@@ -3,7 +3,7 @@
 # Project metadata, dependencies, and tool config (ruff, mypy, bandit, pytest, coverage, mutmut).
 [project]
 name = "openfollow"
-version = "0.2.6rc9"
+version = "0.3.0"
 description = "Live video stage-tracking with PSN, OTP, OSC and RTTrPM output for lighting, media and audio show control"
 license = "AGPL-3.0-or-later"
 readme = "README.md"

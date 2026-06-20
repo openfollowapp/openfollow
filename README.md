@@ -25,6 +25,10 @@
 
 ---
 
+<p align="center">
+  <img src="docs/openfollow-demo.gif" alt="OpenFollow tracking a performer across a live stage camera feed with marker overlays" width="880" />
+</p>
+
 ## Overview
 
 You get a live video view with an overlay, control 3D markers with a gamepad, mouse, or keyboard, and broadcast their positions to show-control tools like lighting consoles and media servers.

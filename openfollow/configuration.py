@@ -424,7 +424,7 @@ class DetectionConfig:
     interval_ms: int = 67
     show_boxes: bool = True
     show_labels: bool = True
-    box_color: str = "#00ff00"
+    box_color: str = "#808080"
     box_thickness: int = 2
     max_persons: int = 10
     pin_marker: bool = False
@@ -462,7 +462,7 @@ class DetectionConfig:
         self.confidence = _coerce_float(self.confidence, 0.2, lo=0.0, hi=1.0)
         # Upper bounds mirror ``openfollow/web/validation.py``.
         self.interval_ms = _coerce_int(self.interval_ms, 67, lo=1, hi=10000)
-        self.box_color = _coerce_hex_color(self.box_color, "#00ff00")
+        self.box_color = _coerce_hex_color(self.box_color, "#808080")
         self.box_thickness = _coerce_int(self.box_thickness, 2, lo=1, hi=10)
         self.max_persons = _coerce_int(self.max_persons, 10, lo=1, hi=50)
         # ``lo=-1`` admits the "follow selected" sentinel but no other negative.

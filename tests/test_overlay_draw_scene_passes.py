@@ -256,7 +256,7 @@ class TestDrawDetections:
 
     def test_attached_box_uses_marker_colour_others_default(self) -> None:
         state = _scene_state(
-            detection_box_color="#00ff00",  # default green
+            detection_box_color="#808080",  # default grey
             detection_show_labels=False,
             detection_attached_track_id=2,
             detection_attached_color="#ff0000",  # marker red
@@ -268,15 +268,16 @@ class TestDrawDetections:
         cr = FakeCairo()
         draw_detections(FakeRenderer(), cr, state, 100, 100)
         strokes = [c for c in cr.calls if c[0] == "rgba"]
-        # Box 1 (unattached) renders green; box 2 (attached) renders red.
-        assert strokes[0][1:4] == pytest.approx((0.0, 1.0, 0.0))
+        # Box 1 (unattached) renders grey; box 2 (attached) renders red.
+        grey = 128 / 255
+        assert strokes[0][1:4] == pytest.approx((grey, grey, grey))
         assert strokes[1][1:4] == pytest.approx((1.0, 0.0, 0.0))
 
     def test_attached_colour_ignored_when_track_not_present(self) -> None:
         # An attached track id with no matching detection leaves every box in
         # the default colour (no crash, no stray highlight).
         state = _scene_state(
-            detection_box_color="#00ff00",
+            detection_box_color="#808080",
             detection_show_labels=False,
             detection_attached_track_id=99,
             detection_attached_color="#ff0000",
@@ -285,7 +286,8 @@ class TestDrawDetections:
         cr = FakeCairo()
         draw_detections(FakeRenderer(), cr, state, 100, 100)
         first_rgba = next(c for c in cr.calls if c[0] == "rgba")
-        assert first_rgba[1:4] == pytest.approx((0.0, 1.0, 0.0))
+        grey = 128 / 255
+        assert first_rgba[1:4] == pytest.approx((grey, grey, grey))
 
 
 # --------------------------------------------------------------------------- #

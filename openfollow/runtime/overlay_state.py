@@ -232,7 +232,7 @@ class OverlayState:
     detections: list[DetectionBox] = field(default_factory=list)
     detection_show_boxes: bool = False
     detection_show_labels: bool = False
-    detection_box_color: str = "#00ff00"
+    detection_box_color: str = "#808080"
     detection_box_thickness: int = 2
     # The detection track currently attached to a marker, painted in that
     # marker's colour. ``None`` track id (or empty colour) = no highlight.
@@ -334,7 +334,7 @@ class OverlayState:
         self.detections = []
         self.detection_show_boxes = False
         self.detection_show_labels = False
-        self.detection_box_color = "#00ff00"
+        self.detection_box_color = "#808080"
         self.detection_box_thickness = 2
         self.detection_attached_track_id = None
         self.detection_attached_color = ""

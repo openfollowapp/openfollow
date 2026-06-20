@@ -45,7 +45,7 @@ What the detection overlay draws on the Operator Screen.
 
 - **Show Boxes** – draw a bounding rectangle around each detected person. On by default.
 - **Show Labels** – draw a text label (confidence score) inside or above each box. On by default.
-- **Box Color** – colour of the boxes. Click the swatch to open the colour picker. Default green (`#00ff00`). The box currently attached to a marker is drawn in **that marker's** colour instead, so you can see which detection is driving the followspot.
+- **Box Color** – colour of the boxes. Click the swatch to open the colour picker. Default grey (`#808080`). The box currently attached to a marker is drawn in **that marker's** colour instead, so you can see which detection is driving the followspot.
 - **Box Thickness (px)** – line weight for the boxes, 1–10 pixels. Default `2`.
 
 ## Tracking

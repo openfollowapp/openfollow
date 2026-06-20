@@ -80,7 +80,7 @@ def test_overlay_state_reset_restores_defaults() -> None:
     assert state.discovered_sources == []
     assert state.available_interfaces == []
     assert state.detection_show_boxes is False
-    assert state.detection_box_color == "#00ff00"
+    assert state.detection_box_color == "#808080"
     assert state.unit_system is UnitSystem.METRIC
     assert state.source_selection_title == "SELECT SOURCE"
     assert len(state._marker_pool) == 16

@@ -2058,7 +2058,7 @@ def test_detection_config_clamps_confidence(bad_conf: object, expected: float) -
 
 def test_detection_config_rejects_bad_box_color() -> None:
     cfg = DetectionConfig(box_color="fuchsia")
-    assert cfg.box_color == "#00ff00"
+    assert cfg.box_color == "#808080"
 
 
 @pytest.mark.parametrize("bad_model", [123, 4.5, None, ["yolov8n.onnx"], {"name": "x"}])

@@ -681,7 +681,7 @@ class TestExternalStateSnapshots:
         # Defaults come from DetectionConfig.
         assert state.detection_show_boxes is True
         assert state.detection_show_labels is True
-        assert state.detection_box_color == "#00ff00"
+        assert state.detection_box_color == "#808080"
         assert state.detection_box_thickness == 2
 
     def test_no_detector_leaves_detection_defaults(self, pool: OverlayStatePool) -> None:

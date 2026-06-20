@@ -189,6 +189,10 @@ above.
 
 macOS support is intended for **local development and testing**. For production/show deployment, use Raspberry Pi.
 
+The supported interpreter is **Python 3.13** (the one pyenv pins below). The
+optional detection / export extras require it; a 3.14+ venv has no upstream
+wheels and will not install them.
+
 Prerequisites:
 
 ```bash
@@ -218,12 +222,14 @@ poetry run openfollow
 <details>
 <summary><b>Optional: AI person detection</b></summary>
 
+Use `-E detection` to **run** detection (ONNX Runtime inference backend):
+
 ```bash
 poetry install -E detection          # ONNX Runtime backend
 ```
 
-Export a model to ONNX. The `export` extra pulls the ultralytics toolchain (heavy –
-torch; install it on a workstation, never the show Pi):
+Use `-E export` to **convert** models. The `export` extra pulls the ultralytics
+toolchain (heavy – torch; install it on a workstation, never the show Pi):
 
 ```bash
 poetry install -E export              # ultralytics export toolchain
@@ -233,6 +239,10 @@ poetry run python scripts/export_onnx.py yolov8n.pt --imgsz 320 --opset 17
 Or, from the Web UI **Person Detection → Model → Download model**, install the export tools
 and export a catalogued model straight into `<storage_path>/models/` (workstation + internet
 only).
+
+If `-E detection` / `-E export` fails to install, check your venv is on Python
+3.13: a 3.14+ venv has no upstream torch/scipy/onnxruntime wheels yet, so switch
+the venv back to 3.13.
 
 Then enable detection in the Web UI **Person Detection** section and pick your model from the
 **Model** dropdown (only models already in the storage folder are listed). The storage location
@@ -282,12 +292,14 @@ poetry run openfollow
 <details>
 <summary><b>Optional: AI person detection</b></summary>
 
+Use `-E detection` to **run** detection (ONNX Runtime inference backend):
+
 ```bash
 poetry install -E detection          # ONNX Runtime backend
 ```
 
-Export a model to ONNX. The `export` extra pulls the ultralytics toolchain (heavy –
-torch; install it on a workstation, never the show Pi):
+Use `-E export` to **convert** models. The `export` extra pulls the ultralytics
+toolchain (heavy – torch; install it on a workstation, never the show Pi):
 
 ```bash
 poetry install -E export              # ultralytics export toolchain
@@ -297,6 +309,10 @@ poetry run python scripts/export_onnx.py yolov8n.pt --imgsz 320 --opset 17
 Or, from the Web UI **Person Detection → Model → Download model**, install the export tools
 and export a catalogued model straight into `<storage_path>/models/` (workstation + internet
 only).
+
+If `-E detection` / `-E export` fails to install, check your venv is on Python
+3.13: a 3.14+ venv has no upstream torch/scipy/onnxruntime wheels yet, so switch
+the venv back to 3.13.
 
 Then enable detection in the Web UI **Person Detection** section and pick your model from the
 **Model** dropdown (only models already in the storage folder are listed). The storage location

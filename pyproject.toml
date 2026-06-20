@@ -12,7 +12,9 @@ authors = [
     { name = "Michel Honold" },
     { name = "Vinzenz Schultz" },
 ]
-requires-python = ">=3.10,<4.0"
+# Upper cap tracks upstream wheel availability: torch/scipy/onnxruntime ship no
+# cp314 wheels yet, so detection/export break on 3.14. Bump to <3.15 once they do.
+requires-python = ">=3.10,<3.14"
 dependencies = [
     "pypsn @ git+https://github.com/open-stage/python-psn.git",
     "numpy>=1.24",

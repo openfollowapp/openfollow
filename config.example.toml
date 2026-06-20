@@ -1,0 +1,201 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# Example OpenFollow config with default values for every setting.
+video_source_type = "testpattern"
+ndi_source_name = ""
+srt_host = "srt://0.0.0.0:5000"
+rtp_url = "rtp://0.0.0.0:5004"
+rtp_encoding = "H264"
+rtsp_url = "rtsp://0.0.0.0:554/stream/main"
+picam_camera_name = ""
+picam_width = 1920
+picam_height = 1080
+picam_framerate = 30
+v4l2_device = "/dev/video0"
+v4l2_render_resolution = "1080p"
+v4l2_framerate = 30
+testpattern_resolution = "1080p"
+testpattern_pattern = "stage"
+stall_timeout = 3.0
+heal_interval = 5.0
+window_width = 1920
+window_height = 1080
+psn_system_name = "OpenFollow"
+psn_mcast_ip = "236.10.10.10"
+# Pin the network INTERFACE (eth0/wlan0). The interface
+# name is stable across DHCP renewals and venue changes; its IP is
+# not. Leave blank for automatic selection (primary outbound IPv4).
+psn_source_iface = ""
+web_port = 80
+web_pin = ""
+controlled_marker_ids = [
+    1,
+]
+viewer_marker_ids = [
+    1,
+]
+
+[camera]
+pos_x = 0.0
+pos_y = -11.0
+pos_z = 6.0
+pitch = -22.0
+yaw = 0.0
+roll = 0.0
+fov = 60.0
+
+[grid]
+width = 10.0
+depth = 6.0
+spacing = 1.0
+x_offset = 0.0
+y_offset = 3.0
+z_offset = 0.0
+origin_visible = false
+origin_length = 1.0
+origin_thickness = 3
+
+[marker]
+min_speed = 0.1
+max_speed = 3.0
+move_speed = 2.0
+default_pos_x = 0.0
+default_pos_y = 0.0
+default_pos_z = 1.6
+ball_visible = true
+ball_size = 0.15
+transparency = 0.3
+crosshair_visible = true
+crosshair_size = 0.3
+crosshair_color = "#ffffff"
+crosshair_thickness = 2
+drop_line = true
+drop_line_thickness = 2
+ground_circle = true
+ground_circle_size = 0.3
+ground_circle_filled = false
+z_display_from_stage = true
+
+[controller]
+enabled = true
+keyboard_enabled = true
+mouse_enabled = false
+deadzone = 0.01
+invert_y = false
+curve = "logarithmic"
+btn_reset = "X"
+btn_source_select = "BACK"
+btn_toggle_help = "Y"
+btn_speed_down = "LB"
+btn_speed_up = "RB"
+btn_move_z_down = "LT"
+btn_move_z_up = "RT"
+btn_toggle_zones = "B"
+move_xy_stick = "right"
+src_btn_confirm = "A"
+src_btn_cancel = "B"
+map_a = "A"
+map_b = "B"
+map_x = "X"
+map_y = "Y"
+map_back = "BACK"
+map_start = "START"
+map_lb = "LB"
+map_rb = "RB"
+map_dpad_up = "DPAD_UP"
+map_dpad_down = "DPAD_DOWN"
+map_dpad_left = "DPAD_LEFT"
+map_dpad_right = "DPAD_RIGHT"
+swap_triggers = false
+mapped_controller_name = ""
+key_move_layout = "wasd"
+key_move_z_up = "q"
+key_move_z_down = "e"
+key_reset = "x"
+key_toggle_help = "h"
+key_toggle_zones = "z"
+key_speed_down = "r"
+key_speed_up = "t"
+
+# Intentionally empty: the button-detection wizard fills this in per-device.
+# Shipping captured raw indices here would mis-map any other controller.
+[controller.button_raw_indices]
+
+[osc]
+enabled = true
+port = 8765
+# Optional IPv4 multicast group (224.0.0.0–239.255.255.255) the inbound
+# listener joins. Empty = off; unicast + subnet broadcast always received.
+multicast_group = "239.20.20.20"
+
+# OSC-driven operator messages shown on the video overlay. Senders push to
+# /openfollow/operator/message <message> <info> <markerId> <seconds>;
+# markerId 0 broadcasts, a non-zero id targets the station controlling it.
+[operator_messages]
+enabled = false       # gate the OSC ingest + overlay draw
+position = "bottom"   # "bottom" | "top"
+max_visible = 5       # cap on stacked cards; overflow shows "+N more"
+scale = 1.0           # window + text scale: 1.0 | 1.25 | 1.5 | 1.75 | 2.0
+
+[otp_output]
+enabled = false
+# Multicast addresses are derived from `system_number` per ANSI E1.59
+# Table 15-19: transform → 239.159.1.<system_number>, advertisements →
+# 239.159.2.1. There is no `mcast_ip` field – change `system_number`
+# to choose a different transform group.
+port = 5568
+# Pin the source interface by name (eth0/wlan0), like psn_source_iface.
+# Empty = auto-detect the primary interface.
+source_iface = ""
+system_number = 1
+priority = 100
+
+[rttrpm_output]
+enabled = false
+host = "127.0.0.1"
+port = 36700
+fps = 60
+context = 0
+
+[detection]
+enabled = false
+model = "yolov8n.onnx"
+storage_path = ""
+inference_size = 640
+preprocess_clahe = true
+confidence = 0.2
+interval_ms = 67
+show_boxes = true
+show_labels = true
+box_color = "#00ff00"
+box_thickness = 2
+max_persons = 10
+pin_marker = false
+pin_point = "top"
+smoothing = 0.15
+prediction = 8.0
+grace_period_ms = 500
+pin_mode = "assist"
+assist_radius_m = 1.0
+assist_strength = 0.5
+
+[trigger_zones]
+enabled = true
+show_overlay = true
+eval_fps = 10
+default_osc_host = "127.0.0.1"
+default_osc_port = 53000
+debounce_ms = 200
+hysteresis = 0.05
+
+[ui]
+# "metric" | "imperial". Drives length / speed rendering in the web UI
+# and the on-device Operator Screen / scene / zones overlay. Internal
+# storage, OSC, PSN/RTTrPM/OTP and .openfollowtemplate files are always
+# metric – only display formatting and form-input parsing change.
+unit_system = "metric"
+
+# Reveal experimental web-UI sections (Person Detection, Mouse Input,
+# RTTrPM Output, Device Permissions). Toggled from Station Settings.
+# Turning it off also disables mouse input and person detection.
+show_experimental_features = false

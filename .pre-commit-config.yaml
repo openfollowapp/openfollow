@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# Pre-commit hook config: ruff lint/format, bandit, whitespace/EOF fixers.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-toml
+
+  # ruff lint + format; check-only (run `make format` to fix). rev must match
+  # pyproject.toml dev deps version.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.18
+    hooks:
+      - id: ruff-check
+        args: ["--no-fix"]
+        files: ^(openfollow|tests)/
+      - id: ruff-format
+        args: ["--check"]
+        files: ^(openfollow|tests)/
+
+  # bandit static security scan, incremental on changed files.
+  # Config in [tool.bandit] in pyproject.toml.
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.4
+    hooks:
+      - id: bandit
+        args: ["-c", "pyproject.toml"]
+        # Keep unpinned to avoid version resolution issues with shallow checkout.
+        additional_dependencies: ["bandit[toml]"]
+        files: ^openfollow/.*\.py$

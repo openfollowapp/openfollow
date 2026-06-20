@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# rpi-image-gen config: OpenFollow appliance image for the Raspberry Pi CM5.
+# OpenFollow appliance image – Raspberry Pi CM5 (16 GB eMMC), Pi OS Lite (Trixie).
+#
+# Same headless Cage Wayland kiosk appliance as the Pi 5 image, targeting the CM5
+# compute board booting from its 16 GB eMMC. All the shared appliance config (the
+# `openfollow` account, image size, custom layer, .deb path) lives in
+# openfollow-common.yaml – only the device layer and image name differ per board.
+#
+# Build (run natively on an arm64 Pi; CI does this on the self-hosted runner):
+#   cp dist/openfollow_*_arm64.deb packaging/image/openfollow.deb
+#   rpi-image-gen build -S packaging/image -c openfollow-cm5.yaml
+# Output: <rpi-image-gen>/work/image-openfollow-cm5/openfollow-cm5.img
+include:
+  file: openfollow-common.yaml
+
+device:
+  layer: rpi-cm5                      # CM5 device layer: 2712 kernel, defaults variant=16G storage_type=emmc
+
+image:
+  name: openfollow-cm5

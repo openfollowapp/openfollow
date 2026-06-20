@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# systemd unit for the OpenFollow Cage/Wayland kiosk session.
+[Unit]
+Description=OpenFollow (live video stage-tracking + 3D overlay)
+# network-online.target (not bare network.target) so the app starts only once an
+# interface actually has an address – otherwise the local IP, the discovery
+# beacon and PSN binding latch onto loopback on a fresh boot.
+After=network-online.target seatd.service systemd-udev-settle.service openfollow-splash.service
+Wants=network-online.target systemd-udev-settle.service openfollow-splash.service
+
+[Service]
+Type=simple
+User=openfollow
+WorkingDirectory=/var/lib/openfollow
+# Let the non-root service bind the configured web_port (default 80, a privileged
+# <1024 port). The ambient cap propagates across the cage -> sh -> python exec
+# chain (none are setuid). Do NOT add CapabilityBoundingSet – it would strip
+# CAP_SETUID/CAP_SETGID from any sudo child and break privileged actions.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+# Let the boot splash show briefly, then stop it so DRM is free for Cage. The
+# '+' prefix runs this one line as root (stopping a system unit needs privilege);
+# the sleeps and the session run as User=. Replaces deprecated PermissionsStartOnly=.
+ExecStartPre=/bin/sleep 3
+ExecStartPre=+-/bin/systemctl stop openfollow-splash.service
+# Wait for USB devices (gamepad) to finish enumerating.
+ExecStartPre=/bin/sleep 2
+# session.sh resolves XDG_RUNTIME_DIR + waits for the lingering /run/user/<uid>,
+# then launches Cage. It must derive the uid at runtime (id -u): a system unit's
+# %U is the manager uid (0), not User=, so %U here would be wrong.
+ExecStart=/usr/share/openfollow/session.sh
+Restart=always
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=15
+Environment=WLR_BACKENDS=drm,libinput
+Environment=WLR_RENDERER=gles2
+Environment=GDK_BACKEND=wayland
+Environment=GST_PLUGIN_FEATURE_RANK=v4l2slh264dec:257,v4l2slh265dec:257,v4l2h264dec:257,v4l2h265dec:257,openh264dec:1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openfollow
+
+[Install]
+WantedBy=multi-user.target

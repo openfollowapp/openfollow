@@ -1,0 +1,242 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# Release workflow: build the offline .deb, sign it into an .ofupdate bundle, build Pi OS images + SBOM.
+name: release-deb
+
+# Build the offline OpenFollow .deb on a GitHub-hosted ARM64 runner (native arm64
+# – no cross-compile) and attach it to the GitHub Release. The package bundles
+# every Python dependency in a private venv, so it installs offline and is the
+# input artifact for the rpi-image-gen image build.
+#
+# The .deb build runs in a debian:trixie container so the venv's Python (3.13)
+# matches the Trixie image; the ubuntu-24.04-arm host ships 3.12. The image job
+# runs on the host directly (mmdebstrap bootstraps the Trixie rootfs regardless).
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Override Debian version (default: read from pyproject.toml)"
+        required: false
+        type: string
+
+permissions:
+  contents: write  # upload the .deb asset to the release
+
+concurrency:
+  group: release-deb-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    # Native arm64 + Python 3.13 to match the Trixie image's venv ABI (see header).
+    container:
+      image: debian:trixie
+    steps:
+      # checkout needs git in PATH; the bare debian:trixie image has none.
+      # git is also needed later for pip to clone the pypsn git dependency.
+      - name: Install git for checkout
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
+
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        # Root inside the container – no sudo (install-system-deps.sh expects root).
+        run: |
+          # sudo for build-deb.sh's visudo; openssl for the signed-bundle step;
+          # gh for attaching assets to the GitHub Release from inside this container.
+          apt-get install -y --no-install-recommends sudo openssl gh
+          # Runtime system deps (shared with the Ansible/install path) ...
+          bash scripts/install-system-deps.sh
+          # ... plus the build-only toolchain: venv, dpkg tooling, the -dev
+          # headers that PyGObject/python-rtmidi compile against, pycairo +
+          # librsvg for the splash render.
+          apt-get install -y --no-install-recommends \
+            python3-venv python3-dev build-essential pkg-config dpkg-dev lintian \
+            libgirepository-2.0-dev libcairo2-dev libasound2-dev \
+            python3-cairo gir1.2-rsvg-2.0 librsvg2-bin
+
+      - name: Build .deb
+        env:
+          OF_DEB_VERSION: ${{ github.event.inputs.version || github.event.release.tag_name }}
+        run: bash packaging/build-deb.sh "$GITHUB_WORKSPACE/dist"
+
+      - name: Lint .deb (non-blocking)
+        run: lintian dist/openfollow_*_arm64.deb || true
+
+      - name: List contents
+        run: dpkg-deb -c dist/openfollow_*_arm64.deb
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: openfollow-deb
+          path: dist/openfollow_*_arm64.deb
+          if-no-files-found: error
+
+      # Wrap the .deb in a single signed update bundle (.ofupdate): the .deb, a
+      # SHA256SUMS line, and an openssl RSA signature over it. The device verifies
+      # the signature (on-device public key) and checksum before installing. The
+      # .ofupdate is the verified artifact the in-app updater uses; the raw .deb is
+      # also attached to the release for manual apt/dpkg install. Built on both
+      # release and workflow_dispatch so a dispatch run yields a testable bundle.
+      - name: Build signed update bundle
+        env:
+          PRIVKEY: ${{ secrets.OPENFOLLOW_RELEASE_PRIVKEY }}
+        run: |
+          set -eu
+          deb=$(ls dist/openfollow_*_arm64.deb)
+          base=$(basename "$deb" .deb)
+          work="$RUNNER_TEMP/bundle"; rm -rf "$work"; mkdir -p "$work"
+          cp "$deb" "$work/"
+          ( cd "$work" && sha256sum "$(basename "$deb")" > SHA256SUMS )
+          printf '%s' "$PRIVKEY" > "$RUNNER_TEMP/priv.pem"
+          openssl dgst -sha256 -sign "$RUNNER_TEMP/priv.pem" -out "$work/SHA256SUMS.sig" "$work/SHA256SUMS"
+          shred -u "$RUNNER_TEMP/priv.pem"
+          tar -C "$work" -cf "dist/$base.ofupdate" "$(basename "$deb")" SHA256SUMS SHA256SUMS.sig
+
+      # Downloadable on every run (incl. workflow_dispatch) for manual install/testing.
+      - name: Upload bundle workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: openfollow-ofupdate
+          path: dist/openfollow_*_arm64.ofupdate
+          if-no-files-found: error
+
+      # Attach both the signed bundle (in-app updater path) and the raw .deb
+      # (manual apt/dpkg install) to the release. Globs are non-overlapping.
+      - name: Attach .deb + bundle to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/openfollow_*_arm64.ofupdate dist/openfollow_*_arm64.deb --clobber --repo "$GITHUB_REPOSITORY"
+
+  # Build the flashable Raspberry Pi OS Lite (Trixie, arm64) appliance images, with
+  # the .deb from the build job pre-installed, using rpi-image-gen (cloned at a
+  # pinned ref). One matrix leg per board: `cm5` (16 GB eMMC, flash with rpiboot)
+  # and `pi5` (standard board, SD card, flash with Raspberry Pi Imager). Both legs
+  # consume the same .deb and the same packaging/image/ source; only the per-board
+  # config (openfollow-<target>.yaml) differs. Each leg runs on its own hosted
+  # runner with an isolated $RUNNER_TEMP, so the two boards build in parallel.
+  image:
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false        # a failure on one board must not cancel the other
+      matrix:
+        target: [cm5, pi5]
+    env:
+      RIG_REF: v2.6.0
+    steps:
+      # Ubuntu 24.04 blocks unprivileged user namespaces (AppArmor) that
+      # mmdebstrap's rootless mode needs. Fallback if insufficient: ubuntu-22.04-arm.
+      - name: Allow unprivileged user namespaces (mmdebstrap rootless)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - uses: actions/checkout@v7
+
+      - name: Fetch the built .deb
+        uses: actions/download-artifact@v8
+        with:
+          name: openfollow-deb
+          path: packaging/image
+
+      - name: Normalise .deb name
+        # The image config references a stable filename (packaging/image/openfollow.deb),
+        # not the versioned artifact name.
+        run: mv packaging/image/openfollow_*_arm64.deb packaging/image/openfollow.deb
+
+      - name: Clone rpi-image-gen (pinned)
+        run: git clone --depth 1 --branch "$RIG_REF" https://github.com/raspberrypi/rpi-image-gen "$RUNNER_TEMP/rpi-image-gen"
+
+      - name: Install rpi-image-gen host deps
+        run: sudo "$RUNNER_TEMP/rpi-image-gen/install_deps.sh"
+
+      - name: Build image
+        run: |
+          mkdir -p "$RUNNER_TEMP/rig-build"   # rpi-image-gen -B requires the dir to exist
+          cd "$RUNNER_TEMP/rpi-image-gen"
+          ./rpi-image-gen build -S "$GITHUB_WORKSPACE/packaging/image" \
+            -c openfollow-${{ matrix.target }}.yaml -B "$RUNNER_TEMP/rig-build"
+
+      - name: Compress image
+        id: img
+        env:
+          OF_DEB_VERSION: ${{ github.event.inputs.version || github.event.release.tag_name }}
+        run: |
+          set -eu
+          # Deterministic output path: rpi-image-gen writes <workroot>/image-<name>/<name>.img.
+          IMG="$RUNNER_TEMP/rig-build/image-openfollow-${{ matrix.target }}/openfollow-${{ matrix.target }}.img"
+          [ -f "$IMG" ] || { echo "expected image not found at $IMG" >&2; exit 1; }
+          VER="${OF_DEB_VERSION#v}"; VER="${VER:-dev}"
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          OUT="$GITHUB_WORKSPACE/dist/openfollow-${{ matrix.target }}_${VER}.img.xz"
+          xz -T0 -6 -c "$IMG" > "$OUT"
+          echo "path=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: openfollow-image-${{ matrix.target }}
+          path: ${{ steps.img.outputs.path }}
+          if-no-files-found: error
+
+      # rpi-image-gen already produces an SPDX SBOM for every build: image-rpios
+      # requires image-base, which requires sbom-base, which runs Syft over the
+      # final rootfs. That single scan catalogues BOTH the apt/dpkg OS packages
+      # AND the Python packages in the bundled /opt/openfollow/venv – the
+      # authoritative "what's actually on the image" software list. We just collect
+      # it and ship it; the build was discarding it before.
+      #
+      # Syft writes an uncompressed copy under the build target dir and a
+      # zstd-compressed copy in the deploy dir (deploy.compression defaults to
+      # zstd) – both under the -B workroot. Prefer the uncompressed one; fall back
+      # to decompressing the deploy copy.
+      - name: Collect SBOM
+        id: sbom
+        env:
+          OF_DEB_VERSION: ${{ github.event.inputs.version || github.event.release.tag_name }}
+        run: |
+          set -eu
+          SBOM="$(find "$RUNNER_TEMP/rig-build" -name '*.sbom' -type f -print -quit)"
+          if [ -z "$SBOM" ]; then
+            SBOM_ZST="$(find "$RUNNER_TEMP/rig-build" -name '*.sbom.zst' -type f -print -quit)"
+            [ -n "$SBOM_ZST" ] || { echo "no SBOM produced by rpi-image-gen under $RUNNER_TEMP/rig-build" >&2; exit 1; }
+            SBOM="$RUNNER_TEMP/openfollow.sbom"
+            zstd -d -f -o "$SBOM" "$SBOM_ZST"
+          fi
+          # Must be a valid, non-empty SPDX JSON document.
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert str(d.get("spdxVersion","")).startswith("SPDX-"), "not an SPDX document"' "$SBOM"
+          VER="${OF_DEB_VERSION#v}"; VER="${VER:-dev}"
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          OUT="$GITHUB_WORKSPACE/dist/openfollow-${{ matrix.target }}_${VER}.spdx.json"
+          cp "$SBOM" "$OUT"
+          echo "path=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload SBOM workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: openfollow-sbom-${{ matrix.target }}
+          path: ${{ steps.sbom.outputs.path }}
+          if-no-files-found: error
+
+      # Fail the release if an AGPL or NDI component is in the SBOM, or a detection
+      # extra is bundled in the venv. Runs before both release-attach steps.
+      - name: Gate – SBOM license / scope compliance
+        run: python3 "$GITHUB_WORKSPACE/packaging/image/check_sbom_compliance.py" "${{ steps.sbom.outputs.path }}"
+
+      - name: Attach image to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.img.outputs.path }}" --clobber
+
+      - name: Attach SBOM to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.sbom.outputs.path }}" --clobber

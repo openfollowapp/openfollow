@@ -1,0 +1,56 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# Debian postinst: create the service user, enable a lingering session (so
+# /run/user/<uid> exists at boot for the Cage Wayland kiosk), and enable + start
+# the units. Idempotent: safe to re-run (re-install, and the rpi-image-gen image
+# build runs maintainer scripts during customization).
+set -e
+
+OF_USER=openfollow
+OF_HOME=/var/lib/openfollow
+
+case "$1" in
+  configure)
+    # Dedicated login user (uid >= 1000 so logind manages a session + linger).
+    if ! getent passwd "$OF_USER" >/dev/null; then
+      adduser --quiet --disabled-password --gecos "OpenFollow" \
+        --home "$OF_HOME" "$OF_USER"
+    fi
+
+    # Hardware / session groups for video output, gamepads, audio and seat
+    # access under Cage. Skip any group the base image doesn't define.
+    for grp in video render input audio plugdev netdev dialout; do
+      if getent group "$grp" >/dev/null; then
+        adduser --quiet "$OF_USER" "$grp" || true
+      fi
+    done
+
+    install -d -o "$OF_USER" -g "$OF_USER" -m 0755 "$OF_HOME"
+    chown -R "$OF_USER":"$OF_USER" "$OF_HOME"
+
+    # Persist the user session so XDG_RUNTIME_DIR (/run/user/<uid>) is present
+    # at boot before login. loginctl may be unavailable in a minimal chroot
+    # (image build) – don't fail the install if so.
+    loginctl enable-linger "$OF_USER" 2>/dev/null || true
+
+    systemctl daemon-reload || true
+    # enable always; start/restart only when systemd is actually running
+    # (not in a chroot/image build, where these would fail).
+    systemctl enable openfollow.service openfollow-splash.service || true
+    if systemctl is-system-running >/dev/null 2>&1 || \
+       [ -d /run/systemd/system ]; then
+      # Restart the service if it's already running (upgrade path), otherwise
+      # start it for the first time (fresh install).
+      if systemctl is-active --quiet openfollow.service; then
+        systemctl restart openfollow.service || true
+      else
+        systemctl start openfollow.service || true
+      fi
+    fi
+    ;;
+  abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+esac
+
+exit 0

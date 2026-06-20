@@ -1,0 +1,25 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# Debian postrm: reload units; on purge, drop the lingering session, the service
+# user and its state directory.
+set -e
+
+OF_USER=openfollow
+OF_HOME=/var/lib/openfollow
+
+case "$1" in
+  purge)
+    loginctl disable-linger "$OF_USER" 2>/dev/null || true
+    if getent passwd "$OF_USER" >/dev/null; then
+      deluser --quiet "$OF_USER" 2>/dev/null || true
+    fi
+    rm -rf "$OF_HOME"
+    systemctl daemon-reload || true
+    ;;
+  remove|upgrade|disappear|failed-upgrade|abort-install|abort-upgrade)
+    systemctl daemon-reload || true
+    ;;
+esac
+
+exit 0

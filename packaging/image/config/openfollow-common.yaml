@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# rpi-image-gen config: shared appliance base included by the per-board configs.
+# OpenFollow appliance image – shared base config (NOT built directly).
+#
+# Every appliance setting the two boards have in common lives here. The per-board
+# configs (openfollow-cm5.yaml, openfollow-pi5.yaml) include this file and override
+# only the two knobs that actually differ per board: device.layer and image.name.
+# Always build a board with `rpi-image-gen build -c openfollow-<board>.yaml`, never
+# this file.
+#
+# The application itself (runtime, venv, systemd units, splash, sudoers, the
+# `openfollow` service user) comes from the offline .deb built by
+# packaging/build-deb.sh; this config only adds the OS/boot-level appliance concerns
+# the .deb deliberately leaves alone (silent boot, HDMI mode, radios off, SSH, the
+# login account) via ../layer/openfollow.yaml.
+include:
+  file: trixie-minbase.yaml          # Debian Trixie arm64 minbase, single-root (no AB)
+
+device:
+  # Single account: SSH maintenance user AND the Cage kiosk service user. Created
+  # by the rpi-user-credentials layer BEFORE the .deb installs, so the deb postinst
+  # finds it (getent passwd openfollow) and only adds linger + enables the units.
+  # rpi-user-credentials already adds it to video/render/input/audio/plugdev/
+  # dialout/sudo – the groups OpenFollow needs.
+  #
+  # The password (openfollow) is set by the openfollow layer's chpasswd hook, NOT
+  # via user1pass: device-base enforces a strong-password regex on user1pass that
+  # the intended default 'openfollow' fails by design, and a $6$ hash in YAML would
+  # collide with rpi-image-gen value expansion. Setting it in the hook sidesteps both.
+  user1: openfollow
+  user1sudo: nopasswd                 # passwordless sudo for field service
+  hostname: openfollow                # appliance hostname (default is <class>-<random>);
+                                       # misc-skel writes /etc/hostname + /etc/hosts from this
+
+image:
+  root_part_size: 300%                # headroom for the bundled venv + GStreamer stack
+
+layer:
+  app: openfollow                     # custom layer in ../layer/openfollow.yaml
+
+openfollow:
+  # CI (and the local dry run) drop the built .deb here, next to this source tree.
+  # ${@SRCROOT} resolves to the -S directory (packaging/image).
+  debpath: ${@SRCROOT}/openfollow.deb

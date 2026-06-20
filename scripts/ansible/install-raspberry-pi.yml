@@ -1,0 +1,1065 @@
+---
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# Ansible playbook: provision OpenFollow on a Raspberry Pi (user, deps, repo checkout, systemd units, boot splash, NVMe, network).
+- name: Install OpenFollow on Raspberry Pi
+  # `all` matches whatever the inventory provides, including the ad-hoc
+  # `-i '<pi-ip>,'` form documented in the README. A named group (e.g.
+  # `openfollow`) silently matches nothing for that ad-hoc inventory.
+  hosts: all
+  become: true
+  gather_facts: true
+
+  connection: ssh
+  vars:
+    ansible_common_remote_group: sudo
+    ansible_ssh_common_args: "-o ControlMaster=no -o ControlPersist=no -o AddressFamily=inet"
+    openfollow_user: openfollow  # Service account for the Ansible-managed systemd unit
+    openfollow_group: "{{ openfollow_user }}"
+    openfollow_home: "/home/{{ openfollow_user }}"
+    openfollow_user_password: openfollow
+    openfollow_user_password_salt: openfollow
+    openfollow_user_groups:
+      - sudo
+      - video
+      - render
+      - input
+      - plugdev
+      - audio
+      - netdev
+      - dialout
+    enable_ssh_password_auth: true
+    # Source checkout used to provision the box. Default to the public HTTPS
+    # mirror; for a private SSH remote, use the -e flag. (Runtime updates are
+    # handled separately by the signed-.deb release installer.)
+    openfollow_repo_url: "https://openfollow.app/code/openfollowapp.git"
+    deploy_key_name: openfollow-deploy
+    openfollow_repo_version: main
+    openfollow_repo_force: false
+    openfollow_repo_force_if_dirty: true
+    openfollow_preserve_runtime_config: true
+    openfollow_repo_dir: "{{ openfollow_home }}/openfollow"  # Used as WorkingDirectory in openfollow.service.j2
+    poetry_bin: "{{ openfollow_home }}/.local/bin/poetry"
+    openfollow_service_name: openfollow
+    openfollow_enable_service: true
+    openfollow_start_service: true
+    hdmi_width: 1920
+    hdmi_height: 1080
+    hdmi_refresh_hz: 60
+    wlr_drm_devices: ""
+    mount_nvme: true
+    nvme_mount_src: /dev/nvme0n1p1
+    nvme_mount_point: /mnt/nvme
+    nvme_mount_fstype: ext4
+    nvme_mount_opts: defaults,nofail,noatime
+    nvme_yolo_root: "{{ nvme_mount_point }}/openfollow/yolo"
+    # Person detection (opencv / onnxruntime) is opt-in: it's a large, slow
+    # ARM install that most deployments don't need up front and can be added
+    # later with `-e install_detection_extra=true`. Default off so a base
+    # install stays fast.
+    install_detection_extra: false
+    # Dev/CI toolchain (ruff, pytest, mypy, bandit, pip-audit, mutmut,
+    # pre-commit, hypothesis, coverage) is opt-in: consumer Pis never run it, so
+    # the default install is `--only main`. Set `-e openfollow_install_dev=true`
+    # on a testing Pi that runs `make ci` via `make ci-remote`.
+    openfollow_install_dev: false
+    recreate_poetry_env: true
+    disable_wifi: true
+
+    enable_boot_splash: true
+    splash_service_name: "{{ openfollow_service_name }}-splash"
+    splash_install_dir: /usr/local/share/openfollow
+    splash_svg_path: "{{ splash_install_dir }}/openfollow.svg"
+    splash_png_path: "{{ splash_install_dir }}/splash.png"
+    splash_script_path: "{{ splash_install_dir }}/splash.sh"
+    splash_logo_scale: 0.70
+    boot_cmdline_path: /boot/firmware/cmdline.txt
+    boot_config_path: /boot/firmware/config.txt
+    silent_boot_params:
+      - quiet
+      - loglevel=0
+      - logo.nologo
+      - vt.global_cursor_default=0
+      - systemd.show_status=0
+    # NetworkManager-wait-online.service is deliberately NOT disabled here:
+    # the openfollow unit waits on network-online.target, which only delays
+    # startup if a wait-online service is enabled. Disabling it caused the
+    # app to start before the NIC had an address (loopback IP / no peer
+    # discovery until a restart). See the "Ensure NetworkManager-wait-online"
+    # task below, which re-enables it on hosts where a prior install disabled it.
+    openfollow_network_online_timeout: 20  # seconds; bounds a network-less boot
+    silent_boot_services_to_disable:
+      - cloud-init-main.service
+      - cloud-init-network.service
+      - cloud-init-local.service
+      - cloud-init.target
+      - cloud-config.service
+      - cloud-final.service
+      - bluetooth.service
+      - ModemManager.service
+
+    # Apt package list moved out to scripts/install-system-deps.sh as
+    # the single source of truth (consumed by this playbook via the
+    # ``Install system dependencies`` task below and by the in-app web
+    # updater in openfollow.runtime.app_commands.run_update).
+
+  handlers:
+    - name: reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: reload ssh
+      ansible.builtin.systemd:
+        name: ssh
+        state: reloaded
+
+    - name: restart openfollow
+      ansible.builtin.systemd:
+        name: "{{ openfollow_service_name }}"
+        state: restarted
+
+  tasks:
+    # System (apt) deps live in scripts/install-system-deps.sh – single
+    # source of truth shared with the in-app web updater, which runs
+    # the same script via passwordless sudo (sudoers drop-in below).
+    # Keeping the package list out of the playbook means a new dep
+    # added to the script automatically gets picked up on the next
+    # in-app update without needing a fresh playbook run.
+    #
+    # ``ansible.builtin.script`` transfers and runs the script from the
+    # control machine, so it works on first boot before the target has
+    # the repo checked out (git itself is one of the deps the script
+    # installs – chicken-and-egg otherwise).
+    - name: Install system dependencies via shared install script
+      ansible.builtin.script:
+        cmd: "{{ playbook_dir }}/../install-system-deps.sh"
+      changed_when: true
+
+    - name: Ensure supplemental groups exist for {{ openfollow_user }}
+      ansible.builtin.group:
+        name: "{{ item }}"
+        state: present
+      loop: "{{ openfollow_user_groups }}"
+
+    - name: Ensure {{ openfollow_user }} user exists with known password
+      ansible.builtin.user:
+        name: "{{ openfollow_user }}"
+        shell: /bin/bash
+        create_home: true
+        groups: "{{ openfollow_user_groups }}"
+        append: true
+        password: "{{ openfollow_user_password | password_hash('sha512', openfollow_user_password_salt) }}"
+        update_password: always
+
+    - name: Ensure SSH service is enabled and running
+      ansible.builtin.systemd:
+        name: ssh
+        enabled: true
+        state: started
+
+    - name: Ensure SSH include directory exists
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: enable_ssh_password_auth | bool
+
+    - name: Enable SSH password authentication
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/00-openfollow-password-auth.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          PasswordAuthentication yes
+          KbdInteractiveAuthentication yes
+          UsePAM yes
+      when: enable_ssh_password_auth | bool
+      notify:
+        - reload ssh
+
+    - name: Remove old 99- password auth override if present
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/99-openfollow-password-auth.conf
+        state: absent
+      notify:
+        - reload ssh
+
+    - name: Ensure sshd_config PasswordAuthentication is set to yes
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?\s*PasswordAuthentication\s'
+        line: 'PasswordAuthentication yes'
+        state: present
+      when: enable_ssh_password_auth | bool
+      notify:
+        - reload ssh
+
+    - name: Ensure sshd_config KbdInteractiveAuthentication is set to yes
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?\s*KbdInteractiveAuthentication\s'
+        line: 'KbdInteractiveAuthentication yes'
+        state: present
+      when: enable_ssh_password_auth | bool
+      notify:
+        - reload ssh
+
+    - name: Ensure sshd_config UsePAM is set to yes
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?\s*UsePAM\s'
+        line: 'UsePAM yes'
+        state: present
+      when: enable_ssh_password_auth | bool
+      notify:
+        - reload ssh
+
+    - name: Ensure /etc/hosts maps the hostname to 127.0.1.1
+      # Fresh Pi OS images set the hostname without the Debian-convention
+      # 127.0.1.1 loopback line, so every `sudo` logs "unable to resolve host
+      # <hostname>" (journal spam + a per-sudo DNS-timeout delay). The app's
+      # privilege broker shells out to sudo at runtime, so this recurs. The
+      # broker also keeps this line in sync when it renames the host at boot
+      # (device_repair.sync_etc_hosts); this seeds it at provision time.
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        # Tolerate leading whitespace before the address so an indented loopback
+        # line is updated in place, not duplicated (matches device_repair's
+        # _LOOPBACK_RE).
+        regexp: '^\s*127\.0\.1\.1\b'
+        line: "127.0.1.1\t{{ ansible_hostname }}"
+        state: present
+
+    - name: Disable WiFi
+      ansible.builtin.lineinfile:
+        path: "{{ boot_config_path }}"
+        regexp: '^#?dtoverlay=disable-wifi'
+        line: 'dtoverlay=disable-wifi'
+        state: present
+      when: disable_wifi | bool
+      notify:
+        - restart openfollow
+
+    - name: Check boot cmdline file
+      ansible.builtin.stat:
+        path: "{{ boot_cmdline_path }}"
+      register: boot_cmdline_stat
+
+    - name: Check boot config file
+      ansible.builtin.stat:
+        path: "{{ boot_config_path }}"
+      register: boot_config_stat
+
+    - name: Backup boot cmdline once
+      ansible.builtin.copy:
+        src: "{{ boot_cmdline_path }}"
+        dest: "{{ boot_cmdline_path }}.bak"
+        remote_src: true
+        force: false
+        owner: root
+        group: root
+        mode: "0644"
+      when: boot_cmdline_stat.stat.exists
+
+    - name: Backup boot config once
+      ansible.builtin.copy:
+        src: "{{ boot_config_path }}"
+        dest: "{{ boot_config_path }}.bak"
+        remote_src: true
+        force: false
+        owner: root
+        group: root
+        mode: "0644"
+      when: boot_config_stat.stat.exists
+
+    - name: Read current boot cmdline
+      ansible.builtin.slurp:
+        path: "{{ boot_cmdline_path }}"
+      register: boot_cmdline_raw
+      when: boot_cmdline_stat.stat.exists
+
+    - name: Build silent boot cmdline
+      ansible.builtin.set_fact:
+        boot_cmdline_updated: >-
+          {{
+            (
+              (
+                (boot_cmdline_raw.content | b64decode | trim)
+                | regex_replace('(^|\\s)console=tty1(?=\\s|$)', '\\1console=tty3')
+              ).split()
+              +
+              (
+                silent_boot_params
+                | reject('in', ((boot_cmdline_raw.content | b64decode | trim) | regex_replace('(^|\\s)console=tty1(?=\\s|$)', '\\1console=tty3')).split())
+                | list
+              )
+            ) | join(' ')
+          }}
+      when: boot_cmdline_stat.stat.exists
+
+    - name: Apply silent boot cmdline
+      ansible.builtin.copy:
+        dest: "{{ boot_cmdline_path }}"
+        content: "{{ boot_cmdline_updated }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+      when:
+        - boot_cmdline_stat.stat.exists
+        - boot_cmdline_updated != (boot_cmdline_raw.content | b64decode | trim)
+
+    - name: Redirect boot console from tty1 to tty3
+      ansible.builtin.replace:
+        path: "{{ boot_cmdline_path }}"
+        regexp: 'console=tty1'
+        replace: 'console=tty3'
+      when: boot_cmdline_stat.stat.exists
+
+    - name: Ensure silent boot comment in config
+      ansible.builtin.lineinfile:
+        path: "{{ boot_config_path }}"
+        line: "# Silent boot"
+        state: present
+        insertafter: EOF
+      when: boot_config_stat.stat.exists
+
+    - name: Disable firmware rainbow splash
+      ansible.builtin.lineinfile:
+        path: "{{ boot_config_path }}"
+        regexp: '^#?disable_splash='
+        line: 'disable_splash=1'
+        state: present
+        insertafter: EOF
+      when: boot_config_stat.stat.exists
+
+    - name: Gather service facts for optional boot speedups
+      ansible.builtin.service_facts:
+
+    - name: Disable optional boot-delay services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: false
+        state: stopped
+      loop: "{{ silent_boot_services_to_disable }}"
+      when: item in ansible_facts.services
+      failed_when: false
+
+    # network-online.target only delays the openfollow unit if a wait-online
+    # service is enabled. Re-enable it (a prior install may have disabled it)
+    # and bound its timeout so a network-less boot isn't stuck on the default.
+    # No ``failed_when: false`` here: this service is what makes
+    # network-online.target actually delay the openfollow unit, so a silent
+    # enable failure would re-introduce the loopback boot-order bug while the
+    # playbook still reported success. The ``when`` already gates on the
+    # service existing, so failing loudly only happens when a present service
+    # genuinely can't be enabled – which the operator needs to know about.
+    - name: Re-enable NetworkManager-wait-online (so network-online.target waits)
+      ansible.builtin.systemd:
+        name: NetworkManager-wait-online.service
+        enabled: true
+      when: "'NetworkManager-wait-online.service' in ansible_facts.services"
+
+    - name: Ensure NetworkManager-wait-online drop-in directory exists
+      ansible.builtin.file:
+        path: /etc/systemd/system/NetworkManager-wait-online.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: "'NetworkManager-wait-online.service' in ansible_facts.services"
+
+    - name: Bound NetworkManager-wait-online timeout for network-less boots
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/NetworkManager-wait-online.service.d/timeout.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Service]
+          ExecStart=
+          ExecStart=/usr/bin/nm-online -s -q --timeout={{ openfollow_network_online_timeout }}
+      when: "'NetworkManager-wait-online.service' in ansible_facts.services"
+      notify:
+        - reload systemd
+
+    - name: Mask getty on tty1
+      ansible.builtin.systemd:
+        name: getty@tty1.service
+        masked: true
+        enabled: false
+        state: stopped
+      failed_when: false
+
+    - name: Ensure seatd is enabled and running
+      ansible.builtin.systemd:
+        name: seatd
+        enabled: true
+        state: started
+
+    # The NVMe steps below are skipped entirely when the disk is absent.
+    # Without this guard, a Pi with no NVMe drive crashes the install: the
+    # partition stat reports "missing", which then drives parted/mkfs at the
+    # bare disk device (which also doesn't exist) and the mount at a
+    # nonexistent source. `nofail` in the mount opts only protects boot-time
+    # fstab, not the play itself. Pass `-e mount_nvme=false` to opt out.
+    - name: Check if NVMe disk is present
+      ansible.builtin.stat:
+        path: "{{ nvme_mount_src | regex_replace('p[0-9]+$', '') }}"
+      register: nvme_disk
+      when: mount_nvme | bool
+
+    - name: Warn when NVMe mount is requested but no disk is present
+      ansible.builtin.debug:
+        msg: >-
+          mount_nvme is enabled but no NVMe disk was found at
+          {{ nvme_mount_src | regex_replace('p[0-9]+$', '') }} – skipping all
+          NVMe partition/format/mount steps. Attach an NVMe drive (or set
+          nvme_mount_src), or pass `-e mount_nvme=false` to silence this.
+      when:
+        - mount_nvme | bool
+        - not nvme_disk.stat.exists
+
+    - name: Check if NVMe partition exists
+      ansible.builtin.stat:
+        path: "{{ nvme_mount_src }}"
+      register: nvme_partition
+      when:
+        - mount_nvme | bool
+        - nvme_disk.stat.exists
+
+    - name: Create NVMe partition table (GPT)
+      ansible.builtin.command:
+        argv:
+          - parted
+          - -s
+          - "{{ nvme_mount_src | regex_replace('p[0-9]+$', '') }}"
+          - mklabel
+          - gpt
+      when:
+        - mount_nvme | bool
+        - nvme_disk.stat.exists
+        - not nvme_partition.stat.exists
+
+    - name: Create NVMe partition
+      ansible.builtin.command:
+        argv:
+          - parted
+          - -s
+          - -a
+          - optimal
+          - "{{ nvme_mount_src | regex_replace('p[0-9]+$', '') }}"
+          - mkpart
+          - primary
+          - ext4
+          - "0%"
+          - "100%"
+      when:
+        - mount_nvme | bool
+        - nvme_disk.stat.exists
+        - not nvme_partition.stat.exists
+
+    - name: Format NVMe partition with ext4
+      ansible.builtin.command:
+        argv:
+          - mkfs.ext4
+          - -F
+          - "{{ nvme_mount_src }}"
+      when:
+        - mount_nvme | bool
+        - nvme_disk.stat.exists
+        - not nvme_partition.stat.exists
+
+    - name: Ensure NVMe mount point exists
+      ansible.builtin.file:
+        path: "{{ nvme_mount_point }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when:
+        - mount_nvme | bool
+        - nvme_disk.stat.exists
+
+    - name: Mount NVMe SSD
+      ansible.builtin.mount:
+        path: "{{ nvme_mount_point }}"
+        src: "{{ nvme_mount_src }}"
+        fstype: "{{ nvme_mount_fstype }}"
+        opts: "{{ nvme_mount_opts }}"
+        state: mounted
+      when:
+        - mount_nvme | bool
+        - nvme_disk.stat.exists
+
+    - name: Create NVMe detection storage directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ openfollow_user }}"
+        group: "{{ openfollow_group }}"
+        mode: "0755"
+      loop:
+        - "{{ nvme_mount_point }}/openfollow"
+        - "{{ nvme_yolo_root }}"
+        - "{{ nvme_yolo_root }}/models"
+        - "{{ nvme_yolo_root }}/cache"
+      when:
+        - mount_nvme | bool
+        - nvme_disk.stat.exists
+
+    - name: Install Poetry for {{ openfollow_user }}
+      become_user: "{{ openfollow_user }}"
+      ansible.builtin.shell: |
+        curl -sSL https://install.python-poetry.org | python3 -
+      args:
+        creates: "{{ poetry_bin }}"
+      environment:
+        HOME: "{{ openfollow_home }}"
+
+    - name: Ensure .ssh directory exists for {{ openfollow_user }}
+      ansible.builtin.file:
+        path: "{{ openfollow_home }}/.ssh"
+        state: directory
+        owner: "{{ openfollow_user }}"
+        group: "{{ openfollow_group }}"
+        mode: "0700"
+
+    # The deploy key is only needed to clone a *private* repo over SSH.
+    # Public/HTTPS installs (the README default) need no key, so probe for it
+    # on the control machine and skip the copy + SSH config when it's absent
+    # rather than failing on a missing source file.
+    - name: Check for deploy key on control machine
+      ansible.builtin.stat:
+        path: "{{ lookup('env', 'HOME') }}/.ssh/{{ deploy_key_name }}"
+      register: deploy_key_local
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Copy deploy private key to Pi
+      ansible.builtin.copy:
+        src: "{{ lookup('env', 'HOME') }}/.ssh/{{ deploy_key_name }}"
+        dest: "{{ openfollow_home }}/.ssh/{{ deploy_key_name }}"
+        owner: "{{ openfollow_user }}"
+        group: "{{ openfollow_group }}"
+        mode: "0600"
+      when: deploy_key_local.stat.exists
+
+    - name: Copy deploy public key to Pi
+      ansible.builtin.copy:
+        src: "{{ lookup('env', 'HOME') }}/.ssh/{{ deploy_key_name }}.pub"
+        dest: "{{ openfollow_home }}/.ssh/{{ deploy_key_name }}.pub"
+        owner: "{{ openfollow_user }}"
+        group: "{{ openfollow_group }}"
+        mode: "0644"
+      when: deploy_key_local.stat.exists
+
+    - name: Configure SSH to use deploy key for GitHub
+      ansible.builtin.blockinfile:
+        path: "{{ openfollow_home }}/.ssh/config"
+        create: true
+        owner: "{{ openfollow_user }}"
+        group: "{{ openfollow_group }}"
+        mode: "0600"
+        block: |
+          Host github.com
+            IdentityFile ~/.ssh/{{ deploy_key_name }}
+            StrictHostKeyChecking no
+      when: deploy_key_local.stat.exists
+
+    # On a first install the checkout doesn't exist yet, so `git status` would
+    # fail to chdir and register a result with no `rc` – which the newer Ansible
+    # templating engine then rejects with "dict has no attribute 'rc'". Probe
+    # for the checkout first, only inspect status when it's actually there, and
+    # collapse the result into a single well-defined `openfollow_repo_dirty`
+    # fact so the downstream conditionals never touch a missing key.
+    - name: Check whether the OpenFollow checkout already exists
+      ansible.builtin.stat:
+        path: "{{ openfollow_repo_dir }}/.git"
+      register: openfollow_repo_git
+
+    - name: Check repository status before update
+      become_user: "{{ openfollow_user }}"
+      ansible.builtin.command:
+        argv:
+          - git
+          - status
+          - --porcelain
+      args:
+        chdir: "{{ openfollow_repo_dir }}"
+      register: openfollow_repo_status
+      changed_when: false
+      failed_when: false
+      when: openfollow_repo_git.stat.exists
+
+    - name: Determine whether the repository has uncommitted local changes
+      ansible.builtin.set_fact:
+        openfollow_repo_dirty: >-
+          {{
+            openfollow_repo_git.stat.exists
+            and (openfollow_repo_status.rc | default(1)) == 0
+            and ((openfollow_repo_status.stdout | default('') | trim) != "")
+          }}
+
+    - name: Compute effective force mode for repository update
+      ansible.builtin.set_fact:
+        openfollow_repo_force_effective: >-
+          {{
+            (openfollow_repo_force | bool)
+            or ((openfollow_repo_force_if_dirty | bool) and (openfollow_repo_dirty | bool))
+          }}
+
+    - name: Warn when forcing update due local repository changes
+      ansible.builtin.debug:
+        msg:
+          - "Repository has local changes in {{ openfollow_repo_dir }}; forcing checkout because openfollow_repo_force_if_dirty=true."
+          - "Set -e openfollow_repo_force_if_dirty=false to make local changes a hard error."
+      when:
+        - openfollow_repo_dirty | bool
+        - not (openfollow_repo_force | bool)
+        - openfollow_repo_force_if_dirty | bool
+
+    - name: Fail when repository is dirty and force-on-dirty is disabled
+      ansible.builtin.fail:
+        msg: >-
+          Local modifications exist in {{ openfollow_repo_dir }} and force mode is disabled.
+          Rerun with -e openfollow_repo_force=true or -e openfollow_repo_force_if_dirty=true,
+          or clean/stash local changes manually.
+      when:
+        - openfollow_repo_dirty | bool
+        - not (openfollow_repo_force | bool)
+        - not (openfollow_repo_force_if_dirty | bool)
+
+    - name: Check if runtime config exists for backup
+      ansible.builtin.stat:
+        path: "{{ openfollow_repo_dir }}/config.toml"
+      register: runtime_config_stat
+      when: openfollow_preserve_runtime_config | bool
+
+    - name: Backup runtime config before forced repository update
+      ansible.builtin.slurp:
+        src: "{{ openfollow_repo_dir }}/config.toml"
+      register: runtime_config_backup
+      when:
+        - openfollow_preserve_runtime_config | bool
+        - runtime_config_stat.stat.exists
+        - openfollow_repo_force_effective | bool
+
+    - name: Clone OpenFollow repository
+      become_user: "{{ openfollow_user }}"
+      ansible.builtin.git:
+        repo: "{{ openfollow_repo_url }}"
+        dest: "{{ openfollow_repo_dir }}"
+        version: "{{ openfollow_repo_version }}"
+        update: true
+        force: "{{ openfollow_repo_force_effective | bool }}"
+        key_file: "{{ (openfollow_home + '/.ssh/' + deploy_key_name) if deploy_key_local.stat.exists else omit }}"
+
+    - name: Restore runtime config after forced repository update
+      ansible.builtin.copy:
+        content: "{{ runtime_config_backup.content | b64decode }}"
+        dest: "{{ openfollow_repo_dir }}/config.toml"
+        owner: "{{ openfollow_user }}"
+        group: "{{ openfollow_group }}"
+        mode: "0644"
+      when:
+        - openfollow_preserve_runtime_config | bool
+        - runtime_config_backup is defined
+        - runtime_config_backup.content is defined
+        - openfollow_repo_force_effective | bool
+
+    - name: Configure Poetry to use system site-packages
+      become_user: "{{ openfollow_user }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ poetry_bin }}"
+          - config
+          - virtualenvs.options.system-site-packages
+          - "true"
+          - --local
+      args:
+        chdir: "{{ openfollow_repo_dir }}"
+      environment:
+        HOME: "{{ openfollow_home }}"
+
+    - name: Recreate Poetry virtualenv when requested
+      become_user: "{{ openfollow_user }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ poetry_bin }}"
+          - env
+          - remove
+          - python
+      args:
+        chdir: "{{ openfollow_repo_dir }}"
+      environment:
+        HOME: "{{ openfollow_home }}"
+      register: poetry_env_remove
+      changed_when: "'Deleted' in (poetry_env_remove.stdout ~ poetry_env_remove.stderr)"
+      failed_when: false
+      when: recreate_poetry_env | bool
+
+    # Consumer Pis only need the runtime deps, so the default install is
+    # `--only main`: it skips the dev/CI group (ruff, pytest, mypy, bandit,
+    # pip-audit, mutmut, pre-commit, hypothesis, coverage), which the device
+    # never runs. That keeps the install lean and stops a dev-only package's
+    # download breaking a production install. A testing Pi that runs `make ci`
+    # (via `make ci-remote`) needs the dev group, so set
+    # `-e openfollow_install_dev=true` there – that drops `--only main` and
+    # falls back to a default `poetry install` (the dev group is non-optional,
+    # so it installs by default). `--only` is exclusive in Poetry and ignores
+    # `--with`, which is why the toggle removes the flag rather than adding one.
+    - name: Install Python dependencies with Poetry
+      become_user: "{{ openfollow_user }}"
+      ansible.builtin.command:
+        argv: >-
+          {{ [poetry_bin, 'install', '--no-interaction', '--no-ansi']
+             + ([] if openfollow_install_dev | bool else ['--only', 'main'])
+             + (['-E', 'detection'] if install_detection_extra | bool else []) }}
+      args:
+        chdir: "{{ openfollow_repo_dir }}"
+      environment:
+        HOME: "{{ openfollow_home }}"
+        # Headless trixie ships gnome-keyring-daemon enabled with a LOCKED
+        # default collection (nothing unlocks it without a PAM/GUI login). Poetry
+        # probes `keyring` for repository credentials during install, which makes
+        # a SecretService call that tries to unlock that collection and blocks
+        # forever on a dbus unlock prompt that can never be answered headless –
+        # `poetry install` hangs at 0% CPU indefinitely. Force the no-op keyring
+        # backend so the credential lookup returns instantly. (Bookworm test Pis
+        # didn't hit this because their openfollow user had no live SecretService.)
+        PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+
+    # Clear Poetry's PyPI download/build cache after install so re-runs
+    # don't accumulate wheels on small SD cards (numpy/opencv/onnxruntime
+    # wheels are large). Scoped to the ``pypi`` package cache by Poetry
+    # itself – it never touches the virtualenv (which lives under
+    # ``~/.cache/pypoetry/virtualenvs``), so the installed env is
+    # untouched and only re-downloads cost anything on the next change.
+    # Soft-failed: reclaiming cache must not fail an otherwise-good install.
+    - name: Reclaim disk by clearing Poetry cache
+      become_user: "{{ openfollow_user }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ poetry_bin }}"
+          - cache
+          - clear
+          - --all
+          - --no-interaction
+          - pypi
+      args:
+        chdir: "{{ openfollow_repo_dir }}"
+      environment:
+        HOME: "{{ openfollow_home }}"
+      register: poetry_cache_clear
+      changed_when: "'Deleting' in (poetry_cache_clear.stdout ~ poetry_cache_clear.stderr)"
+      failed_when: false
+
+    - name: Resolve {{ openfollow_user }} UID
+      tags: [systemd]
+      ansible.builtin.command: "id -u {{ openfollow_user }}"
+      register: openfollow_user_uid
+      changed_when: false
+
+    - name: Check linger status for {{ openfollow_user }}
+      ansible.builtin.stat:
+        path: "/var/lib/systemd/linger/{{ openfollow_user }}"
+      register: linger_status
+
+    - name: Enable linger for {{ openfollow_user }}
+      ansible.builtin.command: "loginctl enable-linger {{ openfollow_user }}"
+      when: not linger_status.stat.exists
+
+    - name: Install boot splash dependencies (also for --tags boot_splash runs)
+      tags: [boot_splash]
+      ansible.builtin.apt:
+        name:
+          - python3-gi
+          - python3-gi-cairo
+          - gir1.2-rsvg-2.0
+          # GStreamer GI binding for the splash launcher's single-master
+          # mirror helper (Gst.parse_launch); see openfollow-splash.sh.j2.
+          - gir1.2-gstreamer-1.0
+          # modetest: enumerate connected HDMI connectors so the splash can be
+          # mirrored to every output (see openfollow-splash.sh.j2).
+          - libdrm-tests
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      when: enable_boot_splash | bool
+
+    - name: Ensure boot splash assets directory exists
+      tags: [boot_splash]
+      ansible.builtin.file:
+        path: "{{ splash_install_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: enable_boot_splash | bool
+
+    - name: Install boot splash SVG
+      tags: [boot_splash]
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../openfollow/web/static/openfollow.svg"
+        dest: "{{ splash_svg_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      register: splash_svg_copy
+      when: enable_boot_splash | bool
+
+    - name: Check if boot splash PNG exists
+      tags: [boot_splash]
+      ansible.builtin.stat:
+        path: "{{ splash_png_path }}"
+      register: splash_png_stat
+      when: enable_boot_splash | bool
+
+    - name: Render boot splash PNG (black background, preserved aspect ratio)
+      tags: [boot_splash]
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        import os
+        import re
+
+        import cairo
+        import gi
+
+        gi.require_version("Rsvg", "2.0")
+        from gi.repository import Rsvg
+
+        svg_path = "{{ splash_svg_path }}"
+        out_path = "{{ splash_png_path }}"
+        W = int("{{ hdmi_width }}")
+        H = int("{{ hdmi_height }}")
+        logo_scale = float("{{ splash_logo_scale }}")
+
+        handle = Rsvg.Handle.new_from_file(svg_path)
+
+        svg_w = svg_h = 0.0
+        try:
+            dim = handle.get_dimensions()
+            svg_w = float(dim.width or 0)
+            svg_h = float(dim.height or 0)
+        except Exception:
+            svg_w = svg_h = 0.0
+
+        if svg_w <= 0 or svg_h <= 0:
+            with open(svg_path, "r", encoding="utf-8", errors="ignore") as f:
+                head = f.read(4096)
+            m = re.search(r"viewBox=\"[^\"]*\s([0-9.]+)\s([0-9.]+)\"", head)
+            if not m:
+                raise RuntimeError("Could not determine SVG dimensions")
+            svg_w = float(m.group(1))
+            svg_h = float(m.group(2))
+
+        max_w = W * logo_scale
+        max_h = H * logo_scale
+        s = min(max_w / svg_w, max_h / svg_h)
+        x = (W - svg_w * s) / 2.0
+        y = (H - svg_h * s) / 2.0
+
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, W, H)
+        cr = cairo.Context(surface)
+        cr.set_source_rgb(0.0, 0.0, 0.0)
+        cr.paint()
+
+        cr.save()
+        cr.translate(x, y)
+        cr.scale(s, s)
+        handle.render_cairo(cr)
+        cr.restore()
+
+        surface.write_to_png(out_path)
+        os.chmod(out_path, 0o644)
+        PY
+      when:
+        - enable_boot_splash | bool
+
+    - name: Install boot splash launcher script
+      tags: [boot_splash]
+      ansible.builtin.template:
+        src: templates/openfollow-splash.sh.j2
+        dest: "{{ splash_script_path }}"
+        owner: root
+        group: root
+        mode: "0755"
+      when: enable_boot_splash | bool
+
+    - name: Install boot splash systemd service
+      tags: [boot_splash]
+      ansible.builtin.template:
+        src: templates/openfollow-splash.service.j2
+        dest: "/etc/systemd/system/{{ splash_service_name }}.service"
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - reload systemd
+      when: enable_boot_splash | bool
+
+    - name: Ensure boot splash service is enabled (runs on next boot)
+      tags: [boot_splash]
+      ansible.builtin.systemd:
+        name: "{{ splash_service_name }}"
+        enabled: true
+        state: stopped
+        daemon_reload: true
+      when: enable_boot_splash | bool
+
+    - name: Ensure boot splash service is disabled when feature is off
+      tags: [boot_splash]
+      ansible.builtin.systemd:
+        name: "{{ splash_service_name }}"
+        enabled: false
+        state: stopped
+      failed_when: false
+      when: not (enable_boot_splash | bool)
+
+    - name: Install openfollow systemd service
+      tags: [systemd]
+      ansible.builtin.template:
+        src: templates/openfollow.service.j2
+        dest: "/etc/systemd/system/{{ openfollow_service_name }}.service"
+        owner: root
+        group: root
+        mode: "0644"
+      vars:
+        openfollow_user_uid_value: "{{ openfollow_user_uid.stdout }}"
+      notify:
+        - reload systemd
+        - restart openfollow
+
+    - name: Allow {{ openfollow_user }} privileged actions without password
+      ansible.builtin.copy:
+        # Grants broker-managed network / device-repair / journal-group
+        # capabilities, not just the updater. Legacy drop-in cleanup below.
+        dest: "/etc/sudoers.d/{{ openfollow_service_name }}-privileged"
+        owner: root
+        group: root
+        mode: "0440"
+        validate: "visudo -cf %s"
+        # IMPORTANT: this block is generated from the capability
+        # registry and pinned by ``tests/test_ansible_sudoers_dropin``.
+        # Every NOPASSWD line below corresponds to a
+        # Matches ``sudoers_pattern`` on Capability in
+        # ``openfollow/privilege/capabilities.py:ALL_CAPABILITIES``.
+        # Legacy grants kept for compatibility.
+        content: |
+          # ----- legacy update grants -----
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl restart {{ openfollow_service_name }}, /bin/systemctl restart {{ openfollow_service_name }}, /bin/bash {{ openfollow_repo_dir }}/scripts/install-system-deps.sh
+          # ----- generated from ALL_CAPABILITIES (do not edit by hand) -----
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/sbin/usermod -aG systemd-journal ^[a-z_][a-z0-9_-]*$
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/sbin/usermod -aG video\,render\,input\,plugdev\,netdev\,dialout ^[a-z_][a-z0-9_-]*$
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/loginctl enable-linger *
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/hostnamectl set-hostname *
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/tee /etc/hosts
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl enable *
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl disable *
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl mask getty@*.service
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/install -m 0440 -o root -g root /tmp/openfollow-sudoers-* /etc/sudoers.d/openfollow-privileged
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/install -m 0440 -o root -g root /dev/null /etc/sudoers.d/openfollow-update
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/install -m 0644 -o root -g root /tmp/openfollow-*.service /etc/systemd/system/openfollow.service
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemd-analyze verify *
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/sbin/visudo -cf *
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl restart *
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/sbin/dhcpcd -n *
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/sbin/dhcpcd -k *
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/nmcli con mod *
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/nmcli con up *
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/nmcli con down *
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/tee /etc/dhcpcd.conf.tmp
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/mv /etc/dhcpcd.conf.tmp /etc/dhcpcd.conf
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl reload dhcpcd
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/journalctl -u *
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemd-run --collect --unit=openfollow-self-update /usr/share/openfollow/apply-update.sh /tmp/openfollow-update-*
+
+    - name: Remove legacy openfollow-update sudoers drop-in
+      ansible.builtin.file:
+        path: "/etc/sudoers.d/{{ openfollow_service_name }}-update"
+        state: absent
+
+    - name: Ensure openfollow service state
+      tags: [systemd]
+      ansible.builtin.systemd:
+        name: "{{ openfollow_service_name }}"
+        enabled: "{{ openfollow_enable_service }}"
+        state: "{{ 'started' if openfollow_start_service else 'stopped' }}"
+        daemon_reload: true
+
+    - name: Ensure kanshi config directory exists
+      ansible.builtin.file:
+        path: "{{ openfollow_home }}/.config/kanshi"
+        state: directory
+        owner: "{{ openfollow_user }}"
+        group: "{{ openfollow_group }}"
+        mode: "0755"
+
+    - name: Deploy kanshi output config
+      ansible.builtin.copy:
+        dest: "{{ openfollow_home }}/.config/kanshi/config"
+        owner: "{{ openfollow_user }}"
+        group: "{{ openfollow_group }}"
+        mode: "0644"
+        content: |
+          # Profile priority: dual ports > single-2 > single-1
+          profile dual {
+            output HDMI-A-2 mode {{ hdmi_width }}x{{ hdmi_height }}@{{ hdmi_refresh_hz }}Hz position 0,0 enable
+            output HDMI-A-1 mode {{ hdmi_width }}x{{ hdmi_height }}@{{ hdmi_refresh_hz }}Hz position 0,0 enable
+          }
+          profile single-2 {
+            output HDMI-A-2 mode {{ hdmi_width }}x{{ hdmi_height }}@{{ hdmi_refresh_hz }}Hz enable
+          }
+          profile single-1 {
+            output HDMI-A-1 mode {{ hdmi_width }}x{{ hdmi_height }}@{{ hdmi_refresh_hz }}Hz enable
+          }
+      notify:
+        - restart openfollow
+
+    - name: Force HDMI hotplug detection in /boot/firmware/config.txt
+      ansible.builtin.lineinfile:
+        path: "{{ boot_config_path }}"
+        regexp: '^#?hdmi_force_hotplug'
+        line: 'hdmi_force_hotplug=1'
+        state: present
+
+    - name: Set HDMI DMT group in /boot/firmware/config.txt
+      ansible.builtin.lineinfile:
+        path: "{{ boot_config_path }}"
+        regexp: '^#?hdmi_group'
+        line: 'hdmi_group=2'
+        state: present
+
+    - name: Set HDMI Full HD mode in /boot/firmware/config.txt
+      ansible.builtin.lineinfile:
+        path: "{{ boot_config_path }}"
+        regexp: '^#?hdmi_mode'
+        line: 'hdmi_mode=82'
+        state: present
+
+    - name: Limit HDMI bandwidth to prevent 4K negotiation
+      ansible.builtin.lineinfile:
+        path: "{{ boot_config_path }}"
+        regexp: '^#?hdmi_max_pixel_freq'
+        line: 'hdmi_max_pixel_freq=150'
+        state: present
+
+    - name: Disable 4K60 support
+      ansible.builtin.lineinfile:
+        path: "{{ boot_config_path }}"
+        regexp: '^#?hdmi_enable_4kp60'
+        line: 'hdmi_enable_4kp60=0'
+        state: present
+
+    - name: NDI reminder
+      ansible.builtin.debug:
+        msg:
+          - "NDI input requires manual NDI SDK and gst-plugin-ndi installation."
+          - "Complete the README NDI steps before setting video_source_type='ndi'."

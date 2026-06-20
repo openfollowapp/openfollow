@@ -1,0 +1,274 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# rpi-image-gen layer: install the offline OpenFollow .deb and apply the headless appliance boot config.
+# METABEGIN
+# X-Env-Layer-Name: openfollow
+# X-Env-Layer-Category: app
+# X-Env-Layer-Desc: Install the offline OpenFollow .deb and apply the headless
+#  appliance boot config (silent kiosk boot, HDMI 1080p, WiFi/BT off, SSH on).
+#  The .deb carries the runtime, the systemd units, the splash and the
+#  `openfollow` service user; this layer adds only the OS/boot concerns the .deb
+#  does not own. Requires rpi-user-credentials (creates the openfollow login user
+#  before the deb installs) and rpi-boot-firmware (so our config.txt/cmdline.txt
+#  edits run AFTER the firmware templates are installed, not before).
+#  The network stack is NetworkManager (installed + enabled below), not the
+#  stock systemd-net-min/systemd-networkd: OpenFollow's in-app Network page
+#  configures interfaces through nmcli, so NetworkManager must own the links.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: rpi-user-credentials,rpi-boot-firmware,systemd-timesyncd
+#
+# X-Env-VarPrefix: openfollow
+#
+# X-Env-VarRequires: IGconf_device_user1
+# X-Env-VarRequires-Valid: string
+#
+# X-Env-Var-debpath: ${@SRCROOT}/openfollow.deb
+# X-Env-Var-debpath-Desc: Path to the offline OpenFollow .deb to install into the image.
+# X-Env-Var-debpath-Required: y
+# X-Env-Var-debpath-Valid: string
+# X-Env-Var-debpath-Set: y
+# METAEND
+---
+mmdebstrap:
+  packages:
+    - openssh-server          # headless maintenance access (unit enabled below)
+    - network-manager         # network stack: provides nmcli for the in-app Network page
+    - avahi-daemon            # mDNS responder: advertises <hostname>.local so the unit
+                              # is reachable by name (the app self-names from its station id)
+    - gir1.2-webkit2-4.1      # WebKitGTK typelib for the on-screen "Open Web UI" embedded
+                              # browser. Only a Recommends of the .deb, so the
+                              # --no-install-recommends install below would skip it – bake it in
+                              # explicitly so the feature works on the offline appliance.
+    - cloud-guest-utils       # provides growpart for the first-boot root-fs expand (hook 2c)
+    - parted                  # provisions a blank NVMe (GPT + ext4) in the mount hook (2d);
+                              # mkfs.ext4 (e2fsprogs) and blkid/lsblk/wipefs (util-linux) are base
+
+  customize-hooks:
+    # 0. Set the openfollow login password (the account itself is created by the
+    #    rpi-user-credentials layer, which runs first via the Requires edge).
+    #    Done here rather than via device.user1pass: the default 'openfollow'
+    #    fails device-base's strong-password regex, and a hashed value in YAML
+    #    collides with rpi-image-gen value expansion. CHANGE THIS ON PRODUCTION UNITS.
+    - echo 'openfollow:openfollow' | chroot "$1" chpasswd
+
+    # 1. Install the offline .deb. apt resolves its Depends (GStreamer, Cage,
+    #    seatd, kanshi, the gir1.2-* typelibs, ...) from the Pi OS repos at build
+    #    time -> baked into the image, no internet at runtime. The deb postinst is
+    #    chroot-safe: it enables the units, skips the live `systemctl start`, finds
+    #    the existing `openfollow` user (created by rpi-user-credentials) and only
+    #    adds linger + hardware groups.
+    - |-
+      set -eu
+      cp "$IGconf_openfollow_debpath" "$1/tmp/openfollow.deb"
+      chroot "$1" apt-get update
+      chroot "$1" apt-get install -y --no-install-recommends /tmp/openfollow.deb
+
+    # 2. Guarantee the units are enabled offline (the postinst's `systemctl enable`
+    #    is best-effort / `|| true` in a chroot; enable-units is the rpi-image-gen
+    #    way to wire the multi-user.target.wants symlinks deterministically).
+    #    NetworkManager + its wait-online are enabled here so NM is the active
+    #    network stack at boot and network-online.target waits on a real IP.
+    #    avahi-daemon is enabled so the unit answers <hostname>.local mDNS – the
+    #    app self-names from its station id (e.g. openfollow-noble-bear) at boot.
+    - $BDEBSTRAP_HOOKS/enable-units "$1" openfollow.service openfollow-splash.service ssh.service NetworkManager.service NetworkManager-wait-online.service avahi-daemon.service
+
+    # 2a. Mask systemd-networkd so a leftover networkd unit can't fight NM for the
+    #     links. The base image no longer pulls systemd-net-min (dropped from
+    #     Requires), but the networkd units still ship with systemd; masking makes
+    #     "NetworkManager owns every interface" explicit and conflict-free.
+    - chroot "$1" systemctl mask systemd-networkd.service systemd-networkd.socket systemd-networkd-wait-online.service
+
+    # 2b. Enable lingering for openfollow so /run/user/<uid> exists at boot before
+    #     login – the Cage kiosk session needs XDG_RUNTIME_DIR. The deb postinst
+    #     tries `loginctl enable-linger` but that no-ops in a chroot (no logind);
+    #     creating the marker file is exactly what enable-linger does.
+    - mkdir -p "$1/var/lib/systemd/linger" && touch "$1/var/lib/systemd/linger/$IGconf_device_user1"
+
+    # 2c. Root-fs expand. The image ships a compact root partition
+    #     (image.root_part_size) so the .img is small and quick to flash; this
+    #     oneshot grows it to fill whatever medium it landed on (eMMC / SD / NVMe).
+    #     It is idempotent and self-healing: growpart no-ops once the partition
+    #     fills the disk and resize2fs no-ops once the fs fills the partition, so
+    #     it runs harmlessly on every boot and a transient first-boot failure is
+    #     simply retried next boot (deliberately NO done-sentinel – a sentinel
+    #     written before a failed resize would mask the small rootfs forever).
+    #     growpart comes from cloud-guest-utils (added above); resize2fs from
+    #     e2fsprogs (base). Without this the rest of the medium is left
+    #     unpartitioned – a 16 GB eMMC stays a ~4 GB root.
+    - |-
+      set -eu
+      cat > "$1/usr/local/sbin/openfollow-growroot.sh" <<'GROWROOT'
+      #!/bin/sh
+      set -eu
+      root_src=$(findmnt -n -o SOURCE / 2>/dev/null || true)
+      root_dev=$(readlink -f "$root_src" 2>/dev/null || echo "$root_src")
+      case "$root_dev" in
+      /dev/mmcblk*p[0-9]*|/dev/nvme*p[0-9]*) disk=${root_dev%p[0-9]*}; part=${root_dev##*p} ;;
+      /dev/sd[a-z][0-9]*) disk=${root_dev%%[0-9]*}; part=${root_dev##*[a-z]} ;;
+      *) echo "growroot: unrecognized root device $root_dev, skipping" >&2; exit 0 ;;
+      esac
+      # Grow the partition. The service runs every boot, so stay quiet on the
+      # steady-state path and only speak up on a real change or error.
+      # growpart's NOCHANGE exit code varies by version, so key off its output:
+      #   CHANGED  -> log the one-time expansion;
+      #   NOCHANGE -> already maxed, stay silent;
+      #   anything else with a non-zero exit -> real error (bad table, growpart
+      #   missing, ...) -> fail so the unit shows failed and retries next boot
+      #   instead of resize2fs no-op'ing into a silent small root.
+      rc=0
+      out=$(growpart "$disk" "$part" 2>&1) || rc=$?
+      case "$out" in
+      *CHANGED*) printf '%s\n' "$out" ;;
+      *NOCHANGE*) ;;
+      *) printf 'growroot: growpart (rc=%s): %s\n' "$rc" "$out" >&2; [ "$rc" -eq 0 ] || exit "$rc" ;;
+      esac
+      # Stdout suppressed so the every-boot "Nothing to do!" doesn't spam the
+      # journal; errors still go to stderr and a non-zero exit trips set -e.
+      resize2fs "$root_dev" >/dev/null
+      GROWROOT
+      chmod 0755 "$1/usr/local/sbin/openfollow-growroot.sh"
+      cat > "$1/etc/systemd/system/openfollow-growroot.service" <<'UNIT'
+      [Unit]
+      Description=Expand OpenFollow root filesystem to fill the disk
+      DefaultDependencies=no
+      After=systemd-remount-fs.service local-fs.target
+      Before=openfollow.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/sbin/openfollow-growroot.sh
+
+      [Install]
+      WantedBy=multi-user.target
+      UNIT
+      mkdir -p "$1/etc/systemd/system/multi-user.target.wants"
+      ln -sf /etc/systemd/system/openfollow-growroot.service \
+        "$1/etc/systemd/system/multi-user.target.wants/openfollow-growroot.service"
+
+    # 2d. Mount the NVMe storage when a drive is present. The CM5 ships an NVMe
+    #     SLOT, not a guaranteed drive: an empty slot is an ordinary, fully
+    #     supported configuration, so this is strictly presence-gated and a
+    #     clean no-op without a drive – the appliance still boots and runs from
+    #     eMMC. A drive that already carries a filesystem is mounted as-is and
+    #     NEVER reformatted; only a TRULY blank drive (no partition table, no
+    #     filesystem, no signatures) is provisioned with GPT + ext4. The mount
+    #     is persisted by-UUID with nofail so a later drive removal can't block
+    #     boot. With the drive mounted here, detection storage auto-resolves to
+    #     /mnt/nvme/openfollow/yolo (resolve_detection_storage_path).
+    - |-
+      set -eu
+      cat > "$1/usr/local/sbin/openfollow-mount-nvme.sh" <<'MOUNTNVME'
+      #!/bin/sh
+      set -eu
+      DISK=/dev/nvme0n1
+      MOUNTPOINT=/mnt/nvme
+      OPTS=defaults,nofail,noatime
+      # No drive in the slot -> clean no-op (boot continues from eMMC).
+      [ -b "$DISK" ] || { echo "mount-nvme: no NVMe at $DISK, skipping" >&2; exit 0; }
+      # Already mounted, or already known to fstab -> idempotent no-op.
+      if findmnt -rno TARGET "$MOUNTPOINT" >/dev/null 2>&1; then exit 0; fi
+      if grep -qsE "[[:space:]]$MOUNTPOINT[[:space:]]" /etc/fstab; then
+        mkdir -p "$MOUNTPOINT"
+        mountpoint -q "$MOUNTPOINT" || mount "$MOUNTPOINT" || true
+        exit 0
+      fi
+      # Pick an existing filesystem to mount; never reformat data.
+      src=""
+      for p in $(lsblk -rno NAME,FSTYPE "$DISK" | awk 'NR>1 && $2!="" {print $1}'); do
+        src="/dev/$p"; break
+      done
+      disk_fs=$(lsblk -rno FSTYPE "$DISK" | sed -n '1p')
+      part_count=$(lsblk -rno NAME "$DISK" | tail -n +2 | wc -l | tr -d ' ')
+      if [ -n "$src" ]; then
+        :                                   # existing fs on a partition
+      elif [ -n "$disk_fs" ]; then
+        src="$DISK"                         # existing fs on the bare disk
+      elif [ "$part_count" -eq 0 ] && ! wipefs --no-act "$DISK" | grep -q .; then
+        echo "mount-nvme: blank NVMe at $DISK, creating GPT + ext4" >&2
+        parted -s "$DISK" mklabel gpt
+        parted -s -a optimal "$DISK" mkpart primary ext4 0% 100%
+        udevadm settle 2>/dev/null || true
+        mkfs.ext4 -F "${DISK}p1"
+        src="${DISK}p1"
+      else
+        echo "mount-nvme: $DISK holds data but no mountable fs, leaving untouched" >&2
+        exit 0
+      fi
+      uuid=$(blkid -s UUID -o value "$src" 2>/dev/null || true)
+      [ -n "$uuid" ] || { echo "mount-nvme: no UUID for $src, skipping" >&2; exit 0; }
+      fstype=$(blkid -s TYPE -o value "$src" 2>/dev/null || echo ext4)
+      mkdir -p "$MOUNTPOINT"
+      grep -qsE "UUID=$uuid[[:space:]]" /etc/fstab || \
+        printf 'UUID=%s %s %s %s 0 2\n' "$uuid" "$MOUNTPOINT" "$fstype" "$OPTS" >> /etc/fstab
+      mountpoint -q "$MOUNTPOINT" || mount "$MOUNTPOINT"
+      # Detection storage tree, owned by the service user the .deb creates.
+      mkdir -p "$MOUNTPOINT/openfollow/yolo/models" "$MOUNTPOINT/openfollow/yolo/cache"
+      chown -R openfollow:openfollow "$MOUNTPOINT/openfollow" 2>/dev/null || true
+      MOUNTNVME
+      chmod 0755 "$1/usr/local/sbin/openfollow-mount-nvme.sh"
+      cat > "$1/etc/systemd/system/openfollow-mount-nvme.service" <<'UNIT'
+      [Unit]
+      Description=Mount the OpenFollow NVMe storage if present
+      DefaultDependencies=no
+      ConditionPathExistsGlob=/dev/nvme*
+      After=systemd-remount-fs.service local-fs.target
+      Before=openfollow.service openfollow-growroot.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/sbin/openfollow-mount-nvme.sh
+
+      [Install]
+      WantedBy=multi-user.target
+      UNIT
+      mkdir -p "$1/etc/systemd/system/multi-user.target.wants"
+      ln -sf /etc/systemd/system/openfollow-mount-nvme.service \
+        "$1/etc/systemd/system/multi-user.target.wants/openfollow-mount-nvme.service"
+
+    # 3. Silent kiosk boot: console off the active VT (-> tty3) and quiet the
+    #    kernel/systemd so nothing paints over the splash/kiosk on HDMI. Preserve
+    #    the root=ROOTDEV placeholder (rpi-image-gen substitutes it at assembly).
+    - |-
+      set -eu
+      CMDLINE="$1/boot/firmware/cmdline.txt"
+      sed -i 's/console=tty1/console=tty3/' "$CMDLINE"
+      grep -q 'logo.nologo' "$CMDLINE" || \
+        sed -i 's/$/ quiet loglevel=0 logo.nologo vt.global_cursor_default=0 systemd.show_status=0/' "$CMDLINE"
+
+    # 4. Appliance config.txt: disable the firmware rainbow splash, turn off the
+    #    onboard radios, and pin HDMI to 1920x1080@60 (DMT) – mirrors
+    #    scripts/ansible/install-raspberry-pi.yml. Appended under the trailing
+    #    [all] section so it applies on CM5. Idempotent via the marker guard.
+    - |-
+      set -eu
+      CONFIG="$1/boot/firmware/config.txt"
+      if ! grep -q '# --- OpenFollow appliance ---' "$CONFIG"; then
+        printf '%s\n' \
+          '' \
+          '# --- OpenFollow appliance ---' \
+          'disable_splash=1' \
+          'dtoverlay=disable-wifi' \
+          'dtoverlay=disable-bt' \
+          'hdmi_force_hotplug=1' \
+          'hdmi_group=2' \
+          'hdmi_mode=82' \
+          'hdmi_max_pixel_freq=150' \
+          'hdmi_enable_4kp60=0' \
+          >> "$CONFIG"
+      fi
+
+    # 5. Network-online wait on a cable-less boot is already bounded: the kiosk
+    #    unit waits on network-online.target (so it binds a real IP, not loopback),
+    #    and the .deb ships a NetworkManager-wait-online timeout drop-in
+    #    (10-openfollow-timeout.conf) that caps the wait at ~15s. Now that NM is
+    #    the active stack, that drop-in applies as-is – no networkd-specific
+    #    override is needed here.
+
+    # 6. The kiosk owns the display – keep a login getty off tty1.
+    - chroot "$1" systemctl mask getty@tty1.service
+
+  cleanup-hooks:
+    - rm -f "$1/tmp/openfollow.deb"
+    - chroot "$1" apt-get clean

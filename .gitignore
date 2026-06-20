@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# YOLO PyTorch weights downloaded by the model-export toolchain (ultralytics
+# fetches the .pt into the cwd before converting to ONNX). Never committed.
+*.pt
+
+# rpi-image-gen: the .deb dropped in for a local image build (CI fetches it as an artifact)
+packaging/image/openfollow.deb
+packaging/image/*.img
+packaging/image/*.img.xz
+
+# Poetry
+.venv/
+
+# Release signing private key – kept offline / in the OPENFOLLOW_RELEASE_PRIVKEY
+# Actions secret, NEVER committed. Only the matching public key is tracked.
+release-priv.pem
+
+# macOS
+.DS_Store
+
+.pytest_cache
+
+# Hypothesis example database / scratch dir (issue #121 Phase B). CI uses
+# the derandomized profile, so this is local-only and never committed.
+.hypothesis/
+
+# Local Claude Code harness state (not project config to share).
+# Skills under .claude/skills/ ARE shared project config and are tracked.
+.claude/*
+!.claude/skills/
+
+# Coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+todo/
+
+# Operator-specific runtime config + marker calibration – never committed.
+# Covers the atomic-save ``.bak`` fallback (#225) and ad-hoc operator
+# backups (``.save`` / ``.pibackup`` / ``.premidi`` / ``-backup`` / ...).
+config.toml
+config.toml.*
+markers.toml
+markers.toml.*
+
+# Operator's local templates folder, seeded by the running dev
+# server next to ``config.toml``. Bundled system templates live
+# in ``openfollow/templates/system/`` and are committed; the
+# top-level ``/templates/`` directory is the runtime mirror and
+# must NOT track operator-saved files.
+/templates/

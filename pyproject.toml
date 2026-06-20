@@ -1,0 +1,243 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# Project metadata, dependencies, and tool config (ruff, mypy, bandit, pytest, coverage, mutmut).
+[project]
+name = "openfollow"
+version = "0.2.6rc9"
+description = "Live video stage-tracking with PSN, OTP, OSC and RTTrPM output for lighting, media and audio show control"
+license = "AGPL-3.0-or-later"
+readme = "README.md"
+authors = [
+    { name = "Paul Hermann" },
+    { name = "Michel Honold" },
+    { name = "Vinzenz Schultz" },
+]
+requires-python = ">=3.10,<4.0"
+dependencies = [
+    "pypsn @ git+https://github.com/open-stage/python-psn.git",
+    "numpy>=1.24",
+    "tomli>=1.2.0; python_version<'3.11'",
+    "tomli-w>=1.0",
+    "bottle>=0.12",
+    "pygame>=2.5.0",
+    "multicast-expert>=1.4",
+    "PyGObject>=3.56.3",
+    "psutil>=5.9",
+    "python-osc>=1.10.2",
+    # USB MIDI support. mido is pure Python; python-rtmidi is C++ extension
+    # with prebuilt wheels for Pi (aarch64 / manylinux). On platforms without
+    # wheels pip builds from sdist (needs C++ toolchain + ALSA/CoreMIDI/WinMM
+    # headers). openfollow/input/midi.py fail-softs if import absent at runtime.
+    "mido>=1.3",
+    "python-rtmidi>=1.5",
+    "packaging>=26.2",
+    # Render the bundled help ``.md`` docs to HTML for the web UI help drawer.
+    # Pure-Python, no native deps (safe on the Pi). ``escape=True`` (see
+    # ``openfollow/web/_md.py``) keeps the rendered fragment inert, so no HTML
+    # sanitiser dependency is needed.
+    "mistune>=3.0",
+]
+
+[project.optional-dependencies]
+detection = ["onnxruntime>=1.17", "opencv-python>=4.8"]
+# Model export tooling: converts YOLO ``.pt`` weights to the ONNX models the
+# detector runs. Pulls torch, so it's a workstation-only extra, never required
+# at show time. Used by ``scripts/export_onnx.py`` and the web model-export
+# action; installed on demand from the detection UI.
+export = ["ultralytics>=8.4.72"]
+
+[project.scripts]
+openfollow = "openfollow.main:main"
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+# ``.openfollowtemplate`` JSON files in ``openfollow/templates/system/``
+# must be explicitly listed or excluded from wheel builds.
+[tool.poetry]
+include = [
+    { path = "openfollow/templates/system/*.openfollowtemplate", format = ["sdist", "wheel"] },
+    # Bundled help docs read by the ``/help/<id>.html`` route
+    # (``openfollow/web/routes.py``) via the filesystem. Listed explicitly for
+    # the same reason as the templates above: Poetry ships only Python modules
+    # by default, so without this the wheel build drops the ``.md`` files and
+    # the help drawer would 404 on a packaged install.
+    { path = "openfollow/web/help/*.md", format = ["sdist", "wheel"] },
+    # Release-signing public key read at runtime to verify an update bundle
+    # before install. Listed explicitly for the same reason as above: Poetry
+    # ships only Python modules by default, so without this the wheel drops the
+    # ``.pem`` and every update fails closed ("signing key not found").
+    { path = "openfollow/runtime/release-pubkey.pem", format = ["sdist", "wheel"] },
+]
+
+[tool.poetry.group.dev.dependencies]
+# ruff check/format replaces flake8/autopep8. Pinned to exact version
+# since pre-1.0 patches can add rules or change formatting (see [tool.ruff]
+# producing a spurious reformat diff) on changes unrelated to the work at hand.
+# The ``ruff-pre-commit`` hook ``rev`` in ``.pre-commit-config.yaml`` is pinned
+# to the SAME version so the local hooks and CI never disagree. Bump together.
+ruff = "0.15.18"
+pytest = "^9.1.1"
+pytest-cov = "^7.1"
+coverage = { extras = ["toml"], version = "^7.14" }
+pre-commit = "^4.6.0"
+mutmut = "^3.6"
+mypy = "^2.1"
+
+# Static type checking: mypy --strict for all openfollow.* modules.
+# Third-party stubs without type info use ignore_missing_imports.
+# openfollow.web.routes carves out disallow_untyped_decorators (Bottle decorators return Any).
+pytest-xdist = "^3.6"
+hypothesis = "^6"
+bandit = {extras = ["toml"], version = "^1.9.4"}
+pip-audit = "^2.10.1"
+
+# Linting: ruff check/format (faster pyflakes/pycodestyle/isort/pyupgrade bundle).
+# line-length=120 matches old flake8 setting. target-version=py310 matches requires-python.
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+# Selected rule sets:
+#   E/W  pycodestyle   – style errors + warnings (flake8 parity)
+#   F    pyflakes      – real bugs: undefined names, unused imports, bad f-strings
+#   B    flake8-bugbear      – likely-bug patterns (zip w/o strict, mutable defaults)
+#   I    isort               – import ordering / grouping
+#   UP   pyupgrade           – modernise syntax to the py310 floor
+#   C4   flake8-comprehensions – simpler/faster comprehension forms
+#   SIM  flake8-simplify     – clarity simplifications, CURATED subset (see ``ignore``)
+#
+# flake8-simplify (SIM) rules: curated subset enabled. Disabled rules in
+# ``ignore`` below fight intentional patterns (teardown resilience, guard clarity).
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP", "C4", "SIM"]
+ignore = ["SIM105", "SIM108", "SIM102", "SIM117"]
+
+[tool.mypy]
+python_version = "3.13"
+files = ["openfollow"]
+follow_imports = "silent"
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "gi.*",
+    "pygame.*",
+    "bottle",
+    "pythonosc.*",
+    "psutil",
+    "pypsn.*",
+    "multicast_expert.*",
+    "tomli",
+    "tomli_w",
+    "cv2",
+    "onnxruntime",
+    "mido",
+]
+ignore_missing_imports = true
+
+# Strict-by-default: modules must pass mypy --strict to land in this repo.
+[[tool.mypy.overrides]]
+module = ["openfollow", "openfollow.*"]
+strict = true
+
+# Bottle decorators return Any (no stubs). Disable disallow_untyped_decorators
+# here rather than scattering # type: ignore across all handlers.
+[[tool.mypy.overrides]]
+module = ["openfollow.web.routes"]
+strict = true
+disallow_untyped_decorators = false
+
+# Static security scanning: bandit over the whole package.
+# Critical checks stay on (shell injection, eval, crypto, SQL, SSL).
+# Skipped rules below target false positives (asserts for type-narrowing,
+# bind all interfaces for discovery beacons, subprocess imports, etc.).
+#     of the ~40 legitimate argv calls to sudo/nmcli/systemctl/dhcpcd. No shell
+#     is used, and the privilege broker gates argv via narrow sudoers rules.
+#   - B105 (hardcoded password string) – the sudo broker is full of
+#     ``password = ""`` inits and ``NEEDS_PASSWORD = "needs_password"``
+#     constants → ~100% false positive. B106/B107 (password as a call/arg
+#     default) stay ON to still catch a genuinely hardcoded credential.
+#   - B110 (try/except/pass) / B112 (try/except/continue) – intentional
+#     best-effort teardown and poll-loop resilience used throughout.
+[tool.bandit]
+skips = ["B101", "B104", "B105", "B110", "B112", "B404", "B603", "B607"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: fast deterministic unit tests",
+    "integration: integration tests with mocks/fakes",
+    "smoke: import and basic startup smoke tests",
+    "smoke_e2e: real-pipeline + PSN→output end-to-end smoke test (opt-in, not in `make ci`)",
+    "hardware: reserved for future hardware-in-loop tests",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["openfollow"]
+parallel = false
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+precision = 1
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    'if __name__ == "__main__":',
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.coverage.xml]
+output = "coverage.xml"
+
+# Mutation testing: critical modules (peer_auth, engine, solver, receiver, config).
+# See docs/COVERAGE.md for policy. Mutate entire tree, test only critical modules.
+[tool.mutmut]
+paths_to_mutate = ["openfollow/"]
+do_not_mutate = [
+    "**/openfollow/__init__.py",
+    "**/openfollow/app.py",
+    "**/openfollow/main.py",
+    "**/openfollow/services.py",
+    "**/openfollow/window.py",
+    "**/openfollow/system_stats.py",
+    "**/openfollow/runtime_metrics.py",
+    "**/openfollow/net_utils.py",
+    "**/openfollow/input/**",
+    "**/openfollow/output/**",
+    "**/openfollow/otp/**",
+    "**/openfollow/rttrpm/**",
+    "**/openfollow/runtime/**",
+    "**/openfollow/video/**",
+    "**/openfollow/web/discovery.py",
+    "**/openfollow/web/routes.py",
+    "**/openfollow/web/server.py",
+    "**/openfollow/web/__init__.py",
+    "**/openfollow/zones/__init__.py",
+    "**/openfollow/zones/geometry.py",
+    "**/openfollow/zones/osc_sender.py",
+    "**/openfollow/scene/__init__.py",
+    "**/openfollow/scene/camera.py",
+    "**/openfollow/scene/calibration.py",
+    "**/openfollow/psn/__init__.py",
+    "**/openfollow/psn/server.py",
+    "**/openfollow/psn/marker.py",
+]
+# Scoping tests_dir to a single file per ``mutmut run`` keeps pytest's
+# import graph small enough that the mutants/ copy doesn't collide with
+# the original import of ``openfollow.services`` (GObject metaclass).
+# Rotate through the critical modules by editing ``tests_dir`` (and,
+# if needed, ``do_not_mutate`` above) before re-running ``make mutation``.
+tests_dir = ["tests/test_zone_engine.py"]
+# Run the critical-module unit suite against each mutant.  ``-x`` lets
+# mutmut stop as soon as a mutant is killed, which keeps the wall-clock
+# bounded.
+pytest_add_cli_args = ["-m", "unit", "-x", "-q"]
+mutate_only_covered_lines = true

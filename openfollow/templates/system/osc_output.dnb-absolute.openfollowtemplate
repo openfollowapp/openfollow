@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "osc_output",
+  "id": "system-osc_output-dnb-absolute",
+  "name": "d&b absolute",
+  "is_system": true,
+  "payload": {
+    "address": "/dbaudio1/coordinatemapping/source_position_xyz/1/[markerid]",
+    "args": ["[x]", "[y]", "[z]"],
+    "trigger": {"kind": "stream", "rate_hz": 30}
+  }
+}

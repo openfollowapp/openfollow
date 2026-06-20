@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# Static systemd unit for manual installs (Ansible renders its own from a .j2).
+# Copy to /etc/systemd/system/openfollow.service, then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now openfollow
+# Manual defaults: User=pi, WorkingDirectory=/home/pi/openfollow. For a different
+# account, update User=, WorkingDirectory=, ExecStart=, and /run/user/<uid> refs.
+
+[Unit]
+Description=OpenFollow (NDI + 3D marker overlay)
+After=network.target seatd.service user@1000.service systemd-udev-settle.service
+Wants=network.target user@1000.service systemd-udev-settle.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/openfollow
+
+# Ensure XDG_RUNTIME_DIR exists before Cage starts (created by user@1000.service with linger)
+ExecStartPre=/bin/bash -c 'until [ -d /run/user/1000 ]; do sleep 0.5; done'
+
+# Wait for USB devices to be fully enumerated (gamepad may not be ready immediately)
+ExecStartPre=/bin/sleep 2
+
+# Run on HDMI display via Cage (Wayland kiosk compositor)
+ExecStart=/usr/bin/cage -- /home/pi/.local/bin/poetry run python -m openfollow.main
+
+# Auto-restart on crash / exit
+Restart=always
+RestartSec=5
+
+# Timeout settings
+TimeoutStartSec=60
+TimeoutStopSec=15
+
+# Environment variables for Wayland/Cage
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WLR_BACKENDS=drm,libinput
+Environment=WLR_RENDERER=gles2
+
+# Logging to journalctl
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openfollow
+
+[Install]
+WantedBy=multi-user.target

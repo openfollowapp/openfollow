@@ -1,0 +1,115 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# go-task task definitions: run, systemd service management, logs, diagnostics.
+version: "3"
+
+tasks:
+  # Manual execution
+  dev:
+    desc: Run OpenFollow directly on display (no watchdog, Ctrl-C stops it)
+    cmds:
+      - ./scripts/run-on-display.sh --no-watchdog
+
+  # Service management
+  install:
+    desc: Install manual systemd service and enable autostart at boot
+    cmds:
+      - sudo cp config/openfollow.service /etc/systemd/system/
+      - sudo systemctl daemon-reload
+      - sudo systemctl enable openfollow
+      - sudo loginctl enable-linger pi
+      - echo "Service installed and enabled for autostart"
+      - echo "User linger enabled (XDG_RUNTIME_DIR available at boot)"
+      - echo "Manual defaults: User=pi, WorkingDirectory=/home/pi/openfollow"
+      - echo "If you use another account/path, edit config/openfollow.service before task install."
+      - echo "Ansible installs manage the service via scripts/ansible/templates/openfollow.service.j2."
+      - echo "Start now with task start"
+      - echo "Check status with task status"
+
+  uninstall:
+    desc: Disable autostart and remove systemd service
+    cmds:
+      - sudo systemctl stop openfollow 2>/dev/null || true
+      - sudo systemctl disable openfollow 2>/dev/null || true
+      - sudo rm -f /etc/systemd/system/openfollow.service
+      - sudo systemctl daemon-reload
+      - echo "Service disabled and removed"
+
+  start:
+    desc: Start the OpenFollow service
+    cmds:
+      - sudo systemctl start openfollow
+
+  stop:
+    desc: Stop the OpenFollow service
+    cmds:
+      - sudo systemctl stop openfollow
+
+  restart:
+    desc: Restart the OpenFollow service
+    cmds:
+      - sudo systemctl restart openfollow
+
+  status:
+    desc: Show OpenFollow service status
+    cmds:
+      - systemctl status openfollow --no-pager
+
+  enable:
+    desc: Enable OpenFollow to start at boot
+    cmds:
+      - sudo systemctl enable openfollow
+      - echo "Service enabled for autostart at boot"
+
+  disable:
+    desc: Disable OpenFollow from starting at boot
+    cmds:
+      - sudo systemctl disable openfollow
+      - echo "Service disabled - no autostart at boot"
+
+  # Logging
+  logs:
+    desc: Show recent OpenFollow logs (last 50 lines)
+    cmds:
+      - journalctl -u openfollow -n 50 --no-pager
+
+  logs:follow:
+    desc: Follow OpenFollow logs in real-time
+    cmds:
+      - journalctl -u openfollow -f
+
+  logs:all:
+    desc: Show all OpenFollow logs
+    cmds:
+      - journalctl -u openfollow --no-pager
+
+  # Troubleshooting
+  kill:
+    desc: Kill stale OpenFollow processes
+    cmds:
+      - pkill -9 -f "openfollow.main" 2>/dev/null || true
+      - pkill -9 -f "run-on-display.sh" 2>/dev/null || true
+      - pkill -9 -f cage 2>/dev/null || true
+      - sleep 0.5
+      - echo "Killed stale processes"
+
+  # Development
+  test:
+    desc: Run automated test suite
+    cmds:
+      - poetry run pytest
+
+  controller:diag:
+    desc: List connected controller capabilities (pygame)
+    cmds:
+      - poetry run python scripts/controller_diagnostics.py
+
+  controller:rumble:
+    desc: Trigger short rumble test on controller index 0
+    cmds:
+      - poetry run python scripts/controller_diagnostics.py --device 0 --test-rumble
+
+  controller:led:
+    desc: Trigger LED test (green) on controller index 0
+    cmds:
+      - poetry run python scripts/controller_diagnostics.py --device 0 --test-led 0 255 0

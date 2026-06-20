@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# systemd unit template: run the OpenFollow kiosk under Cage after a real network address is up.
+[Unit]
+Description=OpenFollow (NDI + 3D tracker overlay)
+{# network-online.target (not bare network.target) so the app starts only
+   once an interface actually has an address – otherwise the local IP, the
+   discovery beacon, and PSN binding latch onto loopback on a fresh boot. #}
+{% if enable_boot_splash | default(false) %}
+After=network-online.target seatd.service user@{{ openfollow_user_uid_value }}.service systemd-udev-settle.service {{ splash_service_name }}.service
+Wants=network-online.target user@{{ openfollow_user_uid_value }}.service systemd-udev-settle.service {{ splash_service_name }}.service
+{% else %}
+After=network-online.target seatd.service user@{{ openfollow_user_uid_value }}.service systemd-udev-settle.service
+Wants=network-online.target user@{{ openfollow_user_uid_value }}.service systemd-udev-settle.service
+{% endif %}
+
+[Service]
+Type=simple
+User={{ openfollow_user }}
+# Let the non-root service bind the configured web_port (default 80, a
+# privileged <1024 port). Without this the bind fails and the web UI
+# silently falls back to 8080. Ambient cap propagates across the
+# cage -> sh -> poetry -> python exec chain (none are setuid); no
+# NoNewPrivileges is set, so it isn't blocked.
+#
+# Do NOT add `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` to "scope" this:
+# the bounding set caps *every* child, so it strips CAP_SETUID/CAP_SETGID
+# from `sudo` (setuid-root) and the privilege broker can no
+# longer escalate – `sudo: unable to change to root gid: Operation not
+# permitted`. That breaks network Apply, the sudoers drop-in installer and
+# the updater's apt step. The ambient cap alone is what enables the port-80
+# bind; the bounding restriction only ever subtracted working behavior.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+WorkingDirectory={{ openfollow_repo_dir }}
+# User/path values are provided by openfollow_user and openfollow_repo_dir in install-raspberry-pi.yml.
+# ExecStartPre runs as root (PermissionsStartOnly), while the main app runs as openfollow_user.
+PermissionsStartOnly=true
+ExecStartPre=/bin/bash -c 'until [ -d /run/user/{{ openfollow_user_uid_value }} ]; do sleep 0.5; done'
+{% if enable_boot_splash | default(false) %}
+# Let splash display for a few seconds, then stop it so DRM is free for Cage.
+ExecStartPre=/bin/sleep 3
+ExecStartPre=-/bin/systemctl stop {{ splash_service_name }}.service
+{% endif %}
+ExecStartPre=/bin/sleep 2
+# Run the app in the FOREGROUND (do NOT `exec` it) and kill kanshi once it
+# returns: the web-UI restart calls sys.exit, relying on Cage exiting so systemd
+# (Restart=always) respawns a fresh session. A backgrounded kanshi keeps the
+# Cage session non-empty, so with the old `exec python` Cage stayed alive after
+# the app died (zombie app, black screen) and systemd never respawned.
+ExecStart=/usr/bin/cage -- /bin/sh -c 'kanshi & {{ poetry_bin }} run python -m openfollow.main; rc=$?; kill "$!" 2>/dev/null; exit $rc'
+Restart=always
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=15
+Environment=XDG_RUNTIME_DIR=/run/user/{{ openfollow_user_uid_value }}
+Environment=WLR_BACKENDS=drm,libinput
+Environment=WLR_RENDERER=gles2
+{% if wlr_drm_devices | default('') %}
+Environment=WLR_DRM_DEVICES={{ wlr_drm_devices }}
+{% endif %}
+Environment=GDK_BACKEND=wayland
+Environment=GST_PLUGIN_FEATURE_RANK=v4l2slh264dec:257,v4l2slh265dec:257,v4l2h264dec:257,v4l2h265dec:257,openh264dec:1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier={{ openfollow_service_name }}
+
+[Install]
+WantedBy=multi-user.target

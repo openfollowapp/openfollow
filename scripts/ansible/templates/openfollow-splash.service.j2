@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# systemd unit template: render the boot splash via KMS before the main service.
+[Unit]
+Description=OpenFollow boot splash
+After=local-fs.target
+Before={{ openfollow_service_name }}.service
+ConditionPathExists=/dev/dri/card1
+ConditionPathExists={{ splash_png_path }}
+ConditionPathExists={{ splash_script_path }}
+
+[Service]
+# Render splash via KMS using the vc4 display driver (card1 = HDMI on Pi 5).
+# The launcher fans out to one kmssink per connected HDMI so the splash
+# mirrors across all attached screens (see openfollow-splash.sh.j2).
+Type=simple
+ExecStart={{ splash_script_path }}
+TimeoutStopSec=2
+KillMode=control-group
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

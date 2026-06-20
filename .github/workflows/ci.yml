@@ -1,0 +1,197 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# CI pipeline: lint, bandit, unit/integration/smoke tests + coverage, build, weekly audit.
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    # Weekly supply-chain audit (Mondays 06:00 UTC) – drives the `audit` job so
+    # a newly-disclosed CVE is surfaced even when no code has changed.
+    - cron: "0 6 * * 1"
+
+# Cancel in-progress run when a newer commit is pushed to same ref.
+# Latest commit is the only one that matters; superseded runs just burn runner
+# minutes. ``main`` pushes are serialized per ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # Weekly `schedule` trigger only drives the `audit` job below;
+    # full gate has no reason to re-run on a timer (runs on every main push
+    # and PR). Skip on schedule runs.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+
+    # Run hypothesis under derandomized ``ci`` profile (tests/conftest.py)
+    # so property-test inputs are identical every run – no flaky failures.
+    env:
+      HYPOTHESIS_PROFILE: ci
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install system dependencies
+        # ``libasound2-dev`` (ALSA development headers) is required by
+        # ``python-rtmidi``'s wheel build for Linux – only sdist ships
+        # for the runner's CPython/glibc combo, and meson build
+        # aborts with "Dependency 'alsa' not found" without headers.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-gi \
+            python3-gi-cairo \
+            gir1.2-gstreamer-1.0 \
+            gir1.2-gst-plugins-base-1.0 \
+            gir1.2-gtk-3.0 \
+            gir1.2-rsvg-2.0 \
+            libgirepository-2.0-dev \
+            libcairo2-dev \
+            libgstreamer1.0-0 \
+            gstreamer1.0-tools \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            libasound2-dev
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          installer-parallel: true
+
+      # Cache in-project `.venv` keyed on lockfile so heavy detection extras
+      # (onnxruntime + opencv) aren't re-downloaded every run. Key changes only
+      # when `poetry.lock` does; Python-minor guards against env mismatches.
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v5
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py3.13-${{ hashFiles('poetry.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-py3.13-
+
+      - name: Install dependencies
+        # ``-E detection`` pulls in onnxruntime + opencv-python so the
+        # detection-backend code paths exercise on Linux CI the same way
+        # they do on macOS dev boxes (closes a ~0.6 pp Linux/macOS
+        # coverage gap on the optional-import branches).
+        # ``mido`` + ``python-rtmidi`` are base deps now, so a plain install
+        # builds them; the ``libasound2-dev`` step above provides the ALSA
+        # headers ``python-rtmidi`` needs to build its wheel on CI's Python
+        # 3.13 (which has no prebuilt rtmidi wheel).
+        run: poetry install --no-interaction -E detection
+
+      # Lint: `make lint` runs `ruff check` + `ruff format --check`.
+      # Single source of truth in `[tool.ruff]` block of pyproject.toml.
+      - name: Lint (ruff)
+        run: make lint
+
+      # Static security scan: bandit over openfollow package.
+      # Offline + deterministic, gates every PR.
+      # Supply-chain audit (pip-audit) is decoupled into the `audit` job
+      # below so a new CVE can't block unrelated PRs.
+      - name: Static security scan (bandit)
+        run: make security
+
+      - name: Run unit tests
+        run: make test-unit
+
+      - name: Run integration and smoke tests with combined coverage gate
+        run: make test-integration
+
+      - name: Export coverage XML
+        run: poetry run coverage xml -o coverage.xml
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: warn
+
+      - name: Build package
+        run: poetry build --no-interaction
+
+      # End-to-end smoke test: real GStreamer pipeline + PSN→OTP/RTTrPM.
+      # Opt-in, kept out of coverage gate. Main pushes only (post-merge signal).
+      # GStreamer already installed above.
+      - name: E2E smoke test
+        if: github.event_name == 'push'
+        run: make test-smoke-e2e
+
+  # Supply-chain audit (pip-audit), decoupled from per-PR gate.
+  # Queries live PyPI advisory DB; newly-disclosed CVE must not block PRs.
+  # Runs on weekly schedule + main pushes only. Dependabot handles version bumps.
+  audit:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      # PyGObject (a runtime dep) builds against these at install time.
+      # ``libasound2-dev`` (ALSA headers) is needed because ``python-rtmidi``
+      # is a base dep now and has no prebuilt wheel for CI's Python 3.13, so a
+      # plain ``poetry install`` builds it from sdist here too – without the
+      # headers the meson build aborts with "Dependency 'alsa' not found"
+      # (matches the ``test`` job's step).
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-gi \
+            python3-gi-cairo \
+            gir1.2-gstreamer-1.0 \
+            gir1.2-gst-plugins-base-1.0 \
+            gir1.2-gtk-3.0 \
+            gir1.2-rsvg-2.0 \
+            libgirepository-2.0-dev \
+            libcairo2-dev \
+            libgstreamer1.0-0 \
+            gstreamer1.0-tools \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            libasound2-dev
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          installer-parallel: true
+
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v5
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py3.13-${{ hashFiles('poetry.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-py3.13-
+
+      # ``-E detection`` so onnxruntime + opencv are in the audited closure;
+      # ``mido`` + ``python-rtmidi`` come in as base deps.
+      - name: Install dependencies
+        run: poetry install --no-interaction -E detection
+
+      - name: pip-audit (supply-chain)
+        run: make audit

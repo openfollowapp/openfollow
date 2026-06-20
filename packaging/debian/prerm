@@ -1,0 +1,16 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# Debian prerm: stop and disable the units before the files are removed.
+set -e
+
+case "$1" in
+  remove|upgrade|deconfigure)
+    if [ -d /run/systemd/system ]; then
+      systemctl stop openfollow.service openfollow-splash.service || true
+    fi
+    systemctl disable openfollow.service openfollow-splash.service || true
+    ;;
+esac
+
+exit 0

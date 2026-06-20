@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# systemd unit that renders the boot splash via KMS before openfollow.service.
+[Unit]
+Description=OpenFollow boot splash
+After=local-fs.target
+Before=openfollow.service
+# A KMS card exists (DRM minor numbering isn't stable, so glob rather than pin
+# card1 – splash.sh picks the vc4 card), and the rendered splash + launcher are
+# present.
+ConditionPathExistsGlob=/dev/dri/card*
+ConditionPathExists=/usr/share/openfollow/splash.png
+ConditionPathExists=/usr/share/openfollow/splash.sh
+
+[Service]
+# Render the splash via KMS using the vc4 display driver. The launcher fans out
+# to one kmssink per connected HDMI so the splash mirrors across all screens
+# (see /usr/share/openfollow/splash.sh).
+Type=simple
+ExecStart=/usr/share/openfollow/splash.sh
+TimeoutStopSec=2
+KillMode=control-group
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

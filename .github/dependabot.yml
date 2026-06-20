@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# Dependabot config: weekly version-bump PRs for pip, GitHub Actions, pre-commit.
+# Complements pip-audit (which flags currently-vulnerable installed deps).
+version: 2
+updates:
+  # Python dependencies. The "pip" ecosystem understands Poetry projects
+  # (reads pyproject.toml + poetry.lock). Minor/patch bumps are grouped
+  # into a single PR per run to keep review noise down; major bumps still
+  # come as individual PRs so they get scrutinised on their own.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      python-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions used in .github/workflows. Near-zero noise; keeps the
+  # CI action versions current.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+
+  # pre-commit hooks (.pre-commit-config.yaml). The bandit hook is pinned to an
+  # exact `rev:` that poetry's `bandit = "^1.9.4"` would otherwise outpace –
+  # without this the hook and `make security`/CI can drift to different bandit
+  # versions (a finding could pass one and fail the other).
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "osc_output",
+  "id": "system-osc_output-adm-osc",
+  "name": "ADM-OSC 2D",
+  "is_system": true,
+  "payload": {
+    "address": "/adm/obj/[markerid]/xyz",
+    "args": ["[x.frac]", "[y.frac]", "0"],
+    "trigger": {"kind": "stream", "rate_hz": 30}
+  }
+}

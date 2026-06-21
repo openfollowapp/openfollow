@@ -3240,9 +3240,11 @@ def test_update_video_source_post_with_restart_renders_general_partial(live_serv
     )
     assert status == 200
     assert server.check_restart_requested() is True
-    # General partial has two top-level sections; verify the right one rendered.
+    # Verify the general partial rendered (not the video-source one) via
+    # stable, platform-independent section markers. The Software Update
+    # section is gated on the host platform, so don't key on it here.
     assert 'id="general-network-section"' in body
-    assert 'id="general-software-update-section"' in body
+    assert 'data-fold-key="general-station"' in body
     assert 'id="video-source-section"' not in body
 
 

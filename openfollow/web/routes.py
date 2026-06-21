@@ -731,6 +731,9 @@ def _build_general_template_data(
         "update_status": server.get_update_status(),
         "network_state": server.get_network_state(),
         "current_version": openfollow.__version__,
+        # The in-app updater installs a signed .deb via dpkg/systemd, which
+        # only exists on the Pi. Hide the Software Update section on macOS.
+        "update_supported": sys.platform != "darwin",
     }
     if update_feedback:
         data["update_feedback"] = update_feedback

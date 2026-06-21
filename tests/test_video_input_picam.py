@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -309,3 +310,43 @@ class TestGetSourceLabel:
             }
         )
         assert label == "Pi Camera (1920x1080@30)"
+
+
+class TestPiCamIsAvailable:
+    def test_unavailable_off_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "platform", "darwin")
+        ok, reason = PiCamInput.is_available()
+        assert ok is False
+        assert "Linux" in reason
+
+    def test_unavailable_when_factory_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "platform", "linux")
+        fake = make_fake_gst()
+        with patch("gi.repository.Gst", fake):
+            ok, reason = PiCamInput.is_available()
+        assert ok is False
+        assert "libcamerasrc" in reason
+
+    def test_available_on_linux_with_factory(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "platform", "linux")
+        fake = make_fake_gst(known_factories={"libcamerasrc": object()})
+        with patch("gi.repository.Gst", fake):
+            ok, reason = PiCamInput.is_available()
+        assert ok is True
+        assert reason == ""
+
+    def test_unavailable_when_gst_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Any exception during the GStreamer probe is reported as a
+        generic ``GStreamer not available`` rather than crashing the
+        availability check."""
+        monkeypatch.setattr(sys, "platform", "linux")
+
+        class _BoomGst:
+            @staticmethod
+            def init(_):
+                raise RuntimeError("gst boom")
+
+        with patch("gi.repository.Gst", _BoomGst):
+            ok, reason = PiCamInput.is_available()
+        assert ok is False
+        assert "GStreamer not available" in reason

@@ -1,4 +1,4 @@
-# OSC Output
+# OSC Transmitters
 
 Configure outbound OSC messages for lighting consoles, media servers, audio engines, and show-control software.
 
@@ -107,7 +107,7 @@ Read-only panels showing what the transmitter is doing right now.
 
 ## Adding and managing transmitters
 
-**Template** dropdown + **+ New OSC output** – choose a template and click the button to add a transmitter pre-filled with its address and arguments. Leave the dropdown on *empty* to start with a blank transmitter. Drag the ⋮⋮ handle on the left of a collapsed transmitter to reorder – order is cosmetic, transmitters evaluate independently.
+**Template** dropdown + **+ New transmitter** – choose a template and click the button to add a transmitter pre-filled with its address and arguments. Leave the dropdown on *empty* to start with a blank transmitter. Drag the ⋮⋮ handle on the left of a collapsed transmitter to reorder – order is cosmetic, transmitters evaluate independently.
 
 ## Saving & sharing
 

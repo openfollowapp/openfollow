@@ -5072,7 +5072,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         template_id = _as_str(request.forms.get("template_id", ""), "").strip()
         with _config_write_lock:
             cfg = load_config(server.config_path)
-            row = OscTransmitterConfig(name="New OSC output")
+            row = OscTransmitterConfig(name="New transmitter")
             if template_id:
                 # Both system and user templates flow through one
                 # ``file:<filename>`` lookup. Dropdown values for user

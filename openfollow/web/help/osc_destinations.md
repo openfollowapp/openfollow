@@ -1,8 +1,8 @@
 # OSC Destinations
 
-A **destination** is a named, reusable OSC connection: a host, a port, and a transport. Transmitters (OSC Output) and trigger zones don't carry their own connection any more – they point at a destination by name. Edit a destination's host once and every transmitter and zone referencing it repoints live, with no restart.
+A **destination** is a named, reusable OSC connection: a host, a port, and a transport. Transmitters and trigger zones point at a destination by name, so the connection lives in one place. Edit a destination's host once and every transmitter and zone referencing it repoints live, with no restart.
 
-This is the fix for the "the console moved to a new IP" problem: change one destination instead of hand-editing every transmitter row and every zone.
+When a receiver of OSC Data moves to a new IP, change that one destination and every transmitter and zone using it follows.
 
 ## Fields
 

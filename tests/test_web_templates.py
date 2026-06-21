@@ -578,7 +578,7 @@ class TestSaveOscBindingAsTemplate:
             },
         )
         assert status == 200
-        assert "OSC Output" in body
+        assert "OSC Transmitters" in body
         from openfollow.templates.loader import find_template
 
         entry = find_template(

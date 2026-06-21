@@ -3381,6 +3381,57 @@ def test_apply_runtime_osc_destinations_change_reapplies_both_consumers() -> Non
     assert app._web_commands.restart_requested is False
 
 
+def test_apply_runtime_osc_destinations_change_without_zone_engine() -> None:
+    """When no zone engine is wired (``getattr`` → ``None``), the destination
+    change still re-resolves the transmitter manager and updates config."""
+    from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
+
+    class _RecordingRuntimeServices(_DummyRuntimeServices):
+        def __init__(self) -> None:
+            super().__init__()
+            self.transmitter_dests: list[object] = []
+
+        def apply_osc_transmitters_change(self, new_cfg, destinations=None) -> None:  # noqa: ANN001
+            self.transmitter_dests.append(destinations)
+
+    app = _app_with()
+    app._runtime_services = _RecordingRuntimeServices()
+    # Deliberately no ``_zone_engine`` attribute → getattr returns None.
+
+    new_dests = OscDestinationsConfig(
+        destinations=[OscDestinationConfig(id="default", name="Default", host="10.0.0.9")],
+    )
+    apply_runtime_config_changes(app, AppConfig(osc_destinations=new_dests))
+
+    assert app._config.osc_destinations == new_dests
+    assert app._runtime_services.transmitter_dests == [new_dests]
+
+
+def test_apply_runtime_osc_destinations_change_failure_reverts() -> None:
+    """If the transmitter re-resolve raises, the destination change reverts and
+    the zone engine is never reloaded (the failure short-circuits the else)."""
+    from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
+
+    class _FailingRuntimeServices(_DummyRuntimeServices):
+        def apply_osc_transmitters_change(self, new_cfg, destinations=None) -> None:  # noqa: ANN001
+            raise RuntimeError("boom")
+
+    app = _app_with()
+    app._runtime_services = _FailingRuntimeServices()
+    zone_engine = _DummyZoneEngine()
+    app._runtime_services._zone_engine = zone_engine  # type: ignore[attr-defined]
+    old_dests = app._config.osc_destinations
+
+    new_dests = OscDestinationsConfig(
+        destinations=[OscDestinationConfig(id="default", name="Default", host="10.0.0.9")],
+    )
+    apply_runtime_config_changes(app, AppConfig(osc_destinations=new_dests))
+
+    # Reverted to the prior destinations; zone engine never reloaded.
+    assert app._config.osc_destinations == old_dests
+    assert zone_engine.reloaded == []
+
+
 def test_apply_runtime_reapplies_midi_devices_to_subsystem() -> None:
     """MIDI config changes reapply to live subsystem."""
     from openfollow.configuration import MidiConfig, MidiPatch

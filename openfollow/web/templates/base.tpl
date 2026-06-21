@@ -1298,13 +1298,14 @@
  }
  .row-tab-panel { display: none; }
  .row-tab-panel.active { display: block; }
- .osc-binding-row { margin-bottom: 0.6rem; border: 1px solid var(--border-soft); border-radius: 0.6rem; padding: 0.5rem 0.8rem; background: var(--surface); }
- .osc-binding-summary { display: flex; gap: 0.6rem; align-items: center; cursor: pointer; padding-bottom: 0.2rem; }
+ .osc-binding-row, .osc-destination-row { margin-bottom: 0.6rem; border: 1px solid var(--border-soft); border-radius: 0.6rem; padding: 0.5rem 0.8rem; background: var(--surface); }
+ .osc-binding-summary, .osc-destination-summary { display: flex; gap: 0.6rem; align-items: center; cursor: pointer; padding-bottom: 0.2rem; }
  /* Breathing room between the summary and the editor body when the
  row is expanded (``<details open>``). When collapsed the
  ``.osc-binding-form`` is ``display: none`` so the margin is a
  no-op. */
- .osc-binding-row[open] > .osc-binding-form { margin-top: 0.9rem; }
+ .osc-binding-row[open] > .osc-binding-form,
+ .osc-destination-row[open] > .osc-destination-form { margin-top: 0.9rem; }
  /* Drag handle: visible click target inside the collapsed-row
  summary that the operator grabs to reorder rows. The actual
  drag-and-drop wiring lives in the document-level JS at the
@@ -1325,8 +1326,12 @@
  .osc-binding-row.drop-target { outline: 2px dashed var(--accent); outline-offset: 2px; }
  .osc-binding-enabled-dot { width: 0.55rem; height: 0.55rem; border-radius: 999px; background: var(--muted); }
  .osc-binding-enabled-dot.on { background: var(--accent); }
- .osc-binding-kind-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
+ .osc-binding-kind-badge, .osc-destination-proto-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
  .osc-binding-target { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
+ /* Destination collapsed summary: host:port sits right after the name; the
+ protocol badge anchors to the right. */
+ .osc-destination-addr { color: var(--muted); font-size: 0.8rem; }
+ .osc-destination-proto-badge { margin-left: auto; }
  .args-list { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.4rem; }
  .arg-pill-input { font-family: ui-monospace, monospace; }
  .args-buttons { display: flex; gap: 0.3rem; }

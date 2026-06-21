@@ -3818,6 +3818,110 @@ def test_osc_destinations_crud_round_trip(live_server) -> None:
     assert after.get(new_id) is None
 
 
+def test_osc_destinations_section_get_renders(live_server) -> None:
+    """``GET /section/osc_destinations`` renders the destinations partial."""
+    _, base = live_server
+    status, body = _get(base, "/section/osc_destinations")
+    assert status == 200
+    assert "OSC Destinations" in body
+
+
+def test_osc_destination_save_partial_form_leaves_absent_fields_untouched(
+    live_server,
+) -> None:
+    """A save that omits fields updates only what's posted – the parser loop
+    skips absent fields rather than clobbering them with defaults."""
+    server, base = live_server
+    seeded = load_config(server.config_path).osc_destinations.destinations[0]
+    original_name = seeded.name
+    status, _ = _post_form(
+        base,
+        f"/section/osc_destination/{seeded.id}",
+        {"host": "10.1.2.3"},  # only host – name/port/protocol/framing absent
+    )
+    assert status == 200
+    saved = load_config(server.config_path).osc_destinations.get(seeded.id)
+    assert saved is not None
+    assert saved.host == "10.1.2.3"
+    assert saved.name == original_name
+
+
+def test_osc_destination_save_unknown_id_404(live_server) -> None:
+    _, base = live_server
+    status, _ = _post_form(base, "/section/osc_destination/no-such", {"host": "1.2.3.4"})
+    assert status == 404
+
+
+def test_osc_destination_duplicate_unknown_id_404(live_server) -> None:
+    _, base = live_server
+    status, _ = _post_form(base, "/section/osc_destination/no-such/duplicate", {})
+    assert status == 404
+
+
+def test_osc_destination_delete_unknown_id_is_noop(live_server) -> None:
+    server, base = live_server
+    before = len(load_config(server.config_path).osc_destinations.destinations)
+    status, body = _post_form(base, "/section/osc_destination/no-such/delete", {})
+    assert status == 200
+    assert "OSC Destinations" in body
+    after = len(load_config(server.config_path).osc_destinations.destinations)
+    assert after == before
+
+
+def test_osc_destination_move_reorders_and_guards_edges(live_server) -> None:
+    """move up/down swaps neighbours; edge moves and an unknown direction are
+    no-ops; an unknown id is a 404."""
+    server, base = live_server
+    # Seeded "Default" sits at index 0; add two more for a clear ordering.
+    _post_form(base, "/section/osc_destinations/add", {})
+    _post_form(base, "/section/osc_destinations/add", {})
+    dests = load_config(server.config_path).osc_destinations.destinations
+    assert len(dests) == 3
+    first_id, second_id, third_id = (d.id for d in dests)
+
+    def _order() -> list[str]:
+        return [d.id for d in load_config(server.config_path).osc_destinations.destinations]
+
+    _post_form(base, f"/section/osc_destination/{second_id}/move", {"direction": "up"})
+    assert _order()[:2] == [second_id, first_id]
+
+    _post_form(base, f"/section/osc_destination/{second_id}/move", {"direction": "down"})
+    assert _order()[:2] == [first_id, second_id]
+
+    # Top-up and bottom-down: target == idx → no swap, no save.
+    _post_form(base, f"/section/osc_destination/{first_id}/move", {"direction": "up"})
+    _post_form(base, f"/section/osc_destination/{third_id}/move", {"direction": "down"})
+    assert _order() == [first_id, second_id, third_id]
+
+    # Unknown direction → no-op.
+    _post_form(base, f"/section/osc_destination/{first_id}/move", {"direction": "sideways"})
+    assert _order() == [first_id, second_id, third_id]
+
+    status, _ = _post_form(
+        base,
+        "/section/osc_destination/no-such/move",
+        {"direction": "up"},
+    )
+    assert status == 404
+
+
+def test_osc_destinations_collapsed_summary_shows_host_port(live_server) -> None:
+    """The collapsed destination row shows host:port right after the name plus a
+    protocol badge, so a folded destination stays identifiable at a glance."""
+    server, base = live_server
+    seeded = load_config(server.config_path).osc_destinations.destinations[0]
+    _post_form(
+        base,
+        f"/section/osc_destination/{seeded.id}",
+        {"name": "Console", "host": "10.5.5.5", "port": "9001", "protocol": "udp", "framing": "slip"},
+    )
+    _, body = _get(base, "/section/osc_destinations")
+    assert "osc-destination-addr" in body
+    assert "10.5.5.5:9001" in body
+    assert "osc-destination-proto-badge" in body
+    assert "UDP" in body
+
+
 def test_broadcast_section_rejects_non_shareable_sections(live_server) -> None:
     """OSC routing + zones travel by file only – a section broadcast of them
     is refused with 403, never pushed to peers."""

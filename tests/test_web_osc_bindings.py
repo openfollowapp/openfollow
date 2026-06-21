@@ -150,8 +150,8 @@ def test_section_renders_empty_state(live_server) -> None:
     _, base, _ = live_server
     status, body = _get(base, "/section/osc_bindings")
     assert status == 200
-    assert "OSC Output" in body
-    assert "No OSC outputs configured" in body
+    assert "OSC Transmitters" in body
+    assert "No transmitters configured" in body
 
 
 def test_section_renders_existing_rows(live_server) -> None:
@@ -236,7 +236,7 @@ def test_add_creates_row(live_server) -> None:
     cfg = load_config(cfg_path)
     assert len(cfg.osc_transmitters.transmitters) == 1
     row = cfg.osc_transmitters.transmitters[0]
-    assert row.name == "New OSC output"
+    assert row.name == "New transmitter"
     assert row.enabled is False
     # ``focus_id`` opens the row in the rendered partial.
     assert f'data-row-id="{row.id}"' in body
@@ -514,7 +514,7 @@ def test_duplicate_clones_row(live_server) -> None:
     cfg = load_config(cfg_path)
     assert len(cfg.osc_transmitters.transmitters) == 2
     assert cfg.osc_transmitters.transmitters[1].id != row_id
-    assert cfg.osc_transmitters.transmitters[1].name == "New OSC output (copy)"
+    assert cfg.osc_transmitters.transmitters[1].name == "New transmitter (copy)"
 
 
 def test_duplicate_404_for_unknown_id(live_server) -> None:
@@ -542,7 +542,7 @@ def test_delete_unknown_id_is_noop(live_server) -> None:
         {},
     )
     assert status == 200
-    assert "OSC Output" in body  # partial still renders cleanly
+    assert "OSC Transmitters" in body  # partial still renders cleanly
 
 
 def test_move_up_swaps_with_predecessor(live_server) -> None:
@@ -1339,7 +1339,7 @@ def test_add_with_unknown_template_id_falls_back_to_blank_row(live_server) -> No
     )
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[0]
-    assert row.name == "New OSC output"
+    assert row.name == "New transmitter"
     assert row.address == ""
     assert row.args == []
 
@@ -1458,7 +1458,7 @@ def test_add_with_empty_template_id_yields_blank_row(live_server) -> None:
     _post_form(base, "/section/osc_bindings/add", {"template_id": ""})
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[0]
-    assert row.name == "New OSC output"
+    assert row.name == "New transmitter"
     assert row.address == ""
     assert row.args == []
 
@@ -1476,7 +1476,7 @@ def test_add_with_unknown_template_id_yields_blank_row(live_server) -> None:
     )
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[0]
-    assert row.name == "New OSC output"
+    assert row.name == "New transmitter"
     assert row.address == ""
     assert row.args == []
 
@@ -1494,7 +1494,7 @@ def test_add_with_unsafe_file_template_id_yields_blank_row(live_server) -> None:
     )
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[0]
-    assert row.name == "New OSC output"
+    assert row.name == "New transmitter"
     assert row.address == ""
 
 
@@ -3075,7 +3075,7 @@ def test_save_rejects_address_without_leading_slash(live_server) -> None:
     # Nothing persisted – the whole save was rejected before apply.
     row = load_config(cfg_path).osc_transmitters.transmitters[0]
     assert row.address != "cue/go"
-    assert row.name == "New OSC output"
+    assert row.name == "New transmitter"
 
 
 def test_save_as_template_rejects_address_without_leading_slash(live_server) -> None:

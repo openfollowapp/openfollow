@@ -16,6 +16,6 @@ These settings govern the zone engine as a whole and apply to every zone.
 
 > If zones flicker with rapid in/out events, increase **Hysteresis** first; use **Debounce** as the secondary safety net.
 
-Each zone picks where its OSC messages go by selecting an **OSC Destination** in the zone editor – the same shared connections used by OSC Output. Manage them under **OSC Destinations**; editing a destination's IP repoints every referencing zone and transmitter live.
+Each zone picks where its OSC messages go by selecting an **OSC Destination** in the zone editor – the same shared connections used by OSC Transmitters. Manage them under **OSC Destinations**; editing a destination's IP repoints every referencing zone and transmitter live.
 
 **Save** – write the global settings to disk. The zone engine reloads immediately; no restart is needed.

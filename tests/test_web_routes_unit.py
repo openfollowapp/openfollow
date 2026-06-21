@@ -610,6 +610,20 @@ class TestApplyImportDataSkipRestart:
         assert len(out.trigger_zones.zones) == 1
         assert out.trigger_zones.zones[0].name == "Valid"
 
+    def test_osc_routing_blocks_without_inner_lists_are_skipped(self) -> None:
+        """An ``osc_transmitters`` / ``osc_destinations`` block whose inner
+        list key is absent or non-list is skipped, not applied – a crafted
+        payload can't crash the import or wipe the existing rows."""
+        current = AppConfig()
+        out = _apply_import_data(
+            current,
+            {
+                "osc_transmitters": {},  # no "transmitters" list → skipped
+                "osc_destinations": {"destinations": "nope"},  # not a list → skipped
+            },
+        )
+        assert out.osc_transmitters.transmitters == []
+
     def test_window_dimensions_imported_as_ints(self) -> None:
         current = AppConfig()
         out = _apply_import_data(current, {"window_width": 1920, "window_height": 1080})

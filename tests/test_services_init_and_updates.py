@@ -2325,6 +2325,31 @@ class TestApplyOscTransmittersChange:
             if services._osc_transmitter_manager is not None:
                 services._osc_transmitter_manager.stop()
 
+    def test_explicit_destinations_skip_app_config_fallback(
+        self,
+        services: AppRuntimeServices,
+    ) -> None:
+        """Passing an explicit destinations set bypasses the
+        ``destinations is None`` fallback to the app's current set."""
+        from openfollow.configuration import (
+            OscDestinationConfig,
+            OscDestinationsConfig,
+            OscTransmittersConfig,
+        )
+
+        dests = OscDestinationsConfig(
+            destinations=[OscDestinationConfig(id="d1", name="Console", host="10.0.0.5")],
+        )
+        services.apply_osc_transmitters_change(
+            OscTransmittersConfig(transmitters=[]),
+            destinations=dests,
+        )
+        try:
+            assert services._osc_transmitter_manager is not None
+        finally:
+            if services._osc_transmitter_manager is not None:
+                services._osc_transmitter_manager.stop()
+
     def test_reinit_reattaches_event_bus_when_input_manager_exists(
         self,
         services: AppRuntimeServices,

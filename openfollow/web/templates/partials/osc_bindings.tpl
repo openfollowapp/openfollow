@@ -34,13 +34,13 @@
 % end
 <div id="osc-bindings-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="osc_bindings" data-help="osc_bindings">
  <div class="section-head">
- <h2>OSC Output</h2>
+ <h2>OSC Transmitters</h2>
  <span class="section-note">Outbound OSC messages – Stream / Hotkey / Controller-button triggers</span>
  </div>
 
  <div class="osc-bindings-list">
  % if not transmitters:
- <p class="empty-state">No OSC outputs configured. Use <em>+ New OSC output</em> below to create one.</p>
+ <p class="empty-state">No transmitters configured. Use <em>+ New transmitter</em> below to create one.</p>
  % end
  % for idx, row in enumerate(transmitters):
  % is_focus = (defined('focus_id') and focus_id == row.id)
@@ -400,7 +400,7 @@
  hx-post="/section/osc_binding/{{row.id}}/delete"
  hx-target="#osc-bindings-section"
  hx-swap="outerHTML"
- hx-confirm="Delete this OSC output?">Delete</button>
+ hx-confirm="Delete this transmitter?">Delete</button>
  </div>
  </form>
  </details>
@@ -443,6 +443,6 @@
  </optgroup>
  % end
  </select>
- <button type="submit" class="save-btn">+ New OSC output</button>
+ <button type="submit" class="save-btn">+ New transmitter</button>
  </form>
 </div>

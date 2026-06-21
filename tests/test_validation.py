@@ -896,7 +896,7 @@ def test_osc_destination_field_rules(field: str, value: str, expect_error: bool)
 
 
 # ---------------------------------------------------------------------------
-# Per-zone OSC address fields share the OSC Output blur validator
+# Per-zone OSC address fields share the OSC Transmitters blur validator
 # ---------------------------------------------------------------------------
 
 # triggered_by blur validation: empty/valid lists pass, invalid entries reject.
@@ -938,7 +938,7 @@ class TestZoneTriggeredByRule:
 class TestZoneOscAddressRules:
     def test_empty_field_is_valid(self, field: str) -> None:
         """An unset zone OSC field is a valid "skip this transition"
-        – same lenient contract as OSC Output's empty osc_message."""
+        – same lenient contract as OSC Transmitters's empty osc_message."""
         assert validate("zone", field, "") is None
         assert validate("zone", field, "   ") is None
 
@@ -948,7 +948,7 @@ class TestZoneOscAddressRules:
         assert validate("zone", field, "/zone/enter") is None
 
     def test_address_plus_quoted_arg_is_valid(self, field: str) -> None:
-        """Quoted args alongside address allowed in zone fields like OSC Output."""
+        """Quoted args alongside address allowed in zone fields like OSC Transmitters."""
         assert validate("zone", field, '/cmd "Go Cue 1" 1.5') is None
 
     def test_address_without_leading_slash_rejected(self, field: str) -> None:
@@ -968,3 +968,14 @@ class TestZoneOscAddressRules:
         err = validate("zone", field, "/" + "a" * 2048)
         assert err is not None
         assert "2048" in err
+
+
+def test_needs_cfg_false_for_every_rule() -> None:
+    """No registered ``FieldRule`` currently reads ``AppConfig``, so
+    ``needs_cfg`` returns ``False`` for all of them – the ``/api/validate``
+    fast-path skips the per-keystroke TOML parse for every field."""
+    from openfollow.web.validation import needs_cfg
+
+    for section, rules in FIELD_RULES.items():
+        for field_name, rule in rules.items():
+            assert needs_cfg(rule) is False, f"{section}.{field_name}"

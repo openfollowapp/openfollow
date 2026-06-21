@@ -18,7 +18,11 @@ import pytest
 
 from openfollow.configuration import CameraConfig, DetectionConfig, GridConfig
 from openfollow.runtime.services_detection_pin import (
+    _NOMINAL_FRAME_DT,
     DetectionPinState,
+    _advance_smoothing,
+    _dt_steps,
+    _ema_factor,
     apply_detection_pin,
     assist_pinned_marker_id,
     get_or_create_manual_marker,
@@ -1225,3 +1229,67 @@ def test_assist_locked_track_absent_from_detections_falls_through(monkeypatch) -
 
     # The stale lock isn't found, so the nearest in-range detection is chosen.
     assert state.locked_track_id == 1
+
+
+# --------------------------------------------------------------------------- #
+# Frame-rate-independent smoothing / prediction (time-aware filter)
+# --------------------------------------------------------------------------- #
+
+
+def test_ema_factor_is_exact_at_nominal_and_compounds() -> None:
+    # At one nominal frame the alpha is returned unchanged (no float drift), so
+    # the default dt reproduces the legacy per-frame tuning exactly.
+    assert _ema_factor(0.3, 1.0) == 0.3
+    assert _ema_factor(0.15, 1.0) == 0.15
+    # Two frames compound the retention: 1 - (1-a)^2.
+    assert _ema_factor(0.2, 2.0) == pytest.approx(1.0 - 0.8**2)
+    # A full-snap alpha stays full at any step count.
+    assert _ema_factor(1.0, 3.0) == 1.0
+
+
+def test_dt_steps_clamps_and_normalises() -> None:
+    assert _dt_steps(_NOMINAL_FRAME_DT) == pytest.approx(1.0)
+    assert _dt_steps(2 * _NOMINAL_FRAME_DT) == pytest.approx(2.0)
+    # A huge stall is clamped so the filter can't take an unbounded step.
+    assert _dt_steps(100.0) == _dt_steps(10.0)
+
+
+def test_advance_smoothing_nominal_matches_legacy_formula() -> None:
+    cfg = SimpleNamespace(detection=DetectionConfig(enabled=False, prediction=2.0, smoothing=0.5))
+    st = DetectionPinState()
+
+    # First call seeds (velocity 0 -> predicted == target).
+    assert _advance_smoothing(st, 1.0, 2.0, cfg, _NOMINAL_FRAME_DT) == (1.0, 2.0)
+
+    # Second call reproduces the legacy rule: vel = 0.3*delta, predicted =
+    # target + vel*prediction, smooth += smoothing*(predicted - smooth).
+    x2, y2 = _advance_smoothing(st, 2.0, 2.0, cfg, _NOMINAL_FRAME_DT)
+    vel = 0.3 * (2.0 - 1.0)
+    predicted = 2.0 + vel * 2.0
+    assert x2 == pytest.approx(1.0 + 0.5 * (predicted - 1.0))
+    assert y2 == pytest.approx(2.0)
+
+
+def test_pin_velocity_is_frame_rate_independent() -> None:
+    """A target moving at a constant world speed converges to the same
+    per-nominal-frame velocity whether sampled at 60fps or 30fps, so the
+    prediction lookahead distance is identical regardless of frame rate."""
+    cfg = SimpleNamespace(detection=DetectionConfig(enabled=False, prediction=8.0, smoothing=0.5))
+    speed = 2.0  # world units per second
+    nominal = _NOMINAL_FRAME_DT
+
+    s60 = DetectionPinState()
+    x = 0.0
+    for _ in range(300):
+        x += speed * nominal  # one 60fps frame of travel
+        _advance_smoothing(s60, x, 0.0, cfg, nominal)
+
+    s30 = DetectionPinState()
+    x = 0.0
+    for _ in range(300):
+        x += speed * (2 * nominal)  # one 30fps frame of travel
+        _advance_smoothing(s30, x, 0.0, cfg, 2 * nominal)
+
+    expected = speed * nominal  # per-nominal-frame velocity
+    assert s60.vel_x == pytest.approx(expected, rel=1e-3)
+    assert s30.vel_x == pytest.approx(expected, rel=1e-3)

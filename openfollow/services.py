@@ -33,6 +33,7 @@ from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.runtime.services_detection_pin import (
+    _NOMINAL_FRAME_DT,
     DetectionPinState,
 )
 from openfollow.runtime.services_detection_pin import (
@@ -2222,14 +2223,19 @@ class AppRuntimeServices:
         if self._overlay_renderer is not None:  # pragma: no branch
             self._overlay_renderer.state = state
 
-    def apply_detection_pin(self) -> None:
-        """Pin the selected controlled marker to the tracked detection with EMA smoothing."""
+    def apply_detection_pin(self, dt: float = _NOMINAL_FRAME_DT) -> None:
+        """Pin the selected controlled marker to the tracked detection with EMA smoothing.
+
+        ``dt`` (seconds since the previous animate frame) keeps the smoothing /
+        prediction frame-rate-independent.
+        """
         apply_detection_pin_helper(
             self._app,
             person_detector=self._person_detector,
             unproject_cam_buffer=self._unproject_cam_buffer,
             screen_point_buffer=self._screen_point_buffer,
             pin_state=self._detection_pin_state,
+            dt=dt,
         )
 
     def init_zone_engine(self) -> None:

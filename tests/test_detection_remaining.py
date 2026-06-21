@@ -208,6 +208,9 @@ class _FakeOnnxSession:
     def get_outputs(self) -> list[types.SimpleNamespace]:
         return [types.SimpleNamespace(name="output0")]
 
+    def get_providers(self) -> list[str]:
+        return ["CPUExecutionProvider"]
+
     def run(self, out_names: list[str], feeds: dict[str, Any]) -> list[np.ndarray]:
         self.run_calls.append((out_names, feeds))
         if self.output is not None:
@@ -219,11 +222,14 @@ class _FakeOnnxSession:
 def _install_fake_onnxruntime(
     monkeypatch: pytest.MonkeyPatch,
     session_factory: Any | None = None,
+    available_providers: list[str] | None = None,
 ) -> types.ModuleType:
     """Install a fake ``onnxruntime`` module.
 
     ``session_factory`` is called with ``(path, sess_options, providers)``
     and must return a session-like object (typically ``_FakeOnnxSession``).
+    ``available_providers`` is what ``get_available_providers()`` reports;
+    defaults to a CPU-only host.
     """
     fake = types.ModuleType("onnxruntime")
 
@@ -231,6 +237,9 @@ def _install_fake_onnxruntime(
         intra_op_num_threads: int = 0
 
     fake.SessionOptions = _SessionOptions  # type: ignore[attr-defined]
+    fake.get_available_providers = lambda: list(  # type: ignore[attr-defined]
+        available_providers if available_providers is not None else ["CPUExecutionProvider"]
+    )
 
     if session_factory is None:
 
@@ -240,6 +249,24 @@ def _install_fake_onnxruntime(
     fake.InferenceSession = session_factory  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "onnxruntime", fake)
     return fake
+
+
+class TestSelectProviders:
+    """``_OnnxBackend._select_providers`` orders accelerators ahead of CPU."""
+
+    def test_coreml_preferred_when_available(self) -> None:
+        chosen = _OnnxBackend._select_providers(["CoreMLExecutionProvider", "CPUExecutionProvider"])
+        assert chosen == ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+
+    def test_cpu_only_when_no_accelerator(self) -> None:
+        # The Pi (Linux aarch64) reports no CoreML – must stay CPU-only.
+        assert _OnnxBackend._select_providers(["CPUExecutionProvider"]) == ["CPUExecutionProvider"]
+
+    def test_cpu_appended_even_when_runtime_omits_it(self) -> None:
+        # CPU is always the trailing fallback for ops the accelerator drops.
+        chosen = _OnnxBackend._select_providers(["CoreMLExecutionProvider"])
+        assert chosen == ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+        assert chosen[-1] == "CPUExecutionProvider"
 
 
 class TestOnnxBackendConstruction:
@@ -259,6 +286,22 @@ class TestOnnxBackendConstruction:
         assert captured["threads"] == 4
         assert captured["providers"] == ["CPUExecutionProvider"]
         assert backend._model_input_size == 320
+
+    def test_coreml_requested_when_runtime_offers_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, Any] = {}
+
+        def _factory(path: str, *, sess_options: Any, providers: list[str]) -> _FakeOnnxSession:
+            captured["providers"] = providers
+            return _FakeOnnxSession()
+
+        _install_fake_onnxruntime(
+            monkeypatch,
+            session_factory=_factory,
+            available_providers=["CoreMLExecutionProvider", "CPUExecutionProvider"],
+        )
+
+        _OnnxBackend("models/yolov8n.onnx")
+        assert captured["providers"] == ["CoreMLExecutionProvider", "CPUExecutionProvider"]
 
 
 class _FakeCv2:
@@ -653,6 +696,59 @@ class TestTrackedDetectionRelease:
         ]
 
         assert det.tracked_detection is pinned_box
+
+    def test_reacquires_nearest_after_id_switch_not_largest(self) -> None:
+        """The followed person's track was re-numbered: a *smaller* box reappears
+        where they were while a *larger* unrelated person stands elsewhere. The
+        pin must re-lock onto the nearest box (the same person), not the largest –
+        this is the auto-follow-loses-a-still-visible-person regression."""
+        det = _detector_without_backend()
+        det._pinned_id = 5  # old id, now gone
+        det._tracked = []  # track expired -> pin releases
+        det._last_pinned_center = (0.35, 0.5)  # where we last followed them
+        near_small = DetectionBox(0.30, 0.45, 0.40, 0.70, confidence=0.7, track_id=12)
+        far_large = DetectionBox(0.60, 0.10, 0.95, 0.95, confidence=0.8, track_id=13)
+        det._results = [far_large, near_small]
+
+        picked = det.tracked_detection
+        assert picked is near_small
+        assert picked.track_id == 12
+        assert det._pinned_id == 12
+
+    def test_reacquire_falls_back_to_largest_when_old_target_gone(self) -> None:
+        """Every visible detection is outside the re-acquire gate (the followed
+        person has left the frame), so the pin falls back to the largest box."""
+        det = _detector_without_backend()
+        det._pinned_id = 5
+        det._tracked = []
+        det._last_pinned_center = (0.1, 0.1)  # old corner; nobody near it now
+        small = DetectionBox(0.50, 0.50, 0.60, 0.60, confidence=0.7, track_id=20)
+        big = DetectionBox(0.55, 0.10, 0.95, 0.95, confidence=0.6, track_id=21)
+        det._results = [small, big]
+
+        picked = det.tracked_detection
+        assert picked is big
+        assert det._pinned_id == 21
+
+    def test_cold_start_seeds_centre_then_holds_same_person(self) -> None:
+        """A cold-start pick (largest) seeds the last-followed centre, so the next
+        call holds that same person (now re-numbered) over a larger newcomer –
+        proving the centre is maintained through the public property."""
+        det = _detector_without_backend()
+        first = DetectionBox(0.30, 0.30, 0.50, 0.80, confidence=0.9, track_id=1)
+        det._results = [first]
+        det._tracked = []
+        assert det.tracked_detection is first  # cold start: only box, seeds centre
+
+        # Their track is re-numbered (1 -> 2) and a larger newcomer appears.
+        moved = DetectionBox(0.31, 0.31, 0.49, 0.79, confidence=0.8, track_id=2)
+        newcomer = DetectionBox(0.60, 0.05, 0.98, 0.98, confidence=0.85, track_id=3)
+        det._results = [newcomer, moved]
+        det._tracked = []  # old id 1 no longer present -> pin releases
+
+        picked = det.tracked_detection
+        assert picked is moved
+        assert det._pinned_id == 2
 
 
 # --------------------------------------------------------------------------- #

@@ -99,6 +99,7 @@
 % for tid in config.controlled_marker_ids:
                     <option value="{{tid}}" {{'selected' if saved_pin_id == tid else ''}}>Marker {{tid}}</option>
 % end
+                </select>
                 <span class="field-note">Which marker the automatic tracker drives.</span>
             </div>
         </div>

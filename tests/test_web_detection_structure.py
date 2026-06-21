@@ -250,3 +250,26 @@ def test_detection_tier_availability_reflects_on_disk(tmp_path) -> None:
     by_model = {t["model"]: t["available"] for t in tiers}
     assert by_model["yolo26n.onnx"] is True
     assert by_model["yolo26s.onnx"] is False
+
+
+def test_all_select_tags_are_closed() -> None:
+    """Every ``<select>`` is balanced by a ``</select>``.
+
+    The test HTML parser auto-closes tags, so a missing ``</select>`` slips past
+    structural assertions while a real browser mis-parses every element after the
+    unclosed select – breaking the Pin point picker and the rest of the form.
+    Render with controlled markers + replace mode so all three selects emit.
+    """
+    cfg = AppConfig()
+    cfg.controlled_marker_ids = [0, 1]
+    cfg.detection.enabled = True
+    cfg.detection.pin_mode = "replace"
+    html = _render(config=cfg)
+    assert html.count("<select") == html.count("</select>") >= 3
+
+
+def test_pin_point_select_renders_head_and_feet() -> None:
+    """The Pin point picker (head / feet) is present and well-formed."""
+    html = _render()
+    assert 'name="pin_point"' in html
+    assert 'value="top"' in html and 'value="bottom"' in html

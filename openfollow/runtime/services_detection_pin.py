@@ -69,11 +69,6 @@ class DetectionPinState:
     # between the locked person and the manual anchor instead.
     ai_smooth_x: float | None = None
     ai_smooth_y: float | None = None
-    # Assist mode: the marker id the outer glide is currently seeded for. When the
-    # operator switches the assist-controlled marker, this id differs from the new
-    # one and the glide is re-seeded from the new marker's own position, so the
-    # output starts on it instead of sweeping across from the previous marker.
-    glide_marker_id: int | None = None
     # Display only, recomputed each frame: the detection track currently attached
     # to a marker (locked in assist, tracked in replace) and the marker id it
     # drives, so the overlay can paint that one box in the marker's colour.
@@ -95,7 +90,6 @@ class DetectionPinState:
         self.locked_track_id = None
         self.ai_smooth_x = None
         self.ai_smooth_y = None
-        self.glide_marker_id = None
         self.attached_track_id = None
         self.attached_marker_id = None
 
@@ -116,30 +110,43 @@ class DetectionPinState:
         self.locked_track_id = None
 
 
-def assist_pinned_marker_id(app: Any) -> int | None:
-    """Resolve the marker id under assist control this frame, or ``None``.
+def assist_active(app: Any) -> bool:
+    """True when AI-assisted tracking is engaged.
 
-    Single source of truth for "is this id being driven by assist": the input
-    resolvers redirect operator movement to a manual ghost for this id, and the
-    assist pin reads that ghost as its clip anchor. Returns ``None`` unless
-    detection is ``enabled`` *and* ``pin_marker`` is on *and* ``pin_mode ==
-    "assist"`` *and* the configured / selected target resolves to a controlled
-    marker. Gating on ``enabled`` keeps the ghost, the input redirect, and the
-    assist glide off together when person detection is switched off.
+    Detection's only on/off is ``enabled`` (the Tracking control); assist is the
+    active mode when ``pin_mode == "assist"``. Gating on ``enabled`` keeps the
+    ghosts, the input redirect, and the assist glide off together when person
+    detection is switched off.
     """
     det = app._config.detection
-    if not det.enabled or not det.pin_marker or det.pin_mode != "assist":
-        return None
-    configured_id = det.pin_marker_id
-    if configured_id < 0:
-        selected_id = app._selected_id
-    elif configured_id in app._controlled_ids:
-        selected_id = configured_id
-    else:
-        return None
-    if selected_id is None:
-        return None
-    return int(selected_id)
+    return bool(det.enabled) and det.pin_mode == "assist"
+
+
+def is_assist_controlled(app: Any, marker_id: int | None) -> bool:
+    """True when ``marker_id`` is under assist control this frame.
+
+    Single source of truth for "is this id being driven by assist": assist
+    refines *every* controlled marker, so the input resolvers redirect operator
+    movement to a manual ghost for any controlled id, and the assist pin reads
+    that ghost as the clip anchor.
+    """
+    if marker_id is None:
+        return False
+    return assist_active(app) and marker_id in app._controlled_ids
+
+
+def _get_pin_state(app: Any, marker_id: int) -> DetectionPinState:
+    """Return the per-marker pin-smoothing state, creating it lazily.
+
+    Mirrors :func:`get_or_create_manual_marker`: each driven marker owns its
+    smoothing / glide state for its whole driven lifetime, so the never-reset
+    outer glide stays continuous across frames.
+    """
+    state: DetectionPinState | None = app._detection_pin_states.get(marker_id)
+    if state is None:
+        state = DetectionPinState()
+        app._detection_pin_states[marker_id] = state
+    return state
 
 
 def get_or_create_manual_marker(app: Any, marker_id: int) -> Marker:
@@ -253,39 +260,51 @@ def apply_detection_pin(
     person_detector: Any,
     unproject_cam_buffer: npt.NDArray[Any],
     screen_point_buffer: npt.NDArray[Any],
-    pin_state: DetectionPinState,
     dt: float = _NOMINAL_FRAME_DT,
 ) -> None:
-    """Pin selected controlled marker to tracked detection with EMA smoothing.
+    """Drive controlled marker(s) from detection with EMA smoothing.
 
-    ``dt`` is the seconds elapsed since the previous animate frame; it makes the
-    smoothing / prediction frame-rate-independent (see :func:`_advance_smoothing`).
+    Detection's only on/off is ``enabled``. In ``assist`` mode every controlled
+    marker is refined; in ``replace`` mode the single resolved marker is auto-
+    pinned. ``dt`` is the seconds elapsed since the previous animate frame; it
+    makes the smoothing / prediction frame-rate-independent (see
+    :func:`_advance_smoothing`).
     """
     cfg = app._config
-    # Recomputed each frame: clear the attached-box marker first so a frame with
-    # no attachment (pin off, no marker, lost detection) shows no coloured box.
-    pin_state.attached_track_id = None
-    pin_state.attached_marker_id = None
-    # Drop stale manual ghosts whenever assist isn't the active mode, so a later
-    # re-engage re-seeds the anchor from the live marker instead of a stale pos.
-    if cfg.detection.pin_mode != "assist" or not cfg.detection.pin_marker:
-        _prune_manual_markers(app, keep=None)
-    if not cfg.detection.pin_marker:
+    det = cfg.detection
+    if not det.enabled:
+        # Detection off – drop every ghost + per-marker state so a later
+        # re-engage re-seeds fresh from the live markers.
+        _prune_manual_markers(app, keep=set())
+        _prune_pin_states(app, keep=set())
         return
 
-    if cfg.detection.pin_mode == "assist":
+    if det.pin_mode == "assist":
         # Assist runs even without a live detector: input is redirected to the
-        # manual ghost, so the output must keep gliding to it (degrading to pure
-        # manual) rather than freezing while the operator steers an unused anchor.
-        _apply_assist_pin(
+        # manual ghosts, so each output keeps gliding to its anchor (degrading to
+        # pure manual) rather than freezing.
+        _apply_assist_all(
             app,
             person_detector=person_detector,
             unproject_cam_buffer=unproject_cam_buffer,
             screen_point_buffer=screen_point_buffer,
-            pin_state=pin_state,
             dt=dt,
         )
         return
+
+    # Replace mode (Fully Automatic): auto-pin the single resolved marker. Assist
+    # ghosts are unused here, so drop them all.
+    _prune_manual_markers(app, keep=set())
+    marker = _resolve_pinned_marker(app, cfg)
+    if marker is None:
+        _prune_pin_states(app, keep=set())
+        return
+    _prune_pin_states(app, keep={marker.marker_id})
+    pin_state = _get_pin_state(app, marker.marker_id)
+    # Recomputed each frame: clear the attached-box marker first so a frame with
+    # no attachment (no detector, lost detection) shows no coloured box.
+    pin_state.attached_track_id = None
+    pin_state.attached_marker_id = None
 
     if person_detector is None:
         return
@@ -300,16 +319,12 @@ def apply_detection_pin(
     if w <= 0 or h <= 0:
         return
 
-    marker = _resolve_pinned_marker(app, cfg)
-    if marker is None:
-        return
-
     # The tracked person is the attached box; the overlay paints it in the
     # driven marker's colour.
     pin_state.attached_track_id = best.track_id
     pin_state.attached_marker_id = marker.marker_id
 
-    use_bottom = cfg.detection.pin_point == "bottom"
+    use_bottom = det.pin_point == "bottom"
     screen_x = (best.x1 + best.x2) / 2.0 * w
     screen_y = (best.y2 if use_bottom else best.y1) * h
 
@@ -329,76 +344,110 @@ def apply_detection_pin(
     marker.set_pos(smooth_x, smooth_y, marker.pos[2])
 
 
-def _apply_assist_pin(
+def _apply_assist_all(
     app: Any,
     *,
     person_detector: Any,
     unproject_cam_buffer: npt.NDArray[Any],
     screen_point_buffer: npt.NDArray[Any],
-    pin_state: DetectionPinState,
     dt: float = _NOMINAL_FRAME_DT,
 ) -> None:
-    """Two-marker assist: glide the AI output marker toward person-near-anchor.
+    """Assist every controlled marker toward the person nearest its own anchor.
 
-    There are two distinct entities. The operator steers a **manual ghost**
-    (input is redirected to it via ``assist_pinned_marker_id``); it is the clip
-    anchor and is never written here. The **registered** marker is the
-    AI-corrected output (broadcast + zones + normal render): each frame its
-    smoothed position glides toward the detection nearest the anchor (within
-    ``assist_radius_m``, eased onto the person by ``assist_strength``) or, when
-    none is in range, glides back toward the anchor. The glide (rate
-    ``smoothing``) is seeded once and never reset, so the output never snaps.
+    Assist refines all controlled markers simultaneously. Each marker has two
+    entities: a **manual ghost** the operator steers (the clip anchor, never
+    written here) and the **registered** marker (the AI-corrected output:
+    broadcast + zones + normal render). Per marker the smoothed output glides
+    toward the detection nearest its anchor (within ``assist_radius_m``, eased
+    onto the person by ``assist_strength``) or back toward the anchor when none
+    is in range; the glide is seeded once and never reset, so it never snaps. The
+    same detection may drive more than one marker – operators legitimately overlap
+    spots on one performer, and collisions self-resolve as the anchors diverge.
     """
     cfg = app._config
-    steps = _dt_steps(dt)  # shared by the inner smoothing and the outer glide
-    pinned_id = assist_pinned_marker_id(app)
-    if pinned_id is None:
-        _prune_manual_markers(app, keep=None)
-        pin_state.reset()
+    target_ids = set(app._controlled_ids)
+    _prune_manual_markers(app, keep=target_ids)
+    _prune_pin_states(app, keep=target_ids)
+    if not target_ids:
         return
-    _prune_manual_markers(app, keep=pinned_id)
-
-    out_marker = app._server.get_marker(pinned_id)
-    if out_marker is None:
-        return
-    anchor = get_or_create_manual_marker(app, pinned_id)
-
-    # Operator switched the assist-controlled marker: re-seed everything from the
-    # new marker so the output starts on it. Without this the never-reset outer
-    # glide would carry the previous marker's position and visibly sweep across.
-    if pinned_id != pin_state.glide_marker_id:
-        pin_state.reset()
-        pin_state.glide_marker_id = pinned_id
 
     w, h = app._video_receiver.resolution
     if w <= 0 or h <= 0:
         return
 
+    steps = _dt_steps(dt)  # shared by the inner smoothing and the outer glide
     use_bottom = cfg.detection.pin_point == "bottom"
-    manual_x, manual_y, manual_z = anchor.pos
-    plane_z = cfg.grid.z_offset if use_bottom else manual_z
-
     params = _load_camera_params(app, unproject_cam_buffer)
     screen_pt = screen_point_buffer
 
-    def _world_of(box: Any) -> tuple[float, float] | None:
-        """Unproject a detection's pin point to a PSN-absolute world (x, y).
-
-        Returns ``None`` for a non-finite solve (degenerate camera geometry).
-        The nearest-search visits each detection once, so no per-frame cache.
-        """
-        screen_pt[0, 0] = (box.x1 + box.x2) / 2.0 * w
-        screen_pt[0, 1] = (box.y2 if use_bottom else box.y1) * h
-        world = unproject_to_plane(params, screen_pt, float(w), float(h), plane_z)
-        if not np.all(np.isfinite(world[0])):
-            return None
-        return float(world[0, 0]), float(world[0, 1])
-
-    # No live detector (e.g. detection deps missing) → no detections, so the
-    # output simply glides to the manual anchor; the operator keeps control.
+    # No live detector (deps missing) → no detections, so each output simply
+    # glides to its manual anchor; the operator keeps control.
     detections = person_detector.detections if person_detector is not None else []
+
+    # Unproject each detection's pin point ONCE per plane and memoise by plane Z,
+    # so N markers don't re-unproject M detections N times. ``pin_point ==
+    # "bottom"`` shares the stage-floor plane across every marker (one pass);
+    # ``"top"`` uses each anchor's Z, so markers at the same height still share a
+    # single pass and only genuinely-different heights cost extra.
+    det_world_cache: dict[float, list[tuple[int, float, float]]] = {}
+
+    def _det_worlds_for(plane_z: float) -> list[tuple[int, float, float]]:
+        cached = det_world_cache.get(plane_z)
+        if cached is not None:
+            return cached
+        worlds: list[tuple[int, float, float]] = []
+        for box in detections:
+            screen_pt[0, 0] = (box.x1 + box.x2) / 2.0 * w
+            screen_pt[0, 1] = (box.y2 if use_bottom else box.y1) * h
+            world = unproject_to_plane(params, screen_pt, float(w), float(h), plane_z)
+            if not np.all(np.isfinite(world[0])):
+                continue
+            worlds.append((box.track_id, float(world[0, 0]), float(world[0, 1])))
+        det_world_cache[plane_z] = worlds
+        return worlds
+
     radius_sq = cfg.detection.assist_radius_m**2
 
+    for mid in sorted(target_ids):
+        out_marker = app._server.get_marker(mid)
+        if out_marker is None:
+            continue
+        anchor = get_or_create_manual_marker(app, mid)
+        state = _get_pin_state(app, mid)
+        manual_x, manual_y, manual_z = anchor.pos
+        plane_z = cfg.grid.z_offset if use_bottom else manual_z
+        _assist_one(
+            cfg,
+            state,
+            out_marker,
+            mid,
+            manual_x,
+            manual_y,
+            manual_z,
+            _det_worlds_for(plane_z),
+            radius_sq,
+            steps,
+        )
+
+
+def _assist_one(
+    cfg: Any,
+    state: DetectionPinState,
+    out_marker: Any,
+    marker_id: int,
+    manual_x: float,
+    manual_y: float,
+    manual_z: float,
+    det_worlds: list[tuple[int, float, float]],
+    radius_sq: float,
+    steps: float,
+) -> None:
+    """Glide one assist marker's output toward the person nearest its anchor.
+
+    ``det_worlds`` is the precomputed ``(track_id, x, y)`` of every detection on
+    this marker's unproject plane (PSN-absolute). Mutates ``state`` and writes
+    ``out_marker``.
+    """
     # Always follow the detection nearest the operator's manual anchor – never a
     # bigger box, never a previously-locked one. The operator retargets simply by
     # nudging the anchor toward a different person; the never-reset outer glide
@@ -406,34 +455,31 @@ def _apply_assist_pin(
     chosen_id: int | None = None
     chosen_world: tuple[float, float] | None = None
     best_dsq = radius_sq
-    for box in detections:
-        world = _world_of(box)
-        if world is None:
-            continue
-        dsq = (world[0] - manual_x) ** 2 + (world[1] - manual_y) ** 2
+    for track_id, wx, wy in det_worlds:
+        dsq = (wx - manual_x) ** 2 + (wy - manual_y) ** 2
         if dsq <= best_dsq:
             best_dsq = dsq
-            chosen_id, chosen_world = box.track_id, world
+            chosen_id, chosen_world = track_id, (wx, wy)
 
     if chosen_world is None:
         # No detection near the anchor – target the anchor itself so the AI
         # marker glides home. Drop the person lock + velocity but keep the
         # outer glide so the output never snaps.
-        pin_state.soft_release()
+        state.soft_release()
         target_x, target_y = manual_x, manual_y
     else:
         # New lock (or first acquisition) – re-seed the inner de-jitter so the
         # person target tracks cleanly. The outer glide is untouched, so the
         # output still eases (never jumps) onto the newly-locked person.
-        if chosen_id != pin_state.locked_track_id:
-            pin_state.smooth_x = None
-            pin_state.smooth_y = None
-            pin_state.vel_x = 0.0
-            pin_state.vel_y = 0.0
-            pin_state.prev_target_x = None
-            pin_state.prev_target_y = None
-            pin_state.locked_track_id = chosen_id
-        smooth_x, smooth_y = _advance_smoothing_steps(pin_state, chosen_world[0], chosen_world[1], cfg, steps)
+        if chosen_id != state.locked_track_id:
+            state.smooth_x = None
+            state.smooth_y = None
+            state.vel_x = 0.0
+            state.vel_y = 0.0
+            state.prev_target_x = None
+            state.prev_target_y = None
+            state.locked_track_id = chosen_id
+        smooth_x, smooth_y = _advance_smoothing_steps(state, chosen_world[0], chosen_world[1], cfg, steps)
         # ``assist_strength`` is the in-range clip ratio: 1.0 sits exactly on the
         # person; lower blends toward the manual anchor.
         strength = cfg.detection.assist_strength
@@ -444,28 +490,40 @@ def _apply_assist_pin(
     # from the registered marker's pos; never reset → the output never snaps. The
     # glide rate is frame-rate-independent (re-derived from the shared ``steps``).
     glide = _ema_factor(cfg.detection.smoothing, steps)
-    if pin_state.ai_smooth_x is None or pin_state.ai_smooth_y is None:
+    if state.ai_smooth_x is None or state.ai_smooth_y is None:
         out_x, out_y, _ = out_marker.pos
-        pin_state.ai_smooth_x = out_x
-        pin_state.ai_smooth_y = out_y
-    pin_state.ai_smooth_x += glide * (target_x - pin_state.ai_smooth_x)
-    pin_state.ai_smooth_y += glide * (target_y - pin_state.ai_smooth_y)
-    out_marker.set_pos(pin_state.ai_smooth_x, pin_state.ai_smooth_y, manual_z)
+        state.ai_smooth_x = out_x
+        state.ai_smooth_y = out_y
+    state.ai_smooth_x += glide * (target_x - state.ai_smooth_x)
+    state.ai_smooth_y += glide * (target_y - state.ai_smooth_y)
+    out_marker.set_pos(state.ai_smooth_x, state.ai_smooth_y, manual_z)
 
     # The locked person (if any) is the attached box; the overlay paints it in
     # the output marker's colour. ``None`` while gliding home leaves all boxes
     # in the default detection colour.
-    pin_state.attached_track_id = pin_state.locked_track_id
-    pin_state.attached_marker_id = pinned_id
+    state.attached_track_id = state.locked_track_id
+    state.attached_marker_id = marker_id
 
 
-def _prune_manual_markers(app: Any, *, keep: int | None) -> None:
+def _prune_manual_markers(app: Any, *, keep: set[int]) -> None:
     """Drop stale manual ghosts so a re-engage re-seeds fresh from the marker.
 
-    ``keep`` is the currently assist-pinned id (or ``None`` when assist is off).
-    Any other ghost is discarded – when the operator switches the selected /
-    pinned marker or turns assist off, the old anchor must not linger.
+    ``keep`` is the set of ids currently under assist control (empty when assist
+    is off). Any other ghost is discarded – when the operator changes the
+    controlled set or turns assist off, the old anchors must not linger.
     """
-    stale = [mid for mid in app._assist_manual if mid != keep]
+    stale = [mid for mid in app._assist_manual if mid not in keep]
     for mid in stale:
         del app._assist_manual[mid]
+
+
+def _prune_pin_states(app: Any, *, keep: set[int]) -> None:
+    """Drop per-marker pin states for markers no longer driven.
+
+    Parallels :func:`_prune_manual_markers`. A marker that leaves the driven set
+    (controlled set shrinks, mode switch, detection off) sheds its smoothing /
+    glide state so a later re-entry seeds fresh from the live marker position.
+    """
+    stale = [mid for mid in app._detection_pin_states if mid not in keep]
+    for mid in stale:
+        del app._detection_pin_states[mid]

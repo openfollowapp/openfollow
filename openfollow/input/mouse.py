@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from openfollow.runtime.services_detection_pin import (
-    assist_pinned_marker_id,
     get_or_create_manual_marker,
+    is_assist_controlled,
 )
 from openfollow.scene.solver import unproject_to_plane
 
@@ -128,7 +128,7 @@ class MouseHandler:
         app = self._app
         if app._selected_id is None:
             return None
-        if app._selected_id == assist_pinned_marker_id(app):
+        if is_assist_controlled(app, app._selected_id):
             return get_or_create_manual_marker(app, app._selected_id)
         if app._server is None:
             return None

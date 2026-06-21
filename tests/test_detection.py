@@ -479,20 +479,17 @@ def test_drain_does_not_live_swap_inference_size() -> None:
     assert detector._inference_size == 320
 
 
-def test_drain_recomputes_clahe_when_toggled() -> None:
+def test_clahe_always_present_and_survives_drain() -> None:
     detection_module = _load_detection_module()
-    detector = detection_module.PersonDetector(
-        DetectionConfig(enabled=False, preprocess_clahe=False),
-    )
-    assert detector._clahe is None
-
-    detector._pending_config = DetectionConfig(enabled=False, preprocess_clahe=True)
-    detector._drain_pending_config()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False))
+    # CLAHE is unconditional – the equaliser exists straight after construction.
     assert detector._clahe is not None
+    clahe_before = detector._clahe
 
-    detector._pending_config = DetectionConfig(enabled=False, preprocess_clahe=False)
+    # A live reload doesn't touch CLAHE – there is no toggle to drain.
+    detector._pending_config = DetectionConfig(enabled=False, confidence=0.42)
     detector._drain_pending_config()
-    assert detector._clahe is None
+    assert detector._clahe is clahe_before
 
 
 def test_drain_rebuilds_backend_when_model_changes() -> None:
@@ -784,3 +781,64 @@ def test_drain_restores_env_baseline_on_storage_path_cleared(
     # Env restored to the operator's pre-app baseline (unset).
     assert "XDG_CACHE_HOME" not in _os.environ
     assert detector._config.storage_path == ""
+
+
+def test_pick_available_model_prefers_fastest_tier(tmp_path: Path) -> None:
+    detection_module = _load_detection_module()
+    models = tmp_path / "models"
+    models.mkdir()
+    # A higher tier and a non-tier model present, but the Fastest tier wins.
+    for name in ("yolo26m.onnx", "yolo11l.onnx", "yolo26n.onnx"):
+        (models / name).write_bytes(b"x")
+
+    picked = detection_module.PersonDetector._pick_available_model(models)
+
+    assert picked is not None
+    assert picked.name == "yolo26n.onnx"
+
+
+def test_pick_available_model_falls_back_to_any_onnx(tmp_path: Path) -> None:
+    detection_module = _load_detection_module()
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "custom_model.onnx").write_bytes(b"x")
+
+    picked = detection_module.PersonDetector._pick_available_model(models)
+
+    assert picked is not None
+    assert picked.name == "custom_model.onnx"
+
+
+def test_pick_available_model_none_when_empty(tmp_path: Path) -> None:
+    detection_module = _load_detection_module()
+    models = tmp_path / "models"
+    models.mkdir()
+
+    assert detection_module.PersonDetector._pick_available_model(models) is None
+
+
+def test_prepare_model_path_falls_back_when_configured_model_missing(tmp_path: Path) -> None:
+    detection_module = _load_detection_module()
+    models = tmp_path / "models"
+    models.mkdir(parents=True)
+    (models / "yolo26n.onnx").write_bytes(b"x")
+
+    # Configured model isn't on disk; resolution should fall back to the tier
+    # that is, so enabling detection still starts.
+    cfg = DetectionConfig(enabled=True, model="yolov8n.onnx", storage_path=str(tmp_path))
+    resolved = detection_module.PersonDetector._prepare_model_path(cfg)
+
+    assert Path(resolved) == models / "yolo26n.onnx"
+
+
+def test_prepare_model_path_keeps_configured_model_when_present(tmp_path: Path) -> None:
+    detection_module = _load_detection_module()
+    models = tmp_path / "models"
+    models.mkdir(parents=True)
+    (models / "yolo26n.onnx").write_bytes(b"x")
+    (models / "yolo26m.onnx").write_bytes(b"x")
+
+    cfg = DetectionConfig(enabled=True, model="yolo26m.onnx", storage_path=str(tmp_path))
+    resolved = detection_module.PersonDetector._prepare_model_path(cfg)
+
+    assert Path(resolved) == models / "yolo26m.onnx"

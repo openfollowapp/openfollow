@@ -414,12 +414,43 @@ _DETECTION_PIN_MODES = ("replace", "assist")
 
 
 @dataclass
+class DetectionMaskConfig:
+    """A single polygonal detection mask in normalised 0-1 frame coordinates.
+
+    Detection is confined to the union of all enabled masks: a person whose
+    ground point falls outside every mask is discarded before tracking. An empty
+    mask list leaves detection unrestricted.
+    """
+
+    name: str = ""
+    vertices: list[list[float]] = field(default_factory=list)  # [[x, y], ...] in 0-1 frame space
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        self.name = _coerce_str(self.name, "")
+        self.enabled = _coerce_bool(self.enabled, True)
+        # Normalize vertices to [float, float] pairs. Drop non-finite coords:
+        # ``float("nan")`` / ``float("inf")`` survive coercion but make every
+        # point-in-polygon comparison False, silently corrupting the mask.
+        cleaned: list[list[float]] = []
+        for v in self.vertices:
+            if isinstance(v, (list, tuple)) and len(v) >= 2:
+                try:
+                    x, y = float(v[0]), float(v[1])
+                except (TypeError, ValueError):
+                    continue
+                if not (math.isfinite(x) and math.isfinite(y)):
+                    continue
+                cleaned.append([x, y])
+        self.vertices = cleaned
+
+
+@dataclass
 class DetectionConfig:
     enabled: bool = False
-    model: str = "yolov8n.onnx"
+    model: str = "yolo26n.onnx"
     storage_path: str = ""
     inference_size: int = 640
-    preprocess_clahe: bool = True
     confidence: float = 0.2
     interval_ms: int = 67
     show_boxes: bool = True
@@ -427,8 +458,7 @@ class DetectionConfig:
     box_color: str = "#808080"
     box_thickness: int = 2
     max_persons: int = 10
-    pin_marker: bool = False
-    # Which marker the detection pin writes to when ``pin_marker`` is enabled.
+    # Which marker the detection pin writes to in Fully Automatic (replace) mode.
     # ``-1`` (sentinel) follows the controller's selected marker
     # (``app._selected_id``). Any non-negative value pins to that exact id; if
     # it isn't in ``controlled_marker_ids`` the runtime skips the pin.
@@ -447,11 +477,14 @@ class DetectionConfig:
     pin_mode: str = "assist"
     assist_radius_m: float = 1.0
     assist_strength: float = 0.5
+    # Region-of-interest polygons in normalised 0-1 frame coords. Detection is
+    # confined to the union of enabled masks; empty = unrestricted.
+    masks: list[DetectionMaskConfig] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # ``model`` / ``storage_path`` are rendered into templates and consumed
         # via ``Path(...)`` / ``.strip()``; both assume ``str``.
-        self.model = _coerce_str(self.model, "yolov8n.onnx")
+        self.model = _coerce_str(self.model, "yolo26n.onnx")
         self.storage_path = _coerce_str(self.storage_path, "")
         self.pin_point = _coerce_choice(self.pin_point, _DETECTION_PIN_POINTS, "top")
         # inference_size: letterbox math requires >= 160; YOLO heads prefer
@@ -475,6 +508,14 @@ class DetectionConfig:
         # Gate radius for assist mode. Upper bound mirrors web/validation.py.
         self.assist_radius_m = _coerce_float(self.assist_radius_m, 1.0, lo=0.1, hi=50.0)
         self.assist_strength = _coerce_float(self.assist_strength, 0.5, lo=0.0, hi=1.0)
+        # Convert dict entries (hand-edited TOML / imported config) to
+        # dataclasses and drop non-object entries, so the detector thread can
+        # dereference ``mask.vertices`` without an AttributeError.
+        self.masks = [
+            DetectionMaskConfig(**_filter_known(DetectionMaskConfig, m)) if isinstance(m, dict) else m
+            for m in self.masks
+            if isinstance(m, (dict, DetectionMaskConfig))
+        ]
 
 
 @dataclass

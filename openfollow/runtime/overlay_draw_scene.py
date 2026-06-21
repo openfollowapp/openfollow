@@ -101,7 +101,7 @@ def draw_origin(cr: Any, state: OverlayState, w: int, h: int) -> None:
 
 def draw_detections(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
     default_rgb = parse_hex(state.detection_box_color)
-    attached_rgb = parse_hex(state.detection_attached_color) if state.detection_attached_color else None
+    attached_colors = state.detection_attached_colors
     cr.set_line_width(state.detection_box_thickness)
 
     for det in state.detections:
@@ -110,10 +110,11 @@ def draw_detections(renderer: Any, cr: Any, state: OverlayState, w: int, h: int)
         x2 = det.x2 * w
         y2 = det.y2 * h
 
-        # The box attached to a marker is drawn in that marker's colour so the
-        # operator can tell which detection is driving the followspot.
-        if attached_rgb is not None and det.track_id == state.detection_attached_track_id:
-            r, g, b = attached_rgb
+        # A box attached to a marker is drawn in that marker's colour so the
+        # operator can tell which detection is driving each followspot.
+        attached_hex = attached_colors.get(det.track_id)
+        if attached_hex:
+            r, g, b = parse_hex(attached_hex)
         else:
             r, g, b = default_rgb
 

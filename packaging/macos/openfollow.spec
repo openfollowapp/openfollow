@@ -112,11 +112,10 @@ hiddenimports += collect_submodules("openfollow")
 # ModuleNotFoundError and MIDI control is unavailable.
 hiddenimports += ["rtmidi", *collect_submodules("mido.backends")]
 
-# Bundle the first-run config seed and (when present) the default model.
+# Bundle the first-run config seed and every pre-shipped quality-tier model.
 datas += [(str(MACOS / "config.seed.toml"), ".")]
-_default_model = BUILD / "models" / "yolov8n.onnx"
-if _default_model.is_file():
-    datas += [(str(_default_model), "models")]
+for _model in sorted((BUILD / "models").glob("*.onnx")):
+    datas += [(str(_model), "models")]
 
 a = Analysis(  # noqa: F821
     [str(MACOS / "launcher.py")],

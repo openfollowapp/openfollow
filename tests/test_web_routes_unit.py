@@ -48,9 +48,10 @@ import numpy as np
 import pytest
 
 import openfollow.web.routes as routes_module
-from openfollow.configuration import AppConfig, DetectionConfig, TriggerZoneConfig
+from openfollow.configuration import AppConfig, DetectionConfig, DetectionMaskConfig, TriggerZoneConfig
 from openfollow.web.routes import (
     _apply_import_data,
+    _apply_mask_fields,
     _apply_zone_fields,
     _as_float,
     _as_float_or_zero,
@@ -358,6 +359,35 @@ class TestApplyZoneFields:
         _apply_zone_fields(zone, {"trigger_source": "garbage"})
         # Post-init must have rewritten it to an allowed value.
         assert zone.trigger_source in ("markers", "detection", "both")
+
+
+class TestApplyMaskFields:
+    def test_updates_name_enabled_and_vertices(self) -> None:
+        mask = DetectionMaskConfig(name="M0", enabled=True)
+        _apply_mask_fields(mask, {"name": "Stage", "enabled": False, "vertices": [[0, 0], [1, 0], [1, 1]]})
+        assert mask.name == "Stage"
+        assert mask.enabled is False
+        assert mask.vertices == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+
+    def test_absent_keys_are_left_untouched(self) -> None:
+        """A partial PUT toggling ``enabled`` must not wipe the polygon."""
+        mask = DetectionMaskConfig(name="Keep", vertices=[[0.1, 0.1], [0.2, 0.1], [0.2, 0.2]])
+        _apply_mask_fields(mask, {"enabled": False})
+        assert mask.enabled is False
+        assert mask.name == "Keep"
+        assert mask.vertices == [[0.1, 0.1], [0.2, 0.1], [0.2, 0.2]]
+
+    def test_post_init_drops_non_finite_vertices(self) -> None:
+        """The ``__post_init__`` re-run scrubs a crafted non-finite vertex."""
+        mask = DetectionMaskConfig()
+        _apply_mask_fields(mask, {"vertices": [[0.0, 0.0], [float("nan"), 0.5], [1.0, 1.0]]})
+        assert mask.vertices == [[0.0, 0.0], [1.0, 1.0]]
+
+    def test_null_vertices_preserves_existing(self) -> None:
+        """``{"vertices": null}`` must not destructively blank the polygon."""
+        mask = DetectionMaskConfig(vertices=[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]])
+        _apply_mask_fields(mask, {"vertices": None})
+        assert mask.vertices == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
 
 
 # --------------------------------------------------------------------------- #

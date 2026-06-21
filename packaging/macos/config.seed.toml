@@ -13,9 +13,11 @@ web_port = 8080
 video_source_type = "testpattern"
 
 [detection]
-# Detection ships ready to run: onnxruntime + opencv are bundled and a default
-# yolov8n.onnx is seeded into the storage folder below on first launch.
+# Detection ships ready to run: onnxruntime + opencv are bundled and the full set
+# of quality tiers is seeded into the storage folder below on first launch. A
+# Mac has the headroom for the Balanced tier, so default to it.
 enabled = true
+model = "yolo26m.onnx"
 # Absolute, writable, device-local path. @STORAGE_PATH@ is substituted with the
 # user's "Application Support/OpenFollow/yolo" by the bundle launcher.
 storage_path = "@STORAGE_PATH@"

@@ -58,69 +58,228 @@
     </div>
 % end
 
+% det = config.detection
+% tracking_state = 'off' if not det.enabled else ('assist' if det.pin_mode == 'assist' else 'replace')
+
+    <form class="section {{'saved' if saved_section == 'tracking' else ''}}" data-fold-key="detection_tracking" data-help="detection"
+          hx-post="/section/detection/tracking" hx-target="#detection-section" hx-swap="outerHTML" hx-trigger="submit">
+        <div class="section-head">
+            <h2>Tracking</h2>
+            <span class="section-note">How detection follows your performers. Turning tracking on starts person detection automatically.</span>
+        </div>
+        <div class="row">
+            <div class="field">
+                <label>Tracking</label>
+                <div class="seg-toggle seg-toggle--3" role="radiogroup" aria-label="Tracking mode">
+                    <label class="seg-option">
+                        <input type="radio" name="tracking_state" value="off" {{'checked' if tracking_state == 'off' else ''}}>
+                        <span><strong>Off</strong><small>No detection</small></span>
+                    </label>
+                    <label class="seg-option">
+                        <input type="radio" name="tracking_state" value="assist" {{'checked' if tracking_state == 'assist' else ''}}>
+                        <span><strong>AI Assisted</strong><small>Refines all your markers</small></span>
+                    </label>
+                    <label class="seg-option">
+                        <input type="radio" name="tracking_state" value="replace" {{'checked' if tracking_state == 'replace' else ''}}>
+                        <span><strong>Fully Automatic</strong><small>Auto-follows one person</small></span>
+                    </label>
+                </div>
+            </div>
+        </div>
+        <div class="row" data-replace-only {{'' if tracking_state == 'replace' else 'hidden'}}>
+            <div class="field">
+                <label>Follow marker</label>
+%     saved_pin_id = det.pin_marker_id
+%     pin_id_in_list = saved_pin_id in config.controlled_marker_ids
+                <select name="pin_marker_id">
+                    <option value="-1" {{'selected' if saved_pin_id < 0 else ''}}>Currently selected (controller)</option>
+%     if saved_pin_id >= 0 and not pin_id_in_list:
+                    <option value="{{saved_pin_id}}" selected disabled>Marker {{saved_pin_id}} (unavailable)</option>
+%     end
+% for tid in config.controlled_marker_ids:
+                    <option value="{{tid}}" {{'selected' if saved_pin_id == tid else ''}}>Marker {{tid}}</option>
+% end
+                <span class="field-note">Which marker the automatic tracker drives.</span>
+            </div>
+        </div>
+
+        <div class="group">
+            <h3 class="group-title">Motion</h3>
+            <div class="row row--pair">
+                <div class="field">
+                    <label>Track</label>
+                    <select name="pin_point">
+                        <option value="top" {{'selected' if det.pin_point == 'top' else ''}}>Head (top of person)</option>
+                        <option value="bottom" {{'selected' if det.pin_point == 'bottom' else ''}}>Feet (floor position)</option>
+                    </select>
+                    <span class="field-note">Which part of the person sets the marker.</span>
+                </div>
+                <div class="field">
+                    <label>Smoothing / glide (0–1)</label>
+                    <input id="detection-smoothing" type="number" name="smoothing" value="{{det.smoothing}}" min="0.01" max="1" step="0.01"
+                           hx-get="/api/validate/detection/smoothing" hx-trigger="blur changed delay:200ms"
+                           hx-target="#detection-smoothing-error" hx-swap="innerHTML" hx-include="closest form"
+                           aria-describedby="detection-smoothing-error" aria-invalid="false">
+                    <span id="detection-smoothing-error" class="field-error"></span>
+                </div>
+            </div>
+            <div class="row row--pair">
+                <div class="field">
+                    <label>Prediction</label>
+                    <input id="detection-prediction" type="number" name="prediction" value="{{det.prediction}}" min="0" max="20" step="0.5"
+                           hx-get="/api/validate/detection/prediction" hx-trigger="blur changed delay:200ms"
+                           hx-target="#detection-prediction-error" hx-swap="innerHTML" hx-include="closest form"
+                           aria-describedby="detection-prediction-error" aria-invalid="false">
+                    <span id="detection-prediction-error" class="field-error"></span>
+                </div>
+                <div class="field">
+                    <label>Grace Period (ms)</label>
+                    <input id="detection-grace-period-ms" type="number" name="grace_period_ms" value="{{det.grace_period_ms}}" min="0" max="10000" step="100"
+                           hx-get="/api/validate/detection/grace_period_ms" hx-trigger="blur changed delay:200ms"
+                           hx-target="#detection-grace-period-ms-error" hx-swap="innerHTML" hx-include="closest form"
+                           aria-describedby="detection-grace-period-ms-error" aria-invalid="false">
+                    <span id="detection-grace-period-ms-error" class="field-error"></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="group group--assist" data-assist-only {{'' if tracking_state == 'assist' else 'hidden'}}>
+            <h3 class="group-title">Assisted Tracking</h3>
+            <span class="section-note">Where the AI output sits relative to your manual anchor.</span>
+            <div class="row row--pair">
+                <div class="field">
+                    <label>Assist Radius (m)</label>
+                    <input id="detection-assist-radius-m" type="number" name="assist_radius_m" value="{{det.assist_radius_m}}" min="0.1" max="50" step="0.1"
+                           hx-get="/api/validate/detection/assist_radius_m" hx-trigger="blur changed delay:200ms"
+                           hx-target="#detection-assist-radius-m-error" hx-swap="innerHTML" hx-include="closest form"
+                           aria-describedby="detection-assist-radius-m-error" aria-invalid="false">
+                    <span id="detection-assist-radius-m-error" class="field-error"></span>
+                </div>
+                <div class="field">
+                    <label>Clip strength (0–1)</label>
+                    <input id="detection-assist-strength" type="number" name="assist_strength" value="{{det.assist_strength}}" min="0" max="1" step="0.05"
+                           hx-get="/api/validate/detection/assist_strength" hx-trigger="blur changed delay:200ms"
+                           hx-target="#detection-assist-strength-error" hx-swap="innerHTML" hx-include="closest form"
+                           aria-describedby="detection-assist-strength-error" aria-invalid="false">
+                    <span id="detection-assist-strength-error" class="field-error"></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="actions">
+            <button type="submit" class="save-btn">Save</button>
+        </div>
+    </form>
+
     <form class="section {{'saved' if saved_section == 'models' else ''}}" data-fold-key="detection_models" data-help="detection"
           hx-post="/section/detection/models" hx-target="#detection-section" hx-swap="outerHTML" hx-trigger="submit">
         <div class="section-head">
             <h2>Models</h2>
-            <span class="section-note">Pick the active model, download new ones, and remove ones you no longer need.</span>
+            <span class="section-note">Pick a detection quality. Higher quality is more accurate but needs more compute.</span>
         </div>
 
-        <div class="group">
-            <h3 class="group-title">Model</h3>
+% tiers = defined('detection_tiers') and detection_tiers or []
 % available_models = defined('detection_available_models') and detection_available_models or []
 % installed_models = defined('detection_installed_models') and detection_installed_models or []
 % storage_info = defined('detection_storage_info') and detection_storage_info or {}
-% saved_model = config.detection.model
-% selectable = [(v, lbl) for v, lbl, avail in available_models if avail]
+% saved_model = det.model
+% tier_models = [t['model'] for t in tiers]
+% tier_label_by_model = {t['model']: t['label'] for t in tiers}
 % catalogue_unavailable = [(v, lbl) for v, lbl, avail in available_models if not avail]
-            <div class="row">
-                <div class="field">
-                    <label>Model</label>
-%     if selectable:
-                    <select name="model">
-%         for value, label in selectable:
-                        <option value="{{value}}" {{'selected' if value == saved_model else ''}}>{{label}}</option>
+% other_installed = [(v, lbl) for v, lbl, avail in available_models if avail and v not in tier_models]
+% selected_is_tier = saved_model in tier_models
+        <div class="group">
+            <h3 class="group-title">Quality</h3>
+% if tiers:
+            <div class="tier-list" role="radiogroup" aria-label="Detection quality">
+%     for t in tiers:
+                <label class="tier-option">
+                    <input type="radio" name="model" value="{{t['model']}}" {{'checked' if t['model'] == saved_model else ''}} {{'disabled' if not t['available'] else ''}}>
+                    <span><strong>{{t['label']}}</strong><small>{{t['blurb']}}{{'' if t['available'] else ' – download in Advanced'}}</small></span>
+                </label>
+%     end
+            </div>
+%     if not selected_is_tier:
+            <span class="field-note">Using a custom model: <code>{{saved_model}}</code> (change it under Advanced models).</span>
+%     end
+% else:
+            <input type="hidden" name="model" value="{{saved_model}}">
+            <span class="field-note">No quality tiers available – install detection components first.</span>
+% end
+        </div>
+
+        <details class="inline-advanced">
+            <summary>Advanced models</summary>
+            <div class="inline-advanced-content">
+
+% if other_installed:
+            <div class="group">
+                <h3 class="group-title">Other installed models</h3>
+                <div class="tier-list" role="radiogroup" aria-label="Other installed models">
+%     if not selected_is_tier:
+                    <label class="tier-option">
+                        <input type="radio" name="model" value="{{saved_model}}" checked>
+                        <span><strong>{{saved_model}}</strong><small>Current selection</small></span>
+                    </label>
+%     end
+%     for value, label in other_installed:
+%         if value != saved_model:
+                    <label class="tier-option">
+                        <input type="radio" name="model" value="{{value}}">
+                        <span><strong>{{label}}</strong><small>{{value}}</small></span>
+                    </label>
 %         end
-                    </select>
-                    <span class="field-note">Only models present in the storage folder are listed.</span>
-%     else:
-                    <input type="hidden" name="model" value="{{saved_model}}">
-                    <span class="field-note">No models installed yet &ndash; download one below.</span>
 %     end
                 </div>
             </div>
+% elif not selected_is_tier:
+            <div class="group">
+                <h3 class="group-title">Other installed models</h3>
+                <div class="tier-list" role="radiogroup" aria-label="Other installed models">
+                    <label class="tier-option">
+                        <input type="radio" name="model" value="{{saved_model}}" checked>
+                        <span><strong>{{saved_model}}</strong><small>Current selection</small></span>
+                    </label>
+                </div>
+            </div>
+% end
+
+% include('partials/detection_model_download.tpl', config=config, catalogue_unavailable=catalogue_unavailable, extras_installed=extras_installed, di_running=di_running)
+
+%     if installed_models:
+            <div class="group">
+                <h3 class="group-title">Installed models</h3>
+                <div class="detection-installed-models">
+%         for m in installed_models:
+                    <div class="row" style="align-items: center; gap: 10px;">
+                        <code style="flex: 1 1 auto;">{{m['name']}}</code>
+%             if m['name'] in tier_label_by_model:
+                        <span class="tier-tag">{{tier_label_by_model[m['name']]}}</span>
+%             end
+                        <span class="field-note" style="margin: 0;">{{m['size_h']}}</span>
+                        <button type="button" class="broadcast-btn"
+                                {{'disabled' if di_running else ''}}
+                                hx-post="/section/detection/models/delete"
+                                hx-vals='{"model": "{{m['name']}}"}'
+                                hx-target="#detection-section"
+                                hx-swap="outerHTML"
+                                hx-confirm="Delete {{m['name']}}? This removes the file from disk.">
+                            Delete
+                        </button>
+                    </div>
+%         end
+                </div>
+            </div>
+%     end
+
 %     if storage_info:
             <p class="section-note" style="margin: 8px 0 0;">
                 Models disk: <strong>{{storage_info.get('free_h', '?')}} free</strong> of {{storage_info.get('total_h', '?')}}
                 (<code>{{storage_info.get('path', '')}}</code>)
             </p>
 %     end
-        </div>
-
-%     if installed_models:
-        <div class="group">
-            <h3 class="group-title">Installed models</h3>
-            <div class="detection-installed-models">
-%         for m in installed_models:
-                <div class="row" style="align-items: center; gap: 10px;">
-                    <code style="flex: 1 1 auto;">{{m['name']}}</code>
-                    <span class="field-note" style="margin: 0;">{{m['size_h']}}</span>
-                    <button type="button" class="broadcast-btn"
-                            {{'disabled' if di_running else ''}}
-                            hx-post="/section/detection/models/delete"
-                            hx-vals='{"model": "{{m['name']}}"}'
-                            hx-target="#detection-section"
-                            hx-swap="outerHTML"
-                            hx-confirm="Delete {{m['name']}}? This removes the file from disk.">
-                        Delete
-                    </button>
-                </div>
-%         end
             </div>
-        </div>
-%     end
-
-% include('partials/detection_model_download.tpl', config=config, catalogue_unavailable=catalogue_unavailable, extras_installed=extras_installed, di_running=di_running)
+        </details>
 
         <div class="actions">
             <button type="submit" class="save-btn">Save</button>
@@ -131,24 +290,14 @@
           hx-post="/section/detection/inference" hx-target="#detection-section" hx-swap="outerHTML" hx-trigger="submit">
         <div class="section-head">
             <h2>Detection &amp; Display</h2>
-            <span class="section-note">Core inference settings and what the overlay draws.</span>
+            <span class="section-note">How sensitive detection is and what the overlay draws.</span>
         </div>
         <div class="group">
             <h3 class="group-title">Detection</h3>
-            <div class="row row--toggles">
-                <div class="field checkbox-field">
-                    <label>Enabled</label>
-                    <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if config.detection.enabled else ''}}></div>
-                </div>
-                <div class="field checkbox-field">
-                    <label>CLAHE Preprocess</label>
-                    <div class="checkbox-wrap"><input type="checkbox" name="preprocess_clahe" {{'checked' if config.detection.preprocess_clahe else ''}}></div>
-                </div>
-            </div>
             <div class="row row--pair">
                 <div class="field">
-                    <label>Confidence (0–1)</label>
-                    <input id="detection-confidence" type="number" name="confidence" value="{{config.detection.confidence}}" min="0" max="1" step="0.05"
+                    <label>Detection sensitivity (0–1)</label>
+                    <input id="detection-confidence" type="number" name="confidence" value="{{det.confidence}}" min="0" max="1" step="0.05"
                            hx-get="/api/validate/detection/confidence" hx-trigger="blur changed delay:200ms"
                            hx-target="#detection-confidence-error" hx-swap="innerHTML" hx-include="closest form"
                            aria-describedby="detection-confidence-error" aria-invalid="false">
@@ -157,29 +306,19 @@
                 <div class="field">
                     <label>Detection Rate (FPS)</label>
                     <select name="interval_ms">
-                        <option value="1000" {{'selected' if config.detection.interval_ms == 1000 else ''}}>1 FPS</option>
-                        <option value="500" {{'selected' if config.detection.interval_ms == 500 else ''}}>2 FPS</option>
-                        <option value="200" {{'selected' if config.detection.interval_ms == 200 else ''}}>5 FPS</option>
-                        <option value="100" {{'selected' if config.detection.interval_ms == 100 else ''}}>10 FPS</option>
-                        <option value="67" {{'selected' if config.detection.interval_ms == 67 else ''}}>15 FPS</option>
-                        <option value="33" {{'selected' if config.detection.interval_ms == 33 else ''}}>30 FPS</option>
+                        <option value="1000" {{'selected' if det.interval_ms == 1000 else ''}}>1 FPS</option>
+                        <option value="500" {{'selected' if det.interval_ms == 500 else ''}}>2 FPS</option>
+                        <option value="200" {{'selected' if det.interval_ms == 200 else ''}}>5 FPS</option>
+                        <option value="100" {{'selected' if det.interval_ms == 100 else ''}}>10 FPS</option>
+                        <option value="67" {{'selected' if det.interval_ms == 67 else ''}}>15 FPS</option>
+                        <option value="33" {{'selected' if det.interval_ms == 33 else ''}}>30 FPS</option>
                     </select>
                 </div>
             </div>
             <div class="row row--pair">
                 <div class="field">
-                    <label>Inference Size</label>
-                    <select name="inference_size">
-                        <option value="320" {{'selected' if config.detection.inference_size == 320 else ''}}>320 (faster)</option>
-                        <option value="416" {{'selected' if config.detection.inference_size == 416 else ''}}>416</option>
-                        <option value="512" {{'selected' if config.detection.inference_size == 512 else ''}}>512</option>
-                        <option value="640" {{'selected' if config.detection.inference_size == 640 else ''}}>640 (default, slower)</option>
-                    </select>
-                    <span class="field-note">Match the model's export image size.</span>
-                </div>
-                <div class="field">
-                    <label>Max Persons</label>
-                    <input id="detection-max-persons" type="number" name="max_persons" value="{{config.detection.max_persons}}" min="1" max="50" step="1"
+                    <label>Maximum people</label>
+                    <input id="detection-max-persons" type="number" name="max_persons" value="{{det.max_persons}}" min="1" max="50" step="1"
                            hx-get="/api/validate/detection/max_persons" hx-trigger="blur changed delay:200ms"
                            hx-target="#detection-max-persons-error" hx-swap="innerHTML" hx-include="closest form"
                            aria-describedby="detection-max-persons-error" aria-invalid="false">
@@ -193,11 +332,11 @@
             <div class="row row--toggles">
                 <div class="field checkbox-field">
                     <label>Show Boxes</label>
-                    <div class="checkbox-wrap"><input type="checkbox" name="show_boxes" {{'checked' if config.detection.show_boxes else ''}}></div>
+                    <div class="checkbox-wrap"><input type="checkbox" name="show_boxes" {{'checked' if det.show_boxes else ''}}></div>
                 </div>
                 <div class="field checkbox-field">
                     <label>Show Labels</label>
-                    <div class="checkbox-wrap"><input type="checkbox" name="show_labels" {{'checked' if config.detection.show_labels else ''}}></div>
+                    <div class="checkbox-wrap"><input type="checkbox" name="show_labels" {{'checked' if det.show_labels else ''}}></div>
                 </div>
             </div>
             <div class="row row--pair">
@@ -208,14 +347,14 @@
                     %# hidden input carries form value. Inline validator dropped
                     %# (see analogous crosshair field in marker.tpl).
                     <button id="detection-box-color" type="button" class="color-swatch-trigger"
-                            data-color-picker="full" data-value="{{config.detection.box_color}}"
+                            data-color-picker="full" data-value="{{det.box_color}}"
                             aria-label="Detection box colour"></button>
-                    <input type="hidden" name="box_color" value="{{config.detection.box_color}}">
+                    <input type="hidden" name="box_color" value="{{det.box_color}}">
                     <span class="field-note">The box attached to a marker is drawn in that marker's colour.</span>
                 </div>
                 <div class="field">
                     <label>Box Thickness (px)</label>
-                    <input id="detection-box-thickness" type="number" name="box_thickness" value="{{config.detection.box_thickness}}" min="1" max="10" step="1"
+                    <input id="detection-box-thickness" type="number" name="box_thickness" value="{{det.box_thickness}}" min="1" max="10" step="1"
                            hx-get="/api/validate/detection/box_thickness" hx-trigger="blur changed delay:200ms"
                            hx-target="#detection-box-thickness-error" hx-swap="innerHTML" hx-include="closest form"
                            aria-describedby="detection-box-thickness-error" aria-invalid="false">
@@ -229,110 +368,5 @@
         </div>
     </form>
 
-    <form class="section {{'saved' if saved_section == 'tracking' else ''}}" data-fold-key="detection_tracking" data-help="detection"
-          hx-post="/section/detection/tracking" hx-target="#detection-section" hx-swap="outerHTML" hx-trigger="submit">
-        <div class="section-head">
-            <h2>Tracking</h2>
-            <span class="section-note">Pick how detection drives the marker, then tune the motion.</span>
-        </div>
-        <div class="row">
-            <div class="field">
-                <label>Tracking Mode</label>
-                <div class="seg-toggle" role="radiogroup" aria-label="Tracking mode">
-                    <label class="seg-option">
-                        <input type="radio" name="pin_mode" value="assist" {{'checked' if config.detection.pin_mode == 'assist' else ''}}>
-                        <span><strong>AI Assisted</strong><small>Refine your manual control</small></span>
-                    </label>
-                    <label class="seg-option">
-                        <input type="radio" name="pin_mode" value="replace" {{'checked' if config.detection.pin_mode == 'replace' else ''}}>
-                        <span><strong>Fully Automatic</strong><small>Auto-pin the largest person</small></span>
-                    </label>
-                </div>
-            </div>
-        </div>
-        <div class="row row--toggles">
-            <div class="field checkbox-field">
-                <label>Pin Marker</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="pin_marker" {{'checked' if config.detection.pin_marker else ''}}></div>
-            </div>
-        </div>
-        <div class="row row--pair">
-            <div class="field">
-                <label>Pin To Marker</label>
-%     saved_pin_id = config.detection.pin_marker_id
-%     pin_id_in_list = saved_pin_id in config.controlled_marker_ids
-                <select name="pin_marker_id">
-                    <option value="-1" {{'selected' if saved_pin_id < 0 else ''}}>Currently selected (controller)</option>
-%     if saved_pin_id >= 0 and not pin_id_in_list:
-                    <option value="{{saved_pin_id}}" selected disabled>Marker {{saved_pin_id}} (unavailable)</option>
-%     end
-% for tid in config.controlled_marker_ids:
-                    <option value="{{tid}}" {{'selected' if saved_pin_id == tid else ''}}>Marker {{tid}}</option>
-% end
-                </select>
-            </div>
-            <div class="field">
-                <label>Pin Point</label>
-                <select name="pin_point">
-                    <option value="top" {{'selected' if config.detection.pin_point == 'top' else ''}}>Top (Head)</option>
-                    <option value="bottom" {{'selected' if config.detection.pin_point == 'bottom' else ''}}>Bottom (Feet)</option>
-                </select>
-            </div>
-        </div>
-        <div class="row row--pair">
-            <div class="field">
-                <label>Smoothing / glide (0–1)</label>
-                <input id="detection-smoothing" type="number" name="smoothing" value="{{config.detection.smoothing}}" min="0.01" max="1" step="0.01"
-                       hx-get="/api/validate/detection/smoothing" hx-trigger="blur changed delay:200ms"
-                       hx-target="#detection-smoothing-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="detection-smoothing-error" aria-invalid="false">
-                <span id="detection-smoothing-error" class="field-error"></span>
-            </div>
-            <div class="field">
-                <label>Prediction</label>
-                <input id="detection-prediction" type="number" name="prediction" value="{{config.detection.prediction}}" min="0" max="20" step="0.5"
-                       hx-get="/api/validate/detection/prediction" hx-trigger="blur changed delay:200ms"
-                       hx-target="#detection-prediction-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="detection-prediction-error" aria-invalid="false">
-                <span id="detection-prediction-error" class="field-error"></span>
-            </div>
-        </div>
-        <div class="row row--pair">
-            <div class="field">
-                <label>Grace Period (ms)</label>
-                <input id="detection-grace-period-ms" type="number" name="grace_period_ms" value="{{config.detection.grace_period_ms}}" min="0" max="10000" step="100"
-                       hx-get="/api/validate/detection/grace_period_ms" hx-trigger="blur changed delay:200ms"
-                       hx-target="#detection-grace-period-ms-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="detection-grace-period-ms-error" aria-invalid="false">
-                <span id="detection-grace-period-ms-error" class="field-error"></span>
-            </div>
-        </div>
-
-        <div class="group group--assist" data-assist-only {{'' if config.detection.pin_mode == 'assist' else 'hidden'}}>
-            <h3 class="group-title">Assisted Tracking</h3>
-            <span class="section-note">Where the AI output sits relative to your manual anchor.</span>
-            <div class="row row--pair">
-                <div class="field">
-                    <label>Assist Radius (m)</label>
-                    <input id="detection-assist-radius-m" type="number" name="assist_radius_m" value="{{config.detection.assist_radius_m}}" min="0.1" max="50" step="0.1"
-                           hx-get="/api/validate/detection/assist_radius_m" hx-trigger="blur changed delay:200ms"
-                           hx-target="#detection-assist-radius-m-error" hx-swap="innerHTML" hx-include="closest form"
-                           aria-describedby="detection-assist-radius-m-error" aria-invalid="false">
-                    <span id="detection-assist-radius-m-error" class="field-error"></span>
-                </div>
-                <div class="field">
-                    <label>Clip strength (0–1)</label>
-                    <input id="detection-assist-strength" type="number" name="assist_strength" value="{{config.detection.assist_strength}}" min="0" max="1" step="0.05"
-                           hx-get="/api/validate/detection/assist_strength" hx-trigger="blur changed delay:200ms"
-                           hx-target="#detection-assist-strength-error" hx-swap="innerHTML" hx-include="closest form"
-                           aria-describedby="detection-assist-strength-error" aria-invalid="false">
-                    <span id="detection-assist-strength-error" class="field-error"></span>
-                </div>
-            </div>
-        </div>
-
-        <div class="actions">
-            <button type="submit" class="save-btn">Save</button>
-        </div>
-    </form>
+% include('partials/detection_mask_editor.tpl', config=config)
 </div>

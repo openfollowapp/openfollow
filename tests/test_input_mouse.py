@@ -187,9 +187,8 @@ class TestMouseAssistRedirect:
 
     @staticmethod
     def _assist_app() -> _DummyApp:
-        app = _DummyApp()
+        app = _DummyApp()  # _controlled_ids = [1], _selected_id = 1
         app._config.detection.enabled = True
-        app._config.detection.pin_marker = True
         app._config.detection.pin_mode = "assist"
         return app
 
@@ -220,13 +219,41 @@ class TestMouseAssistRedirect:
         assert app._server.get_marker(1).pos[2] == 0.0
 
     def test_replace_mode_steers_registered_marker(self) -> None:
-        # Back-compat: with assist off, the mouse still drives the registered
-        # marker directly and never creates a ghost.
-        app = _DummyApp()  # default detection: pin_marker False / replace
+        # Replace mode (with detection enabled) drives the registered marker
+        # directly and never creates a ghost.
+        app = _DummyApp()
+        app._config.detection.enabled = True
+        app._config.detection.pin_mode = "replace"
         handler = MouseHandler(app)
         handler.on_pointer_down(700, 400, 1)
 
         assert app._server.get_marker(1).pos != (0.0, 0.0, 0.0)
+        assert app._assist_manual == {}
+
+    def test_detection_disabled_steers_registered_marker(self) -> None:
+        # Detection off: even with pin_mode "assist" left over, assist_active is
+        # False, so the mouse drives the registered marker and creates no ghost.
+        app = _DummyApp()
+        app._config.detection.enabled = False
+        app._config.detection.pin_mode = "assist"
+        handler = MouseHandler(app)
+        handler.on_pointer_down(700, 400, 1)
+
+        assert app._server.get_marker(1).pos != (0.0, 0.0, 0.0)
+        assert app._assist_manual == {}
+
+    def test_assist_redirect_only_for_selected_controlled_id(self) -> None:
+        # The mouse only ever steers the selected marker, and only redirects to
+        # the ghost when that selected id is itself assist-controlled. A
+        # selected id outside controlled_marker_ids drives the registered
+        # marker even while assist is active.
+        app = self._assist_app()
+        app._server.add_marker(2).set_pos(0.0, 0.0, 0.0)
+        app._selected_id = 2  # selected but NOT in _controlled_ids ([1])
+        handler = MouseHandler(app)
+        handler.on_pointer_down(700, 400, 1)
+
+        assert app._server.get_marker(2).pos != (0.0, 0.0, 0.0)
         assert app._assist_manual == {}
 
 

@@ -46,8 +46,12 @@ mkdir -p "$BUILD/models" "$DIST"
 echo "==> Rendering icon"
 bash "$SCRIPT_DIR/make-icns.sh"
 
-echo "==> Exporting default model (yolov8n.onnx)"
-poetry run python "$REPO/scripts/export_onnx.py" yolov8n.pt --imgsz 320 --output-dir "$BUILD/models"
+echo "==> Exporting quality-tier models (yolo26 n/s/m/l/x @ 640)"
+# A Mac workstation has the headroom to run every tier, so ship all five at the
+# larger inference size for accuracy. The detector auto-detects the export size.
+for tier in n s m l x; do
+    poetry run python "$REPO/scripts/export_onnx.py" "yolo26${tier}.pt" --imgsz 640 --output-dir "$BUILD/models"
+done
 
 # The frozen app's GObject stack needs the Homebrew GLib, but two wheels get in
 # the way of bundling it:

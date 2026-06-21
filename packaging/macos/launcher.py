@@ -28,7 +28,6 @@ from pathlib import Path
 
 APP_NAME = "OpenFollow"
 SEED_CONFIG_NAME = "config.seed.toml"
-DEFAULT_MODEL_NAME = "yolov8n.onnx"
 STORAGE_PLACEHOLDER = "@STORAGE_PATH@"
 
 
@@ -64,13 +63,15 @@ def seed_user_data(config_dir: Path, resources: Path) -> Path:
         text = seed.read_text(encoding="utf-8").replace(STORAGE_PLACEHOLDER, str(storage_dir))
         config_path.write_text(text, encoding="utf-8")
 
-    model_src = resources / "models" / DEFAULT_MODEL_NAME
-    if model_src.is_file():
+    # Seed every bundled quality-tier model (never overwrite an existing file).
+    models_src = resources / "models"
+    if models_src.is_dir():
         models_dir = storage_dir / "models"
         models_dir.mkdir(parents=True, exist_ok=True)
-        model_dst = models_dir / DEFAULT_MODEL_NAME
-        if not model_dst.exists():
-            shutil.copyfile(model_src, model_dst)
+        for model_src in sorted(models_src.glob("*.onnx")):
+            model_dst = models_dir / model_src.name
+            if not model_dst.exists():
+                shutil.copyfile(model_src, model_dst)
 
     return config_path
 

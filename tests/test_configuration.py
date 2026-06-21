@@ -2061,11 +2061,16 @@ def test_detection_config_rejects_bad_box_color() -> None:
     assert cfg.box_color == "#808080"
 
 
-@pytest.mark.parametrize("bad_model", [123, 4.5, None, ["yolov8n.onnx"], {"name": "x"}])
+def test_detection_config_default_model() -> None:
+    """The shipped default model is the NMS-free YOLO26 nano export."""
+    assert DetectionConfig().model == "yolo26n.onnx"
+
+
+@pytest.mark.parametrize("bad_model", [123, 4.5, None, ["yolo26n.onnx"], {"name": "x"}])
 def test_detection_config_coerces_non_string_model_to_default(bad_model: object) -> None:
     """Non-string model must coerce to default string."""
     cfg = DetectionConfig(model=bad_model)  # type: ignore[arg-type]
-    assert cfg.model == "yolov8n.onnx"
+    assert cfg.model == "yolo26n.onnx"
     assert isinstance(cfg.model, str)
 
 
@@ -2164,14 +2169,29 @@ def test_detection_config_clamps_assist_strength(bad_strength: object, expected:
 
 def test_detection_config_default_values() -> None:
     """The shipped detection defaults favour accuracy on a workstation: a
-    larger inference size, CLAHE preprocessing, a lower confidence floor, a
-    faster cadence, and prediction lookahead. Guards against silent drift."""
+    larger inference size, a lower confidence floor, a faster cadence, and
+    prediction lookahead. Guards against silent drift."""
     cfg = DetectionConfig()
     assert cfg.inference_size == 640
-    assert cfg.preprocess_clahe is True
     assert cfg.confidence == pytest.approx(0.2)
     assert cfg.interval_ms == 67
     assert cfg.prediction == pytest.approx(8.0)
+
+
+def test_load_config_drops_obsolete_detection_keys(temp_config_path) -> None:
+    """A hand-edited ``[detection]`` carrying the removed ``pin_marker`` /
+    ``preprocess_clahe`` keys loads without raising; the keys are silently
+    dropped so the resulting config exposes no such attributes."""
+    temp_config_path.write_text(
+        "[detection]\nenabled = true\npin_marker = true\npreprocess_clahe = true\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(str(temp_config_path))
+
+    assert config.detection.enabled is True
+    assert not hasattr(config.detection, "pin_marker")
+    assert not hasattr(config.detection, "preprocess_clahe")
 
 
 # --- OtpOutputConfig ------------------------------------------------------
@@ -2396,6 +2416,98 @@ def test_trigger_zones_config_preserves_already_built_instances() -> None:
     zone = TriggerZoneConfig(name="pre-built")
     zones = TriggerZonesConfig(zones=[zone])
     assert zones.zones[0] is zone
+
+
+# ---------------------------------------------------------------------------
+# DetectionMaskConfig – region-of-interest polygons (normalised 0-1 coords)
+# ---------------------------------------------------------------------------
+
+
+def test_detection_mask_coerces_numeric_vertices() -> None:
+    from openfollow.configuration import DetectionMaskConfig
+
+    mask = DetectionMaskConfig(
+        vertices=[
+            [0, 1],  # ints → floats
+            [0.25, 0.75],  # already floats
+            ["bad", 0.5],  # non-numeric x → dropped
+            [0.6],  # too short → dropped
+            "not a list",  # wrong type → dropped
+            (0.7, 0.8, 0.9),  # tuple len>=2 → kept (first two)
+        ]
+    )
+    assert mask.vertices == [[0.0, 1.0], [0.25, 0.75], [0.7, 0.8]]
+
+
+@pytest.mark.parametrize("bad", ["nan", "inf", "-inf", float("nan"), float("inf")])
+def test_detection_mask_drops_non_finite_vertices(bad: object) -> None:
+    from openfollow.configuration import DetectionMaskConfig
+
+    mask = DetectionMaskConfig(
+        vertices=[
+            [0.0, 0.0],
+            [bad, 0.5],  # non-finite x → dropped
+            [0.5, bad],  # non-finite y → dropped
+            [1.0, 1.0],
+        ]
+    )
+    assert mask.vertices == [[0.0, 0.0], [1.0, 1.0]]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(True, True), (False, False), ("false", False), ("true", True), ("0", False), ("1", True)],
+)
+def test_detection_mask_coerces_enabled(raw: object, expected: bool) -> None:
+    from openfollow.configuration import DetectionMaskConfig
+
+    assert DetectionMaskConfig(enabled=raw).enabled is expected
+
+
+@pytest.mark.parametrize("bad", [None, 5, [1], "maybe"])
+def test_detection_mask_enabled_unrecognised_falls_back_to_default(bad: object) -> None:
+    # ``_coerce_bool`` only recognises real bools + known string forms; anything
+    # else (incl. bare ints) falls to the declared default (True).
+    from openfollow.configuration import DetectionMaskConfig
+
+    assert DetectionMaskConfig(enabled=bad).enabled is True
+
+
+@pytest.mark.parametrize("bad_name", [None, 123, ["x"], {"a": 1}])
+def test_detection_mask_coerces_non_string_name_to_empty(bad_name: object) -> None:
+    from openfollow.configuration import DetectionMaskConfig
+
+    assert DetectionMaskConfig(name=bad_name).name == ""
+
+
+def test_detection_config_converts_dict_masks_to_dataclasses() -> None:
+    from openfollow.configuration import DetectionConfig, DetectionMaskConfig
+
+    cfg = DetectionConfig(
+        masks=[
+            {"name": "stage", "vertices": [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]], "enabled": True},
+            "junk",  # non-object → dropped
+            123,  # non-object → dropped
+        ]
+    )
+    assert len(cfg.masks) == 1
+    assert isinstance(cfg.masks[0], DetectionMaskConfig)
+    assert cfg.masks[0].name == "stage"
+    assert cfg.masks[0].vertices == [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]]
+
+
+def test_detection_config_preserves_already_built_masks() -> None:
+    from openfollow.configuration import DetectionConfig, DetectionMaskConfig
+
+    mask = DetectionMaskConfig(name="pre-built")
+    cfg = DetectionConfig(masks=[mask])
+    assert cfg.masks[0] is mask
+
+
+def test_detection_config_masks_default_empty() -> None:
+    from openfollow.configuration import DetectionConfig
+
+    assert DetectionConfig().masks == []
 
 
 # ---------------------------------------------------------------------------

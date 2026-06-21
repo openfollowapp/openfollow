@@ -36,16 +36,20 @@ def launcher() -> types.ModuleType:
     return _load_launcher()
 
 
-def _write_resources(root: Path, *, with_model: bool) -> Path:
-    """Build a stand-in resource dir (what PyInstaller unpacks at runtime)."""
+def _write_resources(root: Path, *, models: dict[str, bytes] | None = None) -> Path:
+    """Build a stand-in resource dir (what PyInstaller unpacks at runtime).
+
+    ``models`` maps ``<name>.onnx`` -> bytes; ``None`` ships no ``models/`` dir.
+    """
     (root / "config.seed.toml").write_text(
         'web_port = 8080\n\n[detection]\nstorage_path = "@STORAGE_PATH@"\n',
         encoding="utf-8",
     )
-    if with_model:
-        models = root / "models"
-        models.mkdir()
-        (models / "yolov8n.onnx").write_bytes(b"onnx-bytes")
+    if models is not None:
+        models_dir = root / "models"
+        models_dir.mkdir()
+        for name, payload in models.items():
+            (models_dir / name).write_bytes(payload)
     return root
 
 
@@ -54,10 +58,18 @@ def _write_resources(root: Path, *, with_model: bool) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_seed_user_data_first_run_seeds_config_and_model(launcher, tmp_path) -> None:
+def test_seed_user_data_first_run_seeds_config_and_every_model(launcher, tmp_path) -> None:
     resources = tmp_path / "res"
     resources.mkdir()
-    _write_resources(resources, with_model=True)
+    _write_resources(
+        resources,
+        models={
+            "yolo26n.onnx": b"nano",
+            "yolo11s.onnx": b"small",
+            "yolo11m.onnx": b"medium",
+            "notes.txt": b"ignore me",  # written into models/ but not an .onnx
+        },
+    )
     config_dir = tmp_path / "support"
 
     config_path = launcher.seed_user_data(config_dir, resources)
@@ -68,35 +80,43 @@ def test_seed_user_data_first_run_seeds_config_and_model(launcher, tmp_path) -> 
     assert "@STORAGE_PATH@" not in text
     assert str(config_dir / "yolo") in text
     assert "web_port = 8080" in text
-    # The bundled default model is copied into <storage>/models/.
-    seeded = config_dir / "yolo" / "models" / "yolov8n.onnx"
-    assert seeded.read_bytes() == b"onnx-bytes"
+    # Every bundled .onnx tier is copied into <storage>/models/ verbatim.
+    models_dir = config_dir / "yolo" / "models"
+    assert (models_dir / "yolo26n.onnx").read_bytes() == b"nano"
+    assert (models_dir / "yolo11s.onnx").read_bytes() == b"small"
+    assert (models_dir / "yolo11m.onnx").read_bytes() == b"medium"
+    # Non-.onnx resources are left behind.
+    assert not (models_dir / "notes.txt").exists()
 
 
 def test_seed_user_data_does_not_clobber_existing_files(launcher, tmp_path) -> None:
     resources = tmp_path / "res"
     resources.mkdir()
-    _write_resources(resources, with_model=True)
+    _write_resources(resources, models={"yolo26n.onnx": b"bundled", "yolo11s.onnx": b"bundled-s"})
     config_dir = tmp_path / "support"
     (config_dir / "yolo" / "models").mkdir(parents=True)
     (config_dir / "config.toml").write_text("web_port = 9999\n", encoding="utf-8")
-    (config_dir / "yolo" / "models" / "yolov8n.onnx").write_bytes(b"user-model")
+    # One model already present (an operator download); the other is new.
+    (config_dir / "yolo" / "models" / "yolo26n.onnx").write_bytes(b"user-model")
 
     launcher.seed_user_data(config_dir, resources)
 
-    # Operator edits survive: neither the config nor the model is overwritten.
+    # Operator edits survive: neither the config nor the pre-existing model is
+    # overwritten, but the missing bundled tier is still seeded alongside it.
     assert (config_dir / "config.toml").read_text(encoding="utf-8") == "web_port = 9999\n"
-    assert (config_dir / "yolo" / "models" / "yolov8n.onnx").read_bytes() == b"user-model"
+    assert (config_dir / "yolo" / "models" / "yolo26n.onnx").read_bytes() == b"user-model"
+    assert (config_dir / "yolo" / "models" / "yolo11s.onnx").read_bytes() == b"bundled-s"
 
 
-def test_seed_user_data_without_bundled_model_still_seeds_config(launcher, tmp_path) -> None:
+def test_seed_user_data_without_bundled_models_still_seeds_config(launcher, tmp_path) -> None:
     resources = tmp_path / "res"
     resources.mkdir()
-    _write_resources(resources, with_model=False)
+    _write_resources(resources, models=None)
     config_dir = tmp_path / "support"
 
     launcher.seed_user_data(config_dir, resources)
 
+    # No resources/models dir → seeding models is a no-op, config still lands.
     assert (config_dir / "config.toml").is_file()
     assert not (config_dir / "yolo" / "models").exists()
 

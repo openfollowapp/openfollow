@@ -213,6 +213,27 @@ install -m 0755 "$REPO_ROOT/scripts/install-detection.sh"         "$SHARE/instal
 # directory (live on built images after detection install, or from source).
 install -d -m 0755 "$SHARE/scripts"
 install -m 0755 "$REPO_ROOT/scripts/export_onnx.py"               "$SHARE/scripts/export_onnx.py"
+# Pre-shipped quality-tier models (nano/small/medium). The app seeds these into
+# the detection storage models/ folder on first start (openfollow/model_seed.py)
+# so detection works offline out of the box; Large/XLarge stay download-only on
+# the Pi. Exported in a throwaway venv so torch/ultralytics never enter the .deb.
+# Build-time only (needs an uplink); set OF_DEB_SKIP_MODELS=1 on an offline host.
+install -d -m 0755 "$SHARE/models"
+if [ "${OF_DEB_SKIP_MODELS:-0}" = "1" ]; then
+  log "OF_DEB_SKIP_MODELS=1 - skipping pre-shipped model export"
+else
+  log "exporting quality-tier models (yolo26 n/s/m @ 320) - needs an uplink"
+  EXPORT_VENV="$(mktemp -d)"
+  python3 -m venv "$EXPORT_VENV"
+  "$EXPORT_VENV/bin/pip" install --quiet --upgrade pip
+  "$EXPORT_VENV/bin/pip" install --quiet "ultralytics>=8.4.72" onnx onnxslim
+  for tier in n s m; do
+    ( cd "$EXPORT_VENV" && "$EXPORT_VENV/bin/python" "$REPO_ROOT/scripts/export_onnx.py" \
+        "yolo26${tier}.pt" --imgsz 320 --output-dir "$SHARE/models" )
+  done
+  rm -rf "$EXPORT_VENV"
+  chmod 0644 "$SHARE/models"/*.onnx
+fi
 install -m 0644 "$DEBIAN_DIR/kanshi.config"                       "$SHARE/kanshi.config"
 install -m 0644 "$REPO_ROOT/config.example.toml"                 "$SHARE/config.example.toml"
 # First-boot seed: bootstrap_config_if_missing() looks for the example next to

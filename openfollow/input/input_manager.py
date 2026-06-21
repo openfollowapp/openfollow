@@ -14,8 +14,8 @@ from openfollow.input.mouse import MouseHandler
 from openfollow.osc.input import OscMarkerAdapter
 from openfollow.osc.operator_message import OperatorMessageOscAdapter
 from openfollow.runtime.services_detection_pin import (
-    assist_pinned_marker_id,
     get_or_create_manual_marker,
+    is_assist_controlled,
 )
 
 if TYPE_CHECKING:
@@ -114,10 +114,10 @@ class InputManager:
 
         In detection **assist** mode the operator drives a manual *ghost*
         anchor instead of the registered marker (which the detection pin owns
-        as the AI-corrected output). For the assist-pinned id we return that
-        ghost so every input path – keyboard, gamepad move/reset, OSC – moves
-        the anchor with no per-call-site changes. Otherwise we return the
-        registered marker as before.
+        as the AI-corrected output). Assist refines every controlled marker, so
+        for any controlled id under assist we return that ghost so every input
+        path – keyboard, gamepad move/reset, OSC – moves the anchor with no
+        per-call-site changes. Otherwise we return the registered marker.
 
         ``app._server`` is ``PsnServer | None``; the strict type checker
         doesn't see the runtime invariant that ``init_psn`` always runs
@@ -125,7 +125,7 @@ class InputManager:
         keeps the call sites readable instead of every gamepad / OSC
         branch carrying its own ``if self.app._server is None`` skip.
         """
-        if marker_id == assist_pinned_marker_id(self.app):
+        if is_assist_controlled(self.app, marker_id):
             return get_or_create_manual_marker(self.app, marker_id)
         server = self.app._server
         # pragma: no cover – ``init_psn`` runs before ``init_input_manager``

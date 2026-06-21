@@ -79,7 +79,6 @@ def _cfg(**overrides: Any) -> DetectionConfig:
         model="yolov8n.onnx",
         storage_path="",
         inference_size=320,
-        preprocess_clahe=False,
         confidence=0.4,
         interval_ms=100,
         max_persons=10,
@@ -623,10 +622,11 @@ class _FakeClahe:
 
 
 class TestPreprocessClahePath:
-    def test_clahe_branch_calls_apply_on_l_channel(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Covers lines 897-899 – the CLAHE preprocess variant.  We
-        substitute ``cv2.cvtColor`` + ``_clahe.apply`` with fakes so
-        the branch runs without a real OpenCV install.
+    def test_clahe_applied_to_l_channel(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """CLAHE is unconditional: ``_preprocess`` always equalises the LAB
+        L channel. Substitute ``cv2.cvtColor`` + ``_clahe.apply`` with fakes
+        so it runs without a real OpenCV install and assert the L channel was
+        passed through ``apply`` exactly once.
         """
         det = _detector_without_backend()
         fake_clahe = _FakeClahe()

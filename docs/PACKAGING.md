@@ -49,6 +49,7 @@ is the input artifact for the `rpi-image-gen` appliance image build
 /usr/lib/systemd/system/openfollow-splash.service
 /usr/share/openfollow/{openfollow.svg,splash.png,splash.sh,config.example.toml,install-ndi.sh,install-detection.sh}
 /usr/share/openfollow/scripts/export_onnx.py   model-export script (Download Model action shells out to it)
+/usr/share/openfollow/models/{yolo26n,yolo26s,yolo26m}.onnx   pre-shipped quality tiers (Fastest/Fast/Balanced)
 /var/lib/openfollow/                       service user home + WorkingDirectory (config.toml)
 /var/lib/openfollow/config.example.toml    first-boot seed; bootstrap copies it to config.toml
 ```
@@ -57,6 +58,14 @@ The example is shipped into `/var/lib/openfollow/` (not just `/usr/share`) becau
 `bootstrap_config_if_missing` looks for it next to `config.toml` – the
 WorkingDirectory – so a fresh device seeds the curated config on first boot
 instead of falling back to bare dataclass defaults.
+
+The Pi-appropriate quality tiers (Fastest / Fast / Balanced) are exported at
+build time into `/usr/share/openfollow/models/`; on first start the app seeds them
+into the detection storage `models/` folder (`openfollow/model_seed.py`, called
+from `init_video`) so detection works offline out of the box. The heavier
+Accurate / XLarge tiers are Advanced downloads (a Pi can't run them well). The
+export runs in a throwaway venv so torch/ultralytics never enter the `.deb`; it
+needs an uplink, so set `OF_DEB_SKIP_MODELS=1` to build on an offline host.
 
 The service runs as a dedicated `openfollow` login user (created by `postinst`)
 with `loginctl enable-linger` so `/run/user/<uid>` exists at boot for the Cage
@@ -302,9 +311,9 @@ Everything lives under [`packaging/macos/`](../packaging/macos/):
 
 | File | Role |
 | --- | --- |
-| `build-dmg.sh` | Orchestrates icon → default model → PyInstaller → ad-hoc sign → self-check → DMG. |
-| `openfollow.spec` | PyInstaller spec (collects the native stack + detection/export extras). |
-| `launcher.py` | Bundle entry point: `--export` re-exec, `OPENFOLLOW_SELFCHECK`, and the GUI (seeds per-user config + default model on first run). |
+| `build-dmg.sh` | Orchestrates icon → quality-tier models → PyInstaller → ad-hoc sign → self-check → DMG. |
+| `openfollow.spec` | PyInstaller spec (collects the native stack + detection/export extras + every bundled `models/*.onnx`). |
+| `launcher.py` | Bundle entry point: `--export` re-exec, `OPENFOLLOW_SELFCHECK`, and the GUI (seeds per-user config + all quality-tier models on first run). |
 | `runtime_hook.py` | Points `GI_TYPELIB_PATH` / `GST_PLUGIN_PATH` / GdkPixbuf / GTK theme paths at the bundle before `gi` loads. |
 | `config.seed.toml` | First-run config (binds the web UI to port 8080, enables detection). |
 | `make-icns.sh` | Renders the `.icns` from `openfollow/web/static/icon.svg`. |
@@ -320,7 +329,7 @@ make dmg            # -> dist/OpenFollow-<version>-<arch>.dmg
 
 `make dmg` is macOS-only, installs the optional `package-macos` Poetry group plus
 the `detection` + `export` extras, then runs `build-dmg.sh`. The build host needs
-an uplink (torch / ultralytics wheels + the default model weights). The output is
+an uplink (torch / ultralytics wheels + the five YOLO26 tier weights). The output is
 **single-arch** (matches the build host; an Intel `.dmg` needs an Intel build
 host). It is **large** because of torch – on Apple Silicon the `.app` is ~900 MB
 and the compressed `.dmg` ~350 MB.
@@ -374,10 +383,13 @@ regresses one is caught at build time:
 
 ### Models
 
-- A default `yolov8n.onnx` is generated at build time and seeded into
-  `~/Library/Application Support/OpenFollow/yolo/models/` on first launch, so
-  detection runs immediately.
-- The web UI **Person Detection → Download model** action works from the
+- All five YOLO26 quality tiers (`yolo26{n,s,m,l,x}.onnx`, exported at imgsz 640)
+  are generated at build time and seeded into
+  `~/Library/Application Support/OpenFollow/yolo/models/` on first launch
+  (`launcher.seed_user_data` copies every bundled `.onnx`), so detection runs
+  immediately at any quality tier with no download. The seed config defaults the
+  Mac to the Balanced tier (`yolo26m.onnx`).
+- The web UI **Person Detection → Models → Advanced → Download model** action works from the
   installed app. Because the frozen `sys.executable` is the app (not a Python
   interpreter), the export route re-execs the app in `--export` mode and runs
   `export_onnx` in-process (see `_build_export_argv` in

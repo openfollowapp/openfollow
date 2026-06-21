@@ -34,9 +34,10 @@ import numpy as np
 import numpy.typing as npt
 
 from openfollow.video.tracking import LOW_DETECTION_THRESHOLD, ByteTracker
+from openfollow.zones.geometry import point_in_polygon
 
 if TYPE_CHECKING:
-    from openfollow.configuration import DetectionConfig
+    from openfollow.configuration import DetectionConfig, DetectionMaskConfig
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,28 @@ class DetectionBox:
     confidence: float
     label: str = "person"
     track_id: int = -1
+
+
+def filter_detections_to_masks(
+    boxes: list[DetectionBox],
+    masks: list[DetectionMaskConfig],
+) -> list[DetectionBox]:
+    """Keep only detections whose ground point falls inside an enabled mask.
+
+    Masks are normalised 0-1 frame polygons; a detection's ground point is its
+    box bottom-center ``((x1+x2)/2, y2)`` – where the person stands. With no
+    usable mask (none enabled, or all under 3 vertices) every box passes
+    through, so masking stays strictly opt-in.
+    """
+    polys = [[(v[0], v[1]) for v in m.vertices] for m in masks if m.enabled and len(m.vertices) >= 3]
+    if not polys:
+        return boxes
+    kept: list[DetectionBox] = []
+    for b in boxes:
+        ax, ay = (b.x1 + b.x2) / 2.0, b.y2
+        if any(point_in_polygon(ax, ay, poly) for poly in polys):
+            kept.append(b)
+    return kept
 
 
 @dataclass
@@ -404,7 +427,7 @@ class PersonDetector:
         self._backend_name: str | None = None
         self._model_path = config.model
         self._inference_size = self._normalize_inference_size(config.inference_size)
-        self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)) if config.preprocess_clahe else None
+        self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         self._results: list[DetectionBox] = []
         self._running = False
         self._thread: threading.Thread | None = None
@@ -520,10 +543,9 @@ class PersonDetector:
         if model_size is not None:
             self._inference_size = self._normalize_inference_size(int(model_size))
         logger.info(
-            "Detection backend loaded: onnx (model=%s, imgsz=%d, clahe=%s)",
+            "Detection backend loaded: onnx (model=%s, imgsz=%d)",
             self._model_path,
             self._inference_size,
-            "on" if self._clahe is not None else "off",
         )
 
     @staticmethod
@@ -555,8 +577,46 @@ class PersonDetector:
         else:
             resolved_model = models_dir / model_path.name
 
+        # Fall back to an available model when the configured one isn't on disk,
+        # so detection still starts with whatever quality tier is pre-shipped on
+        # this device (the saved name may reference a model from another machine
+        # or a tier not shipped here). Prefer the Fastest tier, then any tier,
+        # then any ``.onnx`` present. An empty models dir keeps the original path
+        # so the backend load surfaces a clear missing-model error.
+        if not resolved_model.exists():
+            fallback = PersonDetector._pick_available_model(models_dir)
+            if fallback is not None:
+                logger.warning(
+                    "Detection model '%s' not found in %s; falling back to '%s'",
+                    resolved_model.name,
+                    models_dir,
+                    fallback.name,
+                )
+                resolved_model = fallback
+
         logger.info("Detection runtime storage redirected to %s", storage_root)
         return str(resolved_model)
+
+    # Preference order for the missing-model fallback: the quality tiers from
+    # Fastest to Most Accurate, so a device with the pre-shipped set lands on the
+    # lightest model rather than an arbitrary one.
+    _FALLBACK_MODEL_ORDER = (
+        "yolo26n.onnx",
+        "yolo26s.onnx",
+        "yolo26m.onnx",
+        "yolo26l.onnx",
+        "yolo26x.onnx",
+    )
+
+    @classmethod
+    def _pick_available_model(cls, models_dir: Path) -> Path | None:
+        """Pick an on-disk model to fall back to, or ``None`` if the dir is empty."""
+        for name in cls._FALLBACK_MODEL_ORDER:
+            candidate = models_dir / name
+            if candidate.is_file():
+                return candidate
+        present = sorted(models_dir.glob("*.onnx"))
+        return present[0] if present else None
 
     # Env var ``_prepare_model_path`` mutates when ``storage_path`` redirects
     # the ONNX runtime cache off the default user dir. Captured + restored
@@ -793,8 +853,8 @@ class PersonDetector:
         Compares the new config against the live one and:
         - Swaps cheap hot-path fields (confidence, max_persons,
           interval_ms, grace_period_ms) with no rebuild.
-        - Recomputes live-applied derived state (e.g. ``_clahe``) when
-          its source field changes. ``inference_size`` is intentionally
+        - Rebuilds the inference backend when model / storage_path
+          changes. ``inference_size`` is intentionally
           NOT live-applied here – the GStreamer appsink caps are
           pinned at pipeline build time and live-restamping
           ``_inference_size`` would silently disagree with the
@@ -872,8 +932,6 @@ class PersonDetector:
             if not pending.storage_path and old.storage_path:
                 self._restore_storage_env(self._initial_storage_env)
 
-        if pending.preprocess_clahe != old.preprocess_clahe:
-            self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)) if pending.preprocess_clahe else None
         # ``inference_size`` is intentionally NOT live-applied here.
         # The GStreamer appsink caps were chosen at pipeline build time
         # from ``PersonDetector.input_resolution`` and the receiver
@@ -1051,6 +1109,10 @@ class PersonDetector:
                 continue
             inference_ms = (time.perf_counter() - infer_started) * 1000.0
 
+            # Confine detection to the operator's masks before tracking, so
+            # out-of-mask detections (e.g. audience) never spawn tracklets.
+            boxes = filter_detections_to_masks(boxes, self._config.masks)
+
             # Associate detections to tracklets (two-stage ByteTrack). Guarded
             # like inference: a numerical edge in the tracker (e.g. a singular
             # Kalman matrix raising LinAlgError) must drop this frame, not kill
@@ -1078,8 +1140,6 @@ class PersonDetector:
 
     def _preprocess(self, frame: npt.NDArray[Any]) -> npt.NDArray[Any]:
         """Apply CLAHE to normalise harsh stage lighting before inference."""
-        if self._clahe is None:
-            return frame
         lab = cv2.cvtColor(frame, cv2.COLOR_RGB2LAB)
         lab[:, :, 0] = self._clahe.apply(lab[:, :, 0])
         return cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)  # type: ignore[no-any-return, unused-ignore]

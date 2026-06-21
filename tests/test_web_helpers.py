@@ -596,7 +596,7 @@ def test_apply_zone_fields_parses_types_and_defaults_vertices() -> None:
             "name": "Stage Left",
             "color": "#FF0000",
             "enabled": "true",
-            "osc_port": "9001",
+            "destination_id": "d1",
             "vertices": [[0, 0], [10, 0], [10, 10]],
             "ignored_unknown_field": "dropped-silently",
         },
@@ -605,7 +605,7 @@ def test_apply_zone_fields_parses_types_and_defaults_vertices() -> None:
     assert zone.name == "Stage Left"
     assert zone.color == "#FF0000"
     assert zone.enabled is True
-    assert zone.osc_port == 9001
+    assert zone.destination_id == "d1"
     assert zone.vertices == [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]
     # Unknown keys must not create attributes on the dataclass.
     assert not hasattr(zone, "ignored_unknown_field")
@@ -751,6 +751,81 @@ def test_apply_import_data_replaces_trigger_zones_list() -> None:
     assert new.trigger_zones.enabled is True
     assert [z.name for z in new.trigger_zones.zones] == ["New 1", "New 2"]
     assert new.trigger_zones.zones[0].vertices == [[0.0, 0.0], [1.0, 1.0]]
+
+
+def test_apply_import_data_round_trips_osc_transmitters_and_destinations() -> None:
+    """Destinations + transmitters + zones travel through the config file so a
+    ``destination_id`` and its target arrive together with references intact."""
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    imported = {
+        "osc_destinations": {
+            "destinations": [
+                {"id": "console", "name": "Console", "host": "10.0.0.9", "port": 8000},
+            ],
+        },
+        "osc_transmitters": {
+            "transmitters": [
+                {"id": "row1", "name": "Cue", "destination_id": "console"},
+            ],
+        },
+        "trigger_zones": {
+            "zones": [{"name": "Z", "destination_id": "console"}],
+        },
+    }
+    new = _apply_import_data(current, imported)
+
+    dests = new.osc_destinations.destinations
+    assert any(d.id == "console" and d.host == "10.0.0.9" for d in dests)
+    rows = new.osc_transmitters.transmitters
+    assert rows[0].destination_id == "console"
+    assert new.trigger_zones.zones[0].destination_id == "console"
+    # The reference resolves on the importing device.
+    assert new.osc_destinations.get(rows[0].destination_id) is not None
+
+
+def test_strip_broadcast_excluded_drops_routing_sections() -> None:
+    """OSC destinations / transmitters / zones export via file but are never
+    real-time shared – the broadcast body omits them."""
+    from openfollow.web.routes import _config_dict_redacted, _strip_broadcast_excluded
+
+    full = _config_dict_redacted(AppConfig())
+    # Sanity: the full export dict carries them.
+    assert "osc_destinations" in full
+    assert "osc_transmitters" in full
+    assert "trigger_zones" in full
+
+    broadcast = _strip_broadcast_excluded(full)
+    assert "osc_destinations" not in broadcast
+    assert "osc_transmitters" not in broadcast
+    assert "trigger_zones" not in broadcast
+    # A non-excluded section still travels.
+    assert "camera" in broadcast
+
+
+def test_apply_osc_destination_fields_coerces_and_normalises() -> None:
+    from openfollow.configuration import OscDestinationConfig
+    from openfollow.web.routes import _apply_osc_destination_fields
+
+    dest = OscDestinationConfig(id="d1")
+    _apply_osc_destination_fields(
+        dest,
+        {
+            "name": "  Console  ",
+            "host": "  10.0.0.5  ",
+            "port": "70000",  # clamps to 65535
+            "protocol": "tcp",
+            "framing": "carrier-pigeon",  # snaps back to slip
+        },
+    )
+    assert dest.name == "Console"
+    assert dest.host == "10.0.0.5"
+    assert dest.port == 65535
+    assert dest.protocol == "tcp"
+    assert dest.framing == "slip"
+    # id is preserved (not minted).
+    assert dest.id == "d1"
 
 
 def test_apply_import_data_window_dims_and_pin_pass_through() -> None:

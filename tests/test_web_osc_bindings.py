@@ -27,6 +27,7 @@ from openfollow.configuration import (
     MidiConfig,
     MidiMessageTrigger,
     MidiPatch,
+    OscDestinationConfig,
     OscTransmitterConfig,
     StreamTrigger,
     VirtualFaderConfig,
@@ -156,8 +157,11 @@ def test_section_renders_empty_state(live_server) -> None:
 def test_section_renders_existing_rows(live_server) -> None:
     _, base, cfg_path = live_server
     cfg = load_config(cfg_path)
+    cfg.osc_destinations.destinations.append(
+        OscDestinationConfig(id="d1", name="Console", host="10.0.0.1", port=8001),
+    )
     cfg.osc_transmitters.transmitters.append(
-        OscTransmitterConfig(name="Stage 1", host="10.0.0.1", port=8001),
+        OscTransmitterConfig(name="Stage 1", destination_id="d1"),
     )
     save_config(cfg, cfg_path)
     status, body = _get(base, "/section/osc_bindings")
@@ -172,10 +176,10 @@ def test_section_focus_query_reopens_row(live_server) -> None:
     _, base, cfg_path = live_server
     cfg = load_config(cfg_path)
     cfg.osc_transmitters.transmitters.append(
-        OscTransmitterConfig(name="A", host="10.0.0.1", port=8001),
+        OscTransmitterConfig(name="A", destination_id="d1"),
     )
     cfg.osc_transmitters.transmitters.append(
-        OscTransmitterConfig(name="B", host="10.0.0.2", port=8002),
+        OscTransmitterConfig(name="B", destination_id="d2"),
     )
     save_config(cfg, cfg_path)
     target_id = cfg.osc_transmitters.transmitters[1].id
@@ -204,7 +208,7 @@ def test_section_renders_per_row_discard_button(live_server) -> None:
     _, base, cfg_path = live_server
     cfg = load_config(cfg_path)
     cfg.osc_transmitters.transmitters.append(
-        OscTransmitterConfig(name="Stage 1", host="10.0.0.1", port=8001),
+        OscTransmitterConfig(name="Stage 1", destination_id="d1"),
     )
     save_config(cfg, cfg_path)
     row_id = cfg.osc_transmitters.transmitters[0].id
@@ -250,10 +254,7 @@ def test_save_updates_basics(live_server) -> None:
         {
             "enabled": "on",
             "name": "Edited",
-            "host": "192.168.1.10",
-            "port": "9000",
-            "protocol": "tcp",
-            "framing": "length_prefix",
+            "destination_id": "dest-7",
             "marker_id": "2",
             "trigger.type": "stream",
             "trigger.rate_hz": "60",
@@ -264,69 +265,10 @@ def test_save_updates_basics(live_server) -> None:
     row = cfg.osc_transmitters.transmitters[0]
     assert row.enabled is True
     assert row.name == "Edited"
-    assert row.host == "192.168.1.10"
-    assert row.port == 9000
-    assert row.protocol == "tcp"
-    assert row.framing == "length_prefix"
+    assert row.destination_id == "dest-7"
     assert row.marker_id == 2
     assert isinstance(row.trigger, StreamTrigger)
     assert row.trigger.rate_hz == 60
-
-
-def test_save_with_tcp_slip_framing_round_trips(live_server) -> None:
-    """SLIP is the default for new TCP rows; the form must persist
-    whichever framing the operator picked through one save + reload
-    cycle."""
-    _, base, cfg_path = live_server
-    _post_form(base, "/section/osc_bindings/add", {})
-    cfg = load_config(cfg_path)
-    row_id = cfg.osc_transmitters.transmitters[0].id
-    status, _ = _post_form(
-        base,
-        f"/section/osc_binding/{row_id}",
-        {
-            "enabled": "on",
-            "name": "Slip",
-            "host": "1.2.3.4",
-            "port": "9000",
-            "protocol": "tcp",
-            "framing": "slip",
-            "marker_id": "1",
-            "trigger.type": "stream",
-            "trigger.rate_hz": "30",
-        },
-    )
-    assert status == 200
-    row = load_config(cfg_path).osc_transmitters.transmitters[0]
-    assert row.protocol == "tcp"
-    assert row.framing == "slip"
-
-
-def test_save_with_invalid_framing_falls_back_to_default(live_server) -> None:
-    """A POST with an invalid framing value: the configuration-layer
-    ``_coerce_choice`` snaps it back to ``"slip"`` so the row persists
-    with the default rather than a value the runtime can't dispatch."""
-    _, base, cfg_path = live_server
-    _post_form(base, "/section/osc_bindings/add", {})
-    cfg = load_config(cfg_path)
-    row_id = cfg.osc_transmitters.transmitters[0].id
-    _post_form(
-        base,
-        f"/section/osc_binding/{row_id}",
-        {
-            "enabled": "on",
-            "name": "X",
-            "host": "h",
-            "port": "9000",
-            "protocol": "tcp",
-            "framing": "carrier-pigeon",
-            "marker_id": "1",
-            "trigger.type": "stream",
-            "trigger.rate_hz": "30",
-        },
-    )
-    row = load_config(cfg_path).osc_transmitters.transmitters[0]
-    assert row.framing == "slip"
 
 
 def test_save_round_trips_non_ascii_form_bytes(live_server) -> None:
@@ -389,9 +331,7 @@ def test_save_partial_form_keeps_unsent_fields(live_server) -> None:
         {
             "enabled": "on",
             "name": "Stage",
-            "host": "1.2.3.4",
-            "port": "8000",
-            "protocol": "udp",
+            "destination_id": "dest-3",
             "marker_id": "1",
             "trigger.type": "stream",
             "trigger.rate_hz": "30",
@@ -403,7 +343,7 @@ def test_save_partial_form_keeps_unsent_fields(live_server) -> None:
     row = cfg.osc_transmitters.transmitters[0]
     assert row.enabled is False
     assert row.name == "Stage"
-    assert row.host == "1.2.3.4"
+    assert row.destination_id == "dest-3"
 
 
 def test_save_404_for_unknown_id(live_server) -> None:
@@ -1426,9 +1366,9 @@ def test_initial_page_render_includes_disk_user_templates(live_server) -> None:
 
 def test_add_with_file_template_copies_extended_fields(live_server) -> None:
     """Dropdown apply via ``add_osc_binding`` must restore
-    host/port/protocol/rate/trigger from a file template, not just
+    destination_id/rate/trigger from a file template, not just
     ``name``/``address``/``args``; otherwise applying a saved template
-    silently drops the saved port + trigger.
+    silently drops the saved destination + trigger.
 
     Dropdown values for user templates are ``file:<filename>`` rather
     than the envelope id, so the add request keys on the
@@ -1445,9 +1385,7 @@ def test_add_with_file_template_copies_extended_fields(live_server) -> None:
         "Stage Preset",
         {
             "name": "ETC Stage Left",
-            "host": "10.0.0.5",
-            "port": 9001,
-            "protocol": "tcp",
+            "destination_id": "dest-5",
             "address": "/eos/go",
             "args": ["[x]", "[y]"],
             "rate_hz": 60,
@@ -1463,9 +1401,7 @@ def test_add_with_file_template_copies_extended_fields(live_server) -> None:
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[-1]
     assert row.name == "ETC Stage Left"
-    assert row.host == "10.0.0.5"
-    assert row.port == 9001
-    assert row.protocol == "tcp"
+    assert row.destination_id == "dest-5"
     assert row.address == "/eos/go"
     assert row.args == ["[x]", "[y]"]
     assert row.rate_hz == 60
@@ -2123,9 +2059,7 @@ def test_apply_osc_binding_fields_top_level_and_trigger() -> None:
         {
             "enabled": "on",
             "name": "X",
-            "host": "h",
-            "port": "9",
-            "protocol": "tcp",
+            "destination_id": "dest-9",
             "marker_id": "3",
             "osc_message": "/foo [x] [y]",
             "trigger.type": "stream",
@@ -2134,9 +2068,7 @@ def test_apply_osc_binding_fields_top_level_and_trigger() -> None:
     )
     assert row.name == "X"
     assert row.enabled is True
-    assert row.host == "h"
-    assert row.port == 9
-    assert row.protocol == "tcp"
+    assert row.destination_id == "dest-9"
     assert row.marker_id == 3
     assert row.address == "/foo"
     assert row.args == ["[x]", "[y]"]
@@ -2154,11 +2086,11 @@ def test_apply_osc_binding_fields_without_osc_message_keeps_address_and_args() -
 
 
 def test_apply_osc_binding_fields_skips_missing_fields() -> None:
-    row = OscTransmitterConfig(name="seed", host="seed.host")
-    _apply_osc_binding_fields(row, {"port": "1234"})
+    row = OscTransmitterConfig(name="seed", destination_id="seed-dest")
+    _apply_osc_binding_fields(row, {"marker_id": "3"})
     assert row.name == "seed"
-    assert row.host == "seed.host"
-    assert row.port == 1234
+    assert row.destination_id == "seed-dest"
+    assert row.marker_id == 3
 
 
 def test_apply_osc_binding_fields_no_trigger_keys_keeps_trigger() -> None:
@@ -2755,15 +2687,14 @@ class TestDefaultFaderField:
     pattern – empty input → ``None``, valid 1..8 preserved."""
 
     def test_apply_default_fader_from_form(self) -> None:
-        row = OscTransmitterConfig(id="r1", host="127.0.0.1", port=9000)
+        row = OscTransmitterConfig(id="r1", destination_id="d1")
         _apply_osc_binding_fields(row, {"default_fader": "3"})
         assert row.default_fader == 3
 
     def test_blank_default_fader_collapses_to_none(self) -> None:
         row = OscTransmitterConfig(
             id="r1",
-            host="127.0.0.1",
-            port=9000,
+            destination_id="d1",
             default_fader=3,
         )
         _apply_osc_binding_fields(row, {"default_fader": ""})
@@ -2774,7 +2705,7 @@ class TestDefaultFaderField:
         ``_coerce_optional_int`` so a ``default_fader=9`` lands on
         ``None`` instead of silently routing to fader 8 (valid range
         1..8)."""
-        row = OscTransmitterConfig(id="r1", host="127.0.0.1", port=9000)
+        row = OscTransmitterConfig(id="r1", destination_id="d1")
         _apply_osc_binding_fields(row, {"default_fader": "99"})
         assert row.default_fader is None
 

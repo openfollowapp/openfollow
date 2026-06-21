@@ -16,7 +16,6 @@ These settings govern the zone engine as a whole and apply to every zone.
 
 > If zones flicker with rapid in/out events, increase **Hysteresis** first; use **Debounce** as the secondary safety net.
 
-- **Default OSC Host** – IP address that zone OSC messages are sent to, used by any zone that hasn't set its own destination. Default `127.0.0.1`.
-- **Default OSC Port** – UDP port for the default destination. Default `53000` (QLab's standard OSC receive port). Range 1–65535.
+Each zone picks where its OSC messages go by selecting an **OSC Destination** in the zone editor – the same shared connections used by OSC Output. Manage them under **OSC Destinations**; editing a destination's IP repoints every referencing zone and transmitter live.
 
 **Save** – write the global settings to disk. The zone engine reloads immediately; no restart is needed.

@@ -31,8 +31,8 @@ class _ZoneCfg:
     osc_address_additional_entry: str = "/additional"
     osc_address_partial_exit: str = "/partial"
     osc_address_final_exit: str = "/final"
-    osc_host: str = ""
-    osc_port: int = 0
+    # The default destination ``_DESTS`` resolves to 127.0.0.1:53000.
+    destination_id: str = "d"
     enabled: bool = True
 
 
@@ -41,29 +41,51 @@ class _ZonesCfg:
     enabled: bool = True
     show_overlay: bool = True
     eval_fps: int = 10
-    default_osc_host: str = "127.0.0.1"
-    default_osc_port: int = 53000
     debounce_ms: int = 0
     hysteresis: float = 0.0
     zones: list[_ZoneCfg] = field(default_factory=list)
 
 
+@dataclass
+class _DestCfg:
+    id: str = "d"
+    name: str = "Default"
+    host: str = "127.0.0.1"
+    port: int = 53000
+    protocol: str = "udp"
+    framing: str = "slip"
+
+
+@dataclass
+class _DestsCfg:
+    """Stand-in for ``OscDestinationsConfig`` – just the ``get`` surface."""
+
+    destinations: list[_DestCfg] = field(default_factory=lambda: [_DestCfg()])
+
+    def get(self, destination_id: str) -> _DestCfg | None:
+        if not destination_id:
+            return None
+        for d in self.destinations:
+            if d.id == destination_id:
+                return d
+        return None
+
+
 class _RecordingOsc:
     """Stand-in for the ``OscService`` zone-engine consumer.
 
-    The engine resolves per-zone host/port (or falls back to the
-    section's ``default_osc_*``) and calls ``send`` with explicit
-    keyword args. The recorder normalises the call into an
-    ``(address, host, port)`` triple. The engine resolves the
-    fallback up front, so the resolved defaults (``"127.0.0.1"`` /
-    ``53000`` per ``_ZonesCfg``) appear in ``sends`` rather than the
-    empty / zero placeholders.
+    The engine resolves a zone's ``destination_id`` to an endpoint and
+    calls ``send`` with explicit keyword args. The recorder normalises the
+    call into an ``(address, host, port)`` triple. The default destination
+    (``127.0.0.1`` / ``53000`` per ``_DestCfg``) appears in ``sends``.
     """
 
     def __init__(self) -> None:
         self.sends: list[tuple[str, str, int]] = []
         # Parallel record that captures typed args list.
         self.sends_full: list[tuple[str, list, str, int]] = []
+        # Endpoint detail incl. transport, for protocol/framing assertions.
+        self.sends_transport: list[tuple[str, str, int, str, str]] = []
 
     def send(
         self,
@@ -73,9 +95,11 @@ class _RecordingOsc:
         host: str,
         port: int,
         protocol: str = "udp",
+        framing: str = "slip",
     ) -> None:
         self.sends.append((address, host, port))
         self.sends_full.append((address, list(args), host, port))
+        self.sends_transport.append((address, host, port, protocol, framing))
 
 
 SQUARE_CORNERS = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]
@@ -94,10 +118,15 @@ def _zone(**kwargs) -> _ZoneCfg:
     return _ZoneCfg(**kwargs)
 
 
-def _engine(zones: list[_ZoneCfg], **cfg_kwargs) -> tuple[ZoneEngine, _RecordingOsc]:
+def _engine(
+    zones: list[_ZoneCfg],
+    *,
+    destinations: _DestsCfg | None = None,
+    **cfg_kwargs,
+) -> tuple[ZoneEngine, _RecordingOsc]:
     cfg = _ZonesCfg(zones=zones, **cfg_kwargs)
     osc = _RecordingOsc()
-    return ZoneEngine(cfg, osc), osc  # type: ignore[arg-type]
+    return ZoneEngine(cfg, osc, destinations or _DestsCfg()), osc  # type: ignore[arg-type]
 
 
 def test_get_zone_diagnostics_reads_snapshot_once() -> None:
@@ -467,7 +496,7 @@ class TestMutationTargetedEdgeCases:
             debounce_ms=10_000,  # 10 s – far longer than the test run
         )
         osc = _RecordingOsc()
-        engine = ZoneEngine(cfg, osc)  # type: ignore[arg-type]
+        engine = ZoneEngine(cfg, osc, _DestsCfg())  # type: ignore[arg-type]
         engine.update([_marker(0, 2.0, 2.0)], [])
         assert osc.sends == [("/first", "127.0.0.1", 53000)]
         # Hot-reload with a structurally identical zones list – the
@@ -493,7 +522,7 @@ class TestMutationTargetedEdgeCases:
         # original skips the out-of-range occupancy entry.
         initial = _ZonesCfg(zones=[_zone(), _zone()])
         osc = _RecordingOsc()
-        engine = ZoneEngine(initial, osc)  # type: ignore[arg-type]
+        engine = ZoneEngine(initial, osc, _DestsCfg())  # type: ignore[arg-type]
         engine.update([_marker(0, 2.0, 2.0)], [])
         # Drop one zone – the trailing occupancy entry now points past
         # the new zones list and must be filtered out without raising.
@@ -555,8 +584,9 @@ class TestMutationTargetedEdgeCases:
         # send SOMETHING so they go unkilled by "sends is not empty"
         # assertions – a test that pins the full (address, host, port)
         # triple catches them.
-        zone = _zone(osc_host="10.0.0.1", osc_port=9000)
-        engine, osc = _engine([zone])
+        zone = _zone(destination_id="d2")
+        dests = _DestsCfg(destinations=[_DestCfg(id="d2", host="10.0.0.1", port=9000)])
+        engine, osc = _engine([zone], destinations=dests)
         engine.update([_marker(0, 2.0, 2.0)], [])
         assert osc.sends == [("/first", "10.0.0.1", 9000)]
         engine.update([], [])
@@ -569,8 +599,9 @@ class TestMutationTargetedEdgeCases:
         # Companion to the port-forwarding test above – covers the
         # ``osc_address_additional_entry`` emit site, which is a
         # separate call that mutmut mutates independently.
-        zone = _zone(osc_host="10.0.0.1", osc_port=9000)
-        engine, osc = _engine([zone])
+        zone = _zone(destination_id="d2")
+        dests = _DestsCfg(destinations=[_DestCfg(id="d2", host="10.0.0.1", port=9000)])
+        engine, osc = _engine([zone], destinations=dests)
         engine.update([_marker(0, 2.0, 2.0)], [])
         engine.update([_marker(0, 2.0, 2.0), _marker(1, 3.0, 3.0)], [])
         assert osc.sends == [
@@ -580,8 +611,9 @@ class TestMutationTargetedEdgeCases:
 
     def test_partial_exit_forwards_port(self) -> None:
         # Covers the partial-exit emit site.
-        zone = _zone(osc_host="10.0.0.1", osc_port=9000)
-        engine, osc = _engine([zone])
+        zone = _zone(destination_id="d2")
+        dests = _DestsCfg(destinations=[_DestCfg(id="d2", host="10.0.0.1", port=9000)])
+        engine, osc = _engine([zone], destinations=dests)
         engine.update([_marker(0, 2.0, 2.0)], [])
         engine.update([_marker(0, 2.0, 2.0), _marker(1, 3.0, 3.0)], [])
         engine.update([_marker(1, 3.0, 3.0)], [])
@@ -590,6 +622,35 @@ class TestMutationTargetedEdgeCases:
             ("/additional", "10.0.0.1", 9000),
             ("/partial", "10.0.0.1", 9000),
         ]
+
+    def test_destination_protocol_and_framing_forwarded(self) -> None:
+        # A TCP/length-prefix destination flows its transport through to
+        # ``OscService.send`` so zones get TCP framing, not just UDP.
+        zone = _zone(destination_id="d2")
+        dests = _DestsCfg(
+            destinations=[_DestCfg(id="d2", host="10.0.0.1", port=9000, protocol="tcp", framing="length_prefix")],
+        )
+        engine, osc = _engine([zone], destinations=dests)
+        engine.update([_marker(0, 2.0, 2.0)], [])
+        assert osc.sends_transport == [("/first", "10.0.0.1", 9000, "tcp", "length_prefix")]
+
+    def test_blank_destination_emits_nothing(self) -> None:
+        # An unselected destination tracks membership (overlay) but sends
+        # nothing – never to a bogus endpoint.
+        zone = _zone(destination_id="")
+        engine, osc = _engine([zone])
+        engine.update([_marker(0, 2.0, 2.0)], [])
+        engine.update([], [])
+        assert osc.sends == []
+        # Membership still advanced so the overlay count is correct mid-run.
+        engine.update([_marker(0, 2.0, 2.0)], [])
+        assert osc.sends == []
+
+    def test_unknown_destination_id_emits_nothing(self) -> None:
+        zone = _zone(destination_id="ghost")
+        engine, osc = _engine([zone])
+        engine.update([_marker(0, 2.0, 2.0)], [])
+        assert osc.sends == []
 
     def test_disabled_zone_resets_debounce_to_numeric_zero(self) -> None:
         # Kills the update() mutant that sets ``occ.last_event_time =
@@ -601,7 +662,7 @@ class TestMutationTargetedEdgeCases:
         zone = _zone()
         zones_cfg = _ZonesCfg(zones=[zone], debounce_ms=1000)
         osc = _RecordingOsc()
-        engine = ZoneEngine(zones_cfg, osc)  # type: ignore[arg-type]
+        engine = ZoneEngine(zones_cfg, osc, _DestsCfg())  # type: ignore[arg-type]
         engine.update([_marker(0, 2.0, 2.0)], [])
         # Disable the zone; update() clears occupancy and resets debounce.
         zone.enabled = False
@@ -673,7 +734,7 @@ class TestMutationTargetedEdgeCases:
         # ``= None`` could slip through the vertices-too-few path.
         zones_cfg = _ZonesCfg(zones=[_zone()], debounce_ms=1000)
         osc = _RecordingOsc()
-        engine = ZoneEngine(zones_cfg, osc)  # type: ignore[arg-type]
+        engine = ZoneEngine(zones_cfg, osc, _DestsCfg())  # type: ignore[arg-type]
         engine.update([_marker(0, 2.0, 2.0)], [])
         # Mutate the zone's vertices in-place to a degenerate 2-vertex
         # shape so the update() degenerate branch fires.
@@ -937,7 +998,7 @@ class TestZoneDiagnostics:
     def test_disabled_zone_clears_last_event_address(self) -> None:
         """Disabled zones clear last_event_address from diagnostics."""
         zones_cfg = _ZonesCfg(zones=[_zone(osc_address_first_entry="/zone/enter")])
-        engine = ZoneEngine(zones_cfg, _RecordingOsc())  # type: ignore[arg-type]
+        engine = ZoneEngine(zones_cfg, _RecordingOsc(), _DestsCfg())  # type: ignore[arg-type]
         engine.update([_marker(0, 2.0, 2.0)], [])
         # Sanity: the address was recorded.
         diag = engine.get_zone_diagnostics(0)
@@ -955,7 +1016,7 @@ class TestZoneDiagnostics:
     def test_degenerate_vertex_list_clears_last_event_address(self) -> None:
         """Degenerate zones clear last_event_address on config reload."""
         zones_cfg = _ZonesCfg(zones=[_zone(osc_address_first_entry="/zone/enter")])
-        engine = ZoneEngine(zones_cfg, _RecordingOsc())  # type: ignore[arg-type]
+        engine = ZoneEngine(zones_cfg, _RecordingOsc(), _DestsCfg())  # type: ignore[arg-type]
         engine.update([_marker(0, 2.0, 2.0)], [])
         # New config instance with a degenerate (<3 vertex) polygon, as a
         # real hot-reload would deliver – distinct from the installed config
@@ -995,7 +1056,7 @@ class TestTriggeredByResetsOccupancyOnReload:
 
     def test_reload_with_narrowed_filter_resets_occupancy(self) -> None:
         zones_cfg = _ZonesCfg(zones=[_zone(triggered_by=[0, 1])])
-        engine = ZoneEngine(zones_cfg, _RecordingOsc())  # type: ignore[arg-type]
+        engine = ZoneEngine(zones_cfg, _RecordingOsc(), _DestsCfg())  # type: ignore[arg-type]
         engine.update(
             [_marker(0, 2.0, 2.0), _marker(1, 2.5, 2.5)],
             [],

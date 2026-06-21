@@ -112,6 +112,11 @@
     %     VALID_TRIGGER_MODIFIERS,
     % )
     % from openfollow.osc.template import PLACEHOLDERS
+    % # OSC destinations come first: transmitters/zones reference them.
+    % include('partials/osc_destinations.tpl',
+    %     config=config, saved=False, focus_id="",
+    %     valid_protocols=VALID_OSC_TRANSMITTER_PROTOCOLS,
+    %     valid_framings=VALID_OSC_FRAMINGS)
     % # Trigger forms need operator's fader/patch alias lists passed
     % # from route handler (``_osc_binding_form_sources``); keeps
     % # template declarative without reaching into route module.

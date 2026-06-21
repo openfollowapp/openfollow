@@ -253,8 +253,7 @@ class _ZoneCfg:
     osc_address_additional_entry: str = "/additional"
     osc_address_partial_exit: str = "/partial"
     osc_address_final_exit: str = "/final"
-    osc_host: str = ""
-    osc_port: int = 0
+    destination_id: str = "d"
     enabled: bool = True
 
 
@@ -263,11 +262,29 @@ class _ZonesCfg:
     enabled: bool = True
     show_overlay: bool = True
     eval_fps: int = 10
-    default_osc_host: str = "127.0.0.1"
-    default_osc_port: int = 53000
     debounce_ms: int = 0
     hysteresis: float = 0.0
     zones: list[_ZoneCfg] = field(default_factory=list)
+
+
+@dataclass
+class _DestCfg:
+    id: str = "d"
+    host: str = "127.0.0.1"
+    port: int = 53000
+    protocol: str = "udp"
+    framing: str = "slip"
+
+
+@dataclass
+class _DestsCfg:
+    destinations: list[_DestCfg] = field(default_factory=lambda: [_DestCfg()])
+
+    def get(self, destination_id: str) -> _DestCfg | None:
+        for d in self.destinations:
+            if d.id == destination_id:
+                return d
+        return None
 
 
 class _RecordingOsc:
@@ -282,6 +299,7 @@ class _RecordingOsc:
         host: str,
         port: int,
         protocol: str = "udp",
+        framing: str = "slip",
     ) -> None:
         self.addresses.append(address)
 
@@ -293,7 +311,7 @@ def _engine(
     zone = _ZoneCfg(vertices=[[float(x), float(y)] for x, y in verts])
     osc = _RecordingOsc()
     cfg = _ZonesCfg(zones=[zone], hysteresis=hysteresis)
-    return ZoneEngine(cfg, osc), osc  # type: ignore[arg-type]
+    return ZoneEngine(cfg, osc, _DestsCfg()), osc  # type: ignore[arg-type]
 
 
 def _marker(x: float, y: float) -> tuple[tuple[str, int], float, float]:

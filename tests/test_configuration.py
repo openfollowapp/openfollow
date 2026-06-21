@@ -2371,12 +2371,25 @@ def test_trigger_zones_config_clamps_high_debounce_and_hysteresis() -> None:
     assert zones.hysteresis == 10.0
 
 
-def test_trigger_zones_config_clamps_default_osc_port() -> None:
-    # Port must be in range 1-65535.
+def test_trigger_zones_config_drops_legacy_default_osc_keys() -> None:
+    # Clean break: the section no longer carries default host/port; a
+    # hand-edited TOML keeps the keys out via ``_filter_known``.
     from openfollow.configuration import TriggerZonesConfig
 
-    assert TriggerZonesConfig(default_osc_port=70000).default_osc_port == 65535
-    assert TriggerZonesConfig(default_osc_port=0).default_osc_port == 1
+    tz = TriggerZonesConfig()
+    assert not hasattr(tz, "default_osc_host")
+    assert not hasattr(tz, "default_osc_port")
+
+
+def test_trigger_zone_config_destination_id() -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    zone = TriggerZoneConfig(destination_id="  d1  ")
+    assert zone.destination_id == "d1"
+    assert not hasattr(zone, "osc_host")
+    assert not hasattr(zone, "osc_port")
+    # Non-string collapses to empty.
+    assert TriggerZoneConfig(destination_id=5).destination_id == ""  # type: ignore[arg-type]
 
 
 def test_trigger_zones_config_converts_dict_zones_to_dataclasses() -> None:
@@ -2716,9 +2729,11 @@ class _DummyCamera:
 class _DummyZoneEngine:
     def __init__(self) -> None:
         self.reloaded: list[object] = []
+        self.reloaded_destinations: list[object] = []
 
-    def reload_config(self, zones) -> None:
+    def reload_config(self, zones, destinations=None) -> None:  # noqa: ANN001
         self.reloaded.append(zones)
+        self.reloaded_destinations.append(destinations)
 
 
 class _DummyOtpServer:
@@ -3098,6 +3113,7 @@ def test_apply_runtime_applies_osc_transmitters_change_live() -> None:
         def apply_osc_transmitters_change(
             self,
             new_cfg: OscTransmittersConfig,
+            destinations=None,  # noqa: ANN001
         ) -> None:
             self.transmitter_changes.append(new_cfg)
 
@@ -3105,7 +3121,7 @@ def test_apply_runtime_applies_osc_transmitters_change_live() -> None:
     app._runtime_services = _RecordingRuntimeServices()
     new_cfg = OscTransmittersConfig(
         transmitters=[
-            OscTransmitterConfig(id="row-a", host="10.0.0.5"),
+            OscTransmitterConfig(id="row-a", destination_id="d1"),
         ]
     )
     new_config = AppConfig(osc_transmitters=new_cfg)
@@ -3130,6 +3146,7 @@ def test_apply_runtime_osc_transmitters_failure_reverts_config() -> None:
         def apply_osc_transmitters_change(
             self,
             new_cfg: OscTransmittersConfig,
+            destinations=None,  # noqa: ANN001
         ) -> None:
             raise OSError("simulated apply failure")
 
@@ -3138,7 +3155,7 @@ def test_apply_runtime_osc_transmitters_failure_reverts_config() -> None:
     app._runtime_services = _FailingRuntimeServices()
     new_cfg = OscTransmittersConfig(
         transmitters=[
-            OscTransmitterConfig(id="r1", host="10.0.0.5"),
+            OscTransmitterConfig(id="r1", destination_id="d1"),
         ]
     )
     new_config = AppConfig(osc_transmitters=new_cfg, viewer_marker_ids=[9])
@@ -3321,8 +3338,6 @@ def test_apply_runtime_reloads_trigger_zones() -> None:
 
     new_zones = TriggerZonesConfig(
         enabled=True,
-        default_osc_host="10.0.0.5",
-        default_osc_port=4242,
         zones=[TriggerZoneConfig(name="Main", vertices=[[0, 0], [1, 0], [1, 1]])],
     )
     new_config = AppConfig(trigger_zones=new_zones)
@@ -3331,6 +3346,39 @@ def test_apply_runtime_reloads_trigger_zones() -> None:
 
     assert zone_engine.reloaded == [new_zones]
     assert app._config.trigger_zones == new_zones
+
+
+def test_apply_runtime_osc_destinations_change_reapplies_both_consumers() -> None:
+    """A destination-only edit (e.g. an IP change) re-resolves at BOTH the
+    transmitter manager and the zone engine, live, with no restart."""
+    from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
+
+    class _RecordingRuntimeServices(_DummyRuntimeServices):
+        def __init__(self) -> None:
+            super().__init__()
+            self.transmitter_dests: list[object] = []
+
+        def apply_osc_transmitters_change(self, new_cfg, destinations=None) -> None:  # noqa: ANN001
+            self.transmitter_dests.append(destinations)
+
+    app = _app_with()
+    app._runtime_services = _RecordingRuntimeServices()
+    zone_engine = _DummyZoneEngine()
+    app._runtime_services._zone_engine = zone_engine  # type: ignore[attr-defined]
+
+    new_dests = OscDestinationsConfig(
+        destinations=[OscDestinationConfig(id="default", name="Default", host="10.0.0.9")],
+    )
+    new_config = AppConfig(osc_destinations=new_dests)
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.osc_destinations == new_dests
+    # Transmitter manager re-resolved against the new destinations.
+    assert app._runtime_services.transmitter_dests == [new_dests]
+    # Zone engine re-resolved against the new destinations.
+    assert zone_engine.reloaded_destinations == [new_dests]
+    assert app._web_commands.restart_requested is False
 
 
 def test_apply_runtime_reapplies_midi_devices_to_subsystem() -> None:
@@ -3778,6 +3826,8 @@ def test_apply_with_fallback_without_on_failure_logs_and_returns(caplog) -> None
 # ---------------------------------------------------------------------------
 
 from openfollow.configuration import (  # noqa: E402
+    OscDestinationConfig,
+    OscDestinationsConfig,
     OscTransmitterConfig,
     OscTransmittersConfig,
 )
@@ -3809,52 +3859,39 @@ class TestOscTransmitterConfig:
         cfg = OscTransmitterConfig(name="  Stage Left  ")
         assert cfg.name == "Stage Left"
 
-    def test_non_string_host_falls_back_to_default(self) -> None:
-        cfg = OscTransmitterConfig(host=123)  # type: ignore[arg-type]
-        assert cfg.host == "127.0.0.1"
+    def test_destination_id_default_is_empty(self) -> None:
+        """A fresh row has no destination selected – it skips sending."""
+        assert OscTransmitterConfig().destination_id == ""
 
-    def test_blank_host_falls_back_to_default(self) -> None:
-        cfg = OscTransmitterConfig(host="   ")
-        assert cfg.host == "127.0.0.1"
+    def test_destination_id_is_stripped(self) -> None:
+        cfg = OscTransmitterConfig(destination_id="  dest-1  ")
+        assert cfg.destination_id == "dest-1"
 
-    def test_host_is_stripped(self) -> None:
-        cfg = OscTransmitterConfig(host="  10.0.0.5  ")
-        assert cfg.host == "10.0.0.5"
+    def test_non_string_destination_id_falls_back_to_empty(self) -> None:
+        cfg = OscTransmitterConfig(destination_id=99)  # type: ignore[arg-type]
+        assert cfg.destination_id == ""
 
-    def test_port_clamped_to_valid_range(self) -> None:
-        assert OscTransmitterConfig(port=0).port == 1
-        assert OscTransmitterConfig(port=70000).port == 65535
-        assert OscTransmitterConfig(port="bogus").port == 8000  # type: ignore[arg-type]
-
-    @pytest.mark.parametrize("good", ["udp", "tcp"])
-    def test_protocol_accepts_known_values(self, good: str) -> None:
-        assert OscTransmitterConfig(protocol=good).protocol == good
-
-    @pytest.mark.parametrize("bad", ["", "raw", None, 7])
-    def test_protocol_falls_back_to_udp_on_unknown(self, bad: object) -> None:
-        cfg = OscTransmitterConfig(protocol=bad)  # type: ignore[arg-type]
-        assert cfg.protocol == "udp"
-
-    def test_default_framing_is_slip(self) -> None:
-        """SLIP is the default framing for new bindings."""
-        cfg = OscTransmitterConfig()
-        assert cfg.framing == "slip"
-
-    @pytest.mark.parametrize("good", ["slip", "length_prefix"])
-    def test_framing_accepts_known_values(self, good: str) -> None:
-        assert OscTransmitterConfig(framing=good).framing == good
-
-    @pytest.mark.parametrize("bad", ["", "raw", None, 7, "SLIP"])
-    def test_framing_falls_back_to_slip_on_unknown(
-        self,
-        bad: object,
-    ) -> None:
-        """Hand-edited TOML or programmatic construction passing an
-        invalid value snaps to ``"slip"`` – same shape as the protocol
-        coercion. ``"SLIP"`` upper-case is intentionally rejected so
-        the on-disk format stays canonical lower-case."""
-        cfg = OscTransmitterConfig(framing=bad)  # type: ignore[arg-type]
-        assert cfg.framing == "slip"
+    def test_legacy_connection_keys_are_dropped_on_load(self) -> None:
+        """Clean break: a TOML row carrying the old inline connection keys
+        loads without them – ``_filter_known`` discards the unknown keys,
+        leaving ``destination_id`` blank."""
+        cfg = OscTransmittersConfig(
+            transmitters=[
+                {
+                    "id": "row1",
+                    "host": "10.0.0.5",
+                    "port": 9000,
+                    "protocol": "tcp",
+                    "framing": "length_prefix",
+                },
+            ],
+        )
+        row = cfg.transmitters[0]
+        assert not hasattr(row, "host")
+        assert not hasattr(row, "port")
+        assert not hasattr(row, "protocol")
+        assert not hasattr(row, "framing")
+        assert row.destination_id == ""
 
     def test_marker_id_default_is_none(self) -> None:
         """marker_id defaults to None (not yet chosen by operator)."""
@@ -3977,15 +4014,103 @@ class TestOscTransmitterConfig:
 class TestOscTransmittersConfig:
     def test_dict_entries_are_promoted_to_dataclasses(self) -> None:
         cfg = OscTransmittersConfig(
-            transmitters=[{"id": "row1", "host": "10.0.0.5"}],
+            transmitters=[{"id": "row1", "destination_id": "d1"}],
         )
         assert isinstance(cfg.transmitters[0], OscTransmitterConfig)
-        assert cfg.transmitters[0].host == "10.0.0.5"
+        assert cfg.transmitters[0].destination_id == "d1"
 
     def test_existing_dataclass_entries_pass_through(self) -> None:
-        row = OscTransmitterConfig(id="r1", host="2.2.2.2")
+        row = OscTransmitterConfig(id="r1", destination_id="d2")
         cfg = OscTransmittersConfig(transmitters=[row])
         assert cfg.transmitters[0] is row
+
+
+class TestOscDestinationConfig:
+    def test_blank_id_is_minted_as_uuid_hex(self) -> None:
+        cfg = OscDestinationConfig()
+        assert len(cfg.id) == 32
+        assert all(c in "0123456789abcdef" for c in cfg.id)
+
+    def test_existing_id_is_preserved_and_stripped(self) -> None:
+        assert OscDestinationConfig(id="  dest-1  ").id == "dest-1"
+
+    def test_non_string_name_falls_back_to_empty(self) -> None:
+        assert OscDestinationConfig(name=99).name == ""  # type: ignore[arg-type]
+
+    def test_name_is_stripped(self) -> None:
+        assert OscDestinationConfig(name="  Console  ").name == "Console"
+
+    def test_non_string_host_falls_back_to_default(self) -> None:
+        assert OscDestinationConfig(host=123).host == "127.0.0.1"  # type: ignore[arg-type]
+
+    def test_blank_host_falls_back_to_default(self) -> None:
+        assert OscDestinationConfig(host="   ").host == "127.0.0.1"
+
+    def test_host_is_stripped(self) -> None:
+        assert OscDestinationConfig(host="  10.0.0.5  ").host == "10.0.0.5"
+
+    def test_port_clamped_to_valid_range(self) -> None:
+        assert OscDestinationConfig(port=0).port == 1
+        assert OscDestinationConfig(port=70000).port == 65535
+        assert OscDestinationConfig(port="bogus").port == 8000  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("good", ["udp", "tcp"])
+    def test_protocol_accepts_known_values(self, good: str) -> None:
+        assert OscDestinationConfig(protocol=good).protocol == good
+
+    @pytest.mark.parametrize("bad", ["", "raw", None, 7])
+    def test_protocol_falls_back_to_udp_on_unknown(self, bad: object) -> None:
+        assert OscDestinationConfig(protocol=bad).protocol == "udp"  # type: ignore[arg-type]
+
+    def test_default_framing_is_slip(self) -> None:
+        assert OscDestinationConfig().framing == "slip"
+
+    @pytest.mark.parametrize("good", ["slip", "length_prefix"])
+    def test_framing_accepts_known_values(self, good: str) -> None:
+        assert OscDestinationConfig(framing=good).framing == good
+
+    @pytest.mark.parametrize("bad", ["", "raw", None, 7, "SLIP"])
+    def test_framing_falls_back_to_slip_on_unknown(self, bad: object) -> None:
+        assert OscDestinationConfig(framing=bad).framing == "slip"  # type: ignore[arg-type]
+
+
+class TestOscDestinationsConfig:
+    def test_default_seeds_one_pickable_destination(self) -> None:
+        cfg = OscDestinationsConfig()
+        assert len(cfg.destinations) == 1
+        assert cfg.destinations[0].id == "default"
+        assert cfg.destinations[0].name == "Default"
+
+    def test_default_config_compares_equal(self) -> None:
+        """The seeded destination uses a fixed id so two default configs
+        compare equal (the hot-reload diff depends on this)."""
+        assert OscDestinationsConfig() == OscDestinationsConfig()
+
+    def test_dict_entries_are_promoted_to_dataclasses(self) -> None:
+        cfg = OscDestinationsConfig(
+            destinations=[{"id": "d1", "host": "10.0.0.9"}],
+        )
+        assert isinstance(cfg.destinations[0], OscDestinationConfig)
+        assert cfg.destinations[0].host == "10.0.0.9"
+
+    def test_filter_known_drops_unknown_keys(self) -> None:
+        cfg = OscDestinationsConfig(
+            destinations=[{"id": "d1", "bogus": "x"}],
+        )
+        assert not hasattr(cfg.destinations[0], "bogus")
+
+    def test_get_returns_matching_destination(self) -> None:
+        d = OscDestinationConfig(id="d1", name="A")
+        cfg = OscDestinationsConfig(destinations=[d])
+        assert cfg.get("d1") is d
+
+    def test_get_unknown_id_returns_none(self) -> None:
+        cfg = OscDestinationsConfig(destinations=[OscDestinationConfig(id="d1")])
+        assert cfg.get("nope") is None
+
+    def test_get_blank_id_returns_none(self) -> None:
+        cfg = OscDestinationsConfig(destinations=[OscDestinationConfig(id="d1")])
+        assert cfg.get("") is None
 
 
 # ---------------------------------------------------------------------------
@@ -4460,7 +4585,7 @@ class TestOscTransmittersConfigLegacyLift:
         sees a synthesised trigger sub-table."""
         cfg = OscTransmittersConfig(
             transmitters=[
-                {"rate_hz": 60, "host": "10.0.0.5"},
+                {"rate_hz": 60, "destination_id": "d1"},
             ]
         )
         row = cfg.transmitters[0]
@@ -4498,25 +4623,13 @@ class TestOscTransmittersConfigLegacyLift:
                 transmitters=[
                     OscTransmitterConfig(
                         id="abc",
-                        host="10.0.0.5",
-                        port=9000,
+                        destination_id="d1",
                         rate_hz=20,
                         template_id="etc",
                     ),
-                    # TCP framing must round-trip correctly.
                     OscTransmitterConfig(
-                        id="tcp-slip",
-                        host="10.0.0.6",
-                        port=9001,
-                        protocol="tcp",
-                        framing="slip",
-                    ),
-                    OscTransmitterConfig(
-                        id="tcp-lp",
-                        host="10.0.0.7",
-                        port=9002,
-                        protocol="tcp",
-                        framing="length_prefix",
+                        id="row2",
+                        destination_id="d2",
                     ),
                 ],
             ),
@@ -4524,16 +4637,12 @@ class TestOscTransmittersConfigLegacyLift:
         save_config(original, str(temp_config_path))
         reloaded = load_config(str(temp_config_path))
         rows = reloaded.osc_transmitters.transmitters
-        assert len(rows) == 3
+        assert len(rows) == 2
         assert rows[0].id == "abc"
-        assert rows[0].host == "10.0.0.5"
+        assert rows[0].destination_id == "d1"
         assert rows[0].rate_hz == 20
-        # Default framing on the original (unspecified) row stays SLIP.
-        assert rows[0].framing == "slip"
-        assert rows[1].id == "tcp-slip"
-        assert rows[1].framing == "slip"
-        assert rows[2].id == "tcp-lp"
-        assert rows[2].framing == "length_prefix"
+        assert rows[1].id == "row2"
+        assert rows[1].destination_id == "d2"
 
     def test_marker_id_none_round_trips_through_toml(
         self,

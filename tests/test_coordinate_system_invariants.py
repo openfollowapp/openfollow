@@ -363,12 +363,22 @@ class _StubOsc:
         host: str | None = None,
         port: int | None = None,
         protocol: str = "udp",
+        framing: str = "slip",
     ) -> None:
-        # ``args``/``protocol`` are accepted to keep the stub aligned with
-        # OscService.send. The invariants
-        # tests don't assert on args today – they only care that the right
-        # address fires for a marker-inside-zone scenario.
+        # ``args``/``protocol``/``framing`` are accepted to keep the stub
+        # aligned with OscService.send. The invariants tests don't assert on
+        # args today – they only care that the right address fires for a
+        # marker-inside-zone scenario.
         self.sent.append((address, host, port))
+
+
+# Single destination every zone in these invariants resolves to.
+class _StubDestinations:
+    @staticmethod
+    def get(destination_id: str) -> object | None:
+        if not destination_id:
+            return None
+        return SimpleNamespace(host="127.0.0.1", port=53000, protocol="udp", framing="slip")
 
 
 def _zone_square(cx: float, cy: float, half: float = 1.0) -> TriggerZoneConfig:
@@ -382,6 +392,7 @@ def _zone_square(cx: float, cy: float, half: float = 1.0) -> TriggerZoneConfig:
         ],
         trigger_source="markers",
         enabled=True,
+        destination_id="d",
         osc_address_first_entry="/z/first",
     )
 
@@ -401,7 +412,7 @@ def test_psn_marker_inside_zone_is_detected_regardless_of_offsets(offsets) -> No
         enabled=True,
         zones=[_zone_square(0.0, 3.0, half=1.0)],
     )
-    engine = ZoneEngine(zone_cfg, osc)
+    engine = ZoneEngine(zone_cfg, osc, _StubDestinations())
     engine.update(svc._collect_marker_positions(), detection_positions=[])
 
     states = engine.get_zone_states()
@@ -439,7 +450,7 @@ def test_mouse_click_inside_zone_is_detected_regardless_of_offsets(offsets) -> N
         enabled=True,
         zones=[_zone_square(wx, wy, half=2.0)],
     )
-    engine = ZoneEngine(zone_cfg, osc)
+    engine = ZoneEngine(zone_cfg, osc, _StubDestinations())
     engine.update(svc._collect_marker_positions(), detection_positions=[])
 
     assert engine.get_zone_states() == [(0, True, 1)], (

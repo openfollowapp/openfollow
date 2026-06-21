@@ -28,8 +28,8 @@ result to :class:`OscService` for transport.
 - Each row keeps the last ~100 send/skip events in a bounded deque.
   Complements (does not replace) the per-target ``ClientStats`` on
   :class:`OscService`.
-- Per-row health lives on :class:`OscService` via
-  ``service.stats_for(row.host, row.port, row.protocol, row.framing)``.
+- Per-row health lives on :class:`OscService`, keyed by the endpoint the
+  row's ``destination_id`` resolves to (host, port, protocol, framing).
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ from openfollow.configuration import (
     FaderOnChangeTrigger,
     HotkeyTrigger,
     MidiMessageTrigger,
+    OscDestinationsConfig,
     StreamTrigger,
 )
 from openfollow.osc.template import (
@@ -246,6 +247,11 @@ class _TickPlan:
     port: int
     protocol: str
     framing: str
+    # True when the row's ``destination_id`` didn't resolve to a known
+    # destination (blank id, or an id deleted from ``osc_destinations``).
+    # The render path turns this into a "no destination selected" skip so
+    # the row never sends to a bogus endpoint.
+    destination_unset: bool
     compiled_address: CompiledTemplate
     compiled_args: tuple[CompiledTemplate, ...]
     ring_buffer: BindingRingBuffer
@@ -366,6 +372,11 @@ class OscTransmitterManager:
         self._controller_marker_provider = controller_marker_provider
         self._lock = threading.Lock()
         self._rows: dict[str, OscTransmitter] = {}
+        # Shared OSC destination profiles, staged under ``_lock``. A row's
+        # ``destination_id`` is resolved against this at plan-build time;
+        # an unresolved id skips the send. Empty until ``restart`` provides
+        # the current set.
+        self._destinations = OscDestinationsConfig(destinations=[])
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._tick: int = 0
@@ -457,15 +468,25 @@ class OscTransmitterManager:
     # Configuration
     # ------------------------------------------------------------------
 
-    def restart(self, cfg: OscTransmittersConfig) -> None:
+    def restart(
+        self,
+        cfg: OscTransmittersConfig,
+        destinations: OscDestinationsConfig | None = None,
+    ) -> None:
         """Replace the row list. Existing scheduler thread keeps running.
 
         Rows are diffed by ``cfg.id``: an existing row whose id appears
         in the new config gets its config swapped via ``update_config``;
         a new id gets a fresh :class:`OscTransmitter`; an id absent from
         the new config is dropped from the next tick onward.
+
+        ``destinations`` stages the current OSC destination profiles each
+        row's ``destination_id`` resolves against; ``None`` keeps the
+        previously staged set (e.g. a transmitter-only edit).
         """
         with self._lock:
+            if destinations is not None:
+                self._destinations = destinations
             new_rows: dict[str, OscTransmitter] = {}
             invalidate_cache: set[str] = set()
             for row_cfg in cfg.transmitters:
@@ -829,12 +850,16 @@ class OscTransmitterManager:
         else:
             stream_mode = "always"
             stream_min_change_m = 0.0
+        # Resolve the row's destination under the lock (caller holds it) so
+        # the plan captures a coherent endpoint snapshot.
+        dest = self._destinations.get(cfg.destination_id)
         return _TickPlan(
             marker_id=cfg.marker_id,
-            host=cfg.host,
-            port=cfg.port,
-            protocol=cfg.protocol,
-            framing=cfg.framing,
+            host=dest.host if dest is not None else "",
+            port=dest.port if dest is not None else 0,
+            protocol=dest.protocol if dest is not None else "udp",
+            framing=dest.framing if dest is not None else "slip",
+            destination_unset=dest is None,
             compiled_address=row.compiled_address,
             compiled_args=row.compiled_args,
             ring_buffer=row.ring_buffer,
@@ -1149,6 +1174,14 @@ class OscTransmitterManager:
         templates don't reference it, because the on-change gate uses the
         default marker as its signal source.
         """
+        if plan.destination_unset:
+            # Blank or dangling ``destination_id`` – nothing to send to.
+            return _RenderResult(
+                address="",
+                args=(),
+                skipped=True,
+                error="no destination selected",
+            )
         needs_default = plan.needs_default_marker
         pos: tuple[float, float, float] = (0.0, 0.0, 0.0)
         if plan.marker_id is not None:

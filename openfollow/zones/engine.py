@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from openfollow.configuration import OscDestinationsConfig
 from openfollow.osc.parser import coerce_osc_args, tokenize_osc_message
 from openfollow.zones.geometry import point_in_polygon, shrink_polygon
 
@@ -48,16 +49,34 @@ class ZoneOccupancy:
 class ZoneEngine:
     """Polygon-membership marker with OSC-on-transition semantics."""
 
-    def __init__(self, config: TriggerZonesConfig, osc_service: OscService) -> None:
+    def __init__(
+        self,
+        config: TriggerZonesConfig,
+        osc_service: OscService,
+        destinations: OscDestinationsConfig | None = None,
+    ) -> None:
         self._osc = osc_service
         self._occupancy: list[ZoneOccupancy] = []
         self._config: TriggerZonesConfig = config
+        # Shared OSC destination profiles a zone's ``destination_id`` resolves
+        # against. Empty until provided so an unselected zone emits nothing.
+        self._destinations: OscDestinationsConfig = destinations or OscDestinationsConfig(destinations=[])
         self._states_snapshot: tuple[tuple[int, bool, int], ...] = ()  # immutable snapshot for web thread
         self._diagnostics_snapshot: tuple[dict[str, Any], ...] = ()  # diagnostics snapshot for web thread
-        self.reload_config(config)
+        self.reload_config(config, destinations)
 
-    def reload_config(self, config: TriggerZonesConfig) -> None:
-        """Replace configuration; preserve occupancy for structurally unchanged zones."""
+    def reload_config(
+        self,
+        config: TriggerZonesConfig,
+        destinations: OscDestinationsConfig | None = None,
+    ) -> None:
+        """Replace configuration; preserve occupancy for structurally unchanged zones.
+
+        ``destinations`` stages the OSC destination profiles zone sends
+        resolve against; ``None`` keeps the previously staged set.
+        """
+        if destinations is not None:
+            self._destinations = destinations
         # Multiple zones can share the same signature (identical vertices,
         # trigger_source, enabled) – a stacked duplicate the user created for
         # any reason. Store a FIFO queue per signature so each new zone
@@ -195,6 +214,13 @@ class ZoneEngine:
         if not entered and not exited:
             return True
 
+        # Resolve the zone's destination. A blank or dangling
+        # ``destination_id`` means "no target" – track membership for the
+        # overlay (advance occupancy) but emit nothing.
+        dest = self._destinations.get(zone.destination_id)
+        if dest is None:
+            return True
+
         debounce_s = max(0.0, self._config.debounce_ms / 1000.0)
         if debounce_s > 0.0 and (now - occ.last_event_time) < debounce_s:
             return False
@@ -202,16 +228,10 @@ class ZoneEngine:
         prev_count = len(occ.occupants)
         count = prev_count
 
-        # Resolve the per-zone target, falling back to the section
-        # defaults. The legacy ``OscOutputClient`` did this internally on
-        # empty host / zero port; with the unified ``OscService``, the
-        # service's contract is "host and port required" so the engine
-        # owns the fallback explicitly. The ``or`` form preserves the
-        # legacy semantics for malformed negative ports – they pass
-        # through to the service, which drops them at its ``port <= 0``
-        # guard rather than silently substituting the default.
-        host = zone.osc_host or self._config.default_osc_host
-        port = zone.osc_port or self._config.default_osc_port
+        host = dest.host
+        port = dest.port
+        protocol = dest.protocol
+        framing = dest.framing
 
         last_address: str = ""
         # Handle entries first, then exits – the order matters for first/final
@@ -221,9 +241,9 @@ class ZoneEngine:
         # upstream set-difference, which is not stable across runs).
         for _ in sorted(entered):
             if count == 0:
-                addr = self._send_zone_osc(zone.osc_address_first_entry, host, port)
+                addr = self._send_zone_osc(zone.osc_address_first_entry, host, port, protocol, framing)
             else:
-                addr = self._send_zone_osc(zone.osc_address_additional_entry, host, port)
+                addr = self._send_zone_osc(zone.osc_address_additional_entry, host, port, protocol, framing)
             if addr:
                 last_address = addr
             count += 1
@@ -231,9 +251,9 @@ class ZoneEngine:
         for _ in sorted(exited):
             count -= 1
             if count == 0:
-                addr = self._send_zone_osc(zone.osc_address_final_exit, host, port)
+                addr = self._send_zone_osc(zone.osc_address_final_exit, host, port, protocol, framing)
             else:
-                addr = self._send_zone_osc(zone.osc_address_partial_exit, host, port)
+                addr = self._send_zone_osc(zone.osc_address_partial_exit, host, port, protocol, framing)
             if addr:
                 last_address = addr
 
@@ -242,7 +262,7 @@ class ZoneEngine:
             occ.last_event_address = last_address
         return True
 
-    def _send_zone_osc(self, raw: str, host: str, port: int) -> str:
+    def _send_zone_osc(self, raw: str, host: str, port: int, protocol: str, framing: str) -> str:
         """Tokenise a zone OSC field and forward to the service.
 
         Each ``osc_address_*_entry`` is one freeform string the operator
@@ -281,7 +301,14 @@ class ZoneEngine:
             return ""
         if not address:
             return ""
-        self._osc.send(address, args=coerce_osc_args(str_args), host=host, port=port)
+        self._osc.send(
+            address,
+            args=coerce_osc_args(str_args),
+            host=host,
+            port=port,
+            protocol=protocol,
+            framing=framing,
+        )
         return address
 
     def get_zone_states(self) -> list[tuple[int, bool, int]]:

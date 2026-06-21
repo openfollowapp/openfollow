@@ -717,7 +717,7 @@ def test_otp_source_iface_has_no_field_rule() -> None:
     "section,field",
     [
         ("rttrpm_output", "host"),
-        ("trigger_zones", "default_osc_host"),
+        ("osc_destination", "host"),
     ],
 )
 def test_validate_host_field_accepts_ip(section: str, field: str) -> None:
@@ -728,7 +728,7 @@ def test_validate_host_field_accepts_ip(section: str, field: str) -> None:
     "section,field",
     [
         ("rttrpm_output", "host"),
-        ("trigger_zones", "default_osc_host"),
+        ("osc_destination", "host"),
     ],
 )
 def test_validate_host_field_accepts_hostname(section: str, field: str) -> None:
@@ -739,7 +739,7 @@ def test_validate_host_field_accepts_hostname(section: str, field: str) -> None:
     "section,field",
     [
         ("rttrpm_output", "host"),
-        ("trigger_zones", "default_osc_host"),
+        ("osc_destination", "host"),
     ],
 )
 def test_validate_host_field_rejects_internal_whitespace(section: str, field: str) -> None:
@@ -830,18 +830,9 @@ def test_validate_osc_message_rejects_unclosed_quote(raw: str) -> None:
     [
         ("name", "Stage 1", False),
         ("name", "x" * 65, True),  # max_len 64
-        ("host", "10.0.0.1", False),
-        ("port", "9000", False),
-        ("port", "0", True),
-        ("port", "65536", True),
-        ("protocol", "udp", False),
-        ("protocol", "tcp", False),
-        ("protocol", "carrier-pigeon", True),
-        # TCP framing selector: both choices accepted, bogus values rejected.
-        ("framing", "slip", False),
-        ("framing", "length_prefix", False),
-        ("framing", "carrier-pigeon", True),
-        ("framing", "SLIP", True),  # canonical lower-case only
+        # Connection is chosen via a destination; empty is allowed (no send).
+        ("destination_id", "", False),
+        ("destination_id", "dest-1", False),
         ("marker_id", "0", False),
         ("marker_id", "-1", True),
         # marker_id can be empty (no default marker).
@@ -875,6 +866,33 @@ def test_osc_binding_field_rules(field: str, value: str, expect_error: bool) -> 
         assert err is not None, f"osc_binding.{field}={value!r} should have failed validation"
     else:
         assert err is None, f"osc_binding.{field}={value!r} unexpectedly failed: {err}"
+
+
+@pytest.mark.parametrize(
+    "field,value,expect_error",
+    [
+        ("name", "Console", False),
+        ("name", "x" * 65, True),  # max_len 64
+        ("host", "10.0.0.1", False),
+        ("host", "192.168 .1.1", True),
+        ("port", "9000", False),
+        ("port", "0", True),
+        ("port", "65536", True),
+        ("protocol", "udp", False),
+        ("protocol", "tcp", False),
+        ("protocol", "carrier-pigeon", True),
+        ("framing", "slip", False),
+        ("framing", "length_prefix", False),
+        ("framing", "carrier-pigeon", True),
+        ("framing", "SLIP", True),  # canonical lower-case only
+    ],
+)
+def test_osc_destination_field_rules(field: str, value: str, expect_error: bool) -> None:
+    err = validate("osc_destination", field, value)
+    if expect_error:
+        assert err is not None, f"osc_destination.{field}={value!r} should have failed validation"
+    else:
+        assert err is None, f"osc_destination.{field}={value!r} unexpectedly failed: {err}"
 
 
 # ---------------------------------------------------------------------------

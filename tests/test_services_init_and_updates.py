@@ -1956,7 +1956,7 @@ class TestInitOscTransmitters:
             services._app._config,
             osc_transmitters=OscTransmittersConfig(
                 transmitters=[
-                    OscTransmitterConfig(id="row-a", host="127.0.0.1", port=9001),
+                    OscTransmitterConfig(id="row-a", destination_id="d1"),
                 ]
             ),
         )

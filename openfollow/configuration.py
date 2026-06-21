@@ -567,8 +567,9 @@ class TriggerZoneConfig:
     osc_address_additional_entry: str = ""
     osc_address_partial_exit: str = ""
     osc_address_final_exit: str = ""
-    osc_host: str = ""
-    osc_port: int = 0
+    # Reference to an :class:`OscDestinationConfig`. Empty = no destination
+    # selected → the zone emits nothing.
+    destination_id: str = ""
     enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -605,6 +606,9 @@ class TriggerZoneConfig:
             except (TypeError, ValueError):
                 continue
         self.triggered_by = cleaned_ids
+        if not isinstance(self.destination_id, str):
+            self.destination_id = ""
+        self.destination_id = self.destination_id.strip()
 
 
 @dataclass
@@ -614,8 +618,6 @@ class TriggerZonesConfig:
     enabled: bool = False
     show_overlay: bool = True
     eval_fps: int = 10
-    default_osc_host: str = "127.0.0.1"
-    default_osc_port: int = 53000
     debounce_ms: int = 200
     hysteresis: float = 0.05  # metres – inward polygon offset for exit threshold
     zones: list[TriggerZoneConfig] = field(default_factory=list)
@@ -634,12 +636,6 @@ class TriggerZonesConfig:
         # survive. Upper bounds mirror ``openfollow/web/validation.py``.
         self.debounce_ms = _coerce_int(self.debounce_ms, 200, lo=0, hi=60000)
         self.hysteresis = _coerce_float(self.hysteresis, 0.05, lo=0.0, hi=10.0)
-        self.default_osc_port = _coerce_int(
-            self.default_osc_port,
-            53000,
-            lo=1,
-            hi=65535,
-        )
         # Drop non-object zone entries instead of keeping them verbatim: a
         # hand-edited inline TOML array (``zones = ["evil"]``) or a crafted
         # payload would otherwise persist a bare str/int that the zone engine
@@ -1231,12 +1227,9 @@ class OscTransmitterConfig:
     id: str = ""
     enabled: bool = False
     name: str = ""
-    host: str = "127.0.0.1"
-    port: int = 8000
-    protocol: str = "udp"
-    # TCP framing selector. Inert for UDP rows but round-trippable so the UI
-    # swap doesn't hide it on protocol toggle.
-    framing: str = "slip"
+    # Reference to an :class:`OscDestinationConfig` (host/port/protocol/framing
+    # live there). Empty = no destination selected → the row skips sending.
+    destination_id: str = ""
     # ``None`` = no default marker picked. Rows using only literals or
     # explicit-marker refs (``[x:markerN]``) still dispatch; rows using a
     # default-marker placeholder (``[x]`` / ``[fy]`` / ``[markerId]``) skip
@@ -1267,20 +1260,9 @@ class OscTransmitterConfig:
         if not isinstance(self.name, str):
             self.name = ""
         self.name = self.name.strip()
-        if not isinstance(self.host, str):
-            self.host = "127.0.0.1"
-        self.host = self.host.strip() or "127.0.0.1"
-        self.port = _coerce_int(self.port, 8000, lo=1, hi=65535)
-        self.protocol = _coerce_choice(
-            self.protocol,
-            VALID_OSC_TRANSMITTER_PROTOCOLS,
-            "udp",
-        )
-        self.framing = _coerce_choice(
-            self.framing,
-            VALID_OSC_FRAMINGS,
-            "slip",
-        )
+        if not isinstance(self.destination_id, str):
+            self.destination_id = ""
+        self.destination_id = self.destination_id.strip()
         self.marker_id = _coerce_optional_marker_id(self.marker_id)
         # ``None`` for unset, else 1..VIRTUAL_FADER_COUNT; out-of-range/junk
         # collapses to ``None`` rather than routing to a valid-but-wrong fader.
@@ -1358,6 +1340,87 @@ class OscTransmittersConfig:
             else:
                 coerced_transmitters.append(t)
         self.transmitters = coerced_transmitters
+
+
+@dataclass
+class OscDestinationConfig:
+    """A named, reusable OSC connection profile.
+
+    Transmitters and trigger zones reference a destination by ``id`` instead
+    of carrying host/port/protocol/framing inline, so re-pointing a single
+    destination repoints every consumer at once.
+    """
+
+    id: str = ""
+    name: str = ""
+    host: str = "127.0.0.1"
+    port: int = 8000
+    protocol: str = "udp"
+    # TCP framing selector. Inert for UDP but round-trippable so the UI swap
+    # doesn't hide it on protocol toggle.
+    framing: str = "slip"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or not self.id.strip():
+            self.id = _new_uuid_hex()
+        else:
+            self.id = self.id.strip()
+        if not isinstance(self.name, str):
+            self.name = ""
+        self.name = self.name.strip()
+        if not isinstance(self.host, str):
+            self.host = "127.0.0.1"
+        self.host = self.host.strip() or "127.0.0.1"
+        self.port = _coerce_int(self.port, 8000, lo=1, hi=65535)
+        self.protocol = _coerce_choice(
+            self.protocol,
+            VALID_OSC_TRANSMITTER_PROTOCOLS,
+            "udp",
+        )
+        self.framing = _coerce_choice(
+            self.framing,
+            VALID_OSC_FRAMINGS,
+            "slip",
+        )
+
+
+def _default_osc_destinations() -> list[OscDestinationConfig]:
+    """Seed one pickable destination so fresh installs have a non-empty list.
+
+    The id is fixed (not minted) so two default configs compare equal – the
+    hot-reload diff and a pile of ``AppConfig() == AppConfig()`` tests rely on
+    default-config equality.
+    """
+    return [OscDestinationConfig(id="default", name="Default")]
+
+
+@dataclass
+class OscDestinationsConfig:
+    """Container for the shared OSC destination profiles."""
+
+    destinations: list[OscDestinationConfig] = field(
+        default_factory=_default_osc_destinations,
+    )
+
+    def __post_init__(self) -> None:
+        coerced: list[OscDestinationConfig] = []
+        for d in self.destinations:
+            if isinstance(d, dict):
+                coerced.append(
+                    OscDestinationConfig(**_filter_known(OscDestinationConfig, d)),
+                )
+            else:
+                coerced.append(d)
+        self.destinations = coerced
+
+    def get(self, destination_id: str) -> OscDestinationConfig | None:
+        """Resolve a destination id to its profile, or ``None`` if unknown."""
+        if not destination_id:
+            return None
+        for d in self.destinations:
+            if d.id == destination_id:
+                return d
+        return None
 
 
 VALID_CURVES = ("linear", "logarithmic", "quadratic", "s-law")
@@ -1811,6 +1874,7 @@ class AppConfig:
     otp_output: OtpOutputConfig = field(default_factory=OtpOutputConfig)
     rttrpm_output: RttrpmOutputConfig = field(default_factory=RttrpmOutputConfig)
     osc_transmitters: OscTransmittersConfig = field(default_factory=OscTransmittersConfig)
+    osc_destinations: OscDestinationsConfig = field(default_factory=OscDestinationsConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     trigger_zones: TriggerZonesConfig = field(default_factory=TriggerZonesConfig)
     midi: MidiConfig = field(default_factory=MidiConfig)
@@ -1909,6 +1973,7 @@ _SUB_CONFIG_MAP: dict[str, type] = {
     "otp_output": OtpOutputConfig,
     "rttrpm_output": RttrpmOutputConfig,
     "osc_transmitters": OscTransmittersConfig,
+    "osc_destinations": OscDestinationsConfig,
     "detection": DetectionConfig,
     "trigger_zones": TriggerZonesConfig,
     "midi": MidiConfig,
@@ -2763,9 +2828,31 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             "osc_transmitters",
             lambda: app._runtime_services.apply_osc_transmitters_change(
                 new_config.osc_transmitters,
+                new_config.osc_destinations,
             ),
         ):
             app._config.osc_transmitters = old_osc_transmitters
+
+    # A destination edit (e.g. an IP change) re-resolves at both consumers so
+    # every referencing transmitter and zone repoints live, no restart.
+    if new_config.osc_destinations != app._config.osc_destinations:
+        old_osc_destinations = app._config.osc_destinations
+        app._config.osc_destinations = new_config.osc_destinations
+        if not _apply(
+            "osc_destinations",
+            lambda: app._runtime_services.apply_osc_transmitters_change(
+                app._config.osc_transmitters,
+                new_config.osc_destinations,
+            ),
+        ):
+            app._config.osc_destinations = old_osc_destinations
+        else:
+            zone_engine = getattr(app._runtime_services, "_zone_engine", None)
+            if zone_engine is not None:
+                zone_engine.reload_config(
+                    app._config.trigger_zones,
+                    new_config.osc_destinations,
+                )
 
     if new_config.detection != app._config.detection:
         old_detection = app._config.detection
@@ -2821,12 +2908,15 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         app._config.trigger_zones = new_config.trigger_zones
         zone_engine = getattr(app._runtime_services, "_zone_engine", None)
         if zone_engine is not None:
-            zone_engine.reload_config(new_config.trigger_zones)
-        # Default OSC host/port flows through ``reload_config`` (the engine
-        # reads ``default_osc_*`` at send time). Stale per-target sockets in
-        # the shared ``OscService`` cache are left in place – they're reused if
-        # a future row targets the same destination and can't be safely evicted
-        # without per-caller ownership tracking.
+            zone_engine.reload_config(
+                new_config.trigger_zones,
+                new_config.osc_destinations,
+            )
+        # The endpoint is resolved from ``osc_destinations`` at send time.
+        # Stale per-target sockets in the shared ``OscService`` cache are left
+        # in place – they're reused if a future row targets the same
+        # destination and can't be safely evicted without per-caller
+        # ownership tracking.
 
     # The MIDI ``apply_config`` is idempotent (same device on same patch is a
     # no-op), so re-applying on every reload pass is safe.

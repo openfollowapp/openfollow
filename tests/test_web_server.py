@@ -3771,7 +3771,7 @@ def test_update_trigger_zones_post_renders_partial(live_server) -> None:
     status, _ = _post_form(
         base,
         "/section/trigger_zones",
-        {"enabled": "on", "default_osc_port": "9001"},
+        {"enabled": "on", "debounce_ms": "150"},
     )
     assert status == 200
 
@@ -3780,7 +3780,52 @@ def test_update_trigger_zones_post_renders_partial(live_server) -> None:
     # ``show_overlay`` was not in the form, so the bool-fields treatment
     # must clear it to False rather than leave it stale.
     assert saved.trigger_zones.show_overlay is False
-    assert saved.trigger_zones.default_osc_port == 9001
+    assert saved.trigger_zones.debounce_ms == 150
+
+
+def test_osc_destinations_crud_round_trip(live_server) -> None:
+    """Add → save → duplicate → delete a destination through the web routes."""
+    server, base = live_server
+
+    # Add: a fresh destination lands on top of the seeded "Default".
+    status, body = _post_form(base, "/section/osc_destinations/add", {})
+    assert status == 200
+    cfg = load_config(server.config_path)
+    assert len(cfg.osc_destinations.destinations) == 2
+    new_id = cfg.osc_destinations.destinations[-1].id
+
+    # Save: edit the new destination's connection.
+    status, _ = _post_form(
+        base,
+        f"/section/osc_destination/{new_id}",
+        {"name": "Console", "host": "10.0.0.9", "port": "9001", "protocol": "tcp", "framing": "slip"},
+    )
+    assert status == 200
+    saved = load_config(server.config_path).osc_destinations.get(new_id)
+    assert saved is not None
+    assert saved.name == "Console"
+    assert saved.host == "10.0.0.9"
+    assert saved.port == 9001
+    assert saved.protocol == "tcp"
+
+    # Duplicate then delete.
+    status, _ = _post_form(base, f"/section/osc_destination/{new_id}/duplicate", {})
+    assert status == 200
+    assert len(load_config(server.config_path).osc_destinations.destinations) == 3
+    status, _ = _post_form(base, f"/section/osc_destination/{new_id}/delete", {})
+    assert status == 200
+    after = load_config(server.config_path).osc_destinations
+    assert after.get(new_id) is None
+
+
+def test_broadcast_section_rejects_non_shareable_sections(live_server) -> None:
+    """OSC routing + zones travel by file only – a section broadcast of them
+    is refused with 403, never pushed to peers."""
+    _, base = live_server
+    for section in ("osc_destinations", "osc_transmitters", "trigger_zones"):
+        status, payload = _post_json(base, f"/api/config/{section}/broadcast", {"enabled": True})
+        assert status == 403, f"{section} should not be broadcastable"
+        assert "not shareable" in payload.get("error", "").lower()
 
 
 def test_update_detection_inference_renders_partial_with_install_state(live_server) -> None:

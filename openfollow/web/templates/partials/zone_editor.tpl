@@ -1,3 +1,5 @@
+% import json
+% _osc_dests_json = json.dumps([{"id": d.id, "name": d.name, "host": d.host, "port": d.port, "protocol": d.protocol, "framing": d.framing} for d in config.osc_destinations.destinations])
 <div id="zone-editor-section" class="section" data-fold-key="zone_editor" data-help="zone_editor" data-template-form="1">
     <div class="section-head">
         <h2>Zone Editor</h2>
@@ -32,6 +34,10 @@
 (function() {
     if (window.__zoneEditorInit) return;
     window.__zoneEditorInit = true;
+
+    // Shared OSC destinations a zone can target (id + label + endpoint),
+    // emitted server-side so the Settings-tab dropdown stays in sync.
+    var OSC_DESTINATIONS = {{!_osc_dests_json}};
 
     // Zone color palette seeded by base.tpl via window.OPENFOLLOW_PALETTE
     // (from openfollow.palette). pickZoneColor delegates to shared
@@ -553,11 +559,17 @@
         html += '    </div></div>';
         html += '  </div>';
 
-        // ---- Settings tab: OSC host/port + the four addresses ----
+        // ---- Settings tab: OSC destination + the four addresses ----
         html += '  <div class="row-tab-panel" id="row-tab-zone-settings" role="tabpanel">';
         html += '    <div class="row">';
-        html += '      <div class="field"><label>OSC Host (optional)</label><input type="text" data-zone-field="osc_host" value="' + escapeAttr(z.osc_host || '') + '" placeholder="use default"></div>';
-        html += '      <div class="field"><label>OSC Port (0 = default)</label><input type="number" data-zone-field="osc_port" value="' + (z.osc_port || 0) + '" min="0" max="65535"></div>';
+        html += '      <div class="field"><label>OSC Destination</label><select data-zone-field="destination_id">';
+        html += '        <option value=""' + (!z.destination_id ? ' selected' : '') + '>(none – zone will not send)</option>';
+        for (var di = 0; di < OSC_DESTINATIONS.length; di++) {
+            var od = OSC_DESTINATIONS[di];
+            var sel = (od.id === z.destination_id) ? ' selected' : '';
+            html += '<option value="' + escapeAttr(od.id) + '"' + sel + '>' + escapeAttr(od.name || '(unnamed)') + '</option>';
+        }
+        html += '      </select></div>';
         html += '    </div>';
         html += '    <div class="row">';
         html += oscField('First Entry Address', 'osc_address_first_entry', z.osc_address_first_entry || '', '/zone/enter');

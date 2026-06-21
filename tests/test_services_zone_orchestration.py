@@ -147,6 +147,7 @@ class _FakeOscService:
         host: str,
         port: int,
         protocol: str = "udp",
+        framing: str = "slip",
     ) -> None:
         self.calls.append((address, list(args), host, port))
 
@@ -172,8 +173,6 @@ def _make_app(
         trigger_zones=TriggerZonesConfig(
             enabled=zones_enabled,
             eval_fps=eval_fps,
-            default_osc_host="127.0.0.1",
-            default_osc_port=54000,
         ),
     )
     app = SimpleNamespace(
@@ -209,7 +208,7 @@ def services(monkeypatch: pytest.MonkeyPatch) -> AppRuntimeServices:
     # services itself; tests swap it for a fake after construction.
     import openfollow.zones as zones_pkg
 
-    monkeypatch.setattr(zones_pkg, "ZoneEngine", lambda cfg, osc: _FakeZoneEngine())
+    monkeypatch.setattr(zones_pkg, "ZoneEngine", lambda cfg, osc, dests=None: _FakeZoneEngine())
 
     svc = AppRuntimeServices(_make_app())
     svc._osc_service = _FakeOscService()  # type: ignore[assignment]
@@ -485,11 +484,15 @@ class TestZoneTestSend:
     def test_test_send_dispatches_through_osc_service(self, services: AppRuntimeServices) -> None:
         """Happy path: an empty zone gets a populated ``first_entry``
         address; ``_zone_test_send`` tokenises + coerces + sends."""
+        from openfollow.configuration import OscDestinationConfig
+
         _seed_zone(services)
+        services._app._config.osc_destinations.destinations.append(
+            OscDestinationConfig(id="d1", host="10.1.2.3", port=9000),
+        )
         zone_cfg = services._app._config.trigger_zones.zones[0]
         zone_cfg.osc_address_first_entry = "/zone/enter 1.5"
-        zone_cfg.osc_host = "10.1.2.3"
-        zone_cfg.osc_port = 9000
+        zone_cfg.destination_id = "d1"
         result = services._zone_test_send(0, "first")
         assert result["success"] is True
         assert result["address"] == "/zone/enter"
@@ -501,17 +504,14 @@ class TestZoneTestSend:
         assert isinstance(fake_osc, _FakeOscService)
         assert fake_osc.calls == [("/zone/enter", [1.5], "10.1.2.3", 9000)]
 
-    def test_test_send_falls_back_to_section_default_host_port(self, services: AppRuntimeServices) -> None:
+    def test_test_send_skipped_when_no_destination_selected(self, services: AppRuntimeServices) -> None:
         _seed_zone(services)
         zone_cfg = services._app._config.trigger_zones.zones[0]
         zone_cfg.osc_address_additional_entry = "/zone/extra"
-        zone_cfg.osc_host = ""
-        zone_cfg.osc_port = 0
-        services._app._config.trigger_zones.default_osc_host = "192.0.2.1"
-        services._app._config.trigger_zones.default_osc_port = 8000
+        zone_cfg.destination_id = ""
         result = services._zone_test_send(0, "additional")
-        assert result["host"] == "192.0.2.1"
-        assert result["port"] == 8000
+        assert result.get("skipped") is True
+        assert result["reason"] == "no destination selected"
 
     def test_test_send_unknown_which_returns_error(self, services: AppRuntimeServices) -> None:
         _seed_zone(services)

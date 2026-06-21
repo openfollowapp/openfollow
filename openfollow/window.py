@@ -9,6 +9,7 @@ RenderCanvas-compatible event API and a display-tick animation loop.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -416,7 +417,31 @@ class GtkNativeSinkWindow:
             return str(name).lower()
         return str(name)
 
+    @staticmethod
+    def _is_macos_quit(event: Any) -> bool:
+        """True for the macOS Quit shortcut (Cmd+Q).
+
+        The Quartz GTK bundle has no application menu, so AppKit never binds
+        Cmd+Q; the keystroke arrives here as a plain ``q`` carrying the Command
+        modifier (Quartz maps Command to MOD2; some builds surface META). Catch
+        it so the app exits gracefully instead of falling through to the ``q``
+        action binding. Gated to macOS so a Linux NumLock+q (MOD2 there) can't
+        quit.
+        """
+        if sys.platform != "darwin":
+            return False
+        from gi.repository import Gdk
+
+        if Gdk.keyval_name(event.keyval) not in ("q", "Q"):
+            return False
+        command = Gdk.ModifierType.MOD2_MASK | Gdk.ModifierType.META_MASK
+        return bool(getattr(event, "state", 0) & command)
+
     def _on_key_press(self, widget: Any, event: Any) -> bool:
+        if self._is_macos_quit(event):
+            # Route Cmd+Q through the same graceful close path as the window's
+            # close button (emit "close" → shutdown, then main_quit).
+            return self._on_delete(widget, event)
         name = self._translate_key(event)
         if name:
             self._emit("key_down", key=name)

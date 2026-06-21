@@ -583,6 +583,25 @@ def _detection_export_script() -> Path | None:
     return None
 
 
+def _build_export_argv(pt_model: str, imgsz: int, opset: int, models_dir: Path) -> list[str] | None:
+    """Build the model-export subprocess argv, or ``None`` if export can't run.
+
+    In a frozen bundle ``sys.executable`` is the app itself (not a Python
+    interpreter) and ``export_onnx.py`` isn't on disk, so re-exec the app in
+    export mode: the bundle launcher routes a leading ``--export`` to
+    ``export_onnx``. From a source checkout / appliance, run the script with the
+    venv interpreter. Returns ``None`` only in the non-frozen case where the
+    script can't be located.
+    """
+    export_args = [pt_model, "--imgsz", str(imgsz), "--opset", str(opset), "--output-dir", str(models_dir)]
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--export", *export_args]
+    export_script = _detection_export_script()
+    if export_script is None:
+        return None
+    return [sys.executable, str(export_script), *export_args]
+
+
 def _coerce_export_imgsz(raw: str, default: int) -> int:
     """Coerce + snap the export image size to a multiple of 32 in [160, 1280].
 
@@ -4816,17 +4835,18 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 install_feedback="Install the model export tools first: run install-detection.sh.",
                 install_error=True,
             )
-        export_script = _detection_export_script()
-        if export_script is None:
+        models_dir = _resolved_models_dir(cfg.detection.storage_path)
+        imgsz = _coerce_export_imgsz(request.forms.get("imgsz", ""), cfg.detection.inference_size)
+        opset = _coerce_export_opset(request.forms.get("opset", ""))
+        pt_model = model[: -len(".onnx")] + ".pt" if model.endswith(".onnx") else model + ".pt"
+
+        argv = _build_export_argv(pt_model, imgsz, opset, models_dir)
+        if argv is None:
             return _render_detection(
                 cfg,
                 install_feedback="Export script not found. Reinstall the package or run from a source checkout.",
                 install_error=True,
             )
-        models_dir = _resolved_models_dir(cfg.detection.storage_path)
-        imgsz = _coerce_export_imgsz(request.forms.get("imgsz", ""), cfg.detection.inference_size)
-        opset = _coerce_export_opset(request.forms.get("opset", ""))
-        pt_model = model[: -len(".onnx")] + ".pt" if model.endswith(".onnx") else model + ".pt"
 
         if not server.try_claim_detection_install(
             action="export",
@@ -4835,17 +4855,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ):
             return _render_detection(cfg, install_feedback="An export is already in progress.", install_error=True)
 
-        argv = [
-            sys.executable,
-            str(export_script),
-            pt_model,
-            "--imgsz",
-            str(imgsz),
-            "--opset",
-            str(opset),
-            "--output-dir",
-            str(models_dir),
-        ]
         worker = threading.Thread(
             target=_run_detection_export_job,
             kwargs={"model": model, "argv": argv, "timeout": _EXPORT_JOB_TIMEOUT_S},

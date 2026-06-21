@@ -223,6 +223,10 @@ poetry install
 poetry run openfollow
 ```
 
+> On macOS the on-device **Settings → Open Web UI** action opens the running web
+> UI in your default browser (the embedded overlay used on Linux/Pi isn't
+> available on macOS). The UI is also reachable from any browser on the LAN.
+
 <details>
 <summary><b>Optional: AI person detection</b></summary>
 
@@ -268,6 +272,28 @@ gst-inspect-1.0 ndisrc          # should print the element
 ```
 
 Then pick **NDI** as the video source in the Web UI (or press `N` on-device).
+
+</details>
+
+<details>
+<summary><b>Optional: build a macOS .dmg</b></summary>
+
+Package the dev tree into a self-contained `.app` / `.dmg` (bundles Python, the
+GTK/GStreamer stack, and the detection + export toolchains, so it runs on a clean
+Mac). Requires the dev setup above plus `brew install librsvg create-dmg`:
+
+```bash
+make dmg    # -> dist/OpenFollow-<version>-<arch>.dmg
+```
+
+The output is single-arch and large (~2-2.5 GB, torch is bundled). The app is
+ad-hoc signed, not notarized, so clear Gatekeeper's quarantine flag on first run:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/OpenFollow.app"   # or right-click -> Open
+```
+
+See [docs/PACKAGING.md](docs/PACKAGING.md#macos-dmg-developer-build) for details.
 
 </details>
 

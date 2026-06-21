@@ -50,6 +50,21 @@ class FakeGdkScrollDirection:
     RIGHT = "right"
 
 
+class FakeGdkModifierType:
+    """Stand-in for ``Gdk.ModifierType`` bit-flags used in the Cmd+Q check.
+
+    The window treats these as plain int flags (``mask_a | mask_b``,
+    ``state & mask``), so int class attributes mirror real GDK semantics.
+    Quartz maps Command to MOD2; some builds surface META instead.
+    """
+
+    SHIFT_MASK = 1 << 0
+    CONTROL_MASK = 1 << 2
+    MOD1_MASK = 1 << 3  # Option / Alt
+    MOD2_MASK = 1 << 4  # Command on Quartz (NumLock on X11)
+    META_MASK = 1 << 28
+
+
 class FakeGdkWindowHints:
     ASPECT = 1
 
@@ -135,6 +150,7 @@ class FakeGdk:
     Geometry = FakeGdkGeometry
     Cursor = FakeGdkCursor
     CursorType = FakeGdkCursorType
+    ModifierType = FakeGdkModifierType
 
     @staticmethod
     def keyval_name(val: int) -> str | None:
@@ -1410,3 +1426,111 @@ class TestEventDispatch:
         assert blurs == [{}]
         # Returns False so GTK keeps its default focus handling.
         assert result is False
+
+
+# --------------------------------------------------------------------------- #
+# macOS Cmd+Q quit handling
+# --------------------------------------------------------------------------- #
+
+
+class TestMacOsQuit:
+    """The Quartz bundle has no app menu, so Cmd+Q is otherwise unbound and
+    falls through to the ``q`` action binding. The window intercepts it and
+    routes to the graceful close path – but only on macOS, and only when the
+    Command modifier is actually present, so the normal ``q`` action still
+    works."""
+
+    def _q_event(self, *, state: int) -> SimpleNamespace:
+        set_keyval_mapping({17: "q"})
+        return SimpleNamespace(keyval=17, state=state)
+
+    def test_cmd_q_on_macos_quits_gracefully(self, window, monkeypatch) -> None:
+        monkeypatch.setattr(sys, "platform", "darwin")
+        closes: list[dict[str, Any]] = []
+        key_downs: list[dict[str, Any]] = []
+        window.add_event_handler(closes.append, "close")
+        window.add_event_handler(key_downs.append, "key_down")
+
+        result = window._window.fire(
+            "key-press-event",
+            self._q_event(state=FakeGdkModifierType.MOD2_MASK),
+        )
+
+        # Routed to the graceful close path – not emitted as a 'q' nudge.
+        assert result is True
+        assert closes == [{}]
+        assert key_downs == []
+        assert window._closing is True
+        assert FakeGtk.main_quit_calls == 1
+
+    def test_cmd_q_via_meta_mask_also_quits(self, window, monkeypatch) -> None:
+        """Some GTK-Quartz builds surface Command as META rather than MOD2."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        closes: list[dict[str, Any]] = []
+        window.add_event_handler(closes.append, "close")
+
+        window._window.fire(
+            "key-press-event",
+            self._q_event(state=FakeGdkModifierType.META_MASK),
+        )
+
+        assert closes == [{}]
+        assert FakeGtk.main_quit_calls == 1
+
+    def test_plain_q_on_macos_is_normal_key_down(self, window, monkeypatch) -> None:
+        """Without the Command modifier, 'q' must keep driving its action
+        binding (raise marker Z) rather than quitting the app."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        key_downs: list[dict[str, Any]] = []
+        window.add_event_handler(key_downs.append, "key_down")
+
+        result = window._window.fire("key-press-event", self._q_event(state=0))
+
+        assert key_downs == [{"key": "q"}]
+        assert FakeGtk.main_quit_calls == 0
+        assert window._closing is False
+        # No overlay mounted → absorbs the event.
+        assert result is True
+
+    def test_cmd_q_on_linux_is_normal_key_down(self, window, monkeypatch) -> None:
+        """On Linux MOD2 is NumLock, not Command – NumLock+q must not quit."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        key_downs: list[dict[str, Any]] = []
+        window.add_event_handler(key_downs.append, "key_down")
+
+        window._window.fire(
+            "key-press-event",
+            self._q_event(state=FakeGdkModifierType.MOD2_MASK),
+        )
+
+        assert key_downs == [{"key": "q"}]
+        assert FakeGtk.main_quit_calls == 0
+        assert window._closing is False
+
+    def test_cmd_plus_other_key_on_macos_does_not_quit(self, window, monkeypatch) -> None:
+        """Only Cmd+Q is intercepted – Cmd+<other> falls through normally."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        set_keyval_mapping({3: "A"})
+        key_downs: list[dict[str, Any]] = []
+        window.add_event_handler(key_downs.append, "key_down")
+
+        window._window.fire(
+            "key-press-event",
+            SimpleNamespace(keyval=3, state=FakeGdkModifierType.MOD2_MASK),
+        )
+
+        assert key_downs == [{"key": "a"}]
+        assert FakeGtk.main_quit_calls == 0
+
+    def test_key_event_without_state_attr_does_not_crash(self, window, monkeypatch) -> None:
+        """Defensive: a key event lacking ``.state`` (some synthetic events)
+        must fall through to normal handling, not raise."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        set_keyval_mapping({17: "q"})
+        key_downs: list[dict[str, Any]] = []
+        window.add_event_handler(key_downs.append, "key_down")
+
+        window._window.fire("key-press-event", SimpleNamespace(keyval=17))
+
+        assert key_downs == [{"key": "q"}]
+        assert FakeGtk.main_quit_calls == 0

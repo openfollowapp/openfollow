@@ -1,0 +1,21 @@
+# OpenFollow first-run defaults for the macOS .app bundle.
+# Copied to ~/Library/Application Support/OpenFollow/config.toml on first launch
+# (never overwritten afterwards). Only the few fields that differ from the
+# dataclass defaults are set; everything else falls back to those defaults.
+
+# Port 80 needs root. A double-clicked .app runs as the logged-in user, so the
+# web UI binds an unprivileged port instead.
+web_port = 8080
+
+# A fresh install has no live NDI / SRT / RTSP feed, so start on the synthetic
+# test pattern: the operator sees the HUD render immediately, then picks a real
+# source in the web UI. testpattern is available on every platform.
+video_source_type = "testpattern"
+
+[detection]
+# Detection ships ready to run: onnxruntime + opencv are bundled and a default
+# yolov8n.onnx is seeded into the storage folder below on first launch.
+enabled = true
+# Absolute, writable, device-local path. @STORAGE_PATH@ is substituted with the
+# user's "Application Support/OpenFollow/yolo" by the bundle launcher.
+storage_path = "@STORAGE_PATH@"

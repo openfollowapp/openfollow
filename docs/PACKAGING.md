@@ -286,3 +286,143 @@ install* takes an operator-supplied `.ofupdate` over the LAN. Both paths verify
 the bundle's signature (against the on-device public key) and the `.deb`'s
 SHA-256 before installing, and fail closed otherwise. See
 [`SERVICE.md`](./SERVICE.md#web-update-button) for the install/privilege details.
+
+## macOS `.dmg` (developer build)
+
+A self-contained macOS app for **workstation / development** use, not show
+deployment (the Raspberry Pi `.deb` / image remain the production targets). The
+`.dmg` bundles everything – Python, the GTK / GStreamer / GObject / Cairo / Rsvg
+native stack, the detection inference backend (`onnxruntime` + `opencv`), and the
+model-export toolchain (`ultralytics` + `torch`) – so it runs on a clean Mac with
+nothing pre-installed.
+
+### Files (macOS)
+
+Everything lives under [`packaging/macos/`](../packaging/macos/):
+
+| File | Role |
+| --- | --- |
+| `build-dmg.sh` | Orchestrates icon → default model → PyInstaller → ad-hoc sign → self-check → DMG. |
+| `openfollow.spec` | PyInstaller spec (collects the native stack + detection/export extras). |
+| `launcher.py` | Bundle entry point: `--export` re-exec, `OPENFOLLOW_SELFCHECK`, and the GUI (seeds per-user config + default model on first run). |
+| `runtime_hook.py` | Points `GI_TYPELIB_PATH` / `GST_PLUGIN_PATH` / GdkPixbuf / GTK theme paths at the bundle before `gi` loads. |
+| `config.seed.toml` | First-run config (binds the web UI to port 8080, enables detection). |
+| `make-icns.sh` | Renders the `.icns` from `openfollow/web/static/icon.svg`. |
+
+### Build it (macOS)
+
+```bash
+# One-time host tools (in addition to the documented macOS dev setup):
+brew install librsvg create-dmg
+
+make dmg            # -> dist/OpenFollow-<version>-<arch>.dmg
+```
+
+`make dmg` is macOS-only, installs the optional `package-macos` Poetry group plus
+the `detection` + `export` extras, then runs `build-dmg.sh`. The build host needs
+an uplink (torch / ultralytics wheels + the default model weights). The output is
+**single-arch** (matches the build host; an Intel `.dmg` needs an Intel build
+host). It is **large** because of torch – on Apple Silicon the `.app` is ~900 MB
+and the compressed `.dmg` ~350 MB.
+
+A post-build self-check runs the frozen app with a scrubbed environment
+(`env -i HOME=$HOME OPENFOLLOW_SELFCHECK=1 …`) and fails the build unless the
+bundled `gi` / GStreamer elements and the detection deps all resolve from inside
+the `.app`.
+
+### Build internals (when the native stack breaks)
+
+Freezing a relocated Homebrew GTK / GStreamer tree alongside torch / opencv hits
+three native-library traps. Each has a guard that fails the build loudly rather
+than shipping a bundle that crashes on launch, so a future spec edit that
+regresses one is caught at build time:
+
+- **Analysis-time dyld resolution.** PyInstaller's `gi` hooks resolve
+  `libgio` / `libgobject` / `librsvg` / `libgstapp` through `macholib`, which does
+  not search the Homebrew prefix. `build-dmg.sh` exports
+  `DYLD_FALLBACK_LIBRARY_PATH` to the brew lib dir so the freeze can find them.
+- **Vendored-dylib shadowing.** The `cv2`, `pygame`, `Pillow`, and `matplotlib`
+  wheels each vendor an older `libglib` / `libintl` / `libharfbuzz` /
+  `libfreetype` / `libfontconfig` under `<pkg>/.dylibs/`. PyInstaller dedups
+  shared libs by basename, so a vendored copy can win and shadow the newer
+  Homebrew build the GObject / pango stack needs (`g_string_copy`,
+  `_hb_coretext_font_create`). `build-dmg.sh` prunes those vendored copies before
+  the freeze (and swaps `opencv-python` → `opencv-python-headless`); the spec
+  asserts every collected `libglib` / `libharfbuzz` comes from a Homebrew source.
+- **GStreamer plugin scan.** The `gi` Gst hook collects all 270+ Homebrew
+  plugins, including `gst-plugins-rs` ones that embed a Python runtime; GStreamer
+  `dlopen`/`dlclose`s every plugin during its registry scan, and one of those
+  `dlclose`s runs a matplotlib static destructor with the GIL released → a fatal
+  abort in `Gst.init()`. The spec keeps an allowlist of the standard C plugins
+  OpenFollow actually uses (and asserts the critical ones – `gtk`, `applemedia`,
+  `videoconvertscale`, `videotestsrc`, `imagefreeze` – survive), and
+  `runtime_hook.py` pins the versioned `GST_PLUGIN_SYSTEM_PATH_1_0` to the
+  bundle's `gst_plugins/` dir so the scan can't recurse into `Frameworks/` and
+  pick up `*.cpython-*.so` extension modules as would-be plugins.
+- **Dynamically imported Python modules.** PyInstaller's static analysis only
+  follows literal `import` statements, so modules pulled in by a runtime string
+  are dropped. OpenFollow has three such surfaces: the video input plugins
+  (discovered by walking `openfollow.video.inputs` with `pkgutil`), the bottle
+  templates (`% from openfollow.<mod> import …` at render time), and `mido`'s
+  MIDI backend. A partial collection is the nastiest failure mode here because it
+  passes a naive smoke test: the app launches, then crash-loops on the first
+  `init_video` (`Unknown video input type: 'testpattern'`) or 500s on the first
+  web request (`No module named 'openfollow.web.labels'`). The spec collects the
+  whole `openfollow` package plus the `mido.backends` / `rtmidi` modules, and the
+  `OPENFOLLOW_SELFCHECK` step asserts the full input-plugin registry resolves and
+  every template-imported submodule imports – so a regression fails the build.
+
+### Models
+
+- A default `yolov8n.onnx` is generated at build time and seeded into
+  `~/Library/Application Support/OpenFollow/yolo/models/` on first launch, so
+  detection runs immediately.
+- The web UI **Person Detection → Download model** action works from the
+  installed app. Because the frozen `sys.executable` is the app (not a Python
+  interpreter), the export route re-execs the app in `--export` mode and runs
+  `export_onnx` in-process (see `_build_export_argv` in
+  [`openfollow/web/routes.py`](../openfollow/web/routes.py)). This is the **same
+  operator-clicked, online model-export action** the offline-runtime contract
+  already allows as an exception – the desktop bundle just makes it functional.
+  It is never on the show data path.
+- A Finder-launched `.app` runs with a **read-only working directory** (`/`), and
+  ultralytics downloads the `.pt` weights into the cwd. So the launcher's
+  `run_export` `chdir`s into the writable storage root
+  (`~/Library/Application Support/OpenFollow/yolo/`) and pins
+  `YOLO_CONFIG_DIR` / `MPLCONFIGDIR` / `XDG_CACHE_HOME` under it before exporting.
+
+### Signing / Gatekeeper
+
+The `.app` is **ad-hoc signed, not notarized**. macOS quarantines it on first
+download, so the operator must clear the quarantine flag once:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/OpenFollow.app"
+# or: right-click the app -> Open -> Open
+```
+
+Notarization (Developer ID + `notarytool` + stapling) and a CI `macos` release
+job are tracked follow-ups.
+
+### On-device "Open Web UI"
+
+The Settings-menu **Open Web UI** action opens the local web UI
+(`http://127.0.0.1:<port>/`) in the system default browser via `open`. The
+embedded WebKitGTK overlay used on Linux/Pi is **not** available on macOS – the
+Homebrew `webkitgtk` port renders through X11/Wayland (incompatible with the
+native Quartz GTK window) and ships no bottle – so nothing WebKit-related is
+bundled. The web server is unchanged and also reachable from any browser on the
+LAN at `http://<mac-ip>:8080/`.
+
+### Not bundled
+
+**NDI** is excluded from the macOS bundle. The proprietary NDI SDK (`libndi`) and
+the `ndisrc` GStreamer plugin (`libgstndi`) are pruned in `openfollow.spec` – the
+SDK would otherwise be redistributed, and the spec now asserts neither survives so
+a transitive re-add fails the build. With no `ndisrc` element,
+`NdiInput.is_available()` is False, so **NDI does not appear in the source picker
+on the Mac app**. (Discovery can't be made to work against a system NDI Tools
+install either: the bundle's GStreamer scan is confined to its own `gst_plugins/`,
+so a system `ndisrc` is never picked up.) NDI input remains available on the
+Raspberry Pi build; receiving NDI on macOS would need a separate, NDI-licensed
+build, which is out of scope for the developer DMG.

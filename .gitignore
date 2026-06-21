@@ -14,6 +14,9 @@ packaging/image/openfollow.deb
 packaging/image/*.img
 packaging/image/*.img.xz
 
+# macOS .app/.dmg build artifacts (generated icon, iconset, default model)
+packaging/macos/_build/
+
 # Poetry
 .venv/
 

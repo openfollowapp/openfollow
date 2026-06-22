@@ -88,6 +88,43 @@ def test_solve_camera_dlt_rejects_degenerate_input() -> None:
     assert solved is None
 
 
+def test_solve_camera_dlt_rejects_mirror_solution_that_reprojects_to_nan() -> None:
+    """A solve that places the calibration points behind the camera is rejected.
+
+    The homography decomposition has a twofold sign ambiguity. For some
+    well-framed inputs it lands on the mirror branch – a finite camera below
+    the floor (pos_z < 0, roll ~= 180 deg) whose own world points fall behind
+    the lens, so ``project_points`` returns all-NaN. The reprojection gate must
+    reject this: ``NaN > 20.0`` is ``False``, so a bare threshold check lets the
+    bad camera through. The contract is reconstruct-or-None, never a camera that
+    can't reproject its own input.
+
+    Inputs are the exact regime that ``test_solver_properties`` falsified:
+    on-screen corners unprojected onto z=0, then solved.
+    """
+    params = np.array([-12.0, -5.0, 4.0, -68.0, -25.0, 0.0, 40.0], dtype=np.float64)
+    w, h = 1920.0, 1080.0
+    screen = np.array(
+        [[0.25 * w, 0.25 * h], [0.75 * w, 0.25 * h], [0.75 * w, 0.75 * h], [0.25 * w, 0.75 * h]],
+        dtype=np.float64,
+    )
+    world = unproject_to_plane(params, screen, w, h, plane_z_psn=0.0)
+    assert np.all(np.isfinite(world))
+
+    solved = solve_camera_dlt([tuple(p) for p in world], [tuple(p) for p in screen], w, h)
+
+    # Either the solver rejected the mirror branch, or it returned a camera
+    # that genuinely reproduces the input (finite reprojection) – never a
+    # camera whose own points reproject to NaN.
+    if solved is not None:
+        solved_params = np.array(
+            [solved.pos_x, solved.pos_y, solved.pos_z, solved.pitch, solved.yaw, solved.roll, solved.fov],
+            dtype=np.float64,
+        )
+        reproj = project_points(solved_params, world, w, h)
+        assert np.all(np.isfinite(reproj)), "solver returned a camera that reprojects its own input to NaN"
+
+
 # --- Horizontal-FOV semantics ------------------------------------------------
 
 

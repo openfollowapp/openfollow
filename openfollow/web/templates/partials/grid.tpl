@@ -85,7 +85,7 @@
                 <span id="grid-thickness-error" class="field-error"></span>
             </div>
             <div class="field">
-                <label for="grid-transparency">Transparency (0–1)</label>
+                <label for="grid-transparency">Opacity (0–1)</label>
                 <input id="grid-transparency" type="number" name="transparency" value="{{config.grid.transparency}}" min="0" max="1" step="any"
                        hx-get="/api/validate/grid/transparency" hx-trigger="blur changed delay:200ms"
                        hx-target="#grid-transparency-error" hx-swap="innerHTML" hx-include="closest form"

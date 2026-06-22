@@ -379,7 +379,7 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         ),
         "color": _hex_color_rule(),
         "thickness": FieldRule(_as_positive_int, lo=1, hi=20, human_error="Thickness must be between 1 and 20 px."),
-        "transparency": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Transparency must be between 0 and 1."),
+        "transparency": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Opacity must be between 0 and 1."),
         "origin_visible": FieldRule(_as_bool),
         "origin_length": FieldRule(_as_float, lo=0.1, human_error="Origin length must be at least 0.1 m."),
         "origin_thickness": FieldRule(
@@ -397,7 +397,7 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
     "marker": {
         "ball_visible": FieldRule(_as_bool),
         "ball_size": FieldRule(_as_float, lo=0.0, human_error="Ball size must be ≥ 0."),
-        "transparency": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Transparency must be between 0 and 1."),
+        "transparency": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Opacity must be between 0 and 1."),
         "crosshair_visible": FieldRule(_as_bool),
         "crosshair_size": FieldRule(_as_float, lo=0.0, human_error="Crosshair size must be ≥ 0."),
         "crosshair_color": _hex_color_rule(),

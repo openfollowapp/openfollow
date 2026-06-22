@@ -167,6 +167,16 @@ def test_validate_range_high() -> None:
     assert "FOV" in err
 
 
+@pytest.mark.parametrize("section", ["grid", "marker"])
+def test_validate_opacity_out_of_range_uses_opacity_wording(section: str) -> None:
+    """The 0-1 alpha control is opacity (1 = fully opaque, 0 = invisible), so
+    its out-of-range message reads "Opacity", not the inverted "Transparency"."""
+    err = validate(section, "transparency", "2")
+    assert err is not None
+    assert "Opacity" in err
+    assert "Transparency" not in err
+
+
 def test_validate_pattern_failure() -> None:
     err = validate("grid", "color", "#zzz")
     assert err is not None

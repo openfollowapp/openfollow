@@ -24,7 +24,7 @@ Point** – the (0, 0, 0) of your show (see Core Concepts).
 
 - **Line Color** – colour of the grid lines.
 - **Line Thickness** – line weight in pixels (1–20).
-- **Transparency** – `0` fully transparent, `1` fully opaque.
+- **Opacity** – `0` fully transparent, `1` fully opaque.
 
 ## Offset Position
 

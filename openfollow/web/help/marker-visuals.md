@@ -8,7 +8,7 @@ The ball is the primary visual: a semi-transparent sphere drawn at the marker's 
 
 - **Show Ball** – enable or disable the ball. When unchecked the ball is hidden; all other elements (crosshair, drop line, ground circle) remain active independently.
 - **Ball Size** – radius of the ball in metres. Because it is sized in world units, `0.15` m appears roughly head-sized at a performer's head height. Default: `0.15`.
-- **Transparency (0–1)** – opacity of the ball. `0` is fully transparent; `1` is fully opaque; in-between values let the stage image show through. Default: `0.3`.
+- **Opacity (0–1)** – `0` is fully transparent; `1` is fully opaque; in-between values let the stage image show through. Default: `0.3`.
 
 ## Crosshair
 

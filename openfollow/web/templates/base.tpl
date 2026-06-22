@@ -1968,6 +1968,10 @@
  {{config.psn_system_name}}
  </div>
  % end
+ <div class="lang-switch" role="group" aria-label="Language">
+ <a href="/set-lang/en">EN</a>
+ <a href="/set-lang/zh_CN">中文</a>
+ </div>
  </header>
  {{!base}}
  % if defined('on_device') and on_device:

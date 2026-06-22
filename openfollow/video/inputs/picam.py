@@ -7,6 +7,7 @@ parsing ``rpicam-hello --list-cameras``.
 """
 
 from __future__ import annotations
+from openfollow.i18n import _, _l  # noqa: E402
 
 import logging
 import re
@@ -60,7 +61,7 @@ class PiCamInput(VideoInputBase):
     """Raspberry Pi CSI/MIPI camera input via libcamera."""
 
     input_id = "picam"
-    display_name = "Pi Camera"
+    display_name = _l("Pi Camera")
 
     # -- Declarations ---------------------------------------------------------
 
@@ -191,7 +192,7 @@ class PiCamInput(VideoInputBase):
         return (
             '<div class="row ndi-row">'
             '    <div class="field wide">'
-            "        <label>Camera</label>"
+            f"        <label>{_("Camera")}</label>"
             '        <select name="picam_camera_name"'
             '                hx-get="/video-input/picam/cameras"'
             '                hx-trigger="load, click from:#refresh-picam"'
@@ -207,17 +208,17 @@ class PiCamInput(VideoInputBase):
             "</div>"
             '<div class="row">'
             '    <div class="field">'
-            "        <label>Width</label>"
+            f"        <label>{_("Width")}</label>"
             f'        <input type="number" name="picam_width" value="{width}"'
             '                min="320" max="4056">'
             "    </div>"
             '    <div class="field">'
-            "        <label>Height</label>"
+            f"        <label>{_("Height")}</label>"
             f'        <input type="number" name="picam_height" value="{height}"'
             '                min="240" max="3040">'
             "    </div>"
             '    <div class="field">'
-            "        <label>FPS</label>"
+            f"        <label>{_("FPS")}</label>"
             f'        <input type="number" name="picam_framerate" value="{framerate}"'
             '                min="1" max="120">'
             "    </div>"

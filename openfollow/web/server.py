@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 from bottle import TEMPLATE_PATH, Bottle
 
 import openfollow
+from openfollow.i18n import I18NPlugin
 from openfollow.net_utils import get_local_ipv4_addresses, get_primary_local_ipv4
 from openfollow.services import WebCommandQueue
 from openfollow.web.discovery import BeaconReceiver, BeaconSender, PeerInfo
@@ -238,6 +239,8 @@ class ConfigWebServer:
         self.camera_names_provider = camera_names_provider
         self._started_at = time.monotonic()
         self._app = Bottle()
+        # i18n: per-request language negotiation (browser Accept-Language / ?lang=)
+        self._app.install(I18NPlugin(domain="openfollow"))
         # Guards the HTTP-server slot assignment in ``_run`` against ``stop()``.
         # Without it, ``stop()`` could run in the window after ``start()`` sets
         # the thread but before ``_run`` populates the slot, miss the freshly

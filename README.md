@@ -223,6 +223,21 @@ poetry install
 poetry run openfollow
 ```
 
+#### Troubleshooting
+
+- **`poetry install` fails with `EnvCommandError` (macOS / pyenv).** If the
+  traceback shows `platform.mac_ver()` returning an empty string, your pyenv
+  Python was built without macOS framework support, so pip can't compute the
+  wheel platform tag when it builds a dependency from source. Reinstall the
+  interpreter with framework support and recreate the venv:
+
+  ```bash
+  PYTHON_CONFIGURE_OPTS="--enable-framework" pyenv install 3.13 --force
+  pyenv local 3.13
+  poetry env remove --all   # drop the venv built against the old interpreter
+  poetry install
+  ```
+
 <details>
 <summary><b>Optional: AI person detection</b></summary>
 

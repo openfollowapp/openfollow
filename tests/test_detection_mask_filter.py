@@ -49,6 +49,20 @@ def test_box_with_feet_outside_mask_is_dropped() -> None:
     assert filter_detections_to_masks([outside], [_TOP_LEFT]) == []
 
 
+def test_master_switch_off_passes_everything_through() -> None:
+    # masks_enabled=False is the master off: an enabled mask is ignored, so a
+    # box that would be dropped passes through untouched.
+    outside = _box(0.9, 0.9)
+    assert filter_detections_to_masks([outside], [_TOP_LEFT], masks_enabled=False) == [outside]
+
+
+def test_master_switch_on_applies_the_filter() -> None:
+    # masks_enabled=True (also the default) confines detection to the mask.
+    inside = _box(0.25, 0.25)
+    outside = _box(0.9, 0.9)
+    assert filter_detections_to_masks([inside, outside], [_TOP_LEFT], masks_enabled=True) == [inside]
+
+
 def test_union_of_two_masks_keeps_boxes_in_either() -> None:
     in_tl = _box(0.25, 0.25)
     in_br = _box(0.75, 0.75)

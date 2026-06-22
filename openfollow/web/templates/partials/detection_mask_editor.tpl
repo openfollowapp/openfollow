@@ -1,13 +1,21 @@
-<div id="detection-mask-editor" class="section" data-help="detection_mask_editor">
+<div id="detection-mask-editor" class="section" data-fold-key="detection_masks" data-help="detection_mask_editor">
     <div class="section-head">
-        <h2>Detection Masks</h2>
-        <span class="section-note">Limit detection to the regions you draw on the camera image. People outside every mask are ignored.</span>
+        <h2>Detection Masks <span class="badge-experimental">Experimental</span></h2>
+        <span class="section-note">Limit detection to regions you draw on the camera image.</span>
+    </div>
+
+    <div class="dme-master">
+        <label class="dme-switch">
+            <input type="checkbox" data-dme="enabled">
+            <span>Apply masks</span>
+        </label>
+        <span class="dme-master-note" data-dme="enabledNote" aria-live="polite"></span>
     </div>
 
     <div class="dme-toolbar">
         <button type="button" class="dme-btn" data-dme="new">+ New Mask</button>
-        <button type="button" class="dme-btn" data-dme="finish" hidden>Finish Polygon</button>
-        <button type="button" class="dme-btn" data-dme="cancel" hidden>Cancel</button>
+        <button type="button" class="dme-btn dme-hidden" data-dme="finish">Finish Polygon</button>
+        <button type="button" class="dme-btn dme-hidden" data-dme="cancel">Cancel</button>
         <button type="button" class="dme-btn" data-dme="delete" disabled>Delete Selected</button>
         <button type="button" class="dme-btn" data-dme="refresh">Refresh Image</button>
     </div>
@@ -23,6 +31,14 @@
 </div>
 
 <style>
+    /* When collapsed, hide every child but the header. The per-element rules
+       below are ID-scoped and out-specify the base .section collapse rule, so
+       restate it here at matching specificity. */
+    #detection-mask-editor.is-collapsed > :not(.section-head) { display: none; }
+    #detection-mask-editor .dme-master { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+    #detection-mask-editor .dme-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.9rem; }
+    #detection-mask-editor .dme-switch input { width: 16px; height: 16px; cursor: pointer; }
+    #detection-mask-editor .dme-master-note { font-size: 0.8rem; color: rgba(255,255,255,0.6); }
     #detection-mask-editor .dme-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
     #detection-mask-editor .dme-btn {
         padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.18);
@@ -34,6 +50,7 @@
         position: relative; width: 100%; max-width: 960px; line-height: 0;
         border-radius: 8px; overflow: hidden; background: #000;
     }
+    #detection-mask-editor .dme-hidden { display: none; }
     #detection-mask-editor #dme-img { display: block; width: 100%; height: auto; }
     #detection-mask-editor #dme-svg {
         position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair;
@@ -75,6 +92,8 @@
     var btnCancel = root.querySelector('[data-dme="cancel"]');
     var btnDelete = root.querySelector('[data-dme="delete"]');
     var btnRefresh = root.querySelector('[data-dme="refresh"]');
+    var chkEnabled = root.querySelector('[data-dme="enabled"]');
+    var enabledNote = root.querySelector('[data-dme="enabledNote"]');
 
     var SVG_NS = 'http://www.w3.org/2000/svg';
     var masks = [];      // [{name, vertices:[[nx,ny],...], enabled}]
@@ -195,9 +214,12 @@
     function setHint(t) { hintEl.textContent = t || ''; }
     function updateToolbar() {
         var drawing = !!draft;
-        btnNew.hidden = drawing;
-        btnFinish.hidden = !drawing;
-        btnCancel.hidden = !drawing;
+        // Toggle a class, not the ``hidden`` attribute: the global ``button``
+        // rule sets ``display``, which (author origin) defeats the UA
+        // ``[hidden]`` rule – so a hidden button stays visible and clickable.
+        btnNew.classList.toggle('dme-hidden', drawing);
+        btnFinish.classList.toggle('dme-hidden', !drawing);
+        btnCancel.classList.toggle('dme-hidden', !drawing);
         btnDelete.disabled = drawing || selected < 0;
     }
     function select(i) {
@@ -213,6 +235,21 @@
             body: body ? JSON.stringify(body) : undefined
         });
     }
+    function setMasterNote() {
+        if (!enabledNote) return;
+        enabledNote.textContent = (chkEnabled && chkEnabled.checked)
+            ? 'Masks on – detection is limited to the enabled regions below.'
+            : 'Masks off – detection runs over the whole frame.';
+    }
+    function setMasterEnabledUI(on) {
+        if (chkEnabled) chkEnabled.checked = !!on;
+        setMasterNote();
+    }
+    function saveMasterEnabled() {
+        setMasterNote();
+        jsonFetch('POST', '/api/detection/masks/enabled', { enabled: !!(chkEnabled && chkEnabled.checked) })
+            .catch(function() {});
+    }
     function fetchMasks() {
         return fetch('/api/detection/masks')
             .then(function(r) { return r.ok ? r.json() : null; })
@@ -225,6 +262,7 @@
                         enabled: m.enabled !== false
                     };
                 });
+                setMasterEnabledUI(d.masks_enabled === true);
                 if (selected >= masks.length) selected = masks.length - 1;
                 updateToolbar(); render(); renderList();
             })
@@ -294,7 +332,10 @@
 
     // -- snapshot --
     function setFeed(ok) {
-        stage.style.display = ok ? 'block' : 'none';
+        // Toggle a class, not an inline ``display`` – an inline style would beat
+        // the section-collapse stylesheet rule and keep the canvas visible while
+        // the box is collapsed.
+        stage.classList.toggle('dme-hidden', !ok);
         noFeed.hidden = ok;
         btnNew.disabled = !ok;
     }
@@ -327,10 +368,12 @@
     btnCancel.addEventListener('click', cancelDraft);
     btnDelete.addEventListener('click', function() { if (selected >= 0) deleteMask(selected); });
     btnRefresh.addEventListener('click', loadSnapshot);
+    if (chkEnabled) chkEnabled.addEventListener('change', saveMasterEnabled);
     svg.addEventListener('click', onStageClick);
     svg.addEventListener('dblclick', function(ev) { if (draft) { ev.preventDefault(); finishDraft(); } });
 
     updateToolbar();
+    setMasterNote();
     fetchMasks();
     loadSnapshot();
 })();

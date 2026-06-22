@@ -123,6 +123,8 @@ class DetectionBox:
 def filter_detections_to_masks(
     boxes: list[DetectionBox],
     masks: list[DetectionMaskConfig],
+    *,
+    masks_enabled: bool = True,
 ) -> list[DetectionBox]:
     """Keep only detections whose ground point falls inside an enabled mask.
 
@@ -130,7 +132,13 @@ def filter_detections_to_masks(
     box bottom-center ``((x1+x2)/2, y2)`` – where the person stands. With no
     usable mask (none enabled, or all under 3 vertices) every box passes
     through, so masking stays strictly opt-in.
+
+    ``masks_enabled`` is the operator's master switch: when False every box
+    passes through regardless of the drawn masks, so masking only takes effect
+    once it is turned on.
     """
+    if not masks_enabled:
+        return boxes
     polys = [[(v[0], v[1]) for v in m.vertices] for m in masks if m.enabled and len(m.vertices) >= 3]
     if not polys:
         return boxes
@@ -1111,7 +1119,8 @@ class PersonDetector:
 
             # Confine detection to the operator's masks before tracking, so
             # out-of-mask detections (e.g. audience) never spawn tracklets.
-            boxes = filter_detections_to_masks(boxes, self._config.masks)
+            # Gated on the master switch: off ⇒ the whole frame is detected.
+            boxes = filter_detections_to_masks(boxes, self._config.masks, masks_enabled=self._config.masks_enabled)
 
             # Associate detections to tracklets (two-stage ByteTrack). Guarded
             # like inference: a numerical edge in the tracker (e.g. a singular

@@ -1,10 +1,9 @@
 % saved_section = defined('saved_section') and saved_section or ''
+%# One-of-N widget rule:
+%#   seg-toggle--N  -> a mode (2-4 options) that changes what the form shows (Tracking).
+%#   tier-list      -> an ordered ladder of 5+ ranked tiers where order is information (Quality).
+%#   <select>       -> plain enumerated values with no per-option descriptor (Detection rate).
 <div id="detection-section" class="experimental-feature detection-cards {{'saved' if saved_section else ''}}">
-
-    <div class="detection-intro">
-        <h2>Person Detection <span class="badge-experimental">Experimental</span></h2>
-        <span class="section-note">Optional YOLO person detection. Compute-heavy &ndash; a workstation is recommended over a Pi 5; see each box's help. Each box saves on its own.</span>
-    </div>
 
 % missing = defined('detection_missing') and detection_missing or []
 % install_feedback = defined('install_feedback') and install_feedback or ''
@@ -64,8 +63,8 @@
     <form class="section {{'saved' if saved_section == 'tracking' else ''}}" data-fold-key="detection_tracking" data-help="detection"
           hx-post="/section/detection/tracking" hx-target="#detection-section" hx-swap="outerHTML" hx-trigger="submit">
         <div class="section-head">
-            <h2>Tracking</h2>
-            <span class="section-note">How detection follows your performers. Turning tracking on starts person detection automatically.</span>
+            <h2>Tracking <span class="badge-experimental">Experimental</span></h2>
+            <span class="section-note">Turn detection on and choose how it steers your markers.</span>
         </div>
         <div class="row">
             <div class="field">
@@ -86,27 +85,24 @@
                 </div>
             </div>
         </div>
-        <div class="row" data-replace-only {{'' if tracking_state == 'replace' else 'hidden'}}>
-            <div class="field">
-                <label>Follow marker</label>
-%     saved_pin_id = det.pin_marker_id
-%     pin_id_in_list = saved_pin_id in config.controlled_marker_ids
-                <select name="pin_marker_id">
-                    <option value="-1" {{'selected' if saved_pin_id < 0 else ''}}>Currently selected (controller)</option>
-%     if saved_pin_id >= 0 and not pin_id_in_list:
-                    <option value="{{saved_pin_id}}" selected disabled>Marker {{saved_pin_id}} (unavailable)</option>
-%     end
-% for tid in config.controlled_marker_ids:
-                    <option value="{{tid}}" {{'selected' if saved_pin_id == tid else ''}}>Marker {{tid}}</option>
-% end
-                </select>
-                <span class="field-note">Which marker the automatic tracker drives.</span>
-            </div>
-        </div>
-
         <div class="group">
             <h3 class="group-title">Motion</h3>
             <div class="row row--pair">
+                <div class="field" data-replace-only {{'' if tracking_state == 'replace' else 'hidden'}}>
+                    <label>Follow marker</label>
+%     saved_pin_id = det.pin_marker_id
+%     pin_id_in_list = saved_pin_id in config.controlled_marker_ids
+                    <select name="pin_marker_id">
+                        <option value="-1" {{'selected' if saved_pin_id < 0 else ''}}>Currently selected (controller)</option>
+%     if saved_pin_id >= 0 and not pin_id_in_list:
+                        <option value="{{saved_pin_id}}" selected disabled>Marker {{saved_pin_id}} (unavailable)</option>
+%     end
+% for tid in config.controlled_marker_ids:
+                        <option value="{{tid}}" {{'selected' if saved_pin_id == tid else ''}}>Marker {{tid}}</option>
+% end
+                    </select>
+                    <span class="field-note">Which marker the automatic tracker drives.</span>
+                </div>
                 <div class="field">
                     <label>Track</label>
                     <select name="pin_point">
@@ -115,41 +111,47 @@
                     </select>
                     <span class="field-note">Which part of the person sets the marker.</span>
                 </div>
-                <div class="field">
-                    <label>Smoothing / glide (0–1)</label>
-                    <input id="detection-smoothing" type="number" name="smoothing" value="{{det.smoothing}}" min="0.01" max="1" step="0.01"
-                           hx-get="/api/validate/detection/smoothing" hx-trigger="blur changed delay:200ms"
-                           hx-target="#detection-smoothing-error" hx-swap="innerHTML" hx-include="closest form"
-                           aria-describedby="detection-smoothing-error" aria-invalid="false">
-                    <span id="detection-smoothing-error" class="field-error"></span>
-                </div>
             </div>
-            <div class="row row--pair">
-                <div class="field">
-                    <label>Prediction</label>
-                    <input id="detection-prediction" type="number" name="prediction" value="{{det.prediction}}" min="0" max="20" step="0.5"
-                           hx-get="/api/validate/detection/prediction" hx-trigger="blur changed delay:200ms"
-                           hx-target="#detection-prediction-error" hx-swap="innerHTML" hx-include="closest form"
-                           aria-describedby="detection-prediction-error" aria-invalid="false">
-                    <span id="detection-prediction-error" class="field-error"></span>
+            <details class="inline-advanced">
+                <summary>Advanced motion</summary>
+                <div class="inline-advanced-content">
+                    <div class="row row--pair">
+                        <div class="field">
+                            <label>Smoothing (0–1)</label>
+                            <input id="detection-smoothing" type="number" name="smoothing" value="{{det.smoothing}}" min="0.01" max="1" step="0.01"
+                                   hx-get="/api/validate/detection/smoothing" hx-trigger="blur changed delay:200ms"
+                                   hx-target="#detection-smoothing-error" hx-swap="innerHTML" hx-include="closest form"
+                                   aria-describedby="detection-smoothing-error" aria-invalid="false">
+                            <span id="detection-smoothing-error" class="field-error"></span>
+                        </div>
+                        <div class="field">
+                            <label>Prediction</label>
+                            <input id="detection-prediction" type="number" name="prediction" value="{{det.prediction}}" min="0" max="20" step="0.5"
+                                   hx-get="/api/validate/detection/prediction" hx-trigger="blur changed delay:200ms"
+                                   hx-target="#detection-prediction-error" hx-swap="innerHTML" hx-include="closest form"
+                                   aria-describedby="detection-prediction-error" aria-invalid="false">
+                            <span id="detection-prediction-error" class="field-error"></span>
+                        </div>
+                    </div>
+                    <div class="row row--pair">
+                        <div class="field">
+                            <label>Grace period (ms)</label>
+                            <input id="detection-grace-period-ms" type="number" name="grace_period_ms" value="{{det.grace_period_ms}}" min="0" max="10000" step="100"
+                                   hx-get="/api/validate/detection/grace_period_ms" hx-trigger="blur changed delay:200ms"
+                                   hx-target="#detection-grace-period-ms-error" hx-swap="innerHTML" hx-include="closest form"
+                                   aria-describedby="detection-grace-period-ms-error" aria-invalid="false">
+                            <span id="detection-grace-period-ms-error" class="field-error"></span>
+                        </div>
+                    </div>
                 </div>
-                <div class="field">
-                    <label>Grace Period (ms)</label>
-                    <input id="detection-grace-period-ms" type="number" name="grace_period_ms" value="{{det.grace_period_ms}}" min="0" max="10000" step="100"
-                           hx-get="/api/validate/detection/grace_period_ms" hx-trigger="blur changed delay:200ms"
-                           hx-target="#detection-grace-period-ms-error" hx-swap="innerHTML" hx-include="closest form"
-                           aria-describedby="detection-grace-period-ms-error" aria-invalid="false">
-                    <span id="detection-grace-period-ms-error" class="field-error"></span>
-                </div>
-            </div>
+            </details>
         </div>
 
         <div class="group group--assist" data-assist-only {{'' if tracking_state == 'assist' else 'hidden'}}>
             <h3 class="group-title">Assisted Tracking</h3>
-            <span class="section-note">Where the AI output sits relative to your manual anchor.</span>
             <div class="row row--pair">
                 <div class="field">
-                    <label>Assist Radius (m)</label>
+                    <label>Assist radius (m)</label>
                     <input id="detection-assist-radius-m" type="number" name="assist_radius_m" value="{{det.assist_radius_m}}" min="0.1" max="50" step="0.1"
                            hx-get="/api/validate/detection/assist_radius_m" hx-trigger="blur changed delay:200ms"
                            hx-target="#detection-assist-radius-m-error" hx-swap="innerHTML" hx-include="closest form"
@@ -157,7 +159,7 @@
                     <span id="detection-assist-radius-m-error" class="field-error"></span>
                 </div>
                 <div class="field">
-                    <label>Clip strength (0–1)</label>
+                    <label>Anchor pull (0–1)</label>
                     <input id="detection-assist-strength" type="number" name="assist_strength" value="{{det.assist_strength}}" min="0" max="1" step="0.05"
                            hx-get="/api/validate/detection/assist_strength" hx-trigger="blur changed delay:200ms"
                            hx-target="#detection-assist-strength-error" hx-swap="innerHTML" hx-include="closest form"
@@ -175,8 +177,8 @@
     <form class="section {{'saved' if saved_section == 'models' else ''}}" data-fold-key="detection_models" data-help="detection"
           hx-post="/section/detection/models" hx-target="#detection-section" hx-swap="outerHTML" hx-trigger="submit">
         <div class="section-head">
-            <h2>Models</h2>
-            <span class="section-note">Pick a detection quality. Higher quality is more accurate but needs more compute.</span>
+            <h2>Detection Model <span class="badge-experimental">Experimental</span></h2>
+            <span class="section-note">The model that spots people. Higher quality sees better, costs more compute.</span>
         </div>
 
 % tiers = defined('detection_tiers') and detection_tiers or []
@@ -290,11 +292,11 @@
     <form class="section {{'saved' if saved_section == 'inference' else ''}}" data-fold-key="detection_inference" data-help="detection"
           hx-post="/section/detection/inference" hx-target="#detection-section" hx-swap="outerHTML" hx-trigger="submit">
         <div class="section-head">
-            <h2>Detection &amp; Display</h2>
-            <span class="section-note">How sensitive detection is and what the overlay draws.</span>
+            <h2>Sensitivity &amp; Overlay <span class="badge-experimental">Experimental</span></h2>
+            <span class="section-note">Detection sensitivity, and what the camera overlay draws.</span>
         </div>
         <div class="group">
-            <h3 class="group-title">Detection</h3>
+            <h3 class="group-title">Sensitivity</h3>
             <div class="row row--pair">
                 <div class="field">
                     <label>Detection sensitivity (0–1)</label>
@@ -305,7 +307,7 @@
                     <span id="detection-confidence-error" class="field-error"></span>
                 </div>
                 <div class="field">
-                    <label>Detection Rate (FPS)</label>
+                    <label>Detection rate (FPS)</label>
                     <select name="interval_ms">
                         <option value="1000" {{'selected' if det.interval_ms == 1000 else ''}}>1 FPS</option>
                         <option value="500" {{'selected' if det.interval_ms == 500 else ''}}>2 FPS</option>
@@ -329,32 +331,31 @@
         </div>
 
         <div class="group">
-            <h3 class="group-title">Display</h3>
+            <h3 class="group-title">Overlay</h3>
             <div class="row row--toggles">
                 <div class="field checkbox-field">
-                    <label>Show Boxes</label>
+                    <label>Show boxes</label>
                     <div class="checkbox-wrap"><input type="checkbox" name="show_boxes" {{'checked' if det.show_boxes else ''}}></div>
                 </div>
                 <div class="field checkbox-field">
-                    <label>Show Labels</label>
+                    <label>Show labels</label>
                     <div class="checkbox-wrap"><input type="checkbox" name="show_labels" {{'checked' if det.show_labels else ''}}></div>
                 </div>
             </div>
             <div class="row row--pair">
                 <div class="field">
-                    <label>Box Color</label>
+                    <label>Box color</label>
                     %# Native picker replaced by circle-swatch full-variant.
                     %# Picked up by color-picker.js via data-color-picker;
                     %# hidden input carries form value. Inline validator dropped
                     %# (see analogous crosshair field in marker.tpl).
                     <button id="detection-box-color" type="button" class="color-swatch-trigger"
                             data-color-picker="full" data-value="{{det.box_color}}"
-                            aria-label="Detection box colour"></button>
+                            aria-label="Detection box color"></button>
                     <input type="hidden" name="box_color" value="{{det.box_color}}">
-                    <span class="field-note">The box attached to a marker is drawn in that marker's colour.</span>
                 </div>
                 <div class="field">
-                    <label>Box Thickness (px)</label>
+                    <label>Box thickness (px)</label>
                     <input id="detection-box-thickness" type="number" name="box_thickness" value="{{det.box_thickness}}" min="1" max="10" step="1"
                            hx-get="/api/validate/detection/box_thickness" hx-trigger="blur changed delay:200ms"
                            hx-target="#detection-box-thickness-error" hx-swap="innerHTML" hx-include="closest form"

@@ -6660,7 +6660,23 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             {"index": idx, "name": m.name, "vertices": m.vertices, "enabled": m.enabled}
             for idx, m in enumerate(cfg.detection.masks)
         ]
-        return json.dumps({"masks": masks_out})
+        return json.dumps({"masks": masks_out, "masks_enabled": cfg.detection.masks_enabled})
+
+    @app.post("/api/detection/masks/enabled")
+    def api_set_detection_masks_enabled() -> Any:
+        """Set the master switch that gates whether masks confine detection."""
+        response.content_type = "application/json"
+        data = _load_json_body()
+        if data is None:
+            return json.dumps({"error": "Invalid JSON"})
+        if not isinstance(data, dict):
+            response.status = 400
+            return json.dumps({"error": "Expected a JSON object"})
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            cfg.detection.masks_enabled = _as_bool(data.get("enabled"), cfg.detection.masks_enabled)
+            save_config(cfg, server.config_path)
+        return json.dumps({"success": True, "masks_enabled": cfg.detection.masks_enabled})
 
     @app.post("/api/detection/masks")
     def api_create_detection_mask() -> Any:

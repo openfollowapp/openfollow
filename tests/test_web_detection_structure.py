@@ -3,11 +3,11 @@
 """Structure tests for the Person Detection partial.
 
 Renders ``partials/detection`` directly (no live server) and asserts the
-three-form layout (Tracking, Models, Detection & Display), the section
-ordering, the Tracking 3-state segmented radio, the YOLO26 quality tiers,
-the replace-only "Follow marker" select, and the absence of the fields the
-refactor dropped (``enabled`` / ``pin_marker`` / ``preprocess_clahe`` /
-``inference_size`` inputs).
+three-form layout (Tracking, Detection Model, Sensitivity & Overlay), the
+section ordering, the Tracking 3-state segmented radio, the YOLO26 quality
+tiers, the replace-only "Follow marker" select, the Advanced-motion
+disclosure, and the absence of the fields the refactor dropped (``enabled`` /
+``pin_marker`` / ``preprocess_clahe`` / ``inference_size`` inputs).
 """
 
 from __future__ import annotations
@@ -50,9 +50,9 @@ def test_three_forms_each_post_to_their_own_route() -> None:
 
 def test_section_order_tracking_then_models_then_detection_display() -> None:
     html = _render()
-    pos_tracking = html.index("<h2>Tracking</h2>")
-    pos_models = html.index("<h2>Models</h2>")
-    pos_display = html.index("<h2>Detection &amp; Display</h2>")
+    pos_tracking = html.index("<h2>Tracking ")
+    pos_models = html.index("<h2>Detection Model ")
+    pos_display = html.index("<h2>Sensitivity &amp; Overlay ")
     assert pos_tracking < pos_models < pos_display
 
 
@@ -196,7 +196,7 @@ def test_no_installed_models_group_when_empty() -> None:
 
 def test_detection_and_display_groups_labelled() -> None:
     html = _render()
-    for title in ("Quality", "Detection", "Display", "Assisted Tracking"):
+    for title in ("Quality", "Sensitivity", "Overlay", "Assisted Tracking"):
         assert f">{title}</h3>" in html
 
 
@@ -208,9 +208,43 @@ def test_max_persons_and_confidence_use_new_labels() -> None:
     assert 'name="confidence"' in html
 
 
+def test_advanced_motion_disclosure_holds_tuning_fields() -> None:
+    # Smoothing + Prediction + Grace period are tucked behind an "Advanced
+    # motion" expander; Follow marker + Track stay visible above it.
+    html = _render()
+    assert "<summary>Advanced motion</summary>" in html
+    advanced = html.split("<summary>Advanced motion</summary>", 1)[1]
+    for name in ("smoothing", "prediction", "grace_period_ms"):
+        assert f'name="{name}"' in advanced
+    # The always-visible motion controls live before the disclosure.
+    before = html.split("<summary>Advanced motion</summary>", 1)[0]
+    assert 'name="pin_point"' in before
+    assert 'name="pin_marker_id"' in before
+
+
+def test_follow_marker_and_track_share_a_row() -> None:
+    # Follow marker (replace-only) and Track sit in the same row--pair: the
+    # segment between this row--pair boundary and the next contains both.
+    html = _render()
+    segments = html.split("row row--pair")
+    seg = next(s for s in segments if ">Follow marker</label>" in s)
+    assert ">Track</label>" in seg
+
+
+def test_motion_labels_use_plain_language() -> None:
+    # Jargon labels renamed; underlying field names are unchanged.
+    html = _render()
+    assert ">Smoothing (0–1)</label>" in html
+    assert ">Anchor pull (0–1)</label>" in html
+    assert "Clip strength" not in html
+    assert "Smoothing / glide" not in html
+    # "Prediction" stays as the visible label by request.
+    assert ">Prediction</label>" in html
+
+
 def test_display_group_keeps_box_controls() -> None:
     html = _render()
-    display_block = html.split(">Display</h3>", 1)[1]
+    display_block = html.split(">Overlay</h3>", 1)[1]
     assert 'name="show_boxes"' in display_block
     assert 'name="show_labels"' in display_block
     assert 'name="box_color"' in display_block
@@ -240,6 +274,45 @@ def test_detection_tiers_helper_maps_labels_and_availability() -> None:
     # Extra not installed → none available regardless of disk.
     no_extra = _detection_tiers({"detection": False}, storage_path="/tmp/of-no-models")
     assert all(t["available"] is False for t in no_extra)
+
+
+def test_every_collapsible_box_carries_experimental_badge() -> None:
+    # Four collapsible boxes (Tracking, Detection Model, Sensitivity & Overlay,
+    # Detection Masks) each carry their own Experimental badge.
+    html = _render()
+    assert html.count("badge-experimental") == 4
+
+
+def test_mask_editor_canvas_visibility_does_not_use_inline_display() -> None:
+    # An inline ``display`` style on the canvas stage beats the section-collapse
+    # rule and leaves the canvas visible while the box is collapsed. The feed
+    # toggle must use a class, not ``style.display``.
+    html = _render()
+    assert "stage.style.display" not in html
+    assert "dme-hidden" in html
+
+
+def test_mask_editor_collapse_outspecifies_its_own_display_rules() -> None:
+    # The editor's ID-scoped ``display: flex`` rules (toolbar, master toggle,
+    # list) out-specify the base ``.section`` collapse rule, so the box must
+    # restate the collapse at matching specificity or those rows stay visible
+    # while collapsed.
+    html = _render()
+    assert "#detection-mask-editor.is-collapsed > :not(.section-head)" in html
+
+
+def test_draw_only_toolbar_buttons_hidden_via_class_not_attribute() -> None:
+    # The global ``button { display }`` rule (author origin) defeats the UA
+    # ``[hidden]`` rule, so the draw-only buttons must hide via the
+    # ``dme-hidden`` class, not the ``hidden`` attribute - otherwise they stay
+    # visible and clickable when no polygon is being drawn.
+    html = _render()
+    assert 'class="dme-btn dme-hidden" data-dme="finish"' in html
+    assert 'class="dme-btn dme-hidden" data-dme="cancel"' in html
+    assert 'data-dme="finish" hidden' not in html
+    assert 'data-dme="cancel" hidden' not in html
+    assert "btnFinish.classList.toggle('dme-hidden'" in html
+    assert "btnCancel.classList.toggle('dme-hidden'" in html
 
 
 def test_detection_tier_availability_reflects_on_disk(tmp_path) -> None:

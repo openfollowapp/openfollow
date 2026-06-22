@@ -2178,6 +2178,32 @@ def test_detection_config_default_values() -> None:
     assert cfg.prediction == pytest.approx(8.0)
 
 
+def test_detection_config_masks_enabled_defaults_off() -> None:
+    """The masking master switch ships off so drawn masks never restrict
+    detection until the operator turns them on."""
+    assert DetectionConfig().masks_enabled is False
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (True, True),
+        (False, False),
+        ("true", True),
+        ("on", True),
+        ("1", True),
+        ("false", False),
+        ("off", False),
+        ("garbage", False),
+        (None, False),
+        (1, False),
+    ],
+)
+def test_detection_config_coerces_masks_enabled(raw: object, expected: bool) -> None:
+    cfg = DetectionConfig(masks_enabled=raw)  # type: ignore[arg-type]
+    assert cfg.masks_enabled is expected
+
+
 def test_load_config_drops_obsolete_detection_keys(temp_config_path) -> None:
     """A hand-edited ``[detection]`` carrying the removed ``pin_marker`` /
     ``preprocess_clahe`` keys loads without raising; the keys are silently

@@ -3784,7 +3784,7 @@ def test_update_trigger_zones_post_renders_partial(live_server) -> None:
 
 
 def test_update_detection_inference_toggles_only_display_bools(live_server) -> None:
-    """The Detection & Display box owns only ``show_boxes`` / ``show_labels``
+    """The Sensitivity & Overlay box owns only ``show_boxes`` / ``show_labels``
     as bool fields. Saving it must not flip ``enabled`` (tracking owns that):
     an absent checkbox coerces to False, a present one to True, and the
     detection enabled state is untouched."""
@@ -3814,8 +3814,8 @@ def test_update_detection_inference_toggles_only_display_bools(live_server) -> N
 
 
 def test_update_detection_models_saves_selected_model(live_server) -> None:
-    """The Models box's quality-tier radios POST ``model``; the chosen value
-    persists and does not disturb the tracking state owned by another box."""
+    """The Detection Model box's quality-tier radios POST ``model``; the chosen
+    value persists and does not disturb the tracking state owned by another box."""
     server, base = live_server
     # Turn detection on via the tracking box first.
     _post_form(base, "/section/detection/tracking", {"tracking_state": "assist"})
@@ -4397,6 +4397,34 @@ def test_api_delete_detection_mask_404_for_out_of_range(live_server) -> None:
 def test_api_create_detection_mask_rejects_non_object_body(live_server) -> None:
     _, base = live_server
     status, body = _post_raw_json(base, "/api/detection/masks", ["not", "a", "dict"])
+    assert status == 400
+    assert "object" in str(body.get("error", "")).lower()
+
+
+def test_api_list_detection_masks_includes_master_flag(live_server) -> None:
+    _, base = live_server
+    status, data = _get_json(base, "/api/detection/masks")
+    assert status == 200
+    # The masking master switch ships off.
+    assert data.get("masks_enabled") is False
+
+
+def test_api_set_detection_masks_enabled_persists(live_server) -> None:
+    server, base = live_server
+    status, body = _post_json(base, "/api/detection/masks/enabled", {"enabled": True})
+    assert status == 200
+    assert body.get("masks_enabled") is True
+    assert load_config(server.config_path).detection.masks_enabled is True
+
+    status, body = _post_json(base, "/api/detection/masks/enabled", {"enabled": False})
+    assert status == 200
+    assert body.get("masks_enabled") is False
+    assert load_config(server.config_path).detection.masks_enabled is False
+
+
+def test_api_set_detection_masks_enabled_rejects_non_object_body(live_server) -> None:
+    _, base = live_server
+    status, body = _post_raw_json(base, "/api/detection/masks/enabled", ["nope"])
     assert status == 400
     assert "object" in str(body.get("error", "")).lower()
 

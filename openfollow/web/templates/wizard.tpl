@@ -2064,7 +2064,7 @@
       var toggle = document.getElementById('fine-zoom-toggle');
       if (toggle) {
         toggle.disabled = true;
-        toggle.title = 'Load a snapshot first';
+        toggle.title = '{{_("Load a snapshot first")}}';
       }
       setFineZoomMode(false);
     } else {
@@ -2080,7 +2080,7 @@
     if (!toggle) return;
     var ready = fineZoomReady();
     toggle.disabled = !ready;
-    toggle.title = ready ? '' : 'Load a snapshot first';
+    toggle.title = ready ? '' : '{{_("Load a snapshot first")}}';
   }
 
   function showNoFeed() {
@@ -2998,7 +2998,7 @@
     fullView.style.display = fineZoomMode ? 'none' : '';
     zoomView.style.display = fineZoomMode ? '' : 'none';
     if (toggle) {
-      toggle.textContent = fineZoomMode ? 'Show full image' : 'Fine adjust';
+      toggle.textContent = fineZoomMode ? '{{_("Show full image")}}' : '{{_("Fine adjust")}}';
     }
     if (fineZoomMode && fineZoomReady()) {
       // Match the four-box grid's overall aspect ratio to the source

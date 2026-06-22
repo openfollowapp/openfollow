@@ -6614,12 +6614,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         hw, hd = w / 2.0, d / 2.0
 
+        # PSN +X is stage left, so the stage-left corners (DSL, USL) sit at
+        # +hw and the stage-right corners (DSR, USR) at -hw. On a front-of-house
+        # camera that places stage left on the right of the image (audience
+        # right) and stage right on the left (audience left).
         corners_psn = np.array(
             [
-                [ox - hw, oy - hd, oz],  # DSL
-                [ox + hw, oy - hd, oz],  # DSR
-                [ox + hw, oy + hd, oz],  # USR
-                [ox - hw, oy + hd, oz],  # USL
+                [ox + hw, oy - hd, oz],  # DSL (downstage stage-left)
+                [ox - hw, oy - hd, oz],  # DSR (downstage stage-right)
+                [ox - hw, oy + hd, oz],  # USR (upstage stage-right)
+                [ox + hw, oy + hd, oz],  # USL (upstage stage-left)
             ],
             dtype=np.float64,
         )

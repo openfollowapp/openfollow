@@ -3309,7 +3309,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         if lang not in _AVAILABLE_LANGUAGES:
             lang = "en"
-        target = request.headers.get("Referer") or "/"
+        target = "/"
+        referer = request.headers.get("Referer")
+        if referer:
+            from urllib.parse import urlparse
+            parsed = urlparse(referer)
+            # Only bounce back to same-origin paths – never to external URLs.
+            if parsed.path and not parsed.netloc:
+                target = parsed.path
+                if parsed.query:
+                    target += "?" + parsed.query
         resp = HTTPResponse(status=303, headers={"Location": target})
         resp.set_cookie("lang", lang, path="/", max_age=86400 * 365)
         raise resp

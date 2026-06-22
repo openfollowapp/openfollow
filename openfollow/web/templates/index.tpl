@@ -14,16 +14,16 @@
 % end
 %# Restart progress banner – global (any tab can trigger the restart
 %# from Diagnostics, so the notice has to live above the tabs).
-<div id="top-restart-notice" class="restart-notice" style="display:none;margin-bottom:1rem;">App is restarting&hellip; Please wait.</div>
+<div id="top-restart-notice" class="restart-notice" style="display:none;margin-bottom:1rem;">{{_('App is restarting… Please wait.')}}</div>
 
 <div class="tab-bar">
-    <button type="button" class="tab-btn" data-tab="overview">Overview</button>
-    <button type="button" class="tab-btn" data-tab="general">General</button>
-    <button type="button" class="tab-btn" data-tab="camera-grid">Camera & Grid</button>
-    <button type="button" class="tab-btn" data-tab="marker-and-zones">Markers & Zones</button>
-    <button type="button" class="tab-btn" data-tab="input">Input</button>
-    <button type="button" class="tab-btn" data-tab="output">Output</button>
-    <button type="button" class="tab-btn experimental-feature" data-tab="detection">Person Detection</button>
+    <button type="button" class="tab-btn" data-tab="overview">{{_('Overview')}}</button>
+    <button type="button" class="tab-btn" data-tab="general">{{_('General')}}</button>
+    <button type="button" class="tab-btn" data-tab="camera-grid">{{_('Camera & Grid')}}</button>
+    <button type="button" class="tab-btn" data-tab="marker-and-zones">{{_('Markers & Zones')}}</button>
+    <button type="button" class="tab-btn" data-tab="input">{{_('Input')}}</button>
+    <button type="button" class="tab-btn" data-tab="output">{{_('Output')}}</button>
+    <button type="button" class="tab-btn experimental-feature" data-tab="detection">{{_('Person Detection')}}</button>
 </div>
 
 <!-- Overview -->
@@ -31,8 +31,8 @@
     % include('partials/overview.tpl', local=local, peers=peers)
     <div class="section" id="statistics-section" data-fold-key="statistics" data-help="statistics">
         <div class="section-head">
-            <h2>Live Statistics</h2>
-            <span class="section-note">Core status first, advanced diagnostics on demand</span>
+            <h2>{{_('Live Statistics')}}</h2>
+            <span class="section-note">{{_('Core status first, advanced diagnostics on demand')}}</span>
         </div>
         <div id="statistics-section-content"
              hx-get="/section/statistics"
@@ -62,8 +62,8 @@
 <!-- Camera & Grid -->
 <div class="tab-content" id="tab-camera-grid">
     <div class="wizard-launch">
-        <a href="/wizard" class="btn-link save-btn">Open Setup Wizard</a>
-        <span class="section-note">Guided camera positioning and grid calibration</span>
+        <a href="/wizard" class="btn-link save-btn">{{_('Open Setup Wizard')}}</a>
+        <span class="section-note">{{_('Guided camera positioning and grid calibration')}}</span>
     </div>
     % include('partials/video_source.tpl', config=config, saved=False, available_inputs=available_inputs, input_html_fragments=input_html_fragments)
     % include('partials/camera.tpl', config=config, saved=False)

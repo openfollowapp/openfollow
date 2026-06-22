@@ -3289,6 +3289,31 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         resp.delete_cookie(_AUTH_COOKIE, path="/")
         raise resp
 
+    # -- Language switcher -------------------------------------------------
+
+    @app.get("/set-lang/<lang>")
+    def set_lang(lang: str) -> Any:
+        """Persist the operator's UI language choice in a cookie and redirect.
+
+        The :class:`~openfollow.i18n.I18NPlugin` reads this ``lang`` cookie on
+        every request to pick the gettext catalog. Any unknown code defaults to
+        English via the plugin – we validate here only to keep the cookie tidy.
+        The redirect target is the ``Referer`` header (so the operator stays on
+        the tab they were on), falling back to ``/``.
+
+        To add a language, define its gettext catalog under
+        ``locale/<code>/LC_MESSAGES/``, list it in ``_AVAILABLE_LANGUAGES``,
+        and add a link in ``base.tpl``'s ``.lang-switch`` group.
+        """
+        from openfollow.i18n import _AVAILABLE_LANGUAGES
+
+        if lang not in _AVAILABLE_LANGUAGES:
+            lang = "en"
+        target = request.headers.get("Referer") or "/"
+        resp = HTTPResponse(status=303, headers={"Location": target})
+        resp.set_cookie("lang", lang, path="/", max_age=86400 * 365)
+        raise resp
+
     # -- Helpers --------------------------------------------------------------
 
     def _render_general(

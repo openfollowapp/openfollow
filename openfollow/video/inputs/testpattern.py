@@ -3,6 +3,7 @@
 """Static test pattern input plugin with grey and stage modes."""
 
 from __future__ import annotations
+from openfollow.i18n import _, _l  # noqa: E402
 
 import logging
 from collections.abc import Callable
@@ -52,7 +53,7 @@ class TestPatternInput(VideoInputBase):
     """Static test image – choose grey or stage scene."""
 
     input_id = "testpattern"
-    display_name = "Test Pattern"
+    display_name = _l("Test Pattern")
 
     @classmethod
     def config_fields(cls) -> list[ConfigField]:
@@ -214,20 +215,19 @@ class TestPatternInput(VideoInputBase):
             '<div class="row">'
             '    <div class="field wide">'
             '        <p style="margin:0 0 0.5rem 0;color:var(--text-muted,#888);">'
-            "            Static test image – useful for debugging overlay, "
-            "Operator Screen, and detection without a live source."
+            f"            {_('Static test image – useful for debugging overlay, Operator Screen, and detection without a live source.')}"
             "        </p>"
             "    </div>"
             "</div>"
             '<div class="row">'
             '    <div class="field">'
-            "        <label>Pattern</label>"
+            f"        <label>{_('Pattern')}</label>"
             '        <select name="testpattern_pattern">'
             f"            {pattern_options}"
             "        </select>"
             "    </div>"
             '    <div class="field">'
-            "        <label>Resolution</label>"
+            f"        <label>{_('Resolution')}</label>"
             '        <select name="testpattern_resolution">'
             f"            {res_options}"
             "        </select>"

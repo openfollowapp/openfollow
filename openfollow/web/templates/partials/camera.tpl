@@ -6,26 +6,26 @@
       data-template-form="1"
       hx-post="/section/camera" hx-target="#camera-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
-        <h2>Camera</h2>
-        <span class="section-note">PSN-space position and orientation</span>
+        <h2>{{_('Camera')}}</h2>
+        <span class="section-note">{{_('PSN-space position and orientation')}}</span>
     </div>
 
     <div class="group">
-        <h3 class="group-title">Position</h3>
+        <h3 class="group-title">{{_('Position')}}</h3>
         <div class="row">
             <div class="field">
-                <label>Position X ({{_len}})</label>
+                <label>{{_('Position X')}} ({{_len}})</label>
                 <input id="camera-pos-x" type="{{'text' if _imp else 'number'}}" name="pos_x" value="{{format_length(config.camera.pos_x, _us) if _imp else config.camera.pos_x}}" step="any"
                        hx-get="/api/validate/camera/pos_x" hx-trigger="blur changed delay:200ms"
                        hx-target="#camera-pos-x-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="camera-pos-x-error" aria-invalid="false">
                 <span id="camera-pos-x-error" class="field-error"></span>
                 % if _imp:
-                <small class="metric-echo">Stored: {{metric_echo(config.camera.pos_x)}}</small>
+                <small class="metric-echo">{{_('Stored')}}: {{metric_echo(config.camera.pos_x)}}</small>
                 % end
             </div>
             <div class="field">
-                <label>Position Y ({{_len}})</label>
+                <label>{{_('Position Y')}} ({{_len}})</label>
                 <input id="camera-pos-y" type="{{'text' if _imp else 'number'}}" name="pos_y" value="{{format_length(config.camera.pos_y, _us) if _imp else config.camera.pos_y}}" step="any"
                        hx-get="/api/validate/camera/pos_y" hx-trigger="blur changed delay:200ms"
                        hx-target="#camera-pos-y-error" hx-swap="innerHTML" hx-include="closest form"
@@ -36,7 +36,7 @@
                 % end
             </div>
             <div class="field">
-                <label>Position Z ({{_len}})</label>
+                <label>{{_('Position Z')}} ({{_len}})</label>
                 <input id="camera-pos-z" type="{{'text' if _imp else 'number'}}" name="pos_z" value="{{format_length(config.camera.pos_z, _us) if _imp else config.camera.pos_z}}" step="any"
                        hx-get="/api/validate/camera/pos_z" hx-trigger="blur changed delay:200ms"
                        hx-target="#camera-pos-z-error" hx-swap="innerHTML" hx-include="closest form"
@@ -50,10 +50,10 @@
     </div>
 
     <div class="group">
-        <h3 class="group-title">Orientation</h3>
+        <h3 class="group-title">{{_('Orientation')}}</h3>
         <div class="row">
             <div class="field">
-                <label>Pitch (°)</label>
+                <label>{{_('Pitch')}} (°)</label>
                 <input id="camera-pitch" type="number" name="pitch" value="{{config.camera.pitch}}" step="any"
                        hx-get="/api/validate/camera/pitch" hx-trigger="blur changed delay:200ms"
                        hx-target="#camera-pitch-error" hx-swap="innerHTML" hx-include="closest form"
@@ -61,7 +61,7 @@
                 <span id="camera-pitch-error" class="field-error"></span>
             </div>
             <div class="field">
-                <label>Yaw (°)</label>
+                <label>{{_('Yaw')}} (°)</label>
                 <input id="camera-yaw" type="number" name="yaw" value="{{config.camera.yaw}}" step="any"
                        hx-get="/api/validate/camera/yaw" hx-trigger="blur changed delay:200ms"
                        hx-target="#camera-yaw-error" hx-swap="innerHTML" hx-include="closest form"
@@ -69,7 +69,7 @@
                 <span id="camera-yaw-error" class="field-error"></span>
             </div>
             <div class="field">
-                <label>Roll (°)</label>
+                <label>{{_('Roll')}} (°)</label>
                 <input id="camera-roll" type="number" name="roll" value="{{config.camera.roll}}" step="any"
                        hx-get="/api/validate/camera/roll" hx-trigger="blur changed delay:200ms"
                        hx-target="#camera-roll-error" hx-swap="innerHTML" hx-include="closest form"
@@ -80,10 +80,10 @@
     </div>
 
     <div class="group">
-        <h3 class="group-title">Lens</h3>
+        <h3 class="group-title">{{_('Lens')}}</h3>
         <div class="row">
             <div class="field">
-                <label>Horizontal Field of View (°)</label>
+                <label>{{_('Horizontal Field of View')}} (°)</label>
                 <input type="number" id="camera_panel_fov" name="fov" value="{{config.camera.fov}}" min="1" max="179" step="any" oninput="cameraPanelHfovEdited()"
                        hx-get="/api/validate/camera/fov" hx-trigger="blur changed delay:200ms"
                        hx-target="#camera-fov-error" hx-swap="innerHTML" hx-include="closest form"
@@ -91,11 +91,11 @@
                 <span id="camera-fov-error" class="field-error"></span>
             </div>
             <div class="field" id="camera_panel_sensor_field">
-                <label>Sensor Size</label>
+                <label>{{_('Sensor Size')}}</label>
                 <select id="camera_panel_sensor" onchange="cameraPanelSensorOrFocalChanged()"></select>
             </div>
             <div class="field" id="camera_panel_sensor_custom_field" style="display:none;">
-                <label>Sensor Width (mm)</label>
+                <label>{{_('Sensor Width')}} (mm)</label>
                 <input type="number" name="sensor_width_mm" id="camera_panel_sensor_custom" step="0.01" min="0" oninput="cameraPanelSensorOrFocalChanged()"
                        hx-get="/api/validate/camera/sensor_width_mm" hx-trigger="blur changed delay:200ms"
                        hx-target="#camera-sensor-width-mm-error" hx-swap="innerHTML" hx-include="closest form"
@@ -103,7 +103,7 @@
                 <span id="camera-sensor-width-mm-error" class="field-error"></span>
             </div>
             <div class="field">
-                <label>Focal Length (mm)</label>
+                <label>{{_('Focal Length')}} (mm)</label>
                 <input type="number" name="focal_length_mm" id="camera_panel_focal"
                        value="{{config.camera.focal_length_mm if config.camera.focal_length_mm is not None else ''}}"
                        step="0.1" min="0" oninput="cameraPanelSensorOrFocalChanged()"
@@ -116,7 +116,7 @@
                    value="{{config.camera.sensor_width_mm if config.camera.sensor_width_mm is not None else ''}}">
         </div>
         <p class="hint" style="margin:0.4rem 0 0 0;font-size:0.8rem;color:var(--muted);">
-            FOV is horizontal (as printed on camera datasheets). Pick your sensor size and focal length and we'll compute FOV automatically.
+            {{_('FOV is horizontal (as printed on camera datasheets). Pick your sensor size and focal length and we will compute FOV automatically.')}}
         </p>
     </div>
 
@@ -226,8 +226,8 @@
     </style>
 
     <div class="actions">
-        <button type="submit" class="save-btn">Save</button>
-        <button type="button" class="broadcast-btn" onclick="broadcastSection('camera', this.form)">Apply to all stations</button>
+        <button type="submit" class="save-btn">{{_('Save')}}</button>
+        <button type="button" class="broadcast-btn" onclick="broadcastSection('camera', this.form)">{{_('Apply to all stations')}}</button>
         <!-- Save / Load template buttons. Camera and grid share one
              ``camera_grid`` template type (tuned together). Buttons bind to
              same modal flow: saving from either side captures both sections,
@@ -235,8 +235,8 @@
         <button type="button" class="secondary"
                 data-template-save
                 data-template-deps="#camera-section, #grid-section"
-                onclick="window.cameraGridSaveTemplate()">Save as template…</button>
+                onclick="window.cameraGridSaveTemplate()">{{_('Save as template…')}}</button>
         <button type="button" class="secondary"
-                onclick="window.cameraGridLoadTemplate()">Load template…</button>
+                onclick="window.cameraGridLoadTemplate()">{{_('Load template…')}}</button>
     </div>
 </form>

@@ -234,26 +234,26 @@
 </style>
 
 <div class="wizard-header">
-  <a href="/">&larr; Back to Settings</a>
-  <h2>Setup Wizard</h2>
+  <a href="/">&larr; {{_("Back to Settings")}}</a>
+  <h2>{{_("Setup Wizard")}}</h2>
 </div>
 
 <nav class="wizard-steps" aria-label="Setup wizard steps">
-  <button type="button" class="wizard-step-btn" data-step="0" onclick="wizardGo(0)">1. Preparation</button>
-  <button type="button" class="wizard-step-btn" data-step="1" onclick="wizardGo(1)">2. Grid Setup</button>
-  <button type="button" class="wizard-step-btn" data-step="2" onclick="wizardGo(2)">3. Video Source</button>
-  <button type="button" class="wizard-step-btn" data-step="3" onclick="wizardGo(3)">4. Camera Position</button>
-  <button type="button" class="wizard-step-btn" data-step="4" onclick="wizardGo(4)">5. Reference Mapping</button>
-  <button type="button" class="wizard-step-btn" data-step="5" onclick="wizardGo(5)">6. Corner Pinning</button>
-  <button type="button" class="wizard-step-btn" data-step="6" onclick="wizardGo(6)">7. Review</button>
+  <button type="button" class="wizard-step-btn" data-step="0" onclick="wizardGo(0)">1. {{_("Preparation")}}</button>
+  <button type="button" class="wizard-step-btn" data-step="1" onclick="wizardGo(1)">2. {{_("Grid Setup")}}</button>
+  <button type="button" class="wizard-step-btn" data-step="2" onclick="wizardGo(2)">3. {{_("Video Source")}}</button>
+  <button type="button" class="wizard-step-btn" data-step="3" onclick="wizardGo(3)">4. {{_("Camera Position")}}</button>
+  <button type="button" class="wizard-step-btn" data-step="4" onclick="wizardGo(4)">5. {{_("Reference Mapping")}}</button>
+  <button type="button" class="wizard-step-btn" data-step="5" onclick="wizardGo(5)">6. {{_("Corner Pinning")}}</button>
+  <button type="button" class="wizard-step-btn" data-step="6" onclick="wizardGo(6)">7. {{_("Review")}}</button>
 </nav>
 
 <!-- Step 1: Preparation -->
 <div class="wizard-content" id="wizard-step-0">
   <div class="section">
     <div class="section-head">
-      <h2>Preparation</h2>
-      <span class="section-note">Understand the setup and prepare the physical space</span>
+      <h2>{{_("Preparation")}}</h2>
+      <span class="section-note">{{_("Understand the setup and prepare the physical space")}}</span>
     </div>
 
     <svg id="prep-svg" class="wizard-illustration" viewBox="0 0 580 400" style="max-width:725px;" xmlns="http://www.w3.org/2000/svg">
@@ -320,19 +320,19 @@
     </svg>
 
     <div class="wizard-help">
-      <strong>Reference Point:</strong> All measurements in this wizard are relative to a single Reference Point. This should be the same reference point for all show control systems that you plan to connect to OpenFollow. If your venue has a defined origin point, you should use that. If you don't have an existing reference point, we recommend the <strong>center of the stage's front edge</strong> as the default.
+      <strong>{{_("Reference Point:")}}</strong> {{_("All measurements in this wizard are relative to a single Reference Point. This should be the same reference point for all show control systems that you plan to connect to OpenFollow. If your venue has a defined origin point, you should use that. If you do not have an existing reference point, we recommend the")}} <strong>{{_("center of the stage front edge")}}</strong> {{_("as the default.")}}
     </div>
     <div class="wizard-help">
-      <strong>The Grid:</strong> The grid area must be a <strong>right-angled rectangle</strong> as large as possible that lies flat on the main performance level. All four corners must be <strong>clearly visible in the camera feed</strong>. Don't worry, you can follow performers outside this grid, as long as they are in the area visible to the camera.
+      <strong>{{_("The Grid:")}}</strong> {{_("The grid area must be a")}} <strong>{{_("right-angled rectangle")}}</strong> {{_("as large as possible that lies flat on the main performance level. All four corners must be")}} <strong>{{_("clearly visible in the camera feed")}}</strong>. {{_("Do not worry, you can follow performers outside this grid, as long as they are in the area visible to the camera.")}}
     </div>
     <div class="wizard-action-required">
-      Before proceeding, physically mark the Reference Point and the four grid corners on the stage with visible markers, so they are easily visible on camera (tape, gaffer marks, etc.).
+      {{_("Before proceeding, physically mark the Reference Point and the four grid corners on the stage with visible markers, so they are easily visible on camera (tape, gaffer marks, etc.).")}}
     </div>
-    <p class="wizard-tip">Take your time with accurate markings &ndash; the precision of the final calibration depends on them.</p>
+    <p class="wizard-tip">{{_("Take your time with accurate markings - the precision of the final calibration depends on them.")}}</p>
 
     <div class="wizard-nav">
       <span class="spacer"></span>
-      <button type="button" class="save-btn" onclick="wizardGo(1)">Next</button>
+      <button type="button" class="save-btn" onclick="wizardGo(1)">{{_("Next")}}</button>
     </div>
   </div>
 </div>
@@ -341,8 +341,8 @@
 <div class="wizard-content" id="wizard-step-1">
   <div class="section">
     <div class="section-head">
-      <h2>Grid Setup</h2>
-      <span class="section-note">Dimensions and position of the rectangular tracking area</span>
+      <h2>{{_("Grid Setup")}}</h2>
+      <span class="section-note">{{_("Dimensions and position of the rectangular tracking area")}}</span>
     </div>
 
     <svg id="grid-setup-svg" class="wizard-illustration" viewBox="0 0 580 400" style="max-width:580px;" xmlns="http://www.w3.org/2000/svg">
@@ -393,8 +393,8 @@
     </svg>
 
     <div class="group">
-      <div class="group-title">Dimensions</div>
-      <p class="wizard-help">Enter the width and depth of the rectangular tracking area you marked on stage.</p>
+      <div class="group-title">{{_("Dimensions")}}</div>
+      <p class="wizard-help">{{_("Enter the width and depth of the rectangular tracking area you marked on stage.")}}</p>
       <div class="row">
         <div class="field">
           <label for="grid_width">Width ({{_len}})</label>
@@ -429,16 +429,16 @@
       </div>
       <div class="wizard-solved-params" style="margin-top:0.5rem;">
         <div class="wizard-solved-param">
-          <span class="param-label">Diagonal</span>
+          <span class="param-label">{{_("Diagonal")}}</span>
           <span class="param-value" id="grid-diagonal">-</span>
         </div>
       </div>
-      <p class="wizard-tip">Verify your grid is rectangular: measure both diagonals on stage &ndash; they must be equal. The expected diagonal is shown above.</p>
+      <p class="wizard-tip">{{_("Verify your grid is rectangular: measure both diagonals on stage - they must be equal. The expected diagonal is shown above.")}}</p>
     </div>
 
     <div class="group">
-      <div class="group-title">Alignment</div>
-      <p class="wizard-help">Define where the Reference Point sits within the grid. By default, it's at the <strong>center of the front edge</strong> (X&nbsp;Offset&nbsp;=&nbsp;0, Y&nbsp;Offset&nbsp;=&nbsp;depth&nbsp;/&nbsp;2).</p>
+      <div class="group-title">{{_("Alignment")}}</div>
+      <p class="wizard-help">{{_("Define where the Reference Point sits within the grid. By default, it is at the center of the front edge (X Offset = 0, Y Offset = depth / 2).")}}</p>
       <div class="row">
         <div class="field">
           <label for="grid_x_offset">X Offset ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(stage left +)</span></label>
@@ -457,16 +457,16 @@
       </div>
     </div>
 
-    <p class="wizard-tip">Measure between the marks you placed on stage. Precision matters &ndash; even 10cm off will affect tracking accuracy. Spacing controls the visual grid density (does not affect calibration). If your Reference Point is 1m left of the grid center: set X Offset = &minus;1.</p>
+    <p class="wizard-tip">{{_("Measure between the marks you placed on stage. Precision matters - even 10cm off will affect tracking accuracy. Spacing controls the visual grid density (does not affect calibration). If your Reference Point is 1m left of the grid center: set X Offset = -1.")}}</p>
 
     <div style="margin-top:0.72rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
-      <button type="button" class="secondary" onclick="resetGridToDefaults()">Load Defaults</button>
-      <button type="button" class="secondary" onclick="restoreGridToLast()">Restore Last</button>
+      <button type="button" class="secondary" onclick="resetGridToDefaults()">{{_("Load Defaults")}}</button>
+      <button type="button" class="secondary" onclick="restoreGridToLast()">{{_("Restore Last")}}</button>
     </div>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(0)">Back</button>
-      <button type="button" class="save-btn" onclick="wizardGo(2)">Next</button>
+      <button type="button" class="secondary" onclick="wizardGo(0)">{{_("Back")}}</button>
+      <button type="button" class="save-btn" onclick="wizardGo(2)">{{_("Next")}}</button>
     </div>
   </div>
 </div>
@@ -475,8 +475,8 @@
 <div class="wizard-content" id="wizard-step-2">
   <div class="section">
     <div class="section-head">
-      <h2>Video Source</h2>
-      <span class="section-note">Select and configure the camera input</span>
+      <h2>{{_("Video Source")}}</h2>
+      <span class="section-note">{{_("Select and configure the camera input")}}</span>
     </div>
 
     <div class="group">
@@ -499,16 +499,16 @@
     </div>
 
     <p class="wizard-help">
-      Choose the video input that matches your camera setup. The change applies live – the new pipeline starts within ~1 s of saving.
+      {{_("Choose the video input that matches your camera setup. The change applies live - the new pipeline starts within ~1 s of saving.")}}
     </p>
 
     <div id="wizard-video-saved" style="display:none;margin-bottom:0.72rem;padding:10px 12px;border-radius:0.8rem;border:1px solid rgba(125,229,159,0.4);background:rgba(125,229,159,0.1);color:var(--ok);font-weight:600;font-size:0.88rem;"></div>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(1)">Back</button>
+      <button type="button" class="secondary" onclick="wizardGo(1)">{{_("Back")}}</button>
       <span class="spacer"></span>
-      <button type="button" class="secondary" onclick="saveWizardVideoSource()">Save</button>
-      <button type="button" class="save-btn" onclick="wizardGo(3)">Next</button>
+      <button type="button" class="secondary" onclick="saveWizardVideoSource()">{{_("Save")}}</button>
+      <button type="button" class="save-btn" onclick="wizardGo(3)">{{_("Next")}}</button>
     </div>
   </div>
 </div>
@@ -517,8 +517,8 @@
 <div class="wizard-content" id="wizard-step-3">
   <div class="section">
     <div class="section-head">
-      <h2>Camera Position</h2>
-      <span class="section-note">Physical camera position and orientation relative to the Reference Point</span>
+      <h2>{{_("Camera Position")}}</h2>
+      <span class="section-note">{{_("Physical camera position and orientation relative to the Reference Point")}}</span>
     </div>
 
     <svg id="cam-pos-svg" class="wizard-illustration" viewBox="0 0 580 400" style="max-width:725px;" xmlns="http://www.w3.org/2000/svg">
@@ -569,8 +569,8 @@
     </svg>
 
     <div class="group">
-      <div class="group-title">Position</div>
-      <p class="wizard-help">Enter the camera's physical position relative to the Reference Point, in {{_len}}. These use PSN theatrical coordinates: X = stage left, Y = upstage, Z = up.</p>
+      <div class="group-title">{{_("Position")}}</div>
+      <p class="wizard-help">{{_("Enter the camera physical position relative to the Reference Point, in")}} {{_len}}. {{_("These use PSN theatrical coordinates: X = stage left, Y = upstage, Z = up.")}}</p>
       <div class="row">
         <div class="field">
           <label for="cam_pos_x">Pos X ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(stage left +)</span></label>
@@ -596,13 +596,13 @@
       </div>
     </div>
     <div class="group">
-      <div class="group-title">Orientation</div>
-      <p class="wizard-help">Enter the camera's angle. If the camera points straight at the stage, start with Pitch &asymp; &minus;30&deg; (looking down), Yaw = 0&deg;, Roll = 0&deg;.</p>
+      <div class="group-title">{{_("Orientation")}}</div>
+      <p class="wizard-help">{{_("Enter the camera angle. If the camera points straight at the stage, start with Pitch approx -30 degrees (looking down), Yaw = 0 degrees, Roll = 0 degrees.")}}</p>
       <div class="row">
         <div class="field">
           <label for="cam_pitch">Pitch <span style="font-weight:400;text-transform:none;letter-spacing:0;">(down &minus;)</span></label>
           <input type="number" step="0.1" min="-90" max="-0.5" id="cam_pitch" value="{{config.camera.pitch}}" oninput="onCamInputChanged()">
-          <div id="cam-pitch-error" class="wizard-field-error" style="display:none;">Pitch must be between &minus;0.5&deg; and &minus;90&deg;</div>
+          <div id="cam-pitch-error" class="wizard-field-error" style="display:none;">{{_("Pitch must be between -0.5 degrees and -90 degrees")}}</div>
         </div>
         <div class="field">
           <label for="cam_yaw">Yaw <span style="font-weight:400;text-transform:none;letter-spacing:0;">(left &minus;)</span></label>
@@ -615,7 +615,7 @@
       </div>
     </div>
     <div class="group">
-      <div class="group-title">Lens</div>
+      <div class="group-title">{{_("Lens")}}</div>
       <div class="row">
         <div class="field">
           <label for="cam_fov">Horizontal Field of View (&deg;)</label>
@@ -638,17 +638,17 @@
         <input type="hidden" id="cam_sensor_width_initial"
                value="{{config.camera.sensor_width_mm if config.camera.sensor_width_mm is not None else ''}}">
       </div>
-      <p class="wizard-tip">Enter the horizontal FOV from your camera datasheet, or pick your sensor size and focal length and we'll compute it.</p>
+      <p class="wizard-tip">{{_("Enter the horizontal FOV from your camera datasheet, or pick your sensor size and focal length and we will compute it.")}}</p>
     </div>
 
     <div style="margin-top:0.72rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
-      <button type="button" class="secondary" onclick="resetCameraToDefaults()">Load Defaults</button>
-      <button type="button" class="secondary" onclick="restoreCameraToLast()">Restore Last</button>
+      <button type="button" class="secondary" onclick="resetCameraToDefaults()">{{_("Load Defaults")}}</button>
+      <button type="button" class="secondary" onclick="restoreCameraToLast()">{{_("Restore Last")}}</button>
     </div>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(2)">Back</button>
-      <button type="button" class="save-btn" onclick="wizardGo(4)">Next</button>
+      <button type="button" class="secondary" onclick="wizardGo(2)">{{_("Back")}}</button>
+      <button type="button" class="save-btn" onclick="wizardGo(4)">{{_("Next")}}</button>
     </div>
   </div>
 </div>
@@ -657,8 +657,8 @@
 <div class="wizard-content" id="wizard-step-4">
   <div class="section">
     <div class="section-head">
-      <h2>Reference Mapping</h2>
-      <span class="section-note">Drag the crosshair to the physical Reference Point mark</span>
+      <h2>{{_("Reference Mapping")}}</h2>
+      <span class="section-note">{{_("Drag the crosshair to the physical Reference Point mark")}}</span>
     </div>
 
     <div id="coarse-container" class="wizard-preview-container" style="display:none;">
@@ -670,23 +670,23 @@
         <g id="coarse-ref"></g>
       </svg>
     </div>
-    <div id="coarse-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in Step 3, then return here and press <strong>Refresh Image</strong>.</div>
+    <div id="coarse-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in Step 3, then return here and press <strong>{{_("Refresh Image")}}</strong>.</div>
 
     <div id="coarse-status" class="wizard-status" style="display:none;"></div>
 
     <div style="margin-top:0.72rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
-      <button type="button" class="secondary" onclick="loadSnapshot()">Refresh Image</button>
-      <button type="button" class="secondary" onclick="resetCoarseCalibration()">Reset</button>
+      <button type="button" class="secondary" onclick="loadSnapshot()">{{_("Refresh Image")}}</button>
+      <button type="button" class="secondary" onclick="resetCoarseCalibration()">{{_("Reset")}}</button>
     </div>
 
     <p class="wizard-help" style="margin-top:0.72rem;">
-      <strong>Drag the crosshair marker</strong> to the physical Reference Point mark visible on the stage. All corners move together with the reference point to roughly align the overlay with your stage.
+      {{_("Drag the crosshair marker to the physical Reference Point mark visible on the stage. All corners move together with the reference point to roughly align the overlay with your stage.")}}
     </p>
-    <p class="wizard-tip">Zoom in on your browser (Ctrl/Cmd + scroll) for more precision. You can also click the crosshair and use <strong>arrow keys</strong> to nudge it precisely (hold <strong>Shift</strong> for larger steps).</p>
+    <p class="wizard-tip">{{_("Zoom in on your browser (Ctrl/Cmd + scroll) for more precision. You can also click the crosshair and use arrow keys to nudge it precisely (hold Shift for larger steps).")}}</p>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(3)">Back</button>
-      <button type="button" class="save-btn" onclick="wizardGo(5)">Next</button>
+      <button type="button" class="secondary" onclick="wizardGo(3)">{{_("Back")}}</button>
+      <button type="button" class="save-btn" onclick="wizardGo(5)">{{_("Next")}}</button>
     </div>
   </div>
 </div>
@@ -695,8 +695,8 @@
 <div class="wizard-content" id="wizard-step-5">
   <div class="section">
     <div class="section-head">
-      <h2>Corner Pinning</h2>
-      <span class="section-note">Drag each corner to its physical stage mark for precise calibration</span>
+      <h2>{{_("Corner Pinning")}}</h2>
+      <span class="section-note">{{_("Drag each corner to its physical stage mark for precise calibration")}}</span>
     </div>
 
     <div id="fine-container" class="wizard-preview-container" style="display:none;">
@@ -752,7 +752,7 @@
         </div>
       </div>
     </div>
-    <div id="fine-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in Step 3, then return here and press <strong>Refresh Image</strong>.</div>
+    <div id="fine-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in Step 3, then return here and press <strong>{{_("Refresh Image")}}</strong>.</div>
 
     <div id="fine-status" class="wizard-status" style="display:none;"></div>
 
@@ -767,25 +767,25 @@
     </div>
 
     <div style="margin-top:0.72rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
-      <button type="button" class="secondary" onclick="loadSnapshot()">Refresh Image</button>
-      <button type="button" class="secondary" onclick="resetCornerPinning()">Reset Corners</button>
+      <button type="button" class="secondary" onclick="loadSnapshot()">{{_("Refresh Image")}}</button>
+      <button type="button" class="secondary" onclick="resetCornerPinning()">{{_("Reset Corners")}}</button>
       <!-- Fine adjust toggle. Disabled until snapshot loads.
            Label flips between "Fine adjust" and "Show full image". -->
       <button type="button" class="secondary" id="fine-zoom-toggle"
               onclick="toggleFineZoomMode()" disabled
-              title="Load a snapshot first">Fine adjust</button>
+              title="Load a snapshot first">{{_("Fine adjust")}}</button>
     </div>
 
     <p class="wizard-help" style="margin-top:0.72rem;">
-      <strong>Drag each corner marker</strong> to its physical mark on the stage. The labels are stage positions: <strong>DSL</strong>/<strong>USL</strong> are stage left, <strong>DSR</strong>/<strong>USR</strong> are stage right (D = downstage/front, U = upstage/back). With a front-of-house camera you see the audience's view, so stage left is on the right of the image (audience right) and stage right is on the left (audience left).
+      {{_("Drag each corner marker to its physical mark on the stage. The labels are stage positions: DSL/USL are stage left, DSR/USR are stage right (D = downstage/front, U = upstage/back). With a front-of-house camera you see the audience view, so stage left is on the right of the image (audience right) and stage right is on the left (audience left).")}}
     </p>
-    <p class="wizard-tip">Start with the two downstage corners (front), then adjust the upstage corners (back). If a corner turns red, the shape is invalid. For pixel-precise placement, click <strong>Fine adjust</strong> to switch to a 4×-zoomed per-corner view.</p>
-    <p>If your corners are invalid, three things could be wrong: The position of your camera relative to the reference point, your marked rectangle has not the same size as the grid, or the corners of your rectangle are not 90 degrees.</p>
-    <p>Click a corner or use <strong>Tab</strong> to select it, then use <strong>arrow keys</strong> to nudge (hold <strong>Shift</strong> for larger steps).</p>
+    <p class="wizard-tip">{{_("Start with the two downstage corners (front), then adjust the upstage corners (back). If a corner turns red, the shape is invalid. For pixel-precise placement, click")}} <strong>{{_("Fine adjust")}}</strong> {{_("to switch to a 4x-zoomed per-corner view.")}}</p>
+    <p>{{_("If your corners are invalid, three things could be wrong: The position of your camera relative to the reference point, your marked rectangle has not the same size as the grid, or the corners of your rectangle are not 90 degrees.")}}</p>
+    <p>{{_("Click a corner or use Tab to select it, then use arrow keys to nudge (hold Shift for larger steps).")}}</p>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(4)">Back</button>
-      <button type="button" class="save-btn" onclick="wizardGo(6)">Next</button>
+      <button type="button" class="secondary" onclick="wizardGo(4)">{{_("Back")}}</button>
+      <button type="button" class="save-btn" onclick="wizardGo(6)">{{_("Next")}}</button>
     </div>
   </div>
 </div>
@@ -794,8 +794,8 @@
 <div class="wizard-content" id="wizard-step-6">
   <div class="section">
     <div class="section-head">
-      <h2>Review</h2>
-      <span class="section-note">Verify all values before applying</span>
+      <h2>{{_("Review")}}</h2>
+      <span class="section-note">{{_("Verify all values before applying")}}</span>
     </div>
 
     <div id="review-container" class="wizard-preview-container" style="display:none;">
@@ -807,12 +807,12 @@
         <g id="review-ref"></g>
       </svg>
     </div>
-    <div id="review-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Values below are still valid, but the visual review is unavailable.</div>
+    <div id="review-no-feed" class="wizard-no-feed" style="display:none;">{{_("No video feed available. Values below are still valid, but the visual review is unavailable.")}}</div>
 
     <div id="review-status" class="wizard-status" style="display:none;"></div>
 
     <div class="group">
-      <div class="group-title">Camera</div>
+      <div class="group-title">{{_("Camera")}}</div>
       <div class="wizard-solved-params" id="review-camera-params">
         <div class="wizard-solved-param"><span class="param-label">Pos X</span><span class="param-value" id="review-cam-pos-x">-</span></div>
         <div class="wizard-solved-param"><span class="param-label">Pos Y</span><span class="param-value" id="review-cam-pos-y">-</span></div>
@@ -825,7 +825,7 @@
     </div>
 
     <div class="group">
-      <div class="group-title">Grid</div>
+      <div class="group-title">{{_("Grid")}}</div>
       <div class="wizard-solved-params" id="review-grid-params">
         <div class="wizard-solved-param"><span class="param-label">Width</span><span class="param-value" id="review-grid-width">-</span></div>
         <div class="wizard-solved-param"><span class="param-label">Depth</span><span class="param-value" id="review-grid-depth">-</span></div>
@@ -837,10 +837,10 @@
     </div>
 
     <div class="wizard-nav">
-      <button type="button" class="secondary" onclick="wizardGo(5)">Back</button>
+      <button type="button" class="secondary" onclick="wizardGo(5)">{{_("Back")}}</button>
       <span class="spacer"></span>
-      <button type="button" class="btn-danger" onclick="discardAndLeave()">Discard &amp; Leave</button>
-      <button type="button" class="save-btn" onclick="applyAndFinish()" id="btn-apply-finish">Apply &amp; Finish</button>
+      <button type="button" class="btn-danger" onclick="discardAndLeave()">{{_("Discard & Leave")}}</button>
+      <button type="button" class="save-btn" onclick="applyAndFinish()" id="btn-apply-finish">{{_("Apply & Finish")}}</button>
     </div>
   </div>
 </div>

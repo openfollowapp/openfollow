@@ -1,5 +1,5 @@
-% import json
-% _osc_dests_json = json.dumps([{"id": d.id, "name": d.name, "host": d.host, "port": d.port, "protocol": d.protocol, "framing": d.framing} for d in config.osc_destinations.destinations])
+% from openfollow.web.routes import osc_destinations_script_json
+% _osc_dests_json = osc_destinations_script_json(config)
 <div id="zone-editor-section" class="section" data-fold-key="zone_editor" data-help="zone_editor" data-template-form="1">
     <div class="section-head">
         <h2>Zone Editor</h2>
@@ -35,8 +35,10 @@
     if (window.__zoneEditorInit) return;
     window.__zoneEditorInit = true;
 
-    // Shared OSC destinations a zone can target (id + label + endpoint),
-    // emitted server-side so the Settings-tab dropdown stays in sync.
+    // Shared OSC destinations a zone can target (id + label + endpoint).
+    // Seeded server-side for the first render, then refreshed from the
+    // /api/zones poll so add/rename/delete in the OSC Destinations section
+    // reaches the dropdown without a full page reload.
     var OSC_DESTINATIONS = {{!_osc_dests_json}};
 
     // Zone color palette seeded by base.tpl via window.OPENFOLLOW_PALETTE
@@ -96,14 +98,23 @@
                 }
                 state.markers = data.markers || [];
                 if (data.grid) state.grid = data.grid;
+                // Refresh the shared destinations so the OSC Destination
+                // dropdown follows add/rename/delete live.
+                var newDests = data.destinations || [];
+                var destsChanged = JSON.stringify(newDests) !== JSON.stringify(OSC_DESTINATIONS);
+                OSC_DESTINATIONS = newDests;
                 if (state.selectedIndex >= state.zones.length) {
                     state.selectedIndex = -1;
                 }
                 render();
                 // Only rebuild the details panel when the selection actually
                 // changes; otherwise we'd clobber open dropdowns / color
-                // pickers / focused inputs on every poll tick.
+                // pickers / focused inputs on every poll tick. Destinations
+                // changing is the one extra reason to rebuild, but only when
+                // the operator isn't mid-edit on this zone's details.
                 if (state.selectedIndex !== state.detailsRenderedIndex) {
+                    renderDetails();
+                } else if (destsChanged && state.selectedIndex >= 0 && !editingSelected) {
                     renderDetails();
                 } else if (state.selectedIndex >= 0) {
                     // Refresh Diagnostics tab in place (don't rebuild whole

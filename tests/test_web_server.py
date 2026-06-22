@@ -3818,6 +3818,27 @@ def test_osc_destinations_crud_round_trip(live_server) -> None:
     assert after.get(new_id) is None
 
 
+def test_api_zones_includes_live_destinations(live_server) -> None:
+    """The zone-editor poll carries the shared destinations, so adding one in
+    the OSC Destinations section reaches the zone dropdown without a reload."""
+    server, base = live_server
+
+    # The seeded "Default" destination is present from the start, with the
+    # endpoint fields the dropdown renders.
+    status, body = _get_json(base, "/api/zones")
+    assert status == 200
+    default = next(d for d in body["destinations"] if d["id"] == "default")
+    assert set(default) == {"id", "name", "host", "port", "protocol", "framing"}
+
+    # Add a destination via the section route; the next poll reflects it.
+    status, _ = _post_form(base, "/section/osc_destinations/add", {})
+    assert status == 200
+    new_id = load_config(server.config_path).osc_destinations.destinations[-1].id
+    status, body2 = _get_json(base, "/api/zones")
+    assert status == 200
+    assert new_id in [d["id"] for d in body2["destinations"]]
+
+
 def test_osc_destinations_section_get_renders(live_server) -> None:
     """``GET /section/osc_destinations`` renders the destinations partial."""
     _, base = live_server

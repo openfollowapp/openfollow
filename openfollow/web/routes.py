@@ -206,6 +206,52 @@ def asset_version() -> str:
     return _compute_asset_version()
 
 
+def _script_safe_json(obj: Any) -> str:
+    """``json.dumps`` escaped for embedding as raw JS inside a ``<script>``.
+
+    ``json.dumps`` does not escape ``<``, ``>`` or ``&``, so a user-controlled
+    string (e.g. an OSC destination name containing ``</script>``) embedded via
+    ``{{!...}}`` could close the script element and inject markup. Escaping
+    those to ``\\uXXXX`` keeps the value a valid JS string while making the
+    breakout impossible; the U+2028/U+2029 line separators are escaped too
+    since they terminate JS string literals on older engines.
+    """
+    return (
+        json.dumps(obj, separators=(",", ":"))
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
+def osc_destinations_client_list(config: AppConfig) -> list[dict[str, Any]]:
+    """Client-facing OSC destination list (id + label + endpoint).
+
+    The single source of truth for the zone editor's destination dropdown,
+    served both at initial render (``osc_destinations_script_json``) and on the
+    ``/api/zones`` poll so the dropdown follows add/rename/delete without a full
+    page reload.
+    """
+    return [
+        {
+            "id": d.id,
+            "name": d.name,
+            "host": d.host,
+            "port": d.port,
+            "protocol": d.protocol,
+            "framing": d.framing,
+        }
+        for d in config.osc_destinations.destinations
+    ]
+
+
+def osc_destinations_script_json(config: AppConfig) -> str:
+    """OSC destinations as ``<script>``-safe JSON for the zone editor's initial render."""
+    return _script_safe_json(osc_destinations_client_list(config))
+
+
 # Help docs served as rendered HTML by ``/help/<id>.html``. A help id is a
 # lowercase slug (no dots/slashes/``..``) so it can't escape ``_WEB_HELP_DIR``.
 _WEB_HELP_DIR = Path(__file__).with_name("help")
@@ -6605,6 +6651,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 },
                 "zones": zones_out,
                 "markers": [{"id": tid, "x": x, "y": y} for tid, x, y in server.get_marker_positions()],
+                # Shared destinations travel with the poll so the editor's
+                # dropdown follows add/rename/delete without a full reload.
+                "destinations": osc_destinations_client_list(cfg),
             }
         )
 

@@ -1403,15 +1403,16 @@ class OscDestinationsConfig:
     )
 
     def __post_init__(self) -> None:
-        coerced: list[OscDestinationConfig] = []
-        for d in self.destinations:
-            if isinstance(d, dict):
-                coerced.append(
-                    OscDestinationConfig(**_filter_known(OscDestinationConfig, d)),
-                )
-            else:
-                coerced.append(d)
-        self.destinations = coerced
+        # Drop non-object destination entries instead of keeping them verbatim:
+        # a hand-edited inline TOML array (``destinations = ["evil"]``) or a
+        # crafted import would otherwise persist a bare str that ``get()`` and
+        # the template dereference (``d.id`` / ``d.host``) → AttributeError.
+        # Already-typed ``OscDestinationConfig`` entries pass through.
+        self.destinations = [
+            OscDestinationConfig(**_filter_known(OscDestinationConfig, d)) if isinstance(d, dict) else d
+            for d in self.destinations
+            if isinstance(d, (dict, OscDestinationConfig))
+        ]
 
     def get(self, destination_id: str) -> OscDestinationConfig | None:
         """Resolve a destination id to its profile, or ``None`` if unknown."""

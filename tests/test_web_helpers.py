@@ -12,7 +12,7 @@ from dataclasses import asdict
 import pytest
 
 import openfollow.video.inputs as inputs_module
-from openfollow.configuration import AppConfig
+from openfollow.configuration import AppConfig, OscDestinationConfig, OscDestinationsConfig
 from openfollow.web.routes import (
     _as_int_list,
     _as_ip_list,
@@ -22,6 +22,8 @@ from openfollow.web.routes import (
     _is_valid_web_pin,
     apply_section_data,
     get_section_data,
+    osc_destinations_client_list,
+    osc_destinations_script_json,
     strip_device_local_fields,
 )
 
@@ -2449,3 +2451,63 @@ def test_allowed_request_hosts_blank_hostname_falls_back(monkeypatch) -> None:
     assert "127.0.0.1" in hosts and "localhost" in hosts and "::1" in hosts
     assert "" not in hosts
     assert not any(h.endswith(".local") for h in hosts)
+
+
+# ---------------------------------------------------------------------------
+# OSC destinations: client list + <script>-safe JSON embedding
+# ---------------------------------------------------------------------------
+
+
+def test_osc_destinations_client_list_shape() -> None:
+    cfg = AppConfig(
+        osc_destinations=OscDestinationsConfig(
+            destinations=[
+                OscDestinationConfig(
+                    id="d1",
+                    name="A",
+                    host="10.0.0.9",
+                    port=9000,
+                    protocol="tcp",
+                    framing="length_prefix",
+                )
+            ]
+        )
+    )
+    assert osc_destinations_client_list(cfg) == [
+        {
+            "id": "d1",
+            "name": "A",
+            "host": "10.0.0.9",
+            "port": 9000,
+            "protocol": "tcp",
+            "framing": "length_prefix",
+        }
+    ]
+
+
+def test_osc_destinations_script_json_escapes_script_breakout() -> None:
+    """A destination name/host with ``</script>`` or ``&`` must not break out of
+    the ``<script>`` block it is embedded in via ``{{! ... }}``."""
+    import json
+
+    cfg = AppConfig(
+        osc_destinations=OscDestinationsConfig(
+            destinations=[
+                OscDestinationConfig(
+                    id="d1",
+                    name="</script><img src=x onerror=alert(1)>",
+                    host="a&b",
+                )
+            ]
+        )
+    )
+    out = osc_destinations_script_json(cfg)
+    # No raw HTML-significant characters survive: a script element cannot be
+    # closed, no tag can open, no entity is introduced.
+    assert "</script>" not in out
+    assert "<" not in out and ">" not in out and "&" not in out
+    assert "\\u003c/script\\u003e" in out
+    # The payload still round-trips: a JSON/JS parser decodes the escapes back.
+    restored = json.loads(out)
+    assert restored[0]["name"] == "</script><img src=x onerror=alert(1)>"
+    assert restored[0]["host"] == "a&b"

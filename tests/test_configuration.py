@@ -4150,6 +4150,20 @@ class TestOscDestinationsConfig:
         )
         assert not hasattr(cfg.destinations[0], "bogus")
 
+    def test_non_object_entries_are_dropped(self) -> None:
+        """A hand-edited TOML / crafted import with bare entries must not
+        persist a str/int/None: ``get()`` and template rendering dereference
+        ``d.id`` / ``d.host`` and would raise AttributeError otherwise. Dict
+        and already-typed entries survive; everything else is dropped."""
+        typed = OscDestinationConfig(id="keep", name="Keep")
+        cfg = OscDestinationsConfig(
+            destinations=["evil", 123, None, {"id": "d1", "host": "10.0.0.9"}, typed],  # type: ignore[list-item]
+        )
+        assert all(isinstance(d, OscDestinationConfig) for d in cfg.destinations)
+        assert [d.id for d in cfg.destinations] == ["d1", "keep"]
+        resolved = cfg.get("d1")
+        assert resolved is not None and resolved.host == "10.0.0.9"
+
     def test_get_returns_matching_destination(self) -> None:
         d = OscDestinationConfig(id="d1", name="A")
         cfg = OscDestinationsConfig(destinations=[d])

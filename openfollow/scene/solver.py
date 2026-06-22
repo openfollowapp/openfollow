@@ -534,12 +534,12 @@ def solve_camera_dlt(
         ]
     )
     reproj = project_points(params, world, canvas_w, canvas_h)
-    # pragma: no cover – the >20 px reprojection-residual safety net
-    # only fires for solver outputs already filtered out by
-    # decompose_homography's invariants; for the four-corner inputs
-    # the calibration overlay produces, reprojection error stays well
-    # under the threshold. Phase 11 numerical-survivor.
-    if np.max(np.abs(reproj - screen)) > 20.0:  # pragma: no cover
+    # Reject the mirror branch of the homography sign ambiguity: it yields a
+    # finite camera that puts the world points behind the lens, so they
+    # reproject to NaN. ``NaN > 20.0`` is False, so the residual must be
+    # tested for finiteness before the magnitude threshold.
+    residual = float(np.max(np.abs(reproj - screen)))
+    if not math.isfinite(residual) or residual > 20.0:
         return None
 
     return result

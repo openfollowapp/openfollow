@@ -3926,6 +3926,99 @@ def test_osc_destination_move_reorders_and_guards_edges(live_server) -> None:
     assert status == 404
 
 
+def test_osc_destination_noop_move_does_not_flash_saved(live_server) -> None:
+    """A boundary move (top row up) changes nothing, so the re-render must NOT
+    carry the 'saved' state – an operator shouldn't see a saved flash for an
+    action that did nothing. A real move does flash saved."""
+    server, base = live_server
+    first_id = load_config(server.config_path).osc_destinations.destinations[0].id
+    _post_form(base, "/section/osc_destinations/add", {})
+    second_id = load_config(server.config_path).osc_destinations.destinations[-1].id
+
+    # No-op: top row up → no swap, no 'saved'.
+    _status, body = _post_form(base, f"/section/osc_destination/{first_id}/move", {"direction": "up"})
+    assert "osc-destinations-section" in body
+    assert "section saved" not in body
+
+    # Real move: second row up → flashes saved.
+    _status, body = _post_form(base, f"/section/osc_destination/{second_id}/move", {"direction": "up"})
+    assert "section saved" in body
+
+
+def test_osc_binding_dangling_destination_shows_missing_option(live_server) -> None:
+    """A row whose ``destination_id`` points at a deleted destination renders a
+    selected '(missing destination)' option, so the dropdown reflects the
+    stored dangling id instead of silently falling back to '(none)'."""
+    server, base = live_server
+    _post_form(base, "/section/osc_bindings/add", {})
+    row_id = load_config(server.config_path).osc_transmitters.transmitters[0].id
+    _post_form(base, f"/section/osc_binding/{row_id}", {"destination_id": "ghost-id"})
+
+    status, body = _get(base, "/section/osc_bindings")
+    assert status == 200
+    assert "(missing destination)" in body
+
+
+def test_osc_destinations_use_drag_handle_not_arrow_buttons(live_server) -> None:
+    """Destinations reorder via the same ⋮⋮ drag handle as transmitters; the
+    per-row ↑/↓ arrow buttons are gone from the UI (the /move route stays as a
+    stable JSON-API surface)."""
+    _, base = live_server
+    status, body = _get(base, "/section/osc_destinations")
+    assert status == 200
+    assert "osc-destination-drag-handle" in body
+    assert 'data-reorder-url="/section/osc_destinations/reorder"' in body
+    assert "↑" not in body
+    assert "↓" not in body
+
+
+def test_osc_destinations_reorder_applies_full_ordering(live_server) -> None:
+    """The drag-handle UI POSTs the complete id ordering: [A,B,C] -> [C,A,B]."""
+    server, base = live_server
+    _post_form(base, "/section/osc_destinations/add", {})
+    _post_form(base, "/section/osc_destinations/add", {})
+    a, b, c = (d.id for d in load_config(server.config_path).osc_destinations.destinations)
+    status, _ = _post_form(base, "/section/osc_destinations/reorder", {"order": f"{c},{a},{b}"})
+    assert status == 200
+    after = [d.id for d in load_config(server.config_path).osc_destinations.destinations]
+    assert after == [c, a, b]
+
+
+def test_osc_destinations_reorder_drops_unknown_keeps_missing(live_server) -> None:
+    """A stale post with a phantom id and an omitted real id: phantom dropped,
+    omitted destination appended so nothing is lost."""
+    server, base = live_server
+    _post_form(base, "/section/osc_destinations/add", {})
+    _post_form(base, "/section/osc_destinations/add", {})
+    a, b, c = (d.id for d in load_config(server.config_path).osc_destinations.destinations)
+    _post_form(base, "/section/osc_destinations/reorder", {"order": f"{c},ghost-id,{a}"})
+    after = [d.id for d in load_config(server.config_path).osc_destinations.destinations]
+    assert after == [c, a, b]
+
+
+def test_osc_destinations_reorder_empty_order_is_noop(live_server) -> None:
+    """Empty / whitespace ``order`` must not drop destinations."""
+    server, base = live_server
+    _post_form(base, "/section/osc_destinations/add", {})
+    before = [d.id for d in load_config(server.config_path).osc_destinations.destinations]
+    status, _ = _post_form(base, "/section/osc_destinations/reorder", {"order": "  "})
+    assert status == 200
+    after = [d.id for d in load_config(server.config_path).osc_destinations.destinations]
+    assert after == before
+
+
+def test_osc_destinations_reorder_no_change_is_idempotent(live_server) -> None:
+    """Posting the existing order is a no-op (the permutation matches what's on
+    disk, so no save) while still re-rendering successfully."""
+    server, base = live_server
+    _post_form(base, "/section/osc_destinations/add", {})
+    before = [d.id for d in load_config(server.config_path).osc_destinations.destinations]
+    status, _ = _post_form(base, "/section/osc_destinations/reorder", {"order": ",".join(before)})
+    assert status == 200
+    after = [d.id for d in load_config(server.config_path).osc_destinations.destinations]
+    assert after == before
+
+
 def test_osc_destinations_collapsed_summary_shows_host_port(live_server) -> None:
     """The collapsed destination row shows host:port right after the name plus a
     protocol badge, so a folded destination stays identifiable at a glance."""

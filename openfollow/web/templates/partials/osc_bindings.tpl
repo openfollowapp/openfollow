@@ -47,7 +47,8 @@
  % trigger_kind = getattr(row.trigger, 'kind', 'stream')
  % row_unresolved = _unresolved_by_row.get(row.id, ())
  % has_unresolved = bool(row_unresolved)
- <details class="osc-binding-row" data-row-id="{{row.id}}" data-trigger-kind="{{trigger_kind}}" {{'open' if is_focus else ''}}>
+ <details class="osc-binding-row" data-row-id="{{row.id}}" data-trigger-kind="{{trigger_kind}}"
+ data-reorder-url="/section/osc_bindings/reorder" data-reorder-target="osc-bindings-section" {{'open' if is_focus else ''}}>
  <summary class="osc-binding-summary">
  % # The drag handle lives inside ``<summary>`` so it
  % # rides the row's collapsed-state header, but pointer
@@ -169,6 +170,12 @@
  aria-describedby="destination-id-{{row.id}}-error"
  aria-invalid="false">
  <option value="" {{'selected' if not row.destination_id else ''}}>(none – row will not send)</option>
+ % # A row pointing at a deleted destination keeps its dangling id: show it as
+ % # a selected (disabled) option so the dropdown reflects the stored state
+ % # instead of silently falling back to "(none)".
+ % if row.destination_id and row.destination_id not in _dest_by_id:
+ <option value="{{row.destination_id}}" selected disabled>(missing destination)</option>
+ % end
  % for d in _destinations:
  <option value="{{d.id}}" {{'selected' if d.id == row.destination_id else ''}}>{{d.name or '(unnamed)'}}</option>
  % end

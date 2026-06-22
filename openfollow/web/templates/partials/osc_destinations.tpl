@@ -16,8 +16,17 @@
  % for idx, dest in enumerate(destinations):
  % is_focus = (defined('focus_id') and focus_id == dest.id)
  % addr_label = '{}:{}'.format(dest.host, dest.port)
- <details class="osc-destination-row" data-row-id="{{dest.id}}" {{'open' if is_focus else ''}}>
+ <details class="osc-destination-row" data-row-id="{{dest.id}}"
+ data-reorder-url="/section/osc_destinations/reorder" data-reorder-target="osc-destinations-section" {{'open' if is_focus else ''}}>
  <summary class="osc-destination-summary">
+ % # Drag handle: pointer-only reorder affordance, same as OSC Transmitters.
+ % # Stop pointer/click propagation so a drag never toggles the <details>.
+ <span class="osc-destination-drag-handle"
+ draggable="true"
+ aria-hidden="true"
+ title="Drag to reorder"
+ onpointerdown="event.stopPropagation()"
+ onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
  <span class="osc-destination-title">{{dest.name or '(unnamed)'}}</span>
  <span class="osc-destination-addr">{{addr_label}}</span>
  <span class="osc-destination-proto-badge">{{dest.protocol.upper()}}</span>
@@ -91,12 +100,6 @@
  <button type="button" class="secondary"
  hx-post="/section/osc_destination/{{dest.id}}/duplicate"
  hx-target="#osc-destinations-section" hx-swap="outerHTML">Duplicate</button>
- <button type="button" class="secondary"
- hx-post="/section/osc_destination/{{dest.id}}/move" hx-vals='{"direction":"up"}'
- hx-target="#osc-destinations-section" hx-swap="outerHTML">↑</button>
- <button type="button" class="secondary"
- hx-post="/section/osc_destination/{{dest.id}}/move" hx-vals='{"direction":"down"}'
- hx-target="#osc-destinations-section" hx-swap="outerHTML">↓</button>
  <button type="button" class="danger"
  hx-post="/section/osc_destination/{{dest.id}}/delete"
  hx-target="#osc-destinations-section" hx-swap="outerHTML"

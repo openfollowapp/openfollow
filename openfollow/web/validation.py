@@ -212,7 +212,7 @@ def _validate_host(value: str, _cfg: AppConfig | None) -> str | None:
     """IPv4 / IPv6 address OR a syntactically valid hostname.
 
     Used for fields like ``rttrpm_output.host`` and
-    ``trigger_zones.default_osc_host`` where the receiver socket can
+    ``osc_destination.host`` where the receiver socket can
     resolve a hostname. Rejects values with internal whitespace,
     schemes, or paths so the operator notices the typo before the
     UDP send silently goes nowhere.

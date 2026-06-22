@@ -575,10 +575,18 @@
         html += '    <div class="row">';
         html += '      <div class="field"><label>OSC Destination</label><select data-zone-field="destination_id">';
         html += '        <option value=""' + (!z.destination_id ? ' selected' : '') + '>(none – zone will not send)</option>';
+        var destFound = false;
         for (var di = 0; di < OSC_DESTINATIONS.length; di++) {
             var od = OSC_DESTINATIONS[di];
             var sel = (od.id === z.destination_id) ? ' selected' : '';
+            if (sel) destFound = true;
             html += '<option value="' + escapeAttr(od.id) + '"' + sel + '>' + escapeAttr(od.name || '(unnamed)') + '</option>';
+        }
+        // A zone pointing at a deleted destination keeps its dangling id: show
+        // it as a selected (disabled) option so the dropdown reflects the
+        // stored state instead of silently falling back to "(none)".
+        if (z.destination_id && !destFound) {
+            html += '<option value="' + escapeAttr(z.destination_id) + '" selected disabled>(missing destination)</option>';
         }
         html += '      </select></div>';
         html += '    </div>';

@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from openfollow.configuration import OscDestinationsConfig
+from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
 from openfollow.osc.parser import coerce_osc_args, tokenize_osc_message
 from openfollow.zones.geometry import point_in_polygon, shrink_polygon
 
@@ -59,8 +59,11 @@ class ZoneEngine:
         self._occupancy: list[ZoneOccupancy] = []
         self._config: TriggerZonesConfig = config
         # Shared OSC destination profiles a zone's ``destination_id`` resolves
-        # against. Empty until provided so an unselected zone emits nothing.
+        # against, staged as an id→profile index (``_dest_index``) so per-zone
+        # resolution is an O(1) dict lookup. Empty until provided so an
+        # unselected zone emits nothing.
         self._destinations: OscDestinationsConfig = destinations or OscDestinationsConfig(destinations=[])
+        self._dest_index: dict[str, OscDestinationConfig] = self._destinations.by_id()
         self._states_snapshot: tuple[tuple[int, bool, int], ...] = ()  # immutable snapshot for web thread
         self._diagnostics_snapshot: tuple[dict[str, Any], ...] = ()  # diagnostics snapshot for web thread
         self.reload_config(config, destinations)
@@ -77,6 +80,7 @@ class ZoneEngine:
         """
         if destinations is not None:
             self._destinations = destinations
+            self._dest_index = destinations.by_id()
         # Multiple zones can share the same signature (identical vertices,
         # trigger_source, enabled) – a stacked duplicate the user created for
         # any reason. Store a FIFO queue per signature so each new zone
@@ -214,10 +218,10 @@ class ZoneEngine:
         if not entered and not exited:
             return True
 
-        # Resolve the zone's destination. A blank or dangling
-        # ``destination_id`` means "no target" – track membership for the
-        # overlay (advance occupancy) but emit nothing.
-        dest = self._destinations.get(zone.destination_id)
+        # Resolve the zone's destination via the staged index (O(1)). A blank
+        # or dangling ``destination_id`` means "no target" – track membership
+        # for the overlay (advance occupancy) but emit nothing.
+        dest = self._dest_index.get(zone.destination_id)
         if dest is None:
             return True
 

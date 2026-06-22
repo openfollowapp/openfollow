@@ -286,6 +286,9 @@ class _DestsCfg:
                 return d
         return None
 
+    def by_id(self) -> dict[str, _DestCfg]:
+        return {d.id: d for d in self.destinations}
+
 
 class _RecordingOsc:
     def __init__(self) -> None:

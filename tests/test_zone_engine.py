@@ -58,7 +58,8 @@ class _DestCfg:
 
 @dataclass
 class _DestsCfg:
-    """Stand-in for ``OscDestinationsConfig`` – just the ``get`` surface."""
+    """Stand-in for ``OscDestinationsConfig`` – the ``get`` + ``by_id`` surface
+    the engine resolves against."""
 
     destinations: list[_DestCfg] = field(default_factory=lambda: [_DestCfg()])
 
@@ -69,6 +70,9 @@ class _DestsCfg:
             if d.id == destination_id:
                 return d
         return None
+
+    def by_id(self) -> dict[str, _DestCfg]:
+        return {d.id: d for d in self.destinations}
 
 
 class _RecordingOsc:

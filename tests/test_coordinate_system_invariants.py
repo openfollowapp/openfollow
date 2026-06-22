@@ -372,13 +372,19 @@ class _StubOsc:
         self.sent.append((address, host, port))
 
 
-# Single destination every zone in these invariants resolves to.
+# Single destination every zone in these invariants resolves to (id ``"d"``).
 class _StubDestinations:
+    _DEST = SimpleNamespace(host="127.0.0.1", port=53000, protocol="udp", framing="slip")
+
     @staticmethod
     def get(destination_id: str) -> object | None:
         if not destination_id:
             return None
-        return SimpleNamespace(host="127.0.0.1", port=53000, protocol="udp", framing="slip")
+        return _StubDestinations._DEST
+
+    @staticmethod
+    def by_id() -> dict[str, object]:
+        return {"d": _StubDestinations._DEST}
 
 
 def _zone_square(cx: float, cy: float, half: float = 1.0) -> TriggerZoneConfig:

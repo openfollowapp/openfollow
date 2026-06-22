@@ -24,12 +24,12 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableSequence, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
 from bottle import Bottle, HTTPResponse, abort, redirect, request, response, static_file, template
@@ -1986,6 +1986,36 @@ def _strip_broadcast_excluded(data: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of a full-config dict without the sections that must
     not be real-time-shared to peers (they still export/import via file)."""
     return {k: v for k, v in data.items() if k not in _BROADCAST_EXCLUDED_SECTIONS}
+
+
+_T = TypeVar("_T")
+
+
+def _find_by_id(items: Sequence[_T], item_id: str) -> tuple[int, _T] | None:
+    """Index-and-item lookup by ``.id`` for the id-keyed config lists (OSC
+    transmitters, OSC destinations). ``None`` when nothing matches, so a route
+    can 404 on stale UI state (a row deleted in another tab) without crashing.
+    """
+    for idx, item in enumerate(items):
+        if getattr(item, "id", None) == item_id:
+            return idx, item
+    return None
+
+
+def _swap_for_direction(items: MutableSequence[Any], idx: int, direction: str) -> bool:
+    """Swap ``items[idx]`` one step ``"up"`` / ``"down"`` in place. No-op at
+    the list edge or for an unknown direction. Returns ``True`` only when a
+    swap actually happened, so the caller persists + flags ``saved`` on a real
+    move rather than on a button-mash against the boundary."""
+    target = idx
+    if direction == "up" and idx > 0:
+        target = idx - 1
+    elif direction == "down" and idx < len(items) - 1:
+        target = idx + 1
+    if target == idx:
+        return False
+    items[idx], items[target] = items[target], items[idx]
+    return True
 
 
 def _apply_import_data(
@@ -5027,8 +5057,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         from openfollow.configuration import (
             VALID_KEY_NAMES,
             VALID_MIDI_MESSAGE_TYPES,
-            VALID_OSC_FRAMINGS,
-            VALID_OSC_TRANSMITTER_PROTOCOLS,
             VALID_OSC_TRANSMITTER_RATES,
             VALID_TRIGGER_EDGES,
             VALID_TRIGGER_KINDS,
@@ -5060,8 +5088,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             config=cfg,
             saved=saved,
             focus_id=focus_id,
-            valid_protocols=VALID_OSC_TRANSMITTER_PROTOCOLS,
-            valid_framings=VALID_OSC_FRAMINGS,
             valid_rates=VALID_OSC_TRANSMITTER_RATES,
             valid_kinds=VALID_TRIGGER_KINDS,
             valid_edges=VALID_TRIGGER_EDGES,
@@ -5087,10 +5113,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         to short-circuit a 404 on stale UI state (operator deletes a row
         in tab A while tab B still has it open) without crashing the
         request."""
-        for idx, row in enumerate(cfg.osc_transmitters.transmitters):
-            if row.id == row_id:
-                return idx, row
-        return None
+        return _find_by_id(cfg.osc_transmitters.transmitters, row_id)
 
     @app.get("/section/osc_bindings")
     def get_osc_bindings_section() -> Any:
@@ -5265,19 +5288,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 abort(404, "Unknown binding")
                 return ""  # pragma: no cover – abort() raises before we reach here
             idx, _ = found
-            transmitters = cfg.osc_transmitters.transmitters
-            target = idx
-            if direction == "up" and idx > 0:
-                target = idx - 1
-            elif direction == "down" and idx < len(transmitters) - 1:
-                target = idx + 1
-            if target != idx:
-                transmitters[idx], transmitters[target] = (
-                    transmitters[target],
-                    transmitters[idx],
-                )
+            moved = _swap_for_direction(cfg.osc_transmitters.transmitters, idx, direction)
+            if moved:
                 save_config(cfg, server.config_path)
-        return _render_osc_bindings_section(cfg, saved=True, focus_id=row_id)
+        return _render_osc_bindings_section(cfg, saved=moved, focus_id=row_id)
 
     @app.post("/section/osc_bindings/reorder")
     def reorder_osc_bindings() -> Any:
@@ -5361,10 +5375,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         cfg: AppConfig,
         dest_id: str,
     ) -> tuple[int, OscDestinationConfig] | None:
-        for idx, dest in enumerate(cfg.osc_destinations.destinations):
-            if dest.id == dest_id:
-                return idx, dest
-        return None
+        return _find_by_id(cfg.osc_destinations.destinations, dest_id)
 
     @app.get("/section/osc_destinations")
     def get_osc_destinations_section() -> Any:
@@ -5433,16 +5444,46 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 abort(404, "Unknown destination")
                 return ""  # pragma: no cover – abort() raises first
             idx, _ = found
-            dests = cfg.osc_destinations.destinations
-            target = idx
-            if direction == "up" and idx > 0:
-                target = idx - 1
-            elif direction == "down" and idx < len(dests) - 1:
-                target = idx + 1
-            if target != idx:
-                dests[idx], dests[target] = dests[target], dests[idx]
+            moved = _swap_for_direction(cfg.osc_destinations.destinations, idx, direction)
+            if moved:
                 save_config(cfg, server.config_path)
-        return _render_osc_destinations_section(cfg, saved=True, focus_id=dest_id)
+        return _render_osc_destinations_section(cfg, saved=moved, focus_id=dest_id)
+
+    @app.post("/section/osc_destinations/reorder")
+    def reorder_osc_destinations() -> Any:
+        """Apply a complete destination ordering from the drag-handle UI.
+
+        Mirrors :func:`reorder_osc_bindings`: ``order`` is a comma-separated
+        list of destination ids in the new order. Unknown ids are dropped; any
+        current destination missing from ``order`` is appended so a stale client
+        can't delete by omission. Empty / malformed ``order`` is a no-op (no
+        success flash). The per-id ``/move`` route stays as a stable JSON-API
+        surface for single-step swaps.
+        """
+        raw_order = _as_str(request.forms.get("order", ""), "")
+        wanted_ids = [s for s in (s.strip() for s in raw_order.split(",")) if s]
+        saved = bool(wanted_ids)
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            dests = cfg.osc_destinations.destinations
+            current = {d.id: d for d in dests}
+            if wanted_ids:
+                new_order: list[OscDestinationConfig] = []
+                seen: set[str] = set()
+                for did in wanted_ids:
+                    dest = current.get(did)
+                    if dest is not None and did not in seen:
+                        new_order.append(dest)
+                        seen.add(did)
+                # Append any destinations missing from the wanted list so a
+                # stale form post can't silently drop them.
+                for dest in dests:
+                    if dest.id not in seen:
+                        new_order.append(dest)
+                if [d.id for d in new_order] != [d.id for d in dests]:
+                    cfg.osc_destinations.destinations = new_order
+                    save_config(cfg, server.config_path)
+        return _render_osc_destinations_section(cfg, saved=saved)
 
     @app.get("/section/osc_binding/<row_id>/trigger_form")
     def get_osc_binding_trigger_form(row_id: str) -> Any:

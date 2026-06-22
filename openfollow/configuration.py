@@ -1413,15 +1413,40 @@ class OscDestinationsConfig:
             for d in self.destinations
             if isinstance(d, (dict, OscDestinationConfig))
         ]
+        # The id is the key transmitters/zones reference, so it must be unique:
+        # a hand-edited TOML or crafted import with two entries sharing an id
+        # would make ``get()`` resolve ambiguously (first match wins) and hide
+        # the duplicate from editing. Keep the first occurrence's id stable so
+        # existing references stay valid; re-mint a fresh uuid for each later
+        # collision rather than dropping the entry.
+        seen_ids: set[str] = set()
+        for dest in self.destinations:
+            if dest.id in seen_ids:
+                dest.id = _new_uuid_hex()
+            seen_ids.add(dest.id)
 
     def get(self, destination_id: str) -> OscDestinationConfig | None:
-        """Resolve a destination id to its profile, or ``None`` if unknown."""
+        """Resolve a destination id to its profile, or ``None`` if unknown.
+
+        Linear scan – fine for one-off lookups (web routes, wizard). Hot
+        per-tick consumers stage an :meth:`by_id` index instead.
+        """
         if not destination_id:
             return None
         for d in self.destinations:
             if d.id == destination_id:
                 return d
         return None
+
+    def by_id(self) -> dict[str, OscDestinationConfig]:
+        """Index destinations by id for O(1) resolution on the hot path.
+
+        Built once when the set is staged into a consumer (the transmitter
+        manager / zone engine) so per-row, per-tick resolution is a dict
+        lookup rather than a linear scan under the lock. Ids are unique
+        (see ``__post_init__``), so the comprehension is unambiguous.
+        """
+        return {d.id: d for d in self.destinations}
 
 
 VALID_CURVES = ("linear", "logarithmic", "quadratic", "s-law")
@@ -2821,39 +2846,56 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         ):
             app._config.rttrpm_output = old_rttrpm_output
 
-    if new_config.osc_transmitters != app._config.osc_transmitters:
+    # OSC routing: transmitter rows reference a shared destination set, and the
+    # zone engine resolves zone sends against the same set. A transmitter or
+    # destination edit (e.g. an IP change) re-resolves at both consumers so
+    # every referencing row and zone repoints live, no restart. Apply both as
+    # one unit – the manager and the zone engine must agree on the same
+    # destination set, and a partial apply would split routing across the two
+    # consumers (manager on the new endpoints while config + zone engine hold
+    # the old ones). Manager always exists once initialised (no on→off teardown).
+    osc_transmitters_changed = new_config.osc_transmitters != app._config.osc_transmitters
+    osc_destinations_changed = new_config.osc_destinations != app._config.osc_destinations
+    # The trigger_zones block below reloads the zone engine too; when zones also
+    # changed, let that block own the single reload so a combined edit doesn't
+    # reload the engine twice in one pass.
+    trigger_zones_changed = new_config.trigger_zones != app._config.trigger_zones
+    if osc_transmitters_changed or osc_destinations_changed:
         old_osc_transmitters = app._config.osc_transmitters
+        old_osc_destinations = app._config.osc_destinations
         app._config.osc_transmitters = new_config.osc_transmitters
-        # Manager always exists once initialised (no on→off teardown).
-        if not _apply(
-            "osc_transmitters",
+        app._config.osc_destinations = new_config.osc_destinations
+
+        def _reload_zone_destinations(destinations: OscDestinationsConfig) -> None:
+            zone_engine = getattr(app._runtime_services, "_zone_engine", None)
+            if zone_engine is not None:
+                zone_engine.reload_config(app._config.trigger_zones, destinations)
+
+        def _revert_osc_routing() -> None:
+            # Restore config first, then re-stage the old routing into the
+            # manager + zone engine so a failed apply can't leave the manager
+            # on the new endpoints while config and the zone engine hold the
+            # old ones. A re-raise here is caught and logged by the helper.
+            app._config.osc_transmitters = old_osc_transmitters
+            app._config.osc_destinations = old_osc_destinations
+            app._runtime_services.apply_osc_transmitters_change(
+                old_osc_transmitters,
+                old_osc_destinations,
+            )
+            _reload_zone_destinations(old_osc_destinations)
+
+        if _apply(
+            "osc_routing",
             lambda: app._runtime_services.apply_osc_transmitters_change(
                 new_config.osc_transmitters,
                 new_config.osc_destinations,
             ),
+            on_failure=_revert_osc_routing,
         ):
-            app._config.osc_transmitters = old_osc_transmitters
-
-    # A destination edit (e.g. an IP change) re-resolves at both consumers so
-    # every referencing transmitter and zone repoints live, no restart.
-    if new_config.osc_destinations != app._config.osc_destinations:
-        old_osc_destinations = app._config.osc_destinations
-        app._config.osc_destinations = new_config.osc_destinations
-        if not _apply(
-            "osc_destinations",
-            lambda: app._runtime_services.apply_osc_transmitters_change(
-                app._config.osc_transmitters,
-                new_config.osc_destinations,
-            ),
-        ):
-            app._config.osc_destinations = old_osc_destinations
-        else:
-            zone_engine = getattr(app._runtime_services, "_zone_engine", None)
-            if zone_engine is not None:
-                zone_engine.reload_config(
-                    app._config.trigger_zones,
-                    new_config.osc_destinations,
-                )
+            # Skip when the trigger_zones block will reload the engine anyway
+            # (with the same committed destinations) – avoids a double reload.
+            if not trigger_zones_changed:
+                _reload_zone_destinations(new_config.osc_destinations)
 
     if new_config.detection != app._config.detection:
         old_detection = app._config.detection
@@ -2909,9 +2951,11 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         app._config.trigger_zones = new_config.trigger_zones
         zone_engine = getattr(app._runtime_services, "_zone_engine", None)
         if zone_engine is not None:
+            # Use the committed destinations (``app._config``) so a zones edit
+            # stays coherent with an OSC-routing apply that was reverted above.
             zone_engine.reload_config(
                 new_config.trigger_zones,
-                new_config.osc_destinations,
+                app._config.osc_destinations,
             )
         # The endpoint is resolved from ``osc_destinations`` at send time.
         # Stale per-target sockets in the shared ``OscService`` cache are left

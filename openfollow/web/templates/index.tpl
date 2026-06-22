@@ -122,8 +122,6 @@
     % # template declarative without reaching into route module.
     % include('partials/osc_bindings.tpl',
     %     config=config, saved=False, focus_id="",
-    %     valid_protocols=VALID_OSC_TRANSMITTER_PROTOCOLS,
-    %     valid_framings=VALID_OSC_FRAMINGS,
     %     valid_rates=VALID_OSC_TRANSMITTER_RATES,
     %     valid_kinds=VALID_TRIGGER_KINDS,
     %     valid_edges=VALID_TRIGGER_EDGES,

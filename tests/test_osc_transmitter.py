@@ -2353,6 +2353,19 @@ class TestDiagnosticsSurface:
         assert preview["address"] == ""
         assert preview["args"] == []
 
+    def test_preview_for_unresolved_destination_surfaces_skip(self) -> None:
+        """The diagnostic preview of a row with no resolvable destination
+        surfaces a 'no destination selected' skip (the render path keeps its
+        own None guard for this, separate from the live-fire path)."""
+        manager, _svc = _manager(markers={0: _FakeMarker((0.0, 0.0, 0.0))})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(destination_id="")]))
+        preview = manager.preview_for("row-1")
+        assert preview is not None
+        assert preview["skipped"] is True
+        assert preview["error"] == "no destination selected"
+        assert preview["address"] == ""
+        assert preview["args"] == []
+
     def test_preview_for_does_not_record_in_ring_buffer(self) -> None:
         """Critical contract: previewing must not pollute the ring
         buffer the operator is watching for *real* sends."""

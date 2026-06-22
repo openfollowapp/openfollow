@@ -19,7 +19,7 @@ When a receiver of OSC Data moves to a new IP, change that one destination and e
 - **+ New destination** – add a blank destination.
 - **Save** – write the destination's settings to disk. Changes apply immediately to every transmitter and zone that references this destination.
 - **Duplicate** – copy a destination (useful for a second receiver on a different port).
-- **↑ / ↓** – reorder the list (cosmetic).
+- **Reorder** – drag the ⋮⋮ handle on the left of a collapsed destination to reorder the list (cosmetic).
 - **Delete** – remove a destination. Any transmitter or zone still pointing at it stops sending until you repoint it at another destination.
 
 ## Sharing between stations

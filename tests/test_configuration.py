@@ -105,6 +105,10 @@ class _DummyRuntimeServices:
     def swap_video(self, new_cfg: AppConfig) -> None:
         self.video_swaps.append(new_cfg)
 
+    def apply_osc_transmitters_change(self, new_cfg, destinations=None) -> None:  # noqa: ANN001
+        # No-op base; subclasses that assert on OSC routing override + record.
+        pass
+
 
 class _DummyWebServer:
     def __init__(self) -> None:
@@ -261,6 +265,32 @@ def test_testpattern_dataclass_defaults_match_plugin_config_fields() -> None:
 # --------------------------------------------------------------------------- #
 # bootstrap_config_if_missing – first-run seed from config.example.toml
 # --------------------------------------------------------------------------- #
+
+
+def test_example_config_matches_current_schema() -> None:
+    """The shipped ``config.example.toml`` must not declare fields the code
+    dropped (they'd be silently filtered on load) and must show the OSC
+    destinations shape transmitters/zones now reference, so an operator
+    copying it as a starting point has a working template."""
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    example_path = repo_root / "config.example.toml"
+    data = tomllib.loads(example_path.read_text(encoding="utf-8"))
+
+    tz = data.get("trigger_zones", {})
+    assert "default_osc_host" not in tz
+    assert "default_osc_port" not in tz
+
+    dests = data.get("osc_destinations", {}).get("destinations", [])
+    assert dests, "example must seed at least one [[osc_destinations.destinations]]"
+    assert {"id", "host", "port", "protocol"} <= set(dests[0])
+
+    # And it loads into a config whose seeded destination is resolvable.
+    cfg = load_config(str(example_path))
+    assert cfg.osc_destinations.destinations
+    first = cfg.osc_destinations.destinations[0]
+    assert cfg.osc_destinations.get(first.id) is first
 
 
 def test_bootstrap_copies_example_when_config_absent(tmp_path) -> None:
@@ -3408,8 +3438,8 @@ def test_apply_runtime_osc_destinations_change_without_zone_engine() -> None:
 
 
 def test_apply_runtime_osc_destinations_change_failure_reverts() -> None:
-    """If the transmitter re-resolve raises, the destination change reverts and
-    the zone engine is never reloaded (the failure short-circuits the else)."""
+    """If the re-resolve raises (and the revert re-apply also raises), the
+    destination change reverts config and the zone engine is never reloaded."""
     from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
 
     class _FailingRuntimeServices(_DummyRuntimeServices):
@@ -3430,6 +3460,122 @@ def test_apply_runtime_osc_destinations_change_failure_reverts() -> None:
     # Reverted to the prior destinations; zone engine never reloaded.
     assert app._config.osc_destinations == old_dests
     assert zone_engine.reloaded == []
+
+
+def test_apply_runtime_osc_routing_combined_change_applies_once() -> None:
+    """A transmitter AND destination change in one pass applies as a single
+    coherent unit: one manager re-stage (no double restart) against the new
+    transmitters + destinations, and one zone-engine reload with the new set."""
+    from openfollow.configuration import (
+        OscDestinationConfig,
+        OscDestinationsConfig,
+        OscTransmitterConfig,
+        OscTransmittersConfig,
+    )
+
+    class _RecordingRuntimeServices(_DummyRuntimeServices):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[tuple[object, object]] = []
+
+        def apply_osc_transmitters_change(self, new_cfg, destinations=None) -> None:  # noqa: ANN001
+            self.calls.append((new_cfg, destinations))
+
+    app = _app_with()
+    app._runtime_services = _RecordingRuntimeServices()
+    zone_engine = _DummyZoneEngine()
+    app._runtime_services._zone_engine = zone_engine  # type: ignore[attr-defined]
+
+    new_txs = OscTransmittersConfig(
+        transmitters=[OscTransmitterConfig(id="r1", name="R1", destination_id="default")],
+    )
+    new_dests = OscDestinationsConfig(
+        destinations=[OscDestinationConfig(id="default", name="Default", host="10.0.0.9")],
+    )
+    apply_runtime_config_changes(
+        app,
+        AppConfig(osc_transmitters=new_txs, osc_destinations=new_dests),
+    )
+
+    # Single apply (not one per section), carrying the new transmitters + dests.
+    assert app._runtime_services.calls == [(new_txs, new_dests)]
+    assert zone_engine.reloaded_destinations == [new_dests]
+    assert app._config.osc_transmitters == new_txs
+    assert app._config.osc_destinations == new_dests
+
+
+def test_apply_runtime_osc_routing_failure_restages_old_routing() -> None:
+    """A failed routing apply re-stages the OLD routing into the manager + zone
+    engine so it can't be left on the new endpoints while config holds the old
+    ones – the split-brain guard. The new apply fails, the revert apply succeeds."""
+    from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
+
+    class _FlakyRuntimeServices(_DummyRuntimeServices):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[tuple[object, object]] = []
+
+        def apply_osc_transmitters_change(self, new_cfg, destinations=None) -> None:  # noqa: ANN001
+            self.calls.append((new_cfg, destinations))
+            if len(self.calls) == 1:
+                raise RuntimeError("boom")  # fail only the NEW apply
+
+    app = _app_with()
+    app._runtime_services = _FlakyRuntimeServices()
+    zone_engine = _DummyZoneEngine()
+    app._runtime_services._zone_engine = zone_engine  # type: ignore[attr-defined]
+    old_txs = app._config.osc_transmitters
+    old_dests = app._config.osc_destinations
+
+    new_dests = OscDestinationsConfig(
+        destinations=[OscDestinationConfig(id="default", name="Default", host="10.0.0.9")],
+    )
+    apply_runtime_config_changes(app, AppConfig(osc_destinations=new_dests))
+
+    # Two applies: the failed new one, then the revert re-staging the OLD set.
+    assert len(app._runtime_services.calls) == 2
+    assert app._runtime_services.calls[0][1] == new_dests
+    assert app._runtime_services.calls[1] == (old_txs, old_dests)
+    # Config reverted, and the manager + zone engine are coherent with it
+    # (last apply + last reload both carry the OLD destinations), not split.
+    assert app._config.osc_transmitters == old_txs
+    assert app._config.osc_destinations == old_dests
+    assert zone_engine.reloaded_destinations == [old_dests]
+
+
+def test_apply_runtime_osc_destinations_and_zones_reload_engine_once() -> None:
+    """Changing destinations AND trigger zones in one pass reloads the zone
+    engine exactly once (the trigger_zones block owns the single reload, with
+    the committed destinations) rather than twice."""
+    from openfollow.configuration import (
+        OscDestinationConfig,
+        OscDestinationsConfig,
+        TriggerZoneConfig,
+        TriggerZonesConfig,
+    )
+
+    app = _app_with()
+    app._runtime_services = _DummyRuntimeServices()
+    zone_engine = _DummyZoneEngine()
+    app._runtime_services._zone_engine = zone_engine  # type: ignore[attr-defined]
+
+    new_dests = OscDestinationsConfig(
+        destinations=[OscDestinationConfig(id="default", name="Default", host="10.0.0.9")],
+    )
+    new_zones = TriggerZonesConfig(
+        enabled=True,
+        zones=[TriggerZoneConfig(name="Main", vertices=[[0, 0], [1, 0], [1, 1]])],
+    )
+    apply_runtime_config_changes(
+        app,
+        AppConfig(osc_destinations=new_dests, trigger_zones=new_zones),
+    )
+
+    # Single reload, carrying the new zones + the committed new destinations.
+    assert zone_engine.reloaded == [new_zones]
+    assert zone_engine.reloaded_destinations == [new_dests]
+    assert app._config.trigger_zones == new_zones
+    assert app._config.osc_destinations == new_dests
 
 
 def test_apply_runtime_reapplies_midi_devices_to_subsystem() -> None:
@@ -4176,6 +4322,50 @@ class TestOscDestinationsConfig:
     def test_get_blank_id_returns_none(self) -> None:
         cfg = OscDestinationsConfig(destinations=[OscDestinationConfig(id="d1")])
         assert cfg.get("") is None
+
+    def test_duplicate_ids_are_made_unique(self) -> None:
+        """The id is the key transmitters/zones reference, so it must be
+        unique. A hand-edited TOML / crafted import with two entries sharing
+        an id keeps the first occurrence stable (existing references stay
+        valid) and re-mints a fresh id for each later collision instead of
+        leaving ``get()`` to resolve ambiguously to the first match."""
+        cfg = OscDestinationsConfig(
+            destinations=[
+                OscDestinationConfig(id="dup", name="First", host="10.0.0.1"),
+                OscDestinationConfig(id="dup", name="Second", host="10.0.0.2"),
+            ],
+        )
+        ids = [d.id for d in cfg.destinations]
+        assert ids[0] == "dup"  # first occurrence kept stable
+        assert ids[1] != "dup"  # later collision re-minted
+        assert len(set(ids)) == 2  # all unique
+        first = cfg.get("dup")
+        second = cfg.get(ids[1])
+        assert first is not None and first.name == "First"
+        assert second is not None and second.name == "Second"
+
+    def test_duplicate_ids_across_three_entries_all_unique(self) -> None:
+        cfg = OscDestinationsConfig(
+            destinations=[
+                OscDestinationConfig(id="x", name="A"),
+                OscDestinationConfig(id="x", name="B"),
+                OscDestinationConfig(id="x", name="C"),
+            ],
+        )
+        ids = [d.id for d in cfg.destinations]
+        assert ids[0] == "x"  # first occurrence kept stable
+        assert len(set(ids)) == 3  # all unique
+
+    def test_by_id_indexes_every_destination(self) -> None:
+        """``by_id`` is the O(1) index hot consumers stage instead of a
+        per-tick linear scan; it must agree with ``get`` for every id."""
+        a = OscDestinationConfig(id="a", host="10.0.0.1")
+        b = OscDestinationConfig(id="b", host="10.0.0.2")
+        cfg = OscDestinationsConfig(destinations=[a, b])
+        index = cfg.by_id()
+        assert index == {"a": a, "b": b}
+        assert index.get("a") is cfg.get("a")
+        assert index.get("nope") is cfg.get("nope")  # both None for unknown id
 
 
 # ---------------------------------------------------------------------------

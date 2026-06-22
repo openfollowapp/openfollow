@@ -19,8 +19,6 @@ import platform
 
 from openfollow.video.inputs._base import VideoInputBase
 
-from openfollow.i18n import _l  # noqa: E402  # i18n lazy string for plugin display_name
-
 logger = logging.getLogger(__name__)
 
 _registry: dict[str, type[VideoInputBase]] = {}

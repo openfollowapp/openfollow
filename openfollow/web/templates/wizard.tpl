@@ -673,7 +673,7 @@
         <g id="coarse-ref"></g>
       </svg>
     </div>
-    <div id="coarse-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in Step 3, then return here and press <strong>{{_("Refresh Image")}}</strong>.</div>
+    <div id="coarse-no-feed" class="wizard-no-feed" style="display:none;">{{_("No video feed available. Configure a video source in Step 3, then return here and press")}} <strong>{{_("Refresh Image")}}</strong>.</div>
 
     <div id="coarse-status" class="wizard-status" style="display:none;"></div>
 
@@ -755,7 +755,7 @@
         </div>
       </div>
     </div>
-    <div id="fine-no-feed" class="wizard-no-feed" style="display:none;">No video feed available. Configure a video source in Step 3, then return here and press <strong>{{_("Refresh Image")}}</strong>.</div>
+    <div id="fine-no-feed" class="wizard-no-feed" style="display:none;">{{_("No video feed available. Configure a video source in Step 3, then return here and press")}} <strong>{{_("Refresh Image")}}</strong>.</div>
 
     <div id="fine-status" class="wizard-status" style="display:none;"></div>
 

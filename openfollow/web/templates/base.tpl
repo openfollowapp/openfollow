@@ -1968,7 +1968,7 @@
  {{config.psn_system_name}}
  </div>
  % end
- <div class="lang-switch" role="group" aria-label="Language">
+ <div class="lang-switch" role="group" aria-label="{{_('Language')}}">
  <a href="/set-lang/en">EN</a>
  <a href="/set-lang/zh_CN">中文</a>
  </div>

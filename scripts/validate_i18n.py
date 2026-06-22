@@ -28,9 +28,6 @@ def extract_used_strings() -> dict[str, set[Path]]:
     # Template patterns: {{_('…')}}  and  {{_("…")}}
     tpl_re = re.compile(r"\{\{_\(['\"](.+?)['\"]\)\}\}")
 
-    # Python patterns: _('…'), _("…"), _l('…'), _l("…")
-    py_re = re.compile(r"\b_[l]?\('(.+?)'\)|\b_[l]?\(" r'"(.+?)"' r"\)")
-
     for fpath in (ROOT / "openfollow").rglob("*.py"):
         if "i18n" in fpath.parts:
             continue

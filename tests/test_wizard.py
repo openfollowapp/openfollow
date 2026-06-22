@@ -1246,3 +1246,27 @@ class TestWizardTemplateSafetyPatterns:
         src = self._wizard_tpl()
         assert '<nav class="wizard-steps"' in src
         assert 'role="tablist"' not in src
+
+    def test_camera_step_draws_vertical_fov_footprint(self) -> None:
+        """The Camera Position step draws the vertical FOV as a ground footprint.
+
+        The earlier illustration only drew the horizontal FOV (a single width
+        line at the centre sight distance), so the operator could not tell
+        whether the camera covered the full depth of the grid. The footprint is
+        the view frustum intersected with the grid plane: a shaded quad plus the
+        four frustum edges, with the vertical FOV derived from the horizontal
+        one on a 16:9 frame.
+        """
+        src = self._wizard_tpl()
+        # Footprint quad + four frustum edges.
+        assert 'id="cp-fov-area"' in src
+        for edge in ("cp-fov-bl", "cp-fov-br", "cp-fov-tl", "cp-fov-tr"):
+            assert f'id="{edge}"' in src, f"missing frustum edge {edge}"
+        # The horizontal-only markup must be gone so it can't silently return.
+        for old in ("cp-fov-left", "cp-fov-right", "cp-fov-line"):
+            assert old not in src, f"stale horizontal-only FOV element {old}"
+        # VFOV is derived from HFOV on a 16:9 frame, not read independently.
+        assert "9 / 16" in src, "vertical FOV must follow from the 16:9 aspect ratio"
+        assert "var vfov" in src
+        # The FOV readout reports both axes (degree sign + H and + V).
+        assert "\\u00b0H" in src and "\\u00b0V" in src

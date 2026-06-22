@@ -441,7 +441,7 @@
       <p class="wizard-help">Define where the Reference Point sits within the grid. By default, it's at the <strong>center of the front edge</strong> (X&nbsp;Offset&nbsp;=&nbsp;0, Y&nbsp;Offset&nbsp;=&nbsp;depth&nbsp;/&nbsp;2).</p>
       <div class="row">
         <div class="field">
-          <label for="grid_x_offset">X Offset ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(right +)</span></label>
+          <label for="grid_x_offset">X Offset ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(stage left +)</span></label>
           <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="grid_x_offset" value="{{format_length(config.grid.x_offset, _us) if _imp else config.grid.x_offset}}" oninput="onGridInputChanged()">
           % if _imp:
           <small class="metric-echo" id="grid_x_offset-echo">Stored: {{metric_echo(config.grid.x_offset)}}</small>
@@ -713,16 +713,10 @@
       % # hooks drag handlers. SVG groups: -edges (partial polygon to
       % # neighbors), -marker (centre handle operator drags).
       % # aria-label for screen readers (semantic stage position names).
+      % # Box order mirrors a front-of-house image: stage left on the right,
+      % # so the top row is USR, USL and the bottom row DSR, DSL.
       <div id="fine-zoom-view" style="display:none;">
         <div class="fine-zoom-grid" id="fine-zoom-grid">
-          <div class="fine-zoom-box" data-corner="USL">
-            <svg class="fine-zoom-svg" data-corner="USL" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="group" aria-label="Fine adjust upstage-left corner">
-              <image data-fine-zoom-image x="0" y="0"/>
-              <g data-fine-zoom-edges></g>
-              <g data-fine-zoom-marker></g>
-            </svg>
-            <span class="fine-zoom-corner-label">USL</span>
-          </div>
           <div class="fine-zoom-box" data-corner="USR">
             <svg class="fine-zoom-svg" data-corner="USR" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="group" aria-label="Fine adjust upstage-right corner">
               <image data-fine-zoom-image x="0" y="0"/>
@@ -731,13 +725,13 @@
             </svg>
             <span class="fine-zoom-corner-label">USR</span>
           </div>
-          <div class="fine-zoom-box" data-corner="DSL">
-            <svg class="fine-zoom-svg" data-corner="DSL" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="group" aria-label="Fine adjust downstage-left corner">
+          <div class="fine-zoom-box" data-corner="USL">
+            <svg class="fine-zoom-svg" data-corner="USL" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="group" aria-label="Fine adjust upstage-left corner">
               <image data-fine-zoom-image x="0" y="0"/>
               <g data-fine-zoom-edges></g>
               <g data-fine-zoom-marker></g>
             </svg>
-            <span class="fine-zoom-corner-label">DSL</span>
+            <span class="fine-zoom-corner-label">USL</span>
           </div>
           <div class="fine-zoom-box" data-corner="DSR">
             <svg class="fine-zoom-svg" data-corner="DSR" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="group" aria-label="Fine adjust downstage-right corner">
@@ -746,6 +740,14 @@
               <g data-fine-zoom-marker></g>
             </svg>
             <span class="fine-zoom-corner-label">DSR</span>
+          </div>
+          <div class="fine-zoom-box" data-corner="DSL">
+            <svg class="fine-zoom-svg" data-corner="DSL" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="group" aria-label="Fine adjust downstage-left corner">
+              <image data-fine-zoom-image x="0" y="0"/>
+              <g data-fine-zoom-edges></g>
+              <g data-fine-zoom-marker></g>
+            </svg>
+            <span class="fine-zoom-corner-label">DSL</span>
           </div>
         </div>
       </div>
@@ -775,7 +777,7 @@
     </div>
 
     <p class="wizard-help" style="margin-top:0.72rem;">
-      <strong>Drag each corner marker</strong> to the corresponding physical mark on the stage, as seen from your camera's point of view. The labels mark image quadrants: <strong>DSL</strong> goes on the front mark at the left of the image, <strong>DSR</strong> on the front mark at the right, and so on. (Note: with a front-of-house camera the left of the image is stage right.)
+      <strong>Drag each corner marker</strong> to its physical mark on the stage. The labels are stage positions: <strong>DSL</strong>/<strong>USL</strong> are stage left, <strong>DSR</strong>/<strong>USR</strong> are stage right (D = downstage/front, U = upstage/back). With a front-of-house camera you see the audience's view, so stage left is on the right of the image (audience right) and stage right is on the left (audience left).
     </p>
     <p class="wizard-tip">Start with the two downstage corners (front), then adjust the upstage corners (back). If a corner turns red, the shape is invalid. For pixel-precise placement, click <strong>Fine adjust</strong> to switch to a 4×-zoomed per-corner view.</p>
     <p>If your corners are invalid, three things could be wrong: The position of your camera relative to the reference point, your marked rectangle has not the same size as the grid, or the corners of your rectangle are not 90 degrees.</p>
@@ -1463,10 +1465,12 @@
       var el = document.getElementById(id);
       el.setAttribute('x', x); el.setAttribute('y', y);
     };
-    setLabel('gs-label-dsl', gx - pad, dsY + 14);
-    setLabel('gs-label-dsr', gx + gw + pad - 20, dsY + 14);
-    setLabel('gs-label-usl', gx - pad, gy - 4);
-    setLabel('gs-label-usr', gx + gw + pad - 20, gy - 4);
+    // +X is stage left, drawn on the right, so DSL/USL sit at the right edge
+    // and DSR/USR at the left edge (audience view: stage left = audience right).
+    setLabel('gs-label-dsr', gx - pad, dsY + 14);
+    setLabel('gs-label-dsl', gx + gw + pad - 20, dsY + 14);
+    setLabel('gs-label-usr', gx - pad, gy - 4);
+    setLabel('gs-label-usl', gx + gw + pad - 20, gy - 4);
 
     // Width dimension (below grid)
     var dimY = dsY + 22;
@@ -1546,7 +1550,7 @@
       offZLabel.style.display = 'none';
     }
 
-    // Diagonal (DSL→USR)
+    // Diagonal (DSR→USL)
     var diag = Math.sqrt(w * w + d * d);
     var diagLine = document.getElementById('gs-diag');
     diagLine.setAttribute('x1', gx); diagLine.setAttribute('y1', dsY);
@@ -1714,11 +1718,13 @@
 
     var svgW = 580, svgH = 400;
     var hw = gw / 2, hd = gd / 2;
+    // Stage convention: +X is stage left, so DSL/USL are at +hw and DSR/USR
+    // at -hw (order: DSL, DSR, USR, USL), matching the other wizard steps.
     var gridCorners = [
-      [gox - hw, goy - hd],
       [gox + hw, goy - hd],
-      [gox + hw, goy + hd],
+      [gox - hw, goy - hd],
       [gox - hw, goy + hd],
+      [gox + hw, goy + hd],
     ];
 
     function isoProject(wx, wy, wz) {
@@ -1992,7 +1998,8 @@
     fovLabel.setAttribute('text-anchor', 'end');
     fovLabel.textContent = 'FOV ' + fov.toFixed(0) + '\u00b0';
 
-    // Downstage / Upstage labels – near DSL and USL corners
+    // Downstage label near the downstage stage-right (DSR) corner; upstage
+    // label centered on the upstage edge.
     var dsLabelPos = toSvg(gox - hw, goy - hd, goz + 1.0);
     document.getElementById('cp-ds-label').setAttribute('x', dsLabelPos[0] + 6);
     document.getElementById('cp-ds-label').setAttribute('y', dsLabelPos[1]);
@@ -2527,11 +2534,13 @@
     var g = state.grid;
     var hw = g.width / 2, hd = g.depth / 2;
     var ox = g.x_offset, oy = g.y_offset, oz = g.z_offset;
+    // Stage convention: +X is stage left, so DSL/USL are at +hw and DSR/USR
+    // at -hw. Each row pairs with the same-named screen corner below.
     var worldCorners = [
-      [ox - hw, oy - hd, oz],
       [ox + hw, oy - hd, oz],
-      [ox + hw, oy + hd, oz],
+      [ox - hw, oy - hd, oz],
       [ox - hw, oy + hd, oz],
+      [ox + hw, oy + hd, oz],
     ];
     var screenCorners = [
       cornerPositions.DSL,
@@ -3054,11 +3063,13 @@
     var g = state.grid;
     var hw = g.width / 2, hd = g.depth / 2;
     var ox = g.x_offset, oy = g.y_offset, oz = g.z_offset;
+    // Stage convention: +X is stage left, so DSL/USL are at +hw and DSR/USR
+    // at -hw. Each row pairs with the same-named screen corner below.
     var worldCorners = [
-      [ox - hw, oy - hd, oz],
       [ox + hw, oy - hd, oz],
-      [ox + hw, oy + hd, oz],
+      [ox - hw, oy - hd, oz],
       [ox - hw, oy + hd, oz],
+      [ox + hw, oy + hd, oz],
     ];
 
     var screenCorners = [

@@ -75,17 +75,21 @@ def poly_str(pts_2d) -> str:
 
 
 def grid_corners(grid: GridConfig) -> list[tuple[float, float, float]]:
-    """Return DSL, DSR, USR, USL grid corners in PSN coords."""
+    """Return DSL, DSR, USR, USL grid corners in PSN coords.
+
+    PSN +X is stage left, so the stage-left corners (DSL, USL) sit at +hw and
+    the stage-right corners (DSR, USR) at -hw.
+    """
     hw = grid.width / 2.0
     hd = grid.depth / 2.0
     cx = grid.x_offset
     cy = grid.y_offset
     z = grid.z_offset
     return [
-        (cx - hw, cy - hd, z),
-        (cx + hw, cy - hd, z),
-        (cx + hw, cy + hd, z),
-        (cx - hw, cy + hd, z),
+        (cx + hw, cy - hd, z),  # DSL (downstage stage-left)
+        (cx - hw, cy - hd, z),  # DSR (downstage stage-right)
+        (cx - hw, cy + hd, z),  # USR (upstage stage-right)
+        (cx + hw, cy + hd, z),  # USL (upstage stage-left)
     ]
 
 
@@ -361,12 +365,13 @@ def _draw_tape_corners(out, p, grid: GridConfig):
     cy = grid.y_offset
     z = grid.z_offset
     L = TAPE_BRACKET_LEN
-    # (corner, inward_x_sign, inward_y_sign)
+    # (corner, inward_x_sign, inward_y_sign). +X is stage left, so the -hw
+    # corners are stage right (DSR/USR) and the +hw corners stage left (DSL/USL).
     specs = [
-        ((cx - hw, cy - hd, z), +1, +1),  # DSL
-        ((cx + hw, cy - hd, z), -1, +1),  # DSR
-        ((cx + hw, cy + hd, z), -1, -1),  # USR
-        ((cx - hw, cy + hd, z), +1, -1),  # USL
+        ((cx - hw, cy - hd, z), +1, +1),  # DSR (downstage stage-right)
+        ((cx + hw, cy - hd, z), -1, +1),  # DSL (downstage stage-left)
+        ((cx + hw, cy + hd, z), -1, -1),  # USL (upstage stage-left)
+        ((cx - hw, cy + hd, z), +1, -1),  # USR (upstage stage-right)
     ]
     for (x0, y0, z0), sx, sy in specs:
         x_arm_end = (x0 + sx * L, y0, z0)

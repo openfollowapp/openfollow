@@ -215,22 +215,24 @@ class TestConfigDefaults:
         grid = GridConfig()
         hw = grid.width / 2.0
         hd = grid.depth / 2.0
+        # Stage convention: +X is stage left, so DSL/USL are at +hw and DSR/USR
+        # at -hw (matching openfollow/web/routes.py and scripts/gen_stage_svg.py).
         corners = np.array(
             [
-                [grid.x_offset - hw, grid.y_offset - hd, grid.z_offset],  # DSL
-                [grid.x_offset + hw, grid.y_offset - hd, grid.z_offset],  # DSR
-                [grid.x_offset + hw, grid.y_offset + hd, grid.z_offset],  # USR
-                [grid.x_offset - hw, grid.y_offset + hd, grid.z_offset],  # USL
+                [grid.x_offset + hw, grid.y_offset - hd, grid.z_offset],  # DSL (stage left)
+                [grid.x_offset - hw, grid.y_offset - hd, grid.z_offset],  # DSR (stage right)
+                [grid.x_offset - hw, grid.y_offset + hd, grid.z_offset],  # USR (stage right)
+                [grid.x_offset + hw, grid.y_offset + hd, grid.z_offset],  # USL (stage left)
             ]
         )
         params = np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov])
         projected = project_points(params, corners, 1920.0, 1080.0)
         expected = np.array(
             [
-                [292.0, 732.7],
-                [1628.0, 732.7],
-                [1421.6, 465.7],
-                [498.4, 465.7],
+                [1628.0, 732.7],  # DSL (stage left → image right)
+                [292.0, 732.7],  # DSR (stage right → image left)
+                [498.4, 465.7],  # USR
+                [1421.6, 465.7],  # USL
             ]
         )
         assert np.allclose(projected, expected, atol=0.5), (
@@ -579,6 +581,34 @@ class TestWizardProjectEndpoint:
             x, y = c[name]
             assert 0 <= x <= IMG_W, f"{name} x={x} out of bounds"
             assert 0 <= y <= IMG_H, f"{name} y={y} out of bounds"
+
+    def test_stage_left_corners_project_to_image_right(self, live_server) -> None:
+        """Stage-left corners (DSL/USL) land on the right of a front-of-house image.
+
+        PSN ``+X`` is stage left, and a centred front-of-house camera shows the
+        audience's view, where stage left is on the right (audience right). So
+        the stage-left corners must project to a larger image-x than their
+        stage-right counterparts. This pins the convention the wizard labels and
+        DLT solve depend on (stage left / audience right), not the projection math.
+        """
+        _, base = live_server
+        status, data = _post_json(
+            base,
+            "/api/wizard/project",
+            {
+                "camera": _CAM,
+                "grid": _GRID,
+                "image_width": IMG_W,
+                "image_height": IMG_H,
+            },
+        )
+        assert status == 200
+        c = data["corners"]
+        assert c["DSL"][0] > c["DSR"][0], "DSL (stage left) must be right of DSR (stage right)"
+        assert c["USL"][0] > c["USR"][0], "USL (stage left) must be right of USR (stage right)"
+        # Downstage corners sit lower in the image (larger y) than upstage ones.
+        assert c["DSL"][1] > c["USL"][1], "DSL (downstage) must be below USL (upstage)"
+        assert c["DSR"][1] > c["USR"][1], "DSR (downstage) must be below USR (upstage)"
 
     # Camera sitting inside the grid footprint, nearly level: the two front
     # corners fall at/behind the camera plane and project to NaN.

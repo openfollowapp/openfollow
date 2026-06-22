@@ -3314,8 +3314,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if referer:
             from urllib.parse import urlparse
             parsed = urlparse(referer)
-            # Only bounce back to same-origin paths – never to external URLs.
-            if parsed.path and not parsed.netloc:
+            # Only bounce back to same-origin paths to prevent open redirect.
+            request_host = request.headers.get("Host", "")
+            if parsed.netloc == request_host:
                 target = parsed.path
                 if parsed.query:
                     target += "?" + parsed.query

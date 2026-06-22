@@ -4441,6 +4441,20 @@ def test_update_grid_post_persists_and_renders_partial(live_server) -> None:
     assert saved.grid.origin_visible is True
 
 
+def test_update_grid_post_toggles_visible(live_server) -> None:
+    """The Show Grid checkbox: ticked -> True, omitted -> False. Omitting it
+    must hide the grid, not silently preserve the prior True default."""
+    server, base = live_server
+
+    status, _ = _post_form(base, "/section/grid", {"width": "25"})
+    assert status == 200
+    assert load_config(server.config_path).grid.visible is False
+
+    status, _ = _post_form(base, "/section/grid", {"width": "25", "visible": "on"})
+    assert status == 200
+    assert load_config(server.config_path).grid.visible is True
+
+
 def test_update_marker_post_persists_visual_booleans(live_server) -> None:
     """POST /section/marker exercises the longest bool-fields list in the
     routes module. Boxes ticked → True, omitted → False."""

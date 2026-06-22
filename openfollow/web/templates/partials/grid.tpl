@@ -14,6 +14,15 @@
     </div>
 
     <div class="group">
+        <div class="row">
+            <div class="field checkbox-field">
+                <label>Show Grid</label>
+                <div class="checkbox-wrap"><input type="checkbox" name="visible" {{'checked' if config.grid.visible else ''}}></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="group">
         <h3 class="group-title">Dimensions</h3>
         <div class="row">
             <div class="field">

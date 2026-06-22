@@ -51,6 +51,7 @@ def _make_marker_config() -> SimpleNamespace:
 
 def _make_grid_config() -> SimpleNamespace:
     return SimpleNamespace(
+        visible=True,
         width=30.0,
         depth=20.0,
         spacing=2.0,
@@ -131,10 +132,27 @@ class TestSyncGridConfig:
         sync_grid_config(state, cfg)
 
         assert state.grid_config == (30.0, 20.0, 2.0, 1.0, 2.0, 0.5)
+        assert state.grid_visible is True
         assert state.grid_color == "#abcdef"
         assert state.grid_thickness == 2
         assert state.grid_transparency == 0.25
         assert state.show_origin is True
+
+    def test_copies_visible_false(self) -> None:
+        state = OverlayState()
+        gc = _make_grid_config()
+        gc.visible = False
+        sync_grid_config(state, SimpleNamespace(grid=gc))
+        assert state.grid_visible is False
+
+    def test_grid_visible_defaults_true_for_partial_object(self) -> None:
+        # A grid object predating the field must not crash the per-tick path
+        # and falls back to visible (the default).
+        state = OverlayState()
+        gc = _make_grid_config()
+        del gc.visible
+        sync_grid_config(state, SimpleNamespace(grid=gc))
+        assert state.grid_visible is True
         assert state.origin_length == 2.0
         assert state.origin_thickness == 4
 

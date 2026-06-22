@@ -311,6 +311,9 @@ _GRID_TRANSPARENCY_DEFAULT = 0.6
 
 @dataclass
 class GridConfig:
+    # Master show/hide for the grid overlay. Default on so existing configs
+    # keep drawing the grid.
+    visible: bool = True
     width: float = 10.0
     depth: float = 6.0
     spacing: float = 1.0
@@ -332,6 +335,7 @@ class GridConfig:
     def __post_init__(self) -> None:
         # Dimensions/offsets reach numpy float buffers in draw_grid; appearance
         # fields reach Cairo.
+        self.visible = _coerce_bool(self.visible, True)
         self.width = _coerce_float(self.width, 10.0, lo=0.1)
         self.depth = _coerce_float(self.depth, 6.0, lo=0.1)
         self.spacing = _coerce_float(self.spacing, 1.0, lo=0.1)

@@ -359,6 +359,7 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         ),
     },
     "grid": {
+        "visible": FieldRule(_as_bool),
         "width": FieldRule(_as_float, lo=0.1, human_error="Width must be at least 0.1 m."),
         "depth": FieldRule(_as_float, lo=0.1, human_error="Depth must be at least 0.1 m."),
         "spacing": FieldRule(_as_float, lo=0.1, human_error="Spacing must be at least 0.1 m."),

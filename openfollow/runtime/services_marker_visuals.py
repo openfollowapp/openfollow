@@ -211,6 +211,9 @@ def sync_grid_config(state: OverlayState, cfg: Any) -> None:
         _soft_float(g.y_offset, d.y_offset),
         _soft_float(g.z_offset, d.z_offset),
     )
+    # getattr keeps the per-tick path safe if a shim/partial grid object
+    # predates this field; a real GridConfig always carries it.
+    state.grid_visible = _soft_bool(getattr(g, "visible", d.visible), d.visible)
     state.grid_color = g.color.lower() if isinstance(g.color, str) and _HEX_COLOR_RE.match(g.color) else d.color
     state.grid_thickness = _soft_int(g.thickness, d.thickness, lo=1)
     # ``_soft_float`` rejects non-finite (inf/nan) to ``default``; the

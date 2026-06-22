@@ -1896,6 +1896,35 @@ def test_grid_config_rejects_unparseable_origin_visible_to_default(bad_value: ob
     assert cfg.origin_visible is False
 
 
+def test_grid_config_visible_defaults_true() -> None:
+    # Master grid toggle defaults on so existing configs keep drawing the grid.
+    assert GridConfig().visible is True
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("true", True),
+        ("on", True),
+        ("1", True),
+        ("false", False),
+        ("off", False),
+        ("0", False),
+        ("no", False),
+    ],
+)
+def test_grid_config_coerces_visible_strings(value: str, expected: bool) -> None:
+    cfg = GridConfig(visible=value)  # type: ignore[arg-type]
+    assert cfg.visible is expected
+
+
+@pytest.mark.parametrize("bad_value", ["maybe", "", "42", 42, None, [True]])
+def test_grid_config_rejects_unparseable_visible_to_default(bad_value: object) -> None:
+    # Junk falls back to the default (True), never a silently-hidden grid.
+    cfg = GridConfig(visible=bad_value)  # type: ignore[arg-type]
+    assert cfg.visible is True
+
+
 # GridConfig.max_height – denominator for [fz] / [ifz].
 # Default 0.0 = unset; negative inputs collapse to 0; positive preserved.
 

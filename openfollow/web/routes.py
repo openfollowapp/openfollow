@@ -1232,6 +1232,7 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "focal_length_mm": _as_optional_float,
     },
     "grid": {
+        "visible": _as_bool,
         "width": _as_float,
         "depth": _as_float,
         "spacing": _as_float,
@@ -4216,7 +4217,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/grid")
     def update_grid() -> Any:
         """Update grid settings."""
-        cfg = _save_section_from_form("grid", bool_fields=("origin_visible",))
+        cfg = _save_section_from_form("grid", bool_fields=("visible", "origin_visible"))
         return template("partials/grid", config=cfg, saved=True)
 
     @app.post("/section/movement")

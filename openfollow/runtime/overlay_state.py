@@ -143,6 +143,7 @@ class OverlayState:
     camera_params: npt.NDArray[Any] | None = None
     # Grid: (width, depth, spacing, x_offset, y_offset, z_offset)
     grid_config: tuple[float, float, float, float, float, float] | None = None
+    grid_visible: bool = True
     grid_color: str = _GRID_COLOR_DEFAULT
     grid_thickness: int = _GRID_THICKNESS_DEFAULT
     grid_transparency: float = _GRID_TRANSPARENCY_DEFAULT
@@ -269,6 +270,7 @@ class OverlayState:
         self.selected_id = None
         self.camera_params = None
         self.grid_config = None
+        self.grid_visible = True
         self.grid_color = _GRID_COLOR_DEFAULT
         self.grid_thickness = _GRID_THICKNESS_DEFAULT
         self.grid_transparency = _GRID_TRANSPARENCY_DEFAULT

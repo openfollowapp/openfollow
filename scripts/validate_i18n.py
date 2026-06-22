@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
 """CI guard: verify every _() / _l() / {{_()}} call has a matching
 translation in the zh_CN catalog.
 

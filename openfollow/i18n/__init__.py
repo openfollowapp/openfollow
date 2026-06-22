@@ -74,7 +74,7 @@ class _LazyString:
         self._message = message
 
     def __str__(self) -> str:
-        return _tls._translate(self._message)
+        return _template_translate(self._message)
 
     def __repr__(self) -> str:
         return repr(str(self))
@@ -135,7 +135,7 @@ def _best_language(accept_lang_header: str | None) -> str:
         else:
             tag = part
             q = 1.0
-        candidates.append((q, tag.strip().lower().replace("-", "_")))
+        candidates.append((q, tag.strip().replace("-", "_")))
     candidates.sort(key=lambda x: x[0], reverse=True)
     for _q, tag in candidates:
         if tag in _AVAILABLE_LANGUAGES:

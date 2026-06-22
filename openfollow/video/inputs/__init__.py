@@ -54,7 +54,7 @@ def _discover_inputs() -> None:
             )
             continue
         _registry[cls.input_id] = cls  # type: ignore[type-abstract]
-        logger.info("Registered video input: %s", cls.input_id)
+        logger.info("Registered video input: %s (%s)", cls.input_id, cls.display_name)
 
 
 def get_registry() -> dict[str, type[VideoInputBase]]:

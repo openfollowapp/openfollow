@@ -1149,8 +1149,6 @@ msgstr "编码"
 msgid "SRT URL"
 msgstr "SRT 地址"
 
-msgid "NDI Source"
-msgstr "NDI 源"
 
 msgid "Scan"
 msgstr "扫描"
@@ -1412,3 +1410,6 @@ msgstr "先从两个下台口角点（前方）开始，然后调整上台口角
 
 msgid "to switch to a 4x-zoomed per-corner view."
 msgstr "切换到 4 倍放大逐角视图。"
+
+msgid "NDI® Source"
+msgstr "NDI® 源"

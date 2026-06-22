@@ -319,7 +319,7 @@ class NdiInput(VideoInputBase):
         return warning + (
             '<div class="row ndi-row">'
             '    <div class="field wide">'
-            "        <label>{_("NDI® Source")}</label>"
+            f"        <label>{_('NDI® Source')}</label>"
             '        <select name="ndi_source_name" hx-get="/video-input/ndi/sources"'
             '                hx-trigger="load, click from:#refresh-ndi"'
             '                hx-target="this" hx-swap="innerHTML">'

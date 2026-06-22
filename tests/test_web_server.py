@@ -4429,6 +4429,34 @@ def test_api_set_detection_masks_enabled_rejects_non_object_body(live_server) ->
     assert "object" in str(body.get("error", "")).lower()
 
 
+def test_api_set_detection_masks_enabled_rejects_null_body(live_server) -> None:
+    _, base = live_server
+    status, body = _post_raw_json(base, "/api/detection/masks/enabled", None)
+    assert status == 400
+    assert "Invalid JSON" in str(body.get("error", ""))
+
+
+def test_api_create_detection_mask_rejects_null_body(live_server) -> None:
+    _, base = live_server
+    status, body = _post_raw_json(base, "/api/detection/masks", None)
+    assert status == 400
+    assert "Invalid JSON" in str(body.get("error", ""))
+
+
+def test_api_update_detection_mask_rejects_null_body(live_server) -> None:
+    _, base = live_server
+    status, body = _post_raw_json(base, "/api/detection/masks/0", None, method="PUT")
+    assert status == 400
+    assert "Invalid JSON" in str(body.get("error", ""))
+
+
+def test_api_update_detection_mask_rejects_non_object_body(live_server) -> None:
+    _, base = live_server
+    status, body = _post_raw_json(base, "/api/detection/masks/0", "a string", method="PUT")
+    assert status == 400
+    assert "object" in str(body.get("error", "")).lower()
+
+
 def test_api_create_detection_mask_drops_garbage_vertices(live_server) -> None:
     server, base = live_server
     # A crafted payload with non-numeric, short, and wrong-type vertices:

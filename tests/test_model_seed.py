@@ -60,6 +60,39 @@ def test_seed_does_not_overwrite_existing_destination(tmp_path: Path) -> None:
     assert (dest / "yolo11s.onnx").read_bytes() == b"bundled-s"
 
 
+def test_seed_returns_empty_when_models_dir_cannot_be_created(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # An unwritable storage location must degrade to a no-op, not crash startup.
+    source = tmp_path / "bundled"
+    source.mkdir()
+    (source / "yolo26n.onnx").write_bytes(b"nano")
+    dest = tmp_path / "storage" / "models"
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(Path, "mkdir", _boom)
+
+    assert seed_bundled_models(source, dest) == []
+    assert not dest.exists()
+
+
+def test_seed_skips_files_that_fail_to_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A copy that fails (e.g. disk full) is logged and skipped; the file is not
+    # reported as seeded and the rest of the run continues.
+    source = tmp_path / "bundled"
+    source.mkdir()
+    (source / "yolo26n.onnx").write_bytes(b"nano")
+    dest = tmp_path / "models"
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(model_seed.shutil, "copyfile", _boom)
+
+    assert seed_bundled_models(source, dest) == []
+    assert not (dest / "yolo26n.onnx").exists()
+
+
 def test_seed_ignores_non_onnx_files(tmp_path: Path) -> None:
     source = tmp_path / "bundled"
     source.mkdir()

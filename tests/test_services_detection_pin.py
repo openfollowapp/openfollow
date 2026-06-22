@@ -613,6 +613,15 @@ def test_assist_glides_home_when_no_detections_at_all(monkeypatch) -> None:
     assert anchor.pos == (2.0, 3.0, 1.0)
 
 
+def test_assist_is_a_noop_when_no_controlled_markers(monkeypatch) -> None:
+    # With no controlled markers there is nothing to refine: assist must early
+    # return without touching state (and without unprojecting anything).
+    app = _make_app(detection_cfg=_assist_cfg(), selected_id=None, controlled_ids=[], resolution=(1000, 1000))
+    _run_assist(app, _AssistDetector([_det(0.5, 1)]), monkeypatch)
+    assert app._detection_pin_states == {}
+    assert app._assist_manual == {}
+
+
 def test_assist_output_z_follows_anchor(monkeypatch) -> None:
     app = _assist_app(_assist_cfg(assist_radius_m=50.0))  # smoothing 1, strength 1
     out = app._server.get_marker(_PID)

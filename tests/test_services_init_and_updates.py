@@ -349,6 +349,23 @@ class TestInitOverlayState:
         assert renderer.state is sentinel
 
 
+class TestSeedBundledDetectionModels:
+    def test_seeds_models_into_resolved_storage(
+        self, services: AppRuntimeServices, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:  # noqa: ANN001
+        # When models are bundled, they are copied into ``<storage>/models``.
+        source = tmp_path / "bundled"
+        source.mkdir()
+        (source / "yolo26n.onnx").write_bytes(b"nano")
+        monkeypatch.setattr("openfollow.model_seed.bundled_models_dir", lambda: source)
+        cfg = AppConfig()
+        cfg.detection.storage_path = str(tmp_path / "store")
+
+        services._seed_bundled_detection_models(cfg)
+
+        assert (tmp_path / "store" / "models" / "yolo26n.onnx").read_bytes() == b"nano"
+
+
 # --------------------------------------------------------------------------- #
 # init_camera
 # --------------------------------------------------------------------------- #

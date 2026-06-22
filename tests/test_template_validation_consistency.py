@@ -11,7 +11,9 @@ Walks every partial template and asserts that every ``<input>`` whose
 - ``hx-target`` referencing a sibling ``<span class="field-error">``
 - ``aria-describedby`` matching the same id as ``hx-target``
 
-The section is derived from the partial's filename (``grid.tpl`` → ``"grid"``).
+The section is derived from the partial's filename (``grid.tpl`` → ``"grid"``),
+with ``_SECTION_OVERRIDES`` mapping plural row-list partials to their singular
+``FIELD_RULES`` section (``osc_destinations.tpl`` → ``"osc_destination"``).
 ``type="hidden"``, ``type="checkbox"``, and ``type="radio"`` inputs are skipped
 – discrete choices don't need on-blur validation. ``<select>`` is also skipped
 (it's an HTML element distinct from ``<input>``; the consistency check is scoped
@@ -69,8 +71,15 @@ def _parse_partial(path: Path) -> list[dict[str, str]]:
     return parser.inputs
 
 
+# Some partials render a list of rows whose FIELD_RULES section is singular
+# while the filename is plural. Map the filename stem to the rules section so
+# the registered inputs are audited rather than silently skipped on a missing
+# ``FIELD_RULES.get(stem)`` lookup.
+_SECTION_OVERRIDES = {"osc_destinations": "osc_destination"}
+
+
 def _section_from_path(path: Path) -> str:
-    return path.stem
+    return _SECTION_OVERRIDES.get(path.stem, path.stem)
 
 
 def _registered_inputs() -> Iterable[tuple[Path, str, dict[str, str]]]:
@@ -94,6 +103,17 @@ def _registered_inputs() -> Iterable[tuple[Path, str, dict[str, str]]]:
 
 def test_partials_directory_exists() -> None:
     assert _PARTIALS_DIR.is_dir(), f"missing partials dir: {_PARTIALS_DIR}"
+
+
+def test_osc_destinations_partial_inputs_are_audited() -> None:
+    """The osc_destinations partial has a plural filename but a singular
+    ``osc_destination`` FIELD_RULES section. Without the override its inputs
+    would be silently skipped; assert they are actually picked up so the
+    markup audit can't regress to a no-op for this form."""
+    audited = {(path.name, attrs["name"]) for path, _section, attrs in _registered_inputs()}
+    assert ("osc_destinations.tpl", "host") in audited
+    assert ("osc_destinations.tpl", "port") in audited
+    assert ("osc_destinations.tpl", "name") in audited
 
 
 def test_every_registered_input_has_validation_markup() -> None:

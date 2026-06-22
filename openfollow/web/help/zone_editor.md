@@ -48,8 +48,7 @@ One editable row per polygon vertex, labelled V1, V2, … to match the canvas ha
 
 The four OSC messages the zone fires on occupancy transitions. Leave any address blank to suppress that event.
 
-- **OSC Host (optional)** – destination IP for this zone's messages. Blank falls back to the default OSC host in Trigger Zones settings.
-- **OSC Port (0 = default)** – destination UDP port. `0` uses the default port from Trigger Zones settings.
+- **OSC Destination** – the shared connection (host, port, transport) this zone's messages go to, picked from the list you maintain under **OSC Destinations**. A zone with no destination selected emits nothing. Edit the destination's IP once and every referencing zone and transmitter repoints live.
 - **First Entry Address** – sent on empty → occupied (0 → 1 occupant). E.g. trigger a cue or raise an audio bus.
 - **Additional Entry Address** – sent when another occupant enters an already-occupied zone (n → n+1). E.g. increment a counter or layer an effect.
 - **Partial Exit Address** – sent when one occupant leaves but the zone stays occupied (n+1 → n, n ≥ 1). E.g. decrement a counter.

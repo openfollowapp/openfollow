@@ -733,10 +733,9 @@ zones/
 - `enabled` (bool) – arms the engine (OSC output). Default `False`.
 - `show_overlay` (bool) – renders zone polygons on the HUD. Independent of `enabled` – the overlay hotkey (`z` / `B`) flips this alone, so rendering must not be gated on `enabled`.
 - `eval_fps` (int, one of `1, 5, 10, 15, 30, 60`) – engine evaluation rate; marker/detection collection is skipped between ticks.
-- `default_osc_host` / `default_osc_port` – fallback target when a zone leaves its own `osc_host`/`osc_port` blank.
 - `debounce_ms` (int) – transitions inside the window are **discarded, not queued**.
 - `hysteresis` (float, metres) – inward polygon offset applied to build the exit polygon (`shrink_polygon`), so near-boundary flicker doesn't re-fire OSC.
-- `zones: list[TriggerZoneConfig]` – per-zone: `vertices`, `color`, `trigger_source` (`"markers" | "detection" | "both"`), four OSC addresses (`osc_address_first_entry`, `_additional_entry`, `_partial_exit`, `_final_exit`), optional `osc_host`/`osc_port` override, `enabled`.
+- `zones: list[TriggerZoneConfig]` – per-zone: `vertices`, `color`, `trigger_source` (`"markers" | "detection" | "both"`), four OSC addresses (`osc_address_first_entry`, `_additional_entry`, `_partial_exit`, `_final_exit`), `destination_id` (references a shared `OscDestinationConfig`; blank/dangling = emit nothing), `enabled`.
 
 ### Occupancy state machine (`ZoneEngine._emit_transitions`)
 Per zone, tracks the set of occupants and an integer count. Transitions, in order:

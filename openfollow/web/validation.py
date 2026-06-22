@@ -212,7 +212,7 @@ def _validate_host(value: str, _cfg: AppConfig | None) -> str | None:
     """IPv4 / IPv6 address OR a syntactically valid hostname.
 
     Used for fields like ``rttrpm_output.host`` and
-    ``trigger_zones.default_osc_host`` where the receiver socket can
+    ``osc_destination.host`` where the receiver socket can
     resolve a hostname. Rejects values with internal whitespace,
     schemes, or paths so the operator notices the typo before the
     UDP send silently goes nowhere.
@@ -578,16 +578,11 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             choices=tuple(str(v) for v in VALID_ZONE_EVAL_FPS),
             human_error=(f"Eval FPS must be one of: {', '.join(str(v) for v in VALID_ZONE_EVAL_FPS)}."),
         ),
-        "default_osc_host": FieldRule(
-            _as_str, max_len=255, custom=_validate_host, human_error="Host must be a hostname or IP."
-        ),
-        "default_osc_port": FieldRule(_as_int, lo=1, hi=65535, human_error="Port must be between 1 and 65535."),
         "debounce_ms": FieldRule(_as_int, lo=0, hi=60000, human_error="Debounce must be between 0 and 60000 ms."),
         "hysteresis": FieldRule(_as_float, lo=0.0, hi=10.0, human_error="Hysteresis must be between 0 and 10 m."),
     },
-    # Per-row OSC binding fields; flat section to avoid routing complexity.
-    "osc_binding": {
-        "enabled": FieldRule(_as_bool),
+    # Shared OSC destination profiles (name + connection).
+    "osc_destination": {
         "name": FieldRule(_as_str, max_len=64, human_error="Name must be 0–64 characters."),
         "host": FieldRule(_as_str, max_len=255, custom=_validate_host, human_error="Host must be a hostname or IP."),
         "port": FieldRule(_as_int, lo=1, hi=65535, human_error="Port must be between 1 and 65535."),
@@ -596,12 +591,19 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             choices=VALID_OSC_TRANSMITTER_PROTOCOLS,
             human_error=(f"Protocol must be one of: {', '.join(VALID_OSC_TRANSMITTER_PROTOCOLS)}."),
         ),
-        # TCP framing selector; validated even for UDP rows to preserve round-trip.
         "framing": FieldRule(
             _as_str,
             choices=VALID_OSC_FRAMINGS,
             human_error=(f"Framing must be one of: {', '.join(VALID_OSC_FRAMINGS)}."),
         ),
+    },
+    # Per-row OSC binding fields; flat section to avoid routing complexity.
+    "osc_binding": {
+        "enabled": FieldRule(_as_bool),
+        "name": FieldRule(_as_str, max_len=64, human_error="Name must be 0–64 characters."),
+        # Connection chosen via a shared OSC destination; empty allowed –
+        # an unselected enabled row is a soft "no send", not a blur error.
+        "destination_id": FieldRule(_as_str, max_len=64),
         # marker_id is int | None; empty input means "no default marker".
         "marker_id": FieldRule(_as_optional_int, lo=0, human_error="Marker id must be ≥ 0."),
         # address + args input; template picker handles choice at row creation time.

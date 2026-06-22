@@ -24,12 +24,12 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableSequence, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
 from bottle import Bottle, HTTPResponse, abort, redirect, request, response, static_file, template
@@ -51,6 +51,7 @@ from openfollow.configuration import (
     DEFAULT_UPDATE_SERVICE_NAME,
     VALID_BUTTON_NAMES,
     AppConfig,
+    OscDestinationConfig,
     OscTransmitterConfig,
     TriggerZoneConfig,
     config_write_lock,
@@ -170,6 +171,7 @@ VALID_SECTIONS = {
     "rttrpm_output",
     "trigger_zones",
     "osc_bindings",
+    "osc_destinations",
 }
 _WEB_STATIC_DIR = Path(__file__).with_name("static")
 
@@ -202,6 +204,52 @@ def asset_version() -> str:
     build always refetches while an unchanged one stays cached.
     """
     return _compute_asset_version()
+
+
+def _script_safe_json(obj: Any) -> str:
+    """``json.dumps`` escaped for embedding as raw JS inside a ``<script>``.
+
+    ``json.dumps`` does not escape ``<``, ``>`` or ``&``, so a user-controlled
+    string (e.g. an OSC destination name containing ``</script>``) embedded via
+    ``{{!...}}`` could close the script element and inject markup. Escaping
+    those to ``\\uXXXX`` keeps the value a valid JS string while making the
+    breakout impossible; the U+2028/U+2029 line separators are escaped too
+    since they terminate JS string literals on older engines.
+    """
+    return (
+        json.dumps(obj, separators=(",", ":"))
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
+def osc_destinations_client_list(config: AppConfig) -> list[dict[str, Any]]:
+    """Client-facing OSC destination list (id + label + endpoint).
+
+    The single source of truth for the zone editor's destination dropdown,
+    served both at initial render (``osc_destinations_script_json``) and on the
+    ``/api/zones`` poll so the dropdown follows add/rename/delete without a full
+    page reload.
+    """
+    return [
+        {
+            "id": d.id,
+            "name": d.name,
+            "host": d.host,
+            "port": d.port,
+            "protocol": d.protocol,
+            "framing": d.framing,
+        }
+        for d in config.osc_destinations.destinations
+    ]
+
+
+def osc_destinations_script_json(config: AppConfig) -> str:
+    """OSC destinations as ``<script>``-safe JSON for the zone editor's initial render."""
+    return _script_safe_json(osc_destinations_client_list(config))
 
 
 # Help docs served as rendered HTML by ``/help/<id>.html``. A help id is a
@@ -1362,8 +1410,6 @@ _TRIGGER_ZONES_FIELD_PARSERS: dict[str, _FieldParser] = {
     "enabled": _as_bool,
     "show_overlay": _as_bool,
     "eval_fps": _as_int,
-    "default_osc_host": _as_str,
-    "default_osc_port": _as_int,
     "debounce_ms": _as_int,
     "hysteresis": _as_float,
 }
@@ -1377,8 +1423,7 @@ _ZONE_FIELD_PARSERS: dict[str, _FieldParser] = {
     "osc_address_additional_entry": _as_str,
     "osc_address_partial_exit": _as_str,
     "osc_address_final_exit": _as_str,
-    "osc_host": _as_str,
-    "osc_port": _as_int,
+    "destination_id": _as_str,
     "enabled": _as_bool,
 }
 
@@ -1444,19 +1489,25 @@ def _apply_zone_fields(zone: TriggerZoneConfig, data: Mapping[str, Any]) -> None
 _OSC_BINDING_FIELD_PARSERS: dict[str, _FieldParser] = {
     "enabled": _as_bool,
     "name": _as_str,
-    "host": _as_str,
-    "port": _as_int,
-    "protocol": _as_str,
-    # Per-binding TCP framing selector. Inert for UDP rows but always
-    # parsed so the form preserves the dropdown; ``__post_init__`` snaps
-    # invalid values back to the default.
-    "framing": _as_str,
+    # Connection is chosen via a shared OSC destination; empty = no
+    # destination selected (the row skips sending).
+    "destination_id": _as_str,
     # ``marker_id`` is :class:`int | None`; clearing means "no default
     # marker", not "marker 0".
     "marker_id": _as_optional_int,
     # Default virtual fader, same shape as ``marker_id``: empty → ``None``,
     # 1..8 preserved, junk collapses to ``None`` in ``__post_init__``.
     "default_fader": _as_optional_int,
+}
+
+
+# Per-destination form parsers, mirroring the dataclass coercion.
+_OSC_DESTINATION_FIELD_PARSERS: dict[str, _FieldParser] = {
+    "name": _as_str,
+    "host": _as_str,
+    "port": _as_int,
+    "protocol": _as_str,
+    "framing": _as_str,
 }
 
 
@@ -1838,6 +1889,19 @@ def _apply_osc_binding_fields(
             row.enabled = False
 
 
+def _apply_osc_destination_fields(
+    dest: OscDestinationConfig,
+    data: Mapping[str, Any],
+) -> None:
+    """Type-coerce posted fields onto a destination, then re-run
+    ``__post_init__`` so bounds / choices match a TOML load."""
+    for field_name, parser in _OSC_DESTINATION_FIELD_PARSERS.items():
+        if field_name in data:
+            current = getattr(dest, field_name)
+            setattr(dest, field_name, parser(data[field_name], current))
+    dest.__post_init__()
+
+
 _DETECTION_FIELD_PARSERS: dict[str, _FieldParser] = {
     "enabled": _as_bool,
     "model": _as_str,
@@ -1911,6 +1975,50 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     return d
 
 
+# Sections that travel through the config export/import file (so a
+# ``destination_id`` and its target move together) but are NEVER real-time
+# shared between stations: each station keeps its own OSC routing + zones.
+_BROADCAST_EXCLUDED_SECTIONS = frozenset(
+    {"osc_destinations", "osc_transmitters", "trigger_zones"},
+)
+
+
+def _strip_broadcast_excluded(data: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of a full-config dict without the sections that must
+    not be real-time-shared to peers (they still export/import via file)."""
+    return {k: v for k, v in data.items() if k not in _BROADCAST_EXCLUDED_SECTIONS}
+
+
+_T = TypeVar("_T")
+
+
+def _find_by_id(items: Sequence[_T], item_id: str) -> tuple[int, _T] | None:
+    """Index-and-item lookup by ``.id`` for the id-keyed config lists (OSC
+    transmitters, OSC destinations). ``None`` when nothing matches, so a route
+    can 404 on stale UI state (a row deleted in another tab) without crashing.
+    """
+    for idx, item in enumerate(items):
+        if getattr(item, "id", None) == item_id:
+            return idx, item
+    return None
+
+
+def _swap_for_direction(items: MutableSequence[Any], idx: int, direction: str) -> bool:
+    """Swap ``items[idx]`` one step ``"up"`` / ``"down"`` in place. No-op at
+    the list edge or for an unknown direction. Returns ``True`` only when a
+    swap actually happened, so the caller persists + flags ``saved`` on a real
+    move rather than on a button-mash against the boundary."""
+    target = idx
+    if direction == "up" and idx > 0:
+        target = idx - 1
+    elif direction == "down" and idx < len(items) - 1:
+        target = idx + 1
+    if target == idx:
+        return False
+    items[idx], items[target] = items[target], items[idx]
+    return True
+
+
 def _apply_import_data(
     current_cfg: AppConfig,
     data: dict[str, Any],
@@ -1953,6 +2061,24 @@ def _apply_import_data(
         if section in data and isinstance(data[section], dict):
             apply_section_data(cfg, section, data[section])
     apply_section_data(cfg, "video_source", data)
+
+    # OSC transmitters + destinations: rebuild the lists wholesale so the
+    # references (a transmitter/zone ``destination_id``) and their targets
+    # travel together through the config file. (They are excluded from
+    # real-time peer broadcast – see ``_strip_broadcast_excluded``.)
+    from openfollow.configuration import (
+        OscDestinationsConfig,
+        OscTransmittersConfig,
+    )
+
+    if "osc_transmitters" in data and isinstance(data["osc_transmitters"], dict):
+        rows = data["osc_transmitters"].get("transmitters")
+        if isinstance(rows, list):
+            cfg.osc_transmitters = OscTransmittersConfig(transmitters=rows)
+    if "osc_destinations" in data and isinstance(data["osc_destinations"], dict):
+        dests = data["osc_destinations"].get("destinations")
+        if isinstance(dests, list):
+            cfg.osc_destinations = OscDestinationsConfig(destinations=dests)
 
     # Trigger zones: import global settings + zones list atomically
     if "trigger_zones" in data and isinstance(data["trigger_zones"], dict):
@@ -4932,8 +5058,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         from openfollow.configuration import (
             VALID_KEY_NAMES,
             VALID_MIDI_MESSAGE_TYPES,
-            VALID_OSC_FRAMINGS,
-            VALID_OSC_TRANSMITTER_PROTOCOLS,
             VALID_OSC_TRANSMITTER_RATES,
             VALID_TRIGGER_EDGES,
             VALID_TRIGGER_KINDS,
@@ -4965,8 +5089,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             config=cfg,
             saved=saved,
             focus_id=focus_id,
-            valid_protocols=VALID_OSC_TRANSMITTER_PROTOCOLS,
-            valid_framings=VALID_OSC_FRAMINGS,
             valid_rates=VALID_OSC_TRANSMITTER_RATES,
             valid_kinds=VALID_TRIGGER_KINDS,
             valid_edges=VALID_TRIGGER_EDGES,
@@ -4992,10 +5114,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         to short-circuit a 404 on stale UI state (operator deletes a row
         in tab A while tab B still has it open) without crashing the
         request."""
-        for idx, row in enumerate(cfg.osc_transmitters.transmitters):
-            if row.id == row_id:
-                return idx, row
-        return None
+        return _find_by_id(cfg.osc_transmitters.transmitters, row_id)
 
     @app.get("/section/osc_bindings")
     def get_osc_bindings_section() -> Any:
@@ -5023,7 +5142,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         template_id = _as_str(request.forms.get("template_id", ""), "").strip()
         with _config_write_lock:
             cfg = load_config(server.config_path)
-            row = OscTransmitterConfig(name="New OSC output")
+            row = OscTransmitterConfig(name="New transmitter")
             if template_id:
                 # Both system and user templates flow through one
                 # ``file:<filename>`` lookup. Dropdown values for user
@@ -5051,7 +5170,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     row.name = payload.get("name", entry.template.name)
                     row.address = payload.get("address", "")
                     row.args = list(payload.get("args", []))
-                    for opt_field in ("host", "port", "protocol", "rate_hz"):
+                    for opt_field in ("destination_id", "rate_hz"):
                         if opt_field in payload:
                             setattr(row, opt_field, payload[opt_field])
                     if "trigger" in payload:
@@ -5170,19 +5289,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 abort(404, "Unknown binding")
                 return ""  # pragma: no cover – abort() raises before we reach here
             idx, _ = found
-            transmitters = cfg.osc_transmitters.transmitters
-            target = idx
-            if direction == "up" and idx > 0:
-                target = idx - 1
-            elif direction == "down" and idx < len(transmitters) - 1:
-                target = idx + 1
-            if target != idx:
-                transmitters[idx], transmitters[target] = (
-                    transmitters[target],
-                    transmitters[idx],
-                )
+            moved = _swap_for_direction(cfg.osc_transmitters.transmitters, idx, direction)
+            if moved:
                 save_config(cfg, server.config_path)
-        return _render_osc_bindings_section(cfg, saved=True, focus_id=row_id)
+        return _render_osc_bindings_section(cfg, saved=moved, focus_id=row_id)
 
     @app.post("/section/osc_bindings/reorder")
     def reorder_osc_bindings() -> Any:
@@ -5234,6 +5344,147 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # would otherwise block any concurrent CRUD writer for the
         # render duration.
         return _render_osc_bindings_section(cfg, saved=saved)
+
+    # -- OSC destinations CRUD -----------------------------------------
+    #
+    # Shared connection profiles in ``cfg.osc_destinations.destinations``,
+    # keyed on a stable ``id``. Transmitters and zones reference a profile
+    # by id; editing one repoints every consumer live. Same load → mutate →
+    # save → full-re-render shape as the bindings CRUD above.
+
+    def _render_osc_destinations_section(
+        cfg: AppConfig,
+        *,
+        saved: bool = False,
+        focus_id: str = "",
+    ) -> Any:
+        from openfollow.configuration import (
+            VALID_OSC_FRAMINGS,
+            VALID_OSC_TRANSMITTER_PROTOCOLS,
+        )
+
+        return template(
+            "partials/osc_destinations",
+            config=cfg,
+            saved=saved,
+            focus_id=focus_id,
+            valid_protocols=VALID_OSC_TRANSMITTER_PROTOCOLS,
+            valid_framings=VALID_OSC_FRAMINGS,
+        )
+
+    def _find_osc_destination(
+        cfg: AppConfig,
+        dest_id: str,
+    ) -> tuple[int, OscDestinationConfig] | None:
+        return _find_by_id(cfg.osc_destinations.destinations, dest_id)
+
+    @app.get("/section/osc_destinations")
+    def get_osc_destinations_section() -> Any:
+        cfg = _request_scoped_config()
+        focus_id = _as_str(request.query.get("focus", ""), "").strip()
+        return _render_osc_destinations_section(cfg, focus_id=focus_id)
+
+    @app.post("/section/osc_destinations/add")
+    def add_osc_destination() -> Any:
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            dest = OscDestinationConfig(name="New destination")
+            cfg.osc_destinations.destinations.append(dest)
+            save_config(cfg, server.config_path)
+        return _render_osc_destinations_section(cfg, saved=True, focus_id=dest.id)
+
+    @app.post("/section/osc_destination/<dest_id>")
+    def save_osc_destination(dest_id: str) -> Any:
+        form_data: dict[str, Any] = dict(request.forms)
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            found = _find_osc_destination(cfg, dest_id)
+            if found is None:
+                abort(404, "Unknown destination")
+                return ""  # pragma: no cover – abort() raises first
+            _, dest = found
+            _apply_osc_destination_fields(dest, form_data)
+            save_config(cfg, server.config_path)
+        return _render_osc_destinations_section(cfg, saved=True, focus_id=dest_id)
+
+    @app.post("/section/osc_destination/<dest_id>/duplicate")
+    def duplicate_osc_destination(dest_id: str) -> Any:
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            found = _find_osc_destination(cfg, dest_id)
+            if found is None:
+                abort(404, "Unknown destination")
+                return ""  # pragma: no cover – abort() raises first
+            idx, dest = found
+            clone = copy.deepcopy(dest)
+            clone.id = ""  # force a fresh uuid in __post_init__
+            clone.name = (dest.name or "Destination") + " (copy)"
+            clone.__post_init__()
+            cfg.osc_destinations.destinations.insert(idx + 1, clone)
+            save_config(cfg, server.config_path)
+        return _render_osc_destinations_section(cfg, saved=True, focus_id=clone.id)
+
+    @app.post("/section/osc_destination/<dest_id>/delete")
+    def delete_osc_destination(dest_id: str) -> Any:
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            found = _find_osc_destination(cfg, dest_id)
+            if found is not None:
+                idx, _ = found
+                del cfg.osc_destinations.destinations[idx]
+                save_config(cfg, server.config_path)
+        return _render_osc_destinations_section(cfg, saved=True)
+
+    @app.post("/section/osc_destination/<dest_id>/move")
+    def move_osc_destination(dest_id: str) -> Any:
+        direction = _as_str(request.forms.get("direction", ""), "")
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            found = _find_osc_destination(cfg, dest_id)
+            if found is None:
+                abort(404, "Unknown destination")
+                return ""  # pragma: no cover – abort() raises first
+            idx, _ = found
+            moved = _swap_for_direction(cfg.osc_destinations.destinations, idx, direction)
+            if moved:
+                save_config(cfg, server.config_path)
+        return _render_osc_destinations_section(cfg, saved=moved, focus_id=dest_id)
+
+    @app.post("/section/osc_destinations/reorder")
+    def reorder_osc_destinations() -> Any:
+        """Apply a complete destination ordering from the drag-handle UI.
+
+        Mirrors :func:`reorder_osc_bindings`: ``order`` is a comma-separated
+        list of destination ids in the new order. Unknown ids are dropped; any
+        current destination missing from ``order`` is appended so a stale client
+        can't delete by omission. Empty / malformed ``order`` is a no-op (no
+        success flash). The per-id ``/move`` route stays as a stable JSON-API
+        surface for single-step swaps.
+        """
+        raw_order = _as_str(request.forms.get("order", ""), "")
+        wanted_ids = [s for s in (s.strip() for s in raw_order.split(",")) if s]
+        saved = bool(wanted_ids)
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            dests = cfg.osc_destinations.destinations
+            current = {d.id: d for d in dests}
+            if wanted_ids:
+                new_order: list[OscDestinationConfig] = []
+                seen: set[str] = set()
+                for did in wanted_ids:
+                    dest = current.get(did)
+                    if dest is not None and did not in seen:
+                        new_order.append(dest)
+                        seen.add(did)
+                # Append any destinations missing from the wanted list so a
+                # stale form post can't silently drop them.
+                for dest in dests:
+                    if dest.id not in seen:
+                        new_order.append(dest)
+                if [d.id for d in new_order] != [d.id for d in dests]:
+                    cfg.osc_destinations.destinations = new_order
+                    save_config(cfg, server.config_path)
+        return _render_osc_destinations_section(cfg, saved=saved)
 
     @app.get("/section/osc_binding/<row_id>/trigger_form")
     def get_osc_binding_trigger_form(row_id: str) -> Any:
@@ -5565,9 +5816,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         trigger_dict = asdict(transient.trigger) if transient.trigger is not None else {"kind": "stream", "rate_hz": 30}
         payload: dict[str, Any] = {
             "name": transient.name,
-            "host": transient.host,
-            "port": transient.port,
-            "protocol": transient.protocol,
+            "destination_id": transient.destination_id,
             "address": transient.address,
             "args": list(transient.args),
             "rate_hz": transient.rate_hz,
@@ -5828,7 +6077,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "address": tpl.payload.get("address", ""),
                     "args": list(tpl.payload.get("args", [])),
                 }
-                for opt_field in ("host", "port", "protocol", "rate_hz"):
+                for opt_field in ("destination_id", "rate_hz"):
                     if opt_field in tpl.payload:
                         kwargs[opt_field] = tpl.payload[opt_field]
                 if "trigger" in tpl.payload:
@@ -6262,7 +6511,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # web_pin/web_port are device-local and stripped on receive; also drop
         # the PIN here so the credential never travels in the broadcast body
         # (peer auth still carries it in the signed header via ``pin=``).
-        cfg_data = _config_dict_redacted(cfg)
+        # OSC destinations / transmitters / zones export via file but are never
+        # real-time shared – strip them from the broadcast body.
+        cfg_data = _strip_broadcast_excluded(_config_dict_redacted(cfg))
         peers = server.get_peers()
         pin = cfg.web_pin
         results = _broadcast_to_peers(
@@ -6332,6 +6583,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         also filters as defence-in-depth against out-of-date senders.
         """
         response.content_type = "application/json"
+
+        # OSC destinations / transmitters / zones travel via the config file
+        # only – never real-time to peers. Refuse a crafted section-broadcast.
+        if section in _BROADCAST_EXCLUDED_SECTIONS:
+            response.status = 403
+            return json.dumps({"error": "Section is not shareable between stations"})
 
         data = _load_json_body()
         if data is None:
@@ -6411,8 +6668,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "osc_address_additional_entry": z.osc_address_additional_entry,
                     "osc_address_partial_exit": z.osc_address_partial_exit,
                     "osc_address_final_exit": z.osc_address_final_exit,
-                    "osc_host": z.osc_host,
-                    "osc_port": z.osc_port,
+                    "destination_id": z.destination_id,
                     "enabled": z.enabled,
                     "is_occupied": occ,
                     "occupant_count": count,
@@ -6424,8 +6680,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "globals": {
                     "enabled": tz.enabled,
                     "show_overlay": tz.show_overlay,
-                    "default_osc_host": tz.default_osc_host,
-                    "default_osc_port": tz.default_osc_port,
                     "eval_fps": tz.eval_fps,
                     "debounce_ms": tz.debounce_ms,
                     "hysteresis": tz.hysteresis,
@@ -6439,6 +6693,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 },
                 "zones": zones_out,
                 "markers": [{"id": tid, "x": x, "y": y} for tid, x, y in server.get_marker_positions()],
+                # Shared destinations travel with the poll so the editor's
+                # dropdown follows add/rename/delete without a full reload.
+                "destinations": osc_destinations_client_list(cfg),
             }
         )
 
@@ -6502,8 +6759,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 osc_address_additional_entry=src.osc_address_additional_entry,
                 osc_address_partial_exit=src.osc_address_partial_exit,
                 osc_address_final_exit=src.osc_address_final_exit,
-                osc_host=src.osc_host,
-                osc_port=src.osc_port,
+                destination_id=src.destination_id,
                 enabled=src.enabled,
             )
             zones.append(clone)

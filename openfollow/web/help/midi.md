@@ -1,14 +1,14 @@
 # MIDI
 
-USB MIDI device aliases and virtual fader sources for this station. Once configured, patches and fader values feed OSC Output rows via MIDI message triggers and fader placeholders.
+USB MIDI device aliases and virtual fader sources for this station. Once configured, patches and fader values feed OSC Transmitters rows via MIDI message triggers and fader placeholders.
 
 ## MIDI Patches
 
-A patch is a stable, numbered slot you assign a connected MIDI device to – the same idea as a QLab MIDI patch. The patch ID, not the port name or alias, is the key everything else references (OSC Output triggers, virtual fader sources). IDs are assigned sequentially and stay fixed across reboots and device swaps.
+A patch is a stable, numbered slot you assign a connected MIDI device to – the same idea as a QLab MIDI patch. The patch ID, not the port name or alias, is the key everything else references (OSC Transmitters triggers, virtual fader sources). IDs are assigned sequentially and stay fixed across reboots and device swaps.
 
 Click **Add new MIDI Patch** to create a slot, then fill in its row:
 
-- **ID** – read-only permanent integer key. Referenced by virtual fader sources and OSC Output trigger forms.
+- **ID** – read-only permanent integer key. Referenced by virtual fader sources and OSC Transmitters trigger forms.
 - **Alias** – optional friendly name (up to 64 characters), such as `FOH` or `X-Touch`. Shown alongside the ID in patch dropdowns.
 - **Device** – the MIDI input port bound to this patch. The dropdown lists currently connected ports; an unplugged device shows as `(not connected)`, and saving preserves the binding for when it reconnects.
 
@@ -18,7 +18,7 @@ Each row has its own **Save** and **Delete** buttons.
 
 ## Virtual Faders
 
-Eight normalised faders (0.00 – 1.00), addressed by position on the bus (1 through 8). Each fader's live value shows in its strip and feeds OSC Output rows via fader placeholders. The bus is fixed at eight; you cannot add or remove entries.
+Eight normalised faders (0.00 – 1.00), addressed by position on the bus (1 through 8). Each fader's live value shows in its strip and feeds OSC Transmitters rows via fader placeholders. The bus is fixed at eight; you cannot add or remove entries.
 
 Click a strip to open its settings in the detail panel below.
 
@@ -47,4 +47,4 @@ Click **Save fader** to apply changes to the selected fader.
 
 Read-only. One strip per controlled marker, driven by whichever gamepad currently controls it. Provisioned automatically from the Controlled Markers list – nothing to configure here.
 
-A marker fader's live value feeds OSC Output rows via the `[markerfader]` placeholder. Which gamepad axis feeds the marker faders, and how fast they travel, is set on the Gamepad page.
+A marker fader's live value feeds OSC Transmitters rows via the `[markerfader]` placeholder. Which gamepad axis feeds the marker faders, and how fast they travel, is set on the Gamepad page.

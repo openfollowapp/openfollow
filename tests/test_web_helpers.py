@@ -316,6 +316,32 @@ def test_apply_section_data_controller_revalidates_deadzone() -> None:
     assert config.controller.deadzone == 1.0
 
 
+def test_apply_section_data_mouse_clamps_and_applies() -> None:
+    # A crafted POST to the mouse section must round-trip through the
+    # controller parser map + __post_init__ re-run: in-range values apply,
+    # out-of-range values clamp.
+    config = AppConfig()
+
+    ok = apply_section_data(
+        config,
+        "mouse",
+        {
+            "mouse_hysteresis_px": "4",
+            "mouse_smoothing": "0.3",
+            "mouse_max_distance": "999999",  # over the 10000 m cap
+            "mouse_wheel_z_step": "0.5",
+            "mouse_wheel_invert": "true",
+        },
+    )
+
+    assert ok is True
+    assert config.controller.mouse_hysteresis_px == 4.0
+    assert config.controller.mouse_smoothing == 0.3
+    assert config.controller.mouse_max_distance == 10000.0
+    assert config.controller.mouse_wheel_z_step == 0.5
+    assert config.controller.mouse_wheel_invert is True
+
+
 # --- __post_init__ re-run after web-form saves ---------------------------
 # Every dataclass with validation in ``__post_init__`` must also have it
 # re-run after a web-form save, otherwise a crafted POST that slips past

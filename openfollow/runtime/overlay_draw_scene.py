@@ -12,7 +12,7 @@ import numpy.typing as npt
 
 from openfollow.runtime.overlay_draw_style import parse_hex
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
-from openfollow.scene.solver import project_points
+from openfollow.scene.solver import ground_circle_world_ring, project_points
 
 # Cap grid lines per axis. A degenerate width/depth ÷ spacing (e.g. from a
 # hand-edited config.toml or peer broadcast – neither has an upper clamp) would
@@ -175,16 +175,7 @@ def _draw_assist_ghost(
 
     if state.grid_config:
         z_off = state.grid_config[5]
-        gc_radius = state.ground_circle_size
-        n_segs = 24
-        gc_pts = [
-            (
-                tx + gc_radius * math.cos(2 * math.pi * i / n_segs),
-                ty + gc_radius * math.sin(2 * math.pi * i / n_segs),
-                z_off,
-            )
-            for i in range(n_segs)
-        ]
+        gc_pts = ground_circle_world_ring(tx, ty, z_off, state.ground_circle_size)
         gc_scr = project(cam, gc_pts, w, h)
         gc_scr = gc_scr[np.all(np.isfinite(gc_scr), axis=1)]
         if len(gc_scr) >= 3:
@@ -270,16 +261,7 @@ def draw_marker(cr: Any, state: OverlayState, t: MarkerOverlayData, w: int, h: i
 
     if state.show_ground_circle and state.grid_config:
         z_off = state.grid_config[5]
-        gc_radius = state.ground_circle_size
-        n_segs = 24
-        gc_pts = [
-            (
-                tx + gc_radius * math.cos(2 * math.pi * i / n_segs),
-                ty + gc_radius * math.sin(2 * math.pi * i / n_segs),
-                z_off,
-            )
-            for i in range(n_segs)
-        ]
+        gc_pts = ground_circle_world_ring(tx, ty, z_off, state.ground_circle_size)
         gc_scr = project(cam, gc_pts, w, h)
         # Keep only finite points so one segment crossing behind the camera
         # doesn't erase the whole ground circle (matches the zone treatment).

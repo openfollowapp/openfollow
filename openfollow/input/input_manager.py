@@ -188,6 +188,15 @@ class InputManager:
         # controlled markers. Movement application remains gated below.
         gamepad_result = self.gamepad_handler.update(dt)
 
+        # Mouse marker control glides toward the cursor target every frame so
+        # smoothing is independent of pointer-event rate. The handler no-ops
+        # when not actively grabbing a marker.
+        if self.app._config.controller.mouse_enabled:
+            try:
+                self.mouse_handler.update()
+            except Exception:
+                logger.exception("Mouse update failed this tick.")
+
         # MIDI hotplug: keep the patch-missing badge (and listener ports)
         # tracking live hardware between config saves, mirroring the gamepad
         # hotplug above. Runs before the no-controlled-markers early-exit so an

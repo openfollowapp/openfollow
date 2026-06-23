@@ -2542,6 +2542,67 @@ def test_controller_mouse_enabled_default_is_false() -> None:
     assert ControllerConfig(mouse_enabled=True).mouse_enabled is True
 
 
+def test_controller_mouse_steering_defaults_are_back_compatible() -> None:
+    # Defaults reproduce direct 1:1 control with wheel-Z on, as before.
+    cfg = ControllerConfig()
+    assert cfg.mouse_hysteresis_px == 0.0
+    assert cfg.mouse_smoothing == 1.0
+    assert cfg.mouse_max_distance == 0.0
+    assert cfg.mouse_wheel_z_enabled is True
+    assert cfg.mouse_wheel_invert is False
+    assert cfg.mouse_wheel_z_step == 0.1
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(-5.0, 0.0), (500.0, 200.0), ("abc", 0.0), (None, 0.0), (12.5, 12.5)],
+)
+def test_controller_mouse_hysteresis_coerced(value: object, expected: float) -> None:
+    assert ControllerConfig(mouse_hysteresis_px=value).mouse_hysteresis_px == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(0.0, 0.01), (5.0, 1.0), ("nope", 1.0), (None, 1.0), (0.4, 0.4)],
+)
+def test_controller_mouse_smoothing_coerced(value: object, expected: float) -> None:
+    assert ControllerConfig(mouse_smoothing=value).mouse_smoothing == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(-1.0, 0.0), (99999.0, 10000.0), ("x", 0.0), (None, 0.0), (25.0, 25.0)],
+)
+def test_controller_mouse_max_distance_coerced(value: object, expected: float) -> None:
+    assert ControllerConfig(mouse_max_distance=value).mouse_max_distance == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(-2.0, 0.0), (50.0, 10.0), ("x", 0.1), (None, 0.1), (0.25, 0.25)],
+)
+def test_controller_mouse_wheel_z_step_coerced(value: object, expected: float) -> None:
+    assert ControllerConfig(mouse_wheel_z_step=value).mouse_wheel_z_step == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("false", False), ("no", False), ("true", True), (0, True), ("garbage", True)],
+)
+def test_controller_mouse_wheel_z_enabled_coerced(value: object, expected: bool) -> None:
+    # Non-bool / unrecognised input falls back to the default (True); a TOML
+    # string "false" is correctly read as False (not truthy).
+    assert ControllerConfig(mouse_wheel_z_enabled=value).mouse_wheel_z_enabled is expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("true", True), ("on", True), ("false", False), ("garbage", False)],
+)
+def test_controller_mouse_wheel_invert_coerced(value: object, expected: bool) -> None:
+    assert ControllerConfig(mouse_wheel_invert=value).mouse_wheel_invert is expected
+
+
 def test_controller_z_movement_default_keys() -> None:
     # Default matches config.example.toml: Z+ on q, Z- on e (e is a pollable
     # macOS key code and free under the default wasd movement layout).

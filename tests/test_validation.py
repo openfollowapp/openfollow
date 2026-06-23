@@ -410,6 +410,21 @@ def test_validate_strips_leading_trailing_whitespace() -> None:
     assert validate("camera", "fov", "60") is None
 
 
+@pytest.mark.parametrize(
+    ("field", "good", "bad"),
+    [
+        ("mouse_hysteresis_px", "12", "300"),
+        ("mouse_smoothing", "0.4", "5"),
+        ("mouse_max_distance", "25", "99999"),
+        ("mouse_wheel_z_step", "0.25", "50"),
+    ],
+)
+def test_validate_mouse_numeric_bounds(field: str, good: str, bad: str) -> None:
+    # The mouse partial validates against the controller rules (aliased).
+    assert validate("mouse", field, good) is None
+    assert validate("mouse", field, bad) is not None
+
+
 def test_validate_rejects_dangerous_control_chars_but_strips_whitespace() -> None:
     # NUL is rejected (not silently cleaned) so blur matches the unsanitised
     # save path; a leading tab is whitespace → stripped → the hex still passes.

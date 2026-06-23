@@ -149,6 +149,29 @@ def project_points(
     return np.column_stack([sx, sy])
 
 
+def ground_circle_world_ring(
+    cx: float,
+    cy: float,
+    z: float,
+    radius: float,
+    segments: int = 24,
+) -> list[tuple[float, float, float]]:
+    """Build a horizontal ring of world points around ``(cx, cy)`` at height ``z``.
+
+    Single source of truth for the marker ground-circle geometry: the overlay
+    draws this ring and the mouse hit-test projects the same points, so the
+    clickable region can't drift from the rendered circle.
+    """
+    return [
+        (
+            cx + radius * math.cos(2 * math.pi * i / segments),
+            cy + radius * math.sin(2 * math.pi * i / segments),
+            z,
+        )
+        for i in range(segments)
+    ]
+
+
 def unproject_to_plane(
     params: npt.NDArray[Any],
     screen_pts: npt.NDArray[Any],

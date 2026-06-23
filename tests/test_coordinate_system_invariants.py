@@ -260,14 +260,22 @@ def test_mouse_click_stores_psn_absolute_position(offsets) -> None:
     """
     ox, oy, oz = offsets
     app = _make_app(_grid(ox, oy, oz))
+    app._config.controller.mouse_enabled = True
     app._server.add_marker(1).set_pos(0.0, 0.0, 0.0)
     app._controlled_ids = [1]
     app._selected_id = 1
 
+    cam = _top_down_camera()
+    cam_params = np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov])
+
     handler = MouseHandler(app)
-    # Left-click at a fixed screen point – chosen off-center so the x/y
-    # unprojection results are distinct from one another.
-    handler.on_pointer_down(800.0, 300.0, 1)
+    # Grab the marker by clicking its projected ground-circle centre, then drag
+    # the cursor to an off-centre point (x/y unprojections distinct) and let the
+    # per-frame update apply it.
+    center = project(cam_params, [(0.0, 0.0, oz)], 1280, 720)[0]
+    handler.on_pointer_down(float(center[0]), float(center[1]), 1)
+    handler.on_pointer_move(800.0, 300.0)
+    handler.update()
 
     marker = app._server.get_marker(1)
     x, y, _ = marker.pos
@@ -275,8 +283,6 @@ def test_mouse_click_stores_psn_absolute_position(offsets) -> None:
     # Compute the expected world point independently; the test asserts
     # marker.pos matches this PSN-absolute point without any offset
     # subtraction applied in mouse.py.
-    cam = _top_down_camera()
-    cam_params = np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov])
     expected = unproject_to_plane(
         cam_params,
         np.array([[800.0, 300.0]], dtype=np.float64),

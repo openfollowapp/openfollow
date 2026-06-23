@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from openfollow.scene.solver import (
+    ground_circle_world_ring,
     hfov_to_vfov,
     project_points,
     solve_camera_dlt,
@@ -20,6 +21,22 @@ from openfollow.scene.solver import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+def test_ground_circle_world_ring_geometry() -> None:
+    ring = ground_circle_world_ring(2.0, -1.0, 0.5, 0.3, segments=8)
+    assert len(ring) == 8
+    # Every point sits at the requested height and exactly the radius away
+    # from the centre in the XY plane.
+    for x, y, z in ring:
+        assert z == 0.5
+        assert math.hypot(x - 2.0, y - (-1.0)) == pytest.approx(0.3)
+    # First point is at angle 0 → offset purely along +X.
+    assert ring[0] == pytest.approx((2.3, -1.0, 0.5))
+
+
+def test_ground_circle_world_ring_default_segment_count() -> None:
+    assert len(ground_circle_world_ring(0.0, 0.0, 0.0, 1.0)) == 24
 
 
 def _world_corners() -> np.ndarray:

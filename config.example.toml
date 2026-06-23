@@ -215,7 +215,7 @@ hysteresis = 0.05
 # metric – only display formatting and form-input parsing change.
 unit_system = "metric"
 
-# Reveal experimental web-UI sections (Person Detection, Mouse Input,
-# RTTrPM Output, Device Permissions). Toggled from Station Settings.
-# Turning it off also disables mouse input and person detection.
+# Reveal experimental web-UI sections (Person Detection, RTTrPM Output,
+# Device Permissions). Toggled from Station Settings.
+# Turning it off also disables person detection.
 show_experimental_features = false

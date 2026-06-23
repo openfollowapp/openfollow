@@ -1,8 +1,6 @@
 # Mouse Input
 
-> Mouse Input is marked **Experimental**. It is off by default and not recommended as a primary input method during live shows.
-
-Click-and-drag control for steering markers directly on the live video.
+Click-and-drag control for steering markers directly on the live video. Off by default – turn it on with the **Enabled** checkbox.
 
 **One mouse per station.** All mice plugged into a station share a single system cursor, so only one mouse steers one marker at a time – a second mouse just moves the same pointer. To control several markers at once, use one gamepad per operator instead.
 

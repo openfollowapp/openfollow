@@ -1,9 +1,9 @@
 % import sys
 % _is_macos = sys.platform == "darwin"
-<form id="mouse-section" class="section experimental-feature {{'saved' if defined('saved') and saved else ''}}" data-fold-key="mouse" data-help="mouse"
+<form id="mouse-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="mouse" data-help="mouse"
       hx-post="/section/mouse" hx-target="#mouse-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
-        <h2>Mouse Input <span class="badge-experimental">Experimental</span></h2>
+        <h2>Mouse Input</h2>
         <span class="section-note">Click a marker's ground circle to take control; right-click releases</span>
     </div>
 

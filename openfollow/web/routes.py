@@ -4208,15 +4208,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/settings/experimental")
     def update_experimental() -> Any:
         """Persist ``[ui] show_experimental_features``. Turning it off also
-        disables ``controller.mouse_enabled`` and ``detection.enabled``; the
-        config-reload watcher applies those at runtime. The body-class show/
-        hide flip is done client-side. Responds empty (hx-swap="none")."""
+        disables ``detection.enabled`` (still experimental); the config-reload
+        watcher applies that at runtime. The body-class show/hide flip is done
+        client-side. Responds empty (hx-swap="none")."""
         show = _as_bool(request.forms.get("show_experimental_features"), False)
 
         def _mutate(cfg: AppConfig) -> None:
             cfg.ui.show_experimental_features = show
             if not show:
-                cfg.controller.mouse_enabled = False
                 cfg.detection.enabled = False
 
         _persist_ui_change(_mutate)

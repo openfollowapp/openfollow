@@ -14,6 +14,15 @@
     </div>
 
     <div class="group">
+        <div class="row">
+            <div class="field checkbox-field">
+                <label>Show Grid</label>
+                <div class="checkbox-wrap"><input type="checkbox" name="visible" {{'checked' if config.grid.visible else ''}}></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="group">
         <h3 class="group-title">{{_('Dimensions')}}</h3>
         <div class="row">
             <div class="field">
@@ -85,7 +94,7 @@
                 <span id="grid-thickness-error" class="field-error"></span>
             </div>
             <div class="field">
-                <label for="grid-transparency">{{_('Transparency')}} (0–1)</label>
+                <label for="grid-transparency">{{_('Opacity')}} (0–1)</label>
                 <input id="grid-transparency" type="number" name="transparency" value="{{config.grid.transparency}}" min="0" max="1" step="any"
                        hx-get="/api/validate/grid/transparency" hx-trigger="blur changed delay:200ms"
                        hx-target="#grid-transparency-error" hx-swap="innerHTML" hx-include="closest form"

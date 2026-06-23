@@ -1298,19 +1298,20 @@
  }
  .row-tab-panel { display: none; }
  .row-tab-panel.active { display: block; }
- .osc-binding-row { margin-bottom: 0.6rem; border: 1px solid var(--border-soft); border-radius: 0.6rem; padding: 0.5rem 0.8rem; background: var(--surface); }
- .osc-binding-summary { display: flex; gap: 0.6rem; align-items: center; cursor: pointer; padding-bottom: 0.2rem; }
+ .osc-binding-row, .osc-destination-row { margin-bottom: 0.6rem; border: 1px solid var(--border-soft); border-radius: 0.6rem; padding: 0.5rem 0.8rem; background: var(--surface); }
+ .osc-binding-summary, .osc-destination-summary { display: flex; gap: 0.6rem; align-items: center; cursor: pointer; padding-bottom: 0.2rem; }
  /* Breathing room between the summary and the editor body when the
  row is expanded (``<details open>``). When collapsed the
  ``.osc-binding-form`` is ``display: none`` so the margin is a
  no-op. */
- .osc-binding-row[open] > .osc-binding-form { margin-top: 0.9rem; }
+ .osc-binding-row[open] > .osc-binding-form,
+ .osc-destination-row[open] > .osc-destination-form { margin-top: 0.9rem; }
  /* Drag handle: visible click target inside the collapsed-row
  summary that the operator grabs to reorder rows. The actual
  drag-and-drop wiring lives in the document-level JS at the
  bottom of this file. ``cursor: grab`` flips to ``grabbing``
  while the row is mid-drag. */
- .osc-binding-drag-handle {
+ .osc-binding-drag-handle, .osc-destination-drag-handle {
  cursor: grab;
  color: var(--muted);
  font-family: ui-monospace, monospace;
@@ -1319,14 +1320,18 @@
  user-select: none;
  letter-spacing: -0.1em;
  }
- .osc-binding-drag-handle:hover { color: var(--text); }
- .osc-binding-drag-handle:active { cursor: grabbing; }
- .osc-binding-row.dragging { opacity: 0.55; }
- .osc-binding-row.drop-target { outline: 2px dashed var(--accent); outline-offset: 2px; }
+ .osc-binding-drag-handle:hover, .osc-destination-drag-handle:hover { color: var(--text); }
+ .osc-binding-drag-handle:active, .osc-destination-drag-handle:active { cursor: grabbing; }
+ .osc-binding-row.dragging, .osc-destination-row.dragging { opacity: 0.55; }
+ .osc-binding-row.drop-target, .osc-destination-row.drop-target { outline: 2px dashed var(--accent); outline-offset: 2px; }
  .osc-binding-enabled-dot { width: 0.55rem; height: 0.55rem; border-radius: 999px; background: var(--muted); }
  .osc-binding-enabled-dot.on { background: var(--accent); }
- .osc-binding-kind-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
+ .osc-binding-kind-badge, .osc-destination-proto-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
  .osc-binding-target { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
+ /* Destination collapsed summary: host:port sits right after the name; the
+ protocol badge anchors to the right. */
+ .osc-destination-addr { color: var(--muted); font-size: 0.8rem; }
+ .osc-destination-proto-badge { margin-left: auto; }
  .args-list { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.4rem; }
  .arg-pill-input { font-family: ui-monospace, monospace; }
  .args-buttons { display: flex; gap: 0.3rem; }
@@ -4074,11 +4079,17 @@
  if (show) { el.removeAttribute('hidden'); } else { el.setAttribute('hidden', ''); }
  });
  });
+ // Generic drag-reorder shared by the OSC Transmitters + OSC Destinations
+ // row lists: same ⋮⋮ handle on both. Each row carries the bulk-reorder
+ // endpoint + swap target in ``data-reorder-url`` / ``data-reorder-target``,
+ // so one set of listeners drives both lists.
+ const OSC_REORDER_HANDLE_SEL = '.osc-binding-drag-handle, .osc-destination-drag-handle';
+ const OSC_REORDER_ROW_SEL = '.osc-binding-row, .osc-destination-row';
  let oscDragSourceId = null;
  document.addEventListener('dragstart', (event) => {
- const handle = event.target.closest('.osc-binding-drag-handle');
+ const handle = event.target.closest(OSC_REORDER_HANDLE_SEL);
  if (!handle) return;
- const row = handle.closest('.osc-binding-row');
+ const row = handle.closest(OSC_REORDER_ROW_SEL);
  if (!row) return;
  oscDragSourceId = row.dataset.rowId;
  row.classList.add('dragging');
@@ -4092,21 +4103,21 @@
  }
  });
  document.addEventListener('dragend', (event) => {
- const handle = event.target.closest('.osc-binding-drag-handle');
- const row = handle ? handle.closest('.osc-binding-row') : null;
+ const handle = event.target.closest(OSC_REORDER_HANDLE_SEL);
+ const row = handle ? handle.closest(OSC_REORDER_ROW_SEL) : null;
  if (row) row.classList.remove('dragging');
- document.querySelectorAll('.osc-binding-row.drop-target').forEach(el => {
+ document.querySelectorAll('.drop-target').forEach(el => {
  el.classList.remove('drop-target');
  });
  oscDragSourceId = null;
  });
  document.addEventListener('dragover', (event) => {
  if (!oscDragSourceId) return;
- const targetRow = event.target.closest('.osc-binding-row');
+ const targetRow = event.target.closest(OSC_REORDER_ROW_SEL);
  if (!targetRow) return;
  event.preventDefault();
  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
- document.querySelectorAll('.osc-binding-row.drop-target').forEach(el => {
+ document.querySelectorAll('.drop-target').forEach(el => {
  if (el !== targetRow) el.classList.remove('drop-target');
  });
  if (targetRow.dataset.rowId !== oscDragSourceId) {
@@ -4115,11 +4126,12 @@
  });
  document.addEventListener('drop', (event) => {
  if (!oscDragSourceId) return;
- const targetRow = event.target.closest('.osc-binding-row');
+ const targetRow = event.target.closest(OSC_REORDER_ROW_SEL);
  if (!targetRow) return;
  event.preventDefault();
  const list = targetRow.parentElement;
  if (!list) return;
+ // Don't cross lists: a drag started in one list only reorders within it.
  const sourceRow = list.querySelector('[data-row-id="' + oscDragSourceId + '"]');
  if (!sourceRow || sourceRow === targetRow) {
  oscDragSourceId = null;
@@ -4131,17 +4143,21 @@
  const rect = targetRow.getBoundingClientRect();
  const after = (event.clientY - rect.top) > rect.height / 2;
  list.insertBefore(sourceRow, after ? targetRow.nextSibling : targetRow);
- // Build the new ordering and POST it. HTMX is already loaded so
- // ``htmx.ajax`` is the cleanest path – keeps the re-render flow
- // identical to every other CRUD round-trip in this section.
- const order = Array.from(list.querySelectorAll('.osc-binding-row'))
+ // Build the new ordering and POST it to the row's own reorder
+ // endpoint. HTMX is already loaded so ``htmx.ajax`` keeps the
+ // re-render flow identical to every other CRUD round-trip.
+ const url = targetRow.dataset.reorderUrl;
+ const targetId = targetRow.dataset.reorderTarget;
+ if (url && targetId) {
+ const order = Array.from(list.querySelectorAll(OSC_REORDER_ROW_SEL))
  .map(el => el.dataset.rowId)
  .join(',');
- window.htmx.ajax('POST', '/section/osc_bindings/reorder', {
- target: '#osc-bindings-section',
+ window.htmx.ajax('POST', url, {
+ target: '#' + targetId,
  swap: 'outerHTML',
  values: { order },
  });
+ }
  oscDragSourceId = null;
  });
  document.addEventListener('DOMContentLoaded', () => {

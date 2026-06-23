@@ -8,6 +8,13 @@ Easiest to set with the **Setup Wizard** (Open Setup Wizard on the Camera &
 Grid tab). All distances are in **metres**, relative to the **Reference
 Point** – the (0, 0, 0) of your show (see Core Concepts).
 
+## Display
+
+- **Show Grid** – draw or hide the whole grid overlay on the Operator Screen.
+  The Origin Marker below has its own toggle, so the origin cross can still show
+  when the grid lines are hidden. Display only – it never affects tracking,
+  calibration, or any output protocol.
+
 ## Dimensions
 
 - **Width** – grid size along X (stage left–right).
@@ -24,7 +31,7 @@ Point** – the (0, 0, 0) of your show (see Core Concepts).
 
 - **Line Color** – colour of the grid lines.
 - **Line Thickness** – line weight in pixels (1–20).
-- **Transparency** – `0` fully transparent, `1` fully opaque.
+- **Opacity** – `0` fully transparent, `1` fully opaque.
 
 ## Offset Position
 

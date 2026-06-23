@@ -167,6 +167,16 @@ def test_validate_range_high() -> None:
     assert "FOV" in err
 
 
+@pytest.mark.parametrize("section", ["grid", "marker"])
+def test_validate_opacity_out_of_range_uses_opacity_wording(section: str) -> None:
+    """The 0-1 alpha control is opacity (1 = fully opaque, 0 = invisible), so
+    its out-of-range message reads "Opacity", not the inverted "Transparency"."""
+    err = validate(section, "transparency", "2")
+    assert err is not None
+    assert "Opacity" in err
+    assert "Transparency" not in err
+
+
 def test_validate_pattern_failure() -> None:
     err = validate("grid", "color", "#zzz")
     assert err is not None
@@ -717,7 +727,7 @@ def test_otp_source_iface_has_no_field_rule() -> None:
     "section,field",
     [
         ("rttrpm_output", "host"),
-        ("trigger_zones", "default_osc_host"),
+        ("osc_destination", "host"),
     ],
 )
 def test_validate_host_field_accepts_ip(section: str, field: str) -> None:
@@ -728,7 +738,7 @@ def test_validate_host_field_accepts_ip(section: str, field: str) -> None:
     "section,field",
     [
         ("rttrpm_output", "host"),
-        ("trigger_zones", "default_osc_host"),
+        ("osc_destination", "host"),
     ],
 )
 def test_validate_host_field_accepts_hostname(section: str, field: str) -> None:
@@ -739,7 +749,7 @@ def test_validate_host_field_accepts_hostname(section: str, field: str) -> None:
     "section,field",
     [
         ("rttrpm_output", "host"),
-        ("trigger_zones", "default_osc_host"),
+        ("osc_destination", "host"),
     ],
 )
 def test_validate_host_field_rejects_internal_whitespace(section: str, field: str) -> None:
@@ -830,18 +840,9 @@ def test_validate_osc_message_rejects_unclosed_quote(raw: str) -> None:
     [
         ("name", "Stage 1", False),
         ("name", "x" * 65, True),  # max_len 64
-        ("host", "10.0.0.1", False),
-        ("port", "9000", False),
-        ("port", "0", True),
-        ("port", "65536", True),
-        ("protocol", "udp", False),
-        ("protocol", "tcp", False),
-        ("protocol", "carrier-pigeon", True),
-        # TCP framing selector: both choices accepted, bogus values rejected.
-        ("framing", "slip", False),
-        ("framing", "length_prefix", False),
-        ("framing", "carrier-pigeon", True),
-        ("framing", "SLIP", True),  # canonical lower-case only
+        # Connection is chosen via a destination; empty is allowed (no send).
+        ("destination_id", "", False),
+        ("destination_id", "dest-1", False),
         ("marker_id", "0", False),
         ("marker_id", "-1", True),
         # marker_id can be empty (no default marker).
@@ -877,8 +878,35 @@ def test_osc_binding_field_rules(field: str, value: str, expect_error: bool) -> 
         assert err is None, f"osc_binding.{field}={value!r} unexpectedly failed: {err}"
 
 
+@pytest.mark.parametrize(
+    "field,value,expect_error",
+    [
+        ("name", "Console", False),
+        ("name", "x" * 65, True),  # max_len 64
+        ("host", "10.0.0.1", False),
+        ("host", "192.168 .1.1", True),
+        ("port", "9000", False),
+        ("port", "0", True),
+        ("port", "65536", True),
+        ("protocol", "udp", False),
+        ("protocol", "tcp", False),
+        ("protocol", "carrier-pigeon", True),
+        ("framing", "slip", False),
+        ("framing", "length_prefix", False),
+        ("framing", "carrier-pigeon", True),
+        ("framing", "SLIP", True),  # canonical lower-case only
+    ],
+)
+def test_osc_destination_field_rules(field: str, value: str, expect_error: bool) -> None:
+    err = validate("osc_destination", field, value)
+    if expect_error:
+        assert err is not None, f"osc_destination.{field}={value!r} should have failed validation"
+    else:
+        assert err is None, f"osc_destination.{field}={value!r} unexpectedly failed: {err}"
+
+
 # ---------------------------------------------------------------------------
-# Per-zone OSC address fields share the OSC Output blur validator
+# Per-zone OSC address fields share the OSC Transmitters blur validator
 # ---------------------------------------------------------------------------
 
 # triggered_by blur validation: empty/valid lists pass, invalid entries reject.
@@ -920,7 +948,7 @@ class TestZoneTriggeredByRule:
 class TestZoneOscAddressRules:
     def test_empty_field_is_valid(self, field: str) -> None:
         """An unset zone OSC field is a valid "skip this transition"
-        – same lenient contract as OSC Output's empty osc_message."""
+        – same lenient contract as OSC Transmitters's empty osc_message."""
         assert validate("zone", field, "") is None
         assert validate("zone", field, "   ") is None
 
@@ -930,7 +958,7 @@ class TestZoneOscAddressRules:
         assert validate("zone", field, "/zone/enter") is None
 
     def test_address_plus_quoted_arg_is_valid(self, field: str) -> None:
-        """Quoted args alongside address allowed in zone fields like OSC Output."""
+        """Quoted args alongside address allowed in zone fields like OSC Transmitters."""
         assert validate("zone", field, '/cmd "Go Cue 1" 1.5') is None
 
     def test_address_without_leading_slash_rejected(self, field: str) -> None:
@@ -950,3 +978,14 @@ class TestZoneOscAddressRules:
         err = validate("zone", field, "/" + "a" * 2048)
         assert err is not None
         assert "2048" in err
+
+
+def test_needs_cfg_false_for_every_rule() -> None:
+    """No registered ``FieldRule`` currently reads ``AppConfig``, so
+    ``needs_cfg`` returns ``False`` for all of them – the ``/api/validate``
+    fast-path skips the per-keystroke TOML parse for every field."""
+    from openfollow.web.validation import needs_cfg
+
+    for section, rules in FIELD_RULES.items():
+        for field_name, rule in rules.items():
+            assert needs_cfg(rule) is False, f"{section}.{field_name}"

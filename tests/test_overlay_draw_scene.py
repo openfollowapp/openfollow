@@ -148,6 +148,18 @@ class TestGridLineCountIsBounded:
         assert len(cr.move_tos) == 7 + 11
         assert len(cr.line_tos) == len(cr.move_tos)
 
+    def test_hidden_grid_draws_nothing(self) -> None:
+        # grid_visible=False short-circuits before any line is emitted.
+        renderer = FakeRenderer()
+        cr = FakeCairo()
+        state = self._state(10.0, 6.0, 1.0)
+        state.grid_visible = False
+
+        draw_grid(renderer, cr, state, 1920, 1080)
+
+        assert cr.move_tos == []
+        assert cr.line_tos == []
+
 
 class TestAssistGhost:
     """The assist-mode AI-output ghost renders as a dim crosshair + ground ring,

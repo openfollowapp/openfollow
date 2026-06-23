@@ -3771,7 +3771,7 @@ def test_update_trigger_zones_post_renders_partial(live_server) -> None:
     status, _ = _post_form(
         base,
         "/section/trigger_zones",
-        {"enabled": "on", "default_osc_port": "9001"},
+        {"enabled": "on", "debounce_ms": "150"},
     )
     assert status == 200
 
@@ -3780,7 +3780,270 @@ def test_update_trigger_zones_post_renders_partial(live_server) -> None:
     # ``show_overlay`` was not in the form, so the bool-fields treatment
     # must clear it to False rather than leave it stale.
     assert saved.trigger_zones.show_overlay is False
-    assert saved.trigger_zones.default_osc_port == 9001
+    assert saved.trigger_zones.debounce_ms == 150
+
+
+def test_osc_destinations_crud_round_trip(live_server) -> None:
+    """Add → save → duplicate → delete a destination through the web routes."""
+    server, base = live_server
+
+    # Add: a fresh destination lands on top of the seeded "Default".
+    status, body = _post_form(base, "/section/osc_destinations/add", {})
+    assert status == 200
+    cfg = load_config(server.config_path)
+    assert len(cfg.osc_destinations.destinations) == 2
+    new_id = cfg.osc_destinations.destinations[-1].id
+
+    # Save: edit the new destination's connection.
+    status, _ = _post_form(
+        base,
+        f"/section/osc_destination/{new_id}",
+        {"name": "Console", "host": "10.0.0.9", "port": "9001", "protocol": "tcp", "framing": "slip"},
+    )
+    assert status == 200
+    saved = load_config(server.config_path).osc_destinations.get(new_id)
+    assert saved is not None
+    assert saved.name == "Console"
+    assert saved.host == "10.0.0.9"
+    assert saved.port == 9001
+    assert saved.protocol == "tcp"
+
+    # Duplicate then delete.
+    status, _ = _post_form(base, f"/section/osc_destination/{new_id}/duplicate", {})
+    assert status == 200
+    assert len(load_config(server.config_path).osc_destinations.destinations) == 3
+    status, _ = _post_form(base, f"/section/osc_destination/{new_id}/delete", {})
+    assert status == 200
+    after = load_config(server.config_path).osc_destinations
+    assert after.get(new_id) is None
+
+
+def test_api_zones_includes_live_destinations(live_server) -> None:
+    """The zone-editor poll carries the shared destinations, so adding one in
+    the OSC Destinations section reaches the zone dropdown without a reload."""
+    server, base = live_server
+
+    # The seeded "Default" destination is present from the start, with the
+    # endpoint fields the dropdown renders.
+    status, body = _get_json(base, "/api/zones")
+    assert status == 200
+    default = next(d for d in body["destinations"] if d["id"] == "default")
+    assert set(default) == {"id", "name", "host", "port", "protocol", "framing"}
+
+    # Add a destination via the section route; the next poll reflects it.
+    status, _ = _post_form(base, "/section/osc_destinations/add", {})
+    assert status == 200
+    new_id = load_config(server.config_path).osc_destinations.destinations[-1].id
+    status, body2 = _get_json(base, "/api/zones")
+    assert status == 200
+    assert new_id in [d["id"] for d in body2["destinations"]]
+
+
+def test_osc_destinations_section_get_renders(live_server) -> None:
+    """``GET /section/osc_destinations`` renders the destinations partial."""
+    _, base = live_server
+    status, body = _get(base, "/section/osc_destinations")
+    assert status == 200
+    assert "OSC Destinations" in body
+
+
+def test_osc_destination_save_partial_form_leaves_absent_fields_untouched(
+    live_server,
+) -> None:
+    """A save that omits fields updates only what's posted – the parser loop
+    skips absent fields rather than clobbering them with defaults."""
+    server, base = live_server
+    seeded = load_config(server.config_path).osc_destinations.destinations[0]
+    original_name = seeded.name
+    status, _ = _post_form(
+        base,
+        f"/section/osc_destination/{seeded.id}",
+        {"host": "10.1.2.3"},  # only host – name/port/protocol/framing absent
+    )
+    assert status == 200
+    saved = load_config(server.config_path).osc_destinations.get(seeded.id)
+    assert saved is not None
+    assert saved.host == "10.1.2.3"
+    assert saved.name == original_name
+
+
+def test_osc_destination_save_unknown_id_404(live_server) -> None:
+    _, base = live_server
+    status, _ = _post_form(base, "/section/osc_destination/no-such", {"host": "1.2.3.4"})
+    assert status == 404
+
+
+def test_osc_destination_duplicate_unknown_id_404(live_server) -> None:
+    _, base = live_server
+    status, _ = _post_form(base, "/section/osc_destination/no-such/duplicate", {})
+    assert status == 404
+
+
+def test_osc_destination_delete_unknown_id_is_noop(live_server) -> None:
+    server, base = live_server
+    before = len(load_config(server.config_path).osc_destinations.destinations)
+    status, body = _post_form(base, "/section/osc_destination/no-such/delete", {})
+    assert status == 200
+    assert "OSC Destinations" in body
+    after = len(load_config(server.config_path).osc_destinations.destinations)
+    assert after == before
+
+
+def test_osc_destination_move_reorders_and_guards_edges(live_server) -> None:
+    """move up/down swaps neighbours; edge moves and an unknown direction are
+    no-ops; an unknown id is a 404."""
+    server, base = live_server
+    # Seeded "Default" sits at index 0; add two more for a clear ordering.
+    _post_form(base, "/section/osc_destinations/add", {})
+    _post_form(base, "/section/osc_destinations/add", {})
+    dests = load_config(server.config_path).osc_destinations.destinations
+    assert len(dests) == 3
+    first_id, second_id, third_id = (d.id for d in dests)
+
+    def _order() -> list[str]:
+        return [d.id for d in load_config(server.config_path).osc_destinations.destinations]
+
+    _post_form(base, f"/section/osc_destination/{second_id}/move", {"direction": "up"})
+    assert _order()[:2] == [second_id, first_id]
+
+    _post_form(base, f"/section/osc_destination/{second_id}/move", {"direction": "down"})
+    assert _order()[:2] == [first_id, second_id]
+
+    # Top-up and bottom-down: target == idx → no swap, no save.
+    _post_form(base, f"/section/osc_destination/{first_id}/move", {"direction": "up"})
+    _post_form(base, f"/section/osc_destination/{third_id}/move", {"direction": "down"})
+    assert _order() == [first_id, second_id, third_id]
+
+    # Unknown direction → no-op.
+    _post_form(base, f"/section/osc_destination/{first_id}/move", {"direction": "sideways"})
+    assert _order() == [first_id, second_id, third_id]
+
+    status, _ = _post_form(
+        base,
+        "/section/osc_destination/no-such/move",
+        {"direction": "up"},
+    )
+    assert status == 404
+
+
+def test_osc_destination_noop_move_does_not_flash_saved(live_server) -> None:
+    """A boundary move (top row up) changes nothing, so the re-render must NOT
+    carry the 'saved' state – an operator shouldn't see a saved flash for an
+    action that did nothing. A real move does flash saved."""
+    server, base = live_server
+    first_id = load_config(server.config_path).osc_destinations.destinations[0].id
+    _post_form(base, "/section/osc_destinations/add", {})
+    second_id = load_config(server.config_path).osc_destinations.destinations[-1].id
+
+    # No-op: top row up → no swap, no 'saved'.
+    _status, body = _post_form(base, f"/section/osc_destination/{first_id}/move", {"direction": "up"})
+    assert "osc-destinations-section" in body
+    assert "section saved" not in body
+
+    # Real move: second row up → flashes saved.
+    _status, body = _post_form(base, f"/section/osc_destination/{second_id}/move", {"direction": "up"})
+    assert "section saved" in body
+
+
+def test_osc_binding_dangling_destination_shows_missing_option(live_server) -> None:
+    """A row whose ``destination_id`` points at a deleted destination renders a
+    selected '(missing destination)' option, so the dropdown reflects the
+    stored dangling id instead of silently falling back to '(none)'."""
+    server, base = live_server
+    _post_form(base, "/section/osc_bindings/add", {})
+    row_id = load_config(server.config_path).osc_transmitters.transmitters[0].id
+    _post_form(base, f"/section/osc_binding/{row_id}", {"destination_id": "ghost-id"})
+
+    status, body = _get(base, "/section/osc_bindings")
+    assert status == 200
+    assert "(missing destination)" in body
+
+
+def test_osc_destinations_use_drag_handle_not_arrow_buttons(live_server) -> None:
+    """Destinations reorder via the same ⋮⋮ drag handle as transmitters; the
+    per-row ↑/↓ arrow buttons are gone from the UI (the /move route stays as a
+    stable JSON-API surface)."""
+    _, base = live_server
+    status, body = _get(base, "/section/osc_destinations")
+    assert status == 200
+    assert "osc-destination-drag-handle" in body
+    assert 'data-reorder-url="/section/osc_destinations/reorder"' in body
+    assert "↑" not in body
+    assert "↓" not in body
+
+
+def test_osc_destinations_reorder_applies_full_ordering(live_server) -> None:
+    """The drag-handle UI POSTs the complete id ordering: [A,B,C] -> [C,A,B]."""
+    server, base = live_server
+    _post_form(base, "/section/osc_destinations/add", {})
+    _post_form(base, "/section/osc_destinations/add", {})
+    a, b, c = (d.id for d in load_config(server.config_path).osc_destinations.destinations)
+    status, _ = _post_form(base, "/section/osc_destinations/reorder", {"order": f"{c},{a},{b}"})
+    assert status == 200
+    after = [d.id for d in load_config(server.config_path).osc_destinations.destinations]
+    assert after == [c, a, b]
+
+
+def test_osc_destinations_reorder_drops_unknown_keeps_missing(live_server) -> None:
+    """A stale post with a phantom id and an omitted real id: phantom dropped,
+    omitted destination appended so nothing is lost."""
+    server, base = live_server
+    _post_form(base, "/section/osc_destinations/add", {})
+    _post_form(base, "/section/osc_destinations/add", {})
+    a, b, c = (d.id for d in load_config(server.config_path).osc_destinations.destinations)
+    _post_form(base, "/section/osc_destinations/reorder", {"order": f"{c},ghost-id,{a}"})
+    after = [d.id for d in load_config(server.config_path).osc_destinations.destinations]
+    assert after == [c, a, b]
+
+
+def test_osc_destinations_reorder_empty_order_is_noop(live_server) -> None:
+    """Empty / whitespace ``order`` must not drop destinations."""
+    server, base = live_server
+    _post_form(base, "/section/osc_destinations/add", {})
+    before = [d.id for d in load_config(server.config_path).osc_destinations.destinations]
+    status, _ = _post_form(base, "/section/osc_destinations/reorder", {"order": "  "})
+    assert status == 200
+    after = [d.id for d in load_config(server.config_path).osc_destinations.destinations]
+    assert after == before
+
+
+def test_osc_destinations_reorder_no_change_is_idempotent(live_server) -> None:
+    """Posting the existing order is a no-op (the permutation matches what's on
+    disk, so no save) while still re-rendering successfully."""
+    server, base = live_server
+    _post_form(base, "/section/osc_destinations/add", {})
+    before = [d.id for d in load_config(server.config_path).osc_destinations.destinations]
+    status, _ = _post_form(base, "/section/osc_destinations/reorder", {"order": ",".join(before)})
+    assert status == 200
+    after = [d.id for d in load_config(server.config_path).osc_destinations.destinations]
+    assert after == before
+
+
+def test_osc_destinations_collapsed_summary_shows_host_port(live_server) -> None:
+    """The collapsed destination row shows host:port right after the name plus a
+    protocol badge, so a folded destination stays identifiable at a glance."""
+    server, base = live_server
+    seeded = load_config(server.config_path).osc_destinations.destinations[0]
+    _post_form(
+        base,
+        f"/section/osc_destination/{seeded.id}",
+        {"name": "Console", "host": "10.5.5.5", "port": "9001", "protocol": "udp", "framing": "slip"},
+    )
+    _, body = _get(base, "/section/osc_destinations")
+    assert "osc-destination-addr" in body
+    assert "10.5.5.5:9001" in body
+    assert "osc-destination-proto-badge" in body
+    assert "UDP" in body
+
+
+def test_broadcast_section_rejects_non_shareable_sections(live_server) -> None:
+    """OSC routing + zones travel by file only – a section broadcast of them
+    is refused with 403, never pushed to peers."""
+    _, base = live_server
+    for section in ("osc_destinations", "osc_transmitters", "trigger_zones"):
+        status, payload = _post_json(base, f"/api/config/{section}/broadcast", {"enabled": True})
+        assert status == 403, f"{section} should not be broadcastable"
+        assert "not shareable" in payload.get("error", "").lower()
 
 
 def test_update_detection_inference_renders_partial_with_install_state(live_server) -> None:
@@ -4439,6 +4702,20 @@ def test_update_grid_post_persists_and_renders_partial(live_server) -> None:
     assert saved.grid.width == pytest.approx(25.0)
     assert saved.grid.depth == pytest.approx(15.0)
     assert saved.grid.origin_visible is True
+
+
+def test_update_grid_post_toggles_visible(live_server) -> None:
+    """The Show Grid checkbox: ticked -> True, omitted -> False. Omitting it
+    must hide the grid, not silently preserve the prior True default."""
+    server, base = live_server
+
+    status, _ = _post_form(base, "/section/grid", {"width": "25"})
+    assert status == 200
+    assert load_config(server.config_path).grid.visible is False
+
+    status, _ = _post_form(base, "/section/grid", {"width": "25", "visible": "on"})
+    assert status == 200
+    assert load_config(server.config_path).grid.visible is True
 
 
 def test_update_marker_post_persists_visual_booleans(live_server) -> None:

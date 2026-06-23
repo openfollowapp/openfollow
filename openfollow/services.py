@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from openfollow.configuration import (
         AppConfig,
         DetectionConfig,
+        OscDestinationsConfig,
         OscTransmittersConfig,
         OtpOutputConfig,
         RttrpmOutputConfig,
@@ -1047,7 +1048,10 @@ class AppRuntimeServices:
             # until it's populated, long before any 60 Hz render.
             controller_marker_provider=self._controller_marker_provider,
         )
-        manager.restart(self._app._config.osc_transmitters)
+        manager.restart(
+            self._app._config.osc_transmitters,
+            self._app._config.osc_destinations,
+        )
         manager.start()
         self._osc_transmitter_manager = manager
         self._sync_osc_binding_conflicts()
@@ -1363,8 +1367,9 @@ class AppRuntimeServices:
     def apply_osc_transmitters_change(
         self,
         new_cfg: OscTransmittersConfig,
+        destinations: OscDestinationsConfig | None = None,
     ) -> None:
-        """Apply an ``osc_transmitters`` config change live.
+        """Apply an ``osc_transmitters`` (or destinations) change live.
 
         Two-state matrix instead of OTP/RTTrPM's four-state because the
         manager always exists once :meth:`init_osc_transmitters` has run:
@@ -1376,12 +1381,18 @@ class AppRuntimeServices:
           Rows are diffed by id; the scheduler thread keeps running
           throughout. An all-rows-deleted config leaves an idle manager
           that wakes up cheaply if rows return on the next reload.
+
+        ``destinations`` stages the current OSC destination profiles so a
+        destination-only edit (e.g. an IP change) re-resolves every row;
+        ``None`` falls back to the app's current set.
         """
+        if destinations is None:
+            destinations = self._app._config.osc_destinations
         manager = self._osc_transmitter_manager
         if manager is None:
             self.init_osc_transmitters()
             return
-        manager.restart(new_cfg)
+        manager.restart(new_cfg, destinations)
         # ``init_osc_transmitters`` syncs conflicts in its own body; this
         # hot-reload branch needs a parallel sync. Keeping it outside
         # ``manager.restart`` keeps the manager registry-agnostic.
@@ -2237,7 +2248,11 @@ class AppRuntimeServices:
         from openfollow.zones import ZoneEngine
 
         cfg = self._app._config.trigger_zones
-        self._zone_engine = ZoneEngine(cfg, self._osc_service)
+        self._zone_engine = ZoneEngine(
+            cfg,
+            self._osc_service,
+            self._app._config.osc_destinations,
+        )
 
     def update_zone_triggers(self) -> None:
         """Evaluate zone membership and emit OSC, throttled by ``eval_fps``."""
@@ -2396,16 +2411,24 @@ class AppRuntimeServices:
             return {"error": f"unclosed quote in field: {exc}"}
         if not address:
             return {"skipped": True, "reason": "field has no address"}
-        host = zone.osc_host or cfg.default_osc_host
-        port = zone.osc_port or cfg.default_osc_port
+        dest = self._app._config.osc_destinations.get(zone.destination_id)
+        if dest is None:
+            return {"skipped": True, "reason": "no destination selected"}
         typed_args = coerce_osc_args(str_args)
-        self._osc_service.send(address, args=typed_args, host=host, port=port)
+        self._osc_service.send(
+            address,
+            args=typed_args,
+            host=dest.host,
+            port=dest.port,
+            protocol=dest.protocol,
+            framing=dest.framing,
+        )
         return {
             "success": True,
             "address": address,
             "args": list(typed_args),
-            "host": host,
-            "port": port,
+            "host": dest.host,
+            "port": dest.port,
         }
 
     def _get_marker_positions_snapshot(self) -> list[tuple[int, float, float]]:

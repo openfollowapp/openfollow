@@ -59,14 +59,68 @@ from openfollow.web.routes import (
     _as_optional_float,
     _as_positive_int,
     _config_to_toml,
+    _find_by_id,
     _import_needs_restart,
     _parse_vertices,
+    _swap_for_direction,
     _wizard_camera_params,
     apply_section_data,
     strip_device_local_fields,
 )
 
 pytestmark = pytest.mark.unit
+
+
+class _Item:
+    """Minimal ``.id``-bearing stand-in for the id-keyed config rows."""
+
+    def __init__(self, item_id: str) -> None:
+        self.id = item_id
+
+
+class TestFindById:
+    def test_returns_index_and_item_on_match(self) -> None:
+        items = [_Item("a"), _Item("b"), _Item("c")]
+        found = _find_by_id(items, "b")
+        assert found is not None
+        idx, item = found
+        assert idx == 1
+        assert item is items[1]
+
+    def test_returns_none_when_missing(self) -> None:
+        assert _find_by_id([_Item("a")], "z") is None
+
+    def test_returns_first_match(self) -> None:
+        items = [_Item("dup"), _Item("dup")]
+        found = _find_by_id(items, "dup")
+        assert found is not None and found[0] == 0
+
+
+class TestSwapForDirection:
+    def test_up_swaps_with_predecessor(self) -> None:
+        items = ["a", "b", "c"]
+        assert _swap_for_direction(items, 1, "up") is True
+        assert items == ["b", "a", "c"]
+
+    def test_down_swaps_with_successor(self) -> None:
+        items = ["a", "b", "c"]
+        assert _swap_for_direction(items, 1, "down") is True
+        assert items == ["a", "c", "b"]
+
+    def test_top_up_is_noop_returns_false(self) -> None:
+        items = ["a", "b"]
+        assert _swap_for_direction(items, 0, "up") is False
+        assert items == ["a", "b"]
+
+    def test_bottom_down_is_noop_returns_false(self) -> None:
+        items = ["a", "b"]
+        assert _swap_for_direction(items, 1, "down") is False
+        assert items == ["a", "b"]
+
+    def test_unknown_direction_is_noop_returns_false(self) -> None:
+        items = ["a", "b"]
+        assert _swap_for_direction(items, 0, "sideways") is False
+        assert items == ["a", "b"]
 
 
 # --------------------------------------------------------------------------- #
@@ -609,6 +663,20 @@ class TestApplyImportDataSkipRestart:
         )
         assert len(out.trigger_zones.zones) == 1
         assert out.trigger_zones.zones[0].name == "Valid"
+
+    def test_osc_routing_blocks_without_inner_lists_are_skipped(self) -> None:
+        """An ``osc_transmitters`` / ``osc_destinations`` block whose inner
+        list key is absent or non-list is skipped, not applied – a crafted
+        payload can't crash the import or wipe the existing rows."""
+        current = AppConfig()
+        out = _apply_import_data(
+            current,
+            {
+                "osc_transmitters": {},  # no "transmitters" list → skipped
+                "osc_destinations": {"destinations": "nope"},  # not a list → skipped
+            },
+        )
+        assert out.osc_transmitters.transmitters == []
 
     def test_window_dimensions_imported_as_ints(self) -> None:
         current = AppConfig()

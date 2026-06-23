@@ -485,9 +485,7 @@ class TestApplyOscOutput:
             "ETC Stage",
             {
                 "name": "ETC Stage Left",
-                "host": "10.0.0.5",
-                "port": 9001,
-                "protocol": "tcp",
+                "destination_id": "dest-5",
                 "address": "/eos/go",
                 "args": ["[x]", "[y]"],
                 "rate_hz": 60,
@@ -504,9 +502,7 @@ class TestApplyOscOutput:
         assert len(rows) == 1
         row = rows[0]
         assert row.name == "ETC Stage Left"
-        assert row.host == "10.0.0.5"
-        assert row.port == 9001
-        assert row.protocol == "tcp"
+        assert row.destination_id == "dest-5"
         assert row.address == "/eos/go"
         assert row.args == ["[x]", "[y]"]
         assert row.rate_hz == 60
@@ -574,9 +570,7 @@ class TestSaveOscBindingAsTemplate:
             {
                 "template_name": "Stage Cue",
                 "name": "Stage Cue (live)",
-                "host": "192.168.10.5",
-                "port": "9001",
-                "protocol": "tcp",
+                "destination_id": "dest-99",
                 "marker_id": "0",
                 "trigger.type": "stream",
                 "trigger.rate_hz": "60",
@@ -584,7 +578,7 @@ class TestSaveOscBindingAsTemplate:
             },
         )
         assert status == 200
-        assert "OSC Output" in body
+        assert "OSC Transmitters" in body
         from openfollow.templates.loader import find_template
 
         entry = find_template(
@@ -594,9 +588,7 @@ class TestSaveOscBindingAsTemplate:
         assert entry is not None and entry.template is not None
         p = entry.template.payload
         assert p["name"] == "Stage Cue (live)"
-        assert p["host"] == "192.168.10.5"
-        assert p["port"] == 9001
-        assert p["protocol"] == "tcp"
+        assert p["destination_id"] == "dest-99"
         assert p["address"] == "/cue/[markerid]/go"
         assert p["args"] == ["[x]"]
         assert p["rate_hz"] == 60
@@ -646,9 +638,7 @@ class TestSaveOscBindingAsTemplate:
             {
                 "template_name": "OnChangeStage",
                 "name": "On-change stage",
-                "host": "10.0.0.1",
-                "port": "9000",
-                "protocol": "udp",
+                "destination_id": "dest-1",
                 "trigger.type": "stream",
                 "trigger.rate_hz": "60",
                 "trigger.mode": "on_change",
@@ -724,9 +714,7 @@ class TestSaveOscBindingAsTemplate:
             {
                 "template_name": "RoundTrip",
                 "name": "Source row",
-                "host": "10.10.10.10",
-                "port": "5005",
-                "protocol": "udp",
+                "destination_id": "dest-7",
                 "trigger.type": "stream",
                 "trigger.rate_hz": "20",
                 "osc_message": "/round/[markerid] [x]",
@@ -740,9 +728,7 @@ class TestSaveOscBindingAsTemplate:
         cfg = load_config(cfg_path)
         applied = cfg.osc_transmitters.transmitters[-1]  # the apply row
         assert applied.name == "Source row"
-        assert applied.host == "10.10.10.10"
-        assert applied.port == 5005
-        assert applied.protocol == "udp"
+        assert applied.destination_id == "dest-7"
         assert applied.address == "/round/[markerid]"
         assert applied.args == ["[x]"]
         assert applied.rate_hz == 20

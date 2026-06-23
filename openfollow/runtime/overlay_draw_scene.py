@@ -35,6 +35,8 @@ def project(
 
 
 def draw_grid(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
+    if not state.grid_visible:
+        return
     gc = state.grid_config
     if gc is None:
         return

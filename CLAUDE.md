@@ -135,7 +135,7 @@ All config lives in `config.toml` (auto-reloaded when file changes on disk).
 
 ### Sub-configs
 - **CameraConfig:** pos_x/y/z, pitch/yaw/roll, fov
-- **GridConfig:** width, depth, spacing, x_offset, y_offset, z_offset, origin_visible, origin_length, origin_thickness
+- **GridConfig:** visible, width, depth, spacing, x_offset, y_offset, z_offset, origin_visible, origin_length, origin_thickness
 - **MarkerConfig:** min_speed, max_speed, move_speed, default_pos_x/y/z, ball_visible, ball_size, transparency, crosshair_visible, crosshair_size, crosshair_color, crosshair_thickness, drop_line, drop_line_thickness, ground_circle, ground_circle_size, ground_circle_filled, z_display_from_stage
 - **ControllerConfig:** enabled, keyboard_enabled, mouse_enabled, deadzone, invert_y, curve, the gamepad button map (`btn_reset`, `btn_source_select`, `btn_speed_up/down`, `btn_move_z_up/down`, `btn_settings`, `btn_next/prev_marker`, …), the keyboard binding map (`key_move_layout`, `key_reset`, `key_speed_up/down`, `key_toggle_help`, `key_toggle_zones`, `key_settings`, …), `move_xy_stick` (no LED fields)
 - **DetectionConfig:** enabled, model, storage_path (not exposed in the UI; device-local – stripped from config export and preserved-across-import so a path never crosses machines; blank auto-resolves to `/mnt/nvme/openfollow/yolo` when `/mnt/nvme` is a mountpoint, else a `yolo` folder under the working dir – via `resolve_detection_storage_path` in [`video/detection.py`](openfollow/video/detection.py), used by `_prepare_model_path` + the web model-discover/export helpers; set an absolute path in `config.toml` to override), inference_size, preprocess_clahe, confidence, interval_ms, show_boxes, show_labels, box_color, box_thickness, max_persons, pin_marker, pin_marker_id (`-1` = follow selected marker), pin_point (`top`|`bottom`), smoothing, prediction, grace_period_ms, pin_mode (`replace`|`assist`, default `assist`), assist_radius_m, assist_strength
@@ -733,10 +733,9 @@ zones/
 - `enabled` (bool) – arms the engine (OSC output). Default `False`.
 - `show_overlay` (bool) – renders zone polygons on the HUD. Independent of `enabled` – the overlay hotkey (`z` / `B`) flips this alone, so rendering must not be gated on `enabled`.
 - `eval_fps` (int, one of `1, 5, 10, 15, 30, 60`) – engine evaluation rate; marker/detection collection is skipped between ticks.
-- `default_osc_host` / `default_osc_port` – fallback target when a zone leaves its own `osc_host`/`osc_port` blank.
 - `debounce_ms` (int) – transitions inside the window are **discarded, not queued**.
 - `hysteresis` (float, metres) – inward polygon offset applied to build the exit polygon (`shrink_polygon`), so near-boundary flicker doesn't re-fire OSC.
-- `zones: list[TriggerZoneConfig]` – per-zone: `vertices`, `color`, `trigger_source` (`"markers" | "detection" | "both"`), four OSC addresses (`osc_address_first_entry`, `_additional_entry`, `_partial_exit`, `_final_exit`), optional `osc_host`/`osc_port` override, `enabled`.
+- `zones: list[TriggerZoneConfig]` – per-zone: `vertices`, `color`, `trigger_source` (`"markers" | "detection" | "both"`), four OSC addresses (`osc_address_first_entry`, `_additional_entry`, `_partial_exit`, `_final_exit`), `destination_id` (references a shared `OscDestinationConfig`; blank/dangling = emit nothing), `enabled`.
 
 ### Occupancy state machine (`ZoneEngine._emit_transitions`)
 Per zone, tracks the set of occupants and an integer count. Transitions, in order:

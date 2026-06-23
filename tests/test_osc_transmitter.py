@@ -23,6 +23,8 @@ import pytest
 from openfollow.configuration import (
     ControllerButtonTrigger,
     HotkeyTrigger,
+    OscDestinationConfig,
+    OscDestinationsConfig,
     OscTransmitterConfig,
     OscTransmittersConfig,
     StreamTrigger,
@@ -70,14 +72,25 @@ class _FakeMarker:
         self.pos = pos
 
 
+# Default destination every ``_row`` resolves to. Host/port match the
+# values tests historically asserted on, now carried by the destination.
+_DEFAULT_DEST_ID = "dest-1"
+
+
+def _destinations(*dests: OscDestinationConfig) -> OscDestinationsConfig:
+    """Build an ``OscDestinationsConfig``; defaults to the single
+    ``dest-1`` profile rows reference unless explicit ones are given."""
+    if not dests:
+        dests = (OscDestinationConfig(id=_DEFAULT_DEST_ID, name="Default", host="127.0.0.1", port=9000),)
+    return OscDestinationsConfig(destinations=list(dests))
+
+
 def _row(**overrides: Any) -> OscTransmitterConfig:
     """Transmitter row with defaults; tests override only what they assert."""
     defaults: dict[str, Any] = {
         "id": "row-1",
         "enabled": True,
-        "host": "127.0.0.1",
-        "port": 9000,
-        "protocol": "udp",
+        "destination_id": _DEFAULT_DEST_ID,
         "marker_id": 0,
         "template_id": "",
         "address": "/cue/[markerid]",
@@ -95,6 +108,7 @@ def _manager(
     fader_values: dict[int, float] | None = None,
     marker_fader_values: dict[int, float] | None = None,
     controller_markers: dict[int, int] | None = None,
+    destinations: OscDestinationsConfig | None = None,
 ) -> tuple[OscTransmitterManager, _FakeOscService]:
     # grid tuple = (width, depth, max_height, z_offset). max_height=0.0
     # makes ``[z.frac]`` / ``[z.frac.inv]`` raise RenderError; fractional-Z
@@ -117,6 +131,9 @@ def _manager(
         marker_fader_provider=marker_fader_provider,
         controller_marker_provider=controller_marker_provider,
     )
+    # Seed destinations once; subsequent ``restart(cfg)`` calls (with no
+    # destinations arg) keep the staged set, mirroring a transmitter-only edit.
+    manager.restart(OscTransmittersConfig(transmitters=[]), destinations or _destinations())
     return manager, service
 
 
@@ -362,7 +379,7 @@ class TestRendering:
             marker_provider={0: _FakeMarker((2.5, 0.0, 0.0))}.get,
             grid_provider=grid_provider,
         )
-        manager.restart(OscTransmittersConfig(transmitters=[_row(args=["[x.frac]"])]))
+        manager.restart(OscTransmittersConfig(transmitters=[_row(args=["[x.frac]"])]), _destinations())
         manager._tick_once()
         assert service.calls[0][1] == [pytest.approx(0.5)]
         # Widen grid to 20 m → fraction halves on next tick.
@@ -384,7 +401,7 @@ class TestRendering:
             marker_provider={0: _FakeMarker((0.0, 0.0, 2.0))}.get,
             grid_provider=grid_provider,
         )
-        manager.restart(OscTransmittersConfig(transmitters=[_row(args=["[z.frac]"])]))
+        manager.restart(OscTransmittersConfig(transmitters=[_row(args=["[z.frac]"])]), _destinations())
         # First tick: max_height is 0, row skips with a RenderError.
         manager._tick_once()
         assert service.calls == []
@@ -395,15 +412,14 @@ class TestRendering:
 
 
 class TestTransport:
-    def test_send_passes_protocol_through(self) -> None:
-        manager, svc = _manager(markers={0: _FakeMarker((0.0, 0.0, 0.0))})
-        manager.restart(
-            OscTransmittersConfig(
-                transmitters=[
-                    _row(host="10.0.0.5", port=8000, protocol="tcp"),
-                ]
-            )
+    def test_send_resolves_destination_endpoint(self) -> None:
+        """A row's ``destination_id`` resolves to the destination's
+        host/port/protocol at send time."""
+        dests = _destinations(
+            OscDestinationConfig(id="d-tcp", host="10.0.0.5", port=8000, protocol="tcp"),
         )
+        manager, svc = _manager(markers={0: _FakeMarker((0.0, 0.0, 0.0))}, destinations=dests)
+        manager.restart(OscTransmittersConfig(transmitters=[_row(destination_id="d-tcp")]))
         manager._tick_once()
         _addr, _args, host, port, protocol, _framing = svc.calls[0]
         assert host == "10.0.0.5"
@@ -411,27 +427,19 @@ class TestTransport:
         assert protocol == "tcp"
 
     def test_send_passes_framing_through(self) -> None:
-        """Per-binding framing travels from ``OscTransmitterConfig`` through
-        the tick into ``OscService.send`` so the cached ``TcpOscSender`` uses
-        the configured wire format."""
-        manager, svc = _manager(markers={0: _FakeMarker((0.0, 0.0, 0.0))})
+        """Per-destination framing travels through the tick into
+        ``OscService.send`` so the cached ``TcpOscSender`` uses the
+        configured wire format."""
+        dests = _destinations(
+            OscDestinationConfig(id="d-slip", host="10.0.0.5", port=8001, protocol="tcp", framing="slip"),
+            OscDestinationConfig(id="d-lp", host="10.0.0.6", port=8002, protocol="tcp", framing="length_prefix"),
+        )
+        manager, svc = _manager(markers={0: _FakeMarker((0.0, 0.0, 0.0))}, destinations=dests)
         manager.restart(
             OscTransmittersConfig(
                 transmitters=[
-                    _row(
-                        id="row-slip",
-                        host="10.0.0.5",
-                        port=8001,
-                        protocol="tcp",
-                        framing="slip",
-                    ),
-                    _row(
-                        id="row-lp",
-                        host="10.0.0.6",
-                        port=8002,
-                        protocol="tcp",
-                        framing="length_prefix",
-                    ),
+                    _row(id="row-slip", destination_id="d-slip"),
+                    _row(id="row-lp", destination_id="d-lp"),
                 ]
             )
         )
@@ -439,6 +447,31 @@ class TestTransport:
         framings = {host: framing for _addr, _args, host, _port, _protocol, framing in svc.calls}
         assert framings["10.0.0.5"] == "slip"
         assert framings["10.0.0.6"] == "length_prefix"
+
+    def test_unresolved_destination_skips_send_with_reason(self) -> None:
+        """A blank / dangling ``destination_id`` sends nothing and records
+        a skip reason in the row's ring buffer."""
+        manager, svc = _manager(markers={0: _FakeMarker((0.0, 0.0, 0.0))})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(id="r", destination_id="")]))
+        manager._tick_once()
+        assert svc.calls == []
+        entries = manager.ring_buffer_for("r") or []
+        assert entries[-1].status == "skipped"
+        assert entries[-1].error == "no destination selected"
+
+    def test_destination_ip_edit_repoints_next_send(self) -> None:
+        """Re-staging destinations with a new host (a live IP edit) makes the
+        next send target the new host – no row edit needed."""
+        dests = _destinations(OscDestinationConfig(id="d", host="10.0.0.5", port=9000))
+        manager, svc = _manager(markers={0: _FakeMarker((0.0, 0.0, 0.0))}, destinations=dests)
+        manager.restart(OscTransmittersConfig(transmitters=[_row(destination_id="d")]))
+        manager._tick_once()
+        assert svc.calls[0][2] == "10.0.0.5"
+        # Operator edits the destination's IP; transmitters unchanged.
+        new_dests = _destinations(OscDestinationConfig(id="d", host="10.0.0.9", port=9000))
+        manager.restart(OscTransmittersConfig(transmitters=[_row(destination_id="d")]), new_dests)
+        manager._tick_once()
+        assert svc.calls[-1][2] == "10.0.0.9"
 
 
 # ---------------------------------------------------------------------------
@@ -1061,7 +1094,7 @@ class TestOnChangeCacheLocking:
         assert "row-1" in manager._last_sent_pos
         # Cosmetic reload (same marker_id + trigger kind) reuses the object.
         same = manager._rows["row-1"]
-        manager.restart(OscTransmittersConfig(transmitters=[self._on_change_row(host="10.0.0.9")]))
+        manager.restart(OscTransmittersConfig(transmitters=[self._on_change_row(name="renamed")]))
         assert manager._rows["row-1"] is same
         assert "row-1" in manager._last_sent_pos
 
@@ -1295,14 +1328,14 @@ class TestOnChangeCacheLocking:
         manager.restart(OscTransmittersConfig(transmitters=[self._on_change_row()]))
         manager._tick_once()
         assert "row-1" in manager._last_sent_pos
-        # Edit cosmetic fields only (host/name) and the threshold –
+        # Edit cosmetic fields only (destination/name) and the threshold –
         # threshold change is read fresh per tick, doesn't affect
         # the cached position's meaning.
         manager.restart(
             OscTransmittersConfig(
                 transmitters=[
                     self._on_change_row(
-                        host="10.0.0.1",
+                        destination_id="dest-1",
                         name="renamed",
                         trigger=StreamTrigger(
                             rate_hz=60,
@@ -1551,7 +1584,8 @@ class TestDefaultMarkerLookupGated:
                         args=["My Cue"],
                     ),
                 ]
-            )
+            ),
+            _destinations(),
         )
         manager._tick_once()
         assert calls == []
@@ -1808,8 +1842,9 @@ class TestEventBusDispatch:
         rows: list[OscTransmitterConfig],
         *,
         markers: dict[int, _FakeMarker] | None = None,
+        destinations: OscDestinationsConfig | None = None,
     ) -> tuple[OscTransmitterManager, _FakeOscService, InputEventBus]:
-        manager, svc = _manager(markers=markers)
+        manager, svc = _manager(markers=markers, destinations=destinations)
         manager.restart(OscTransmittersConfig(transmitters=rows))
         bus = InputEventBus()
         manager.attach_event_bus(bus)
@@ -1899,10 +1934,14 @@ class TestEventBusDispatch:
         on the same hotkey both emit."""
         manager, svc, bus = self._attached(
             [
-                _row(id="r1", host="10.0.0.1", trigger=HotkeyTrigger(key="F1")),
-                _row(id="r2", host="10.0.0.2", trigger=HotkeyTrigger(key="F1")),
+                _row(id="r1", destination_id="d1", trigger=HotkeyTrigger(key="F1")),
+                _row(id="r2", destination_id="d2", trigger=HotkeyTrigger(key="F1")),
             ],
             markers={0: _FakeMarker((1.0, 2.0, 3.0))},
+            destinations=_destinations(
+                OscDestinationConfig(id="d1", host="10.0.0.1", port=9000),
+                OscDestinationConfig(id="d2", host="10.0.0.2", port=9000),
+            ),
         )
         bus.emit_key(KeyEvent(key="F1", edge="press"))
         manager.process_pending_events()
@@ -2281,7 +2320,7 @@ class TestDiagnosticsSurface:
             marker_provider=markers.get,
             grid_provider=lambda: (10.0, 6.0, 0.0, 0.0),
         )
-        manager.restart(OscTransmittersConfig(transmitters=[_row()]))
+        manager.restart(OscTransmittersConfig(transmitters=[_row()]), _destinations())
         manager._tick_once()  # skip
         markers[0] = _FakeMarker((1.0, 2.0, 3.0))
         manager._tick_once()  # send
@@ -2311,6 +2350,19 @@ class TestDiagnosticsSurface:
         assert preview is not None
         assert preview["skipped"] is True
         assert preview["error"] == "default marker 0 not registered"
+        assert preview["address"] == ""
+        assert preview["args"] == []
+
+    def test_preview_for_unresolved_destination_surfaces_skip(self) -> None:
+        """The diagnostic preview of a row with no resolvable destination
+        surfaces a 'no destination selected' skip (the render path keeps its
+        own None guard for this, separate from the live-fire path)."""
+        manager, _svc = _manager(markers={0: _FakeMarker((0.0, 0.0, 0.0))})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(destination_id="")]))
+        preview = manager.preview_for("row-1")
+        assert preview is not None
+        assert preview["skipped"] is True
+        assert preview["error"] == "no destination selected"
         assert preview["address"] == ""
         assert preview["args"] == []
 
@@ -2803,13 +2855,18 @@ class TestMidiMessageDispatch:
     def test_multiple_matching_rows_all_fire(self) -> None:
         """No cross-row collision rule – two rows on the same MIDI message
         both fire."""
-        manager, svc = _manager()
+        manager, svc = _manager(
+            destinations=_destinations(
+                OscDestinationConfig(id="d1", host="10.0.0.1", port=9000),
+                OscDestinationConfig(id="d2", host="10.0.0.2", port=9000),
+            ),
+        )
         manager.restart(
             OscTransmittersConfig(
                 transmitters=[
                     _row(
                         id="r1",
-                        host="10.0.0.1",
+                        destination_id="d1",
                         marker_id=None,
                         address="/cc",
                         args=[],
@@ -2821,7 +2878,7 @@ class TestMidiMessageDispatch:
                     ),
                     _row(
                         id="r2",
-                        host="10.0.0.2",
+                        destination_id="d2",
                         marker_id=None,
                         address="/cc",
                         args=[],

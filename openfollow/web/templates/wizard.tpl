@@ -525,6 +525,8 @@
       <!-- Grid quad (isometric) -->
       <polygon id="cp-grid" fill="rgba(255,188,0,0.06)" stroke="rgba(255,188,0,0.5)" stroke-width="1.5"/>
       <g id="cp-grid-lines"></g>
+      <!-- Field-of-view ground footprint on the grid plane -->
+      <polygon id="cp-fov-area" fill="rgba(255,188,0,0.08)" stroke="rgba(255,188,0,0.4)" stroke-width="1" stroke-dasharray="3,3"/>
       <!-- Corner labels -->
       <text id="cp-label-dsl" fill="rgba(247,245,233,0.5)" font-size="9" font-weight="600">DSL</text>
       <text id="cp-label-dsr" fill="rgba(247,245,233,0.5)" font-size="9" font-weight="600">DSR</text>
@@ -558,10 +560,11 @@
       <circle id="cp-floor-dot" r="3" fill="rgba(159,201,255,0.4)"/>
       <!-- Dashed line from camera to ref -->
       <line id="cp-sight-line" stroke="rgba(255,255,255,0.15)" stroke-width="1" stroke-dasharray="4,4"/>
-      <!-- FOV cone lines -->
-      <line id="cp-fov-left" stroke="rgba(255,188,0,0.3)" stroke-width="1" stroke-dasharray="3,3"/>
-      <line id="cp-fov-right" stroke="rgba(255,188,0,0.3)" stroke-width="1" stroke-dasharray="3,3"/>
-      <line id="cp-fov-line" stroke="rgba(255,255,255,0.35)" stroke-width="1"/>
+      <!-- FOV frustum edges (lens to ground footprint corners) -->
+      <line id="cp-fov-bl" stroke="rgba(255,188,0,0.3)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line id="cp-fov-br" stroke="rgba(255,188,0,0.3)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line id="cp-fov-tl" stroke="rgba(255,188,0,0.22)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line id="cp-fov-tr" stroke="rgba(255,188,0,0.22)" stroke-width="1" stroke-dasharray="3,3"/>
       <text id="cp-fov-label" fill="rgba(255,188,0,0.6)" font-size="9" font-weight="600" text-anchor="middle"></text>
       <!-- Axis labels -->
       <text id="cp-ds-label" fill="rgba(247,245,233,0.3)" font-size="9" font-weight="600" text-anchor="middle">DOWNSTAGE</text>
@@ -1745,22 +1748,45 @@
     var lookY = Math.cos(pitchR) * Math.cos(yawR);
     var lookZ = Math.sin(pitchR);
 
-    // FOV cone: project a horizontal line at a distance where it intersects grid plane
-    // Distance from camera to grid plane (z=goz) along look direction
+    // Sight line: where the look direction hits the grid plane (z=goz).
     var floorDist = ((cz - goz) > 0 && lookZ < 0) ? -(cz - goz) / lookZ : 10;
-    var fovHalfRad = (fov / 2) * rad;
-    var fovHalfWidth = floorDist * Math.tan(fovHalfRad);
-    // FOV target point on floor
     var fovTargetX = cx + lookX * floorDist;
     var fovTargetY = cy + lookY * floorDist;
-    // Perpendicular direction on floor (for FOV width)
-    var lookFloorLen = Math.sqrt(lookX * lookX + lookY * lookY) || 1;
-    var perpX = -lookY / lookFloorLen;
-    var perpY = lookX / lookFloorLen;
-    var fovLeftX = fovTargetX + perpX * fovHalfWidth;
-    var fovLeftY = fovTargetY + perpY * fovHalfWidth;
-    var fovRightX = fovTargetX - perpX * fovHalfWidth;
-    var fovRightY = fovTargetY - perpY * fovHalfWidth;
+
+    // Field-of-view footprint on the grid plane. Assume a 16:9 frame, so the
+    // vertical FOV follows from the horizontal one. Build a camera frame from
+    // the look direction L, a horizontal right vector R, and an in-image up U,
+    // then intersect the four corner rays with the grid plane.
+    var vfov = (2 * Math.atan(Math.tan((fov / 2) * rad) * 9 / 16)) / rad;
+    var th = Math.tan((fov / 2) * rad);
+    var tv = Math.tan((vfov / 2) * rad);
+    var Rv = [Math.cos(yawR), -Math.sin(yawR), 0];
+    var Uv = [-Math.sin(yawR) * Math.sin(pitchR), -Math.cos(yawR) * Math.sin(pitchR), Math.cos(pitchR)];
+    var capGround = Math.max(gw, gd) * 2 + Math.abs(cx) + Math.abs(cy) + 4;
+    function cornerDir(sx, sy) {
+      var dx = lookX + sx * th * Rv[0] + sy * tv * Uv[0];
+      var dy = lookY + sx * th * Rv[1] + sy * tv * Uv[1];
+      var dz = lookZ + sx * th * Rv[2] + sy * tv * Uv[2];
+      var len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+      return [dx / len, dy / len, dz / len];
+    }
+    function floorHit(D) {
+      if (D[2] < -1e-3) {
+        var t = (goz - cz) / D[2];
+        if (t > 0) {
+          var hx = cx + D[0] * t, hy = cy + D[1] * t;
+          if (Math.sqrt((hx - cx) * (hx - cx) + (hy - cy) * (hy - cy)) <= capGround) return [hx, hy];
+        }
+      }
+      // Ray points at/above the horizon or past the cap: clamp onto the plane
+      // at the max ground reach so the footprint stays bounded.
+      var hlen = Math.sqrt(D[0] * D[0] + D[1] * D[1]) || 1;
+      return [cx + (D[0] / hlen) * capGround, cy + (D[1] / hlen) * capGround];
+    }
+    var fovBL = floorHit(cornerDir(-1, -1));
+    var fovBR = floorHit(cornerDir(1, -1));
+    var fovTR = floorHit(cornerDir(1, 1));
+    var fovTL = floorHit(cornerDir(-1, 1));
 
     // Collect all world points for auto-scale bounding
     var screenPts = [];
@@ -1772,8 +1798,12 @@
     screenPts.push(isoProject(0, 0, goz));
     if (Math.abs(goz) > 0.01) screenPts.push(isoProject(0, 0, 0));
     screenPts.push(isoProject(cx, cy, 0));
-    screenPts.push(isoProject(fovLeftX, fovLeftY, goz));
-    screenPts.push(isoProject(fovRightX, fovRightY, goz));
+    // Anchor the auto-scale to the grid, camera, centre sightline and the near
+    // coverage edge. The far coverage edge can run far upstage at shallow
+    // angles, so leave it out of the bounds and let it clip at the frame.
+    screenPts.push(isoProject(fovTargetX, fovTargetY, goz));
+    screenPts.push(isoProject(fovBL[0], fovBL[1], goz));
+    screenPts.push(isoProject(fovBR[0], fovBR[1], goz));
     screenPts.push(isoProject(cx, cy, cz));
 
     var minSx = Infinity, maxSx = -Infinity, minSy = Infinity, maxSy = -Infinity;
@@ -1975,28 +2005,28 @@
     camLabel.setAttribute('y', camLabelY);
     camLabel.setAttribute('text-anchor', 'middle');
 
-    // FOV cone lines and horizontal width line on grid plane
-    var fovLSvg = toSvg(fovLeftX, fovLeftY, goz);
-    var fovRSvg = toSvg(fovRightX, fovRightY, goz);
-    document.getElementById('cp-fov-left').setAttribute('x1', camTop[0]);
-    document.getElementById('cp-fov-left').setAttribute('y1', camTop[1]);
-    document.getElementById('cp-fov-left').setAttribute('x2', fovLSvg[0]);
-    document.getElementById('cp-fov-left').setAttribute('y2', fovLSvg[1]);
-    document.getElementById('cp-fov-right').setAttribute('x1', camTop[0]);
-    document.getElementById('cp-fov-right').setAttribute('y1', camTop[1]);
-    document.getElementById('cp-fov-right').setAttribute('x2', fovRSvg[0]);
-    document.getElementById('cp-fov-right').setAttribute('y2', fovRSvg[1]);
-    // Horizontal FOV width line at floor level
-    document.getElementById('cp-fov-line').setAttribute('x1', fovLSvg[0]);
-    document.getElementById('cp-fov-line').setAttribute('y1', fovLSvg[1]);
-    document.getElementById('cp-fov-line').setAttribute('x2', fovRSvg[0]);
-    document.getElementById('cp-fov-line').setAttribute('y2', fovRSvg[1]);
+    // FOV ground footprint: shaded quad + the four frustum edges from the lens
+    var aBL = toSvg(fovBL[0], fovBL[1], goz);
+    var aBR = toSvg(fovBR[0], fovBR[1], goz);
+    var aTR = toSvg(fovTR[0], fovTR[1], goz);
+    var aTL = toSvg(fovTL[0], fovTL[1], goz);
+    document.getElementById('cp-fov-area').setAttribute('points',
+      aBL[0]+','+aBL[1]+' '+aBR[0]+','+aBR[1]+' '+aTR[0]+','+aTR[1]+' '+aTL[0]+','+aTL[1]);
+    function setFovEdge(id, p) {
+      var el = document.getElementById(id);
+      el.setAttribute('x1', camTop[0]); el.setAttribute('y1', camTop[1]);
+      el.setAttribute('x2', p[0]); el.setAttribute('y2', p[1]);
+    }
+    setFovEdge('cp-fov-bl', aBL);
+    setFovEdge('cp-fov-br', aBR);
+    setFovEdge('cp-fov-tl', aTL);
+    setFovEdge('cp-fov-tr', aTR);
     // FOV label – left of the lens
     var fovLabel = document.getElementById('cp-fov-label');
     fovLabel.setAttribute('x', camTop[0] - camSize - 6);
     fovLabel.setAttribute('y', camTop[1] + 4);
     fovLabel.setAttribute('text-anchor', 'end');
-    fovLabel.textContent = 'FOV ' + fov.toFixed(0) + '\u00b0';
+    fovLabel.textContent = 'FOV ' + fov.toFixed(0) + '\u00b0H \u00b7 ' + vfov.toFixed(0) + '\u00b0V';
 
     // Downstage label near the downstage stage-right (DSR) corner; upstage
     // label centered on the upstage edge.

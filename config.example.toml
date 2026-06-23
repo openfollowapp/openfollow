@@ -179,12 +179,22 @@ pin_mode = "assist"
 assist_radius_m = 1.0
 assist_strength = 0.5
 
+# Reusable OSC connection profiles. Transmitters and trigger zones reference
+# a destination by `id`; edit one here and every consumer repoints live. The
+# `id` is a stable key (referenced by `destination_id` elsewhere) – keep it
+# fixed once other rows point at it.
+[[osc_destinations.destinations]]
+id = "default"
+name = "Default"
+host = "127.0.0.1"
+port = 8000
+protocol = "udp"   # "udp" | "tcp"
+framing = "slip"   # TCP only: "slip" | "length_prefix"
+
 [trigger_zones]
 enabled = true
 show_overlay = true
 eval_fps = 10
-default_osc_host = "127.0.0.1"
-default_osc_port = 53000
 debounce_ms = 200
 hysteresis = 0.05
 

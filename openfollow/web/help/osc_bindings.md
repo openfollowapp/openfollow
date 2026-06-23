@@ -1,4 +1,4 @@
-# OSC Output
+# OSC Transmitters
 
 Configure outbound OSC messages for lighting consoles, media servers, audio engines, and show-control software.
 
@@ -12,11 +12,7 @@ Identity, destination, and transport.
 - **Name** – a label for your own reference. Appears in the Diagnostics tab and the Overview live counters.
 - **Default marker** – marker ID that bare position placeholders (`[x]`, `[y]`, `[markerid]`, etc.) resolve against when no `:N` index is given. Leave blank if every placeholder names its marker explicitly; the default must be an existing marker (IDs start at 1).
 - **Default fader** – virtual fader that bare fader placeholders (`[fader]`, including transform forms like `[fader.pct]`) resolve against. Leave as `(none)` if you use only explicit `[fader:N]` references or have no fader placeholders.
-- **Host** / **Port** – destination IP address and port number (1–65535).
-- **Protocol** – `UDP` or `TCP`. UDP is correct for most lighting and audio receivers.
-- **Framing** – visible only when Protocol is `TCP`. Choose what your receiver expects:
-  - **SLIP (RFC 1055)** – default per OSC 1.1; each packet is delimited by `0xC0`.
-  - **Length-prefix (OSC 1.0)** – each packet is preceded by a 32-bit big-endian length.
+- **Destination** – the shared OSC connection (host, port, transport) this transmitter sends to, picked from the list you maintain under **OSC Destinations**. A transmitter with no destination selected sends nothing. Edit a destination's IP once and every transmitter and zone pointing at it repoints live – no per-row editing, no restart. The read-only line under the dropdown shows the destination's resolved `host:port`.
 
 ## Trigger
 
@@ -111,7 +107,7 @@ Read-only panels showing what the transmitter is doing right now.
 
 ## Adding and managing transmitters
 
-**Template** dropdown + **+ New OSC output** – choose a template and click the button to add a transmitter pre-filled with its address and arguments. Leave the dropdown on *empty* to start with a blank transmitter. Drag the ⋮⋮ handle on the left of a collapsed transmitter to reorder – order is cosmetic, transmitters evaluate independently.
+**Template** dropdown + **+ New transmitter** – choose a template and click the button to add a transmitter pre-filled with its address and arguments. Leave the dropdown on *empty* to start with a blank transmitter. Drag the ⋮⋮ handle on the left of a collapsed transmitter to reorder – order is cosmetic, transmitters evaluate independently.
 
 ## Saving & sharing
 

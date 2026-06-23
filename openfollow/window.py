@@ -9,6 +9,7 @@ RenderCanvas-compatible event API and a display-tick animation loop.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -130,6 +131,16 @@ class GtkNativeSinkWindow:
         # re-embed / re-mount disconnects the prior one instead of stacking.
         self._embed_realize: tuple[Any, int] | None = None
         self._overlay_realize: tuple[Any, int] | None = None
+        # macOS doesn't reliably deliver GTK pointer events to the gtksink-hosted
+        # window under the GStreamer pipeline (the same reason the keyboard polls
+        # Quartz instead of reading GTK key events). Poll the pointer position +
+        # button state once per frame there and synthesise the same pointer
+        # events; a no-op elsewhere, where the GTK signal handlers work.
+        self._pointer_poll = sys.platform == "darwin"
+        self._pointer_device: Any = None  # lazily acquired on the first poll
+        self._poll_last_pos: tuple[int, int] | None = None
+        self._poll_btn1 = False
+        self._poll_btn3 = False
         self._setup_events()
         self._window.show_all()
 
@@ -356,10 +367,82 @@ class GtkNativeSinkWindow:
             self._tick_callback_id = None
             self._tick_fn = None
 
+    @staticmethod
+    def _poll_pointer_events(
+        state: tuple[tuple[int, int] | None, bool, bool],
+        x: int,
+        y: int,
+        b1: bool,
+        b3: bool,
+        within: bool,
+    ) -> tuple[list[tuple[str, dict[str, Any]]], tuple[tuple[int, int], bool, bool]]:
+        """Pure edge-detection for the macOS pointer poll.
+
+        Given the previous ``(last_pos, last_b1, last_b3)`` and the freshly polled
+        position / button state, return the pointer events to emit and the new
+        state. Grab / release / reset all happen on a button *press*, so only
+        down edges over the canvas (``within``) are emitted; a move on the same
+        frame as a grab is suppressed so the grab seeds its baseline without
+        yanking the marker.
+        """
+        last_pos, last_b1, last_b3 = state
+        events: list[tuple[str, dict[str, Any]]] = []
+        b1_grab = b1 and not last_b1 and within
+        if b1_grab:
+            events.append(("pointer_down", {"x": x, "y": y, "button": 1}))
+        if b3 and not last_b3 and within:
+            events.append(("pointer_down", {"x": x, "y": y, "button": 3}))
+        if within and (x, y) != last_pos and not b1_grab:
+            events.append(("pointer_move", {"x": x, "y": y}))
+        return events, ((x, y), b1, b3)
+
+    def _acquire_pointer_device(self) -> Any:
+        try:
+            seat = self._Gdk.Display.get_default().get_default_seat()
+        except Exception:
+            return None
+        return seat.get_pointer() if seat is not None else None
+
+    def poll_pointer(self) -> None:
+        """macOS: synthesise pointer events from a per-frame position/button poll.
+
+        No-op where GTK delivers pointer events (Linux/Pi). The emitted events go
+        through the same ``_emit`` path as the GTK signal handlers, so all
+        downstream gating and ``MouseHandler`` behaviour is unchanged.
+        """
+        if not self._pointer_poll:
+            return
+        if self._pointer_device is None:
+            self._pointer_device = self._acquire_pointer_device()
+            if self._pointer_device is None:
+                self._pointer_poll = False  # unavailable – stop polling
+                return
+        gwin = self._window.get_window()
+        if gwin is None:
+            return
+        _w, x, y, mask = gwin.get_device_position(self._pointer_device)
+        Gdk = self._Gdk
+        b1 = bool(mask & Gdk.ModifierType.BUTTON1_MASK)
+        b3 = bool(mask & Gdk.ModifierType.BUTTON3_MASK)
+        cw, ch = self.get_canvas_size()
+        within = 0 <= x < cw and 0 <= y < ch
+        events, new_state = self._poll_pointer_events(
+            (self._poll_last_pos, self._poll_btn1, self._poll_btn3), x, y, b1, b3, within
+        )
+        self._poll_last_pos, self._poll_btn1, self._poll_btn3 = new_state
+        for etype, kwargs in events:
+            self._emit(etype, **kwargs)
+
     def _on_tick(self, widget: Any, frame_clock: Any, user_data: Any) -> bool:
         """GTK tick callback – runs once per display frame."""
         if self._closing:
             return False
+        try:
+            self.poll_pointer()
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("Pointer poll failed")
         if self._tick_fn is not None:
             try:
                 self._tick_fn()

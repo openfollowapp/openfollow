@@ -403,6 +403,8 @@ Every binding is a `ControllerConfig` field; the defaults are shown. There is no
 ### Mouse (`input/mouse.py`)
 Left-click on a marker's **ground circle** grabs that marker (hit-tested against the projected ground-circle polygon, with a pixel-radius fallback when the circle is off/tiny; nearest centre wins on overlap); right-click releases. A grab seeds the glide at the marker's current position – it never yanks the marker to the click – and a click on empty stage is a no-op. While held, pointer moves record a target (after the `mouse_hysteresis_px` pixel deadband, and rejecting targets past the `mouse_max_y` upstage cap); the marker is steered by `MouseHandler.update()`, called every frame from `InputManager.update`, which EMA-glides it toward the target at `mouse_smoothing` (1.0 = instant). Positions are unprojected onto the stage floor plane (via `scene/solver.unproject_to_plane`) in the one PSN-absolute frame. The ground-circle ring geometry is shared with the overlay via `scene/solver.ground_circle_world_ring`. Scroll wheel adjusts Z when `mouse_wheel_z_enabled`, by `mouse_wheel_z_step` m per tick, sign flipped by `mouse_wheel_invert`. Double **right-clicking** (two right-clicks within `_DOUBLE_CLICK_S`/`_DOUBLE_CLICK_PX`, detected in-handler via the injectable `_clock`) resets the selected marker to `_get_default_marker_position()` and **releases control** when `mouse_double_click_reset` is set. It lives on the right button because that's the release button, and a reset releases too (staying grabbed would snap the absolute marker straight back to the cursor on the next move). Left-click stays a pure grab.
 
+**Event source per platform.** `MouseHandler`'s `on_pointer_*` entry points are fed by the GTK pointer signal handlers in [`window.py`](openfollow/window.py) (`_on_button_press`/`_on_motion`/`_on_scroll`). GTK doesn't reliably deliver pointer events to the gtksink-hosted window on **macOS** under the GStreamer pipeline (the same reason the keyboard polls Quartz instead of reading GTK key events), so on macOS the window also runs `poll_pointer()` once per frame from `_on_tick`: it reads `gdk_window.get_device_position()` (window-relative position + a button mask) and synthesises the same `pointer_down`/`pointer_move` events through `_emit`, so everything downstream is unchanged. Edge detection lives in the pure `_poll_pointer_events` helper. The scroll **wheel can't be polled** (no current-scroll-position API), so wheel-Z stays GTK-only on macOS – use the `Q`/`E` keys for height there. The poll is a no-op on Linux/Pi, where the GTK events work.
+
 ### Gamepad (`input/gamepad.py`)
 All bindings are `ControllerConfig` fields; defaults shown.
 - Left stick (`move_xy_stick`, default `left`): move selected marker
@@ -775,8 +777,8 @@ This repo has two active development streams (Mac dev + Pi). Merge conflicts hap
 - **Always combine both sides** – never just pick one side
 
 ### macOS vs Pi differences
-- **macOS:** Quartz keyboard polling, NDI via libndi dylib
-- **Pi:** GTK event-based keyboard, NDI via ARM libndi, Cage compositor, systemd service
+- **macOS:** Quartz keyboard polling, per-frame GDK pointer polling (`window.poll_pointer`; GTK pointer/scroll events don't fire reliably under the pipeline – wheel-Z is unavailable, use `Q`/`E`), NDI via libndi dylib
+- **Pi:** GTK event-based keyboard + GTK pointer/scroll events, NDI via ARM libndi, Cage compositor, systemd service
 - `gst_runtime_available()` checks GStreamer at runtime
 
 ### GStreamer SRT gotchas

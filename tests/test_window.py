@@ -51,6 +51,11 @@ class FakeGdkScrollDirection:
     SMOOTH = "smooth"
 
 
+class FakeGdkModifierType:
+    BUTTON1_MASK = 256  # GDK_BUTTON1_MASK
+    BUTTON3_MASK = 1024  # GDK_BUTTON3_MASK
+
+
 class FakeGdkWindowHints:
     ASPECT = 1
 
@@ -132,6 +137,7 @@ class FakeGdkSurface:
 class FakeGdk:
     EventMask = FakeGdkEventMask
     ScrollDirection = FakeGdkScrollDirection
+    ModifierType = FakeGdkModifierType
     WindowHints = FakeGdkWindowHints
     Geometry = FakeGdkGeometry
     Cursor = FakeGdkCursor
@@ -1446,3 +1452,153 @@ class TestEventDispatch:
         assert blurs == [{}]
         # Returns False so GTK keeps its default focus handling.
         assert result is False
+
+
+# --------------------------------------------------------------------------- #
+# macOS pointer polling
+# --------------------------------------------------------------------------- #
+
+
+class _PollSurface:
+    """Fake realised Gdk.Window returning scripted device positions."""
+
+    def __init__(self, samples: list[tuple[int, int, int]]) -> None:
+        self._samples = samples
+        self._i = 0
+
+    def get_device_position(self, _device: Any) -> tuple[Any, int, int, int]:
+        x, y, mask = self._samples[min(self._i, len(self._samples) - 1)]
+        self._i += 1
+        return (None, x, y, mask)
+
+
+_B1 = FakeGdkModifierType.BUTTON1_MASK
+_B3 = FakeGdkModifierType.BUTTON3_MASK
+
+
+class TestPointerPoll:
+    """On macOS the window polls the pointer each frame and synthesises the
+    same pointer events the GTK signal handlers would."""
+
+    def _handler_list(self, window, event: str) -> list[dict[str, Any]]:
+        collected: list[dict[str, Any]] = []
+        window.add_event_handler(collected.append, event)
+        return collected
+
+    # --- pure edge-detection helper -------------------------------------
+
+    def test_left_press_over_canvas_grabs(self, window) -> None:
+        events, state = window._poll_pointer_events((None, False, False), 100, 200, True, False, True)
+        assert events == [("pointer_down", {"x": 100, "y": 200, "button": 1})]
+        assert state == ((100, 200), True, False)
+
+    def test_press_outside_canvas_does_not_grab(self, window) -> None:
+        events, _ = window._poll_pointer_events((None, False, False), 5, 5, True, False, False)
+        assert events == []
+
+    def test_right_press_over_canvas_emits_button3(self, window) -> None:
+        events, _ = window._poll_pointer_events(((10, 10), False, False), 10, 10, False, True, True)
+        assert events == [("pointer_down", {"x": 10, "y": 10, "button": 3})]
+
+    def test_position_change_emits_move(self, window) -> None:
+        events, _ = window._poll_pointer_events(((10, 10), False, False), 30, 40, False, False, True)
+        assert events == [("pointer_move", {"x": 30, "y": 40})]
+
+    def test_unchanged_position_emits_nothing(self, window) -> None:
+        events, _ = window._poll_pointer_events(((30, 40), False, False), 30, 40, False, False, True)
+        assert events == []
+
+    def test_no_move_on_grab_frame(self, window) -> None:
+        # Cursor moved AND left-pressed in one frame: only the grab is emitted
+        # so it seeds its baseline without yanking the marker.
+        events, _ = window._poll_pointer_events((None, False, False), 50, 60, True, False, True)
+        assert events == [("pointer_down", {"x": 50, "y": 60, "button": 1})]
+
+    def test_no_move_when_outside_canvas(self, window) -> None:
+        events, _ = window._poll_pointer_events(((10, 10), False, False), 99, 99, False, False, False)
+        assert events == []
+
+    def test_held_button_is_not_a_new_press(self, window) -> None:
+        events, _ = window._poll_pointer_events(((10, 10), True, False), 10, 10, True, False, True)
+        assert events == []
+
+    # --- poll_pointer integration (GDK read -> emit) --------------------
+
+    def test_poll_pointer_is_noop_when_disabled(self, window) -> None:
+        window._pointer_poll = False
+        downs = self._handler_list(window, "pointer_down")
+        window.poll_pointer()
+        assert downs == []
+
+    def test_poll_pointer_emits_grab_then_move(self, window) -> None:
+        window._pointer_poll = True
+        window._pointer_device = object()  # skip the lazy Gdk.Display acquire
+        window._box._alloc_w = 1280
+        window._box._alloc_h = 720
+        window._window._gdk_window = _PollSurface(
+            [
+                (100, 200, _B1),  # left button down over canvas -> grab
+                (140, 260, _B1),  # held + moved -> move
+                (140, 260, 0),  # released -> no event (pointer_up is a no-op)
+            ]
+        )
+        downs = self._handler_list(window, "pointer_down")
+        moves = self._handler_list(window, "pointer_move")
+        for _ in range(3):
+            window.poll_pointer()
+        assert downs == [{"x": 100, "y": 200, "button": 1}]
+        assert moves == [{"x": 140, "y": 260}]
+
+    def test_poll_pointer_disables_when_device_unavailable(self, window) -> None:
+        # Lazy acquisition fails (FakeGdk has no Display) -> polling disables
+        # itself rather than retrying every frame.
+        window._pointer_poll = True
+        window._pointer_device = None
+        downs = self._handler_list(window, "pointer_down")
+        window.poll_pointer()
+        assert window._pointer_poll is False
+        assert downs == []
+
+    def test_poll_pointer_noop_when_window_not_realized(self, window) -> None:
+        window._pointer_poll = True
+        window._pointer_device = object()
+        window._window._gdk_window = None  # pre-realize
+        downs = self._handler_list(window, "pointer_down")
+        window.poll_pointer()
+        assert downs == []
+
+    def test_poll_pointer_acquires_device_lazily(self, window, monkeypatch) -> None:
+        class _Seat:
+            def get_pointer(self) -> Any:
+                return object()
+
+        class _Display:
+            @staticmethod
+            def get_default() -> Any:
+                return SimpleNamespace(get_default_seat=lambda: _Seat())
+
+        monkeypatch.setattr(window._Gdk, "Display", _Display, raising=False)
+        window._pointer_poll = True
+        window._pointer_device = None
+        window._box._alloc_w = 1280
+        window._box._alloc_h = 720
+        window._window._gdk_window = _PollSurface([(100, 200, _B1)])
+        downs = self._handler_list(window, "pointer_down")
+        window.poll_pointer()
+        assert window._pointer_device is not None  # acquired on first poll
+        assert downs == [{"x": 100, "y": 200, "button": 1}]
+
+    def test_pointer_poll_error_in_tick_is_isolated(self, window, caplog) -> None:
+        class _Raising:
+            def get_device_position(self, _device: Any) -> Any:
+                raise RuntimeError("poll boom")
+
+        window._pointer_poll = True
+        window._pointer_device = object()
+        window._window._gdk_window = _Raising()
+        window.start_tick_animation(lambda: None)
+        import logging
+
+        with caplog.at_level(logging.ERROR):
+            assert window._window.tick() is True
+        assert any("Pointer poll failed" in rec.message for rec in caplog.records)

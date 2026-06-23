@@ -4,6 +4,8 @@
 
 Click-and-drag control for steering markers directly on the live video.
 
+**One mouse per station.** All mice plugged into a station share a single system cursor, so only one mouse steers one marker at a time – a second mouse just moves the same pointer. To control several markers at once, use one gamepad per operator instead.
+
 ## Taking and releasing control
 
 **Left-click a marker's ground circle** to take control of that marker, then move the mouse to steer it. Clicking the circle grabs the marker where it stands – it does not jump to the cursor. A click on empty stage does nothing, so a stray click can't fling a marker. Left-click a different marker's circle to switch control to it. **Right-click** releases control (movement stops until the next grab). If the ground circle is turned off in Marker settings, the small area around the marker's base stays clickable.

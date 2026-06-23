@@ -1598,7 +1598,7 @@ class ControllerConfig:
     mouse_wheel_invert: bool = False
     # Height change per wheel tick (m).
     mouse_wheel_z_step: float = 0.1
-    # Double-click a marker's ground circle to reset it to the default position.
+    # Double right-click resets the controlled marker to the default position.
     mouse_double_click_reset: bool = True
     deadzone: float = 0.15
     invert_y: bool = False

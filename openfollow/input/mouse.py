@@ -60,8 +60,8 @@ _MIN_GRAB_PX = 14.0
 # the target, so idle frames stop rewriting the marker position.
 _SETTLE_EPS = 1e-4
 
-# Double-click window: a second left-click on the same marker within this many
-# seconds and pixels of the first counts as a double-click (reset to default).
+# Double-click window: a second right-click within this many seconds and pixels
+# of the first counts as a double right-click (reset to default).
 _DOUBLE_CLICK_S = 0.4
 _DOUBLE_CLICK_PX = 8.0
 

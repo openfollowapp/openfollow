@@ -430,7 +430,7 @@ class GtkNativeSinkWindow:
         return self._overlay_widget is None
 
     def _on_scroll(self, widget: Any, event: Any) -> bool:
-        ok, dx, dy = event.get_scroll_deltas()
+        ok, _dx, dy = event.get_scroll_deltas()
         # Scroll-capable devices on the supported platforms (libinput/Wayland on
         # the Pi, Quartz on macOS) deliver one smooth-scroll event per wheel
         # notch. GTK *also* emits a legacy discrete UP/DOWN event for the same

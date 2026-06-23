@@ -48,6 +48,7 @@ class FakeGdkScrollDirection:
     DOWN = "down"
     LEFT = "left"
     RIGHT = "right"
+    SMOOTH = "smooth"
 
 
 class FakeGdkWindowHints:
@@ -1317,43 +1318,78 @@ class TestEventDispatch:
         assert result is False
         assert received == [{"key": "a"}]
 
-    def test_scroll_event_normalises_smooth_delta_sign(self, window) -> None:
-        # GTK smooth dy > 0 means scrolling *down*; the window negates it so the
-        # emitted sign matches the discrete fallback (up = +1, down = -1). A
-        # +1.5 GTK delta (down) emits dy=-1.5; a -2.0 GTK delta (up) emits +2.0.
+    def test_scroll_event_normalises_smooth_delta_to_unit_tick(self, window) -> None:
+        # A smooth-scroll delta is collapsed to a single unit tick so one notch
+        # is exactly one ``mouse_wheel_z_step`` regardless of the device's delta
+        # magnitude. GTK dy > 0 is scroll *down* (emit -1); dy < 0 is up (+1).
+        # The magnitudes here (1.5, -2.0, 2.5) must NOT scale the tick.
         received = self._handler_list(window, "wheel")
 
-        down = SimpleNamespace(
-            get_scroll_deltas=lambda: (True, 0.0, 1.5),
-            direction=FakeGdkScrollDirection.DOWN,
+        for delta in (1.5, 2.5):  # scroll down at different per-notch magnitudes
+            window._window.fire(
+                "scroll-event",
+                SimpleNamespace(
+                    get_scroll_deltas=lambda d=delta: (True, 0.0, d),
+                    direction=FakeGdkScrollDirection.SMOOTH,
+                ),
+            )
+        window._window.fire(
+            "scroll-event",
+            SimpleNamespace(
+                get_scroll_deltas=lambda: (True, 0.0, -2.0),
+                direction=FakeGdkScrollDirection.SMOOTH,
+            ),
         )
-        window._window.fire("scroll-event", down)
-        up = SimpleNamespace(
-            get_scroll_deltas=lambda: (True, 0.0, -2.0),
-            direction=FakeGdkScrollDirection.UP,
-        )
-        window._window.fire("scroll-event", up)
-        assert received == [{"dy": -1.5}, {"dy": 2.0}]
+        assert received == [{"dy": -1.0}, {"dy": -1.0}, {"dy": 1.0}]
 
-    def test_scroll_event_falls_back_to_direction_up(self, window) -> None:
+    def test_scroll_event_horizontal_smooth_delta_emits_nothing(self, window) -> None:
+        # A horizontal-only smooth event (dy == 0) must not emit a vertical tick.
         received = self._handler_list(window, "wheel")
-
-        event = SimpleNamespace(
-            get_scroll_deltas=lambda: (False, 0.0, 0.0),
-            direction=FakeGdkScrollDirection.UP,
+        window._window.fire(
+            "scroll-event",
+            SimpleNamespace(
+                get_scroll_deltas=lambda: (True, 1.5, 0.0),
+                direction=FakeGdkScrollDirection.SMOOTH,
+            ),
         )
-        window._window.fire("scroll-event", event)
-        assert received == [{"dy": 1}]
+        assert received == []
 
-    def test_scroll_event_falls_back_to_direction_down(self, window) -> None:
+    def test_scroll_one_notch_pair_emits_single_tick(self, window) -> None:
+        # Real devices emit a legacy discrete UP/DOWN event AND a smooth event
+        # per wheel notch. Only the smooth one is processed; handling both would
+        # double-count and move Z two steps per notch. One notch up = discrete
+        # UP (ok=False) followed by smooth (ok=True, dy=-1.5) -> a single +1.
         received = self._handler_list(window, "wheel")
-
-        event = SimpleNamespace(
-            get_scroll_deltas=lambda: (False, 0.0, 0.0),
-            direction=FakeGdkScrollDirection.DOWN,
+        window._window.fire(
+            "scroll-event",
+            SimpleNamespace(
+                get_scroll_deltas=lambda: (False, 0.0, 0.0),
+                direction=FakeGdkScrollDirection.UP,
+            ),
         )
-        window._window.fire("scroll-event", event)
-        assert received == [{"dy": -1}]
+        window._window.fire(
+            "scroll-event",
+            SimpleNamespace(
+                get_scroll_deltas=lambda: (True, 0.0, -1.5),
+                direction=FakeGdkScrollDirection.SMOOTH,
+            ),
+        )
+        assert received == [{"dy": 1.0}]
+
+    def test_scroll_event_legacy_discrete_is_ignored(self, window) -> None:
+        """A legacy discrete event (ok=False) on its own emits nothing – it is
+        a duplicate of the smooth event on every supported platform, so the
+        smooth path is authoritative."""
+        received = self._handler_list(window, "wheel")
+        for direction in (FakeGdkScrollDirection.UP, FakeGdkScrollDirection.DOWN):
+            window._window.fire(
+                "scroll-event",
+                SimpleNamespace(
+                    get_scroll_deltas=lambda: (False, 0.0, 0.0),
+                    direction=direction,
+                ),
+            )
+        assert received == []
 
     def test_scroll_event_other_direction_emits_nothing(self, window) -> None:
         """LEFT/RIGHT scroll is a no-op: the app has no horizontal

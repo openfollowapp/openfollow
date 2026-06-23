@@ -430,19 +430,19 @@ class GtkNativeSinkWindow:
         return self._overlay_widget is None
 
     def _on_scroll(self, widget: Any, event: Any) -> bool:
-        Gdk = self._Gdk
         ok, dx, dy = event.get_scroll_deltas()
-        if ok:
-            # GTK smooth deltas use dy > 0 for scrolling *down*; negate so the
-            # emitted sign matches the discrete fallback below (up = +1). Both
-            # paths then agree "up = positive dy", which the mouse handler maps
-            # to raising the marker (increase Z) – without this, smooth- and
-            # discrete-scroll devices moved Z in opposite directions.
-            self._emit("wheel", dy=-dy)
-        elif event.direction == Gdk.ScrollDirection.UP:
-            self._emit("wheel", dy=1)
-        elif event.direction == Gdk.ScrollDirection.DOWN:
-            self._emit("wheel", dy=-1)
+        # Scroll-capable devices on the supported platforms (libinput/Wayland on
+        # the Pi, Quartz on macOS) deliver one smooth-scroll event per wheel
+        # notch. GTK *also* emits a legacy discrete UP/DOWN event for the same
+        # notch; handling both moves Z twice per notch, so we process only the
+        # smooth event (``ok``) and drop the discrete duplicate. The smooth
+        # delta is collapsed to a single unit tick so one notch == one
+        # ``mouse_wheel_z_step`` regardless of the device's reported magnitude
+        # (some report e.g. 1.5/notch, which would otherwise scale the step).
+        # GTK dy > 0 is scroll *down* → emit -1 (lower); dy < 0 is up → +1
+        # (raise). dy == 0 is a horizontal-only event → no vertical tick.
+        if ok and dy:
+            self._emit("wheel", dy=-1.0 if dy > 0 else 1.0)
         return True
 
     def _on_button_press(self, widget: Any, event: Any) -> bool:

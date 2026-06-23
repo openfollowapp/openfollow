@@ -2551,6 +2551,15 @@ def test_controller_mouse_steering_defaults_are_back_compatible() -> None:
     assert cfg.mouse_wheel_z_enabled is True
     assert cfg.mouse_wheel_invert is False
     assert cfg.mouse_wheel_z_step == 0.1
+    assert cfg.mouse_double_click_reset is True
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("false", False), ("no", False), ("true", True), (0, True), ("garbage", True)],
+)
+def test_controller_mouse_double_click_reset_coerced(value: object, expected: bool) -> None:
+    assert ControllerConfig(mouse_double_click_reset=value).mouse_double_click_reset is expected
 
 
 @pytest.mark.parametrize(

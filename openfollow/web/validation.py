@@ -432,6 +432,7 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "mouse_wheel_z_step": FieldRule(
             _as_float, lo=0.0, hi=10.0, human_error="Wheel Z step must be between 0 and 10 m."
         ),
+        "mouse_double_click_reset": FieldRule(_as_bool),
         "deadzone": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Deadzone must be between 0 and 1."),
         "invert_y": FieldRule(_as_bool),
         "curve": FieldRule(

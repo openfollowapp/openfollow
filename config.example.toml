@@ -88,6 +88,7 @@ mouse_max_distance = 0.0
 mouse_wheel_z_enabled = true
 mouse_wheel_invert = false
 mouse_wheel_z_step = 0.1
+mouse_double_click_reset = true
 deadzone = 0.01
 invert_y = false
 curve = "logarithmic"

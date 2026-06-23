@@ -7,6 +7,9 @@ right-click releases. While held, pointer movement unprojects screen
 coordinates onto the stage floor plane and steers the marker toward
 them. The scroll wheel adjusts the marker's Z (height) axis.
 
+Double-clicking a marker's ground circle resets it to the default position
+(``mouse_double_click_reset``), the same action as the reset key.
+
 Steering refinements (all configurable on ``ControllerConfig``):
 - ``mouse_hysteresis_px`` – a pixel deadband on the cursor so hand-tremor
   doesn't wiggle the marker.
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -55,6 +59,11 @@ _MIN_GRAB_PX = 14.0
 # the target, so idle frames stop rewriting the marker position.
 _SETTLE_EPS = 1e-4
 
+# Double-click window: a second left-click on the same marker within this many
+# seconds and pixels of the first counts as a double-click (reset to default).
+_DOUBLE_CLICK_S = 0.4
+_DOUBLE_CLICK_PX = 8.0
+
 
 class MouseHandler:
     """Translates mouse events into absolute marker positions.
@@ -72,6 +81,10 @@ class MouseHandler:
         # EMA target (world x, y) and the current smoothed world position.
         self._target_world: tuple[float, float] | None = None
         self._smooth_world: tuple[float, float] | None = None
+        # Last left-click for double-click detection: (time, x, y, marker_id).
+        self._last_click: tuple[float, float, float, int] | None = None
+        # Monotonic clock, injectable so tests can drive double-click timing.
+        self._clock = time.monotonic
         # Pre-allocated NumPy buffers (same pattern as services_detection_pin)
         self._cam_buffer = np.zeros(7, dtype=np.float64)
         self._screen_buffer = np.zeros((1, 2), dtype=np.float64)
@@ -199,17 +212,22 @@ class MouseHandler:
         self._anchor_screen = None
         self._target_world = None
         self._smooth_world = None
+        self._last_click = None
 
     def _grab(self, x: float, y: float) -> bool:
         """Take control of the marker whose ground circle is under the cursor.
 
         Returns True (consumed) only when a marker is grabbed; a click on empty
-        space is a no-op so it can't snap a marker to the cursor.
+        space is a no-op so it can't snap a marker to the cursor. A second click
+        on the same marker within the double-click window resets it to default.
         """
         tid = self._hit_test(x, y)
         if tid is None:
+            # A click on empty space breaks any in-progress double-click.
+            self._last_click = None
             return False
-        self._app._selected_id = tid
+        app = self._app
+        app._selected_id = tid
         self._active = True
         self._anchor_screen = (x, y)
         # No target until the first move, so the grab itself never yanks the
@@ -217,8 +235,34 @@ class MouseHandler:
         # current position the first time a move sets a target.
         self._target_world = None
         self._smooth_world = None
-        logger.info("Mouse grabbed marker %s", tid)
+        if self._is_double_click(x, y, tid):
+            if app._config.controller.mouse_double_click_reset:
+                self._reset_to_default()
+            self._last_click = None  # consume the sequence; no triple-trigger
+        else:
+            self._last_click = (self._clock(), x, y, tid)
+            logger.info("Mouse grabbed marker %s", tid)
         return True
+
+    def _is_double_click(self, x: float, y: float, tid: int) -> bool:
+        last = self._last_click
+        if last is None:
+            return False
+        t0, x0, y0, tid0 = last
+        return (
+            tid0 == tid and (self._clock() - t0) <= _DOUBLE_CLICK_S and math.hypot(x - x0, y - y0) <= _DOUBLE_CLICK_PX
+        )
+
+    def _reset_to_default(self) -> None:
+        """Reset the controlled marker to the configured default position."""
+        marker = self._get_selected_marker()
+        if marker is None:
+            return
+        marker.set_pos(*self._app._get_default_marker_position())
+        # Drop any pending glide so ``update`` doesn't drag it back.
+        self._target_world = None
+        self._smooth_world = None
+        logger.info("Mouse double-click reset marker %s to default", self._app._selected_id)
 
     def _get_selected_marker(self) -> Marker | None:
         """Return the marker mouse control should steer, or None.

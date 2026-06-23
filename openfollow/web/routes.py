@@ -1330,6 +1330,7 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "mouse_wheel_z_enabled": _as_bool,
         "mouse_wheel_invert": _as_bool,
         "mouse_wheel_z_step": _as_float,
+        "mouse_double_click_reset": _as_bool,
         "deadzone": _as_float,
         "invert_y": _as_bool,
         "curve": _as_str,
@@ -4402,7 +4403,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update mouse settings."""
         cfg = _save_section_from_form(
             "mouse",
-            bool_fields=("mouse_enabled", "mouse_wheel_z_enabled", "mouse_wheel_invert"),
+            bool_fields=("mouse_enabled", "mouse_wheel_z_enabled", "mouse_wheel_invert", "mouse_double_click_reset"),
         )
         return template("partials/mouse", config=cfg, saved=True)
 

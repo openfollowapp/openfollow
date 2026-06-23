@@ -89,6 +89,9 @@ class _DummyApp:
         self._selected_id = 1
         self._assist_manual: dict[int, Marker] = {}
 
+    def _get_default_marker_position(self) -> tuple[float, float, float]:
+        return (7.0, -3.0, 1.6)
+
 
 def _cam_buffer(app: _DummyApp) -> np.ndarray:
     c = app._config.camera
@@ -442,6 +445,120 @@ class TestWheel:
         _grab(handler, app)
         handler.on_wheel(2.0)
         assert app._server.get_marker(1).pos[2] == pytest.approx(4.0)
+
+
+class _FakeClock:
+    """Controllable monotonic clock for double-click timing."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+_DEFAULT_POS = (7.0, -3.0, 1.6)  # _DummyApp._get_default_marker_position
+
+
+class TestDoubleClickReset:
+    """Double-clicking a marker's ground circle resets it to default."""
+
+    def _handler_with_clock(self, app: _DummyApp) -> tuple[MouseHandler, _FakeClock]:
+        handler = MouseHandler(app)
+        clock = _FakeClock()
+        handler._clock = clock
+        return handler, clock
+
+    def test_double_click_resets_to_default(self) -> None:
+        app = _DummyApp()
+        handler, clock = self._handler_with_clock(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)  # first click – grab
+        clock.t = 0.1
+        handler.on_pointer_down(cx, cy, 1)  # second click – double-click
+        assert app._server.get_marker(1).pos == _DEFAULT_POS
+
+    def test_single_click_does_not_reset(self) -> None:
+        app = _DummyApp()
+        handler, _clock = self._handler_with_clock(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
+
+    def test_slow_second_click_does_not_reset(self) -> None:
+        app = _DummyApp()
+        handler, clock = self._handler_with_clock(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        clock.t = 1.0  # outside the 0.4 s window
+        handler.on_pointer_down(cx, cy, 1)
+        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
+
+    def test_far_second_click_does_not_reset(self) -> None:
+        app = _DummyApp()
+        # Big ground circle so both clicks still grab but sit > 8 px apart.
+        app._config.marker.ground_circle_size = 2.0
+        handler, clock = self._handler_with_clock(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        clock.t = 0.1
+        handler.on_pointer_down(cx + 25, cy, 1)  # same marker, but > 8 px away
+        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
+
+    def test_disabled_does_not_reset(self) -> None:
+        app = _DummyApp()
+        app._config.controller.mouse_double_click_reset = False
+        handler, clock = self._handler_with_clock(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        clock.t = 0.1
+        handler.on_pointer_down(cx, cy, 1)
+        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
+
+    def test_empty_space_click_breaks_sequence(self) -> None:
+        app = _DummyApp()
+        handler, clock = self._handler_with_clock(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)  # grab
+        clock.t = 0.05
+        handler.on_pointer_down(5, 5, 1)  # empty space – breaks the sequence
+        clock.t = 0.1
+        handler.on_pointer_down(cx, cy, 1)  # not a double-click anymore
+        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
+
+    def test_right_click_breaks_sequence(self) -> None:
+        app = _DummyApp()
+        handler, clock = self._handler_with_clock(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)  # grab
+        clock.t = 0.05
+        handler.on_pointer_down(cx, cy, 3)  # right-click release – breaks sequence
+        clock.t = 0.1
+        handler.on_pointer_down(cx, cy, 1)
+        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
+
+    def test_reset_is_a_noop_without_a_selected_marker(self) -> None:
+        # Defensive guard: the hit-test normally guarantees a marker, but the
+        # reset must not crash or move anything if there is no selection.
+        app = _DummyApp()
+        app._selected_id = None
+        handler = MouseHandler(app)
+        handler._reset_to_default()
+        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
+
+    def test_double_click_resets_assist_ghost_not_registered(self) -> None:
+        app = _DummyApp()
+        app._config.detection.enabled = True
+        app._config.detection.pin_marker = True
+        app._config.detection.pin_mode = "assist"
+        handler, clock = self._handler_with_clock(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        clock.t = 0.1
+        handler.on_pointer_down(cx, cy, 1)
+        # The manual ghost was reset; the registered (broadcast) marker is untouched.
+        assert app._assist_manual[1].pos == _DEFAULT_POS
+        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
 
 
 class TestAssistRedirect:

@@ -1598,6 +1598,8 @@ class ControllerConfig:
     mouse_wheel_invert: bool = False
     # Height change per wheel tick (m).
     mouse_wheel_z_step: float = 0.1
+    # Double-click a marker's ground circle to reset it to the default position.
+    mouse_double_click_reset: bool = True
     deadzone: float = 0.15
     invert_y: bool = False
     curve: str = "logarithmic"
@@ -1693,6 +1695,7 @@ class ControllerConfig:
         self.mouse_wheel_z_step = _coerce_float(self.mouse_wheel_z_step, 0.1, lo=0.0, hi=10.0)
         self.mouse_wheel_z_enabled = _coerce_bool(self.mouse_wheel_z_enabled, True)
         self.mouse_wheel_invert = _coerce_bool(self.mouse_wheel_invert, False)
+        self.mouse_double_click_reset = _coerce_bool(self.mouse_double_click_reset, True)
         if not 0.0 <= self.deadzone <= 1.0:
             logger.warning(
                 "Invalid controller deadzone %s, clamping to [0.0, 1.0]",

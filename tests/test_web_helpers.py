@@ -331,6 +331,7 @@ def test_apply_section_data_mouse_clamps_and_applies() -> None:
             "mouse_max_distance": "999999",  # over the 10000 m cap
             "mouse_wheel_z_step": "0.5",
             "mouse_wheel_invert": "true",
+            "mouse_double_click_reset": "false",
         },
     )
 
@@ -340,6 +341,7 @@ def test_apply_section_data_mouse_clamps_and_applies() -> None:
     assert config.controller.mouse_max_distance == 10000.0
     assert config.controller.mouse_wheel_z_step == 0.5
     assert config.controller.mouse_wheel_invert is True
+    assert config.controller.mouse_double_click_reset is False
 
 
 # --- __post_init__ re-run after web-form saves ---------------------------

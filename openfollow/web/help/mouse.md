@@ -8,6 +8,8 @@ Click-and-drag control for steering markers directly on the live video.
 
 **Left-click a marker's ground circle** to take control of that marker, then move the mouse to steer it. Clicking the circle grabs the marker where it stands – it does not jump to the cursor. A click on empty stage does nothing, so a stray click can't fling a marker. Left-click a different marker's circle to switch control to it. **Right-click** releases control (movement stops until the next grab). If the ground circle is turned off in Marker settings, the small area around the marker's base stays clickable.
 
+**Double-click resets marker** – when on, double-clicking a marker's ground circle snaps it back to the default position (the same as the reset key). Turn it off if you find yourself resetting markers by accident.
+
 ## Steering refinements
 
 **Hysteresis (px)** – a deadband on the cursor, in screen pixels, so small hand-tremor doesn't make the marker wiggle. The marker only moves once the cursor travels past this many pixels from where it last settled. `0` applies every movement (direct control). Start around `3`–`6` if a resting hand makes the marker drift.

@@ -417,6 +417,27 @@ class TestMaxY:
         _, y, _ = app._server.get_marker(1).pos
         assert y == pytest.approx(-2.0, abs=1e-3)
 
+    def test_capped_move_does_not_strand_hysteresis_anchor(self) -> None:
+        # A move rejected by the Y+ cap must NOT advance the hysteresis anchor,
+        # otherwise a later small correction is wrongly measured from the
+        # rejected point and swallowed by the deadband.
+        app = _DummyApp()
+        app._config.controller.mouse_hysteresis_px = 60.0
+        app._config.controller.mouse_max_y = 3.0
+        handler = MouseHandler(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        handler.on_pointer_move(cx + 100, cy)  # commits (100 px > 60 px deadband)
+        handler.update()
+        committed = app._server.get_marker(1).pos
+        # Far upstage move – rejected by the cap; must not move the anchor.
+        handler.on_pointer_move(*_screen_for_world(app, 0.0, 10.0))
+        # A 20 px jitter from the *committed* point stays inside the deadband; if
+        # the rejected move had stranded the anchor this would commit + move.
+        handler.on_pointer_move(cx + 120, cy)
+        handler.update()
+        assert app._server.get_marker(1).pos == committed
+
 
 class TestWheel:
     """Scroll wheel adjusts Z, gated by config."""
@@ -557,6 +578,18 @@ class TestDoubleClickReset:
         handler.on_pointer_down(cx, cy, 3)
         clock.t = 0.2
         handler.on_pointer_down(cx, cy, 3)
+        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
+
+    def test_double_right_click_without_grab_does_not_reset(self) -> None:
+        # Reset only arms when the first right-click released an active mouse
+        # grab. Two stray right-clicks with no grab (e.g. while steering by
+        # keyboard) must not reset the selected marker.
+        app = _DummyApp()
+        handler, clock = self._handler_with_clock(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 3)  # right-click #1 – nothing to release
+        clock.t = 0.1
+        handler.on_pointer_down(cx, cy, 3)  # right-click #2 within window
         assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
 
     def test_left_double_click_no_longer_resets(self) -> None:

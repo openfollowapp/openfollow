@@ -82,8 +82,10 @@ class MouseHandler:
         # EMA target (world x, y) and the current smoothed world position.
         self._target_world: tuple[float, float] | None = None
         self._smooth_world: tuple[float, float] | None = None
-        # Last right-click for double-click (reset) detection: (time, x, y).
-        self._last_rclick: tuple[float, float, float] | None = None
+        # Last right-click for double-click (reset) detection:
+        # (time, x, y, released_active) – the bool records whether that click
+        # released an active mouse grab, so reset only arms after real control.
+        self._last_rclick: tuple[float, float, float, bool] | None = None
         # Monotonic clock, injectable so tests can drive double-click timing.
         self._clock = time.monotonic
         # Pre-allocated NumPy buffers (same pattern as services_detection_pin)
@@ -130,7 +132,6 @@ class MouseHandler:
                 # Below the deadband – swallow the move so tremor can't wiggle
                 # the marker, but keep the existing target.
                 return True
-        self._anchor_screen = (x, y)
         world = self._unproject(x, y)
         if world is None:
             return True
@@ -139,6 +140,10 @@ class MouseHandler:
             # Target past the upstage (Y+) limit, e.g. near the camera horizon
             # where the unprojected Y runs away – hold the last position.
             return True
+        # Commit: the cursor cleared the deadband AND maps to a valid target, so
+        # this is the new hysteresis baseline. Advancing the anchor on a rejected
+        # or off-plane move would strand it and deadband later corrections.
+        self._anchor_screen = (x, y)
         self._target_world = world
         return True
 
@@ -234,16 +239,25 @@ class MouseHandler:
 
         Right-click is the release button, and a reset releases too, so a second
         right-click within the double-click window resets the controlled marker
-        to its default position (when ``mouse_double_click_reset`` is set).
+        to its default position (when ``mouse_double_click_reset`` is set). The
+        reset only arms when the first click of the pair released an active mouse
+        grab, so two stray right-clicks (e.g. while steering by keyboard) can't
+        reset a marker the mouse wasn't controlling.
         """
-        if self._is_double_right_click(x, y) and self._app._config.controller.mouse_double_click_reset:
+        prior_released = self._last_rclick is not None and self._last_rclick[3]
+        if (
+            self._is_double_right_click(x, y)
+            and prior_released
+            and self._app._config.controller.mouse_double_click_reset
+        ):
             self._reset_to_default()
             self._active = False
             self._reset_tracking()
             self._last_rclick = None  # consume the sequence; no triple-trigger
             return True
-        self._last_rclick = (self._clock(), x, y)
-        if self._active:
+        was_active = self._active
+        self._last_rclick = (self._clock(), x, y, was_active)
+        if was_active:
             self._active = False
             self._reset_tracking()
             logger.info("Mouse input deactivated")
@@ -254,7 +268,7 @@ class MouseHandler:
         last = self._last_rclick
         if last is None:
             return False
-        t0, x0, y0 = last
+        t0, x0, y0, _released = last
         return (self._clock() - t0) <= _DOUBLE_CLICK_S and math.hypot(x - x0, y - y0) <= _DOUBLE_CLICK_PX
 
     def _reset_to_default(self) -> None:

@@ -46,7 +46,6 @@
                 <span id="mouse-max-y-error" class="field-error"></span>
             </div>
         </div>
-        <span class="field-note">0 hysteresis / 1.0 smoothing = direct 1:1 control; Maximum Y+ 0 = no upstage limit.</span>
     </div>
 
     <div class="group">

@@ -8,6 +8,7 @@ button-detection wizard, Pi network screens)."""
 
 from __future__ import annotations
 
+import sys
 from typing import Any, cast
 
 import cairo
@@ -71,6 +72,8 @@ def _help_sections_for(
         keyboard_connected=state.keyboard_connected,
         controller_connected=state.controller_connected,
         mouse_enabled=state.mouse_enabled,
+        # Scroll-wheel Z can't be polled on macOS – hide the hint there.
+        scroll_z=sys.platform != "darwin",
         button_labels=state.button_labels,
         keyboard_labels=state.keyboard_labels,
     )

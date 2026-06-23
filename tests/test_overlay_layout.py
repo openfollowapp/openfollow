@@ -56,6 +56,33 @@ def test_build_help_sections_normal_mode_keyboard_without_settings_key_omits_lin
     assert not any("Settings menu" in line for line in keyboard)
 
 
+def test_build_help_sections_mouse_includes_scroll_z_by_default() -> None:
+    mouse = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=False,
+            controller_connected=False,
+            mouse_enabled=True,
+        )
+    )["Mouse"]
+    assert any("Scroll wheel: Adjust Z" in line for line in mouse)
+
+
+def test_build_help_sections_mouse_omits_scroll_z_when_unavailable() -> None:
+    # macOS can't poll the scroll wheel, so the caller passes scroll_z=False.
+    mouse = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=False,
+            controller_connected=False,
+            mouse_enabled=True,
+            scroll_z=False,
+        )
+    )["Mouse"]
+    assert not any("Scroll wheel" in line for line in mouse)
+    assert any("Move: Set X/Y position" in line for line in mouse)  # other lines remain
+
+
 def test_build_help_sections_reflects_keyboard_labels() -> None:
     sections = build_help_sections(
         mode="normal",

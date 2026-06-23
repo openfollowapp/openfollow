@@ -142,6 +142,7 @@ def build_help_sections(
     keyboard_connected: bool,
     controller_connected: bool,
     mouse_enabled: bool = False,
+    scroll_z: bool = True,
     button_labels: dict[str, str] | None = None,
     keyboard_labels: dict[str, str] | None = None,
 ) -> HelpSections:
@@ -233,8 +234,11 @@ def build_help_sections(
                 "Left click: Activate",
                 "Right click: Deactivate",
                 "Move: Set X/Y position",
-                "Scroll wheel: Adjust Z",
             ]
+            # The scroll wheel can't be polled on macOS, so wheel-Z is
+            # unavailable there – the caller passes scroll_z=False to hide it.
+            if scroll_z:
+                mouse.append("Scroll wheel: Adjust Z")
     elif mode == "source-selection":
         if keyboard_connected:
             keyboard = [

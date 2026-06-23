@@ -1,3 +1,5 @@
+% import sys
+% _is_macos = sys.platform == "darwin"
 <form id="mouse-section" class="section experimental-feature {{'saved' if defined('saved') and saved else ''}}" data-fold-key="mouse" data-help="mouse"
       hx-post="/section/mouse" hx-target="#mouse-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
@@ -50,6 +52,9 @@
 
     <div class="group">
         <h3 class="group-title">Scroll Wheel (Height)</h3>
+        % if _is_macos:
+        <p class="section-note">Height can not be changed by the Scroll Wheel on macOS. Please use the keyboard keys or OSC input for height.</p>
+        % else:
         <div class="row">
             <div class="field checkbox-field">
                 <label>Wheel controls Z</label>
@@ -68,6 +73,7 @@
                 <span id="mouse-wheel-z-step-error" class="field-error"></span>
             </div>
         </div>
+        % end
     </div>
 
     <div class="actions">

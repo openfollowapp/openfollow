@@ -2539,3 +2539,37 @@ def test_osc_destinations_script_json_escapes_script_breakout() -> None:
     restored = json.loads(out)
     assert restored[0]["name"] == "</script><img src=x onerror=alert(1)>"
     assert restored[0]["host"] == "a&b"
+
+
+# --- mouse partial: macOS hides the scroll-wheel form ----------------------
+
+
+def _render_mouse_partial(platform: str, monkeypatch) -> str:
+    import os.path
+    import sys
+
+    import bottle
+
+    import openfollow.web as web_pkg
+
+    tdir = os.path.join(os.path.dirname(web_pkg.__file__), "templates")
+    if tdir not in bottle.TEMPLATE_PATH:
+        bottle.TEMPLATE_PATH.insert(0, tdir)
+    monkeypatch.setattr(sys, "platform", platform)
+    bottle.TEMPLATES.clear()  # force a fresh render under the patched platform
+    return bottle.template("partials/mouse", config=AppConfig(), saved=False)
+
+
+def test_mouse_partial_replaces_wheel_form_with_message_on_macos(monkeypatch) -> None:
+    out = _render_mouse_partial("darwin", monkeypatch)
+    assert "can not be changed by the Scroll Wheel on macOS" in out
+    assert 'name="mouse_wheel_z_step"' not in out
+    assert 'name="mouse_wheel_z_enabled"' not in out
+    assert 'name="mouse_wheel_invert"' not in out
+
+
+def test_mouse_partial_keeps_wheel_form_off_macos(monkeypatch) -> None:
+    out = _render_mouse_partial("linux", monkeypatch)
+    assert "can not be changed by the Scroll Wheel" not in out
+    assert 'name="mouse_wheel_z_step"' in out
+    assert 'name="mouse_wheel_z_enabled"' in out

@@ -336,7 +336,7 @@ def test_apply_section_data_mouse_clamps_and_applies() -> None:
     )
 
     assert ok is True
-    assert config.controller.mouse_hysteresis_px == 4.0
+    assert config.controller.mouse_hysteresis_px == 4
     assert config.controller.mouse_smoothing == 0.3
     assert config.controller.mouse_max_y == 10000.0
     assert config.controller.mouse_wheel_z_step == 0.5

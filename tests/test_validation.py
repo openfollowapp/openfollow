@@ -425,6 +425,12 @@ def test_validate_mouse_numeric_bounds(field: str, good: str, bad: str) -> None:
     assert validate("mouse", field, bad) is not None
 
 
+def test_validate_mouse_hysteresis_rejects_decimals() -> None:
+    # Hysteresis is a whole number of pixels; a decimal must be rejected.
+    assert validate("mouse", "mouse_hysteresis_px", "3.5") is not None
+    assert validate("mouse", "mouse_hysteresis_px", "5") is None
+
+
 def test_validate_rejects_dangerous_control_chars_but_strips_whitespace() -> None:
     # NUL is rejected (not silently cleaned) so blur matches the unsanitised
     # save path; a leading tab is whitespace → stripped → the hex still passes.

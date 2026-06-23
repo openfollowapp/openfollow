@@ -2545,7 +2545,7 @@ def test_controller_mouse_enabled_default_is_false() -> None:
 def test_controller_mouse_steering_defaults_are_back_compatible() -> None:
     # Defaults reproduce direct 1:1 control with wheel-Z on, as before.
     cfg = ControllerConfig()
-    assert cfg.mouse_hysteresis_px == 0.0
+    assert cfg.mouse_hysteresis_px == 0
     assert cfg.mouse_smoothing == 1.0
     assert cfg.mouse_max_y == 0.0
     assert cfg.mouse_wheel_z_enabled is True
@@ -2564,10 +2564,14 @@ def test_controller_mouse_double_click_reset_coerced(value: object, expected: bo
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(-5.0, 0.0), (500.0, 200.0), ("abc", 0.0), (None, 0.0), (12.5, 12.5)],
+    [(-5, 0), (500, 200), ("abc", 0), (None, 0), (10, 10), (12.5, 12), ("3.5", 0)],
 )
-def test_controller_mouse_hysteresis_coerced(value: object, expected: float) -> None:
-    assert ControllerConfig(mouse_hysteresis_px=value).mouse_hysteresis_px == expected
+def test_controller_mouse_hysteresis_coerced_to_int(value: object, expected: int) -> None:
+    # Pixel deadband is a whole number of pixels: clamped to [0, 200]; a
+    # non-integral float truncates; a non-integer string falls back to default.
+    result = ControllerConfig(mouse_hysteresis_px=value).mouse_hysteresis_px
+    assert result == expected
+    assert isinstance(result, int)
 
 
 @pytest.mark.parametrize(

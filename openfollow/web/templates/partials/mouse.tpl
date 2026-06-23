@@ -25,7 +25,7 @@
         <div class="row">
             <div class="field">
                 <label for="mouse-hysteresis-px">Hysteresis (px)</label>
-                <input id="mouse-hysteresis-px" type="number" name="mouse_hysteresis_px" value="{{config.controller.mouse_hysteresis_px}}" min="0" max="200" step="any"
+                <input id="mouse-hysteresis-px" type="number" name="mouse_hysteresis_px" value="{{config.controller.mouse_hysteresis_px}}" min="0" max="200" step="1"
                        hx-get="/api/validate/mouse/mouse_hysteresis_px" hx-trigger="blur changed delay:200ms"
                        hx-target="#mouse-hysteresis-px-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="mouse-hysteresis-px-error" aria-invalid="false">

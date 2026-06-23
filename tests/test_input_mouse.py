@@ -308,7 +308,7 @@ class TestHysteresis:
 
     def test_below_threshold_holds(self) -> None:
         app = _DummyApp()
-        app._config.controller.mouse_hysteresis_px = 50.0
+        app._config.controller.mouse_hysteresis_px = 50
         handler = MouseHandler(app)
         cx, cy = _ground_center(app, 1)
         handler.on_pointer_down(cx, cy, 1)
@@ -320,7 +320,7 @@ class TestHysteresis:
 
     def test_above_threshold_moves(self) -> None:
         app = _DummyApp()
-        app._config.controller.mouse_hysteresis_px = 10.0
+        app._config.controller.mouse_hysteresis_px = 10
         handler = MouseHandler(app)
         cx, cy = _ground_center(app, 1)
         handler.on_pointer_down(cx, cy, 1)
@@ -331,7 +331,7 @@ class TestHysteresis:
 
     def test_subthreshold_jitter_never_accumulates(self) -> None:
         app = _DummyApp()
-        app._config.controller.mouse_hysteresis_px = 50.0
+        app._config.controller.mouse_hysteresis_px = 50
         handler = MouseHandler(app)
         cx, cy = _ground_center(app, 1)
         handler.on_pointer_down(cx, cy, 1)
@@ -345,7 +345,7 @@ class TestHysteresis:
 
     def test_zero_threshold_applies_every_move(self) -> None:
         app = _DummyApp()
-        app._config.controller.mouse_hysteresis_px = 0.0
+        app._config.controller.mouse_hysteresis_px = 0
         handler = MouseHandler(app)
         cx, cy = _ground_center(app, 1)
         handler.on_pointer_down(cx, cy, 1)
@@ -422,7 +422,7 @@ class TestMaxY:
         # otherwise a later small correction is wrongly measured from the
         # rejected point and swallowed by the deadband.
         app = _DummyApp()
-        app._config.controller.mouse_hysteresis_px = 60.0
+        app._config.controller.mouse_hysteresis_px = 60
         app._config.controller.mouse_max_y = 3.0
         handler = MouseHandler(app)
         cx, cy = _ground_center(app, 1)

@@ -419,7 +419,7 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "keyboard_enabled": FieldRule(_as_bool),
         "mouse_enabled": FieldRule(_as_bool),
         "mouse_hysteresis_px": FieldRule(
-            _as_float, lo=0.0, hi=200.0, human_error="Mouse hysteresis must be between 0 and 200 px."
+            _as_int, lo=0, hi=200, human_error="Mouse hysteresis must be a whole number of pixels between 0 and 200."
         ),
         "mouse_smoothing": FieldRule(
             _as_float, lo=0.01, hi=1.0, human_error="Mouse smoothing must be between 0.01 and 1."

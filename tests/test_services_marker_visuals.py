@@ -860,6 +860,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
             enabled=False,
             keyboard_enabled=False,
             mouse_enabled=False,
+            mouse_double_click_reset=True,
             btn_reset="",
             btn_toggle_help="",
             btn_toggle_zones="",

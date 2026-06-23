@@ -56,6 +56,47 @@ def test_build_help_sections_normal_mode_keyboard_without_settings_key_omits_lin
     assert not any("Settings menu" in line for line in keyboard)
 
 
+def test_build_help_sections_mouse_uses_grab_release_wording() -> None:
+    mouse = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=False,
+            controller_connected=False,
+            mouse_enabled=True,
+        )
+    )["Mouse"]
+    assert any("Left click: Grab marker" in line for line in mouse)
+    assert any("Right click: Release" in line for line in mouse)
+    # The pre-grab-rework wording is gone.
+    assert not any("Activate" in line for line in mouse)
+    assert not any("Deactivate" in line for line in mouse)
+
+
+def test_build_help_sections_mouse_includes_reset_by_default() -> None:
+    mouse = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=False,
+            controller_connected=False,
+            mouse_enabled=True,
+        )
+    )["Mouse"]
+    assert any("Double right click: Reset" in line for line in mouse)
+
+
+def test_build_help_sections_mouse_omits_reset_when_disabled() -> None:
+    mouse = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=False,
+            controller_connected=False,
+            mouse_enabled=True,
+            double_click_reset=False,
+        )
+    )["Mouse"]
+    assert not any("Reset" in line for line in mouse)
+
+
 def test_build_help_sections_mouse_includes_scroll_z_by_default() -> None:
     mouse = dict(
         build_help_sections(

@@ -174,6 +174,7 @@ class OverlayState:
     # Indices of connected gamepads not bound to any marker; shown in Settings info card.
     unbound_controller_indices: list[int] = field(default_factory=list)
     mouse_enabled: bool = False
+    mouse_double_click_reset: bool = True
     ip_text: str = ""
     show_hud_help: bool = True
     # System stats (CPU, RAM, temperature)
@@ -296,6 +297,7 @@ class OverlayState:
         self.keyboard_connected = False
         self.unbound_controller_indices = []
         self.mouse_enabled = False
+        self.mouse_double_click_reset = True
         self.ip_text = ""
         self.show_hud_help = True
         self.cpu_percent = 0.0

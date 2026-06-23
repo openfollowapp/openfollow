@@ -61,6 +61,7 @@ def _help_sections_for(
         state.keyboard_connected,
         state.controller_connected,
         state.mouse_enabled,
+        state.mouse_double_click_reset,
         tuple(sorted((state.button_labels or {}).items())),
         tuple(sorted((state.keyboard_labels or {}).items())),
     )
@@ -72,6 +73,7 @@ def _help_sections_for(
         keyboard_connected=state.keyboard_connected,
         controller_connected=state.controller_connected,
         mouse_enabled=state.mouse_enabled,
+        double_click_reset=state.mouse_double_click_reset,
         # Scroll-wheel Z can't be polled on macOS – hide the hint there.
         scroll_z=sys.platform != "darwin",
         button_labels=state.button_labels,

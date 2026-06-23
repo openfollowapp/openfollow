@@ -9,7 +9,7 @@ Configure how a connected USB gamepad drives markers: stick sensitivity and resp
 - **Axis Deadzone (0–1)** – the fraction of stick travel treated as zero. Default `0.15`. Raise it if the marker creeps when the stick is released; lower it for tighter response on a well-centred stick.
 - **Response Curve** – how stick deflection translates to marker velocity:
   - `Linear` – velocity scales proportionally with deflection.
-  - `Logarithmic` – finer movement at small deflections, faster at large ones. The default and usually best for followspot work.
+  - `Logarithmic` – finer movement at small deflections, faster at large ones. The default and usually best for live tracking.
   - `Quadratic` – like Logarithmic but with a steeper ramp-up.
   - `S-Law` – slow at both ends, fast through the middle; suits very dynamic shows.
 

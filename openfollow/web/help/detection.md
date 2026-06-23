@@ -4,7 +4,7 @@
 
 Experimental YOLO-based person detection that finds people in the camera frame and can drive zone events or automatically steer a marker. Opt-in: detection stays disabled until the required packages are installed and **Enabled** is on.
 
-> **Performance.** Person detection is compute-heavy and does **not** run efficiently on a Raspberry Pi 5 today – a more powerful workstation is recommended for it. It is also not suited to very crowded scenes (many overlapping people). Where it shines is tracking an individual actor: it reacts faster than a human operator and can sharpen the followspot's position once you have parked the assist anchor on the right person.
+> **Performance.** Person detection is compute-heavy and does **not** run efficiently on a Raspberry Pi 5 today – a more powerful workstation is recommended for it. It is also not suited to very crowded scenes (many overlapping people). Where it shines is tracking an individual actor: it reacts faster than a human operator and can sharpen the marker's position once you have parked the assist anchor on the right person.
 
 ## Dependencies
 
@@ -45,7 +45,7 @@ What the detection overlay draws on the Operator Screen.
 
 - **Show Boxes** – draw a bounding rectangle around each detected person. On by default.
 - **Show Labels** – draw a text label (confidence score) inside or above each box. On by default.
-- **Box Color** – colour of the boxes. Click the swatch to open the colour picker. Default grey (`#808080`). The box currently attached to a marker is drawn in **that marker's** colour instead, so you can see which detection is driving the followspot.
+- **Box Color** – colour of the boxes. Click the swatch to open the colour picker. Default grey (`#808080`). The box currently attached to a marker is drawn in **that marker's** colour instead, so you can see which detection is driving the marker.
 - **Box Thickness (px)** – line weight for the boxes, 1–10 pixels. Default `2`.
 
 ## Tracking

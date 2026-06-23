@@ -500,6 +500,20 @@ class TestDoubleClickReset:
         handler.on_pointer_down(cx, cy, 1)  # second click – double-click
         assert app._server.get_marker(1).pos == _DEFAULT_POS
 
+    def test_double_click_releases_control(self) -> None:
+        # After a reset the marker must park at default: control is released so
+        # the next pointer move can't snap it straight back to the cursor.
+        app = _DummyApp()
+        handler, clock = self._handler_with_clock(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        clock.t = 0.1
+        handler.on_pointer_down(cx, cy, 1)  # double-click reset
+        assert handler.active is False
+        assert handler.on_pointer_move(cx + 200, cy + 100) is False
+        handler.update()
+        assert app._server.get_marker(1).pos == _DEFAULT_POS
+
     def test_single_click_does_not_reset(self) -> None:
         app = _DummyApp()
         handler, _clock = self._handler_with_clock(app)

@@ -8,7 +8,8 @@ coordinates onto the stage floor plane and steers the marker toward
 them. The scroll wheel adjusts the marker's Z (height) axis.
 
 Double-clicking a marker's ground circle resets it to the default position
-(``mouse_double_click_reset``), the same action as the reset key.
+and releases control (``mouse_double_click_reset``), the same action as the
+reset key.
 
 Steering refinements (all configurable on ``ControllerConfig``):
 - ``mouse_hysteresis_px`` – a pixel deadband on the cursor so hand-tremor
@@ -227,6 +228,16 @@ class MouseHandler:
             return False
         app = self._app
         app._selected_id = tid
+        double = self._is_double_click(x, y, tid)
+        if double and app._config.controller.mouse_double_click_reset:
+            # Reset the marker to default and release control. Mouse control is
+            # absolute (marker = where you point), so staying grabbed would snap
+            # the marker straight back to the cursor on the next move; releasing
+            # parks it at default until the operator grabs its circle again.
+            self._reset_to_default()
+            self._active = False
+            self._reset_tracking()
+            return True
         self._active = True
         self._anchor_screen = (x, y)
         # No target until the first move, so the grab itself never yanks the
@@ -234,10 +245,10 @@ class MouseHandler:
         # current position the first time a move sets a target.
         self._target_world = None
         self._smooth_world = None
-        if self._is_double_click(x, y, tid):
-            if app._config.controller.mouse_double_click_reset:
-                self._reset_to_default()
-            self._last_click = None  # consume the sequence; no triple-trigger
+        if double:
+            # Double-click with reset disabled: consume the sequence, grab as
+            # normal so a third quick click can't re-trigger.
+            self._last_click = None
         else:
             self._last_click = (self._clock(), x, y, tid)
             logger.info("Mouse grabbed marker %s", tid)

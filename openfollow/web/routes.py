@@ -1326,7 +1326,7 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "mouse_enabled": _as_bool,
         "mouse_hysteresis_px": _as_float,
         "mouse_smoothing": _as_float,
-        "mouse_max_distance": _as_float,
+        "mouse_max_y": _as_float,
         "mouse_wheel_z_enabled": _as_bool,
         "mouse_wheel_invert": _as_bool,
         "mouse_wheel_z_step": _as_float,

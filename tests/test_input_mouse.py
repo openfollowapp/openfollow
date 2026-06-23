@@ -355,45 +355,67 @@ class TestHysteresis:
         assert (round(x, 6), round(y, 6)) != (0.0, 0.0)
 
 
-class TestMaxDistance:
-    """Targets beyond the origin-radius limit are ignored."""
+def _screen_for_world(app: _DummyApp, wx: float, wy: float) -> tuple[float, float]:
+    """Screen pixel that a stage-plane world point projects to."""
+    z_off = app._config.grid.z_offset
+    w, h = _canvas_size(app)
+    scr = project_points(
+        _cam_buffer(app),
+        np.array([[wx, wy, z_off]], dtype=np.float64),
+        float(w),
+        float(h),
+    )
+    return float(scr[0, 0]), float(scr[0, 1])
 
-    def test_beyond_max_is_ignored(self) -> None:
+
+class TestMaxY:
+    """Targets past the upstage (Y+) cap are ignored; downstage is unaffected."""
+
+    def test_beyond_max_y_is_ignored(self) -> None:
         app = _DummyApp()
-        app._config.controller.mouse_max_distance = 0.5
+        app._config.controller.mouse_max_y = 3.0
         handler = MouseHandler(app)
         cx, cy = _ground_center(app, 1)
         handler.on_pointer_down(cx, cy, 1)
-        # A point low in frame unprojects far from the origin.
-        far_x, far_y = cx, cy + 250
-        wx, wy = _world_at(app, far_x, far_y)
-        assert math.hypot(wx, wy) > 0.5  # guard: target really is out of range
         before = app._server.get_marker(1).pos
-        handler.on_pointer_move(far_x, far_y)
+        handler.on_pointer_move(*_screen_for_world(app, 0.0, 6.0))  # 6 m upstage > 3 m cap
         handler.update()
         assert app._server.get_marker(1).pos == before
 
-    def test_within_max_applies(self) -> None:
+    def test_within_max_y_applies(self) -> None:
         app = _DummyApp()
-        app._config.controller.mouse_max_distance = 1000.0
+        app._config.controller.mouse_max_y = 10.0
         handler = MouseHandler(app)
         cx, cy = _ground_center(app, 1)
         handler.on_pointer_down(cx, cy, 1)
-        handler.on_pointer_move(cx + 60, cy + 30)
+        handler.on_pointer_move(*_screen_for_world(app, 0.0, 6.0))
         handler.update()
-        x, y, _ = app._server.get_marker(1).pos
-        assert (round(x, 6), round(y, 6)) != (0.0, 0.0)
+        _, y, _ = app._server.get_marker(1).pos
+        assert y == pytest.approx(6.0, abs=1e-3)
 
-    def test_zero_max_is_unlimited(self) -> None:
+    def test_zero_max_y_is_unlimited(self) -> None:
         app = _DummyApp()
-        app._config.controller.mouse_max_distance = 0.0
+        app._config.controller.mouse_max_y = 0.0
         handler = MouseHandler(app)
         cx, cy = _ground_center(app, 1)
         handler.on_pointer_down(cx, cy, 1)
-        handler.on_pointer_move(cx, cy + 250)
+        handler.on_pointer_move(*_screen_for_world(app, 0.0, 6.0))
         handler.update()
-        x, y, _ = app._server.get_marker(1).pos
-        assert (round(x, 6), round(y, 6)) != (0.0, 0.0)
+        _, y, _ = app._server.get_marker(1).pos
+        assert y == pytest.approx(6.0, abs=1e-3)
+
+    def test_downstage_target_not_capped(self) -> None:
+        # The cap is on Y+ (upstage) only; a downstage target (Y below the cap)
+        # always applies, even with a low cap.
+        app = _DummyApp()
+        app._config.controller.mouse_max_y = 1.0
+        handler = MouseHandler(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        handler.on_pointer_move(*_screen_for_world(app, 0.0, -2.0))  # 2 m downstage
+        handler.update()
+        _, y, _ = app._server.get_marker(1).pos
+        assert y == pytest.approx(-2.0, abs=1e-3)
 
 
 class TestWheel:

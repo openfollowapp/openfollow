@@ -15,8 +15,8 @@ Steering refinements (all configurable on ``ControllerConfig``):
   doesn't wiggle the marker.
 - ``mouse_smoothing`` – an EMA glide toward the cursor target, applied
   every frame by :meth:`MouseHandler.update`.
-- ``mouse_max_distance`` – ignore targets farther than this from the world
-  origin so a stray move near the camera horizon can't fling the marker.
+- ``mouse_max_y`` – cap the upstage (Y+) target so a move near the camera
+  horizon, where the unprojected Y runs away, can't fling the marker upstage.
 """
 
 from __future__ import annotations
@@ -137,13 +137,12 @@ class MouseHandler:
         world = self._unproject(x, y)
         if world is None:
             return True
-        wx, wy = world
-        max_d = self._app._config.controller.mouse_max_distance
-        if max_d > 0.0 and math.hypot(wx, wy) > max_d:
-            # Target out of bounds (e.g. near the camera horizon) – hold the
-            # last good target rather than flinging the marker to the far field.
+        max_y = self._app._config.controller.mouse_max_y
+        if max_y > 0.0 and world[1] > max_y:
+            # Target past the upstage (Y+) limit, e.g. near the camera horizon
+            # where the unprojected Y runs away – hold the last position.
             return True
-        self._target_world = (wx, wy)
+        self._target_world = world
         return True
 
     def on_pointer_up(

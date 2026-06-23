@@ -2547,7 +2547,7 @@ def test_controller_mouse_steering_defaults_are_back_compatible() -> None:
     cfg = ControllerConfig()
     assert cfg.mouse_hysteresis_px == 0.0
     assert cfg.mouse_smoothing == 1.0
-    assert cfg.mouse_max_distance == 0.0
+    assert cfg.mouse_max_y == 0.0
     assert cfg.mouse_wheel_z_enabled is True
     assert cfg.mouse_wheel_invert is False
     assert cfg.mouse_wheel_z_step == 0.1
@@ -2582,8 +2582,8 @@ def test_controller_mouse_smoothing_coerced(value: object, expected: float) -> N
     ("value", "expected"),
     [(-1.0, 0.0), (99999.0, 10000.0), ("x", 0.0), (None, 0.0), (25.0, 25.0)],
 )
-def test_controller_mouse_max_distance_coerced(value: object, expected: float) -> None:
-    assert ControllerConfig(mouse_max_distance=value).mouse_max_distance == expected
+def test_controller_mouse_max_y_coerced(value: object, expected: float) -> None:
+    assert ControllerConfig(mouse_max_y=value).mouse_max_y == expected
 
 
 @pytest.mark.parametrize(

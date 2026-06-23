@@ -415,7 +415,7 @@ def test_validate_strips_leading_trailing_whitespace() -> None:
     [
         ("mouse_hysteresis_px", "12", "300"),
         ("mouse_smoothing", "0.4", "5"),
-        ("mouse_max_distance", "25", "99999"),
+        ("mouse_max_y", "25", "99999"),
         ("mouse_wheel_z_step", "0.25", "50"),
     ],
 )

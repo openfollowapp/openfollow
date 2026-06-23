@@ -16,7 +16,7 @@ Click-and-drag control for steering markers directly on the live video.
 
 **Smoothing** – how heavily the marker glides toward the cursor, like the weight of a real followspot. `1.0` is instant 1:1 control; lower values (e.g. `0.2`) ease the marker toward the cursor for a smoother, slightly laggier feel. Range `0.01`–`1.0`.
 
-**Max distance (m)** – the farthest a mouse target may sit from the stage origin (0, 0). Near the top of the picture the floor stretches toward the horizon, where a tiny cursor move maps to an enormous stage distance; this caps that so the marker (and its light) can't shoot off into the far field. A target beyond the limit is ignored and the marker holds its last position. `0` means no limit.
+**Maximum Y+ (m)** – the farthest **upstage** (away from the audience, the +Y direction) a mouse target may go. Near the top of the picture the floor stretches toward the horizon, where a tiny cursor move maps to an enormous upstage distance; this caps that so the marker (and its light) can't shoot off into the far field. A move past the limit is ignored and the marker holds its last position. `0` means no upstage limit.
 
 ## Scroll wheel (height)
 

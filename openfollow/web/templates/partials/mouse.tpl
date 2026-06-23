@@ -38,15 +38,15 @@
                 <span id="mouse-smoothing-error" class="field-error"></span>
             </div>
             <div class="field">
-                <label for="mouse-max-distance">Max distance (m)</label>
-                <input id="mouse-max-distance" type="number" name="mouse_max_distance" value="{{config.controller.mouse_max_distance}}" min="0" max="10000" step="any"
-                       hx-get="/api/validate/mouse/mouse_max_distance" hx-trigger="blur changed delay:200ms"
-                       hx-target="#mouse-max-distance-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="mouse-max-distance-error" aria-invalid="false">
-                <span id="mouse-max-distance-error" class="field-error"></span>
+                <label for="mouse-max-y">Maximum Y+ (m)</label>
+                <input id="mouse-max-y" type="number" name="mouse_max_y" value="{{config.controller.mouse_max_y}}" min="0" max="10000" step="any"
+                       hx-get="/api/validate/mouse/mouse_max_y" hx-trigger="blur changed delay:200ms"
+                       hx-target="#mouse-max-y-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="mouse-max-y-error" aria-invalid="false">
+                <span id="mouse-max-y-error" class="field-error"></span>
             </div>
         </div>
-        <span class="field-note">0 hysteresis / 1.0 smoothing = direct 1:1 control; max distance 0 = unlimited.</span>
+        <span class="field-note">0 hysteresis / 1.0 smoothing = direct 1:1 control; Maximum Y+ 0 = no upstage limit.</span>
     </div>
 
     <div class="group">

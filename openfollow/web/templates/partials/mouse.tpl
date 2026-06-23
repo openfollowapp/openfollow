@@ -12,7 +12,7 @@
                 <div class="checkbox-wrap"><input type="checkbox" name="mouse_enabled" {{'checked' if config.controller.mouse_enabled else ''}}></div>
             </div>
             <div class="field checkbox-field">
-                <label>Double-click resets marker</label>
+                <label>Double right-click resets marker</label>
                 <div class="checkbox-wrap"><input type="checkbox" name="mouse_double_click_reset" {{'checked' if config.controller.mouse_double_click_reset else ''}}></div>
             </div>
         </div>

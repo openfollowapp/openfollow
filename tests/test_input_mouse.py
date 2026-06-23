@@ -483,7 +483,8 @@ _DEFAULT_POS = (7.0, -3.0, 1.6)  # _DummyApp._get_default_marker_position
 
 
 class TestDoubleClickReset:
-    """Double-clicking a marker's ground circle resets it to default."""
+    """Double right-clicking resets the controlled marker to default and
+    releases it (right-click is the release button)."""
 
     def _handler_with_clock(self, app: _DummyApp) -> tuple[MouseHandler, _FakeClock]:
         handler = MouseHandler(app)
@@ -491,107 +492,104 @@ class TestDoubleClickReset:
         handler._clock = clock
         return handler, clock
 
-    def test_double_click_resets_to_default(self) -> None:
+    def _grab_then(self, handler: MouseHandler, app: _DummyApp) -> tuple[float, float]:
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)  # grab marker 1
+        return cx, cy
+
+    def test_double_right_click_resets_to_default(self) -> None:
         app = _DummyApp()
         handler, clock = self._handler_with_clock(app)
-        cx, cy = _ground_center(app, 1)
-        handler.on_pointer_down(cx, cy, 1)  # first click – grab
+        cx, cy = self._grab_then(handler, app)
         clock.t = 0.1
-        handler.on_pointer_down(cx, cy, 1)  # second click – double-click
+        handler.on_pointer_down(cx, cy, 3)  # right-click #1 (release)
+        clock.t = 0.2
+        handler.on_pointer_down(cx, cy, 3)  # right-click #2 → reset
         assert app._server.get_marker(1).pos == _DEFAULT_POS
 
-    def test_double_click_releases_control(self) -> None:
-        # After a reset the marker must park at default: control is released so
-        # the next pointer move can't snap it straight back to the cursor.
+    def test_double_right_click_releases_control(self) -> None:
         app = _DummyApp()
         handler, clock = self._handler_with_clock(app)
-        cx, cy = _ground_center(app, 1)
-        handler.on_pointer_down(cx, cy, 1)
+        cx, cy = self._grab_then(handler, app)
         clock.t = 0.1
-        handler.on_pointer_down(cx, cy, 1)  # double-click reset
+        handler.on_pointer_down(cx, cy, 3)
+        clock.t = 0.2
+        handler.on_pointer_down(cx, cy, 3)  # reset
         assert handler.active is False
         assert handler.on_pointer_move(cx + 200, cy + 100) is False
         handler.update()
         assert app._server.get_marker(1).pos == _DEFAULT_POS
 
-    def test_single_click_does_not_reset(self) -> None:
+    def test_single_right_click_does_not_reset(self) -> None:
         app = _DummyApp()
         handler, _clock = self._handler_with_clock(app)
-        cx, cy = _ground_center(app, 1)
-        handler.on_pointer_down(cx, cy, 1)
+        cx, cy = self._grab_then(handler, app)
+        handler.on_pointer_down(cx, cy, 3)  # one right-click → release only
+        assert handler.active is False
         assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
 
-    def test_slow_second_click_does_not_reset(self) -> None:
+    def test_slow_second_right_click_does_not_reset(self) -> None:
         app = _DummyApp()
         handler, clock = self._handler_with_clock(app)
-        cx, cy = _ground_center(app, 1)
-        handler.on_pointer_down(cx, cy, 1)
-        clock.t = 1.0  # outside the 0.4 s window
-        handler.on_pointer_down(cx, cy, 1)
-        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
-
-    def test_far_second_click_does_not_reset(self) -> None:
-        app = _DummyApp()
-        # Big ground circle so both clicks still grab but sit > 8 px apart.
-        app._config.marker.ground_circle_size = 2.0
-        handler, clock = self._handler_with_clock(app)
-        cx, cy = _ground_center(app, 1)
-        handler.on_pointer_down(cx, cy, 1)
+        cx, cy = self._grab_then(handler, app)
         clock.t = 0.1
-        handler.on_pointer_down(cx + 25, cy, 1)  # same marker, but > 8 px away
+        handler.on_pointer_down(cx, cy, 3)
+        clock.t = 1.0  # outside the 0.4 s window
+        handler.on_pointer_down(cx, cy, 3)
+        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
+
+    def test_far_second_right_click_does_not_reset(self) -> None:
+        app = _DummyApp()
+        handler, clock = self._handler_with_clock(app)
+        cx, cy = self._grab_then(handler, app)
+        clock.t = 0.1
+        handler.on_pointer_down(cx, cy, 3)
+        clock.t = 0.2
+        handler.on_pointer_down(cx + 25, cy, 3)  # > 8 px from the first right-click
         assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
 
     def test_disabled_does_not_reset(self) -> None:
         app = _DummyApp()
         app._config.controller.mouse_double_click_reset = False
         handler, clock = self._handler_with_clock(app)
-        cx, cy = _ground_center(app, 1)
-        handler.on_pointer_down(cx, cy, 1)
+        cx, cy = self._grab_then(handler, app)
         clock.t = 0.1
-        handler.on_pointer_down(cx, cy, 1)
+        handler.on_pointer_down(cx, cy, 3)
+        clock.t = 0.2
+        handler.on_pointer_down(cx, cy, 3)
         assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
 
-    def test_empty_space_click_breaks_sequence(self) -> None:
+    def test_left_double_click_no_longer_resets(self) -> None:
+        # Reset lives on the right button now; two left-clicks just grab.
         app = _DummyApp()
         handler, clock = self._handler_with_clock(app)
         cx, cy = _ground_center(app, 1)
-        handler.on_pointer_down(cx, cy, 1)  # grab
-        clock.t = 0.05
-        handler.on_pointer_down(5, 5, 1)  # empty space – breaks the sequence
-        clock.t = 0.1
-        handler.on_pointer_down(cx, cy, 1)  # not a double-click anymore
-        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
-
-    def test_right_click_breaks_sequence(self) -> None:
-        app = _DummyApp()
-        handler, clock = self._handler_with_clock(app)
-        cx, cy = _ground_center(app, 1)
-        handler.on_pointer_down(cx, cy, 1)  # grab
-        clock.t = 0.05
-        handler.on_pointer_down(cx, cy, 3)  # right-click release – breaks sequence
+        handler.on_pointer_down(cx, cy, 1)
         clock.t = 0.1
         handler.on_pointer_down(cx, cy, 1)
         assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
+        assert handler.active is True
 
     def test_reset_is_a_noop_without_a_selected_marker(self) -> None:
-        # Defensive guard: the hit-test normally guarantees a marker, but the
-        # reset must not crash or move anything if there is no selection.
+        # Defensive guard: the reset must not crash or move anything when there
+        # is no selection.
         app = _DummyApp()
         app._selected_id = None
         handler = MouseHandler(app)
         handler._reset_to_default()
         assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
 
-    def test_double_click_resets_assist_ghost_not_registered(self) -> None:
+    def test_double_right_click_resets_assist_ghost_not_registered(self) -> None:
         app = _DummyApp()
         app._config.detection.enabled = True
         app._config.detection.pin_marker = True
         app._config.detection.pin_mode = "assist"
         handler, clock = self._handler_with_clock(app)
-        cx, cy = _ground_center(app, 1)
-        handler.on_pointer_down(cx, cy, 1)
+        cx, cy = self._grab_then(handler, app)
         clock.t = 0.1
-        handler.on_pointer_down(cx, cy, 1)
+        handler.on_pointer_down(cx, cy, 3)
+        clock.t = 0.2
+        handler.on_pointer_down(cx, cy, 3)
         # The manual ghost was reset; the registered (broadcast) marker is untouched.
         assert app._assist_manual[1].pos == _DEFAULT_POS
         assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)

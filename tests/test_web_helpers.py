@@ -2573,3 +2573,26 @@ def test_mouse_partial_keeps_wheel_form_off_macos(monkeypatch) -> None:
     assert "can not be changed by the Scroll Wheel" not in out
     assert 'name="mouse_wheel_z_step"' in out
     assert 'name="mouse_wheel_z_enabled"' in out
+
+
+def test_mouse_bool_fields_excludes_wheel_checkboxes_on_macos(monkeypatch) -> None:
+    # On macOS the scroll-wheel checkboxes aren't rendered, so they're absent
+    # from the POST. They must NOT be in the save's bool_fields, or the missing
+    # values would be coerced to False and clobber the stored config.
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "darwin")
+    fields = routes._mouse_bool_fields()
+    assert "mouse_wheel_z_enabled" not in fields
+    assert "mouse_wheel_invert" not in fields
+    assert "mouse_enabled" in fields
+    assert "mouse_double_click_reset" in fields
+
+
+def test_mouse_bool_fields_includes_wheel_checkboxes_off_macos(monkeypatch) -> None:
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "linux")
+    fields = routes._mouse_bool_fields()
+    assert "mouse_wheel_z_enabled" in fields
+    assert "mouse_wheel_invert" in fields

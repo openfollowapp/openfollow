@@ -26,12 +26,16 @@ OUTDIR="${2:-${IGconf_image_outputdir:?image outputdir not provided}}"
 : "${IMAGEMOUNTPATH:?genimage mount path not set}"
 
 # In-place edit via a temp file, portable across GNU and BSD sed (no -i).
+# Write the result back over the original file rather than mv'ing the temp
+# into place, so the file keeps its existing mode and owner (a mv would give
+# /etc/fstab the temp file's 0600 instead of the expected 0644).
 edit() {
    _f="$1"
    shift
    _t=$(mktemp)
    sed "$@" "$_f" >"$_t"
-   mv "$_t" "$_f"
+   cat "$_t" >"$_f"
+   rm -f "$_t"
 }
 
 case "$LABEL" in

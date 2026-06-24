@@ -118,6 +118,22 @@ def test_root_label_rewrites_fstab_to_uuid(tmp_path: Path) -> None:
 
 
 @requires_sh
+def test_root_label_preserves_fstab_mode(tmp_path: Path) -> None:
+    # The rewrite must not change /etc/fstab's permissions - it has to stay
+    # world-readable (0644), not get the temp file's restrictive 0600.
+    mnt = tmp_path / "mnt"
+    (mnt / "etc").mkdir(parents=True)
+    fstab = mnt / "etc" / "fstab"
+    fstab.write_text(_FSTAB_BY_SLOT, encoding="utf-8")
+    fstab.chmod(0o644)
+    _write_uuids(tmp_path / "out")
+
+    proc = _run_root_ref("ROOT", mnt, tmp_path / "out")
+    assert proc.returncode == 0, proc.stderr
+    assert fstab.stat().st_mode & 0o777 == 0o644
+
+
+@requires_sh
 def test_boot_label_rewrites_cmdline_and_preserves_tail(tmp_path: Path) -> None:
     mnt = tmp_path / "mnt"
     mnt.mkdir()

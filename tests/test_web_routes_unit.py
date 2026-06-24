@@ -271,7 +271,7 @@ class TestAsOptionalInt:
 
     def test_bool_collapses_to_none(self) -> None:
         """``bool`` is an ``int`` subclass, so a crafted POST with
-        ``marker_id=true`` would otherwise silently save marker 1.
+        ``default_fader=true`` would otherwise silently save fader 1.
         ``OscTransmitterConfig.__post_init__`` already collapses bool
         inputs to ``None``; the web parser agrees so save-time and
         POST-time coercion stay in lockstep."""

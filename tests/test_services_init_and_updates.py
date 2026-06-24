@@ -333,6 +333,16 @@ def services(monkeypatch: pytest.MonkeyPatch) -> AppRuntimeServices:
     return AppRuntimeServices(_dummy_app())
 
 
+def test_controlled_markers_provider_returns_copy(services: AppRuntimeServices) -> None:
+    """The OSC ``markers`` provider (drives the ``all`` token + controlled
+    filter) returns the live controlled-id list as a fresh copy, so a
+    concurrent reload swapping the list can't tear a mid-tick read."""
+    services._app._controlled_ids = [3, 7]
+    snapshot = services._controlled_markers_provider()
+    assert snapshot == [3, 7]
+    assert snapshot is not services._app._controlled_ids
+
+
 # --------------------------------------------------------------------------- #
 # _init_overlay_state
 # --------------------------------------------------------------------------- #

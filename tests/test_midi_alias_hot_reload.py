@@ -120,7 +120,7 @@ def test_midi_event_dispatches_through_patch_after_port_rename(
         id="row-1",
         enabled=True,
         destination_id="d1",
-        marker_id=None,
+        markers=[],
         address="/cc/[value]",
         args=[],
         trigger=MidiMessageTrigger(
@@ -223,7 +223,7 @@ def test_late_event_on_closed_port_callback_does_not_double_dispatch(
         id="row-1",
         enabled=True,
         destination_id="d1",
-        marker_id=None,
+        markers=[],
         address="/cc/[value]",
         args=[],
         trigger=MidiMessageTrigger(
@@ -313,7 +313,7 @@ def test_midi_patch_reassignment_breaks_old_trigger_row(
         id="row-1",
         enabled=True,
         destination_id="d1",
-        marker_id=None,
+        markers=[],
         address="/cc/[value]",
         args=[],
         trigger=MidiMessageTrigger(
@@ -386,7 +386,7 @@ def test_concurrent_event_during_apply_config_does_not_race(
         id="row-1",
         enabled=True,
         destination_id="d1",
-        marker_id=None,
+        markers=[],
         address="/cc/[value]",
         args=[],
         trigger=MidiMessageTrigger(

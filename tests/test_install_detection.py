@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -129,3 +130,61 @@ def test_ultralytics_is_a_soft_dependency_not_a_hard_gate() -> None:
     assert "import ultralytics, onnx" in text
     assert 'die "detection backend' in text
     assert 'die "ultralytics' not in text and "die 'ultralytics" not in text
+
+
+# --- clock-skew diagnostics -------------------------------------------------
+
+
+def _classify(sample: str) -> subprocess.CompletedProcess[str]:
+    # Pipe a captured-output sample through clock_skew_in and report the verdict.
+    return _run(f"printf '%s' {shlex.quote(sample)} | clock_skew_in && echo SKEW || echo CLEAN")
+
+
+@pytest.mark.parametrize(
+    "sample",
+    [
+        # The pip / TLS form: a wrong clock makes PyPI's cert look future-dated.
+        "ERROR: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate is not yet valid (_ssl.c:1006)",
+        # The apt-style wording, in case a clock-skew run logs it.
+        "Verifying signature: Not live until 2026-06-25T01:42:42Z",
+    ],
+)
+def test_clock_skew_in_detects_future_dated_tls(sample: str) -> None:
+    r = _classify(sample)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "SKEW"
+
+
+@pytest.mark.parametrize(
+    "sample",
+    [
+        "Successfully installed onnxruntime-1.17.0 opencv-python-4.8.0",
+        "ERROR: Could not find a version that satisfies the requirement foo",
+        "ERROR: connection timed out",
+        # A plain cert-verify failure (bad CA, MITM) is NOT a clock problem and
+        # must not be misattributed to the clock.
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate",
+    ],
+)
+def test_clock_skew_in_ignores_unrelated_failures(sample: str) -> None:
+    r = _classify(sample)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "CLEAN"
+
+
+def test_clock_skew_message_is_actionable() -> None:
+    r = _run("clock_skew_message")
+    assert r.returncode == 0, r.stderr
+    out = r.stdout
+    assert "clock" in out.lower()
+    assert "timedatectl" in out
+    assert "date -s" in out
+
+
+def test_pip_failures_route_through_clock_skew_check() -> None:
+    text = _script().read_text()
+    # Every pip install path must capture output and consult clock_skew_in on
+    # failure, so a wrong clock surfaces as the fix, not a raw SSL traceback.
+    assert 'die "$(clock_skew_message)"' in text
+    # torch (incl. fallback) + the backend install = at least three checks.
+    assert text.count("clock_skew_in <") >= 3

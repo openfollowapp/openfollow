@@ -34,7 +34,7 @@ Wide-angle and fisheye lenses bow straight lines, so the pinhole overlay (grid, 
 
 The correction is centred on the middle of the image. Tune by eye: enable experimental features, open this page next to the live display, and adjust until the overlay lines follow the video. Mouse placement and AI tracking are corrected to match, so clicking a point in the video still lands the marker there. `0` / `0` disables the correction (plain pinhole).
 
-The **Setup Wizard** also carries these sliders in its Corner Pinning step: bow the projected grid to match the lens, then pin the corners. The solve undistorts the pinned corners before fitting the pinhole pose, so a fisheye lens no longer skews the calibration. Sliders set in the wizard are saved back here on Apply, and vice versa.
+The **Setup Wizard** also carries these sliders in its Corner Pinning step (behind the same experimental-features toggle): bow the projected grid to match the lens, then pin the corners. The solve undistorts the pinned corners before fitting the pinhole pose, so a fisheye lens no longer skews the calibration. Sliders set in the wizard are saved back here on Apply, and vice versa.
 
 ## Saving & sharing
 

@@ -61,6 +61,20 @@ def test_section_header_carries_badge(rel: str, heading: str) -> None:
     assert "badge-experimental" in line, f"{rel}: {heading!r} header is missing the Experimental badge"
 
 
+def test_wizard_lens_controls_are_experimental_gated() -> None:
+    # The corner-pinning lens-distortion sliders must hide when experimental
+    # features are off – same gate as the Camera-tab group. Both the controls
+    # and the tip below them carry the class so nothing lens-related shows.
+    wiz = _read("wizard.tpl")
+    controls = _line_with(wiz, 'id="cp-lens-controls"')
+    assert "experimental-feature" in controls, "wizard.tpl: lens controls missing the gate class"
+    tip = _line_with(wiz, "Bow the projected grid")
+    assert "experimental-feature" in tip, "wizard.tpl: lens tip missing the gate class"
+    # Marked with the Experimental badge like the Camera-tab group.
+    label = _line_with(wiz, 'for="cp_lens_k1"')
+    assert "badge-experimental" in label, "wizard.tpl: lens controls missing the Experimental badge"
+
+
 def test_base_tpl_ships_gate_css_and_body_class() -> None:
     base = _read("base.tpl")
     assert "body:not(.show-experimental) .experimental-feature" in base

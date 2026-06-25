@@ -779,9 +779,9 @@
               title="Load a snapshot first">Fine adjust</button>
     </div>
 
-    <div id="cp-lens-controls" style="margin-top:0.72rem;display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end;">
+    <div id="cp-lens-controls" class="experimental-feature" style="margin-top:0.72rem;display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end;">
       <div class="field" style="flex:1;min-width:200px;">
-        <label for="cp_lens_k1">Lens distortion &ndash; barrel / fisheye (k1)</label>
+        <label for="cp_lens_k1">Lens distortion <span class="badge-experimental">Experimental</span> &ndash; barrel / fisheye (k1)</label>
         <div style="display:flex;gap:0.5rem;align-items:center;">
           <input type="range" id="cp_lens_k1_range" min="-0.4" max="0.4" step="0.005"
                  value="{{config.camera.lens_k1}}" style="flex:1;" oninput="onWizardLensRange('k1')"
@@ -801,7 +801,7 @@
         </div>
       </div>
     </div>
-    <p class="wizard-tip" style="margin-top:0.4rem;">Bow the projected grid to match a fisheye / wide-angle lens before pinning the corners. Only the overlay is bent; the video is unchanged.</p>
+    <p class="wizard-tip experimental-feature" style="margin-top:0.4rem;">Bow the projected grid to match a fisheye / wide-angle lens before pinning the corners. Only the overlay is bent; the video is unchanged.</p>
 
     <p class="wizard-help" style="margin-top:0.72rem;">
       <strong>Drag each corner marker</strong> to its physical mark on the stage. The labels are stage positions: <strong>DSL</strong>/<strong>USL</strong> are stage left, <strong>DSR</strong>/<strong>USR</strong> are stage right (D = downstage/front, U = upstage/back). With a front-of-house camera you see the audience's view, so stage left is on the right of the image (audience right) and stage right is on the left (audience left).

@@ -1047,6 +1047,11 @@ class AppRuntimeServices:
             # :meth:`init_input_manager`), so the closure tolerates ``None``
             # until it's populated, long before any 60 Hz render.
             controller_marker_provider=self._controller_marker_provider,
+            # ``markers`` field's ``all`` token + controlled-only validity
+            # filter. Reads the live controlled-id list each tick so a
+            # hot-reload of ``controlled_marker_ids`` re-expands ``all``
+            # without a manager restart.
+            controlled_markers_provider=self._controlled_markers_provider,
         )
         manager.restart(
             self._app._config.osc_transmitters,
@@ -1150,6 +1155,15 @@ class AppRuntimeServices:
         if im is None:
             return None
         return im.controller_marker_id(controller_idx)
+
+    def _controlled_markers_provider(self) -> list[int]:
+        """Snapshot of ``controlled_marker_ids`` for the OSC transmitter
+        ``markers`` field's ``all`` token + controlled-only validity filter.
+
+        Reads ``app._controlled_ids`` (the same list the gamepad routing and
+        marker-fader provisioning use), copied so a concurrent hot-reload
+        swapping the list can't tear a mid-tick read."""
+        return list(self._app._controlled_ids)
 
     def _marker_fader_values_provider(self) -> list[dict[str, Any]]:
         """Snapshot of the per-controlled-marker faders for the MIDI

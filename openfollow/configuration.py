@@ -202,6 +202,85 @@ def _coerce_optional_marker_id(value: Any) -> int | None:
     return out
 
 
+# Marker-token grammar for an OSC transmitter row's ``markers`` field. Each
+# token is one of: a non-negative integer marker id, a controller alias
+# ``cN`` (1-based, no leading zero – mirrors the ``:cN`` reference grammar in
+# ``osc/template.py``), or the keyword ``all`` (every id in
+# ``controlled_marker_ids``). ``all`` and the aliases resolve dynamically, so
+# they're stored verbatim and only mapped to concrete ids by the transmitter
+# manager at render time.
+MARKER_TOKEN_ALL = "all"
+_CONTROLLER_ALIAS_RE = re.compile(r"^c[1-9][0-9]*$")
+
+
+def _canonical_marker_token(raw: Any) -> str | None:
+    """Canonicalise one ``markers`` entry, or ``None`` when invalid.
+
+    Accepts an int (non-negative) or a string token (``"all"`` / ``"cN"`` /
+    a decimal id). Invalid entries – floats, ``True``, negatives, ``c0`` /
+    ``c01``, junk – return ``None`` so the caller drops them (the field
+    ignores invalid ids by spec).
+    """
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if not s:
+            return None
+        if s == MARKER_TOKEN_ALL:
+            return MARKER_TOKEN_ALL
+        if _CONTROLLER_ALIAS_RE.match(s):
+            return s
+        # Fall through to the numeric coercer (rejects bool / float / junk).
+        mid = _coerce_optional_marker_id(s)
+        return None if mid is None else str(mid)
+    mid = _coerce_optional_marker_id(raw)
+    return None if mid is None else str(mid)
+
+
+def _marker_token_sort_key(token: str) -> tuple[int, int]:
+    """Display order: numeric ids ascending, then controller aliases by
+    index. ``all`` collapses the list so it never reaches here."""
+    if _CONTROLLER_ALIAS_RE.match(token):
+        return (1, int(token[1:]))
+    return (0, int(token))
+
+
+def _coerce_marker_tokens(value: Any) -> list[str]:
+    """Normalise an OSC transmitter row's ``markers`` field to a sorted,
+    de-duplicated list of canonical tokens.
+
+    Accepts a list (TOML array), a comma-separated string (hand-edited TOML
+    / web form), or a bare int (legacy single ``marker_id`` lift). ``all``
+    subsumes every other entry, so its presence collapses the result to
+    ``["all"]``. Numeric tokens sort ascending ahead of controller aliases.
+    """
+    if value is None or isinstance(value, bool):
+        return []
+    if isinstance(value, str):
+        raw_items: list[Any] = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        raw_items = list(value)
+    else:
+        # Bare int (legacy lift) or anything else the canonicaliser vets.
+        raw_items = [value]
+    canonical: list[str] = []
+    seen: set[str] = set()
+    has_all = False
+    for item in raw_items:
+        token = _canonical_marker_token(item)
+        if token is None:
+            continue
+        if token == MARKER_TOKEN_ALL:
+            has_all = True
+            continue
+        if token not in seen:
+            seen.add(token)
+            canonical.append(token)
+    if has_all:
+        return [MARKER_TOKEN_ALL]
+    canonical.sort(key=_marker_token_sort_key)
+    return canonical
+
+
 def _coerce_choice(value: Any, choices: tuple[str, ...], default: str) -> str:
     """Return ``value`` when it matches one of ``choices``, else ``default``."""
     if isinstance(value, str) and value in choices:
@@ -1247,11 +1326,14 @@ class OscTransmitterConfig:
     # Reference to an :class:`OscDestinationConfig` (host/port/protocol/framing
     # live there). Empty = no destination selected → the row skips sending.
     destination_id: str = ""
-    # ``None`` = no default marker picked. Rows using only literals or
-    # explicit-marker refs (``[x:markerN]``) still dispatch; rows using a
-    # default-marker placeholder (``[x]`` / ``[fy]`` / ``[markerId]``) skip
-    # with "no default marker configured" until set.
-    marker_id: int | None = None
+    # Default markers driving ``[x]`` / ``[markerid]`` / ``[markerfader]``.
+    # Each token is a marker id, a controller alias ``cN``, or ``all`` (every
+    # controlled marker). Multiple tokens fan the row out into one
+    # independent send per resolved marker. Empty list = no default marker:
+    # rows using only literals or explicit refs (``[x:markerN]``) still
+    # dispatch; rows using a default-marker placeholder skip with "no default
+    # marker configured" until a token is set.
+    markers: list[str] = field(default_factory=list)
     # Optional default virtual fader. Bare placeholders (``[fader]``,
     # ``[float]``, ``[int:min-max]``) resolve through this; explicit refs
     # (``[fader:3]``) ignore it. ``None`` = unset; ``0`` is rejected at
@@ -1280,7 +1362,7 @@ class OscTransmitterConfig:
         if not isinstance(self.destination_id, str):
             self.destination_id = ""
         self.destination_id = self.destination_id.strip()
-        self.marker_id = _coerce_optional_marker_id(self.marker_id)
+        self.markers = _coerce_marker_tokens(self.markers)
         # ``None`` for unset, else 1..VIRTUAL_FADER_COUNT; out-of-range/junk
         # collapses to ``None`` rather than routing to a valid-but-wrong fader.
         self.default_fader = _coerce_optional_int(
@@ -1349,6 +1431,12 @@ class OscTransmittersConfig:
                         "kind": "stream",
                         "rate_hz": row_data["rate_hz"],
                     }
+                # Legacy lift: a single ``marker_id`` becomes the one-token
+                # ``markers`` list (``_coerce_marker_tokens`` handles the
+                # scalar). ``_filter_known`` would otherwise drop the unknown
+                # key and lose the operator's default marker.
+                if "markers" not in row_data and "marker_id" in row_data:
+                    row_data["markers"] = row_data["marker_id"]
                 coerced_transmitters.append(
                     OscTransmitterConfig(
                         **_filter_known(OscTransmitterConfig, row_data),

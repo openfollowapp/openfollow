@@ -584,7 +584,7 @@ def test_fader_on_change_marker_source_survives_save_reload(
             transmitters=[
                 OscTransmitterConfig(
                     id="r1",
-                    marker_id=4,
+                    markers=["4"],
                     trigger=FaderOnChangeTrigger(marker_id=4, rate_hz=30),
                 ),
             ]
@@ -4163,70 +4163,48 @@ class TestOscTransmitterConfig:
         assert not hasattr(row, "framing")
         assert row.destination_id == ""
 
-    def test_marker_id_default_is_none(self) -> None:
-        """marker_id defaults to None (not yet chosen by operator)."""
-        assert OscTransmitterConfig().marker_id is None
+    def test_markers_default_is_empty(self) -> None:
+        """markers defaults to [] (no default marker chosen yet)."""
+        assert OscTransmitterConfig().markers == []
 
-    def test_marker_id_explicit_zero_preserved(self) -> None:
+    def test_markers_explicit_zero_preserved(self) -> None:
         """An operator who deliberately picks marker 0 must see that
-        choice round-trip through the schema – distinct from
-        "unset" (``None``)."""
-        assert OscTransmitterConfig(marker_id=0).marker_id == 0
+        choice round-trip through the schema – distinct from "unset"."""
+        assert OscTransmitterConfig(markers=["0"]).markers == ["0"]
 
-    def test_marker_id_explicit_int_preserved(self) -> None:
-        assert OscTransmitterConfig(marker_id=5).marker_id == 5
+    def test_markers_explicit_int_preserved(self) -> None:
+        assert OscTransmitterConfig(markers=["5"]).markers == ["5"]
 
-    def test_marker_id_negative_collapses_to_none(self) -> None:
-        """Invalid input collapses to None so the runtime surfaces
-        "no default marker configured" instead of using marker 0."""
-        assert OscTransmitterConfig(marker_id=-3).marker_id is None
+    def test_markers_csv_string_parses_sorts_and_dedupes(self) -> None:
+        """A hand-edited comma-separated string canonicalises: numeric ids
+        sort ascending, duplicates drop."""
+        assert OscTransmitterConfig(markers="7, 3, 1, 3").markers == ["1", "3", "7"]  # type: ignore[arg-type]
 
-    def test_marker_id_bogus_string_collapses_to_none(self) -> None:
-        assert (
-            OscTransmitterConfig(
-                marker_id="bogus",  # type: ignore[arg-type]
-            ).marker_id
-            is None
-        )
+    def test_markers_controller_alias_preserved(self) -> None:
+        assert OscTransmitterConfig(markers="c2, 1").markers == ["1", "c2"]  # type: ignore[arg-type]
 
-    def test_marker_id_empty_string_collapses_to_none(self) -> None:
-        """Web form posts an empty string when the operator clears
-        the input; that must mean ``None``, not "marker 0"."""
-        assert (
-            OscTransmitterConfig(
-                marker_id="",  # type: ignore[arg-type]
-            ).marker_id
-            is None
-        )
+    def test_markers_all_keyword_collapses_list(self) -> None:
+        """``all`` subsumes every other entry."""
+        assert OscTransmitterConfig(markers="1, all, c3").markers == ["all"]  # type: ignore[arg-type]
 
-    def test_marker_id_whitespace_string_collapses_to_none(self) -> None:
-        assert (
-            OscTransmitterConfig(
-                marker_id="   ",  # type: ignore[arg-type]
-            ).marker_id
-            is None
-        )
+    def test_markers_invalid_entries_are_dropped(self) -> None:
+        """Negatives, floats, bad aliases (c0 / c01), and junk are ignored
+        rather than collapsing the whole field."""
+        assert OscTransmitterConfig(markers="1, -3, bogus, 1.5, c0, c01, 4").markers == ["1", "4"]  # type: ignore[arg-type]
 
-    def test_marker_id_bool_collapses_to_none(self) -> None:
-        """``True`` is an ``int`` subclass – accepting it would silently
-        promote a hand-edited ``marker_id = true`` to marker 1.
-        Mirrors the bool guard in :func:`_coerce_int`."""
-        assert (
-            OscTransmitterConfig(
-                marker_id=True,  # type: ignore[arg-type]
-            ).marker_id
-            is None
-        )
+    def test_markers_empty_string_is_empty_list(self) -> None:
+        assert OscTransmitterConfig(markers="   ").markers == []  # type: ignore[arg-type]
 
-    def test_marker_id_float_collapses_to_none(self) -> None:
-        """Float marker_id must reject (could silently truncate to wrong marker)."""
-        for bad in (1.5, 0.1, -0.5, 1.0, float("inf"), float("nan")):
-            assert (
-                OscTransmitterConfig(
-                    marker_id=bad,  # type: ignore[arg-type]
-                ).marker_id
-                is None
-            ), f"expected None for marker_id={bad!r}"
+    def test_markers_bool_collapses_to_empty(self) -> None:
+        """``True`` is an ``int`` subclass – a hand-edited ``markers = true``
+        must not become marker 1."""
+        assert OscTransmitterConfig(markers=True).markers == []  # type: ignore[arg-type]
+
+    def test_markers_legacy_int_lift(self) -> None:
+        """A bare int (the legacy single ``marker_id``) lifts to a one-token
+        list; a negative lifts to empty."""
+        assert OscTransmitterConfig(markers=5).markers == ["5"]  # type: ignore[arg-type]
+        assert OscTransmitterConfig(markers=-3).markers == []  # type: ignore[arg-type]
 
     def test_non_string_template_id_collapses_to_empty(self) -> None:
         cfg = OscTransmitterConfig(template_id=99)  # type: ignore[arg-type]
@@ -4972,40 +4950,31 @@ class TestOscTransmittersConfigLegacyLift:
         assert rows[1].id == "row2"
         assert rows[1].destination_id == "d2"
 
-    def test_marker_id_none_round_trips_through_toml(
+    def test_markers_empty_round_trips_through_toml(
         self,
         temp_config_path,  # noqa: ANN001
     ) -> None:
         original = AppConfig(
             osc_transmitters=OscTransmittersConfig(
                 transmitters=[
-                    OscTransmitterConfig(id="r1", marker_id=None),
+                    OscTransmitterConfig(id="r1", markers=[]),
                 ],
             ),
         )
         save_config(original, str(temp_config_path))
-        # Confirm the dump didn't write a ``marker_id`` key for the
-        # row – otherwise a future reader that *does* coerce the
-        # absent-value branch differently could disagree with us.
-        with open(temp_config_path, "rb") as f:
-            raw = tomllib.load(f)
-        row = raw["osc_transmitters"]["transmitters"][0]
-        assert "marker_id" not in row
         reloaded = load_config(str(temp_config_path))
-        assert reloaded.osc_transmitters.transmitters[0].marker_id is None
+        assert reloaded.osc_transmitters.transmitters[0].markers == []
 
-    def test_marker_id_explicit_zero_round_trips_through_toml(
+    def test_markers_multi_round_trips_through_toml(
         self,
         temp_config_path,  # noqa: ANN001
     ) -> None:
-        """An operator who deliberately set marker 0 must see that
-        choice survive a save / reload cycle – distinct from
-        "unset" (``None``). ``0`` is not stripped by
-        :func:`_strip_none` because it isn't ``None``."""
+        """A multi-marker row (ids + alias) survives a save / reload cycle
+        in canonical order."""
         original = AppConfig(
             osc_transmitters=OscTransmittersConfig(
                 transmitters=[
-                    OscTransmitterConfig(id="r1", marker_id=0),
+                    OscTransmitterConfig(id="r1", markers=["7", "0", "c1"]),
                 ],
             ),
         )
@@ -5013,24 +4982,22 @@ class TestOscTransmittersConfigLegacyLift:
         with open(temp_config_path, "rb") as f:
             raw = tomllib.load(f)
         row = raw["osc_transmitters"]["transmitters"][0]
-        assert row["marker_id"] == 0
+        assert row["markers"] == ["0", "7", "c1"]
         reloaded = load_config(str(temp_config_path))
-        assert reloaded.osc_transmitters.transmitters[0].marker_id == 0
+        assert reloaded.osc_transmitters.transmitters[0].markers == ["0", "7", "c1"]
 
-    def test_marker_id_explicit_int_round_trips_through_toml(
+    def test_legacy_marker_id_lifts_into_markers(
         self,
         temp_config_path,  # noqa: ANN001
     ) -> None:
-        original = AppConfig(
-            osc_transmitters=OscTransmittersConfig(
-                transmitters=[
-                    OscTransmitterConfig(id="r1", marker_id=7),
-                ],
-            ),
+        """A hand-edited TOML row carrying the legacy single ``marker_id``
+        key lifts into the one-token ``markers`` list on load."""
+        temp_config_path.write_text(
+            "[[osc_transmitters.transmitters]]\nid = 'r1'\nmarker_id = 4\n",
+            encoding="utf-8",
         )
-        save_config(original, str(temp_config_path))
         reloaded = load_config(str(temp_config_path))
-        assert reloaded.osc_transmitters.transmitters[0].marker_id == 7
+        assert reloaded.osc_transmitters.transmitters[0].markers == ["4"]
 
 
 def test_new_uuid_hex_returns_unique_strings_each_call() -> None:

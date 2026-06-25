@@ -86,17 +86,25 @@ def _destinations(*dests: OscDestinationConfig) -> OscDestinationsConfig:
 
 
 def _row(**overrides: Any) -> OscTransmitterConfig:
-    """Transmitter row with defaults; tests override only what they assert."""
+    """Transmitter row with defaults; tests override only what they assert.
+
+    ``marker_id=<id|None>`` is accepted as shorthand for the single
+    default-marker case and mapped onto the ``markers`` list (``None`` →
+    no default marker); pass ``markers=[...]`` directly to exercise the
+    multi-marker fan-out."""
     defaults: dict[str, Any] = {
         "id": "row-1",
         "enabled": True,
         "destination_id": _DEFAULT_DEST_ID,
-        "marker_id": 0,
+        "markers": ["0"],
         "template_id": "",
         "address": "/cue/[markerid]",
         "args": ["[x]", "[y]", "[z]"],
         "rate_hz": 60,
     }
+    if "marker_id" in overrides:
+        mid = overrides.pop("marker_id")
+        overrides["markers"] = [] if mid is None else [str(mid)]
     defaults.update(overrides)
     return OscTransmitterConfig(**defaults)
 
@@ -108,6 +116,7 @@ def _manager(
     fader_values: dict[int, float] | None = None,
     marker_fader_values: dict[int, float] | None = None,
     controller_markers: dict[int, int] | None = None,
+    controlled_markers: list[int] | None = None,
     destinations: OscDestinationsConfig | None = None,
 ) -> tuple[OscTransmitterManager, _FakeOscService]:
     # grid tuple = (width, depth, max_height, z_offset). max_height=0.0
@@ -123,6 +132,10 @@ def _manager(
         fader_provider = fader_values.get
     marker_fader_provider = marker_fader_values.get if marker_fader_values is not None else None
     controller_marker_provider = controller_markers.get if controller_markers is not None else None
+    # ``controlled_markers`` (list of ids) → provider for the ``all`` token +
+    # controlled-only validity filter; None leaves it unwired (numeric tokens
+    # pass through unfiltered, ``all`` yields nothing).
+    controlled_markers_provider = (lambda: list(controlled_markers)) if controlled_markers is not None else None
     manager = OscTransmitterManager(
         osc_service=service,  # type: ignore[arg-type]
         marker_provider=marker_map.get,
@@ -130,6 +143,7 @@ def _manager(
         fader_provider=fader_provider,
         marker_fader_provider=marker_fader_provider,
         controller_marker_provider=controller_marker_provider,
+        controlled_markers_provider=controlled_markers_provider,
     )
     # Seed destinations once; subsequent ``restart(cfg)`` calls (with no
     # destinations arg) keep the staged set, mirroring a transmitter-only edit.
@@ -980,12 +994,12 @@ class TestStreamOnChangeGate:
         manager, _svc = _manager(markers={0: marker})
         manager.restart(OscTransmittersConfig(transmitters=[self._on_change_row()]))
         # Sanity: cache empty before any tick.
-        assert "row-1" not in manager._last_sent_pos
+        assert not any(k[0] == "row-1" for k in manager._last_sent_pos)
         # Diagnostics test packet – must NOT prime the cache.
         result = manager.test_send("row-1")
         assert result is not None
         assert result["sent"] is True
-        assert "row-1" not in manager._last_sent_pos
+        assert not any(k[0] == "row-1" for k in manager._last_sent_pos)
 
     def test_test_send_does_not_skip_against_live_cache(self) -> None:
         # A live tick primed the cache. A subsequent test packet
@@ -1060,7 +1074,7 @@ class TestOnChangeCacheLocking:
         send_release.set()
         tick_thread.join(timeout=2.0)
         assert not tick_thread.is_alive()
-        assert "row-1" not in manager._last_sent_pos
+        assert not any(k[0] == "row-1" for k in manager._last_sent_pos)
 
     def test_recreating_same_id_mid_send_does_not_prime_new_rows_cache(self) -> None:
         # A row dropped then re-created under the SAME id while
@@ -1073,7 +1087,7 @@ class TestOnChangeCacheLocking:
         manager.restart(OscTransmittersConfig(transmitters=[self._on_change_row()]))
         # Snapshot a plan from the original row (plan.source_row = object A).
         original = manager._rows["row-1"]
-        plan = manager._plan_for_row(original)
+        plan = manager._plans_for_row(original)[0]
         # Drop then re-create row-1 → a fresh object B under the same id.
         manager.restart(OscTransmittersConfig(transmitters=[]))
         manager.restart(OscTransmittersConfig(transmitters=[self._on_change_row()]))
@@ -1081,7 +1095,7 @@ class TestOnChangeCacheLocking:
         # The old plan's in-flight send completes and tries to write.
         manager._fire_plan(plan)
         # Identity guard refuses to prime the new row's cache.
-        assert "row-1" not in manager._last_sent_pos
+        assert not any(k[0] == "row-1" for k in manager._last_sent_pos)
 
     def test_in_place_reload_keeps_cache_via_object_identity(self) -> None:
         # The flip side: a cosmetic in-place reload reuses the same row
@@ -1091,12 +1105,12 @@ class TestOnChangeCacheLocking:
         manager, _svc = _manager(markers={0: marker})
         manager.restart(OscTransmittersConfig(transmitters=[self._on_change_row()]))
         manager._tick_once()  # primes cache
-        assert "row-1" in manager._last_sent_pos
+        assert any(k[0] == "row-1" for k in manager._last_sent_pos)
         # Cosmetic reload (same marker_id + trigger kind) reuses the object.
         same = manager._rows["row-1"]
         manager.restart(OscTransmittersConfig(transmitters=[self._on_change_row(name="renamed")]))
         assert manager._rows["row-1"] is same
-        assert "row-1" in manager._last_sent_pos
+        assert any(k[0] == "row-1" for k in manager._last_sent_pos)
 
     def test_per_axis_compare_not_euclidean(self) -> None:
         # 4cm on three axes is ~6.93cm Euclidean (above 5cm), but the
@@ -1231,9 +1245,9 @@ class TestOnChangeCacheLocking:
         manager, _svc = _manager(markers={0: marker})
         manager.restart(OscTransmittersConfig(transmitters=[self._on_change_row()]))
         manager._tick_once()
-        assert "row-1" in manager._last_sent_pos
+        assert any(k[0] == "row-1" for k in manager._last_sent_pos)
         manager.restart(OscTransmittersConfig(transmitters=[]))
-        assert "row-1" not in manager._last_sent_pos
+        assert not any(k[0] == "row-1" for k in manager._last_sent_pos)
 
     # A surviving row whose effective on-change input (default marker)
     # changes must drop its cache entry, else the next tick compares the
@@ -1251,7 +1265,7 @@ class TestOnChangeCacheLocking:
             )
         )
         manager._tick_once()
-        assert "row-1" in manager._last_sent_pos
+        assert any(k[0] == "row-1" for k in manager._last_sent_pos)
         # Swap default marker. New config's cache key is the same
         # ("row-1") but the cached position was marker 0's, not
         # marker 1's. Without invalidation, the next tick would
@@ -1263,7 +1277,7 @@ class TestOnChangeCacheLocking:
                 ]
             )
         )
-        assert "row-1" not in manager._last_sent_pos
+        assert not any(k[0] == "row-1" for k in manager._last_sent_pos)
 
     def test_cache_kept_when_address_template_changes(self) -> None:
         # The gate watches only the default marker, so address / args
@@ -1272,7 +1286,7 @@ class TestOnChangeCacheLocking:
         manager, _svc = _manager(markers={0: marker})
         manager.restart(OscTransmittersConfig(transmitters=[self._on_change_row()]))
         manager._tick_once()
-        assert "row-1" in manager._last_sent_pos
+        assert any(k[0] == "row-1" for k in manager._last_sent_pos)
         manager.restart(
             OscTransmittersConfig(
                 transmitters=[
@@ -1280,7 +1294,7 @@ class TestOnChangeCacheLocking:
                 ]
             )
         )
-        assert "row-1" in manager._last_sent_pos
+        assert any(k[0] == "row-1" for k in manager._last_sent_pos)
 
     def test_cache_kept_when_args_change(self) -> None:
         # Same reasoning as the address-edit case.
@@ -1288,7 +1302,7 @@ class TestOnChangeCacheLocking:
         manager, _svc = _manager(markers={0: marker})
         manager.restart(OscTransmittersConfig(transmitters=[self._on_change_row()]))
         manager._tick_once()
-        assert "row-1" in manager._last_sent_pos
+        assert any(k[0] == "row-1" for k in manager._last_sent_pos)
         manager.restart(
             OscTransmittersConfig(
                 transmitters=[
@@ -1296,7 +1310,7 @@ class TestOnChangeCacheLocking:
                 ]
             )
         )
-        assert "row-1" in manager._last_sent_pos
+        assert any(k[0] == "row-1" for k in manager._last_sent_pos)
 
     def test_cache_dropped_when_trigger_kind_changes(self) -> None:
         from openfollow.configuration import HotkeyTrigger
@@ -1305,7 +1319,7 @@ class TestOnChangeCacheLocking:
         manager, _svc = _manager(markers={0: marker})
         manager.restart(OscTransmittersConfig(transmitters=[self._on_change_row()]))
         manager._tick_once()
-        assert "row-1" in manager._last_sent_pos
+        assert any(k[0] == "row-1" for k in manager._last_sent_pos)
         # Switch trigger kind from Stream to Hotkey – flipping back
         # to Stream later would otherwise resurrect a stale cache.
         manager.restart(
@@ -1315,7 +1329,7 @@ class TestOnChangeCacheLocking:
                 ]
             )
         )
-        assert "row-1" not in manager._last_sent_pos
+        assert not any(k[0] == "row-1" for k in manager._last_sent_pos)
 
     def test_cache_kept_on_cosmetic_edits(self) -> None:
         # Editing only host / port / name / rate_hz / threshold
@@ -1327,7 +1341,7 @@ class TestOnChangeCacheLocking:
         manager, _svc = _manager(markers={0: marker})
         manager.restart(OscTransmittersConfig(transmitters=[self._on_change_row()]))
         manager._tick_once()
-        assert "row-1" in manager._last_sent_pos
+        assert any(k[0] == "row-1" for k in manager._last_sent_pos)
         # Edit cosmetic fields only (destination/name) and the threshold –
         # threshold change is read fresh per tick, doesn't affect
         # the cached position's meaning.
@@ -1346,7 +1360,7 @@ class TestOnChangeCacheLocking:
                 ]
             )
         )
-        assert "row-1" in manager._last_sent_pos
+        assert any(k[0] == "row-1" for k in manager._last_sent_pos)
 
 
 class TestRingBufferIntegration:
@@ -3579,4 +3593,183 @@ class TestResolverGuards:
         manager._tick_once()  # must not raise
         assert svc.calls == []
         entries = manager.ring_buffer_for("row-c") or []
+        assert entries and entries[-1].status == "skipped"
+
+
+class TestMultiMarkerFanOut:
+    """A row whose ``markers`` field names several markers fans out into one
+    independent send per resolved marker, each rendered against its own
+    marker context."""
+
+    def test_fans_out_one_send_per_marker(self) -> None:
+        manager, svc = _manager(
+            markers={
+                1: _FakeMarker((1.0, 0.0, 0.0)),
+                3: _FakeMarker((3.0, 0.0, 0.0)),
+                7: _FakeMarker((7.0, 0.0, 0.0)),
+            },
+        )
+        manager.restart(
+            OscTransmittersConfig(
+                transmitters=[_row(markers=["7", "3", "1"], address="/m/[markerid]", args=["[x]"])],
+            )
+        )
+        manager._tick_once()
+        # One send per marker, lowest id first, each carrying its own id + x.
+        assert [(c[0], c[1]) for c in svc.calls] == [
+            ("/m/1", [1.0]),
+            ("/m/3", [3.0]),
+            ("/m/7", [7.0]),
+        ]
+
+    def test_non_marker_dependent_row_sends_once(self) -> None:
+        """A row whose message doesn't reference the default marker emits a
+        single packet even when it names several markers – no duplicates."""
+        manager, svc = _manager(markers={1: _FakeMarker((0.0, 0.0, 0.0)), 3: _FakeMarker((0.0, 0.0, 0.0))})
+        manager.restart(
+            OscTransmittersConfig(
+                transmitters=[_row(markers=["1", "3"], address="/go", args=["1"])],
+            )
+        )
+        manager._tick_once()
+        assert [c[0] for c in svc.calls] == ["/go"]
+
+    def test_on_change_gate_is_per_marker(self) -> None:
+        from openfollow.configuration import StreamTrigger
+
+        m1 = _FakeMarker((0.0, 0.0, 0.0))
+        m3 = _FakeMarker((0.0, 0.0, 0.0))
+        manager, svc = _manager(markers={1: m1, 3: m3})
+        row = _row(
+            markers=["1", "3"],
+            address="/m/[markerid]",
+            args=["[x]"],
+            trigger=StreamTrigger(rate_hz=60, mode="on_change", min_change_m=0.05),
+        )
+        manager.restart(OscTransmittersConfig(transmitters=[row]))
+        manager._tick_once()  # primes both markers
+        assert len(svc.calls) == 2
+        svc.calls.clear()
+        # Move only marker 3 → only its send fires; marker 1 is gated.
+        m3.pos = (5.0, 0.0, 0.0)
+        manager._tick_once()
+        assert [(c[0], c[1]) for c in svc.calls] == [("/m/3", [5.0])]
+
+    def test_all_token_expands_to_controlled_markers(self) -> None:
+        manager, svc = _manager(
+            markers={2: _FakeMarker((2.0, 0.0, 0.0)), 5: _FakeMarker((5.0, 0.0, 0.0))},
+            controlled_markers=[5, 2],
+        )
+        manager.restart(
+            OscTransmittersConfig(
+                transmitters=[_row(markers=["all"], address="/m/[markerid]", args=[])],
+            )
+        )
+        manager._tick_once()
+        # Sorted ascending regardless of controlled-list order.
+        assert [c[0] for c in svc.calls] == ["/m/2", "/m/5"]
+
+    def test_all_token_reexpands_after_controlled_change(self) -> None:
+        controlled = [2]
+        markers = {2: _FakeMarker((2.0, 0.0, 0.0)), 5: _FakeMarker((5.0, 0.0, 0.0))}
+        service = _FakeOscService()
+        manager = OscTransmitterManager(
+            osc_service=service,  # type: ignore[arg-type]
+            marker_provider=markers.get,
+            grid_provider=lambda: (10.0, 6.0, 0.0, 0.0),
+            controlled_markers_provider=lambda: list(controlled),
+        )
+        manager.restart(
+            OscTransmittersConfig(transmitters=[_row(markers=["all"], address="/m/[markerid]", args=[])]),
+            _destinations(),
+        )
+        manager._tick_once()
+        assert [c[0] for c in service.calls] == ["/m/2"]
+        service.calls.clear()
+        # Operator adds marker 5 to the controlled set – no manager restart.
+        controlled.append(5)
+        manager._tick_once()
+        assert [c[0] for c in service.calls] == ["/m/2", "/m/5"]
+
+    def test_non_controlled_numeric_token_dropped(self) -> None:
+        manager, svc = _manager(
+            markers={2: _FakeMarker((2.0, 0.0, 0.0)), 5: _FakeMarker((5.0, 0.0, 0.0))},
+            controlled_markers=[2],
+        )
+        manager.restart(
+            OscTransmittersConfig(
+                transmitters=[_row(markers=["2", "5"], address="/m/[markerid]", args=[])],
+            )
+        )
+        manager._tick_once()
+        # Marker 5 isn't controlled → dropped; only marker 2 sends.
+        assert [c[0] for c in svc.calls] == ["/m/2"]
+
+    def test_controller_alias_resolves_to_driven_marker(self) -> None:
+        manager, svc = _manager(
+            markers={4: _FakeMarker((4.0, 0.0, 0.0))},
+            controller_markers={0: 4},  # controller c1 drives marker 4
+        )
+        manager.restart(
+            OscTransmittersConfig(
+                transmitters=[_row(markers=["c1"], address="/m/[markerid]", args=[])],
+            )
+        )
+        manager._tick_once()
+        assert [c[0] for c in svc.calls] == ["/m/4"]
+
+    def test_all_token_without_controlled_provider_yields_nothing(self) -> None:
+        # No controlled-markers provider wired → ``all`` can't enumerate the
+        # controlled set, so the marker-dependent row skips.
+        manager, svc = _manager(markers={1: _FakeMarker((1.0, 0.0, 0.0))})
+        manager.restart(
+            OscTransmittersConfig(
+                transmitters=[_row(markers=["all"], address="/m/[markerid]", args=[])],
+            )
+        )
+        manager._tick_once()
+        assert svc.calls == []
+
+    def test_controller_alias_without_provider_yields_nothing(self) -> None:
+        # No controller-marker provider wired → ``cN`` resolves to nothing.
+        manager, svc = _manager(markers={4: _FakeMarker((4.0, 0.0, 0.0))})
+        manager.restart(
+            OscTransmittersConfig(
+                transmitters=[_row(markers=["c1"], address="/m/[markerid]", args=[])],
+            )
+        )
+        manager._tick_once()
+        assert svc.calls == []
+
+    def test_duplicate_resolved_marker_is_deduped(self) -> None:
+        # ``c1`` resolves to marker 3, which is also named explicitly → the
+        # two tokens collapse to a single send.
+        manager, svc = _manager(
+            markers={3: _FakeMarker((3.0, 0.0, 0.0))},
+            controlled_markers=[3],
+            controller_markers={0: 3},
+        )
+        manager.restart(
+            OscTransmittersConfig(
+                transmitters=[_row(markers=["3", "c1"], address="/m/[markerid]", args=[])],
+            )
+        )
+        manager._tick_once()
+        assert [c[0] for c in svc.calls] == ["/m/3"]
+
+    def test_controller_alias_skips_when_unconnected(self) -> None:
+        manager, svc = _manager(
+            markers={4: _FakeMarker((4.0, 0.0, 0.0))},
+            controller_markers={},  # c1 drives nothing
+        )
+        manager.restart(
+            OscTransmittersConfig(
+                transmitters=[_row(markers=["c1"], address="/m/[markerid]", args=["[x]"])],
+            )
+        )
+        manager._tick_once()
+        # No resolvable marker → marker-dependent row skips with the
+        # "no default marker configured" reason.
+        assert svc.calls == []
+        entries = manager.ring_buffer_for("row-1") or []
         assert entries and entries[-1].status == "skipped"

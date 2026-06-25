@@ -28,26 +28,23 @@ def draw_zones(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> N
             continue
 
         pts = [(vx, vy, z) for vx, vy in vertices_xy]
-        scr = project(cam, pts, w, h, state.lens_k1, state.lens_k2)
-        # A zone is one closed path: dropping individual non-finite vertices
-        # (e.g. a corner behind the camera) would reconnect non-adjacent
-        # neighbours and warp the outline. Skip the whole zone instead.
-        if not np.all(np.isfinite(scr)):
-            continue
-
         # Under lens distortion each straight edge bows, so build the outline
         # from subdivided edges; otherwise the vertex projection is the outline.
         n = _DISTORTION_SUBDIVISIONS if (state.lens_k1 or state.lens_k2) else 1
         if n == 1:
-            outline = scr
+            outline = project(cam, pts, w, h, state.lens_k1, state.lens_k2)
         else:
             loop = pts + [pts[0]]
             edges = [(loop[i], loop[i + 1]) for i in range(len(pts))]
             polys = _project_segments(cam, edges, w, h, state.lens_k1, state.lens_k2, n)
             # Drop each edge's last point – it repeats the next edge's first.
             outline = np.vstack([poly[:-1] for poly in polys])
-            if not np.all(np.isfinite(outline)):
-                continue
+
+        # A zone is one closed path: dropping individual non-finite vertices
+        # (e.g. a corner behind the camera) would reconnect non-adjacent
+        # neighbours and warp the outline. Skip the whole zone instead.
+        if not np.all(np.isfinite(outline)):
+            continue
 
         r, g, b = parse_hex(color_hex)
         fill_alpha = 0.35 if is_occupied else 0.15
@@ -63,10 +60,11 @@ def draw_zones(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> N
         cr.set_line_width(2.0 if is_occupied else 1.5)
         cr.stroke()
 
-        # Label at polygon centroid
+        # Label at polygon centroid. Without distortion ``outline`` is the corner
+        # projection; with it, the mean of the bowed boundary points.
         if name:
-            cx = float(np.mean(scr[:, 0]))
-            cy = float(np.mean(scr[:, 1]))
+            cx = float(np.mean(outline[:, 0]))
+            cy = float(np.mean(outline[:, 1]))
             label = f"{name} ({count})" if is_occupied else name
             renderer._set_ui_font(cr, 13, bold=is_occupied)
             ext = cr.text_extents(label)

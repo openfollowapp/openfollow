@@ -7085,7 +7085,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         screen_undistorted = invert_overlay_distortion(screen_arr, img_w, img_h, k1, k2)
 
         world_tuples = [tuple(p) for p in world_corners]
-        screen_tuples = [tuple(float(c) for c in p) for p in screen_undistorted]
+        screen_tuples = [(float(p[0]), float(p[1])) for p in screen_undistorted]
 
         result = solve_camera_dlt(world_tuples, screen_tuples, img_w, img_h)
         if result is None:

@@ -2328,10 +2328,10 @@
     cornerPositions.USR = c.USR.slice();
     cornerPositions.USL = c.USL.slice();
 
-    // Bowed edges for the fine-zoom view, rebuilt from the freshly projected
-    // pins (matches the full quad above) so they keep curving while a corner is
-    // later dragged.
-    fineBowedEdges = buildBowedEdges();
+    // Bowed edges for the fine-zoom view, only when the server supplied a bowed
+    // outline (no edge behind the camera) so the zoom boxes match the straight
+    // main quad in the behind-camera fallback instead of curving on their own.
+    fineBowedEdges = (data.outline && data.outline.length) ? buildBowedEdges() : null;
 
     // Refresh fine-zoom boxes AFTER cornerPositions updated so boxes
     // render new positions. Try/catch so zoom code failures don't break
@@ -2802,10 +2802,11 @@
   }
 
   function updateFineQuad() {
-    // Rebuild the bowed boundary from the moved pins so both the full fine view
-    // and the zoom boxes keep curving to match the lens during a drag. Falls
-    // back to a straight 4-corner quad when distortion is off.
-    fineBowedEdges = buildBowedEdges();
+    // Refresh the bowed boundary shape from the moved pins, but only when bowing
+    // is already active for this projection. Keeps the curve live during a drag
+    // without re-enabling it in the behind-camera fallback where the full quad is
+    // straight.
+    if (fineBowedEdges) fineBowedEdges = buildBowedEdges();
     var pts = cornerPositions;
     var quadPts;
     if (fineBowedEdges) {

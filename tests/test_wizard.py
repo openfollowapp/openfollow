@@ -456,6 +456,40 @@ class TestWizardPage:
         assert "/api/wizard/project" not in fn  # no second projection fetch
         assert "review-quad" not in fn  # overlay drawing is delegated
 
+    def test_overlay_bow_gated_on_server_outline(self, live_server) -> None:
+        """The fine-zoom bow must follow the server's bowed outline.
+
+        The server omits ``outline`` when a grid edge projects behind the camera,
+        and the main quad falls back to a straight 4-corner quad. ``updateAllOverlays``
+        must gate ``fineBowedEdges`` on that same ``data.outline`` signal, otherwise
+        the corner zoom boxes curve while the full quad stays straight – the preview
+        disagreeing with itself in the behind-camera fallback.
+        """
+        _, base = live_server
+        status, body = _get(base, "/wizard")
+        assert status == 200
+        start = body.index("function updateAllOverlays(")
+        end = body.index("\n  }", start)
+        fn = body[start:end]
+        assert "fineBowedEdges = (data.outline" in fn  # built only with a server outline
+        assert "fineBowedEdges = buildBowedEdges();" not in fn  # not unconditional
+
+    def test_manual_corner_move_does_not_re_enable_dropped_bow(self, live_server) -> None:
+        """A drag must refresh an active bow, never re-enable a dropped one.
+
+        When the behind-camera fallback leaves ``fineBowedEdges`` null,
+        ``updateFineQuad`` must not rebuild it from the pins – that would curve the
+        fine view while the full quad is straight. The rebuild is guarded on
+        ``fineBowedEdges`` already being set.
+        """
+        _, base = live_server
+        status, body = _get(base, "/wizard")
+        assert status == 200
+        start = body.index("function updateFineQuad(")
+        end = body.index("\n  }", start)
+        fn = body[start:end]
+        assert "if (fineBowedEdges) fineBowedEdges = buildBowedEdges()" in fn
+
     def test_every_overlay_step_has_a_projection_status_surface(self, live_server) -> None:
         """Each step that renders the projected overlay can show a projection error.
 

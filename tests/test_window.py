@@ -1411,6 +1411,7 @@ class TestEventDispatch:
         assert received == []
 
     def test_button_press_and_release_payloads(self, window) -> None:
+        window._pointer_poll = False  # GTK path (Linux/Pi): handlers emit directly
         downs = self._handler_list(window, "pointer_down")
         ups = self._handler_list(window, "pointer_up")
 
@@ -1423,9 +1424,28 @@ class TestEventDispatch:
         assert ups == [{"x": 56.0, "y": 78.0, "button": 3}]
 
     def test_motion_event_payload(self, window) -> None:
+        window._pointer_poll = False  # GTK path (Linux/Pi): handler emits directly
         moves = self._handler_list(window, "pointer_move")
         window._window.fire("motion-notify-event", SimpleNamespace(x=100.0, y=200.0))
         assert moves == [{"x": 100.0, "y": 200.0}]
+
+    def test_gtk_pointer_handlers_defer_to_poll_on_macos(self, window) -> None:
+        # macOS: the per-frame poll is the authoritative pointer source. GTK also
+        # delivers these intermittently, and a duplicated right-click would read as
+        # a double-click (reset). While polling is active the GTK button/motion
+        # handlers must emit nothing so one physical click is exactly one event.
+        window._pointer_poll = True
+        downs = self._handler_list(window, "pointer_down")
+        ups = self._handler_list(window, "pointer_up")
+        moves = self._handler_list(window, "pointer_move")
+
+        window._window.fire("button-press-event", SimpleNamespace(x=12.0, y=34.0, button=3))
+        window._window.fire("button-release-event", SimpleNamespace(x=12.0, y=34.0, button=3))
+        window._window.fire("motion-notify-event", SimpleNamespace(x=100.0, y=200.0))
+
+        assert downs == []
+        assert ups == []
+        assert moves == []
 
     def test_configure_event_emits_resize(self, window) -> None:
         resizes = self._handler_list(window, "resize")

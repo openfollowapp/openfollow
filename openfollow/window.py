@@ -529,14 +529,23 @@ class GtkNativeSinkWindow:
         return True
 
     def _on_button_press(self, widget: Any, event: Any) -> bool:
+        if self._pointer_poll:
+            return True  # macOS: poll is authoritative – see _on_motion
         self._emit("pointer_down", x=event.x, y=event.y, button=int(event.button))
         return True
 
     def _on_button_release(self, widget: Any, event: Any) -> bool:
+        if self._pointer_poll:
+            return True  # macOS: poll is authoritative – see _on_motion
         self._emit("pointer_up", x=event.x, y=event.y, button=int(event.button))
         return True
 
     def _on_motion(self, widget: Any, event: Any) -> bool:
+        if self._pointer_poll:
+            # macOS: the per-frame poll is the authoritative pointer source. GTK also
+            # delivers these intermittently here, and a duplicated right-click reads as a
+            # double-click (reset). Defer so one physical click is one event.
+            return True
         self._emit("pointer_move", x=event.x, y=event.y)
         return True
 

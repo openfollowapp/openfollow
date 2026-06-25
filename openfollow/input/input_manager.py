@@ -11,6 +11,7 @@ from openfollow.input.events import InputEventBus
 from openfollow.input.gamepad import GamepadHandler, GamepadUpdate
 from openfollow.input.keyboard import KeyboardHandler
 from openfollow.input.mouse import MouseHandler
+from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.osc.input import OscMarkerAdapter
 from openfollow.osc.operator_message import OperatorMessageOscAdapter
 from openfollow.runtime.services_detection_pin import (
@@ -73,6 +74,9 @@ class InputManager:
             marker_resolver=self._gamepad_marker_id,
         )
         self.mouse_handler = MouseHandler(app)
+        # The mouse glide runs every frame; a persistent failure must not flood
+        # the log at the display tick rate.
+        self._mouse_update_err_log = ThrottledExceptionLogger(logger, "Mouse update failed this tick.")
 
         osc_cfg = app._config.osc
         # Marker-position OSC input flows through the unified OSC
@@ -195,7 +199,7 @@ class InputManager:
             try:
                 self.mouse_handler.update()
             except Exception:
-                logger.exception("Mouse update failed this tick.")
+                self._mouse_update_err_log.log()
 
         # MIDI hotplug: keep the patch-missing badge (and listener ports)
         # tracking live hardware between config saves, mirroring the gamepad

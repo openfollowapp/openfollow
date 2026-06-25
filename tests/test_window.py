@@ -1382,10 +1382,9 @@ class TestEventDispatch:
         )
         assert received == [{"dy": 1.0}]
 
-    def test_scroll_event_legacy_discrete_is_ignored(self, window) -> None:
-        """A legacy discrete event (ok=False) on its own emits nothing – it is
-        a duplicate of the smooth event on every supported platform, so the
-        smooth path is authoritative."""
+    def test_scroll_emulated_discrete_is_ignored(self, window) -> None:
+        """A pointer-emulated discrete event (the duplicate GDK synthesises for
+        each smooth notch) emits nothing, so a notch isn't counted twice."""
         received = self._handler_list(window, "wheel")
         for direction in (FakeGdkScrollDirection.UP, FakeGdkScrollDirection.DOWN):
             window._window.fire(
@@ -1393,8 +1392,38 @@ class TestEventDispatch:
                 SimpleNamespace(
                     get_scroll_deltas=lambda: (False, 0.0, 0.0),
                     direction=direction,
+                    get_pointer_emulated=lambda: True,
                 ),
             )
+        assert received == []
+
+    def test_scroll_discrete_only_device_drives_wheel(self, window) -> None:
+        """A genuine discrete-only device (not pointer-emulated, never emits a
+        smooth event) still drives wheel-Z: UP -> +1, DOWN -> -1."""
+        received = self._handler_list(window, "wheel")
+        for direction in (FakeGdkScrollDirection.UP, FakeGdkScrollDirection.DOWN):
+            window._window.fire(
+                "scroll-event",
+                SimpleNamespace(
+                    get_scroll_deltas=lambda: (False, 0.0, 0.0),
+                    direction=direction,
+                    get_pointer_emulated=lambda: False,
+                ),
+            )
+        assert received == [{"dy": 1.0}, {"dy": -1.0}]
+
+    def test_scroll_discrete_without_emulated_accessor_is_dropped(self, window) -> None:
+        """When GDK's pointer-emulated accessor is unavailable the discrete event
+        is treated as a duplicate (dropped), preserving smooth-authoritative
+        behaviour rather than risking a double count."""
+        received = self._handler_list(window, "wheel")
+        window._window.fire(
+            "scroll-event",
+            SimpleNamespace(
+                get_scroll_deltas=lambda: (False, 0.0, 0.0),
+                direction=FakeGdkScrollDirection.UP,
+            ),
+        )
         assert received == []
 
     def test_scroll_event_other_direction_emits_nothing(self, window) -> None:

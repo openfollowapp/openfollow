@@ -630,6 +630,23 @@ class TestDoubleClickReset:
         handler.on_pointer_down(cx, cy, 3)  # right-click #2 within window
         assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
 
+    def test_new_grab_between_right_clicks_does_not_reset(self) -> None:
+        # The double-click window must not straddle two separate grab/release
+        # cycles: grab -> release(#1) -> grab -> release(#2) within the window is
+        # two intentional releases, not a double-click reset. A fresh grab
+        # disarms the pending reset.
+        app = _DummyApp()
+        handler, clock = self._handler_with_clock(app)
+        cx, cy = self._grab_then(handler, app)  # grab A
+        clock.t = 0.05
+        handler.on_pointer_down(cx, cy, 3)  # release A (#1)
+        clock.t = 0.10
+        handler.on_pointer_down(cx, cy, 1)  # grab B (re-grab, disarms)
+        clock.t = 0.15
+        handler.on_pointer_down(cx, cy, 3)  # release B (#2) – must NOT reset
+        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
+        assert handler.active is False
+
     def test_left_double_click_no_longer_resets(self) -> None:
         # Reset lives on the right button now; two left-clicks just grab.
         app = _DummyApp()

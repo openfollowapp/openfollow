@@ -20,6 +20,7 @@ import pytest
 from openfollow.logging_setup import (
     DEFAULT_RING_CAPACITY,
     RingBufferLogHandler,
+    ThrottledExceptionLogger,
     _JournalPriorityFormatter,
     _sd_priority,
     _under_systemd,
@@ -231,6 +232,89 @@ def test_under_systemd_follows_journal_stream_env(monkeypatch: pytest.MonkeyPatc
     assert _under_systemd() is False
     monkeypatch.setenv("JOURNAL_STREAM", "8:123456")
     assert _under_systemd() is True
+
+
+# ---------------------------------------------------------------------------
+# ThrottledExceptionLogger
+# ---------------------------------------------------------------------------
+
+
+class _Clock:
+    """Controllable monotonic clock."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def _raise_then_log(throttle: ThrottledExceptionLogger) -> None:
+    """Call ``throttle.log()`` from inside an ``except`` so exc_info is live."""
+    try:
+        raise RuntimeError("boom")
+    except RuntimeError:
+        throttle.log()
+
+
+def test_throttled_logger_emits_first_and_suppresses_within_interval(caplog: pytest.LogCaptureFixture) -> None:
+    clock = _Clock()
+    logger = logging.getLogger("openfollow.test.throttle.a")
+    throttle = ThrottledExceptionLogger(logger, "tick failed", interval=5.0, clock=clock)
+
+    with caplog.at_level(logging.ERROR, logger=logger.name):
+        for step in range(4):  # t = 0, 1, 2, 3 – all within the 5 s window
+            clock.t = float(step)
+            _raise_then_log(throttle)
+
+    records = [r for r in caplog.records if r.name == logger.name]
+    assert len(records) == 1  # only the first emitted; the rest were suppressed
+    assert records[0].getMessage() == "tick failed"
+    # logger.exception captured the active traceback.
+    assert records[0].exc_info is not None
+
+
+def test_throttled_logger_reports_suppressed_count_after_interval(caplog: pytest.LogCaptureFixture) -> None:
+    clock = _Clock()
+    logger = logging.getLogger("openfollow.test.throttle.b")
+    throttle = ThrottledExceptionLogger(logger, "tick failed", interval=5.0, clock=clock)
+
+    with caplog.at_level(logging.ERROR, logger=logger.name):
+        clock.t = 0.0
+        _raise_then_log(throttle)  # emit
+        clock.t = 1.0
+        _raise_then_log(throttle)  # suppressed (1)
+        clock.t = 2.0
+        _raise_then_log(throttle)  # suppressed (2)
+        clock.t = 6.0
+        _raise_then_log(throttle)  # interval elapsed -> emit with the count
+
+    messages = [r.getMessage() for r in caplog.records if r.name == logger.name]
+    assert messages[0] == "tick failed"
+    assert messages[1] == "tick failed (2 more suppressed in the last 5s)"
+
+
+def test_throttled_logger_resets_suppressed_count_after_emit(caplog: pytest.LogCaptureFixture) -> None:
+    clock = _Clock()
+    logger = logging.getLogger("openfollow.test.throttle.c")
+    throttle = ThrottledExceptionLogger(logger, "tick failed", interval=5.0, clock=clock)
+
+    with caplog.at_level(logging.ERROR, logger=logger.name):
+        clock.t = 0.0
+        _raise_then_log(throttle)  # emit
+        clock.t = 1.0
+        _raise_then_log(throttle)  # suppressed (1)
+        clock.t = 6.0
+        _raise_then_log(throttle)  # emit "(1 more suppressed...)"
+        clock.t = 12.0
+        _raise_then_log(throttle)  # emit, count reset -> no suppressed suffix
+
+    messages = [r.getMessage() for r in caplog.records if r.name == logger.name]
+    assert messages == [
+        "tick failed",
+        "tick failed (1 more suppressed in the last 5s)",
+        "tick failed",
+    ]
 
 
 def _managed_stream() -> logging.StreamHandler:

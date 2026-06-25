@@ -9,9 +9,14 @@ RenderCanvas-compatible event API and a display-tick animation loop.
 
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Callable
 from typing import Any
+
+from openfollow.logging_setup import ThrottledExceptionLogger
+
+logger = logging.getLogger(__name__)
 
 # GDK key name → rendercanvas-style key name
 _GDK_KEY_MAP: dict[str, str] = {
@@ -141,6 +146,9 @@ class GtkNativeSinkWindow:
         self._poll_last_pos: tuple[int, int] | None = None
         self._poll_btn1 = False
         self._poll_btn3 = False
+        # The pointer poll runs every frame; throttle its failure log so a
+        # persistent error can't flood the journal at the display tick rate.
+        self._poll_err_log = ThrottledExceptionLogger(logger, "Pointer poll failed")
         self._setup_events()
         self._window.show_all()
 
@@ -440,9 +448,7 @@ class GtkNativeSinkWindow:
         try:
             self.poll_pointer()
         except Exception:
-            import logging
-
-            logging.getLogger(__name__).exception("Pointer poll failed")
+            self._poll_err_log.log()
         if self._tick_fn is not None:
             try:
                 self._tick_fn()
@@ -512,20 +518,48 @@ class GtkNativeSinkWindow:
             self._emit("key_up", key=name)
         return self._overlay_widget is None
 
+    @staticmethod
+    def _scroll_is_emulated(event: Any) -> bool:
+        """True if a discrete scroll event is a smooth-scroll duplicate.
+
+        GDK marks the legacy UP/DOWN event it synthesises alongside each smooth
+        notch as pointer-emulated. Dropping those (regardless of arrival order)
+        is what stops a notch from moving Z twice on a smooth-capable device,
+        while leaving a genuine discrete-only device (not emulated) working.
+        Defaults to ``True`` (treat as a duplicate) when the GDK accessor is
+        unavailable, preserving the smooth-authoritative behaviour.
+        """
+        getter = getattr(event, "get_pointer_emulated", None)
+        if getter is None:
+            return True
+        try:
+            return bool(getter())
+        except Exception:  # pragma: no cover - defensive: GDK accessor failure
+            return True
+
     def _on_scroll(self, widget: Any, event: Any) -> bool:
+        Gdk = self._Gdk
         ok, _dx, dy = event.get_scroll_deltas()
-        # Scroll-capable devices on the supported platforms (libinput/Wayland on
-        # the Pi, Quartz on macOS) deliver one smooth-scroll event per wheel
-        # notch. GTK *also* emits a legacy discrete UP/DOWN event for the same
-        # notch; handling both moves Z twice per notch, so we process only the
-        # smooth event (``ok``) and drop the discrete duplicate. The smooth
-        # delta is collapsed to a single unit tick so one notch == one
-        # ``mouse_wheel_z_step`` regardless of the device's reported magnitude
-        # (some report e.g. 1.5/notch, which would otherwise scale the step).
-        # GTK dy > 0 is scroll *down* → emit -1 (lower); dy < 0 is up → +1
-        # (raise). dy == 0 is a horizontal-only event → no vertical tick.
-        if ok and dy:
-            self._emit("wheel", dy=-1.0 if dy > 0 else 1.0)
+        if ok:
+            # Smooth event – authoritative. Collapsed to a single unit tick so
+            # one notch == one ``mouse_wheel_z_step`` regardless of the device's
+            # reported magnitude (some report e.g. 1.5/notch, which would
+            # otherwise scale the step). GTK dy > 0 is scroll *down* → emit -1
+            # (lower); dy < 0 is up → +1 (raise). dy == 0 is horizontal → no tick.
+            if dy:
+                self._emit("wheel", dy=-1.0 if dy > 0 else 1.0)
+            return True
+        # Legacy discrete event. On a smooth-capable device GDK emits one of
+        # these per notch *in addition* to the smooth event, flagged as
+        # pointer-emulated; that duplicate is dropped so the notch isn't counted
+        # twice. A genuine discrete-only device (no smooth events) is not
+        # emulated, so it drives wheel-Z here.
+        if self._scroll_is_emulated(event):
+            return True
+        if event.direction == Gdk.ScrollDirection.UP:
+            self._emit("wheel", dy=1.0)
+        elif event.direction == Gdk.ScrollDirection.DOWN:
+            self._emit("wheel", dy=-1.0)
         return True
 
     def _on_button_press(self, widget: Any, event: Any) -> bool:

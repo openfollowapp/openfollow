@@ -238,6 +238,9 @@ class MouseHandler:
         # current position the first time a move sets a target.
         self._target_world = None
         self._smooth_world = None
+        # A fresh grab disarms any pending double-right-click: the reset window
+        # must not straddle two separate grab/release cycles.
+        self._last_rclick = None
         logger.info("Mouse grabbed marker %s", tid)
         return True
 

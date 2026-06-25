@@ -1412,6 +1412,21 @@ class TestEventDispatch:
             )
         assert received == [{"dy": 1.0}, {"dy": -1.0}]
 
+    def test_scroll_discrete_only_horizontal_emits_nothing(self, window) -> None:
+        """A non-emulated discrete LEFT/RIGHT event has no vertical semantics, so
+        it falls through the discrete fallback without emitting."""
+        received = self._handler_list(window, "wheel")
+        for direction in (FakeGdkScrollDirection.LEFT, FakeGdkScrollDirection.RIGHT):
+            window._window.fire(
+                "scroll-event",
+                SimpleNamespace(
+                    get_scroll_deltas=lambda: (False, 0.0, 0.0),
+                    direction=direction,
+                    get_pointer_emulated=lambda: False,
+                ),
+            )
+        assert received == []
+
     def test_scroll_discrete_without_emulated_accessor_is_dropped(self, window) -> None:
         """When GDK's pointer-emulated accessor is unavailable the discrete event
         is treated as a duplicate (dropped), preserving smooth-authoritative

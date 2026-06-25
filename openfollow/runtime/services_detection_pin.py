@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import numpy.typing as npt
 
-from openfollow.scene.solver import unproject_to_plane
+from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
 if TYPE_CHECKING:
     from openfollow.psn.marker import Marker
@@ -260,6 +260,11 @@ def apply_detection_pin(
     screen_pt[0, 0] = screen_x
     screen_pt[0, 1] = screen_y
 
+    # Detections come from the (lens-distorted) video frame, so undistort the pin
+    # point back to the pinhole frame before unprojecting. Identity when no lens
+    # distortion is configured.
+    screen_pt = invert_overlay_distortion(screen_pt, float(w), float(h), cfg.camera.lens_k1, cfg.camera.lens_k2)
+
     plane_z = cfg.grid.z_offset if use_bottom else marker.pos[2]
     world = unproject_to_plane(params, screen_pt, float(w), float(h), plane_z)
 
@@ -329,7 +334,10 @@ def _apply_assist_pin(
         """
         screen_pt[0, 0] = (box.x1 + box.x2) / 2.0 * w
         screen_pt[0, 1] = (box.y2 if use_bottom else box.y1) * h
-        world = unproject_to_plane(params, screen_pt, float(w), float(h), plane_z)
+        # Undistort the detection pin point (it sits on the distorted video) back
+        # to the pinhole frame; identity when no lens distortion is configured.
+        undistorted = invert_overlay_distortion(screen_pt, float(w), float(h), cfg.camera.lens_k1, cfg.camera.lens_k2)
+        world = unproject_to_plane(params, undistorted, float(w), float(h), plane_z)
         if not np.all(np.isfinite(world[0])):
             return None
         return float(world[0, 0]), float(world[0, 1])

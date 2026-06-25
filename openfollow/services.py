@@ -1047,6 +1047,11 @@ class AppRuntimeServices:
             # :meth:`init_input_manager`), so the closure tolerates ``None``
             # until it's populated, long before any 60 Hz render.
             controller_marker_provider=self._controller_marker_provider,
+            # ``markers`` field's ``all`` token + controlled-only validity
+            # filter. Reads the live controlled-id list each tick so a
+            # hot-reload of ``controlled_marker_ids`` re-expands ``all``
+            # without a manager restart.
+            controlled_markers_provider=self._controlled_markers_provider,
         )
         manager.restart(
             self._app._config.osc_transmitters,
@@ -1150,6 +1155,15 @@ class AppRuntimeServices:
         if im is None:
             return None
         return im.controller_marker_id(controller_idx)
+
+    def _controlled_markers_provider(self) -> list[int]:
+        """Snapshot of ``controlled_marker_ids`` for the OSC transmitter
+        ``markers`` field's ``all`` token + controlled-only validity filter.
+
+        Reads ``app._controlled_ids`` (the same list the gamepad routing and
+        marker-fader provisioning use), copied so a concurrent hot-reload
+        swapping the list can't tear a mid-tick read."""
+        return list(self._app._controlled_ids)
 
     def _marker_fader_values_provider(self) -> list[dict[str, Any]]:
         """Snapshot of the per-controlled-marker faders for the MIDI
@@ -2322,9 +2336,12 @@ class AppRuntimeServices:
         if app._camera is None:
             return []
 
-        from openfollow.scene.solver import unproject_to_plane
+        from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
         cam_cfg = app._camera.to_config()
+        # Lens-distortion coefficients live on the config (the pinhole Camera
+        # doesn't carry them), so read them straight from there.
+        lens = app._config.camera
         params = self._zone_cam_buffer
         params[0] = cam_cfg.pos_x
         params[1] = cam_cfg.pos_y
@@ -2340,7 +2357,11 @@ class AppRuntimeServices:
         for det in detections:
             screen_pt[0, 0] = (det.x1 + det.x2) / 2.0 * w
             screen_pt[0, 1] = det.y2 * h  # foot position
-            world = unproject_to_plane(params, screen_pt, float(w), float(h), plane_z)
+            # The detection sits on the (lens-distorted) video, so undistort the
+            # foot point back to the pinhole frame before unprojecting. Identity
+            # when no lens distortion is configured.
+            undistorted = invert_overlay_distortion(screen_pt, float(w), float(h), lens.lens_k1, lens.lens_k2)
+            world = unproject_to_plane(params, undistorted, float(w), float(h), plane_z)
             if not np.all(np.isfinite(world[0])):
                 continue
             # unproject_to_plane returns PSN-absolute world coords, matching

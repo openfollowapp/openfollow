@@ -30,6 +30,7 @@ from openfollow.configuration import (
     VALID_TRIGGER_KINDS,
     VALID_ZONE_EVAL_FPS,
     AppConfig,
+    _canonical_marker_token,
 )
 from openfollow.web.routes import (
     _as_bool,
@@ -241,6 +242,23 @@ def _validate_int_list(value: str, _cfg: AppConfig | None) -> str | None:
     return None
 
 
+def _validate_markers(value: str, _cfg: AppConfig | None) -> str | None:
+    """Per-entry syntax check for the OSC transmitter ``markers`` field.
+
+    Each entry must be a non-negative marker id, a controller alias
+    (``c1``, ``c2``, …), or ``all``. A syntactically-valid id this station
+    doesn't currently control is NOT flagged – it's silently ignored at
+    send time (the station may gain control of it later, and OSC routing
+    never crosses machines). Only malformed tokens block Save."""
+    if not value:
+        return None
+    entries = [e.strip() for e in value.split(",") if e.strip()]
+    for idx, entry in enumerate(entries, start=1):
+        if _canonical_marker_token(entry) is None:
+            return f"Entry {idx} ({entry!r}) must be a marker id, a controller alias (c1, c2, …), or 'all'."
+    return None
+
+
 def _validate_model(value: str, _cfg: AppConfig | None) -> str | None:
     """Model field: free-form filename, but reject traversal."""
     if not value:
@@ -357,6 +375,8 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "focal_length_mm": FieldRule(
             _as_optional_float, lo=0.0, human_error="Focal length must be a positive number (or empty)."
         ),
+        "lens_k1": FieldRule(_as_float, lo=-0.4, hi=0.4, human_error="Must be between -0.4 and 0.4."),
+        "lens_k2": FieldRule(_as_float, lo=-0.2, hi=0.2, human_error="Must be between -0.2 and 0.2."),
     },
     "grid": {
         "visible": FieldRule(_as_bool),
@@ -617,8 +637,15 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         # Connection chosen via a shared OSC destination; empty allowed –
         # an unselected enabled row is a soft "no send", not a blur error.
         "destination_id": FieldRule(_as_str, max_len=64),
-        # marker_id is int | None; empty input means "no default marker".
-        "marker_id": FieldRule(_as_optional_int, lo=0, human_error="Marker id must be ≥ 0."),
+        # ``markers``: comma-separated marker ids / controller aliases (cN) /
+        # ``all``; empty = no default marker. Malformed tokens block; a valid
+        # but non-controlled id is ignored at send time, not flagged here.
+        "markers": FieldRule(
+            _as_str,
+            max_len=256,
+            custom=_validate_markers,
+            human_error="Comma-separated marker ids, controller aliases (c1, c2, …), or 'all'.",
+        ),
         # address + args input; template picker handles choice at row creation time.
         "osc_message": FieldRule(
             _as_str,

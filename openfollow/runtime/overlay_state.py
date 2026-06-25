@@ -141,6 +141,10 @@ class OverlayState:
     selected_id: int | None = None
     # Camera: [pos_x, pos_y, pos_z, pitch, yaw, roll, fov]
     camera_params: npt.NDArray[Any] | None = None
+    # Radial lens-distortion coefficients bowing the overlay to match the lens.
+    # 0/0 = pinhole (no curvature) – the renderer fast-paths to straight lines.
+    lens_k1: float = 0.0
+    lens_k2: float = 0.0
     # Grid: (width, depth, spacing, x_offset, y_offset, z_offset)
     grid_config: tuple[float, float, float, float, float, float] | None = None
     grid_visible: bool = True
@@ -270,6 +274,8 @@ class OverlayState:
         self.markers.clear()
         self.selected_id = None
         self.camera_params = None
+        self.lens_k1 = 0.0
+        self.lens_k2 = 0.0
         self.grid_config = None
         self.grid_visible = True
         self.grid_color = _GRID_COLOR_DEFAULT

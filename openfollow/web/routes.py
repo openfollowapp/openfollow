@@ -49,11 +49,13 @@ if TYPE_CHECKING:
 
 from openfollow.configuration import (
     DEFAULT_UPDATE_SERVICE_NAME,
+    MARKER_TOKEN_ALL,
     VALID_BUTTON_NAMES,
     AppConfig,
     OscDestinationConfig,
     OscTransmitterConfig,
     TriggerZoneConfig,
+    _coerce_marker_tokens,
     config_write_lock,
     load_config,
     save_config,
@@ -1293,6 +1295,8 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "fov": _as_float,
         "sensor_width_mm": _as_optional_float,
         "focal_length_mm": _as_optional_float,
+        "lens_k1": _as_float,
+        "lens_k2": _as_float,
     },
     "grid": {
         "visible": _as_bool,
@@ -1514,11 +1518,12 @@ _OSC_BINDING_FIELD_PARSERS: dict[str, _FieldParser] = {
     # Connection is chosen via a shared OSC destination; empty = no
     # destination selected (the row skips sending).
     "destination_id": _as_str,
-    # ``marker_id`` is :class:`int | None`; clearing means "no default
-    # marker", not "marker 0".
-    "marker_id": _as_optional_int,
-    # Default virtual fader, same shape as ``marker_id``: empty → ``None``,
-    # 1..8 preserved, junk collapses to ``None`` in ``__post_init__``.
+    # ``markers`` is a comma-separated list of marker ids / ``cN`` aliases /
+    # ``all``; empty means "no default marker". ``_coerce_marker_tokens``
+    # vets + canonicalises (``__post_init__`` re-runs it on save).
+    "markers": lambda value, _default: _coerce_marker_tokens(value),
+    # Default virtual fader: empty → ``None``, 1..8 preserved, junk collapses
+    # to ``None`` in ``__post_init__``.
     "default_fader": _as_optional_int,
 }
 
@@ -1664,6 +1669,98 @@ def _parse_trigger_subtable(
     return out
 
 
+def _effective_default_marker_id(
+    markers: list[str],
+    registered: frozenset[int],
+) -> int | None:
+    """Pick a representative default-marker id for the unresolved-pill
+    heuristic from a row's ``markers`` tokens.
+
+    A bare ``[x]`` resolves at runtime when the row names *any* usable
+    default marker. ``all`` / ``cN`` are dynamic – treated as resolvable
+    whenever the station controls at least one marker (the controller
+    drives a controlled marker; ``all`` enumerates them). Numeric tokens
+    count only when controlled. Returns the lowest candidate id, or
+    ``None`` when nothing usable is named (so ``[x]`` shows unresolved)."""
+    candidates: set[int] = set()
+    has_dynamic = False
+    for token in markers:
+        if token == MARKER_TOKEN_ALL or token.startswith("c"):
+            has_dynamic = True
+            continue
+        mid = int(token)
+        if mid in registered:
+            candidates.add(mid)
+    if has_dynamic and registered:
+        candidates.update(registered)
+    return min(candidates) if candidates else None
+
+
+def _osc_binding_marker_label(token: str, catalog: Any) -> str:
+    """Human label for one resolved ``markers`` token, shown in the row
+    summary badge + the nested secondary chips.
+
+    Numeric ids render as ``"<catalog name> (<id>)"`` (falling back to
+    ``"Marker <id>"``); controller aliases render as ``"Controller cN"``."""
+    if token.startswith("c"):
+        return f"Controller {token}"
+    mid = int(token)
+    entry = catalog.get(mid) if catalog is not None else None
+    name = (entry.name.strip() if entry is not None and entry.name else "") or f"Marker {mid}"
+    return f"{name} ({mid})"
+
+
+def _osc_binding_marker_entry(
+    token: str,
+    catalog: Any,
+    controlled_set: set[int],
+) -> dict[str, Any]:
+    """One marker chip: its label plus whether this station controls it.
+
+    Controller aliases (``cN``) resolve to a controlled marker at runtime, so
+    they're always reported controlled; only an explicit numeric id can be
+    uncontrolled (its send is dropped at runtime → the chip is marked)."""
+    controlled = True if token.startswith("c") else int(token) in controlled_set
+    return {"label": _osc_binding_marker_label(token, catalog), "controlled": controlled}
+
+
+def _osc_binding_marker_display(
+    cfg: AppConfig,
+    catalog: Any,
+) -> dict[str, dict[str, Any]]:
+    """Per-row marker display data for the bindings partial.
+
+    Each entry is ``{"header": <str|None>, "nested": [<chip>, …],
+    "markers_unusable": <bool>}`` where a chip is ``{"label",
+    "controlled"}``:
+
+    - **0 markers** → no header, no nested.
+    - **1 marker** → shown inline in the header badge (no nested list);
+      there's no "primary vs secondary" to confuse.
+    - **>1 markers** → *every* marker (primary included) renders as a nested
+      chip so they read uniformly; no header badge.
+
+    ``all`` expands to one chip per controlled marker. ``markers_unusable``
+    is ``True`` when the row names markers but this station controls none of
+    them (it can't send any) – the template reddens the row's status dot
+    from it, and each nested chip carries its own flag."""
+    controlled = sorted(cfg.controlled_marker_ids)
+    controlled_set = set(controlled)
+    out: dict[str, dict[str, Any]] = {}
+    for row in cfg.osc_transmitters.transmitters:
+        markers = row.markers
+        if markers == [MARKER_TOKEN_ALL]:
+            chips = [{"label": _osc_binding_marker_label(str(mid), catalog), "controlled": True} for mid in controlled]
+        else:
+            chips = [_osc_binding_marker_entry(t, catalog, controlled_set) for t in markers]
+        out[row.id] = {
+            "header": chips[0]["label"] if len(chips) == 1 else None,
+            "nested": chips if len(chips) > 1 else [],
+            "markers_unusable": bool(chips) and not any(c["controlled"] for c in chips),
+        }
+    return out
+
+
 def _osc_binding_unresolved_blur_error(
     query: Mapping[str, Any],
     cfg: AppConfig,
@@ -1686,17 +1783,9 @@ def _osc_binding_unresolved_blur_error(
     address, args = parsed
     if not address and not args:
         return None
-    raw_marker_id = query.get("marker_id", "")
-    # An invalid typed value (``"abc"``, ``"-1"``, ``"1.5"``) is already
-    # flagged by the field-level numeric blur; suppress the cross-field
-    # "needs a default marker" warning here so it doesn't read as "empty".
-    # The explicit-marker arm is independent of ``marker_id`` and still
-    # surfaces.
-    raw_marker_id_str = raw_marker_id.strip() if isinstance(raw_marker_id, str) else str(raw_marker_id)
-    parsed_marker_id = _as_optional_int(raw_marker_id, default=None)
-    marker_id_invalid_input = bool(raw_marker_id_str) and (parsed_marker_id is None or parsed_marker_id < 0)
-    marker_id = parsed_marker_id if parsed_marker_id is not None and parsed_marker_id >= 0 else None
     registered = frozenset(cfg.controlled_marker_ids)
+    markers = _coerce_marker_tokens(query.get("markers", ""))
+    marker_id = _effective_default_marker_id(markers, registered)
     from openfollow.osc.template import (
         compile_template,
         token_has_explicit_index,
@@ -1721,15 +1810,20 @@ def _osc_binding_unresolved_blur_error(
     # message names the actionable fix per category. ``unresolved`` is
     # already the operator-facing token form (``"[x]"`` / ``"[x:7]"``).
     # Classify via the grammar, not a ``:`` sniff – a transform can carry
-    # a colon. Suppress the default-marker arm when ``marker_id`` is
-    # invalid input – the field-level validator handles that case.
-    default_tokens = [] if marker_id_invalid_input else [t for t in unresolved if not token_has_explicit_index(t)]
+    # a colon. Per-token validity (malformed / non-controlled entries) is
+    # surfaced by the field-level ``markers`` validator; this arm only flags
+    # the cross-field "you use [x] but name no usable default marker".
+    # Every unresolved token is either explicit-index or not, so the two
+    # lists partition the (non-empty) ``unresolved`` set: at least one is
+    # non-empty here, so ``parts`` below is never empty.
+    default_tokens = [t for t in unresolved if not token_has_explicit_index(t)]
     explicit_tokens = [t for t in unresolved if token_has_explicit_index(t)]
-    if not default_tokens and not explicit_tokens:
-        return None
     parts: list[str] = []
     if default_tokens:
-        parts.append(f"{', '.join(default_tokens)} needs a default marker. Set 'Default marker' to a registered id.")
+        parts.append(
+            f"{', '.join(default_tokens)} needs a default marker. Set 'Default markers' to a controlled id, "
+            "a controller alias (c1, c2, …), or 'all'."
+        )
     if explicit_tokens:
         parts.append(f"{', '.join(explicit_tokens)} references a marker that isn't registered.")
     return " ".join(parts)
@@ -1839,7 +1933,7 @@ def _row_unresolved_placeholders(
     grid_max_height: float = 0.0,
 ) -> tuple[str, ...]:
     """Bracketed placeholder tokens in ``row``'s address + args that can't
-    resolve given the row's ``marker_id`` and the registered-marker registry.
+    resolve given the row's ``markers`` and the registered-marker registry.
 
     The web bindings partial uses this to:
 
@@ -1859,12 +1953,13 @@ def _row_unresolved_placeholders(
         unresolved_placeholders,
     )
 
+    effective_marker_id = _effective_default_marker_id(row.markers, registered_marker_ids)
     out: list[str] = []
     seen: set[str] = set()
     for tpl in (row.address, *row.args):
         for token in unresolved_placeholders(
             compile_template(tpl),
-            default_marker_id=row.marker_id,
+            default_marker_id=effective_marker_id,
             registered_marker_ids=registered_marker_ids,
             grid_max_height=grid_max_height,
         ):
@@ -2188,7 +2283,34 @@ def _load_json_body() -> Any:
     return data
 
 
+# The wizard solves the pinhole pose; lens distortion (lens_k1/lens_k2) is kept
+# separate from this vector because the DLT solve is pinhole. The wizard applies
+# the distortion warp around the pinhole projection instead (see the project /
+# unproject / solve endpoints), so the corner-pinning overlay bows to match a
+# fisheye snapshot and the solve undistorts the pinned corners first.
 _WIZARD_CAMERA_FIELDS = ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov")
+
+
+def _wizard_lens_coeffs(cam: Any) -> tuple[float, float]:
+    """Extract clamped lens-distortion coefficients from a wizard camera dict.
+
+    Absent or unparseable values fall back to ``0.0`` (pinhole), so an older
+    client that posts no coefficients keeps the previous behaviour. Bounds mirror
+    ``CameraConfig.__post_init__``.
+    """
+
+    def _clamp(value: Any, lo: float, hi: float) -> float:
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(f):
+            return 0.0
+        return max(lo, min(hi, f))
+
+    if not isinstance(cam, dict):
+        return 0.0, 0.0
+    return _clamp(cam.get("lens_k1", 0.0), -0.4, 0.4), _clamp(cam.get("lens_k2", 0.0), -0.2, 0.2)
 
 
 def _wizard_camera_params(cam: Any) -> Any:
@@ -3638,6 +3760,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             detection_storage_info=_detection_storage_info(config.detection.storage_path),
             osc_user_templates=osc_user_templates,
             osc_system_templates=osc_system_templates,
+            # Marker chips / unresolved pills / status dots must render at
+            # first paint, not only after a save – same context the section
+            # render builds.
+            **_osc_bindings_marker_context(config),
             # MIDI Devices table needs the live discovered-devices list so
             # it renders connected ports at first paint, not after the first
             # HTMX refresh.
@@ -5052,6 +5178,24 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     # (the move route depends on it) stays consistent and a stale form on a
     # different row can't ship an out-of-date trigger sub-form.
 
+    def _osc_bindings_marker_context(cfg: AppConfig) -> dict[str, Any]:
+        """Marker-aware template vars for the OSC bindings partial: the
+        registered-id list, each row's unresolved-placeholder tokens, and the
+        per-row marker display (header / nested chips / dot state).
+
+        Shared by the section render and the index render so the nested
+        chips, unresolved pills, and status dots appear at first paint, not
+        only after the operator saves a row."""
+        registered = frozenset(cfg.controlled_marker_ids)
+        return {
+            "registered_marker_ids": sorted(registered),
+            "unresolved_by_row": {
+                row.id: _row_unresolved_placeholders(row, registered, grid_max_height=cfg.grid.max_height)
+                for row in cfg.osc_transmitters.transmitters
+            },
+            "marker_display_by_row": _osc_binding_marker_display(cfg, server.get_marker_catalog()),
+        }
+
     def _render_osc_bindings_section(
         cfg: AppConfig,
         *,
@@ -5083,15 +5227,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         )
         from openfollow.osc.template import PLACEHOLDERS
 
-        registered = frozenset(cfg.controlled_marker_ids)
-        unresolved_by_row = {
-            row.id: _row_unresolved_placeholders(
-                row,
-                registered,
-                grid_max_height=cfg.grid.max_height,
-            )
-            for row in cfg.osc_transmitters.transmitters
-        }
         # Form-source data for the trigger forms + ``default_fader`` field.
         # Computed here (config already loaded) so the per-row partial
         # render and the trigger-swap render see identical lists.
@@ -5116,8 +5251,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             builtin_templates=system_templates,
             user_templates=user_templates,
             placeholders=sorted(PLACEHOLDERS),
-            registered_marker_ids=sorted(registered),
-            unresolved_by_row=unresolved_by_row,
+            **_osc_bindings_marker_context(cfg),
             valid_midi_types=VALID_MIDI_MESSAGE_TYPES,
             virtual_fader_names=virtual_fader_names,
             marker_fader_names=_marker_fader_names_for_form(server),
@@ -5171,8 +5305,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 # Copy every persistable field the template carries (host /
                 # port / protocol / rate_hz / trigger), not just name /
                 # address / args, so applying restores full row state.
-                # ``enabled`` and ``marker_id`` are NOT copied (apply lands
-                # rows inert; default marker is per-binding).
+                # ``enabled`` and ``markers`` are NOT copied (apply lands
+                # rows inert; default markers are per-binding).
                 entry = None
                 if template_id.startswith("file:"):
                     bare = template_id[len("file:") :]
@@ -5828,7 +5962,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             )
         # Build the template payload: every persistable field except
         # ``id`` (per-row uuid), ``enabled`` (apply-time False), and
-        # ``marker_id`` (per-binding operator choice). ``template_id``
+        # ``markers`` (per-binding operator choice). ``template_id``
         # is also dropped – it's row metadata pointing at the *source*
         # template, not part of the saved-template content.
         trigger_dict = asdict(transient.trigger) if transient.trigger is not None else {"kind": "stream", "rate_hz": 30}
@@ -6084,7 +6218,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             )
         if tpl.type == "osc_output":
             # Restore every persistable row field the template carries.
-            # ``enabled`` and ``marker_id`` are ignored even if a template
+            # ``enabled`` and ``markers`` are ignored even if a template
             # carries them – apply always lands the row inert with no default
             # marker. ``name`` falls back to the envelope name so a minimal
             # ``{address, args}`` template still gets a readable label.
@@ -6108,10 +6242,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     kwargs["trigger"] = dict(tpl.payload["trigger"])
                 row = OscTransmitterConfig(**kwargs)
                 # Defence in depth: even if a malformed template
-                # bypassed validation and carries enabled/marker_id
+                # bypassed validation and carries enabled/markers
                 # fields, we still strip them after construction.
                 row.enabled = False
-                row.marker_id = None
+                row.markers = []
                 cfg.osc_transmitters.transmitters.append(row)
                 save_config(cfg, server.config_path)
             return json.dumps({"ok": True, "row_id": row.id})
@@ -6261,9 +6395,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 )
         # Cross-field unresolved-placeholder check for OSC bindings, at blur
         # time on the message field – surfaces the same condition the partial
-        # paints as red pills. Reads sibling ``marker_id`` from the form and
+        # paints as red pills. Reads sibling ``markers`` from the form and
         # the registered-marker registry from the live config.
-        if section == "osc_binding" and field_name in ("osc_message", "marker_id"):
+        if section == "osc_binding" and field_name in ("osc_message", "markers"):
             err_msg = _osc_binding_unresolved_blur_error(
                 request.query,
                 _request_scoped_config(),
@@ -6885,8 +7019,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         import numpy as np
 
-        from openfollow.scene.solver import project_points
+        from openfollow.scene.solver import apply_overlay_distortion, project_points
 
+        k1, k2 = _wizard_lens_coeffs(cam)
         hw, hd = w / 2.0, d / 2.0
 
         # PSN +X is stage left, so the stage-left corners (DSL, USL) sit at
@@ -6906,8 +7041,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # Reference point at ground level (where the physical mark is)
         ref_psn = np.array([[0, 0, 0]], dtype=np.float64)
 
-        screen_corners = project_points(params, corners_psn, img_w, img_h)
-        screen_ref = project_points(params, ref_psn, img_w, img_h)
+        # Bow the projected overlay to match a fisheye / wide-angle snapshot so
+        # the corner-pinning preview lines up with the distorted video.
+        screen_corners = apply_overlay_distortion(
+            project_points(params, corners_psn, img_w, img_h), img_w, img_h, k1, k2
+        )
+        screen_ref = apply_overlay_distortion(project_points(params, ref_psn, img_w, img_h), img_w, img_h, k1, k2)
         projected = [screen_corners, screen_ref]
 
         result = {
@@ -6920,10 +7059,32 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "reference": screen_ref[0].tolist(),
         }
 
+        # Bowed boundary outline so the wizard quad curves exactly like the HUD
+        # grid (which subdivides each straight world edge). Same subdivision
+        # count as the renderer keeps the two curves identical. Best-effort: a
+        # behind-camera edge point omits the outline and the client falls back to
+        # the straight corner quad.
+        from openfollow.runtime.overlay_draw_scene import _DISTORTION_SUBDIVISIONS
+
+        n_sub = _DISTORTION_SUBDIVISIONS if (k1 or k2) else 1
+        loop = np.vstack([corners_psn, corners_psn[0:1]])  # close the quad
+        edge_ts = np.linspace(0.0, 1.0, n_sub + 1)[:-1]  # drop shared join vertex
+        outline_world = np.array(
+            [loop[i] + t * (loop[i + 1] - loop[i]) for i in range(4) for t in edge_ts],
+            dtype=np.float64,
+        )
+        outline_screen = apply_overlay_distortion(
+            project_points(params, outline_world, img_w, img_h), img_w, img_h, k1, k2
+        )
+        if np.isfinite(outline_screen).all():
+            result["outline"] = outline_screen.tolist()
+
         if abs(oz) > 1e-6:
             # Elevated point at grid height (top of z-offset line)
             ref_elevated = np.array([[0, 0, oz]], dtype=np.float64)
-            screen_elevated = project_points(params, ref_elevated, img_w, img_h)
+            screen_elevated = apply_overlay_distortion(
+                project_points(params, ref_elevated, img_w, img_h), img_w, img_h, k1, k2
+            )
             projected.append(screen_elevated)
             result["reference_elevated"] = screen_elevated[0].tolist()
             result["z_offset"] = oz
@@ -6955,7 +7116,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         import numpy as np
 
-        from openfollow.scene.solver import unproject_to_plane
+        from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
         try:
             cam = data["camera"]
@@ -6965,6 +7126,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             _require_wizard_canvas(img_w, img_h)
             plane_z = float(data.get("plane_z", 0.0))
             params = _wizard_camera_params(cam)
+            k1, k2 = _wizard_lens_coeffs(cam)
             if not isinstance(screen_points, list) or not screen_points:
                 raise ValueError("screen_points must be a non-empty list")
             for p in screen_points:
@@ -6980,6 +7142,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": str(exc)})
 
+        # The clicked points sit on the distorted snapshot; undistort them to the
+        # pinhole frame before unprojecting (identity when no distortion is set).
+        pts = invert_overlay_distortion(pts, img_w, img_h, k1, k2)
         world = unproject_to_plane(params, pts, img_w, img_h, plane_z)
 
         if len(pts) == 2 and not np.any(np.isnan(world)):
@@ -7028,10 +7193,22 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         import numpy as np
 
-        from openfollow.scene.solver import project_points, solve_camera_dlt
+        from openfollow.scene.solver import (
+            apply_overlay_distortion,
+            invert_overlay_distortion,
+            project_points,
+            solve_camera_dlt,
+        )
+
+        k1, k2 = _wizard_lens_coeffs(data.get("camera"))
+
+        # The corners were pinned on the distorted snapshot. Undistort them to the
+        # pinhole frame so the pinhole DLT solve isn't biased by the lens curve.
+        screen_arr = np.array(screen_corners, dtype=np.float64)
+        screen_undistorted = invert_overlay_distortion(screen_arr, img_w, img_h, k1, k2)
 
         world_tuples = [tuple(p) for p in world_corners]
-        screen_tuples = [tuple(p) for p in screen_corners]
+        screen_tuples = [(float(p[0]), float(p[1])) for p in screen_undistorted]
 
         result = solve_camera_dlt(world_tuples, screen_tuples, img_w, img_h)
         if result is None:
@@ -7052,7 +7229,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             dtype=np.float64,
         )
         world_arr = np.array(world_corners, dtype=np.float64)
-        reprojected = project_points(params, world_arr, img_w, img_h)
+        # Re-distort the reprojected corners back into the snapshot frame so the
+        # snap feedback lands where the operator pinned (on the distorted video).
+        reprojected = apply_overlay_distortion(project_points(params, world_arr, img_w, img_h), img_w, img_h, k1, k2)
 
         return json.dumps(
             {

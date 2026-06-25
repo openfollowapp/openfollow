@@ -101,6 +101,23 @@ def test_as_int_list_parses_csv_and_falls_back() -> None:
 # helpers shouldn't break these.
 
 
+def test_apply_section_data_camera_lens_distortion_roundtrips() -> None:
+    config = AppConfig()
+    ok = apply_section_data(config, "camera", {"lens_k1": "-0.15", "lens_k2": "0.03"})
+    assert ok is True
+    assert config.camera.lens_k1 == pytest.approx(-0.15)
+    assert config.camera.lens_k2 == pytest.approx(0.03)
+
+
+def test_apply_section_data_camera_lens_distortion_clamps_out_of_range() -> None:
+    config = AppConfig()
+    ok = apply_section_data(config, "camera", {"lens_k1": "5", "lens_k2": "-5"})
+    assert ok is True
+    # __post_init__ re-runs after the web save, clamping to the configured band.
+    assert config.camera.lens_k1 == 0.4
+    assert config.camera.lens_k2 == -0.2
+
+
 def test_apply_section_data_grid_tolerates_huge_int_width() -> None:
     config = AppConfig()
     ok = apply_section_data(config, "grid", {"width": 10**5000})

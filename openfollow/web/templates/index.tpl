@@ -133,7 +133,10 @@
     %     midi_patches=midi_patches,
     %     builtin_templates=osc_system_templates,
     %     user_templates=osc_user_templates,
-    %     placeholders=sorted(PLACEHOLDERS))
+    %     placeholders=sorted(PLACEHOLDERS),
+    %     registered_marker_ids=registered_marker_ids,
+    %     unresolved_by_row=unresolved_by_row,
+    %     marker_display_by_row=marker_display_by_row)
 </div>
 
 <!-- Person Detection -->

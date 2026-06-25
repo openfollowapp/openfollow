@@ -35,7 +35,9 @@ from openfollow.runtime.services_detection_pin import (
     get_or_create_manual_marker,
 )
 from openfollow.scene.solver import (
+    apply_overlay_distortion,
     ground_circle_world_ring,
+    invert_overlay_distortion,
     project_points,
     unproject_to_plane,
 )
@@ -343,8 +345,13 @@ class MouseHandler:
         buf, w, h = view
         self._screen_buffer[0, 0] = x
         self._screen_buffer[0, 1] = y
+        # The cursor lands on the (lens-distorted) video, so undistort it back to
+        # the pinhole frame before unprojecting. Identity when no lens distortion
+        # is configured. k1/k2 live on the config (the Camera object is pinhole).
+        cam = self._app._config.camera
+        screen = invert_overlay_distortion(self._screen_buffer, float(w), float(h), cam.lens_k1, cam.lens_k2)
         plane_z = self._app._config.grid.z_offset
-        world = unproject_to_plane(buf, self._screen_buffer, float(w), float(h), plane_z)
+        world = unproject_to_plane(buf, screen, float(w), float(h), plane_z)
         if not np.all(np.isfinite(world[0])):
             return None
         return float(world[0, 0]), float(world[0, 1])
@@ -367,6 +374,11 @@ class MouseHandler:
         z_off = cfg.grid.z_offset
         gc_on = cfg.marker.ground_circle
         gc_size = cfg.marker.ground_circle_size
+        # Match the rendered circle: the overlay bows the projected ground circle
+        # by the lens coefficients, so the hit-test projects through the same
+        # warp (identity when no lens is configured) or the clickable region
+        # would drift from what the operator sees.
+        k1, k2 = cfg.camera.lens_k1, cfg.camera.lens_k2
         best_tid: int | None = None
         best_dist = float("inf")
         for tid in app._controlled_ids:
@@ -374,7 +386,13 @@ class MouseHandler:
             if marker is None:
                 continue
             mx, my, _ = marker.pos
-            center = project_points(buf, np.array([[mx, my, z_off]], dtype=np.float64), float(w), float(h))[0]
+            center = apply_overlay_distortion(
+                project_points(buf, np.array([[mx, my, z_off]], dtype=np.float64), float(w), float(h)),
+                float(w),
+                float(h),
+                k1,
+                k2,
+            )[0]
             if not np.all(np.isfinite(center)):
                 continue
             cx, cy = float(center[0]), float(center[1])
@@ -382,7 +400,13 @@ class MouseHandler:
             hit = False
             if gc_on and gc_size > 0.0:
                 ring = ground_circle_world_ring(mx, my, z_off, gc_size)
-                ring_scr = project_points(buf, np.array(ring, dtype=np.float64), float(w), float(h))
+                ring_scr = apply_overlay_distortion(
+                    project_points(buf, np.array(ring, dtype=np.float64), float(w), float(h)),
+                    float(w),
+                    float(h),
+                    k1,
+                    k2,
+                )
                 finite = ring_scr[np.all(np.isfinite(ring_scr), axis=1)]
                 if len(finite) >= 3:
                     polygon = [(float(px), float(py)) for px, py in finite]

@@ -410,6 +410,56 @@ class TestCollectDetectionPositions:
         assert all(k == ("detection", -1) for k, _x, _y in out)
 
 
+def _spy_detection_unproject(monkeypatch: pytest.MonkeyPatch) -> dict[str, np.ndarray]:
+    """Patch unproject_to_plane to record the screen point it receives."""
+    from openfollow.scene import solver as solver_mod
+
+    recorded: dict[str, np.ndarray] = {}
+
+    def _spy(_params, screen_pt, _w, _h, _plane_z):  # noqa: ANN001, ANN202
+        recorded["screen"] = np.array(screen_pt, dtype=float).copy()
+        return np.array([[2.0, 3.0]], dtype=np.float64)
+
+    monkeypatch.setattr(solver_mod, "unproject_to_plane", _spy)
+    return recorded
+
+
+class TestCollectDetectionPositionsLensDistortion:
+    """A detection foot point sits on the lens-distorted video, so it is
+    undistorted back to the pinhole frame before unprojection – the same
+    treatment the detection-pin path gets (identity when no lens is set)."""
+
+    def test_passes_raw_foot_point_when_lens_zero(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        services._person_detector = _FakeDetector([_FakeDet(0.6, 0.5, 0.8, 0.7, track_id=3)])
+        services._app._video_receiver = _FakeReceiver()  # lens_k1 == lens_k2 == 0 by default
+        recorded = _spy_detection_unproject(monkeypatch)
+
+        out = services._collect_detection_positions()
+        assert out == [(("detection", 3), 2.0, 3.0)]
+        # No distortion -> the raw foot point reaches unproject unchanged:
+        # centre_x = 0.7*1920, foot_y = 0.7*1080.
+        assert recorded["screen"][0, 0] == pytest.approx(0.7 * 1920)
+        assert recorded["screen"][0, 1] == pytest.approx(0.7 * 1080)
+
+    def test_undistorts_foot_point_when_lens_set(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        services._person_detector = _FakeDetector([_FakeDet(0.6, 0.5, 0.8, 0.7, track_id=3)])
+        services._app._video_receiver = _FakeReceiver()
+        services._app._config.camera.lens_k1 = -0.2  # barrel
+        recorded = _spy_detection_unproject(monkeypatch)
+
+        services._collect_detection_positions()
+        cx, cy = 960.0, 540.0  # 1920x1080 centre
+        raw = np.hypot(0.7 * 1920 - cx, 0.7 * 1080 - cy)
+        undist = np.hypot(recorded["screen"][0, 0] - cx, recorded["screen"][0, 1] - cy)
+        # Undistorting a barrel-distorted foot point pushes it outward, matching
+        # the detection-pin path (and the bowed zone overlay).
+        assert undist > raw
+
+
 # --------------------------------------------------------------------------- #
 # _get_zone_states_snapshot + _get_marker_positions_snapshot
 # --------------------------------------------------------------------------- #

@@ -39,6 +39,7 @@ from openfollow.web.validation import (
     _validate_int_list,
     _validate_ip_list,
     _validate_keybinding,
+    _validate_markers,
     _validate_model,
     _validate_multicast_ip,
     _validate_service_name,
@@ -165,6 +166,21 @@ def test_validate_range_high() -> None:
     err = validate("camera", "fov", "200")
     assert err is not None
     assert "FOV" in err
+
+
+@pytest.mark.parametrize(
+    "field,raw",
+    [("lens_k1", "0.5"), ("lens_k1", "-0.5"), ("lens_k2", "0.5"), ("lens_k2", "-0.5")],
+)
+def test_validate_lens_distortion_out_of_range(field: str, raw: str) -> None:
+    err = validate("camera", field, raw)
+    assert err is not None
+    assert "between" in err.lower()
+
+
+@pytest.mark.parametrize("field,raw", [("lens_k1", "0.1"), ("lens_k2", "-0.03")])
+def test_validate_lens_distortion_in_range_ok(field: str, raw: str) -> None:
+    assert validate("camera", field, raw) is None
 
 
 @pytest.mark.parametrize("section", ["grid", "marker"])
@@ -628,6 +644,19 @@ def test_validate_int_list_all_valid() -> None:
     assert _validate_int_list("0, 1, 2", None) is None
 
 
+def test_validate_markers_empty() -> None:
+    assert _validate_markers("", None) is None
+
+
+def test_validate_markers_all_valid_token_kinds() -> None:
+    assert _validate_markers("1, c2, all", None) is None
+
+
+def test_validate_markers_flags_offending_entry() -> None:
+    err = _validate_markers("1, c0", None)
+    assert err is not None and "c0" in err
+
+
 def test_validate_model_empty() -> None:
     assert _validate_model("", None) is None
 
@@ -871,13 +900,18 @@ def test_validate_osc_message_rejects_unclosed_quote(raw: str) -> None:
         # Connection is chosen via a destination; empty is allowed (no send).
         ("destination_id", "", False),
         ("destination_id", "dest-1", False),
-        ("marker_id", "0", False),
-        ("marker_id", "-1", True),
-        # marker_id can be empty (no default marker).
-        ("marker_id", "", False),
-        ("marker_id", "   ", False),
-        ("marker_id", "5", False),
-        ("marker_id", "bogus", True),
+        ("markers", "0", False),
+        ("markers", "1, 3, c1", False),
+        ("markers", "all", False),
+        # A valid-but-non-controlled id is ignored at runtime, not flagged.
+        ("markers", "5", False),
+        # markers can be empty (no default marker).
+        ("markers", "", False),
+        ("markers", "   ", False),
+        # Malformed tokens (negative, junk, bad alias) block.
+        ("markers", "-1", True),
+        ("markers", "bogus", True),
+        ("markers", "1, c0", True),
         # Combined ``osc_message`` field – address as first token.
         ("osc_message", "/foo/[markerId] [x] [y]", False),
         ("osc_message", "", False),

@@ -1324,10 +1324,21 @@
  .osc-binding-drag-handle:active, .osc-destination-drag-handle:active { cursor: grabbing; }
  .osc-binding-row.dragging, .osc-destination-row.dragging { opacity: 0.55; }
  .osc-binding-row.drop-target, .osc-destination-row.drop-target { outline: 2px dashed var(--accent); outline-offset: 2px; }
- .osc-binding-enabled-dot { width: 0.55rem; height: 0.55rem; border-radius: 999px; background: var(--muted); }
+ .osc-binding-enabled-dot { width: 0.55rem; height: 0.55rem; border-radius: 999px; background: var(--muted); flex: none; }
  .osc-binding-enabled-dot.on { background: var(--accent); }
+ .osc-binding-enabled-dot.invalid { background: var(--danger); }
  .osc-binding-kind-badge, .osc-destination-proto-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
+ .osc-binding-marker-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
  .osc-binding-target { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
+ /* Secondary markers nested under a fanned-out transmitter row: read-only
+ chips sharing the parent's destination / message / trigger. */
+ /* Negative top pulls the chips up under their parent row (the row's
+    0.6rem bottom margin otherwise floats them); the bottom margin keeps a
+    clear gap before the next transmitter so they don't touch. */
+ .osc-binding-nested { display: flex; flex-direction: column; gap: 0.4rem; margin: -0.2rem 0 0.7rem 1.4rem; }
+ .osc-binding-nested-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--muted); padding: 0.45rem 0.8rem; border: 1px solid var(--border-soft); border-radius: 0.5rem; background: rgba(255,255,255,0.02); }
+ /* The red dot alone marks an uncontrolled marker – no red border. */
+ .osc-binding-nested-row.is-invalid { color: var(--danger); }
  /* Destination collapsed summary: host:port sits right after the name; the
  protocol badge anchors to the right. */
  .osc-destination-addr { color: var(--muted); font-size: 0.8rem; }
@@ -3512,7 +3523,7 @@
  // client-side mirror of Python's
  // ``unresolved_placeholders``. Rebuilds the unresolved-set from the
  // editor's current text + the live marker registry + the row's
- // ``marker_id`` so the operator sees red pills update as they edit,
+ // ``markers`` so the operator sees red pills update as they edit,
  // without a server round-trip. Only position + ``markerid`` slots
  // surface here (mirrors the server's ``_EDIT_TIME_SOURCES``); fader /
  // ``markerfader`` slots surface as runtime skips. This parse regex
@@ -3528,8 +3539,20 @@
  oscEditorParseJsonAttr(editor, 'oscRegisteredMarkerIds', [])
  .map(v => Number(v)),
  );
- const markerIdRaw = (editor.dataset.oscRowMarkerId || '').trim();
- const markerId = markerIdRaw === '' ? null : Number(markerIdRaw);
+ // Mirror of Python's ``_effective_default_marker_id``: a bare ``[x]``
+ // resolves when the row names any usable default marker. ``all`` / ``cN``
+ // are dynamic – treated as resolvable whenever at least one marker is
+ // controlled; a numeric token counts only when controlled.
+ const markerTokens = (editor.dataset.oscRowMarkers || '')
+ .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+ let hasDefaultMarker = false;
+ for (const tok of markerTokens) {
+ if (tok === 'all' || /^c[1-9][0-9]*$/.test(tok)) {
+ if (registered.size > 0) { hasDefaultMarker = true; break; }
+ } else if (/^[0-9]+$/.test(tok) && registered.has(Number(tok))) {
+ hasDefaultMarker = true; break;
+ }
+ }
  const gridMaxHeightRaw = (editor.dataset.oscGridMaxHeight || '').trim();
  const gridMaxHeight = gridMaxHeightRaw === ''
  ? 0
@@ -3554,7 +3577,7 @@
  const isZFrac = source === 'z' && chain.indexOf('.frac') !== -1;
  let unresolved = false;
  if (index === undefined) {
- unresolved = markerId === null || !registered.has(markerId);
+ unresolved = !hasDefaultMarker;
  if (!unresolved && isZFrac && gridUnset) {
  unresolved = true;
  }
@@ -3629,7 +3652,7 @@
  const messageError = form.querySelector(
  '[id$="-error"][id^="osc-message-"]',
  );
- const markerInput = form.querySelector('input[name="marker_id"]');
+ const markerInput = form.querySelector('input[name="markers"]');
  const markerError = markerInput
  ? document.getElementById(
  markerInput.getAttribute('aria-describedby') || '',
@@ -3676,16 +3699,16 @@
  // Fire the HTMX validation we wired with ``hx-trigger="osc-validate"``.
  window.htmx.trigger(editor, 'osc-validate');
  }, true); // capture: ``blur`` doesn't bubble.
- // Re-evaluate unresolved pills as operator edits Default marker field.
+ // Re-evaluate unresolved pills as operator edits the Default markers field.
  // Mirrors Python's ``_row_unresolved_placeholders`` for real-time pill state.
  document.addEventListener('input', (event) => {
- const input = event.target.closest('input[name="marker_id"]');
+ const input = event.target.closest('input[name="markers"]');
  if (!input) return;
  const form = input.closest('form');
  if (!form) return;
  const editor = form.querySelector('[data-osc-message-editor]');
  if (!editor) return;
- editor.dataset.oscRowMarkerId = (input.value || '').trim();
+ editor.dataset.oscRowMarkers = (input.value || '').trim();
  oscEditorRecomputeUnresolved(editor);
  oscEditorRenderPills(editor);
  oscEditorSyncEnabledUnresolved(editor);
@@ -3775,7 +3798,7 @@
  editor.dispatchEvent(new Event('input', { bubbles: true }));
  });
  // "Save as template…" button captures the whole row form to endpoint.
- // Template carries all operator-tunable fields; ``enabled`` and ``marker_id`` dropped server-side.
+ // Template carries all operator-tunable fields; ``enabled`` and ``markers`` dropped server-side.
  //
  // We use ``FormData`` to gather the live form state (matches
  // what the row's normal Save POST would send), then append the

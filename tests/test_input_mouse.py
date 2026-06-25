@@ -867,3 +867,87 @@ class TestEdges:
         monkeypatch.setattr(mouse_module, "project_points", _proj)
         handler = MouseHandler(app)
         assert handler.on_pointer_down(cx, cy, 1) is True
+
+
+class TestLensDistortionInput:
+    """A steered cursor lands on the lens-distorted video, so it is undistorted
+    back to the pinhole frame before unprojection (identity when no lens is set).
+
+    Grab + move: the grab takes control; the move records the target, which is
+    where ``_unproject`` (and thus the undistort) runs.
+    """
+
+    def test_no_inverse_distortion_when_lens_zero(self, monkeypatch) -> None:
+        from openfollow.input import mouse as mouse_module
+
+        captured: dict[str, np.ndarray] = {}
+
+        def _spy(params, screen_pts, w, h, plane_z):  # noqa: ANN001, ANN202
+            captured["screen"] = np.array(screen_pts, dtype=float).copy()
+            return np.array([[1.0, 2.0, 0.0]])
+
+        monkeypatch.setattr(mouse_module, "unproject_to_plane", _spy)
+        app = _DummyApp()  # lens_k1 == lens_k2 == 0 by default
+        handler = MouseHandler(app)
+        _grab(handler, app)
+        handler.on_pointer_move(1200, 600)
+        # The raw cursor reaches unproject unchanged.
+        assert captured["screen"][0, 0] == 1200.0
+        assert captured["screen"][0, 1] == 600.0
+
+    def test_cursor_is_undistorted_when_lens_set(self, monkeypatch) -> None:
+        from openfollow.input import mouse as mouse_module
+
+        captured: dict[str, np.ndarray] = {}
+
+        def _spy(params, screen_pts, w, h, plane_z):  # noqa: ANN001, ANN202
+            captured["screen"] = np.array(screen_pts, dtype=float).copy()
+            return np.array([[1.0, 2.0, 0.0]])
+
+        app = _DummyApp()
+        handler = MouseHandler(app)
+        _grab(handler, app)  # grab under no distortion (clean hit-test)
+        app._config.camera.lens_k1 = -0.2  # barrel
+        monkeypatch.setattr(mouse_module, "unproject_to_plane", _spy)
+        handler.on_pointer_move(1200, 600)
+        # Canvas defaults to 1280x720 (no _canvas), so centre is (640, 360).
+        cx, cy = 640.0, 360.0
+        r_cursor = math.hypot(1200.0 - cx, 600.0 - cy)
+        s = captured["screen"][0]
+        r_undist = math.hypot(s[0] - cx, s[1] - cy)
+        # Undistorting a barrel-distorted click pushes it outward.
+        assert r_undist > r_cursor
+
+
+class TestHitTestLensDistortion:
+    """The grab hit-test projects through the same lens warp the overlay draws,
+    so the clickable region tracks the *rendered* (bowed) ground circle rather
+    than the raw pinhole projection."""
+
+    def test_grab_follows_rendered_distorted_circle(self) -> None:
+        from openfollow.input import mouse as mouse_module
+
+        app = _DummyApp()
+        # Pure pixel-radius hit (14 px) so the test turns on the projected centre
+        # alone, not the ground-circle polygon size.
+        app._config.marker.ground_circle = False
+        # Off-axis marker: near the frame edge barrel distortion shifts the
+        # rendered centre well beyond the touch radius.
+        app._server.get_marker(1).set_pos(8.0, 6.0, 0.0)
+        app._config.camera.lens_k1 = -0.3
+
+        w, h = _canvas_size(app)
+        buf = _cam_buffer(app)
+        world = np.array([[8.0, 6.0, 0.0]], dtype=np.float64)
+        pinhole = project_points(buf, world, float(w), float(h))[0]
+        bowed = mouse_module.apply_overlay_distortion(
+            project_points(buf, world, float(w), float(h)), float(w), float(h), -0.3, 0.0
+        )[0]
+        # Guard against a vacuous test: the warp must move the centre clear of
+        # the touch radius, otherwise both clicks would hit regardless.
+        assert math.hypot(bowed[0] - pinhole[0], bowed[1] - pinhole[1]) > mouse_module._MIN_GRAB_PX
+
+        # Clicking the rendered (bowed) centre grabs.
+        assert MouseHandler(app).on_pointer_down(float(bowed[0]), float(bowed[1]), 1) is True
+        # Clicking the raw pinhole centre (where the circle is NOT drawn) misses.
+        assert MouseHandler(app).on_pointer_down(float(pinhole[0]), float(pinhole[1]), 1) is False

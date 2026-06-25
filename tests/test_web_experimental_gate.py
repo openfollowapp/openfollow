@@ -36,7 +36,6 @@ _GATED_ROOTS = [
     # The detection partial self-gates so it hides even if rendered
     # outside its tab wrapper.
     ("partials/detection.tpl", 'id="detection-section"'),
-    ("partials/mouse.tpl", 'id="mouse-section"'),
     ("partials/rttrpm_output.tpl", 'id="rttrpm-output-section"'),
 ]
 
@@ -50,7 +49,6 @@ def test_section_root_carries_gate_class(rel: str, anchor: str) -> None:
 # Each experimental section's header must carry the Experimental badge.
 _BADGED_HEADERS = [
     ("partials/detection.tpl", "Person Detection"),
-    ("partials/mouse.tpl", "Mouse Input"),
     ("partials/rttrpm_output.tpl", "RTTrPM Output"),
 ]
 
@@ -90,11 +88,11 @@ def test_general_toggle_is_a_sibling_form_not_nested_in_units() -> None:
 
 
 def test_toggle_mirrors_server_cascade_clientside() -> None:
-    # Turning the toggle off unchecks the mouse/detection Enabled boxes to
-    # mirror the server cascade.
+    # Turning the toggle off unchecks the detection Enabled box to mirror the
+    # server cascade. Mouse input is no longer experimental, so it is untouched.
     base = _read("base.tpl")
     assert "function onExperimentalToggle(cb)" in base
-    assert '#mouse-section input[name="mouse_enabled"]' in base
     assert '#detection-section input[name="enabled"]' in base
+    assert '#mouse-section input[name="mouse_enabled"]' not in base
     # Checkbox is wired to the handler.
     assert "onExperimentalToggle(this)" in _read("partials/general.tpl")

@@ -1109,6 +1109,21 @@ def _coerce_unit_input(
     return repr(meters), None
 
 
+def _mouse_bool_fields() -> tuple[str, ...]:
+    """Bool checkboxes the mouse form submits.
+
+    The scroll-wheel checkboxes are not rendered on macOS (the wheel can't be
+    polled there), so they must be excluded from the save – ``_save_section_from_form``
+    coerces any ``bool_fields`` entry missing from the POST to ``False``, which
+    would otherwise clobber the stored ``mouse_wheel_*`` values on every macOS save.
+    Mirrors the ``_is_macos`` branch in ``partials/mouse.tpl``.
+    """
+    fields = ["mouse_enabled", "mouse_double_click_reset"]
+    if sys.platform != "darwin":
+        fields += ["mouse_wheel_z_enabled", "mouse_wheel_invert"]
+    return tuple(fields)
+
+
 def _normalize_unit_fields(
     section: str,
     form_data: dict[str, Any],
@@ -1328,6 +1343,13 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "enabled": _as_bool,
         "keyboard_enabled": _as_bool,
         "mouse_enabled": _as_bool,
+        "mouse_hysteresis_px": _as_int,
+        "mouse_smoothing": _as_float,
+        "mouse_max_y": _as_float,
+        "mouse_wheel_z_enabled": _as_bool,
+        "mouse_wheel_invert": _as_bool,
+        "mouse_wheel_z_step": _as_float,
+        "mouse_double_click_reset": _as_bool,
         "deadzone": _as_float,
         "invert_y": _as_bool,
         "curve": _as_str,
@@ -4327,15 +4349,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/settings/experimental")
     def update_experimental() -> Any:
         """Persist ``[ui] show_experimental_features``. Turning it off also
-        disables ``controller.mouse_enabled`` and ``detection.enabled``; the
-        config-reload watcher applies those at runtime. The body-class show/
-        hide flip is done client-side. Responds empty (hx-swap="none")."""
+        disables ``detection.enabled`` (still experimental); the config-reload
+        watcher applies that at runtime. The body-class show/hide flip is done
+        client-side. Responds empty (hx-swap="none")."""
         show = _as_bool(request.forms.get("show_experimental_features"), False)
 
         def _mutate(cfg: AppConfig) -> None:
             cfg.ui.show_experimental_features = show
             if not show:
-                cfg.controller.mouse_enabled = False
                 cfg.detection.enabled = False
 
         _persist_ui_change(_mutate)
@@ -4520,10 +4541,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/mouse")
     def update_mouse() -> Any:
         """Update mouse settings."""
-        cfg = _save_section_from_form(
-            "mouse",
-            bool_fields=("mouse_enabled",),
-        )
+        cfg = _save_section_from_form("mouse", bool_fields=_mouse_bool_fields())
         return template("partials/mouse", config=cfg, saved=True)
 
     @app.post("/section/gamepad/detect-buttons")

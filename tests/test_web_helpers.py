@@ -333,6 +333,34 @@ def test_apply_section_data_controller_revalidates_deadzone() -> None:
     assert config.controller.deadzone == 1.0
 
 
+def test_apply_section_data_mouse_clamps_and_applies() -> None:
+    # A crafted POST to the mouse section must round-trip through the
+    # controller parser map + __post_init__ re-run: in-range values apply,
+    # out-of-range values clamp.
+    config = AppConfig()
+
+    ok = apply_section_data(
+        config,
+        "mouse",
+        {
+            "mouse_hysteresis_px": "4",
+            "mouse_smoothing": "0.3",
+            "mouse_max_y": "999999",  # over the 10000 m cap
+            "mouse_wheel_z_step": "0.5",
+            "mouse_wheel_invert": "true",
+            "mouse_double_click_reset": "false",
+        },
+    )
+
+    assert ok is True
+    assert config.controller.mouse_hysteresis_px == 4
+    assert config.controller.mouse_smoothing == 0.3
+    assert config.controller.mouse_max_y == 10000.0
+    assert config.controller.mouse_wheel_z_step == 0.5
+    assert config.controller.mouse_wheel_invert is True
+    assert config.controller.mouse_double_click_reset is False
+
+
 # --- __post_init__ re-run after web-form saves ---------------------------
 # Every dataclass with validation in ``__post_init__`` must also have it
 # re-run after a web-form save, otherwise a crafted POST that slips past
@@ -2528,3 +2556,60 @@ def test_osc_destinations_script_json_escapes_script_breakout() -> None:
     restored = json.loads(out)
     assert restored[0]["name"] == "</script><img src=x onerror=alert(1)>"
     assert restored[0]["host"] == "a&b"
+
+
+# --- mouse partial: macOS hides the scroll-wheel form ----------------------
+
+
+def _render_mouse_partial(platform: str, monkeypatch) -> str:
+    import os.path
+    import sys
+
+    import bottle
+
+    import openfollow.web as web_pkg
+
+    tdir = os.path.join(os.path.dirname(web_pkg.__file__), "templates")
+    if tdir not in bottle.TEMPLATE_PATH:
+        bottle.TEMPLATE_PATH.insert(0, tdir)
+    monkeypatch.setattr(sys, "platform", platform)
+    bottle.TEMPLATES.clear()  # force a fresh render under the patched platform
+    return bottle.template("partials/mouse", config=AppConfig(), saved=False)
+
+
+def test_mouse_partial_replaces_wheel_form_with_message_on_macos(monkeypatch) -> None:
+    out = _render_mouse_partial("darwin", monkeypatch)
+    assert "can not be changed by the Scroll Wheel on macOS" in out
+    assert 'name="mouse_wheel_z_step"' not in out
+    assert 'name="mouse_wheel_z_enabled"' not in out
+    assert 'name="mouse_wheel_invert"' not in out
+
+
+def test_mouse_partial_keeps_wheel_form_off_macos(monkeypatch) -> None:
+    out = _render_mouse_partial("linux", monkeypatch)
+    assert "can not be changed by the Scroll Wheel" not in out
+    assert 'name="mouse_wheel_z_step"' in out
+    assert 'name="mouse_wheel_z_enabled"' in out
+
+
+def test_mouse_bool_fields_excludes_wheel_checkboxes_on_macos(monkeypatch) -> None:
+    # On macOS the scroll-wheel checkboxes aren't rendered, so they're absent
+    # from the POST. They must NOT be in the save's bool_fields, or the missing
+    # values would be coerced to False and clobber the stored config.
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "darwin")
+    fields = routes._mouse_bool_fields()
+    assert "mouse_wheel_z_enabled" not in fields
+    assert "mouse_wheel_invert" not in fields
+    assert "mouse_enabled" in fields
+    assert "mouse_double_click_reset" in fields
+
+
+def test_mouse_bool_fields_includes_wheel_checkboxes_off_macos(monkeypatch) -> None:
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "linux")
+    fields = routes._mouse_bool_fields()
+    assert "mouse_wheel_z_enabled" in fields
+    assert "mouse_wheel_invert" in fields

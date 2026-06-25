@@ -3231,14 +3231,14 @@
  }, 2000);
  });
  }
- // Toggle the <body> gate class. When turning off, uncheck the mouse and
- // detection Enabled boxes to mirror the server-side cascade; selectors
- // must match the route's cascade fields.
+ // Toggle the <body> gate class. When turning off, uncheck the detection
+ // Enabled box to mirror the server-side cascade; the selector must match
+ // the route's cascade fields.
  function onExperimentalToggle(cb) {
  document.body.classList.toggle('show-experimental', cb.checked);
  if (cb.checked) return;
  document.querySelectorAll(
- '#mouse-section input[name="mouse_enabled"], #detection-section input[name="enabled"]'
+ '#detection-section input[name="enabled"]'
  ).forEach(function (el) { el.checked = false; });
  }
  function switchTab(tabId) {

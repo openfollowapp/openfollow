@@ -697,6 +697,7 @@ def build_marker_visual_state(
         and app._input_manager.is_keyboard_connected()
     )
     state.mouse_enabled = cfg.controller.mouse_enabled
+    state.mouse_double_click_reset = cfg.controller.mouse_double_click_reset
     state.show_hud_help = app._show_hud_help
 
     # Virtual fader stack. Read from the running bus and surface only the

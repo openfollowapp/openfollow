@@ -1685,6 +1685,22 @@ class ControllerConfig:
     keyboard_enabled: bool = True
     # Default matches config.example.toml; an explicit ``true`` is honoured.
     mouse_enabled: bool = False
+    # Mouse steering refinements (see input/mouse.py).
+    # Cursor deadband in whole screen pixels; 0 = off (apply every move).
+    mouse_hysteresis_px: int = 0
+    # Glide toward the cursor target; 0 = instant (no smoothing), higher = smoother/laggier.
+    mouse_smoothing: float = 0.0
+    # Cap the marker's upstage (Y+) position when steering by mouse; 0 = no
+    # limit. Near the camera horizon the unprojected Y runs away, so a move
+    # beyond this holds the marker rather than placing it far upstage.
+    mouse_max_y: float = 0.0
+    # Scroll wheel adjusts marker Z height.
+    mouse_wheel_z_enabled: bool = True
+    mouse_wheel_invert: bool = False
+    # Height change per wheel tick (m).
+    mouse_wheel_z_step: float = 0.1
+    # Double right-click resets the controlled marker to the default position.
+    mouse_double_click_reset: bool = True
     deadzone: float = 0.15
     invert_y: bool = False
     curve: str = "logarithmic"
@@ -1772,6 +1788,15 @@ class ControllerConfig:
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
+        # Mouse steering refinements – coerce so a hand-edited / imported TOML
+        # can't feed a string or out-of-range value into the input loop.
+        self.mouse_hysteresis_px = _coerce_int(self.mouse_hysteresis_px, 0, lo=0, hi=200)
+        self.mouse_smoothing = _coerce_float(self.mouse_smoothing, 0.0, lo=0.0, hi=1.0)
+        self.mouse_max_y = _coerce_float(self.mouse_max_y, 0.0, lo=0.0, hi=10000.0)
+        self.mouse_wheel_z_step = _coerce_float(self.mouse_wheel_z_step, 0.1, lo=0.0, hi=10.0)
+        self.mouse_wheel_z_enabled = _coerce_bool(self.mouse_wheel_z_enabled, True)
+        self.mouse_wheel_invert = _coerce_bool(self.mouse_wheel_invert, False)
+        self.mouse_double_click_reset = _coerce_bool(self.mouse_double_click_reset, True)
         if not 0.0 <= self.deadzone <= 1.0:
             logger.warning(
                 "Invalid controller deadzone %s, clamping to [0.0, 1.0]",

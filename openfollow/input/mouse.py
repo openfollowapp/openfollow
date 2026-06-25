@@ -15,7 +15,8 @@ Steering refinements (all configurable on ``ControllerConfig``):
 - ``mouse_hysteresis_px`` – a pixel deadband on the cursor so hand-tremor
   doesn't wiggle the marker.
 - ``mouse_smoothing`` – an EMA glide toward the cursor target, applied
-  every frame by :meth:`MouseHandler.update`.
+  every frame by :meth:`MouseHandler.update`. ``0`` = instant (no smoothing),
+  higher = smoother/laggier.
 - ``mouse_max_y`` – cap the upstage (Y+) target so a move near the camera
   horizon, where the unprojected Y runs away, can't fling the marker upstage.
 """
@@ -59,6 +60,11 @@ _MIN_GRAB_PX = 14.0
 # Below this world-distance the EMA glide is treated as settled and snapped to
 # the target, so idle frames stop rewriting the marker position.
 _SETTLE_EPS = 1e-4
+
+# Smoothing is configured as 0 = instant, higher = smoother; the glide alpha is
+# ``1 - mouse_smoothing``. This floor keeps the maximum (1.0) very-smooth but
+# still converging, so the marker never freezes short of the target.
+_MIN_GLIDE_ALPHA = 0.01
 
 # Double-click window: a second right-click within this many seconds and pixels
 # of the first counts as a double right-click (reset to default).
@@ -179,7 +185,8 @@ class MouseHandler:
 
         Runs every frame (display tick) so smoothing advances independent of
         pointer-event rate and settles on the target when the cursor stops.
-        ``mouse_smoothing`` is a per-frame EMA factor (1.0 = instant).
+        ``mouse_smoothing`` is the per-frame smoothing amount (0 = instant,
+        higher = smoother); the glide alpha is ``1 - mouse_smoothing``.
         """
         if not self._active:
             return
@@ -193,7 +200,7 @@ class MouseHandler:
         if self._smooth_world is None:
             mx, my, _ = marker.pos
             self._smooth_world = (mx, my)
-        alpha = app._config.controller.mouse_smoothing
+        alpha = max(1.0 - app._config.controller.mouse_smoothing, _MIN_GLIDE_ALPHA)
         sx, sy = self._smooth_world
         nx = sx + alpha * (tx - sx)
         ny = sy + alpha * (ty - sy)

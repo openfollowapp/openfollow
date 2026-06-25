@@ -2543,10 +2543,11 @@ def test_controller_mouse_enabled_default_is_false() -> None:
 
 
 def test_controller_mouse_steering_defaults_are_back_compatible() -> None:
-    # Defaults reproduce direct 1:1 control with wheel-Z on, as before.
+    # Defaults reproduce direct 1:1 control with wheel-Z on, as before:
+    # smoothing 0 = instant (the glide alpha is 1 - smoothing).
     cfg = ControllerConfig()
     assert cfg.mouse_hysteresis_px == 0
-    assert cfg.mouse_smoothing == 1.0
+    assert cfg.mouse_smoothing == 0.0
     assert cfg.mouse_max_y == 0.0
     assert cfg.mouse_wheel_z_enabled is True
     assert cfg.mouse_wheel_invert is False
@@ -2576,7 +2577,9 @@ def test_controller_mouse_hysteresis_coerced_to_int(value: object, expected: int
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(0.0, 0.01), (5.0, 1.0), ("nope", 1.0), (None, 1.0), (0.4, 0.4)],
+    # 0 = instant is in range now; out-of-range / non-numeric fall back to the
+    # 0.0 default; the upper clamp is 1.0.
+    [(0.0, 0.0), (1.0, 1.0), (5.0, 1.0), (-1.0, 0.0), ("nope", 0.0), (None, 0.0), (0.4, 0.4)],
 )
 def test_controller_mouse_smoothing_coerced(value: object, expected: float) -> None:
     assert ControllerConfig(mouse_smoothing=value).mouse_smoothing == expected

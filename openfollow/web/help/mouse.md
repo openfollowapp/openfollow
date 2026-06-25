@@ -14,7 +14,7 @@ Click-and-drag control for steering markers directly on the live video. Off by d
 
 **Hysteresis (px)** – a deadband on the cursor, in screen pixels, so small hand-tremor doesn't make the marker wiggle. The marker only moves once the cursor travels past this many pixels from where it last settled. `0` applies every movement (direct control). Start around `3`–`6` if a resting hand makes the marker drift.
 
-**Smoothing** – how heavily the marker glides toward the cursor. `1.0` is instant 1:1 control; lower values (e.g. `0.2`) ease the marker toward the cursor for a smoother, slightly laggier feel. Range `0.01`–`1.0`.
+**Smoothing** – how heavily the marker glides toward the cursor. `0` is direct 1:1 control (instant); higher values (e.g. `0.8`) ease the marker toward the cursor for a smoother, laggier feel. Range `0`–`1`.
 
 **Maximum Y+ (m)** – the farthest **upstage** (away from the audience, the +Y direction) a mouse target may go. Near the top of the picture the floor stretches toward the horizon, where a tiny cursor move maps to an enormous upstage distance; this caps that so the marker (and its light) can't shoot off into the far field. A move past the limit is ignored and the marker holds its last position. `0` means no upstage limit.
 

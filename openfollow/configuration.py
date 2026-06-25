@@ -1587,8 +1587,8 @@ class ControllerConfig:
     # Mouse steering refinements (see input/mouse.py).
     # Cursor deadband in whole screen pixels; 0 = off (apply every move).
     mouse_hysteresis_px: int = 0
-    # Output glide toward the cursor target; 1.0 = instant (no smoothing).
-    mouse_smoothing: float = 1.0
+    # Glide toward the cursor target; 0 = instant (no smoothing), higher = smoother/laggier.
+    mouse_smoothing: float = 0.0
     # Cap the marker's upstage (Y+) position when steering by mouse; 0 = no
     # limit. Near the camera horizon the unprojected Y runs away, so a move
     # beyond this holds the marker rather than placing it far upstage.
@@ -1690,7 +1690,7 @@ class ControllerConfig:
         # Mouse steering refinements – coerce so a hand-edited / imported TOML
         # can't feed a string or out-of-range value into the input loop.
         self.mouse_hysteresis_px = _coerce_int(self.mouse_hysteresis_px, 0, lo=0, hi=200)
-        self.mouse_smoothing = _coerce_float(self.mouse_smoothing, 1.0, lo=0.01, hi=1.0)
+        self.mouse_smoothing = _coerce_float(self.mouse_smoothing, 0.0, lo=0.0, hi=1.0)
         self.mouse_max_y = _coerce_float(self.mouse_max_y, 0.0, lo=0.0, hi=10000.0)
         self.mouse_wheel_z_step = _coerce_float(self.mouse_wheel_z_step, 0.1, lo=0.0, hi=10.0)
         self.mouse_wheel_z_enabled = _coerce_bool(self.mouse_wheel_z_enabled, True)

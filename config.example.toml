@@ -80,11 +80,11 @@ z_display_from_stage = true
 enabled = true
 keyboard_enabled = true
 mouse_enabled = false
-# Mouse steering: 0 px hysteresis + 1.0 smoothing = direct 1:1 control;
-# mouse_max_y caps the upstage (Y+) extent (0 = no limit); wheel adjusts
-# marker height by step (m) per tick.
+# Mouse steering: 0 px hysteresis + 0 smoothing = direct 1:1 control
+# (higher smoothing = smoother/laggier); mouse_max_y caps the upstage (Y+)
+# extent (0 = no limit); wheel adjusts marker height by step (m) per tick.
 mouse_hysteresis_px = 0
-mouse_smoothing = 1.0
+mouse_smoothing = 0.0
 mouse_max_y = 0.0
 mouse_wheel_z_enabled = true
 mouse_wheel_invert = false

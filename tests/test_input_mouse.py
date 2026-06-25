@@ -284,6 +284,44 @@ class TestPosition:
         assert x2 == pytest.approx(0.75 * wx)
         assert abs(x2 - wx) < abs(x1 - wx)  # monotonic approach
 
+    def test_higher_smoothing_glides_more_slowly(self) -> None:
+        # The field reads "0 = instant, higher = smoother": a high value yields
+        # a small glide alpha (= 1 - smoothing), so the first frame barely moves.
+        app = _DummyApp()
+        app._config.controller.mouse_smoothing = 0.75  # alpha 0.25
+        handler = MouseHandler(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        tx, ty = cx + 120, cy + 60
+        handler.on_pointer_move(tx, ty)
+        wx, wy = _world_at(app, tx, ty)
+
+        handler.update()  # seed=(0,0); alpha 0.25 → a quarter of the way
+        x1, y1, _ = app._server.get_marker(1).pos
+        assert x1 == pytest.approx(0.25 * wx)
+        assert y1 == pytest.approx(0.25 * wy)
+
+    def test_max_smoothing_creeps_but_never_freezes(self) -> None:
+        # smoothing 1.0 would invert to alpha 0; the floor keeps it converging
+        # (very slowly) instead of freezing short of the target.
+        app = _DummyApp()
+        app._config.controller.mouse_smoothing = 1.0  # alpha floored to 0.01
+        handler = MouseHandler(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        tx, ty = cx + 120, cy + 60
+        handler.on_pointer_move(tx, ty)
+        wx, wy = _world_at(app, tx, ty)
+
+        handler.update()  # seed=(0,0); alpha 0.01 → 1% of the way, not frozen
+        x1, _y1, _ = app._server.get_marker(1).pos
+        assert x1 == pytest.approx(0.01 * wx)
+        assert 0.0 < abs(x1) < abs(wx)  # moved toward the target, not stuck at 0
+
+        handler.update()  # keeps creeping closer
+        x2, _y2, _ = app._server.get_marker(1).pos
+        assert abs(x2 - wx) < abs(x1 - wx)
+
     def test_uses_canvas_size_when_available(self) -> None:
         app = _DummyApp()
         app._canvas = _DummyCanvas(1280, 720)

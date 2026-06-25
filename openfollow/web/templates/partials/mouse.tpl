@@ -33,7 +33,7 @@
             </div>
             <div class="field">
                 <label for="mouse-smoothing">Smoothing</label>
-                <input id="mouse-smoothing" type="number" name="mouse_smoothing" value="{{config.controller.mouse_smoothing}}" min="0.01" max="1" step="any"
+                <input id="mouse-smoothing" type="number" name="mouse_smoothing" value="{{config.controller.mouse_smoothing}}" min="0" max="1" step="any"
                        hx-get="/api/validate/mouse/mouse_smoothing" hx-trigger="blur changed delay:200ms"
                        hx-target="#mouse-smoothing-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="mouse-smoothing-error" aria-invalid="false">

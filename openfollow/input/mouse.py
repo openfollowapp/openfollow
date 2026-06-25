@@ -19,7 +19,7 @@ from openfollow.runtime.services_detection_pin import (
     assist_pinned_marker_id,
     get_or_create_manual_marker,
 )
-from openfollow.scene.solver import unproject_to_plane
+from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -174,10 +174,16 @@ class MouseHandler:
         self._screen_buffer[0, 0] = screen_x
         self._screen_buffer[0, 1] = screen_y
 
+        # The cursor lands on the (lens-distorted) video, so undistort it back to
+        # the pinhole frame before unprojecting. Identity when no lens distortion
+        # is configured. k1/k2 live on the config (the Camera object is pinhole).
+        cam = app._config.camera
+        screen = invert_overlay_distortion(self._screen_buffer, float(w), float(h), cam.lens_k1, cam.lens_k2)
+
         plane_z = app._config.grid.z_offset
         world = unproject_to_plane(
             buf,
-            self._screen_buffer,
+            screen,
             float(w),
             float(h),
             plane_z,

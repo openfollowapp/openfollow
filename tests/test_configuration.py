@@ -1845,6 +1845,50 @@ def test_camera_config_preserves_optional_float_none() -> None:
     assert cfg.focal_length_mm is None
 
 
+def test_camera_config_lens_distortion_defaults_to_pinhole() -> None:
+    # Existing configs (no lens_k1/lens_k2 in TOML) must render byte-for-byte
+    # as a pinhole overlay – both coefficients default to 0.0.
+    cfg = CameraConfig()
+    assert cfg.lens_k1 == 0.0
+    assert cfg.lens_k2 == 0.0
+
+
+@pytest.mark.parametrize(
+    "bad_k,expected",
+    [
+        (0.1, 0.1),
+        ("0.15", 0.15),
+        (1.5, 0.4),  # above clamp
+        (-1.5, -0.4),  # below clamp
+        (None, 0.0),
+        ("nope", 0.0),
+        (float("inf"), 0.0),  # non-finite -> declared default, not the clamp
+        (float("nan"), 0.0),
+    ],
+)
+def test_camera_config_coerces_and_clamps_lens_k1(bad_k: object, expected: float) -> None:
+    cfg = CameraConfig(lens_k1=bad_k)  # type: ignore[arg-type]
+    assert cfg.lens_k1 == expected
+
+
+@pytest.mark.parametrize(
+    "bad_k,expected",
+    [
+        (0.03, 0.03),
+        ("0.04", 0.04),
+        (1.5, 0.2),
+        (-1.5, -0.2),
+        (None, 0.0),
+        ("nope", 0.0),
+        (float("inf"), 0.0),
+        (float("nan"), 0.0),
+    ],
+)
+def test_camera_config_coerces_and_clamps_lens_k2(bad_k: object, expected: float) -> None:
+    cfg = CameraConfig(lens_k2=bad_k)  # type: ignore[arg-type]
+    assert cfg.lens_k2 == expected
+
+
 def test_camera_config_rejects_inf_fov_to_default() -> None:
     # TOML allows ``inf``/``-inf`` as float literals. ``_coerce_float`` must
     # not raise *and* must not let ``inf`` pass through – an infinite fov

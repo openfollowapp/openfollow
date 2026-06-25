@@ -45,6 +45,8 @@ def test_overlay_state_reset_restores_defaults() -> None:
     state.markers.append(MarkerOverlayData(marker_id=1, x=1.0, y=2.0, z=3.0, color="#ffffff"))
     state.selected_id = 1
     state.camera_params = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    state.lens_k1 = -0.15
+    state.lens_k2 = 0.04
     state.grid_config = (1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
     state.show_ball = False
     state.show_hud_help = False
@@ -72,6 +74,8 @@ def test_overlay_state_reset_restores_defaults() -> None:
     assert state.markers == []
     assert state.selected_id is None
     assert state.camera_params is None
+    assert state.lens_k1 == 0.0
+    assert state.lens_k2 == 0.0
     assert state.grid_config is None
     assert state.show_ball is True
     assert state.show_hud_help is True

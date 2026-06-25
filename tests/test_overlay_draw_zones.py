@@ -301,3 +301,47 @@ class TestRendering:
         assert cr.fill_preserves == 2
         assert cr.strokes == 2
         assert [t.text for t in cr.texts] == ["Left", "Right (2)"]
+
+
+class TestLensDistortion:
+    """Zone edges bow to match the lens when distortion is active, subdividing
+    each straight edge; with distortion off the outline is the raw vertices."""
+
+    def test_off_path_outline_is_raw_vertices(self) -> None:
+        state = _state_with_zone(vertices=_square(s=2.0), name="")
+        cr = FakeCairo()
+        draw_zones(FakeRenderer(), cr, state, 1920, 1080)
+        # 4-vertex square: move_to v0, line_to v1..v3, close.
+        assert len(cr.line_tos) == 3
+        assert cr.closes == 1
+
+    def test_edges_subdivide_when_distortion_active(self) -> None:
+        state = _state_with_zone(vertices=_square(s=2.0), name="")
+        state.lens_k1 = -0.15
+        state.lens_k2 = 0.04
+        cr = FakeCairo()
+        draw_zones(FakeRenderer(), cr, state, 1920, 1080)
+        # 4 edges x 12 chords = 48 outline points: move_to + 47 line_to + close.
+        assert len(cr.line_tos) == 47
+        assert cr.closes == 1
+
+    def test_subdivided_edge_behind_camera_skips_whole_zone(self, monkeypatch) -> None:
+        import openfollow.runtime.overlay_draw_zones as mod
+
+        state = _state_with_zone(vertices=_square(s=2.0), name="")
+        state.lens_k1 = -0.15
+        state.lens_k2 = 0.04
+
+        def _nan_segments(_cam, segments, _w, _h, _k1, _k2, n):
+            segs = np.asarray(segments, dtype=np.float64).reshape(-1, 2, 3)
+            out = np.full((segs.shape[0], n + 1, 2), 100.0)
+            out[0, n // 2] = np.nan  # one sub-point on the first edge behind camera
+            return out
+
+        # Vertices project finite (real call), but a subdivided edge point is NaN.
+        monkeypatch.setattr(mod, "_project_segments", _nan_segments)
+        cr = FakeCairo()
+        draw_zones(FakeRenderer(), cr, state, 1920, 1080)
+        # A closed outline can't be partially drawn -> whole zone skipped.
+        assert cr.closes == 0
+        assert cr.fill_preserves == 0

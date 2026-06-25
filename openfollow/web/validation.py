@@ -357,6 +357,8 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "focal_length_mm": FieldRule(
             _as_optional_float, lo=0.0, human_error="Focal length must be a positive number (or empty)."
         ),
+        "lens_k1": FieldRule(_as_float, lo=-0.4, hi=0.4, human_error="Must be between -0.4 and 0.4."),
+        "lens_k2": FieldRule(_as_float, lo=-0.2, hi=0.2, human_error="Must be between -0.2 and 0.2."),
     },
     "grid": {
         "visible": FieldRule(_as_bool),

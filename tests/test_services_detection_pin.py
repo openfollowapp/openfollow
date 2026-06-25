@@ -110,7 +110,7 @@ def _make_app(
     grid = GridConfig()
     marker = marker or _StubMarker()
     return SimpleNamespace(
-        _config=SimpleNamespace(detection=detection_cfg, grid=grid),
+        _config=SimpleNamespace(detection=detection_cfg, grid=grid, camera=CameraConfig()),
         _video_receiver=_StubVideoReceiver(resolution),
         _camera=_StubCamera(),
         _server=_StubServer(marker),
@@ -1225,3 +1225,52 @@ def test_assist_locked_track_absent_from_detections_falls_through(monkeypatch) -
 
     # The stale lock isn't found, so the nearest in-range detection is chosen.
     assert state.locked_track_id == 1
+
+
+def _capture_unproject_screen(monkeypatch) -> dict:  # noqa: ANN001
+    """Patch unproject_to_plane to record the screen point it receives."""
+    import openfollow.runtime.services_detection_pin as module
+
+    recorded: dict[str, np.ndarray] = {}
+
+    def _spy(_params, screen_pt, _w, _h, _plane_z):  # noqa: ANN001, ANN202
+        recorded["screen"] = np.array(screen_pt, dtype=float).copy()
+        return np.array([[1.0, 2.0, 0.0]], dtype=np.float64)
+
+    monkeypatch.setattr(module, "unproject_to_plane", _spy)
+    return recorded
+
+
+def test_replace_pin_passes_raw_screen_when_lens_zero(monkeypatch) -> None:
+    cfg = DetectionConfig(enabled=True, pin_marker=True, pin_mode="replace", smoothing=1.0)
+    app = _make_app(detection_cfg=cfg)  # lens_k1 == lens_k2 == 0
+    detector = _StubDetector(_StubDetection(0.6, 0.6, 0.8, 0.8))
+    cam, pt = _buffers()
+    recorded = _capture_unproject_screen(monkeypatch)
+
+    apply_detection_pin(
+        app, person_detector=detector, unproject_cam_buffer=cam, screen_point_buffer=pt, pin_state=DetectionPinState()
+    )
+
+    # Pin point reaches unproject unchanged: centre_x = 0.7*1920, top = 0.6*1080.
+    assert recorded["screen"][0, 0] == pytest.approx(0.7 * 1920)
+    assert recorded["screen"][0, 1] == pytest.approx(0.6 * 1080)
+
+
+def test_replace_pin_undistorts_screen_when_lens_set(monkeypatch) -> None:
+    cfg = DetectionConfig(enabled=True, pin_marker=True, pin_mode="replace", smoothing=1.0)
+    app = _make_app(detection_cfg=cfg)
+    app._config.camera.lens_k1 = -0.2  # barrel
+    detector = _StubDetector(_StubDetection(0.6, 0.6, 0.8, 0.8))
+    cam, pt = _buffers()
+    recorded = _capture_unproject_screen(monkeypatch)
+
+    apply_detection_pin(
+        app, person_detector=detector, unproject_cam_buffer=cam, screen_point_buffer=pt, pin_state=DetectionPinState()
+    )
+
+    cx, cy = 960.0, 540.0  # 1920x1080 centre
+    raw = np.hypot(0.7 * 1920 - cx, 0.6 * 1080 - cy)
+    undist = np.hypot(recorded["screen"][0, 0] - cx, recorded["screen"][0, 1] - cy)
+    # Undistorting a barrel-distorted detection pin pushes it outward.
+    assert undist > raw

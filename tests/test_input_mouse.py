@@ -325,3 +325,45 @@ class TestMouseEdgeArms:
         before = app._server.get_marker(1).pos
         handler.on_pointer_down(640, 360, 1)
         assert app._server.get_marker(1).pos == before
+
+
+class TestLensDistortionInput:
+    """A click lands on the lens-distorted video, so it is undistorted back to
+    the pinhole frame before unprojection (identity when no lens is configured)."""
+
+    def test_no_inverse_distortion_when_lens_zero(self, monkeypatch) -> None:
+        from openfollow.input import mouse as mouse_module
+
+        captured: dict[str, np.ndarray] = {}
+
+        def _spy(params, screen_pts, w, h, plane_z):  # noqa: ANN001, ANN202
+            captured["screen"] = np.array(screen_pts, dtype=float).copy()
+            return np.array([[1.0, 2.0, 0.0]])
+
+        monkeypatch.setattr(mouse_module, "unproject_to_plane", _spy)
+        app = _DummyApp()  # lens_k1 == lens_k2 == 0 by default
+        MouseHandler(app).on_pointer_down(1200, 600, 1)
+        # The raw cursor reaches unproject unchanged.
+        assert captured["screen"][0, 0] == 1200.0
+        assert captured["screen"][0, 1] == 600.0
+
+    def test_cursor_is_undistorted_when_lens_set(self, monkeypatch) -> None:
+        from openfollow.input import mouse as mouse_module
+
+        captured: dict[str, np.ndarray] = {}
+
+        def _spy(params, screen_pts, w, h, plane_z):  # noqa: ANN001, ANN202
+            captured["screen"] = np.array(screen_pts, dtype=float).copy()
+            return np.array([[1.0, 2.0, 0.0]])
+
+        monkeypatch.setattr(mouse_module, "unproject_to_plane", _spy)
+        app = _DummyApp()
+        app._config.camera.lens_k1 = -0.2  # barrel
+        MouseHandler(app).on_pointer_down(1200, 600, 1)
+        # Canvas defaults to 1280x720 (no _canvas), so centre is (640, 360).
+        cx, cy = 640.0, 360.0
+        r_cursor = math.hypot(1200.0 - cx, 600.0 - cy)
+        s = captured["screen"][0]
+        r_undist = math.hypot(s[0] - cx, s[1] - cy)
+        # Undistorting a barrel-distorted click pushes it outward.
+        assert r_undist > r_cursor

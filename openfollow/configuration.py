@@ -289,6 +289,12 @@ class CameraConfig:
     # the projection math; ``fov`` remains the source of truth.
     sensor_width_mm: float | None = None
     focal_length_mm: float | None = None
+    # Radial lens-distortion coefficients for the overlay-curvature correction.
+    # Bow the rendered HUD to match a fisheye / wide-angle lens via
+    # f = 1 + k1*r^2 + k2*r^4 (r normalised to the image half-diagonal). The
+    # video frame is never warped. 0/0 = pinhole (no curvature).
+    lens_k1: float = 0.0
+    lens_k2: float = 0.0
 
     def __post_init__(self) -> None:
         # These feed ``project_points`` via a numpy float array. Clamp fov out
@@ -302,6 +308,13 @@ class CameraConfig:
         self.fov = _coerce_float(self.fov, 60.0, lo=1.0, hi=179.0)
         self.sensor_width_mm = _coerce_optional_float(self.sensor_width_mm, None, lo=0.0)
         self.focal_length_mm = _coerce_optional_float(self.focal_length_mm, None, lo=0.0)
+        # Bounds cover strong wide-angle / fisheye lenses. The radial map
+        # f = 1 + k1*r^2 + k2*r^4 stays positive and monotonic across the bulk
+        # of the frame; near the extreme corner a strong barrel setting can
+        # compress past monotonic, but the floored inverse (input path) stays
+        # bounded there, so control never diverges.
+        self.lens_k1 = _coerce_float(self.lens_k1, 0.0, lo=-0.4, hi=0.4)
+        self.lens_k2 = _coerce_float(self.lens_k2, 0.0, lo=-0.2, hi=0.2)
 
 
 _GRID_COLOR_DEFAULT = "#545454"

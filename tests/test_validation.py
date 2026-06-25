@@ -167,6 +167,21 @@ def test_validate_range_high() -> None:
     assert "FOV" in err
 
 
+@pytest.mark.parametrize(
+    "field,raw",
+    [("lens_k1", "0.5"), ("lens_k1", "-0.5"), ("lens_k2", "0.5"), ("lens_k2", "-0.5")],
+)
+def test_validate_lens_distortion_out_of_range(field: str, raw: str) -> None:
+    err = validate("camera", field, raw)
+    assert err is not None
+    assert "between" in err.lower()
+
+
+@pytest.mark.parametrize("field,raw", [("lens_k1", "0.1"), ("lens_k2", "-0.03")])
+def test_validate_lens_distortion_in_range_ok(field: str, raw: str) -> None:
+    assert validate("camera", field, raw) is None
+
+
 @pytest.mark.parametrize("section", ["grid", "marker"])
 def test_validate_opacity_out_of_range_uses_opacity_wording(section: str) -> None:
     """The 0-1 alpha control is opacity (1 = fully opaque, 0 = invisible), so

@@ -2322,9 +2322,12 @@ class AppRuntimeServices:
         if app._camera is None:
             return []
 
-        from openfollow.scene.solver import unproject_to_plane
+        from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
         cam_cfg = app._camera.to_config()
+        # Lens-distortion coefficients live on the config (the pinhole Camera
+        # doesn't carry them), so read them straight from there.
+        lens = app._config.camera
         params = self._zone_cam_buffer
         params[0] = cam_cfg.pos_x
         params[1] = cam_cfg.pos_y
@@ -2340,7 +2343,11 @@ class AppRuntimeServices:
         for det in detections:
             screen_pt[0, 0] = (det.x1 + det.x2) / 2.0 * w
             screen_pt[0, 1] = det.y2 * h  # foot position
-            world = unproject_to_plane(params, screen_pt, float(w), float(h), plane_z)
+            # The detection sits on the (lens-distorted) video, so undistort the
+            # foot point back to the pinhole frame before unprojecting. Identity
+            # when no lens distortion is configured.
+            undistorted = invert_overlay_distortion(screen_pt, float(w), float(h), lens.lens_k1, lens.lens_k2)
+            world = unproject_to_plane(params, undistorted, float(w), float(h), plane_z)
             if not np.all(np.isfinite(world[0])):
                 continue
             # unproject_to_plane returns PSN-absolute world coords, matching

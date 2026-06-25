@@ -1278,6 +1278,8 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "fov": _as_float,
         "sensor_width_mm": _as_optional_float,
         "focal_length_mm": _as_optional_float,
+        "lens_k1": _as_float,
+        "lens_k2": _as_float,
     },
     "grid": {
         "visible": _as_bool,
@@ -2166,7 +2168,34 @@ def _load_json_body() -> Any:
     return data
 
 
+# The wizard solves the pinhole pose; lens distortion (lens_k1/lens_k2) is kept
+# separate from this vector because the DLT solve is pinhole. The wizard applies
+# the distortion warp around the pinhole projection instead (see the project /
+# unproject / solve endpoints), so the corner-pinning overlay bows to match a
+# fisheye snapshot and the solve undistorts the pinned corners first.
 _WIZARD_CAMERA_FIELDS = ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov")
+
+
+def _wizard_lens_coeffs(cam: Any) -> tuple[float, float]:
+    """Extract clamped lens-distortion coefficients from a wizard camera dict.
+
+    Absent or unparseable values fall back to ``0.0`` (pinhole), so an older
+    client that posts no coefficients keeps the previous behaviour. Bounds mirror
+    ``CameraConfig.__post_init__``.
+    """
+
+    def _clamp(value: Any, lo: float, hi: float) -> float:
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(f):
+            return 0.0
+        return max(lo, min(hi, f))
+
+    if not isinstance(cam, dict):
+        return 0.0, 0.0
+    return _clamp(cam.get("lens_k1", 0.0), -0.4, 0.4), _clamp(cam.get("lens_k2", 0.0), -0.2, 0.2)
 
 
 def _wizard_camera_params(cam: Any) -> Any:
@@ -6867,8 +6896,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         import numpy as np
 
-        from openfollow.scene.solver import project_points
+        from openfollow.scene.solver import apply_overlay_distortion, project_points
 
+        k1, k2 = _wizard_lens_coeffs(cam)
         hw, hd = w / 2.0, d / 2.0
 
         # PSN +X is stage left, so the stage-left corners (DSL, USL) sit at
@@ -6888,8 +6918,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # Reference point at ground level (where the physical mark is)
         ref_psn = np.array([[0, 0, 0]], dtype=np.float64)
 
-        screen_corners = project_points(params, corners_psn, img_w, img_h)
-        screen_ref = project_points(params, ref_psn, img_w, img_h)
+        # Bow the projected overlay to match a fisheye / wide-angle snapshot so
+        # the corner-pinning preview lines up with the distorted video.
+        screen_corners = apply_overlay_distortion(
+            project_points(params, corners_psn, img_w, img_h), img_w, img_h, k1, k2
+        )
+        screen_ref = apply_overlay_distortion(project_points(params, ref_psn, img_w, img_h), img_w, img_h, k1, k2)
         projected = [screen_corners, screen_ref]
 
         result = {
@@ -6902,10 +6936,32 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "reference": screen_ref[0].tolist(),
         }
 
+        # Bowed boundary outline so the wizard quad curves exactly like the HUD
+        # grid (which subdivides each straight world edge). Same subdivision
+        # count as the renderer keeps the two curves identical. Best-effort: a
+        # behind-camera edge point omits the outline and the client falls back to
+        # the straight corner quad.
+        from openfollow.runtime.overlay_draw_scene import _DISTORTION_SUBDIVISIONS
+
+        n_sub = _DISTORTION_SUBDIVISIONS if (k1 or k2) else 1
+        loop = np.vstack([corners_psn, corners_psn[0:1]])  # close the quad
+        edge_ts = np.linspace(0.0, 1.0, n_sub + 1)[:-1]  # drop shared join vertex
+        outline_world = np.array(
+            [loop[i] + t * (loop[i + 1] - loop[i]) for i in range(4) for t in edge_ts],
+            dtype=np.float64,
+        )
+        outline_screen = apply_overlay_distortion(
+            project_points(params, outline_world, img_w, img_h), img_w, img_h, k1, k2
+        )
+        if np.isfinite(outline_screen).all():
+            result["outline"] = outline_screen.tolist()
+
         if abs(oz) > 1e-6:
             # Elevated point at grid height (top of z-offset line)
             ref_elevated = np.array([[0, 0, oz]], dtype=np.float64)
-            screen_elevated = project_points(params, ref_elevated, img_w, img_h)
+            screen_elevated = apply_overlay_distortion(
+                project_points(params, ref_elevated, img_w, img_h), img_w, img_h, k1, k2
+            )
             projected.append(screen_elevated)
             result["reference_elevated"] = screen_elevated[0].tolist()
             result["z_offset"] = oz
@@ -6937,7 +6993,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         import numpy as np
 
-        from openfollow.scene.solver import unproject_to_plane
+        from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
         try:
             cam = data["camera"]
@@ -6947,6 +7003,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             _require_wizard_canvas(img_w, img_h)
             plane_z = float(data.get("plane_z", 0.0))
             params = _wizard_camera_params(cam)
+            k1, k2 = _wizard_lens_coeffs(cam)
             if not isinstance(screen_points, list) or not screen_points:
                 raise ValueError("screen_points must be a non-empty list")
             for p in screen_points:
@@ -6962,6 +7019,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": str(exc)})
 
+        # The clicked points sit on the distorted snapshot; undistort them to the
+        # pinhole frame before unprojecting (identity when no distortion is set).
+        pts = invert_overlay_distortion(pts, img_w, img_h, k1, k2)
         world = unproject_to_plane(params, pts, img_w, img_h, plane_z)
 
         if len(pts) == 2 and not np.any(np.isnan(world)):
@@ -7010,10 +7070,22 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         import numpy as np
 
-        from openfollow.scene.solver import project_points, solve_camera_dlt
+        from openfollow.scene.solver import (
+            apply_overlay_distortion,
+            invert_overlay_distortion,
+            project_points,
+            solve_camera_dlt,
+        )
+
+        k1, k2 = _wizard_lens_coeffs(data.get("camera"))
+
+        # The corners were pinned on the distorted snapshot. Undistort them to the
+        # pinhole frame so the pinhole DLT solve isn't biased by the lens curve.
+        screen_arr = np.array(screen_corners, dtype=np.float64)
+        screen_undistorted = invert_overlay_distortion(screen_arr, img_w, img_h, k1, k2)
 
         world_tuples = [tuple(p) for p in world_corners]
-        screen_tuples = [tuple(p) for p in screen_corners]
+        screen_tuples = [(float(p[0]), float(p[1])) for p in screen_undistorted]
 
         result = solve_camera_dlt(world_tuples, screen_tuples, img_w, img_h)
         if result is None:
@@ -7034,7 +7106,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             dtype=np.float64,
         )
         world_arr = np.array(world_corners, dtype=np.float64)
-        reprojected = project_points(params, world_arr, img_w, img_h)
+        # Re-distort the reprojected corners back into the snapshot frame so the
+        # snap feedback lands where the operator pinned (on the distorted video).
+        reprojected = apply_overlay_distortion(project_points(params, world_arr, img_w, img_h), img_w, img_h, k1, k2)
 
         return json.dumps(
             {

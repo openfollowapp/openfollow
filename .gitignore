@@ -9,10 +9,21 @@ build/
 # fetches the .pt into the cwd before converting to ONNX). Never committed.
 *.pt
 
+# YOLO ONNX models: pre-shipped quality tiers are exported at build time and
+# seeded into the device-local storage folder at runtime; never committed.
+*.onnx
+
+# Device-local detection storage (resolve_detection_storage_path falls back to
+# ./yolo when no NVMe is mounted): models/ + cache/. Never committed.
+/yolo/
+
 # rpi-image-gen: the .deb dropped in for a local image build (CI fetches it as an artifact)
 packaging/image/openfollow.deb
 packaging/image/*.img
 packaging/image/*.img.xz
+
+# macOS .app/.dmg build artifacts (generated icon, iconset, default model)
+packaging/macos/_build/
 
 # Poetry
 .venv/

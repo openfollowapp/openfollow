@@ -3,7 +3,7 @@
 # Local CI gate and developer task runner: mirrors the CI workflow's
 # lint / typecheck / security / test / build steps plus coverage and mutation.
 
-.PHONY: ci ci-remote lint format typecheck security audit test test-unit test-integration test-smoke-e2e build coverage coverage-html coverage-xml install-hooks \
+.PHONY: ci ci-remote lint format typecheck security audit test test-unit test-integration test-smoke-e2e build dmg coverage coverage-html coverage-xml install-hooks \
         mutation mutation-results mutation-show mutation-clean
 
 # Combined line + branch coverage floor – ratchet up with every PR.
@@ -96,6 +96,16 @@ coverage-xml:
 
 build:
 	poetry build --no-interaction
+
+# Build the self-contained macOS .app and wrap it in a .dmg
+# (dist/OpenFollow-<version>-<arch>.dmg). macOS-only, NOT part of `make ci`
+# (heavy: bundles the detection + export toolchains incl. torch, ~2 GB output).
+# One-time host setup: `brew install librsvg create-dmg`. The pipeline and the
+# Gatekeeper caveat live in packaging/macos/build-dmg.sh + docs/PACKAGING.md.
+dmg:
+	@[ "$$(uname -s)" = "Darwin" ] || { echo "make dmg must run on macOS"; exit 1; }
+	poetry install --no-interaction --with package-macos -E detection -E export
+	bash packaging/macos/build-dmg.sh
 
 install-hooks:
 	poetry run pre-commit install

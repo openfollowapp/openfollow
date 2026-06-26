@@ -74,7 +74,7 @@ class _RecordingServices:
     def update_video(self) -> None:
         self.calls.append("update_video")
 
-    def apply_detection_pin(self) -> None:
+    def apply_detection_pin(self, dt: float = 0.0) -> None:
         self.calls.append("apply_detection_pin")
 
     def update_zone_triggers(self) -> None:

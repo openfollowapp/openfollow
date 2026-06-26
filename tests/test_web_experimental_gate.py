@@ -46,9 +46,14 @@ def test_section_root_carries_gate_class(rel: str, anchor: str) -> None:
     assert "experimental-feature" in line, f"{rel}: {anchor!r} root is missing the experimental-feature class"
 
 
-# Each experimental section's header must carry the Experimental badge.
+# Each experimental section's header must carry the Experimental badge. The
+# Person Detection page has no single header: every collapsible box carries its
+# own badge.
 _BADGED_HEADERS = [
-    ("partials/detection.tpl", "Person Detection"),
+    ("partials/detection.tpl", "Tracking"),
+    ("partials/detection.tpl", "Detection Model"),
+    ("partials/detection.tpl", "Sensitivity &amp; Overlay"),
+    ("partials/detection_mask_editor.tpl", "Detection Masks"),
     ("partials/rttrpm_output.tpl", "RTTrPM Output"),
 ]
 

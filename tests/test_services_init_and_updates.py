@@ -359,6 +359,23 @@ class TestInitOverlayState:
         assert renderer.state is sentinel
 
 
+class TestSeedBundledDetectionModels:
+    def test_seeds_models_into_resolved_storage(
+        self, services: AppRuntimeServices, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:  # noqa: ANN001
+        # When models are bundled, they are copied into ``<storage>/models``.
+        source = tmp_path / "bundled"
+        source.mkdir()
+        (source / "yolo26n.onnx").write_bytes(b"nano")
+        monkeypatch.setattr("openfollow.model_seed.bundled_models_dir", lambda: source)
+        cfg = AppConfig()
+        cfg.detection.storage_path = str(tmp_path / "store")
+
+        services._seed_bundled_detection_models(cfg)
+
+        assert (tmp_path / "store" / "models" / "yolo26n.onnx").read_bytes() == b"nano"
+
+
 # --------------------------------------------------------------------------- #
 # init_camera
 # --------------------------------------------------------------------------- #
@@ -1056,9 +1073,17 @@ class TestUpdateDelegators:
             "apply_detection_pin_helper",
             lambda app, **kw: calls.append((app, kw)),
         )
-        services.apply_detection_pin()
+        services.apply_detection_pin(dt=0.5)
         assert calls[0][0] is services._app
-        assert calls[0][1]["pin_state"] is services._detection_pin_state
+        kwargs = calls[0][1]
+        # Per-marker state lives on the app now – the wrapper must NOT pass a
+        # ``pin_state`` (the kwarg was removed when state moved to
+        # ``app._detection_pin_states``).
+        assert "pin_state" not in kwargs
+        assert kwargs["person_detector"] is services._person_detector
+        assert kwargs["unproject_cam_buffer"] is services._unproject_cam_buffer
+        assert kwargs["screen_point_buffer"] is services._screen_point_buffer
+        assert kwargs["dt"] == 0.5
 
     # Note: ``update_controller_status`` and ``services_controller_status``
     # were removed when the binding moved to the marker cards.

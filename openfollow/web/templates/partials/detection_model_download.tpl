@@ -13,7 +13,7 @@
         <h3 class="group-title">Download Model</h3>
         <span class="section-note">
             Export a YOLO model to ONNX into the storage folder. Needs the
-            model-export tools and an internet connection &ndash; slow on a Pi.
+            model-export tools and an internet connection.
         </span>
 %     if not export_installed:
         <p class="section-note">Install the model-export tools (run <code>install-detection.sh</code>) to enable downloads.</p>

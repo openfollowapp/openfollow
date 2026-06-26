@@ -10,8 +10,8 @@
 % # used to populate the fader source-type dropdown.
 <div id="midi-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="midi" data-help="midi">
  <div class="section-head">
- <h2>MIDI</h2>
- <span class="section-note">USB MIDI device aliases and virtual fader sources. The OSC Transmitters trigger forms reference what's configured here.</span>
+ <h2>{{_('MIDI')}}</h2>
+ <span class="section-note">{{_("USB MIDI device aliases and virtual fader sources. The OSC Transmitters trigger forms reference what's configured here.")}}</span>
  </div>
 
  % # ----------------------------------------------------------------
@@ -30,15 +30,15 @@
  % # connected)") and re-submitting the row preserves it.
  % # ----------------------------------------------------------------
  <div class="group">
- <h3 class="group-title">MIDI Patches</h3>
+ <h3 class="group-title">{{_('MIDI Patches')}}</h3>
  % if config.midi.patches:
  <div class="row">
  <table class="grid-table">
  <thead>
  <tr>
- <th style="width:3rem">ID</th>
- <th>Alias</th>
- <th>Device</th>
+ <th style="width:3rem">{{_('ID')}}</th>
+ <th>{{_('Alias')}}</th>
+ <th>{{_('Device')}}</th>
  <th></th>
  </tr>
  </thead>
@@ -52,11 +52,11 @@
  <tr>
  <td><span class="patch-id">{{patch.id}}</span></td>
  <td>
- <input type="text" form="patch-{{patch.id}}-form" name="alias" value="{{patch.alias}}" placeholder="(optional)" maxlength="64">
+ <input type="text" form="patch-{{patch.id}}-form" name="alias" value="{{patch.alias}}" placeholder="{{_('(optional)')}}" maxlength="64">
  </td>
  <td>
  <select form="patch-{{patch.id}}-form" name="device">
- <option value="" {{'selected' if not patch.identifier else ''}}>– none –</option>
+ <option value="" {{'selected' if not patch.identifier else ''}}>{{_('– none –')}}</option>
  % for device in discovered_devices:
  <option value="{{device['identifier']}}" {{'selected' if device['identifier'] == patch.identifier else ''}}>{{device['port_name']}}{{' – ' + device['serial'] if device['serial'] else ''}}</option>
  % end
@@ -65,17 +65,17 @@
  % # selected option carrying the patch's own
  % # identifier so a save round-trips the binding.
  % if patch.identifier and patch.identifier not in connected_ids:
- <option value="{{patch.identifier}}" selected>{{patch.port_name or patch.identifier}} (not connected)</option>
+ <option value="{{patch.identifier}}" selected>{{patch.port_name or patch.identifier}} {{_('(not connected)')}}</option>
  % end
  </select>
  </td>
  <td class="actions-cell">
- <button type="submit" form="patch-{{patch.id}}-form" class="save-btn small">Save</button>
+ <button type="submit" form="patch-{{patch.id}}-form" class="save-btn small">{{_('Save')}}</button>
  <button type="button" class="danger small"
  hx-post="/section/midi/patches/{{patch.id}}/delete"
  hx-target="#midi-section"
  hx-swap="outerHTML"
- hx-confirm="Delete patch {{patch.id}}{{' (' + patch.alias + ')' if patch.alias else ''}}?">Delete</button>
+ hx-confirm="{{_('Delete patch')}} {{patch.id}}{{' (' + patch.alias + ')' if patch.alias else ''}}?">{{_('Delete')}}</button>
  </td>
  </tr>
  % end
@@ -93,14 +93,14 @@
  </div>
  % else:
  <div class="row">
- <p class="field-note-msg">No MIDI patches yet. Add one, give it an alias, and assign a connected device.</p>
+ <p class="field-note-msg">{{_('No MIDI patches yet. Add one, give it an alias, and assign a connected device.')}}</p>
  </div>
  % end
  <div class="actions">
  <button type="button" class="save-btn"
  hx-post="/section/midi/patches/add"
  hx-target="#midi-section"
- hx-swap="outerHTML">Add new MIDI Patch</button>
+ hx-swap="outerHTML">{{_('Add new MIDI Patch')}}</button>
  </div>
  </div>
 
@@ -114,7 +114,7 @@
  % # re-rendering the click handler / selection state.
  % # ----------------------------------------------------------------
  <div class="group">
- <h3 class="group-title">Virtual Faders</h3>
+ <h3 class="group-title">{{_('Virtual Faders')}}</h3>
  % # ``selected_fader`` ships from the route handler – defaults
  % # to 1 on initial render, but a save handler can pass the
  % # just-saved fader's index so re-rendering after a per-fader
@@ -127,7 +127,7 @@
  % # / ``role="tablist"`` but the related ``role="tabpanel"`` /
  % # Treated as plain toggle buttons with aria-pressed (more accurate
  % # than tabs): buttons swap one shared content panel.
- <div class="midi-fader-strips" role="group" aria-label="Virtual faders">
+ <div class="midi-fader-strips" role="group" aria-label="{{_('Virtual faders')}}">
  % for idx, fader in enumerate(config.virtual_faders.faders, start=1):
  % # Selection indicator: ``selected_fader`` controls
  % # which strip starts selected. The browser-side
@@ -207,10 +207,10 @@
  % # poll fills it in.
  % marker_fader_values = marker_fader_values if defined('marker_fader_values') else []
  <div class="group">
- <h3 class="group-title">Marker Faders</h3>
- <span class="section-note">Read-only. One fader per controlled marker, driven by the gamepad that controls it. Send a marker's value with the OSC <code>[markerfader]</code> placeholder.</span>
+ <h3 class="group-title">{{_('Marker Faders')}}</h3>
+ <span class="section-note">{{_("Read-only. One fader per controlled marker, driven by the gamepad that controls it. Send a marker's value with the OSC")}} <code>[markerfader]</code> {{_('placeholder.')}}</span>
  % if marker_fader_values:
- <div class="midi-fader-strips" role="group" aria-label="Marker faders">
+ <div class="midi-fader-strips" role="group" aria-label="{{_('Marker faders')}}">
  % for entry in marker_fader_values:
  % mid = entry['marker_id']
  % fill_pct = '%g' % (max(0.0, min(1.0, entry['value'])) * 100)
@@ -239,7 +239,7 @@
  % end
  </div>
  % else:
- <p class="field-note-msg">No controlled markers yet. Add markers under Controlled markers and assign a gamepad to see their faders here.</p>
+ <p class="field-note-msg">{{_('No controlled markers yet. Add markers under Controlled markers and assign a gamepad to see their faders here.')}}</p>
  % end
 
  % # Polling driver for the live marker-fader values. One request

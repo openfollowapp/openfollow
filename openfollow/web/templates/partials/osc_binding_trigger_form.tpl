@@ -9,7 +9,7 @@
     % current_mode = getattr(trigger, 'mode', 'always') if kind_field == 'stream' else 'always'
     % current_min_change = getattr(trigger, 'min_change_m', 0.05) if kind_field == 'stream' else 0.05
     <div class="field">
-        <label>Rate (Hz)</label>
+        <label>{{_('Rate (Hz)')}}</label>
         <select name="trigger.rate_hz">
             % for r in valid_rates:
                 <option value="{{r}}" {{'selected' if r == current_rate else ''}}>{{r}} Hz</option>
@@ -28,10 +28,10 @@
         compare). The helper text below makes that explicit.
     -->
     <div class="field">
-        <label>Send</label>
+        <label>{{_('Send')}}</label>
         <select name="trigger.mode" data-osc-stream-mode-select>
-            <option value="always" {{'selected' if current_mode == 'always' else ''}}>Send always</option>
-            <option value="on_change" {{'selected' if current_mode == 'on_change' else ''}}>Send only on change</option>
+            <option value="always" {{'selected' if current_mode == 'always' else ''}}>{{_('Send always')}}</option>
+            <option value="on_change" {{'selected' if current_mode == 'on_change' else ''}}>{{_('Send only on change')}}</option>
         </select>
     </div>
     <!--
@@ -42,22 +42,14 @@
         the wrapper's ``hidden`` attribute on change.
     -->
     <div class="field" data-osc-stream-min-change-wrap {{!'hidden' if current_mode != 'on_change' else ''}}>
-        <label>Min change (m)</label>
+        <label>{{_('Min change (m)')}}</label>
         <input type="number" name="trigger.min_change_m"
                value="{{'%g' % current_min_change}}"
                step="0.01" min="0">
     </div>
     <div class="field span-3">
         <span class="field-note">
-            Rate controls the sample rate. <strong>Send only on change</strong>
-            skips the wire send when this row's <em>default marker</em>
-            hasn't moved at least <em>min change</em> along any axis
-            since the last send. The default marker is always the gate
-            signal – message content (including
-            <code>[x:N]</code> placeholders) is independent.
-            To gate on a marker that isn't in the message, set it as
-            this row's default marker. Rows with no default marker
-            configured fire on every tick regardless of mode.
+            {{_("Rate controls the sample rate. <strong>Send only on change</strong> skips the wire send when this row's <em>default marker</em> hasn't moved at least <em>min change</em> along any axis since the last send. The default marker is always the gate signal – message content (including <code>[x:N]</code> placeholders) is independent. To gate on a marker that isn't in the message, set it as this row's default marker. Rows with no default marker configured fire on every tick regardless of mode.")}}
         </span>
     </div>
 % elif kind == "hotkey":
@@ -65,9 +57,9 @@
     % current_mods = set(getattr(trigger, 'modifiers', ()) if kind_field == 'hotkey' else ())
     % current_edge = getattr(trigger, 'edge', 'press') if kind_field == 'hotkey' else 'press'
     <div class="field">
-        <label>Key</label>
+        <label>{{_('Key')}}</label>
         <select name="trigger.key">
-            <option value="" {{'selected' if not current_key else ''}}>(none)</option>
+            <option value="" {{'selected' if not current_key else ''}}>{{_('(none)')}}</option>
             % for k in valid_keys:
                 % if k:
                 <option value="{{k}}" {{'selected' if k == current_key else ''}}>{{pretty_label(k)}}</option>
@@ -76,7 +68,7 @@
         </select>
     </div>
     <div class="field">
-        <label>Modifiers</label>
+        <label>{{_('Modifiers')}}</label>
         <div class="checkbox-group">
             % for m in valid_modifiers:
                 <label class="inline-checkbox"><input type="checkbox" name="trigger.modifiers" value="{{m}}" {{'checked' if m in current_mods else ''}}> {{pretty_label(m)}}</label>
@@ -84,7 +76,7 @@
         </div>
     </div>
     <div class="field">
-        <label>Edge</label>
+        <label>{{_('Edge')}}</label>
         <select name="trigger.edge">
             % for e in valid_edges:
                 <option value="{{e}}" {{'selected' if e == current_edge else ''}}>{{pretty_label(e)}}</option>
@@ -95,9 +87,9 @@
     % current_btn = getattr(trigger, 'button', '') if kind_field == 'controller_button' else ''
     % current_edge = getattr(trigger, 'edge', 'press') if kind_field == 'controller_button' else 'press'
     <div class="field">
-        <label>Button</label>
+        <label>{{_('Button')}}</label>
         <select name="trigger.button">
-            <option value="" {{'selected' if not current_btn else ''}}>(none)</option>
+            <option value="" {{'selected' if not current_btn else ''}}>{{_('(none)')}}</option>
             % for b in valid_buttons:
                 % if b:
                 <option value="{{b}}" {{'selected' if b == current_btn else ''}}>{{pretty_label(b)}}</option>
@@ -106,7 +98,7 @@
         </select>
     </div>
     <div class="field">
-        <label>Edge</label>
+        <label>{{_('Edge')}}</label>
         <select name="trigger.edge">
             % for e in valid_edges:
                 <option value="{{e}}" {{'selected' if e == current_edge else ''}}>{{pretty_label(e)}}</option>
@@ -134,7 +126,7 @@
     % # by id. Without per-row ids two simultaneous Capture flows
     % # on different rows would clobber each other.
     <div class="field">
-        <label>Type</label>
+        <label>{{_('Type')}}</label>
         <select id="osc-midi-type-{{row.id}}" name="trigger.midi_type">
             % for t in valid_midi_types:
                 <option value="{{t}}" {{'selected' if t == current_midi_type else ''}}>{{pretty_label(t)}}</option>
@@ -142,14 +134,14 @@
         </select>
     </div>
     <div class="field">
-        <label>Patch</label>
+        <label>{{_('Patch')}}</label>
         <select id="osc-midi-patch-{{row.id}}" name="trigger.patch_id">
-            <option value="0" {{'selected' if not current_patch else ''}}>(any)</option>
+            <option value="0" {{'selected' if not current_patch else ''}}>{{_('(any)')}}</option>
             % # If stored patch was deleted (or hand-edited), surface a
             % # "missing" option so value round-trips (else silently
             % # collapses to browser's first pick).
             % if current_patch and current_patch not in _patch_ids:
-                <option value="{{current_patch}}" selected>{{current_patch}} (missing)</option>
+                <option value="{{current_patch}}" selected>{{current_patch}} {{_('(missing)')}}</option>
             % end
             % for patch in _patches:
                 <option value="{{patch['id']}}" {{'selected' if patch['id'] == current_patch else ''}}>{{patch['label']}}</option>
@@ -157,16 +149,16 @@
         </select>
     </div>
     <div class="field">
-        <label>Channel</label>
+        <label>{{_('Channel')}}</label>
         <select id="osc-midi-channel-{{row.id}}" name="trigger.midi_channel">
-            <option value="" {{'selected' if current_channel is None else ''}}>Any</option>
+            <option value="" {{'selected' if current_channel is None else ''}}>{{_('Any')}}</option>
             % for ch in range(1, 17):
                 <option value="{{ch}}" {{'selected' if ch == current_channel else ''}}>{{ch}}</option>
             % end
         </select>
     </div>
     <div class="field">
-        <label>Number</label>
+        <label>{{_('Number')}}</label>
         % # Empty input means "Any" (matches the ``int | None`` shape
         % # on :class:`MidiMessageTrigger`). ``program_change`` /
         % # ``channel_pressure`` carry no per-message number – the
@@ -175,13 +167,13 @@
         % # editable for consistency but the value is dropped on save.
         <input id="osc-midi-number-{{row.id}}" type="number" name="trigger.midi_number"
                value="{{'' if current_number is None else current_number}}"
-               min="0" max="127" step="1" placeholder="Any">
+               min="0" max="127" step="1" placeholder="{{_('Any')}}">
     </div>
     <div class="field">
-        <label>Value</label>
+        <label>{{_('Value')}}</label>
         <input id="osc-midi-value-{{row.id}}" type="number" name="trigger.midi_value"
                value="{{'' if current_value is None else current_value}}"
-               min="0" max="127" step="1" placeholder="Any">
+               min="0" max="127" step="1" placeholder="{{_('Any')}}">
     </div>
     % # Capture flow – pure HTMX. Click arms the broker via the
     % # row-scoped section route, which returns the initial
@@ -194,12 +186,10 @@
                 hx-post="/section/osc/midi/learn/arm/{{row.id}}"
                 hx-target="#osc-midi-capture-status-{{row.id}}"
                 hx-swap="innerHTML">
-            Capture
+            {{_('Capture')}}
         </button>
         <span class="field-note">
-            Press a key, turn a knob, or move a fader. Capture
-            populates the fields above with the next incoming MIDI
-            message (10-second window).
+            {{_('Press a key, turn a knob, or move a fader. Capture populates the fields above with the next incoming MIDI message (10-second window).')}}
         </span>
     </div>
 % elif kind == "fader_on_change":
@@ -220,15 +210,15 @@
     % _markers = defined('marker_fader_names') and marker_fader_names or []
     % _marker_ids = [m[0] for m in _markers]
     <div class="field">
-        <label>Fader</label>
+        <label>{{_('Fader')}}</label>
         <select name="trigger.fader_source">
-            <optgroup label="Virtual faders">
+            <optgroup label="{{_('Virtual faders')}}">
                 % for idx, fader_name in _faders:
                     <option value="index:{{idx}}" {{'selected' if current_source == 'index:%d' % idx else ''}}>{{fader_name}}</option>
                 % end
             </optgroup>
             % if _markers or current_marker >= 1:
-            <optgroup label="Marker faders">
+            <optgroup label="{{_('Marker faders')}}">
                 % for mid, marker_name in _markers:
                     <option value="marker:{{mid}}" {{'selected' if current_source == 'marker:%d' % mid else ''}}>{{marker_name}}</option>
                 % end
@@ -236,14 +226,14 @@
                 % # – keep it selectable so editing the row doesn't silently
                 % # switch the source to an indexed fader.
                 % if current_marker >= 1 and current_marker not in _marker_ids:
-                    <option value="marker:{{current_marker}}" selected>Marker {{current_marker}} (not controlled)</option>
+                    <option value="marker:{{current_marker}}" selected>Marker {{current_marker}} {{_('(not controlled)')}}</option>
                 % end
             </optgroup>
             % end
         </select>
     </div>
     <div class="field">
-        <label>Rate (Hz)</label>
+        <label>{{_('Rate (Hz)')}}</label>
         <select name="trigger.rate_hz">
             % for r in valid_rates:
                 <option value="{{r}}" {{'selected' if r == current_rate else ''}}>{{r}} Hz</option>
@@ -252,10 +242,7 @@
     </div>
     <div class="field span-2">
         <span class="field-note">
-            Throttles fader-driven sends to at most this rate. A
-            sweeping MIDI fader or a moving gamepad (marker) fader
-            produces dozens of changes per second; the throttle keeps
-            the wire output stable regardless.
+            {{_("Throttles fader-driven sends to at most this rate. A sweeping MIDI fader or a moving gamepad (marker) fader produces dozens of changes per second; the throttle keeps the wire output stable regardless.")}}
         </span>
     </div>
 % end

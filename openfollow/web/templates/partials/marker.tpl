@@ -26,15 +26,15 @@
 %# ------------------------------------------------------------------
 <section id="marker-control-visibility-section" class="section" data-fold-key="marker-control-visibility" data-help="marker-control-visibility" data-fold-default="expanded">
     <div class="section-head">
-        <h2>Marker Control & Visibility</h2>
-        <span class="section-note">Shared catalog + this station's selection</span>
+        <h2>{{_('Marker Control & Visibility')}}</h2>
+        <span class="section-note">{{_('Shared catalog + this station\'s selection')}}</span>
     </div>
     <div id="marker-catalog-root"
          hx-get="/api/markers/catalog"
          hx-trigger="load, every 1500ms"
          hx-target="this"
          hx-swap="none">
-        Loading…
+        {{_('Loading…')}}
     </div>
 </section>
 
@@ -44,30 +44,30 @@
 <form id="marker-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="marker-visuals" data-help="marker-visuals" data-fold-default="expanded"
       hx-post="/section/marker" hx-target="#marker-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
-        <h2>Marker Visuals</h2>
-        <span class="section-note">On-screen appearance of each marker</span>
+        <h2>{{_('Marker Visuals')}}</h2>
+        <span class="section-note">{{_('On-screen appearance of each marker')}}</span>
     </div>
 
     <div class="group">
-        <h3 class="group-title">Body</h3>
+        <h3 class="group-title">{{_('Body')}}</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
-                <label>Show Ball</label>
+                <label>{{_('Show Ball')}}</label>
                 <div class="checkbox-wrap"><input type="checkbox" name="ball_visible" {{'checked' if config.marker.ball_visible else ''}}></div>
             </div>
             <div class="field">
-                <label>Ball Size ({{_len}})</label>
+                <label>{{_('Ball Size')}} ({{_len}})</label>
                 <input id="marker-ball-size" type="{{'text' if _imp else 'number'}}" name="ball_size" value="{{format_length(config.marker.ball_size, _us) if _imp else config.marker.ball_size}}" min="0" step="any"
                        hx-get="/api/validate/marker/ball_size" hx-trigger="blur changed delay:200ms"
                        hx-target="#marker-ball-size-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="marker-ball-size-error" aria-invalid="false">
                 <span id="marker-ball-size-error" class="field-error"></span>
                 % if _imp:
-                <small class="metric-echo">Stored: {{metric_echo(config.marker.ball_size)}}</small>
+                <small class="metric-echo">{{_('Stored:')}} {{metric_echo(config.marker.ball_size)}}</small>
                 % end
             </div>
             <div class="field">
-                <label>Opacity (0–1)</label>
+                <label>{{_('Opacity')}} (0–1)</label>
                 <input id="marker-transparency" type="number" name="transparency" value="{{config.marker.transparency}}" min="0" max="1" step="any"
                        hx-get="/api/validate/marker/transparency" hx-trigger="blur changed delay:200ms"
                        hx-target="#marker-transparency-error" hx-swap="innerHTML" hx-include="closest form"
@@ -78,25 +78,25 @@
     </div>
 
     <div class="group">
-        <h3 class="group-title">Crosshair</h3>
+        <h3 class="group-title">{{_('Crosshair')}}</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
-                <label>Show Crosshair</label>
+                <label>{{_('Show Crosshair')}}</label>
                 <div class="checkbox-wrap"><input type="checkbox" name="crosshair_visible" {{'checked' if config.marker.crosshair_visible else ''}}></div>
             </div>
             <div class="field">
-                <label>Crosshair Size ({{_len}})</label>
+                <label>{{_('Crosshair Size')}} ({{_len}})</label>
                 <input id="marker-crosshair-size" type="{{'text' if _imp else 'number'}}" name="crosshair_size" value="{{format_length(config.marker.crosshair_size, _us) if _imp else config.marker.crosshair_size}}" min="0" step="any"
                        hx-get="/api/validate/marker/crosshair_size" hx-trigger="blur changed delay:200ms"
                        hx-target="#marker-crosshair-size-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="marker-crosshair-size-error" aria-invalid="false">
                 <span id="marker-crosshair-size-error" class="field-error"></span>
                 % if _imp:
-                <small class="metric-echo">Stored: {{metric_echo(config.marker.crosshair_size)}}</small>
+                <small class="metric-echo">{{_('Stored:')}} {{metric_echo(config.marker.crosshair_size)}}</small>
                 % end
             </div>
             <div class="field">
-                <label>Crosshair Thickness (px)</label>
+                <label>{{_('Crosshair Thickness')}} (px)</label>
                 <input id="marker-crosshair-thickness" type="number" name="crosshair_thickness" value="{{config.marker.crosshair_thickness}}" min="1" max="10"
                        hx-get="/api/validate/marker/crosshair_thickness" hx-trigger="blur changed delay:200ms"
                        hx-target="#marker-crosshair-thickness-error" hx-swap="innerHTML" hx-include="closest form"
@@ -104,7 +104,7 @@
                 <span id="marker-crosshair-thickness-error" class="field-error"></span>
             </div>
             <div class="field">
-                <label>Crosshair Color</label>
+                <label>{{_('Crosshair Color')}}</label>
                 %# Native picker replaced by circle-swatch greys-variant.
                 %# Hidden input carries form value; color-picker.js auto-attaches
                 %# via data-color-picker. Inline validator dropped (picker's hex
@@ -112,31 +112,31 @@
                 %# validates server-side).
                 <button id="marker-crosshair-color" type="button" class="color-swatch-trigger"
                         data-color-picker="greys" data-value="{{config.marker.crosshair_color}}"
-                        aria-label="Crosshair colour"></button>
+                        aria-label="{{_('Crosshair colour')}}"></button>
                 <input type="hidden" name="crosshair_color" value="{{config.marker.crosshair_color}}">
             </div>
         </div>
     </div>
 
     <div class="group">
-        <h3 class="group-title">Z Display</h3>
+        <h3 class="group-title">{{_('Z Display')}}</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
-                <label>Z from Stage Level</label>
+                <label>{{_('Z from Stage Level')}}</label>
                 <div class="checkbox-wrap"><input type="checkbox" name="z_display_from_stage" {{'checked' if config.marker.z_display_from_stage else ''}}></div>
             </div>
         </div>
     </div>
 
     <div class="group">
-        <h3 class="group-title">Drop Line</h3>
+        <h3 class="group-title">{{_('Drop Line')}}</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
-                <label>Drop Line</label>
+                <label>{{_('Drop Line')}}</label>
                 <div class="checkbox-wrap"><input type="checkbox" name="drop_line" {{'checked' if config.marker.drop_line else ''}}></div>
             </div>
             <div class="field">
-                <label>Drop Line Thickness (px)</label>
+                <label>{{_('Drop Line Thickness')}} (px)</label>
                 <input id="marker-drop-line-thickness" type="number" name="drop_line_thickness" value="{{config.marker.drop_line_thickness}}" min="1" max="20"
                        hx-get="/api/validate/marker/drop_line_thickness" hx-trigger="blur changed delay:200ms"
                        hx-target="#marker-drop-line-thickness-error" hx-swap="innerHTML" hx-include="closest form"
@@ -147,32 +147,32 @@
     </div>
 
     <div class="group">
-        <h3 class="group-title">Ground Circle</h3>
+        <h3 class="group-title">{{_('Ground Circle')}}</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
-                <label>Ground Circle</label>
+                <label>{{_('Ground Circle')}}</label>
                 <div class="checkbox-wrap"><input type="checkbox" name="ground_circle" {{'checked' if config.marker.ground_circle else ''}}></div>
             </div>
             <div class="field">
-                <label>Circle Size ({{_len}})</label>
+                <label>{{_('Circle Size')}} ({{_len}})</label>
                 <input id="marker-ground-circle-size" type="{{'text' if _imp else 'number'}}" name="ground_circle_size" value="{{format_length(config.marker.ground_circle_size, _us) if _imp else config.marker.ground_circle_size}}" min="0" step="any"
                        hx-get="/api/validate/marker/ground_circle_size" hx-trigger="blur changed delay:200ms"
                        hx-target="#marker-ground-circle-size-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="marker-ground-circle-size-error" aria-invalid="false">
                 <span id="marker-ground-circle-size-error" class="field-error"></span>
                 % if _imp:
-                <small class="metric-echo">Stored: {{metric_echo(config.marker.ground_circle_size)}}</small>
+                <small class="metric-echo">{{_('Stored:')}} {{metric_echo(config.marker.ground_circle_size)}}</small>
                 % end
             </div>
             <div class="field checkbox-field">
-                <label>Filled</label>
+                <label>{{_('Filled')}}</label>
                 <div class="checkbox-wrap"><input type="checkbox" name="ground_circle_filled" {{'checked' if config.marker.ground_circle_filled else ''}}></div>
             </div>
         </div>
     </div>
 
     <div class="actions">
-        <button type="submit" class="save-btn">Save</button>
+        <button type="submit" class="save-btn">{{_('Save')}}</button>
     </div>
 </form>
 
@@ -235,28 +235,28 @@
     function controlledByLabel(entry, thisStation, peers) {
         const owners = [];
         if (thisStation.controlled_ids.indexOf(entry.id) !== -1) {
-            owners.push({name: 'this station (' + escapeHTML(thisStation.station_name) + ')', self: true});
+            owners.push({name: '{{_('this station (')}}' + escapeHTML(thisStation.station_name) + ')', self: true});
         }
         for (const p of peers) {
             if (p.controlled_ids.indexOf(entry.id) !== -1) {
                 owners.push({name: escapeHTML(p.station_name || p.station_id), self: false});
             }
         }
-        if (owners.length === 0) return '–';
+        if (owners.length === 0) return '{{_('–')}}';
         return owners.map(o => o.self ? '<strong>' + o.name + '</strong>' : o.name).join(' + ');
     }
 
     function viewedByLabel(entry, thisStation, peers) {
         const viewers = [];
         if (thisStation.viewer_ids.indexOf(entry.id) !== -1) {
-            viewers.push({name: 'this station', self: true});
+            viewers.push({name: '{{_('this station')}}', self: true});
         }
         for (const p of peers) {
             if (p.viewer_ids.indexOf(entry.id) !== -1) {
                 viewers.push({name: escapeHTML(p.station_name || p.station_id), self: false});
             }
         }
-        if (viewers.length === 0) return '–';
+        if (viewers.length === 0) return '{{_('–')}}';
         return viewers.map(v => v.self ? '<strong>' + v.name + '</strong>' : v.name).join(' + ');
     }
 
@@ -317,7 +317,7 @@
         }).then(function(resp) {
             const flash = root.querySelector('#selection-saved-flash');
             if (!flash) return;
-            flash.textContent = resp.ok ? '✓ saved' : '⚠ save failed';
+            flash.textContent = resp.ok ? '{{_('✓ saved')}}' : '{{_('⚠ save failed')}}';
             flash.classList.add('show');
             setTimeout(function() { flash.classList.remove('show'); }, 1200);
         });
@@ -334,13 +334,13 @@
             '<td data-cell="id"></td>' +
             '<td><input type="text" data-field="name"></td>' +
             '<td><button type="button" class="color-swatch-trigger" data-field="color" ' +
-                'data-color-picker="full" aria-label="Marker colour"></button></td>' +
+                'data-color-picker="full" aria-label="{{_('Marker colour')}}"></button></td>' +
             '<td class="cell-soft" data-cell="controlled-by"></td>' +
             '<td class="cell-soft" data-cell="viewed-by"></td>' +
             '<td>' +
                 '<span style="display:inline-flex;align-items:center;gap:0.4rem;">' +
-                '<button type="button" class="save-btn small" data-action="save">Save</button>' +
-                '<button type="button" class="danger small" data-action="delete">Delete</button>' +
+                '<button type="button" class="save-btn small" data-action="save">{{_('Save')}}</button>' +
+                '<button type="button" class="danger small" data-action="delete">{{_('Delete')}}</button>' +
                 '</span>' +
             '</td>';
         window.OpenFollow.attachColorPicker(tr.querySelector('[data-field="color"]'), {
@@ -356,7 +356,7 @@
             });
         });
         tr.querySelector('[data-action="delete"]').addEventListener('click', function() {
-            if (!confirm('Delete marker ' + id + '?')) return;
+            if (!confirm('{{_('Delete marker ')}}' + id + '?')) return;
             fetch('/api/markers/catalog/' + id, {method: 'DELETE'});
         });
         return tr;
@@ -369,7 +369,7 @@
         setInputIfChanged(tr.querySelector('[data-field="name"]'), entry.name || '');
         setSwatchIfChanged(tr.querySelector('[data-field="color"]'), entry.color || '');
         const ctrlHTML = controlledByLabel(entry, thisStation, peers) +
-            (conflict ? ' <span title="More than one station claims control" class="conflict-flag">⚠</span>' : '');
+            (conflict ? ' <span title="{{_('More than one station claims control')}}" class="conflict-flag">⚠</span>' : '');
         setHTMLIfChanged(tr.querySelector('[data-cell="controlled-by"]'), ctrlHTML);
         setHTMLIfChanged(tr.querySelector('[data-cell="viewed-by"]'), viewedByLabel(entry, thisStation, peers));
     }
@@ -413,9 +413,9 @@
             '<td><input type="number" min="1" id="new-marker-id" style="width: 4rem;"></td>' +
             '<td><input type="text" id="new-marker-name"></td>' +
             '<td><button type="button" class="color-swatch-trigger" id="new-marker-color" ' +
-                'data-color-picker="full" aria-label="New marker colour"></button></td>' +
+                'data-color-picker="full" aria-label="{{_('New marker colour')}}"></button></td>' +
             '<td colspan="2"><span id="add-marker-feedback" class="add-feedback" aria-live="polite"></span></td>' +
-            '<td><button type="button" class="save-btn" id="add-marker-btn">Add</button></td>';
+            '<td><button type="button" class="save-btn" id="add-marker-btn">{{_('Add')}}</button></td>';
         const idIn = tr.querySelector('#new-marker-id');
         const nameIn = tr.querySelector('#new-marker-name');
         const colorTrigger = tr.querySelector('#new-marker-color');
@@ -432,7 +432,7 @@
         function submit() {
             const id = parseInt(idIn.value, 10);
             if (!id || id < 1) {
-                flash('Enter an id ≥ 1', 'error');
+                flash('{{_('Enter an id ≥ 1')}}', 'error');
                 idIn.focus();
                 return;
             }
@@ -441,19 +441,19 @@
             const dup = tr.parentNode &&
                 tr.parentNode.querySelector('[data-marker-id="' + id + '"]');
             if (dup) {
-                flash('Marker ' + id + ' already exists – edit it above', 'error');
+                flash('{{_('Marker ')}}' + id + '{{_(' already exists – edit it above')}}', 'error');
                 return;
             }
-            const name = nameIn.value || ('Marker ' + id);
+            const name = nameIn.value || ('{{_('Marker ')}}' + id);
             const color = colorTrigger.dataset.value;
-            flash('Adding…', null);
+            flash('{{_('Adding…')}}', null);
             fetch('/api/markers/catalog/' + id, {
                 method: 'PUT',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({name: name, color: color})
             }).then(function(resp) {
                 if (!resp.ok) throw new Error('http ' + resp.status);
-                flash('✓ Added marker ' + id, 'ok');
+                flash('{{_('✓ Added marker ')}}' + id, 'ok');
                 // Clear name and id so updateAddRow re-suggests the next-free id.
                 nameIn.value = '';
                 idIn.value = '';
@@ -465,7 +465,7 @@
                         .catch(function() {});
                 }
             }).catch(function() {
-                flash('⚠ Could not add marker ' + id, 'error');
+                flash('{{_('⚠ Could not add marker ')}}' + id, 'error');
             });
         }
 
@@ -497,7 +497,7 @@
         if (document.activeElement !== nameIn) {
             // Name placeholder follows the typed id, else next_free_id.
             const typedId = parseInt(idIn.value, 10);
-            const placeholder = 'Marker ' + (typedId >= 1 ? typedId : computedNextId);
+            const placeholder = '{{_('Marker ')}}' + (typedId >= 1 ? typedId : computedNextId);
             if (nameIn.placeholder !== placeholder) nameIn.placeholder = placeholder;
         }
         setSwatchIfChanged(colorTrigger, pickMarkerColor(entries));
@@ -511,25 +511,25 @@
         if (root.dataset.skeletonReady === 'true') return;
         root.innerHTML =
             '<div class="group">' +
-                '<h3 class="group-title">Shared catalog</h3>' +
-                '<p class="cell-soft">Synced across all stations on the LAN.</p>' +
+                '<h3 class="group-title">{{_('Shared catalog')}}</h3>' +
+                '<p class="cell-soft">{{_('Synced across all stations on the LAN.')}}</p>' +
                 '<table class="marker-catalog-table">' +
                     '<thead><tr>' +
-                        '<th>ID</th><th>Name</th><th>Color</th>' +
-                        '<th>Controlled by</th><th>Viewed by</th><th></th>' +
+                        '<th>{{_('ID')}}</th><th>{{_('Name')}}</th><th>{{_('Color')}}</th>' +
+                        '<th>{{_('Controlled by')}}</th><th>{{_('Viewed by')}}</th><th></th>' +
                     '</tr></thead>' +
                     '<tbody data-role="catalog-body"></tbody>' +
                 '</table>' +
             '</div>' +
             '<div class="group">' +
-                '<h3 class="group-title">This station\'s selection ' +
+                `<h3 class="group-title">{{_('This station\'s selection')}} ` +
                     '<span class="section-note">(<span data-role="station-name"></span>) ' +
                         '<span id="selection-saved-flash" class="saved-flash" aria-live="polite"></span>' +
                     '</span>' +
                 '</h3>' +
                 '<table class="marker-selection-table">' +
                     '<thead><tr>' +
-                        '<th>ID</th><th>Name</th><th>Control</th><th>View</th>' +
+                        '<th>{{_('ID')}}</th><th>{{_('Name')}}</th><th>{{_('Control')}}</th><th>{{_('View')}}</th>' +
                     '</tr></thead>' +
                     '<tbody data-role="selection-body"></tbody>' +
                 '</table>' +

@@ -6,34 +6,34 @@
       data-template-form="1"
       hx-post="/section/trigger_zones" hx-target="#trigger-zones-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
-        <h2>Trigger Zones</h2>
-        <span class="section-note">Fire OSC messages when markers or detections enter/leave polygon regions</span>
+        <h2>{{_('Trigger Zones')}}</h2>
+        <span class="section-note">{{_('Fire OSC messages when markers or detections enter/leave polygon regions')}}</span>
     </div>
 
     <div class="group">
-        <h3 class="group-title">Global</h3>
+        <h3 class="group-title">{{_('Global')}}</h3>
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
+                <label>{{_('Enabled')}}</label>
                 <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if config.trigger_zones.enabled else ''}}></div>
             </div>
             <div class="field checkbox-field">
-                <label>Show Overlay</label>
+                <label>{{_('Show Overlay')}}</label>
                 <div class="checkbox-wrap"><input type="checkbox" name="show_overlay" {{'checked' if config.trigger_zones.show_overlay else ''}}></div>
             </div>
             <div class="field">
-                <label>Eval Rate (FPS)</label>
+                <label>{{_('Eval Rate')}} (FPS)</label>
                 <select name="eval_fps">
-                    <option value="1" {{'selected' if config.trigger_zones.eval_fps == 1 else ''}}>1 FPS</option>
-                    <option value="5" {{'selected' if config.trigger_zones.eval_fps == 5 else ''}}>5 FPS</option>
-                    <option value="10" {{'selected' if config.trigger_zones.eval_fps == 10 else ''}}>10 FPS</option>
-                    <option value="15" {{'selected' if config.trigger_zones.eval_fps == 15 else ''}}>15 FPS</option>
-                    <option value="30" {{'selected' if config.trigger_zones.eval_fps == 30 else ''}}>30 FPS</option>
-                    <option value="60" {{'selected' if config.trigger_zones.eval_fps == 60 else ''}}>60 FPS</option>
+                    <option value="1" {{'selected' if config.trigger_zones.eval_fps == 1 else ''}}>{{_('1 FPS')}}</option>
+                    <option value="5" {{'selected' if config.trigger_zones.eval_fps == 5 else ''}}>{{_('5 FPS')}}</option>
+                    <option value="10" {{'selected' if config.trigger_zones.eval_fps == 10 else ''}}>{{_('10 FPS')}}</option>
+                    <option value="15" {{'selected' if config.trigger_zones.eval_fps == 15 else ''}}>{{_('15 FPS')}}</option>
+                    <option value="30" {{'selected' if config.trigger_zones.eval_fps == 30 else ''}}>{{_('30 FPS')}}</option>
+                    <option value="60" {{'selected' if config.trigger_zones.eval_fps == 60 else ''}}>{{_('60 FPS')}}</option>
                 </select>
             </div>
             <div class="field">
-                <label>Debounce (ms)</label>
+                <label>{{_('Debounce')}} (ms)</label>
                 <input id="trigger-zones-debounce-ms" type="number" name="debounce_ms" value="{{config.trigger_zones.debounce_ms}}" min="0" max="60000" step="10"
                        hx-get="/api/validate/trigger_zones/debounce_ms" hx-trigger="blur changed delay:200ms"
                        hx-target="#trigger-zones-debounce-ms-error" hx-swap="innerHTML" hx-include="closest form"
@@ -41,20 +41,20 @@
                 <span id="trigger-zones-debounce-ms-error" class="field-error"></span>
             </div>
             <div class="field">
-                <label>Hysteresis ({{_len}})</label>
+                <label>{{_('Hysteresis')}} ({{_len}})</label>
                 <input id="trigger-zones-hysteresis" type="{{'text' if _imp else 'number'}}" name="hysteresis" value="{{format_length(config.trigger_zones.hysteresis, _us) if _imp else config.trigger_zones.hysteresis}}" min="0" max="10" step="0.01"
                        hx-get="/api/validate/trigger_zones/hysteresis" hx-trigger="blur changed delay:200ms"
                        hx-target="#trigger-zones-hysteresis-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="trigger-zones-hysteresis-error" aria-invalid="false">
                 <span id="trigger-zones-hysteresis-error" class="field-error"></span>
                 % if _imp:
-                <small class="metric-echo">Stored: {{metric_echo(config.trigger_zones.hysteresis)}}</small>
+                <small class="metric-echo">{{_('Stored:')}} {{metric_echo(config.trigger_zones.hysteresis)}}</small>
                 % end
             </div>
         </div>
     </div>
 
     <div class="actions">
-        <button type="submit" class="save-btn">Save</button>
+        <button type="submit" class="save-btn">{{_('Save')}}</button>
     </div>
 </form>

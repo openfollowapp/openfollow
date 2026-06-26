@@ -10,18 +10,17 @@
 % export_installed = extras.get('export', False)
 % if unavailable:
     <div class="group">
-        <h3 class="group-title">Download Model</h3>
+        <h3 class="group-title">{{_('Download Model')}}</h3>
         <span class="section-note">
-            Export a YOLO model to ONNX into the storage folder. Needs the
-            model-export tools and an internet connection &ndash; slow on a Pi.
+            {{_('Export a YOLO model to ONNX into the storage folder. Needs the model-export tools and an internet connection – slow on a Pi.')}}
         </span>
 %     if not export_installed:
-        <p class="section-note">Install the model-export tools (run <code>install-detection.sh</code>) to enable downloads.</p>
+        <p class="section-note">{{_('Install the model-export tools (run')}} <code>install-detection.sh</code>{{_(') to enable downloads.')}}</p>
 %     end
 %     if export_installed:
         <div class="row">
             <div class="field">
-                <label>Model</label>
+                <label>{{_('Model')}}</label>
                 <select id="detection-export-model" name="export_model">
 %         for value, label in unavailable:
                     <option value="{{value}}">{{label}}</option>
@@ -29,9 +28,9 @@
                 </select>
             </div>
             <div class="field">
-                <label>Export image size</label>
+                <label>{{_('Export image size')}}</label>
                 <input id="detection-export-imgsz" type="number" name="imgsz" value="{{config.detection.inference_size}}" min="160" max="1280" step="32">
-                <span class="field-note">Snapped to a multiple of 32; match the Inference Size you run.</span>
+                <span class="field-note">{{_('Snapped to a multiple of 32; match the Inference Size you run.')}}</span>
             </div>
         </div>
         <div class="row">
@@ -42,7 +41,7 @@
                         hx-include="#detection-export-model, #detection-export-imgsz"
                         hx-target="#detection-section"
                         hx-swap="outerHTML">
-                    Download model
+                    {{_('Download model')}}
                 </button>
             </div>
         </div>

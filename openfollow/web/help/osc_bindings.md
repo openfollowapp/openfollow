@@ -1,4 +1,4 @@
-# OSC Output
+# OSC Transmitters
 
 Configure outbound OSC messages for lighting consoles, media servers, audio engines, and show-control software.
 
@@ -10,13 +10,14 @@ Identity, destination, and transport.
 
 - **Enabled** – master toggle for this transmitter; disabled transmitters do not transmit. If a placeholder's dependency isn't satisfied (e.g. no Default marker for a bare `[x]`), the toggle turns red and the transmitter is forced off until resolved.
 - **Name** – a label for your own reference. Appears in the Diagnostics tab and the Overview live counters.
-- **Default marker** – marker ID that bare position placeholders (`[x]`, `[y]`, `[markerid]`, etc.) resolve against when no `:N` index is given. Leave blank if every placeholder names its marker explicitly; the default must be an existing marker (IDs start at 1).
+- **Default markers** – the marker(s) that bare position placeholders (`[x]`, `[y]`, `[markerid]`, etc.) resolve against when no `:N` index is given. Enter a comma-separated list to drive several markers from one transmitter: `1, 3, 7` behaves exactly like three separate transmitters sending to markers 1, 3 and 7, each rendered against its own position. The lowest ID is the *primary* (shown in the row header); the rest appear as read-only chips nested under it, ordered by ID. Each entry is one of:
+  - a **marker ID** – sends to that marker when this station controls it. An id it doesn't control isn't an error: that entry is skipped at send time and shown with a red dot.
+  - a **controller alias** `cN` (`c1` = first controller) – the marker that controller is currently driving, resolved live.
+  - **`all`** – every marker this station controls (re-evaluated live as you change which markers are controlled).
+
+  Leave blank if every placeholder names its marker explicitly. An ID this station doesn't control is ignored at send time and shown with a red status dot (in the row header and its nested chip) so you can spot it; a malformed entry is flagged on blur so you can correct it.
 - **Default fader** – virtual fader that bare fader placeholders (`[fader]`, including transform forms like `[fader.pct]`) resolve against. Leave as `(none)` if you use only explicit `[fader:N]` references or have no fader placeholders.
-- **Host** / **Port** – destination IP address and port number (1–65535).
-- **Protocol** – `UDP` or `TCP`. UDP is correct for most lighting and audio receivers.
-- **Framing** – visible only when Protocol is `TCP`. Choose what your receiver expects:
-  - **SLIP (RFC 1055)** – default per OSC 1.1; each packet is delimited by `0xC0`.
-  - **Length-prefix (OSC 1.0)** – each packet is preceded by a 32-bit big-endian length.
+- **Destination** – the shared OSC connection (host, port, transport) this transmitter sends to, picked from the list you maintain under **OSC Destinations**. A transmitter with no destination selected sends nothing. Edit a destination's IP once and every transmitter and zone pointing at it repoints live – no per-row editing, no restart. Each dropdown option shows the destination's resolved `host:port`.
 
 ## Trigger
 
@@ -24,7 +25,7 @@ When the transmitter sends. Pick one **Trigger type** from the dropdown; the fie
 
 - **Stream** – sends continuously at the chosen **Rate (Hz)** (1, 5, 10, 20, 30, or 60 Hz). Set **Send** to:
   - *Send always* – fire every tick regardless of movement.
-  - *Send only on change* – fire only when the transmitter's Default marker has moved at least **Min change (m)** along any axis since the last send. The gate always watches the Default marker, even if the body references other markers via `[x:N]`. Transmitters with no Default marker fire every tick.
+  - *Send only on change* – fire only when the Default marker has moved at least **Min change (m)** along any axis since the last send. The gate always watches the Default marker, even if the body references other markers via `[x:N]`. When several Default markers are named, each marker's send is gated by that marker's own movement. Transmitters with no Default marker fire every tick.
 
 - **Hotkey** – fires on a keyboard combination. Set the **Key**, any **Modifiers** (Ctrl, Shift, Alt, Cmd), and the **Edge** (Press or Release). Movement keys are reserved and cannot be assigned.
 
@@ -111,7 +112,7 @@ Read-only panels showing what the transmitter is doing right now.
 
 ## Adding and managing transmitters
 
-**Template** dropdown + **+ New OSC output** – choose a template and click the button to add a transmitter pre-filled with its address and arguments. Leave the dropdown on *empty* to start with a blank transmitter. Drag the ⋮⋮ handle on the left of a collapsed transmitter to reorder – order is cosmetic, transmitters evaluate independently.
+**Template** dropdown + **+ New transmitter** – choose a template and click the button to add a transmitter pre-filled with its address and arguments. Leave the dropdown on *empty* to start with a blank transmitter. Drag the ⋮⋮ handle on the left of a collapsed transmitter to reorder – order is cosmetic, transmitters evaluate independently.
 
 ## Saving & sharing
 

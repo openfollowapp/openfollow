@@ -20,7 +20,7 @@ import pytest
 
 import openfollow.web.discovery as discovery_module
 from openfollow.configuration import CameraConfig, GridConfig
-from openfollow.scene.solver import project_points, solve_camera_dlt
+from openfollow.scene.solver import apply_overlay_distortion, project_points, solve_camera_dlt
 from openfollow.web.server import ConfigWebServer
 
 # ---------------------------------------------------------------------------
@@ -404,6 +404,91 @@ class TestWizardPage:
         # ``data-corner`` hook for the drag wiring.
         for corner in ("USL", "USR", "DSL", "DSR"):
             assert f'class="fine-zoom-box" data-corner="{corner}"' in body
+
+    def test_fine_zoom_view_has_bowed_edge_wiring(self, live_server) -> None:
+        """The fine-adjust zoom view must curve its edges to match the lens
+        (same bowed boundary the full overlay / HUD draws), not draw straight
+        chords between corners."""
+        _, base = live_server
+        status, body = _get(base, "/wizard")
+        assert status == 200
+        # The bow is computed client-side from the pin positions via the
+        # distortion mirror of scene/solver.py, so it never needs a server round
+        # trip and the helpers must be present.
+        assert "fineBowedEdges" in body
+        assert "function buildBowedEdges(" in body
+        assert "function wizApplyDistortion(" in body
+        assert "function wizInvertDistortion(" in body
+        assert "function wizBowEdge(" in body
+
+    def test_manual_corner_move_keeps_distortion_bow(self, live_server) -> None:
+        """Dragging a corner must NOT snap the preview back to straight edges.
+
+        ``updateFineQuad`` runs on every manual corner move (drag, zoom-drag,
+        arrow nudge). It must rebuild the bowed edges from the moved pins, never
+        null them out – the regression where a corner move dropped the curve.
+        """
+        _, base = live_server
+        status, body = _get(base, "/wizard")
+        assert status == 200
+        # Isolate the updateFineQuad body so the assertion is about the move path.
+        start = body.index("function updateFineQuad(")
+        end = body.index("\n  }", start)
+        fn = body[start:end]
+        assert "buildBowedEdges()" in fn  # rebuilds from the moved pins
+        assert "fineBowedEdges = null" not in fn  # never drops the curve on move
+
+    def test_review_step_does_not_double_project_overlay(self, live_server) -> None:
+        """Review must not flash a straight, lens-free grid before the bow lands.
+
+        The review overlay is drawn once by loadSnapshot -> projectAndOverlay ->
+        updateAllOverlays (live form values + the server's bowed outline).
+        ``populateReview`` must only fill the text summary; a second projection
+        there raced that path and briefly painted a straight quad – the flash the
+        operator saw on entering Review.
+        """
+        _, base = live_server
+        status, body = _get(base, "/wizard")
+        assert status == 200
+        start = body.index("function populateReview(")
+        end = body.index("\n  }", start)
+        fn = body[start:end]
+        assert "/api/wizard/project" not in fn  # no second projection fetch
+        assert "review-quad" not in fn  # overlay drawing is delegated
+
+    def test_overlay_bow_gated_on_server_outline(self, live_server) -> None:
+        """The fine-zoom bow must follow the server's bowed outline.
+
+        The server omits ``outline`` when a grid edge projects behind the camera,
+        and the main quad falls back to a straight 4-corner quad. ``updateAllOverlays``
+        must gate ``fineBowedEdges`` on that same ``data.outline`` signal, otherwise
+        the corner zoom boxes curve while the full quad stays straight – the preview
+        disagreeing with itself in the behind-camera fallback.
+        """
+        _, base = live_server
+        status, body = _get(base, "/wizard")
+        assert status == 200
+        start = body.index("function updateAllOverlays(")
+        end = body.index("\n  }", start)
+        fn = body[start:end]
+        assert "fineBowedEdges = (data.outline" in fn  # built only with a server outline
+        assert "fineBowedEdges = buildBowedEdges();" not in fn  # not unconditional
+
+    def test_manual_corner_move_does_not_re_enable_dropped_bow(self, live_server) -> None:
+        """A drag must refresh an active bow, never re-enable a dropped one.
+
+        When the behind-camera fallback leaves ``fineBowedEdges`` null,
+        ``updateFineQuad`` must not rebuild it from the pins – that would curve the
+        fine view while the full quad is straight. The rebuild is guarded on
+        ``fineBowedEdges`` already being set.
+        """
+        _, base = live_server
+        status, body = _get(base, "/wizard")
+        assert status == 200
+        start = body.index("function updateFineQuad(")
+        end = body.index("\n  }", start)
+        fn = body[start:end]
+        assert "if (fineBowedEdges) fineBowedEdges = buildBowedEdges()" in fn
 
     def test_every_overlay_step_has_a_projection_status_surface(self, live_server) -> None:
         """Each step that renders the projected overlay can show a projection error.
@@ -1246,3 +1331,145 @@ class TestWizardTemplateSafetyPatterns:
         src = self._wizard_tpl()
         assert '<nav class="wizard-steps"' in src
         assert 'role="tablist"' not in src
+
+    def test_camera_step_draws_vertical_fov_footprint(self) -> None:
+        """The Camera Position step draws the vertical FOV as a ground footprint.
+
+        The earlier illustration only drew the horizontal FOV (a single width
+        line at the centre sight distance), so the operator could not tell
+        whether the camera covered the full depth of the grid. The footprint is
+        the view frustum intersected with the grid plane: a shaded quad plus the
+        four frustum edges, with the vertical FOV derived from the horizontal
+        one on a 16:9 frame.
+        """
+        src = self._wizard_tpl()
+        # Footprint quad + four frustum edges.
+        assert 'id="cp-fov-area"' in src
+        for edge in ("cp-fov-bl", "cp-fov-br", "cp-fov-tl", "cp-fov-tr"):
+            assert f'id="{edge}"' in src, f"missing frustum edge {edge}"
+        # The horizontal-only markup must be gone so it can't silently return.
+        for old in ("cp-fov-left", "cp-fov-right", "cp-fov-line"):
+            assert old not in src, f"stale horizontal-only FOV element {old}"
+        # VFOV is derived from HFOV on a 16:9 frame, not read independently.
+        assert "9 / 16" in src, "vertical FOV must follow from the 16:9 aspect ratio"
+        assert "var vfov" in src
+        # The FOV readout reports both axes (degree sign + H and + V).
+        assert "\\u00b0H" in src and "\\u00b0V" in src
+
+
+_CAM_LENS = {**_CAM, "lens_k1": -0.2, "lens_k2": 0.02}
+
+
+@integration
+class TestWizardLensDistortion:
+    """The corner-pinning preview bows to match the lens, and the solve
+    undistorts the pinned corners before the pinhole DLT."""
+
+    def test_project_warps_corners_when_lens_set(self, live_server) -> None:
+        _, base = live_server
+        body = {"grid": _GRID, "image_width": IMG_W, "image_height": IMG_H}
+        _, plain = _post_json(base, "/api/wizard/project", {**body, "camera": _CAM})
+        _, warped = _post_json(base, "/api/wizard/project", {**body, "camera": _CAM_LENS})
+        # A non-zero k bows the projected overlay, so the corners shift.
+        moved = any(
+            abs(plain["corners"][n][0] - warped["corners"][n][0]) > 1.0
+            or abs(plain["corners"][n][1] - warped["corners"][n][1]) > 1.0
+            for n in ("DSL", "DSR", "USR", "USL")
+        )
+        assert moved
+
+    def test_project_zero_lens_matches_no_lens_key(self, live_server) -> None:
+        _, base = live_server
+        body = {"grid": _GRID, "image_width": IMG_W, "image_height": IMG_H}
+        _, no_key = _post_json(base, "/api/wizard/project", {**body, "camera": _CAM})
+        _, zero = _post_json(base, "/api/wizard/project", {**body, "camera": {**_CAM, "lens_k1": 0.0, "lens_k2": 0.0}})
+        for n in ("DSL", "DSR", "USR", "USL"):
+            assert zero["corners"][n] == pytest.approx(no_key["corners"][n], abs=1e-6)
+
+    def test_project_returns_bowed_outline_when_lens_set(self, live_server) -> None:
+        # The wizard quad must bow like the HUD grid: the boundary is returned
+        # subdivided (many points) and distorted, not just the 4 corners.
+        _, base = live_server
+        body = {"grid": _GRID, "image_width": IMG_W, "image_height": IMG_H}
+        _, warped = _post_json(base, "/api/wizard/project", {**body, "camera": _CAM_LENS})
+        assert "outline" in warped
+        assert len(warped["outline"]) > 4  # subdivided edges, not a 4-corner quad
+        # The outline starts at the first (DSL) corner.
+        assert warped["outline"][0] == pytest.approx(warped["corners"]["DSL"], abs=1e-6)
+        # A mid point on the first edge bows off the straight DSL->DSR chord.
+        dsl, dsr = warped["corners"]["DSL"], warped["corners"]["DSR"]
+        mid = warped["outline"][len(warped["outline"]) // 16]
+        cross = (mid[0] - dsl[0]) * (dsr[1] - dsl[1]) - (mid[1] - dsl[1]) * (dsr[0] - dsl[0])
+        assert abs(cross) > 1.0
+
+    def test_project_outline_is_four_corners_when_lens_zero(self, live_server) -> None:
+        _, base = live_server
+        body = {"grid": _GRID, "image_width": IMG_W, "image_height": IMG_H}
+        _, plain = _post_json(base, "/api/wizard/project", {**body, "camera": _CAM})
+        # No distortion -> boundary is just the four corners (a straight quad).
+        assert len(plain["outline"]) == 4
+
+    def test_unproject_undistorts_input_when_lens_set(self, live_server) -> None:
+        _, base = live_server
+        params = _cam_params()
+        screen = project_points(params, np.array([[2.0, 3.0, 0.0]]), IMG_W, IMG_H)
+        body = {"screen_points": screen.tolist(), "image_width": IMG_W, "image_height": IMG_H, "plane_z": 0.0}
+        _, plain = _post_json(base, "/api/wizard/unproject", {**body, "camera": _CAM})
+        _, warped = _post_json(base, "/api/wizard/unproject", {**body, "camera": _CAM_LENS})
+        # Undistorting the same screen point before unprojecting moves the world hit.
+        assert plain["world_points"][0] != pytest.approx(warped["world_points"][0], abs=1e-3)
+
+    def test_solve_undistorts_pinned_corners_round_trip(self, live_server) -> None:
+        # Pin corners on a *distorted* video: project pinhole, then warp forward.
+        _, base = live_server
+        params = _cam_params()
+        world = _world_corners()
+        pinhole_screen = project_points(params, world, IMG_W, IMG_H)
+        k1, k2 = _CAM_LENS["lens_k1"], _CAM_LENS["lens_k2"]
+        distorted_screen = apply_overlay_distortion(pinhole_screen, IMG_W, IMG_H, k1, k2)
+
+        status, data = _post_json(
+            base,
+            "/api/wizard/solve",
+            {
+                "world_corners": world.tolist(),
+                "screen_corners": distorted_screen.tolist(),
+                "image_width": IMG_W,
+                "image_height": IMG_H,
+                "camera": {"lens_k1": k1, "lens_k2": k2},
+            },
+        )
+        assert status == 200
+        # Undistort-then-solve recovers the true pinhole camera.
+        cam = data["camera"]
+        assert cam["pos_y"] == pytest.approx(_CAM["pos_y"], abs=0.5)
+        assert cam["pos_z"] == pytest.approx(_CAM["pos_z"], abs=0.5)
+        assert cam["fov"] == pytest.approx(_CAM["fov"], abs=2.0)
+        # Reprojected corners are re-distorted, so they land on the pinned positions.
+        rp = data["reprojected_corners"]
+        for i in range(4):
+            assert rp[i][0] == pytest.approx(distorted_screen[i][0], abs=2.0)
+            assert rp[i][1] == pytest.approx(distorted_screen[i][1], abs=2.0)
+
+
+@unit
+class TestWizardLensCoeffs:
+    """Direct coverage of the lens-coefficient extraction helper's edge cases."""
+
+    def test_non_dict_camera_yields_zero(self) -> None:
+        from openfollow.web.routes import _wizard_lens_coeffs
+
+        assert _wizard_lens_coeffs(None) == (0.0, 0.0)
+        assert _wizard_lens_coeffs("not a dict") == (0.0, 0.0)
+
+    def test_non_numeric_and_non_finite_fall_back_to_zero(self) -> None:
+        from openfollow.web.routes import _wizard_lens_coeffs
+
+        assert _wizard_lens_coeffs({"lens_k1": "abc"}) == (0.0, 0.0)
+        assert _wizard_lens_coeffs({"lens_k1": float("inf"), "lens_k2": float("nan")}) == (0.0, 0.0)
+
+    def test_values_are_clamped(self) -> None:
+        from openfollow.web.routes import _wizard_lens_coeffs
+
+        assert _wizard_lens_coeffs({"lens_k1": 5.0, "lens_k2": -5.0}) == (0.4, -0.2)
+        assert _wizard_lens_coeffs({"lens_k1": -0.1, "lens_k2": 0.02}) == pytest.approx((-0.1, 0.02))

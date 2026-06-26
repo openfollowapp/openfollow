@@ -51,6 +51,7 @@ def _make_marker_config() -> SimpleNamespace:
 
 def _make_grid_config() -> SimpleNamespace:
     return SimpleNamespace(
+        visible=True,
         width=30.0,
         depth=20.0,
         spacing=2.0,
@@ -131,10 +132,27 @@ class TestSyncGridConfig:
         sync_grid_config(state, cfg)
 
         assert state.grid_config == (30.0, 20.0, 2.0, 1.0, 2.0, 0.5)
+        assert state.grid_visible is True
         assert state.grid_color == "#abcdef"
         assert state.grid_thickness == 2
         assert state.grid_transparency == 0.25
         assert state.show_origin is True
+
+    def test_copies_visible_false(self) -> None:
+        state = OverlayState()
+        gc = _make_grid_config()
+        gc.visible = False
+        sync_grid_config(state, SimpleNamespace(grid=gc))
+        assert state.grid_visible is False
+
+    def test_grid_visible_defaults_true_for_partial_object(self) -> None:
+        # A grid object predating the field must not crash the per-tick path
+        # and falls back to visible (the default).
+        state = OverlayState()
+        gc = _make_grid_config()
+        del gc.visible
+        sync_grid_config(state, SimpleNamespace(grid=gc))
+        assert state.grid_visible is True
         assert state.origin_length == 2.0
         assert state.origin_thickness == 4
 
@@ -837,11 +855,13 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
         psn_system_name="OF",
         marker=_make_full_marker_config(),
         grid=_make_grid_config(),
+        camera=SimpleNamespace(lens_k1=0.0, lens_k2=0.0),
         ui=SimpleNamespace(unit_system="metric"),
         controller=SimpleNamespace(
             enabled=False,
             keyboard_enabled=False,
             mouse_enabled=False,
+            mouse_double_click_reset=True,
             btn_reset="",
             btn_toggle_help="",
             btn_toggle_zones="",
@@ -937,3 +957,22 @@ class TestBuildMarkerVisualStateTornRead:
         # All three components must come from the same packet – the first one,
         # since a correct consumer reads ``pos`` exactly once.
         assert (card.x, card.y, card.z) == (10.0, 20.0, 30.0)
+
+    def test_lens_coefficients_are_copied_from_config(self) -> None:
+        # The overlay warp reads k1/k2 off the live config (the Camera object is
+        # pinhole), so a slider edit must land on the state for the renderer.
+        marker = _TornMarker([(0.0, 0.0, 0.0)])
+        app = _make_visual_app(marker, controlled=False)
+        app._config.camera.lens_k1 = -0.15
+        app._config.camera.lens_k2 = 0.04
+
+        state = build_marker_visual_state(
+            app,
+            overlay_state_pool=OverlayStatePool(),
+            system_stats=None,
+            person_detector=None,
+            cam_params_buffer=np.zeros(7),
+        )
+
+        assert state.lens_k1 == -0.15
+        assert state.lens_k2 == 0.04

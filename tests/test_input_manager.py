@@ -536,3 +536,56 @@ def test_update_isolates_osc_flush_failure(monkeypatch) -> None:
     result = manager.update(0.016)
 
     assert result.settings_open_pressed is True
+
+
+def test_update_drives_mouse_when_enabled(monkeypatch) -> None:
+    """The per-frame mouse glide runs once per update when mouse_enabled."""
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+
+    app = _DummyApp()
+    app._config.controller.mouse_enabled = True
+    manager = InputManager(app)
+    calls: list[int] = []
+    manager.mouse_handler = SimpleNamespace(update=lambda: calls.append(1))
+
+    manager.update(1.0)
+
+    assert calls == [1]
+
+
+def test_update_skips_mouse_when_disabled(monkeypatch) -> None:
+    """With mouse disabled the per-frame glide must not run."""
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+
+    app = _DummyApp()
+    app._config.controller.mouse_enabled = False
+    manager = InputManager(app)
+    calls: list[int] = []
+    manager.mouse_handler = SimpleNamespace(update=lambda: calls.append(1))
+
+    manager.update(1.0)
+
+    assert calls == []
+
+
+def test_update_isolates_mouse_failure(monkeypatch) -> None:
+    """A raising mouse update must not drop the gamepad result."""
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    _FakeGamepadHandler.next_update = GamepadUpdate(settings_open_pressed=True)
+
+    app = _DummyApp()
+    app._config.controller.mouse_enabled = True
+    manager = InputManager(app)
+
+    class _BoomMouse:
+        def update(self) -> None:
+            raise RuntimeError("mouse boom")
+
+    manager.mouse_handler = _BoomMouse()
+
+    result = manager.update(0.016)
+
+    assert result.settings_open_pressed is True

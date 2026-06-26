@@ -333,6 +333,16 @@ def services(monkeypatch: pytest.MonkeyPatch) -> AppRuntimeServices:
     return AppRuntimeServices(_dummy_app())
 
 
+def test_controlled_markers_provider_returns_copy(services: AppRuntimeServices) -> None:
+    """The OSC ``markers`` provider (drives the ``all`` token + controlled
+    filter) returns the live controlled-id list as a fresh copy, so a
+    concurrent reload swapping the list can't tear a mid-tick read."""
+    services._app._controlled_ids = [3, 7]
+    snapshot = services._controlled_markers_provider()
+    assert snapshot == [3, 7]
+    assert snapshot is not services._app._controlled_ids
+
+
 # --------------------------------------------------------------------------- #
 # _init_overlay_state
 # --------------------------------------------------------------------------- #
@@ -1981,7 +1991,7 @@ class TestInitOscTransmitters:
             services._app._config,
             osc_transmitters=OscTransmittersConfig(
                 transmitters=[
-                    OscTransmitterConfig(id="row-a", host="127.0.0.1", port=9001),
+                    OscTransmitterConfig(id="row-a", destination_id="d1"),
                 ]
             ),
         )
@@ -2344,6 +2354,31 @@ class TestApplyOscTransmittersChange:
         assert services._osc_transmitter_manager is None
         new_cfg = OscTransmittersConfig(transmitters=[])
         services.apply_osc_transmitters_change(new_cfg)
+        try:
+            assert services._osc_transmitter_manager is not None
+        finally:
+            if services._osc_transmitter_manager is not None:
+                services._osc_transmitter_manager.stop()
+
+    def test_explicit_destinations_skip_app_config_fallback(
+        self,
+        services: AppRuntimeServices,
+    ) -> None:
+        """Passing an explicit destinations set bypasses the
+        ``destinations is None`` fallback to the app's current set."""
+        from openfollow.configuration import (
+            OscDestinationConfig,
+            OscDestinationsConfig,
+            OscTransmittersConfig,
+        )
+
+        dests = OscDestinationsConfig(
+            destinations=[OscDestinationConfig(id="d1", name="Console", host="10.0.0.5")],
+        )
+        services.apply_osc_transmitters_change(
+            OscTransmittersConfig(transmitters=[]),
+            destinations=dests,
+        )
         try:
             assert services._osc_transmitter_manager is not None
         finally:

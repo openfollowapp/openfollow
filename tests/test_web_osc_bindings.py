@@ -11,6 +11,7 @@ branch is reachable without a live HTTP round-trip.
 from __future__ import annotations
 
 import json
+import re
 import socket
 import time
 import urllib.error
@@ -21,12 +22,14 @@ import pytest
 
 import openfollow.web.discovery as discovery_module
 from openfollow.configuration import (
+    AppConfig,
     ControllerButtonTrigger,
     FaderOnChangeTrigger,
     HotkeyTrigger,
     MidiConfig,
     MidiMessageTrigger,
     MidiPatch,
+    OscDestinationConfig,
     OscTransmitterConfig,
     StreamTrigger,
     VirtualFaderConfig,
@@ -36,7 +39,9 @@ from openfollow.configuration import (
 )
 from openfollow.web.routes import (
     _apply_osc_binding_fields,
+    _effective_default_marker_id,
     _midi_patches_for_form,
+    _osc_binding_marker_display,
     _parse_osc_message,
     _parse_trigger_subtable,
     _row_unresolved_placeholders,
@@ -149,21 +154,25 @@ def test_section_renders_empty_state(live_server) -> None:
     _, base, _ = live_server
     status, body = _get(base, "/section/osc_bindings")
     assert status == 200
-    assert "OSC Output" in body
-    assert "No OSC outputs configured" in body
+    assert "OSC Transmitters" in body
+    assert "No transmitters configured" in body
 
 
 def test_section_renders_existing_rows(live_server) -> None:
     _, base, cfg_path = live_server
     cfg = load_config(cfg_path)
+    cfg.osc_destinations.destinations.append(
+        OscDestinationConfig(id="d1", name="Console", host="10.0.0.1", port=8001),
+    )
     cfg.osc_transmitters.transmitters.append(
-        OscTransmitterConfig(name="Stage 1", host="10.0.0.1", port=8001),
+        OscTransmitterConfig(name="Stage 1", destination_id="d1"),
     )
     save_config(cfg, cfg_path)
     status, body = _get(base, "/section/osc_bindings")
     assert status == 200
     assert "Stage 1" in body
-    assert "10.0.0.1" in body
+    # The destination's address rides inside the <option> label, not below it.
+    assert "<option" in body and "Console – udp://10.0.0.1:8001</option>" in body
 
 
 def test_section_focus_query_reopens_row(live_server) -> None:
@@ -172,10 +181,10 @@ def test_section_focus_query_reopens_row(live_server) -> None:
     _, base, cfg_path = live_server
     cfg = load_config(cfg_path)
     cfg.osc_transmitters.transmitters.append(
-        OscTransmitterConfig(name="A", host="10.0.0.1", port=8001),
+        OscTransmitterConfig(name="A", destination_id="d1"),
     )
     cfg.osc_transmitters.transmitters.append(
-        OscTransmitterConfig(name="B", host="10.0.0.2", port=8002),
+        OscTransmitterConfig(name="B", destination_id="d2"),
     )
     save_config(cfg, cfg_path)
     target_id = cfg.osc_transmitters.transmitters[1].id
@@ -204,7 +213,7 @@ def test_section_renders_per_row_discard_button(live_server) -> None:
     _, base, cfg_path = live_server
     cfg = load_config(cfg_path)
     cfg.osc_transmitters.transmitters.append(
-        OscTransmitterConfig(name="Stage 1", host="10.0.0.1", port=8001),
+        OscTransmitterConfig(name="Stage 1", destination_id="d1"),
     )
     save_config(cfg, cfg_path)
     row_id = cfg.osc_transmitters.transmitters[0].id
@@ -232,7 +241,7 @@ def test_add_creates_row(live_server) -> None:
     cfg = load_config(cfg_path)
     assert len(cfg.osc_transmitters.transmitters) == 1
     row = cfg.osc_transmitters.transmitters[0]
-    assert row.name == "New OSC output"
+    assert row.name == "New transmitter"
     assert row.enabled is False
     # ``focus_id`` opens the row in the rendered partial.
     assert f'data-row-id="{row.id}"' in body
@@ -250,11 +259,8 @@ def test_save_updates_basics(live_server) -> None:
         {
             "enabled": "on",
             "name": "Edited",
-            "host": "192.168.1.10",
-            "port": "9000",
-            "protocol": "tcp",
-            "framing": "length_prefix",
-            "marker_id": "2",
+            "destination_id": "dest-7",
+            "markers": "2",
             "trigger.type": "stream",
             "trigger.rate_hz": "60",
         },
@@ -264,69 +270,10 @@ def test_save_updates_basics(live_server) -> None:
     row = cfg.osc_transmitters.transmitters[0]
     assert row.enabled is True
     assert row.name == "Edited"
-    assert row.host == "192.168.1.10"
-    assert row.port == 9000
-    assert row.protocol == "tcp"
-    assert row.framing == "length_prefix"
-    assert row.marker_id == 2
+    assert row.destination_id == "dest-7"
+    assert row.markers == ["2"]
     assert isinstance(row.trigger, StreamTrigger)
     assert row.trigger.rate_hz == 60
-
-
-def test_save_with_tcp_slip_framing_round_trips(live_server) -> None:
-    """SLIP is the default for new TCP rows; the form must persist
-    whichever framing the operator picked through one save + reload
-    cycle."""
-    _, base, cfg_path = live_server
-    _post_form(base, "/section/osc_bindings/add", {})
-    cfg = load_config(cfg_path)
-    row_id = cfg.osc_transmitters.transmitters[0].id
-    status, _ = _post_form(
-        base,
-        f"/section/osc_binding/{row_id}",
-        {
-            "enabled": "on",
-            "name": "Slip",
-            "host": "1.2.3.4",
-            "port": "9000",
-            "protocol": "tcp",
-            "framing": "slip",
-            "marker_id": "1",
-            "trigger.type": "stream",
-            "trigger.rate_hz": "30",
-        },
-    )
-    assert status == 200
-    row = load_config(cfg_path).osc_transmitters.transmitters[0]
-    assert row.protocol == "tcp"
-    assert row.framing == "slip"
-
-
-def test_save_with_invalid_framing_falls_back_to_default(live_server) -> None:
-    """A POST with an invalid framing value: the configuration-layer
-    ``_coerce_choice`` snaps it back to ``"slip"`` so the row persists
-    with the default rather than a value the runtime can't dispatch."""
-    _, base, cfg_path = live_server
-    _post_form(base, "/section/osc_bindings/add", {})
-    cfg = load_config(cfg_path)
-    row_id = cfg.osc_transmitters.transmitters[0].id
-    _post_form(
-        base,
-        f"/section/osc_binding/{row_id}",
-        {
-            "enabled": "on",
-            "name": "X",
-            "host": "h",
-            "port": "9000",
-            "protocol": "tcp",
-            "framing": "carrier-pigeon",
-            "marker_id": "1",
-            "trigger.type": "stream",
-            "trigger.rate_hz": "30",
-        },
-    )
-    row = load_config(cfg_path).osc_transmitters.transmitters[0]
-    assert row.framing == "slip"
 
 
 def test_save_round_trips_non_ascii_form_bytes(live_server) -> None:
@@ -354,7 +301,7 @@ def test_save_round_trips_non_ascii_form_bytes(live_server) -> None:
             "host": "1.2.3.4",
             "port": "8000",
             "protocol": "udp",
-            "marker_id": "1",
+            "markers": "1",
             "trigger.type": "stream",
             "trigger.rate_hz": "30",
             "osc_message": msg,
@@ -389,10 +336,8 @@ def test_save_partial_form_keeps_unsent_fields(live_server) -> None:
         {
             "enabled": "on",
             "name": "Stage",
-            "host": "1.2.3.4",
-            "port": "8000",
-            "protocol": "udp",
-            "marker_id": "1",
+            "destination_id": "dest-3",
+            "markers": "1",
             "trigger.type": "stream",
             "trigger.rate_hz": "30",
         },
@@ -403,7 +348,7 @@ def test_save_partial_form_keeps_unsent_fields(live_server) -> None:
     row = cfg.osc_transmitters.transmitters[0]
     assert row.enabled is False
     assert row.name == "Stage"
-    assert row.host == "1.2.3.4"
+    assert row.destination_id == "dest-3"
 
 
 def test_save_404_for_unknown_id(live_server) -> None:
@@ -472,7 +417,7 @@ def test_save_with_marker_fader_on_change_trigger(live_server) -> None:
             "host": "10.0.0.1",
             "port": "9000",
             "protocol": "udp",
-            "marker_id": "1",
+            "markers": "1",
             "osc_message": "/spot/[markerfader]",
             "trigger.type": "fader_on_change",
             "trigger.fader_source": "marker:1",
@@ -500,7 +445,7 @@ def test_save_with_indexed_fader_on_change_trigger(live_server) -> None:
             "host": "10.0.0.1",
             "port": "9000",
             "protocol": "udp",
-            "marker_id": "1",
+            "markers": "1",
             "osc_message": "/lvl/[fader:3]",
             "trigger.type": "fader_on_change",
             "trigger.fader_source": "index:3",
@@ -538,7 +483,7 @@ def test_trigger_form_lists_and_selects_marker_fader(
                 "host": "10.0.0.1",
                 "port": "9000",
                 "protocol": "udp",
-                "marker_id": "1",
+                "markers": "1",
                 "osc_message": "/spot/[markerfader]",
                 "trigger.type": "fader_on_change",
                 "trigger.fader_source": "marker:1",
@@ -574,7 +519,7 @@ def test_duplicate_clones_row(live_server) -> None:
     cfg = load_config(cfg_path)
     assert len(cfg.osc_transmitters.transmitters) == 2
     assert cfg.osc_transmitters.transmitters[1].id != row_id
-    assert cfg.osc_transmitters.transmitters[1].name == "New OSC output (copy)"
+    assert cfg.osc_transmitters.transmitters[1].name == "New transmitter (copy)"
 
 
 def test_duplicate_404_for_unknown_id(live_server) -> None:
@@ -602,7 +547,7 @@ def test_delete_unknown_id_is_noop(live_server) -> None:
         {},
     )
     assert status == 200
-    assert "OSC Output" in body  # partial still renders cleanly
+    assert "OSC Transmitters" in body  # partial still renders cleanly
 
 
 def test_move_up_swaps_with_predecessor(live_server) -> None:
@@ -852,7 +797,7 @@ def test_row_unresolved_placeholders_collapses_across_address_and_args() -> None
     address + every arg, with duplicates collapsed across the whole
     row. The pill JS treats them as one dependency per token."""
     row = OscTransmitterConfig(
-        marker_id=None,
+        markers=[],
         address="/eos/[markerid]/go",
         args=["[x]", "[x]", "[y:7]"],
     )
@@ -863,7 +808,7 @@ def test_row_unresolved_placeholders_collapses_across_address_and_args() -> None
 @pytest.mark.unit
 def test_row_unresolved_placeholders_empty_when_all_resolve() -> None:
     row = OscTransmitterConfig(
-        marker_id=1,
+        markers=["1"],
         address="/eos/[markerid]/go",
         args=["[x:1]"],
     )
@@ -877,12 +822,154 @@ def test_row_unresolved_placeholders_empty_for_literal_only_row() -> None:
     no marker is registered, and the UX must not flag them as
     unresolved either."""
     row = OscTransmitterConfig(
-        marker_id=None,
+        markers=[],
         address="/cue/go",
         args=["My Cue"],
     )
     out = _row_unresolved_placeholders(row, frozenset())
     assert out == ()
+
+
+class _FakeCatalog:
+    """Minimal marker-name lookup for the display-helper unit tests."""
+
+    def __init__(self, names: dict[int, str]) -> None:
+        self._names = names
+
+    def get(self, marker_id: int):  # noqa: ANN201 – duck-typed entry
+        name = self._names.get(marker_id)
+        if name is None:
+            return None
+        return type("_Entry", (), {"name": name})()
+
+
+@pytest.mark.unit
+def test_effective_default_marker_id_resolution() -> None:
+    """The unresolved-pill heuristic: a usable default marker exists when a
+    numeric id is controlled, or when a dynamic token (``all`` / ``cN``)
+    is named and the station controls at least one marker."""
+    # Numeric token in the registry → that id.
+    assert _effective_default_marker_id(["7"], frozenset({7})) == 7
+    # Numeric token not in the registry → no usable default.
+    assert _effective_default_marker_id(["7"], frozenset({1})) is None
+    # ``all`` / ``cN`` are dynamic → lowest registered id stands in.
+    assert _effective_default_marker_id(["all"], frozenset({5, 2})) == 2
+    assert _effective_default_marker_id(["c1"], frozenset({3})) == 3
+    # Dynamic token but nothing controlled → no usable default.
+    assert _effective_default_marker_id(["all"], frozenset()) is None
+    # No markers named → no usable default.
+    assert _effective_default_marker_id([], frozenset({1})) is None
+
+
+@pytest.mark.unit
+def test_marker_display_multi_marker_all_nested() -> None:
+    """A row with >1 markers nests every marker (primary included) as a chip
+    – no header badge – so they read uniformly."""
+    from openfollow.configuration import OscTransmittersConfig
+
+    cfg = AppConfig(
+        controlled_marker_ids=[1, 3, 7],
+        osc_transmitters=OscTransmittersConfig(
+            transmitters=[OscTransmitterConfig(id="r1", markers=["1", "3", "7"])],
+        ),
+    )
+    catalog = _FakeCatalog({1: "Marker 1", 3: "Sänger", 7: "Gitarre"})
+    display = _osc_binding_marker_display(cfg, catalog)
+    assert display["r1"]["header"] is None
+    assert display["r1"]["nested"] == [
+        {"label": "Marker 1 (1)", "controlled": True},
+        {"label": "Sänger (3)", "controlled": True},
+        {"label": "Gitarre (7)", "controlled": True},
+    ]
+    assert display["r1"]["markers_unusable"] is False
+
+
+@pytest.mark.unit
+def test_marker_display_single_marker_uses_header() -> None:
+    """A single marker shows in the header badge with no nested list; an
+    uncontrolled single marker sets ``markers_unusable`` True (red dot)."""
+    from openfollow.configuration import OscTransmittersConfig
+
+    cfg = AppConfig(
+        controlled_marker_ids=[1],
+        osc_transmitters=OscTransmittersConfig(
+            transmitters=[
+                OscTransmitterConfig(id="ok", markers=["1"]),
+                OscTransmitterConfig(id="bad", markers=["5"]),
+            ],
+        ),
+    )
+    display = _osc_binding_marker_display(cfg, _FakeCatalog({1: "Lead"}))
+    assert display["ok"] == {"header": "Lead (1)", "nested": [], "markers_unusable": False}
+    assert display["bad"] == {"header": "Marker 5 (5)", "nested": [], "markers_unusable": True}
+
+
+@pytest.mark.unit
+def test_marker_display_multi_marker_flags_uncontrolled_chip() -> None:
+    """In a multi-marker row each chip carries its own controlled flag; at least one is
+    controlled so ``markers_unusable`` is False (yellow dot)."""
+    from openfollow.configuration import OscTransmittersConfig
+
+    cfg = AppConfig(
+        controlled_marker_ids=[1],
+        osc_transmitters=OscTransmittersConfig(
+            transmitters=[OscTransmitterConfig(id="r1", markers=["1", "5"])],
+        ),
+    )
+    display = _osc_binding_marker_display(cfg, _FakeCatalog({}))
+    assert display["r1"]["header"] is None
+    assert display["r1"]["nested"] == [
+        {"label": "Marker 1 (1)", "controlled": True},
+        {"label": "Marker 5 (5)", "controlled": False},
+    ]
+    assert display["r1"]["markers_unusable"] is False
+
+
+@pytest.mark.unit
+def test_marker_display_all_token_nests_controlled() -> None:
+    from openfollow.configuration import OscTransmittersConfig
+
+    cfg = AppConfig(
+        controlled_marker_ids=[5, 2],
+        osc_transmitters=OscTransmittersConfig(
+            transmitters=[OscTransmitterConfig(id="r1", markers=["all"])],
+        ),
+    )
+    catalog = _FakeCatalog({2: "Diva"})
+    display = _osc_binding_marker_display(cfg, catalog)
+    assert display["r1"]["header"] is None
+    # Controlled markers, id-sorted; missing catalog name falls back to "Marker N".
+    assert display["r1"]["nested"] == [
+        {"label": "Diva (2)", "controlled": True},
+        {"label": "Marker 5 (5)", "controlled": True},
+    ]
+    assert display["r1"]["markers_unusable"] is False
+
+
+@pytest.mark.unit
+def test_marker_display_controller_alias_and_empty() -> None:
+    from openfollow.configuration import OscTransmittersConfig
+
+    cfg = AppConfig(
+        controlled_marker_ids=[1],
+        osc_transmitters=OscTransmittersConfig(
+            transmitters=[
+                OscTransmitterConfig(id="alias", markers=["1", "c2"]),
+                OscTransmitterConfig(id="empty", markers=[]),
+            ],
+        ),
+    )
+    catalog = _FakeCatalog({1: "Lead"})
+    display = _osc_binding_marker_display(cfg, catalog)
+    # >1 markers → both nested (alias always resolves to a controlled marker).
+    assert display["alias"]["header"] is None
+    assert display["alias"]["nested"] == [
+        {"label": "Lead (1)", "controlled": True},
+        {"label": "Controller c2", "controlled": True},
+    ]
+    assert display["alias"]["markers_unusable"] is False
+    # No markers → nothing, dot not reddened by markers.
+    assert display["empty"] == {"header": None, "nested": [], "markers_unusable": False}
 
 
 def test_save_with_empty_marker_id_persists_as_none(live_server) -> None:
@@ -897,11 +984,11 @@ def test_save_with_empty_marker_id_persists_as_none(live_server) -> None:
         base,
         f"/section/osc_binding/{row_id}",
         {
-            "marker_id": "",
+            "markers": "",
         },
     )
     cfg = load_config(cfg_path)
-    assert cfg.osc_transmitters.transmitters[0].marker_id is None
+    assert cfg.osc_transmitters.transmitters[0].markers == []
 
 
 def test_save_with_explicit_marker_id_persists_as_int(
@@ -918,11 +1005,11 @@ def test_save_with_explicit_marker_id_persists_as_int(
         base,
         f"/section/osc_binding/{row_id}",
         {
-            "marker_id": "1",
+            "markers": "1",
         },
     )
     cfg = load_config(cfg_path)
-    assert cfg.osc_transmitters.transmitters[0].marker_id == 1
+    assert cfg.osc_transmitters.transmitters[0].markers == ["1"]
 
 
 def test_save_coerces_enabled_false_when_default_marker_unresolved(
@@ -942,13 +1029,13 @@ def test_save_coerces_enabled_false_when_default_marker_unresolved(
         f"/section/osc_binding/{row_id}",
         {
             "enabled": "on",
-            "marker_id": "",
+            "markers": "",
             "osc_message": "/eos/1/go [x]",
         },
     )
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[0]
-    assert row.marker_id is None
+    assert row.markers == []
     assert row.enabled is False
     assert row.address == "/eos/1/go"
     assert row.args == ["[x]"]
@@ -970,13 +1057,13 @@ def test_save_coerces_enabled_false_for_unregistered_explicit_marker(
         f"/section/osc_binding/{row_id}",
         {
             "enabled": "on",
-            "marker_id": "1",  # default is registered, so [x] alone would be fine
+            "markers": "1",  # default is registered, so [x] alone would be fine
             "osc_message": "/multi [x:9]",  # marker 9 not registered
         },
     )
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[0]
-    assert row.marker_id == 1
+    assert row.markers == ["1"]
     assert row.enabled is False
 
 
@@ -995,7 +1082,7 @@ def test_save_keeps_enabled_true_when_all_placeholders_resolve(
         {
             "enabled": "on",
             # The live_server fixture seeds marker 1 in ``controlled_marker_ids``.
-            "marker_id": "1",
+            "markers": "1",
             "osc_message": "/eos/[markerid]/pos [x] [y]",
         },
     )
@@ -1019,13 +1106,13 @@ def test_save_keeps_enabled_true_for_literal_only_row_without_marker(
         f"/section/osc_binding/{row_id}",
         {
             "enabled": "on",
-            "marker_id": "",
+            "markers": "",
             "osc_message": "/cue/go MyCue",
         },
     )
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[0]
-    assert row.marker_id is None
+    assert row.markers == []
     assert row.enabled is True
 
 
@@ -1041,7 +1128,7 @@ def test_section_render_marks_unresolved_pill_in_dataset(live_server) -> None:
         OscTransmitterConfig(
             id="r-uns",
             name="Unset",
-            marker_id=None,
+            markers=[],
             address="/eos/1/go",
             args=["[x]"],
         ),
@@ -1153,7 +1240,7 @@ def test_section_render_no_unresolved_for_clean_row(live_server) -> None:
         OscTransmitterConfig(
             id="r-ok",
             name="Clean",
-            marker_id=1,
+            markers=["1"],
             address="/eos/[markerid]/pos",
             args=["[x]"],
         ),
@@ -1186,6 +1273,106 @@ def test_section_render_passes_registered_marker_ids_to_editor(
     assert "data-osc-registered-marker-ids" in body
     # Don't pin the exact JSON shape – Bottle's HTML escape can vary.
     assert "[1, 2, 5]" in body or "[1,2,5]" in body
+
+
+def _summary_dot_state(body: str, row_id: str) -> str:
+    """Return the summary (header) status-dot state for a row: the dot class
+    inside the row's ``<summary>``, scoped so nested-chip dots don't leak in."""
+    row = re.search(
+        r'data-row-id="' + re.escape(row_id) + r'".*?<summary[^>]*>(.*?)</summary>',
+        body,
+        re.S,
+    )
+    assert row is not None, f"row {row_id} not found"
+    dot = re.search(r"osc-binding-enabled-dot (on|off|invalid)", row.group(1))
+    assert dot is not None, "no status dot in summary"
+    return dot.group(1)
+
+
+def test_section_render_uncontrolled_secondary_is_red_chip_not_dot(live_server) -> None:
+    """A multi-marker row with a valid primary keeps a yellow (``on``) summary
+    dot; the uncontrolled secondary reddens only its own nested chip."""
+    _, base, cfg_path = live_server
+    cfg = load_config(cfg_path)
+    cfg.controlled_marker_ids = [1]
+    cfg.osc_destinations.destinations.append(OscDestinationConfig(id="d1", name="C", host="10.0.0.1", port=8001))
+    cfg.osc_transmitters.transmitters.append(
+        # Primary 1 controlled, secondary 5 not.
+        OscTransmitterConfig(id="r1", name="X", enabled=True, markers=["1", "5"], destination_id="d1"),
+    )
+    save_config(cfg, cfg_path)
+    status, body = _get(base, "/section/osc_bindings")
+    assert status == 200
+    # Summary dot stays yellow – at least one marker is controlled.
+    assert _summary_dot_state(body, "r1") == "on"
+    # The uncontrolled secondary shows a red chip.
+    assert "osc-binding-nested-row is-invalid" in body
+
+
+def test_section_render_no_controlled_marker_reddens_dot(live_server) -> None:
+    """A row that names markers but controls none of them can't send any, so
+    its summary dot is red."""
+    _, base, cfg_path = live_server
+    cfg = load_config(cfg_path)
+    cfg.controlled_marker_ids = [1]
+    cfg.osc_destinations.destinations.append(OscDestinationConfig(id="d1", name="C", host="10.0.0.1", port=8001))
+    cfg.osc_transmitters.transmitters.append(
+        OscTransmitterConfig(id="r1", name="X", markers=["5"], destination_id="d1"),
+    )
+    save_config(cfg, cfg_path)
+    status, body = _get(base, "/section/osc_bindings")
+    assert status == 200
+    assert _summary_dot_state(body, "r1") == "invalid"
+
+
+def test_section_render_invalid_message_reddens_dot(live_server) -> None:
+    """An unresolvable placeholder in the address/args (``[x:9]`` for an
+    unregistered marker) reddens the summary dot even when destination and
+    markers are fine."""
+    _, base, cfg_path = live_server
+    cfg = load_config(cfg_path)
+    cfg.controlled_marker_ids = [1]
+    cfg.osc_destinations.destinations.append(OscDestinationConfig(id="d1", name="C", host="10.0.0.1", port=8001))
+    cfg.osc_transmitters.transmitters.append(
+        OscTransmitterConfig(id="r1", name="X", markers=["1"], destination_id="d1", address="/eos", args=["[x:9]"]),
+    )
+    save_config(cfg, cfg_path)
+    status, body = _get(base, "/section/osc_bindings")
+    assert status == 200
+    assert _summary_dot_state(body, "r1") == "invalid"
+
+
+def test_section_render_marks_missing_destination_red(live_server) -> None:
+    """A transmitter with no destination can never fire, so its summary dot
+    is red even when its (single) marker is controlled."""
+    _, base, cfg_path = live_server
+    cfg = load_config(cfg_path)
+    cfg.controlled_marker_ids = [1]
+    cfg.osc_transmitters.transmitters.append(
+        OscTransmitterConfig(id="r1", name="X", markers=["1"]),  # no destination_id
+    )
+    save_config(cfg, cfg_path)
+    status, body = _get(base, "/section/osc_bindings")
+    assert status == 200
+    assert _summary_dot_state(body, "r1") == "invalid"
+
+
+def test_section_render_no_invalid_dot_when_valid(live_server) -> None:
+    """A row with a valid destination whose every named id is controlled
+    renders no ``invalid`` marker dot anywhere – the summary dot reflects
+    only enabled/disabled."""
+    _, base, cfg_path = live_server
+    cfg = load_config(cfg_path)
+    cfg.controlled_marker_ids = [1, 5]
+    cfg.osc_destinations.destinations.append(OscDestinationConfig(id="d1", name="C", host="10.0.0.1", port=8001))
+    cfg.osc_transmitters.transmitters.append(
+        OscTransmitterConfig(id="r1", name="X", markers=["1", "5"], destination_id="d1"),
+    )
+    save_config(cfg, cfg_path)
+    status, body = _get(base, "/section/osc_bindings")
+    assert status == 200
+    assert "osc-binding-enabled-dot invalid" not in body
+    assert "osc-binding-nested-row is-invalid" not in body
 
 
 def test_save_persists_explicit_markerN_placeholder(live_server) -> None:
@@ -1388,6 +1575,24 @@ def test_initial_page_render_with_osc_row_includes_framing_dropdown(live_server)
     assert 'value="length_prefix"' in body
 
 
+def test_initial_page_render_shows_nested_markers(live_server) -> None:
+    """A multi-marker row's nested chips must render on the first index page
+    load, not only after a save – ``index()`` builds the same marker context
+    the section render does."""
+    _, base, cfg_path = live_server
+    cfg = load_config(cfg_path)
+    cfg.controlled_marker_ids = [1, 3]
+    cfg.osc_transmitters.transmitters.append(
+        OscTransmitterConfig(id="r1", name="X", markers=["1", "3"]),
+    )
+    save_config(cfg, cfg_path)
+    status, body = _get(base, "/")
+    assert status == 200
+    assert 'class="osc-binding-nested"' in body
+    assert "Marker 1 (1)" in body
+    assert "Marker 3 (3)" in body
+
+
 def test_add_with_unknown_template_id_falls_back_to_blank_row(live_server) -> None:
     """A stale dropdown selection (template deleted in another tab)
     yields a blank row rather than a row with a confusing identity."""
@@ -1399,7 +1604,7 @@ def test_add_with_unknown_template_id_falls_back_to_blank_row(live_server) -> No
     )
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[0]
-    assert row.name == "New OSC output"
+    assert row.name == "New transmitter"
     assert row.address == ""
     assert row.args == []
 
@@ -1426,9 +1631,9 @@ def test_initial_page_render_includes_disk_user_templates(live_server) -> None:
 
 def test_add_with_file_template_copies_extended_fields(live_server) -> None:
     """Dropdown apply via ``add_osc_binding`` must restore
-    host/port/protocol/rate/trigger from a file template, not just
+    destination_id/rate/trigger from a file template, not just
     ``name``/``address``/``args``; otherwise applying a saved template
-    silently drops the saved port + trigger.
+    silently drops the saved destination + trigger.
 
     Dropdown values for user templates are ``file:<filename>`` rather
     than the envelope id, so the add request keys on the
@@ -1445,9 +1650,7 @@ def test_add_with_file_template_copies_extended_fields(live_server) -> None:
         "Stage Preset",
         {
             "name": "ETC Stage Left",
-            "host": "10.0.0.5",
-            "port": 9001,
-            "protocol": "tcp",
+            "destination_id": "dest-5",
             "address": "/eos/go",
             "args": ["[x]", "[y]"],
             "rate_hz": 60,
@@ -1463,9 +1666,7 @@ def test_add_with_file_template_copies_extended_fields(live_server) -> None:
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[-1]
     assert row.name == "ETC Stage Left"
-    assert row.host == "10.0.0.5"
-    assert row.port == 9001
-    assert row.protocol == "tcp"
+    assert row.destination_id == "dest-5"
     assert row.address == "/eos/go"
     assert row.args == ["[x]", "[y]"]
     assert row.rate_hz == 60
@@ -1522,7 +1723,7 @@ def test_add_with_empty_template_id_yields_blank_row(live_server) -> None:
     _post_form(base, "/section/osc_bindings/add", {"template_id": ""})
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[0]
-    assert row.name == "New OSC output"
+    assert row.name == "New transmitter"
     assert row.address == ""
     assert row.args == []
 
@@ -1540,7 +1741,7 @@ def test_add_with_unknown_template_id_yields_blank_row(live_server) -> None:
     )
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[0]
-    assert row.name == "New OSC output"
+    assert row.name == "New transmitter"
     assert row.address == ""
     assert row.args == []
 
@@ -1558,7 +1759,7 @@ def test_add_with_unsafe_file_template_id_yields_blank_row(live_server) -> None:
     )
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[0]
-    assert row.name == "New OSC output"
+    assert row.name == "New transmitter"
     assert row.address == ""
 
 
@@ -2123,10 +2324,8 @@ def test_apply_osc_binding_fields_top_level_and_trigger() -> None:
         {
             "enabled": "on",
             "name": "X",
-            "host": "h",
-            "port": "9",
-            "protocol": "tcp",
-            "marker_id": "3",
+            "destination_id": "dest-9",
+            "markers": "3",
             "osc_message": "/foo [x] [y]",
             "trigger.type": "stream",
             "trigger.rate_hz": "60",
@@ -2134,10 +2333,8 @@ def test_apply_osc_binding_fields_top_level_and_trigger() -> None:
     )
     assert row.name == "X"
     assert row.enabled is True
-    assert row.host == "h"
-    assert row.port == 9
-    assert row.protocol == "tcp"
-    assert row.marker_id == 3
+    assert row.destination_id == "dest-9"
+    assert row.markers == ["3"]
     assert row.address == "/foo"
     assert row.args == ["[x]", "[y]"]
     assert isinstance(row.trigger, StreamTrigger)
@@ -2154,11 +2351,11 @@ def test_apply_osc_binding_fields_without_osc_message_keeps_address_and_args() -
 
 
 def test_apply_osc_binding_fields_skips_missing_fields() -> None:
-    row = OscTransmitterConfig(name="seed", host="seed.host")
-    _apply_osc_binding_fields(row, {"port": "1234"})
+    row = OscTransmitterConfig(name="seed", destination_id="seed-dest")
+    _apply_osc_binding_fields(row, {"markers": "3"})
     assert row.name == "seed"
-    assert row.host == "seed.host"
-    assert row.port == 1234
+    assert row.destination_id == "seed-dest"
+    assert row.markers == ["3"]
 
 
 def test_apply_osc_binding_fields_no_trigger_keys_keeps_trigger() -> None:
@@ -2398,7 +2595,7 @@ def test_validate_osc_message_blurs_clean_when_default_marker_set(
     _, base, _ = live_server
     status, body = _get(
         base,
-        "/api/validate/osc_binding/osc_message?osc_message=%2Feos+%5Bx%5D&marker_id=1",
+        "/api/validate/osc_binding/osc_message?osc_message=%2Feos+%5Bx%5D&markers=1",
     )
     assert status == 200
     assert body == ""
@@ -2412,7 +2609,7 @@ def test_validate_osc_message_surfaces_missing_default_marker(
     _, base, _ = live_server
     status, body = _get(
         base,
-        "/api/validate/osc_binding/osc_message?osc_message=%2Feos+%5Bx%5D&marker_id=",
+        "/api/validate/osc_binding/osc_message?osc_message=%2Feos+%5Bx%5D&markers=",
     )
     assert status == 200
     assert "[x]" in body
@@ -2433,14 +2630,14 @@ def test_validate_osc_message_surfaces_unregistered_explicit_marker(
     _, base, _ = live_server
     status, body = _get(
         base,
-        "/api/validate/osc_binding/osc_message?osc_message=%2Feos+%5Bx%3A9%5D&marker_id=1",
+        "/api/validate/osc_binding/osc_message?osc_message=%2Feos+%5Bx%3A9%5D&markers=1",
     )
     assert status == 200
     assert "[x:9]" in body
     assert "isn" in body  # "isn't registered"
 
 
-def test_validate_marker_id_surfaces_message_dependency_error(
+def test_validate_markers_surfaces_message_dependency_error(
     live_server,
 ) -> None:
     """Symmetric: the ``marker_id`` blur endpoint also surfaces the
@@ -2449,7 +2646,7 @@ def test_validate_marker_id_surfaces_message_dependency_error(
     _, base, _ = live_server
     status, body = _get(
         base,
-        "/api/validate/osc_binding/marker_id?marker_id=&osc_message=%2Feos+%5Bx%5D",
+        "/api/validate/osc_binding/markers?markers=&osc_message=%2Feos+%5Bx%5D",
     )
     assert status == 200
     assert "[x]" in body
@@ -2465,7 +2662,7 @@ def test_validate_osc_message_with_explicit_markerid_no_error(
     _, base, _ = live_server
     status, body = _get(
         base,
-        "/api/validate/osc_binding/osc_message?osc_message=%2Feos%2F%5Bmarkerid%3A9%5D%2Fgo&marker_id=1",
+        "/api/validate/osc_binding/osc_message?osc_message=%2Feos%2F%5Bmarkerid%3A9%5D%2Fgo&markers=1",
     )
     assert status == 200
     assert body == ""
@@ -2479,13 +2676,13 @@ def test_validate_osc_message_blurs_clean_for_literal_only_message(
     _, base, _ = live_server
     status, body = _get(
         base,
-        "/api/validate/osc_binding/osc_message?osc_message=%2Fcue%2Fgo+MyCue&marker_id=",
+        "/api/validate/osc_binding/osc_message?osc_message=%2Fcue%2Fgo+MyCue&markers=",
     )
     assert status == 200
     assert body == ""
 
 
-def test_validate_marker_id_blurs_clean_when_no_message_present(
+def test_validate_markers_blurs_clean_when_no_message_present(
     live_server,
 ) -> None:
     """The ``marker_id`` endpoint also runs the cross-field check,
@@ -2495,13 +2692,13 @@ def test_validate_marker_id_blurs_clean_when_no_message_present(
     _, base, _ = live_server
     status, body = _get(
         base,
-        "/api/validate/osc_binding/marker_id?marker_id=&osc_message=",
+        "/api/validate/osc_binding/markers?markers=&osc_message=",
     )
     assert status == 200
     assert body == ""
 
 
-def test_validate_marker_id_blurs_clean_when_message_key_omitted(
+def test_validate_markers_blurs_clean_when_message_key_omitted(
     live_server,
 ) -> None:
     """If a blur sends only ``marker_id`` (no ``osc_message`` key), the
@@ -2511,42 +2708,50 @@ def test_validate_marker_id_blurs_clean_when_message_key_omitted(
     _, base, _ = live_server
     status, body = _get(
         base,
-        "/api/validate/osc_binding/marker_id?marker_id=5",
+        "/api/validate/osc_binding/markers?markers=5",
     )
     assert status == 200
     assert body == ""
 
 
-def test_validate_osc_message_suppresses_default_warn_for_invalid_marker_id(
-    live_server,
-) -> None:
-    """When the sibling ``marker_id`` field is filled with a value
-    that doesn't parse as a non-negative integer (``"abc"``, ``"-1"``,
-    ``"1.5"``), the cross-field validator must not surface the
-    "needs a default marker" warning. The field-level numeric-shape
-    blur on ``marker_id`` surfaces the actual error; doubling up here
-    would mislead the operator into thinking the field is empty."""
+def test_validate_markers_flags_malformed_token(live_server) -> None:
+    """A malformed ``markers`` entry (junk / negative / bad alias) blurs
+    with a hard field-error naming the offending entry. The runtime drops
+    such tokens, but the operator gets feedback on the typo."""
     _, base, _ = live_server
-    for bad in ("abc", "-1", "1.5"):
+    for bad in ("bogus", "-1", "c0"):
         status, body = _get(
             base,
-            "/api/validate/osc_binding/osc_message?osc_message=%2Feos+%5Bx%5D&marker_id=" + bad,
+            "/api/validate/osc_binding/markers?markers=1," + bad,
         )
         assert status == 200, f"bad input: {bad!r}"
-        assert body == "", f"expected suppression for marker_id={bad!r}, got {body!r}"
+        assert 'class="field-error-msg"' in body, f"expected error for {bad!r}, got {body!r}"
+        assert bad in body
 
 
-def test_validate_osc_message_keeps_explicit_warn_when_marker_id_invalid(
-    live_server,
-) -> None:
-    """The invalid-``marker_id`` suppression only applies to the
-    default-marker arm. ``[x:9]`` is unrelated to the operator's
-    ``marker_id`` field, so its "references a marker that isn't
-    registered" warning still surfaces."""
+def test_validate_markers_allows_non_controlled_id(live_server) -> None:
+    """A syntactically-valid id this station doesn't control is ignored at
+    send time, not flagged – the markers field blurs clean. The fixture
+    controls only marker 1."""
     _, base, _ = live_server
     status, body = _get(
         base,
-        "/api/validate/osc_binding/osc_message?osc_message=%2Feos+%5Bx%3A9%5D&marker_id=abc",
+        "/api/validate/osc_binding/markers?markers=5",
+    )
+    assert status == 200
+    assert 'class="field-error-msg"' not in body
+
+
+def test_validate_osc_message_keeps_explicit_warn_regardless_of_markers(
+    live_server,
+) -> None:
+    """An explicit ``[x:9]`` is independent of the ``markers`` field, so its
+    "references a marker that isn't registered" warning surfaces even when
+    ``markers`` carries malformed tokens."""
+    _, base, _ = live_server
+    status, body = _get(
+        base,
+        "/api/validate/osc_binding/osc_message?osc_message=%2Feos+%5Bx%3A9%5D&markers=bogus",
     )
     assert status == 200
     assert "[x:9]" in body
@@ -2564,7 +2769,7 @@ def test_validate_osc_message_collapses_duplicate_unresolved_tokens(
     _, base, _ = live_server
     status, body = _get(
         base,
-        "/api/validate/osc_binding/osc_message?osc_message=%2Feos+%5Bx%5D+%5Bx%5D+%5Bx%5D&marker_id=",
+        "/api/validate/osc_binding/osc_message?osc_message=%2Feos+%5Bx%5D+%5Bx%5D+%5Bx%5D&markers=",
     )
     assert status == 200
     assert body.count("[x]") == 1
@@ -2698,7 +2903,7 @@ class TestPhaseBTriggerSaveRoundTrip:
                 "host": "127.0.0.1",
                 "port": "9000",
                 "protocol": "udp",
-                "marker_id": "",
+                "markers": "",
                 "default_fader": "",
                 "osc_message": "/cue/[value]",
                 "trigger.type": "midi_message",
@@ -2733,7 +2938,7 @@ class TestPhaseBTriggerSaveRoundTrip:
                 "host": "127.0.0.1",
                 "port": "9000",
                 "protocol": "udp",
-                "marker_id": "",
+                "markers": "",
                 "default_fader": "1",
                 "osc_message": "/level/[fader]",
                 "trigger.type": "fader_on_change",
@@ -2755,15 +2960,14 @@ class TestDefaultFaderField:
     pattern – empty input → ``None``, valid 1..8 preserved."""
 
     def test_apply_default_fader_from_form(self) -> None:
-        row = OscTransmitterConfig(id="r1", host="127.0.0.1", port=9000)
+        row = OscTransmitterConfig(id="r1", destination_id="d1")
         _apply_osc_binding_fields(row, {"default_fader": "3"})
         assert row.default_fader == 3
 
     def test_blank_default_fader_collapses_to_none(self) -> None:
         row = OscTransmitterConfig(
             id="r1",
-            host="127.0.0.1",
-            port=9000,
+            destination_id="d1",
             default_fader=3,
         )
         _apply_osc_binding_fields(row, {"default_fader": ""})
@@ -2774,7 +2978,7 @@ class TestDefaultFaderField:
         ``_coerce_optional_int`` so a ``default_fader=9`` lands on
         ``None`` instead of silently routing to fader 8 (valid range
         1..8)."""
-        row = OscTransmitterConfig(id="r1", host="127.0.0.1", port=9000)
+        row = OscTransmitterConfig(id="r1", destination_id="d1")
         _apply_osc_binding_fields(row, {"default_fader": "99"})
         assert row.default_fader is None
 
@@ -3144,7 +3348,7 @@ def test_save_rejects_address_without_leading_slash(live_server) -> None:
     # Nothing persisted – the whole save was rejected before apply.
     row = load_config(cfg_path).osc_transmitters.transmitters[0]
     assert row.address != "cue/go"
-    assert row.name == "New OSC output"
+    assert row.name == "New transmitter"
 
 
 def test_save_as_template_rejects_address_without_leading_slash(live_server) -> None:

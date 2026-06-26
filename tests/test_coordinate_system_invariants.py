@@ -257,14 +257,22 @@ def test_mouse_click_stores_psn_absolute_position(offsets) -> None:
     """
     ox, oy, oz = offsets
     app = _make_app(_grid(ox, oy, oz))
+    app._config.controller.mouse_enabled = True
     app._server.add_marker(1).set_pos(0.0, 0.0, 0.0)
     app._controlled_ids = [1]
     app._selected_id = 1
 
+    cam = _top_down_camera()
+    cam_params = np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov])
+
     handler = MouseHandler(app)
-    # Left-click at a fixed screen point – chosen off-center so the x/y
-    # unprojection results are distinct from one another.
-    handler.on_pointer_down(800.0, 300.0, 1)
+    # Grab the marker by clicking its projected ground-circle centre, then drag
+    # the cursor to an off-centre point (x/y unprojections distinct) and let the
+    # per-frame update apply it.
+    center = project(cam_params, [(0.0, 0.0, oz)], 1280, 720)[0]
+    handler.on_pointer_down(float(center[0]), float(center[1]), 1)
+    handler.on_pointer_move(800.0, 300.0)
+    handler.update()
 
     marker = app._server.get_marker(1)
     x, y, _ = marker.pos
@@ -272,8 +280,6 @@ def test_mouse_click_stores_psn_absolute_position(offsets) -> None:
     # Compute the expected world point independently; the test asserts
     # marker.pos matches this PSN-absolute point without any offset
     # subtraction applied in mouse.py.
-    cam = _top_down_camera()
-    cam_params = np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov])
     expected = unproject_to_plane(
         cam_params,
         np.array([[800.0, 300.0]], dtype=np.float64),
@@ -360,12 +366,28 @@ class _StubOsc:
         host: str | None = None,
         port: int | None = None,
         protocol: str = "udp",
+        framing: str = "slip",
     ) -> None:
-        # ``args``/``protocol`` are accepted to keep the stub aligned with
-        # OscService.send. The invariants
-        # tests don't assert on args today – they only care that the right
-        # address fires for a marker-inside-zone scenario.
+        # ``args``/``protocol``/``framing`` are accepted to keep the stub
+        # aligned with OscService.send. The invariants tests don't assert on
+        # args today – they only care that the right address fires for a
+        # marker-inside-zone scenario.
         self.sent.append((address, host, port))
+
+
+# Single destination every zone in these invariants resolves to (id ``"d"``).
+class _StubDestinations:
+    _DEST = SimpleNamespace(host="127.0.0.1", port=53000, protocol="udp", framing="slip")
+
+    @staticmethod
+    def get(destination_id: str) -> object | None:
+        if not destination_id:
+            return None
+        return _StubDestinations._DEST
+
+    @staticmethod
+    def by_id() -> dict[str, object]:
+        return {"d": _StubDestinations._DEST}
 
 
 def _zone_square(cx: float, cy: float, half: float = 1.0) -> TriggerZoneConfig:
@@ -379,6 +401,7 @@ def _zone_square(cx: float, cy: float, half: float = 1.0) -> TriggerZoneConfig:
         ],
         trigger_source="markers",
         enabled=True,
+        destination_id="d",
         osc_address_first_entry="/z/first",
     )
 
@@ -398,7 +421,7 @@ def test_psn_marker_inside_zone_is_detected_regardless_of_offsets(offsets) -> No
         enabled=True,
         zones=[_zone_square(0.0, 3.0, half=1.0)],
     )
-    engine = ZoneEngine(zone_cfg, osc)
+    engine = ZoneEngine(zone_cfg, osc, _StubDestinations())
     engine.update(svc._collect_marker_positions(), detection_positions=[])
 
     states = engine.get_zone_states()
@@ -436,7 +459,7 @@ def test_mouse_click_inside_zone_is_detected_regardless_of_offsets(offsets) -> N
         enabled=True,
         zones=[_zone_square(wx, wy, half=2.0)],
     )
-    engine = ZoneEngine(zone_cfg, osc)
+    engine = ZoneEngine(zone_cfg, osc, _StubDestinations())
     engine.update(svc._collect_marker_positions(), detection_positions=[])
 
     assert engine.get_zone_states() == [(0, True, 1)], (

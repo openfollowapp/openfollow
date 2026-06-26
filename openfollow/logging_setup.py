@@ -11,8 +11,9 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 # Default cap for the in-memory ring.
 # Public so tests can drive a smaller cap without monkeypatching.
@@ -21,6 +22,51 @@ DEFAULT_RING_CAPACITY = 2000
 # Default format string for log records.
 DEFAULT_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 DEFAULT_DATEFMT = "%H:%M:%S"
+
+
+class ThrottledExceptionLogger:
+    """Rate-limit ``logger.exception`` for a failure on a per-frame path.
+
+    A failing per-tick path (the 60–120 Hz display loop) would otherwise flood
+    the log with the same traceback every frame. :meth:`log` emits at most once
+    per ``interval`` seconds; calls in between are counted and the suppressed
+    total is reported with the next emitted line. Call it from inside an
+    ``except`` block so ``logger.exception`` captures the active exception.
+
+    The clock is injectable so the throttle is deterministically testable.
+    """
+
+    def __init__(
+        self,
+        logger: logging.Logger,
+        message: str,
+        *,
+        interval: float = 5.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._logger = logger
+        self._message = message
+        self._interval = interval
+        self._clock = clock
+        self._last_emit: float | None = None
+        self._suppressed = 0
+
+    def log(self) -> None:
+        now = self._clock()
+        if self._last_emit is not None and now - self._last_emit < self._interval:
+            self._suppressed += 1
+            return
+        if self._suppressed:
+            self._logger.exception(
+                "%s (%d more suppressed in the last %.0fs)",
+                self._message,
+                self._suppressed,
+                self._interval,
+            )
+        else:
+            self._logger.exception(self._message)
+        self._last_emit = now
+        self._suppressed = 0
 
 
 def _sd_priority(levelno: int) -> int:

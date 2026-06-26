@@ -148,6 +148,18 @@ class TestGridLineCountIsBounded:
         assert len(cr.move_tos) == 7 + 11
         assert len(cr.line_tos) == len(cr.move_tos)
 
+    def test_hidden_grid_draws_nothing(self) -> None:
+        # grid_visible=False short-circuits before any line is emitted.
+        renderer = FakeRenderer()
+        cr = FakeCairo()
+        state = self._state(10.0, 6.0, 1.0)
+        state.grid_visible = False
+
+        draw_grid(renderer, cr, state, 1920, 1080)
+
+        assert cr.move_tos == []
+        assert cr.line_tos == []
+
 
 class TestAssistGhost:
     """The assist-mode AI-output ghost renders as a dim crosshair + ground ring,
@@ -188,7 +200,7 @@ class TestAssistGhost:
         state = _state_with_grid_offset(0.0, 0.0, 0.0)
         ghost = MarkerOverlayData(marker_id=1, x=1.0, y=1.0, z=0.0, color="#33ff99", is_assist_ghost=True)
 
-        def _fake_project(_cam, pts, _w, _h):
+        def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0):
             # The marker's own position (2 points) stays finite so draw_marker
             # reaches the ghost path; the crosshair (6) and ground ring (24)
             # project to non-finite, so their segments are skipped and the ring
@@ -202,3 +214,146 @@ class TestAssistGhost:
         draw_marker(cr, state, ghost, 1920, 1080)
         # Reached the ghost path, but nothing fillable was drawn.
         assert cr.fills == 0
+
+
+def _marker_state(k1: float = 0.0, k2: float = 0.0) -> OverlayState:
+    """Camera + grid with every marker glyph enabled, lens distortion configurable."""
+    state = OverlayState()
+    state.camera_params = _camera_params()
+    state.grid_config = (10.0, 6.0, 1.0, 0.0, 0.0, 0.0)
+    state.show_ball = True
+    state.show_crosshair = True
+    state.show_drop_line = True
+    state.show_ground_circle = True
+    state.crosshair_size = 0.5
+    state.ground_circle_size = 0.5
+    state.lens_k1 = k1
+    state.lens_k2 = k2
+    return state
+
+
+def _grid_state(k1: float = 0.0, k2: float = 0.0) -> OverlayState:
+    state = OverlayState()
+    state.camera_params = _camera_params()
+    state.grid_config = (10.0, 6.0, 1.0, 0.0, 0.0, 0.0)
+    state.lens_k1 = k1
+    state.lens_k2 = k2
+    return state
+
+
+class TestLensDistortionWarp:
+    """The overlay warp bows straight world lines (subdivision) and shifts
+    point-anchored glyphs, only when a coefficient is non-zero."""
+
+    def test_grid_off_path_is_unchanged(self) -> None:
+        # k1 == k2 == 0 -> one chord per line, exactly the pinhole output.
+        cr = FakeCairo()
+        draw_grid(FakeRenderer(), cr, _grid_state(), 1920, 1080)
+        assert len(cr.move_tos) == 7 + 11
+        assert len(cr.line_tos) == 7 + 11
+
+    def test_grid_subdivides_when_distortion_active(self) -> None:
+        cr = FakeCairo()
+        draw_grid(FakeRenderer(), cr, _grid_state(k1=-0.15, k2=0.04), 1920, 1080)
+        # Same number of lines, each subdivided into 12 chords.
+        assert len(cr.move_tos) == 7 + 11
+        assert len(cr.line_tos) == (7 + 11) * 12
+
+    def test_grid_line_actually_bows(self) -> None:
+        # A straight world line must render curved: its mid sub-point is not
+        # collinear with the endpoints once distortion is applied.
+        cr = FakeCairo()
+        draw_grid(FakeRenderer(), cr, _grid_state(k1=-0.15, k2=0.04), 1920, 1080)
+        pts = [cr.move_tos[0], *cr.line_tos[:12]]  # 13 points of the first line
+        p0, pm, pe = pts[0], pts[6], pts[12]
+        cross = (pm[0] - p0[0]) * (pe[1] - p0[1]) - (pm[1] - p0[1]) * (pe[0] - p0[0])
+        assert abs(cross) > 1.0
+
+    def test_crosshair_subdivides(self) -> None:
+        marker = MarkerOverlayData(marker_id=1, x=2.0, y=1.0, z=1.0, color="#33ff99")
+        # Isolate the straight lines (crosshair + drop line) from the
+        # already-segmented ground ring, which is not further subdivided.
+        off_state = _marker_state()
+        off_state.show_ground_circle = False
+        off = FakeCairo()
+        draw_marker(off, off_state, marker, 1920, 1080)
+        on_state = _marker_state(k1=-0.15, k2=0.04)
+        on_state.show_ground_circle = False
+        on = FakeCairo()
+        draw_marker(on, on_state, marker, 1920, 1080)
+        # 3 crosshair axes + 1 drop line each subdivide 12x when distortion is on;
+        # the ball arc count is unchanged.
+        assert len(on.line_tos) > len(off.line_tos) * 5
+        assert len(on.arcs) == len(off.arcs)
+
+    def test_ball_center_uses_warped_projection(self) -> None:
+        state = _marker_state(k1=-0.2, k2=0.0)
+        marker = MarkerOverlayData(marker_id=1, x=4.0, y=2.0, z=1.0, color="#ff3333")
+        cr = FakeCairo()
+        draw_marker(cr, state, marker, 1920, 1080)
+        warped = project(state.camera_params, [(4.0, 2.0, 1.0)], 1920, 1080, -0.2, 0.0)[0]
+        assert math.isclose(cr.arcs[0][0], float(warped[0]), abs_tol=1e-6)
+        assert math.isclose(cr.arcs[0][1], float(warped[1]), abs_tol=1e-6)
+        # ...and the warp actually moved it off the pinhole position.
+        pinhole = project(state.camera_params, [(4.0, 2.0, 1.0)], 1920, 1080)[0]
+        assert abs(cr.arcs[0][0] - float(pinhole[0])) > 1.0
+
+    def test_ground_circle_keeps_vertex_count_but_warps(self) -> None:
+        marker = MarkerOverlayData(marker_id=1, x=2.0, y=1.0, z=1.0, color="#33ff99")
+        state_off = _marker_state()
+        state_off.show_crosshair = False
+        state_off.show_drop_line = False
+        off = FakeCairo()
+        draw_marker(off, state_off, marker, 1920, 1080)
+        state_on = _marker_state(k1=-0.2, k2=0.0)
+        state_on.show_crosshair = False
+        state_on.show_drop_line = False
+        on = FakeCairo()
+        draw_marker(on, state_on, marker, 1920, 1080)
+        # 24-segment ring: vertex count is unchanged (no extra subdivision)...
+        assert len(on.line_tos) == len(off.line_tos)
+        assert on.closes == off.closes
+        # ...but each vertex is warped, so positions differ.
+        assert off.line_tos[0] != on.line_tos[0]
+
+    def test_origin_subdivides(self) -> None:
+        state = _grid_state(k1=-0.15, k2=0.04)
+        state.show_origin = True
+        state.origin_length = 3.0
+        cr = FakeCairo()
+        draw_origin(cr, state, 1920, 1080)
+        # 3 axes, each subdivided into 12 chords.
+        assert len(cr.line_tos) == 3 * 12
+
+    def test_assist_ghost_subdivides(self) -> None:
+        ghost = MarkerOverlayData(marker_id=1, x=1.0, y=1.0, z=0.0, color="#33ff99", is_assist_ghost=True)
+        # grid_config=None skips the ghost ground ring, isolating the crosshair.
+        off_state = _grid_state()
+        off_state.grid_config = None
+        off = FakeCairo()
+        draw_marker(off, off_state, ghost, 1920, 1080)
+        on_state = _grid_state(k1=-0.15, k2=0.04)
+        on_state.grid_config = None
+        on = FakeCairo()
+        draw_marker(on, on_state, ghost, 1920, 1080)
+        assert len(on.line_tos) > len(off.line_tos) * 5
+
+    def test_subdivided_line_breaks_across_camera_plane(self, monkeypatch) -> None:
+        # A subdivided line with some sub-points behind the camera must split
+        # into separate runs, not connect across the NaN gap.
+        import openfollow.runtime.overlay_draw_scene as mod
+
+        state = _grid_state(k1=-0.15, k2=0.04)
+        state.show_origin = True
+        state.origin_length = 3.0
+
+        def _fake_project(_cam, pts, _w, _h, _k1=0.0, _k2=0.0):
+            out = np.tile(np.array([[100.0, 100.0]]), (len(pts), 1)).astype(float)
+            out[len(pts) // 2] = np.nan  # one sub-point behind the camera
+            return out
+
+        monkeypatch.setattr(mod, "project", _fake_project)
+        cr = FakeCairo()
+        draw_origin(cr, state, 1920, 1080)
+        # Each axis splits into two finite runs -> two move_tos per axis.
+        assert len(cr.move_tos) == 3 * 2

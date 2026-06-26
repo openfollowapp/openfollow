@@ -67,7 +67,7 @@
                 % end
             </div>
             <div class="field">
-                <label>Transparency (0–1)</label>
+                <label>Opacity (0–1)</label>
                 <input id="marker-transparency" type="number" name="transparency" value="{{config.marker.transparency}}" min="0" max="1" step="any"
                        hx-get="/api/validate/marker/transparency" hx-trigger="blur changed delay:200ms"
                        hx-target="#marker-transparency-error" hx-swap="innerHTML" hx-include="closest form"

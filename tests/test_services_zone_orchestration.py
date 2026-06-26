@@ -147,6 +147,7 @@ class _FakeOscService:
         host: str,
         port: int,
         protocol: str = "udp",
+        framing: str = "slip",
     ) -> None:
         self.calls.append((address, list(args), host, port))
 
@@ -172,8 +173,6 @@ def _make_app(
         trigger_zones=TriggerZonesConfig(
             enabled=zones_enabled,
             eval_fps=eval_fps,
-            default_osc_host="127.0.0.1",
-            default_osc_port=54000,
         ),
     )
     app = SimpleNamespace(
@@ -209,7 +208,7 @@ def services(monkeypatch: pytest.MonkeyPatch) -> AppRuntimeServices:
     # services itself; tests swap it for a fake after construction.
     import openfollow.zones as zones_pkg
 
-    monkeypatch.setattr(zones_pkg, "ZoneEngine", lambda cfg, osc: _FakeZoneEngine())
+    monkeypatch.setattr(zones_pkg, "ZoneEngine", lambda cfg, osc, dests=None: _FakeZoneEngine())
 
     svc = AppRuntimeServices(_make_app())
     svc._osc_service = _FakeOscService()  # type: ignore[assignment]
@@ -411,6 +410,56 @@ class TestCollectDetectionPositions:
         assert all(k == ("detection", -1) for k, _x, _y in out)
 
 
+def _spy_detection_unproject(monkeypatch: pytest.MonkeyPatch) -> dict[str, np.ndarray]:
+    """Patch unproject_to_plane to record the screen point it receives."""
+    from openfollow.scene import solver as solver_mod
+
+    recorded: dict[str, np.ndarray] = {}
+
+    def _spy(_params, screen_pt, _w, _h, _plane_z):  # noqa: ANN001, ANN202
+        recorded["screen"] = np.array(screen_pt, dtype=float).copy()
+        return np.array([[2.0, 3.0]], dtype=np.float64)
+
+    monkeypatch.setattr(solver_mod, "unproject_to_plane", _spy)
+    return recorded
+
+
+class TestCollectDetectionPositionsLensDistortion:
+    """A detection foot point sits on the lens-distorted video, so it is
+    undistorted back to the pinhole frame before unprojection – the same
+    treatment the detection-pin path gets (identity when no lens is set)."""
+
+    def test_passes_raw_foot_point_when_lens_zero(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        services._person_detector = _FakeDetector([_FakeDet(0.6, 0.5, 0.8, 0.7, track_id=3)])
+        services._app._video_receiver = _FakeReceiver()  # lens_k1 == lens_k2 == 0 by default
+        recorded = _spy_detection_unproject(monkeypatch)
+
+        out = services._collect_detection_positions()
+        assert out == [(("detection", 3), 2.0, 3.0)]
+        # No distortion -> the raw foot point reaches unproject unchanged:
+        # centre_x = 0.7*1920, foot_y = 0.7*1080.
+        assert recorded["screen"][0, 0] == pytest.approx(0.7 * 1920)
+        assert recorded["screen"][0, 1] == pytest.approx(0.7 * 1080)
+
+    def test_undistorts_foot_point_when_lens_set(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        services._person_detector = _FakeDetector([_FakeDet(0.6, 0.5, 0.8, 0.7, track_id=3)])
+        services._app._video_receiver = _FakeReceiver()
+        services._app._config.camera.lens_k1 = -0.2  # barrel
+        recorded = _spy_detection_unproject(monkeypatch)
+
+        services._collect_detection_positions()
+        cx, cy = 960.0, 540.0  # 1920x1080 centre
+        raw = np.hypot(0.7 * 1920 - cx, 0.7 * 1080 - cy)
+        undist = np.hypot(recorded["screen"][0, 0] - cx, recorded["screen"][0, 1] - cy)
+        # Undistorting a barrel-distorted foot point pushes it outward, matching
+        # the detection-pin path (and the bowed zone overlay).
+        assert undist > raw
+
+
 # --------------------------------------------------------------------------- #
 # _get_zone_states_snapshot + _get_marker_positions_snapshot
 # --------------------------------------------------------------------------- #
@@ -485,11 +534,15 @@ class TestZoneTestSend:
     def test_test_send_dispatches_through_osc_service(self, services: AppRuntimeServices) -> None:
         """Happy path: an empty zone gets a populated ``first_entry``
         address; ``_zone_test_send`` tokenises + coerces + sends."""
+        from openfollow.configuration import OscDestinationConfig
+
         _seed_zone(services)
+        services._app._config.osc_destinations.destinations.append(
+            OscDestinationConfig(id="d1", host="10.1.2.3", port=9000),
+        )
         zone_cfg = services._app._config.trigger_zones.zones[0]
         zone_cfg.osc_address_first_entry = "/zone/enter 1.5"
-        zone_cfg.osc_host = "10.1.2.3"
-        zone_cfg.osc_port = 9000
+        zone_cfg.destination_id = "d1"
         result = services._zone_test_send(0, "first")
         assert result["success"] is True
         assert result["address"] == "/zone/enter"
@@ -501,17 +554,14 @@ class TestZoneTestSend:
         assert isinstance(fake_osc, _FakeOscService)
         assert fake_osc.calls == [("/zone/enter", [1.5], "10.1.2.3", 9000)]
 
-    def test_test_send_falls_back_to_section_default_host_port(self, services: AppRuntimeServices) -> None:
+    def test_test_send_skipped_when_no_destination_selected(self, services: AppRuntimeServices) -> None:
         _seed_zone(services)
         zone_cfg = services._app._config.trigger_zones.zones[0]
         zone_cfg.osc_address_additional_entry = "/zone/extra"
-        zone_cfg.osc_host = ""
-        zone_cfg.osc_port = 0
-        services._app._config.trigger_zones.default_osc_host = "192.0.2.1"
-        services._app._config.trigger_zones.default_osc_port = 8000
+        zone_cfg.destination_id = ""
         result = services._zone_test_send(0, "additional")
-        assert result["host"] == "192.0.2.1"
-        assert result["port"] == 8000
+        assert result.get("skipped") is True
+        assert result["reason"] == "no destination selected"
 
     def test_test_send_unknown_which_returns_error(self, services: AppRuntimeServices) -> None:
         _seed_zone(services)

@@ -175,9 +175,7 @@ class TestOscOutputPayload:
             "osc_output",
             {
                 "name": "ETC stage",
-                "host": "10.0.0.5",
-                "port": 8000,
-                "protocol": "tcp",
+                "destination_id": "dest-1",
                 "address": "/cue/go",
                 "args": ["[x]"],
                 "rate_hz": 60,
@@ -185,7 +183,7 @@ class TestOscOutputPayload:
             },
         )
 
-    @pytest.mark.parametrize("field_name", ["name", "host", "protocol"])
+    @pytest.mark.parametrize("field_name", ["name", "destination_id"])
     def test_non_str_extended_string_fields_rejected(
         self,
         field_name: str,
@@ -199,30 +197,25 @@ class TestOscOutputPayload:
                 },
             )
 
-    @pytest.mark.parametrize("field_name", ["port", "rate_hz"])
-    def test_non_int_extended_int_fields_rejected(
-        self,
-        field_name: str,
-    ) -> None:
-        with pytest.raises(TemplateValidationError, match=field_name):
+    def test_non_int_rate_hz_rejected(self) -> None:
+        with pytest.raises(TemplateValidationError, match="rate_hz"):
             validate_payload(
                 "osc_output",
                 {
                     "address": "/x",
-                    field_name: "8000",
+                    "rate_hz": "8000",
                 },
             )
 
-    @pytest.mark.parametrize("field_name", ["port", "rate_hz"])
-    def test_bool_for_int_fields_rejected(self, field_name: str) -> None:
-        # ``True`` is an ``int`` subclass; rejected so ``port = true``
-        # doesn't become port 1 on apply.
-        with pytest.raises(TemplateValidationError, match=field_name):
+    def test_bool_for_rate_hz_rejected(self) -> None:
+        # ``True`` is an ``int`` subclass; rejected so ``rate_hz = true``
+        # doesn't become rate 1 on apply.
+        with pytest.raises(TemplateValidationError, match="rate_hz"):
             validate_payload(
                 "osc_output",
                 {
                     "address": "/x",
-                    field_name: True,
+                    "rate_hz": True,
                 },
             )
 
@@ -463,43 +456,18 @@ class TestOscOutputPayload:
                 },
             )
 
-    # Without range/enum checks, ``OscTransmitterConfig.__post_init__``
-    # silently coerces bad values on apply (port → default, rate
-    # snapped to nearest, protocol → ``"udp"``, ``min_change_m`` →
-    # 0.05). Reject up front instead of auto-mutating the template.
-    def test_port_out_of_range_rejected(self) -> None:
-        with pytest.raises(TemplateValidationError, match="'port' must be in 1..65535"):
-            validate_payload(
-                "osc_output",
-                {
-                    "address": "/x",
-                    "port": 70000,
-                },
-            )
+    # Connection is no longer part of the template (it lives on a shared
+    # OSC destination); a template only carries a ``destination_id`` string.
+    def test_legacy_connection_keys_rejected_as_unknown(self) -> None:
+        for bad_key in ("host", "port", "protocol", "framing"):
+            with pytest.raises(TemplateValidationError, match="unknown key"):
+                validate_payload(
+                    "osc_output",
+                    {"address": "/x", bad_key: "whatever"},
+                )
 
-    def test_port_zero_rejected(self) -> None:
-        with pytest.raises(TemplateValidationError, match="'port' must be in 1..65535"):
-            validate_payload("osc_output", {"address": "/x", "port": 0})
-
-    def test_port_negative_rejected(self) -> None:
-        with pytest.raises(TemplateValidationError, match="'port' must be in 1..65535"):
-            validate_payload("osc_output", {"address": "/x", "port": -1})
-
-    def test_port_in_range_passes(self) -> None:
-        validate_payload("osc_output", {"address": "/x", "port": 8000})
-
-    def test_protocol_unknown_rejected(self) -> None:
-        with pytest.raises(TemplateValidationError, match="'protocol' must be one of"):
-            validate_payload(
-                "osc_output",
-                {
-                    "address": "/x",
-                    "protocol": "smtp",
-                },
-            )
-
-    def test_protocol_known_passes(self) -> None:
-        validate_payload("osc_output", {"address": "/x", "protocol": "tcp"})
+    def test_destination_id_passes(self) -> None:
+        validate_payload("osc_output", {"address": "/x", "destination_id": "dest-1"})
 
     def test_top_level_rate_hz_out_of_set_rejected(self) -> None:
         # 59 isn't in (1, 5, 10, 20, 30, 60); row config silently snaps
@@ -565,9 +533,7 @@ class TestOscOutputPayload:
                 "address": "/x",
                 "args": ["[x]"],
                 "name": "Eos",
-                "host": "10.0.0.1",
-                "port": 8000,
-                "protocol": "udp",
+                "destination_id": "dest-1",
                 "rate_hz": 30,
                 "trigger": {"kind": "stream", "rate_hz": 30, "mode": "always"},
             },
@@ -687,8 +653,6 @@ class TestZonesPayload:
                 "enabled": True,
                 "show_overlay": True,
                 "eval_fps": 10,
-                "default_osc_host": "10.0.0.1",
-                "default_osc_port": 53000,
                 "debounce_ms": 200,
                 "hysteresis": 0.05,
                 "zones": [],

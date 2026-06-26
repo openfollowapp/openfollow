@@ -203,6 +203,23 @@ Write `openfollow-pi5_<version>.img.xz` to a microSD card with **Raspberry Pi
 Imager** (**Choose OS → Use custom**) or `dd`, then boot the Pi 5 from it. The
 rootfs auto-expands to fill the card on first boot.
 
+### Root reference (boots by filesystem UUID)
+
+`cmdline.txt` references the root filesystem as `root=UUID=<root-fs-uuid>` and
+`/etc/fstab` mounts root and `/boot/firmware` by `UUID=` as well. UUID references
+ride the stock `/dev/disk/by-uuid/*` udev links, which are created unconditionally
+and resolved by `initramfs-tools` before the root mounts, and a UUID is identical
+across boot media (SD / eMMC / NVMe). The `rpi-image-gen` image layout defaults to
+`/dev/disk/by-slot/*` symlinks, which depend on a boot-device-gated udev rule
+running early in the initramfs; when that rule does not resolve (Pi 5), the kernel
+never finds root and boot drops to the initramfs rescue shell. Two SRCROOT hooks
+override it: `packaging/image/pre-image.sh` chains
+`packaging/image/openfollow-root-ref.sh` onto each `genimage` `exec-pre`, and that
+script rewrites the by-slot references to the build's own `ROOT_UUID` / `BOOT_UUID`
+(from `img_uuids`). The rewrite fails the build loudly if a by-slot reference ever
+survives, so a changed upstream layout can't silently ship an image that boots to a
+shell. Guarded by `tests/test_image_root_ref.py`.
+
 ### NVMe storage (auto-mount, presence-gated)
 
 The CM5 ships an NVMe **slot**, not a guaranteed drive. A first-boot oneshot

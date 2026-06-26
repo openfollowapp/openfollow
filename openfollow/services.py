@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from openfollow.configuration import (
         AppConfig,
         DetectionConfig,
+        OscDestinationsConfig,
         OscTransmittersConfig,
         OtpOutputConfig,
         RttrpmOutputConfig,
@@ -1061,8 +1062,16 @@ class AppRuntimeServices:
             # :meth:`init_input_manager`), so the closure tolerates ``None``
             # until it's populated, long before any 60 Hz render.
             controller_marker_provider=self._controller_marker_provider,
+            # ``markers`` field's ``all`` token + controlled-only validity
+            # filter. Reads the live controlled-id list each tick so a
+            # hot-reload of ``controlled_marker_ids`` re-expands ``all``
+            # without a manager restart.
+            controlled_markers_provider=self._controlled_markers_provider,
         )
-        manager.restart(self._app._config.osc_transmitters)
+        manager.restart(
+            self._app._config.osc_transmitters,
+            self._app._config.osc_destinations,
+        )
         manager.start()
         self._osc_transmitter_manager = manager
         self._sync_osc_binding_conflicts()
@@ -1161,6 +1170,15 @@ class AppRuntimeServices:
         if im is None:
             return None
         return im.controller_marker_id(controller_idx)
+
+    def _controlled_markers_provider(self) -> list[int]:
+        """Snapshot of ``controlled_marker_ids`` for the OSC transmitter
+        ``markers`` field's ``all`` token + controlled-only validity filter.
+
+        Reads ``app._controlled_ids`` (the same list the gamepad routing and
+        marker-fader provisioning use), copied so a concurrent hot-reload
+        swapping the list can't tear a mid-tick read."""
+        return list(self._app._controlled_ids)
 
     def _marker_fader_values_provider(self) -> list[dict[str, Any]]:
         """Snapshot of the per-controlled-marker faders for the MIDI
@@ -1378,8 +1396,9 @@ class AppRuntimeServices:
     def apply_osc_transmitters_change(
         self,
         new_cfg: OscTransmittersConfig,
+        destinations: OscDestinationsConfig | None = None,
     ) -> None:
-        """Apply an ``osc_transmitters`` config change live.
+        """Apply an ``osc_transmitters`` (or destinations) change live.
 
         Two-state matrix instead of OTP/RTTrPM's four-state because the
         manager always exists once :meth:`init_osc_transmitters` has run:
@@ -1391,12 +1410,18 @@ class AppRuntimeServices:
           Rows are diffed by id; the scheduler thread keeps running
           throughout. An all-rows-deleted config leaves an idle manager
           that wakes up cheaply if rows return on the next reload.
+
+        ``destinations`` stages the current OSC destination profiles so a
+        destination-only edit (e.g. an IP change) re-resolves every row;
+        ``None`` falls back to the app's current set.
         """
+        if destinations is None:
+            destinations = self._app._config.osc_destinations
         manager = self._osc_transmitter_manager
         if manager is None:
             self.init_osc_transmitters()
             return
-        manager.restart(new_cfg)
+        manager.restart(new_cfg, destinations)
         # ``init_osc_transmitters`` syncs conflicts in its own body; this
         # hot-reload branch needs a parallel sync. Keeping it outside
         # ``manager.restart`` keeps the manager registry-agnostic.
@@ -2255,7 +2280,11 @@ class AppRuntimeServices:
         from openfollow.zones import ZoneEngine
 
         cfg = self._app._config.trigger_zones
-        self._zone_engine = ZoneEngine(cfg, self._osc_service)
+        self._zone_engine = ZoneEngine(
+            cfg,
+            self._osc_service,
+            self._app._config.osc_destinations,
+        )
 
     def update_zone_triggers(self) -> None:
         """Evaluate zone membership and emit OSC, throttled by ``eval_fps``."""
@@ -2325,9 +2354,12 @@ class AppRuntimeServices:
         if app._camera is None:
             return []
 
-        from openfollow.scene.solver import unproject_to_plane
+        from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
         cam_cfg = app._camera.to_config()
+        # Lens-distortion coefficients live on the config (the pinhole Camera
+        # doesn't carry them), so read them straight from there.
+        lens = app._config.camera
         params = self._zone_cam_buffer
         params[0] = cam_cfg.pos_x
         params[1] = cam_cfg.pos_y
@@ -2343,7 +2375,11 @@ class AppRuntimeServices:
         for det in detections:
             screen_pt[0, 0] = (det.x1 + det.x2) / 2.0 * w
             screen_pt[0, 1] = det.y2 * h  # foot position
-            world = unproject_to_plane(params, screen_pt, float(w), float(h), plane_z)
+            # The detection sits on the (lens-distorted) video, so undistort the
+            # foot point back to the pinhole frame before unprojecting. Identity
+            # when no lens distortion is configured.
+            undistorted = invert_overlay_distortion(screen_pt, float(w), float(h), lens.lens_k1, lens.lens_k2)
+            world = unproject_to_plane(params, undistorted, float(w), float(h), plane_z)
             if not np.all(np.isfinite(world[0])):
                 continue
             # unproject_to_plane returns PSN-absolute world coords, matching
@@ -2414,16 +2450,24 @@ class AppRuntimeServices:
             return {"error": f"unclosed quote in field: {exc}"}
         if not address:
             return {"skipped": True, "reason": "field has no address"}
-        host = zone.osc_host or cfg.default_osc_host
-        port = zone.osc_port or cfg.default_osc_port
+        dest = self._app._config.osc_destinations.get(zone.destination_id)
+        if dest is None:
+            return {"skipped": True, "reason": "no destination selected"}
         typed_args = coerce_osc_args(str_args)
-        self._osc_service.send(address, args=typed_args, host=host, port=port)
+        self._osc_service.send(
+            address,
+            args=typed_args,
+            host=dest.host,
+            port=dest.port,
+            protocol=dest.protocol,
+            framing=dest.framing,
+        )
         return {
             "success": True,
             "address": address,
             "args": list(typed_args),
-            "host": host,
-            "port": port,
+            "host": dest.host,
+            "port": dest.port,
         }
 
     def _get_marker_positions_snapshot(self) -> list[tuple[int, float, float]]:

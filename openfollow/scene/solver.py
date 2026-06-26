@@ -149,6 +149,115 @@ def project_points(
     return np.column_stack([sx, sy])
 
 
+def ground_circle_world_ring(
+    cx: float,
+    cy: float,
+    z: float,
+    radius: float,
+    segments: int = 24,
+) -> list[tuple[float, float, float]]:
+    """Build a horizontal ring of world points around ``(cx, cy)`` at height ``z``.
+
+    Single source of truth for the marker ground-circle geometry: the overlay
+    draws this ring and the mouse hit-test projects the same points, so the
+    clickable region can't drift from the rendered circle.
+    """
+    return [
+        (
+            cx + radius * math.cos(2 * math.pi * i / segments),
+            cy + radius * math.sin(2 * math.pi * i / segments),
+            z,
+        )
+        for i in range(segments)
+    ]
+
+
+# Fixed-point iterations to invert the radial warp. The forward map is gentle
+# across the clamped coefficient range, so the fixed point converges to well
+# under a pixel within a handful of steps.
+_DISTORTION_INVERT_ITERS = 10
+# Floor on the radial factor during inversion. Barrel distortion shrinks radius,
+# so the forward map can't reach the frame corner; a click out there has no
+# preimage and the unfloored iteration would diverge. The floor keeps the result
+# bounded (a sensible clamped point) while sitting well below any in-domain
+# solution's factor, so valid points still invert exactly.
+_DISTORTION_INVERT_F_FLOOR = 0.2
+
+
+def apply_overlay_distortion(
+    screen_pts: npt.NDArray[Any],
+    canvas_w: float,
+    canvas_h: float,
+    k1: float,
+    k2: float,
+) -> npt.NDArray[np.float64]:
+    """Bow projected overlay points to match a radially distorted lens.
+
+    Applies even-order radial distortion ``f = 1 + k1*r^2 + k2*r^4`` about the
+    image centre, with ``r`` normalised to the image half-diagonal (``r == 1``
+    at a corner). ``k < 0`` pulls the edges inward (barrel / fisheye), ``k > 0``
+    pushes them outward (pincushion). Only the rendered HUD is warped; the video
+    frame is never touched.
+
+    Returns the input unchanged when ``k1 == 0.0 and k2 == 0.0`` so the pinhole
+    overlay path costs nothing. Non-finite rows (points behind the camera) pass
+    straight through as NaN for the downstream ``isfinite`` filters.
+    """
+    pts = np.asarray(screen_pts, dtype=np.float64).reshape(-1, 2)
+    if k1 == 0.0 and k2 == 0.0:
+        return pts
+    cx = canvas_w / 2.0
+    cy = canvas_h / 2.0
+    half_diag = 0.5 * math.hypot(canvas_w, canvas_h)
+    dx = (pts[:, 0] - cx) / half_diag
+    dy = (pts[:, 1] - cy) / half_diag
+    r2 = dx * dx + dy * dy
+    f = 1.0 + k1 * r2 + k2 * r2 * r2
+    out_x = cx + dx * f * half_diag
+    out_y = cy + dy * f * half_diag
+    return np.column_stack([out_x, out_y])
+
+
+def invert_overlay_distortion(
+    screen_pts: npt.NDArray[Any],
+    canvas_w: float,
+    canvas_h: float,
+    k1: float,
+    k2: float,
+) -> npt.NDArray[np.float64]:
+    """Map distorted screen points back to the pinhole frame.
+
+    Inverse of :func:`apply_overlay_distortion`. Used on the input path: a mouse
+    click / detection point lands on the distorted video, so it is undistorted
+    here before :func:`unproject_to_plane` (which stays pinhole). Solves
+    ``r_d = r_u * f(r_u)`` by fixed-point iteration on ``r_u`` (the radial vector
+    keeps its direction, so only its length changes).
+
+    Returns the input unchanged when ``k1 == 0.0 and k2 == 0.0``. NaN rows pass
+    through.
+    """
+    pts = np.asarray(screen_pts, dtype=np.float64).reshape(-1, 2)
+    if k1 == 0.0 and k2 == 0.0:
+        return pts
+    cx = canvas_w / 2.0
+    cy = canvas_h / 2.0
+    half_diag = 0.5 * math.hypot(canvas_w, canvas_h)
+    dx = (pts[:, 0] - cx) / half_diag
+    dy = (pts[:, 1] - cy) / half_diag
+    r2_d = dx * dx + dy * dy
+    # r_u = r_d / f(r_u)  =>  r2_u = r2_d / f(r_u)^2. Iterate to the fixed point,
+    # flooring f so an out-of-domain (corner) point stays bounded instead of
+    # diverging.
+    r2_u = r2_d.copy()
+    for _ in range(_DISTORTION_INVERT_ITERS):
+        f = np.maximum(1.0 + k1 * r2_u + k2 * r2_u * r2_u, _DISTORTION_INVERT_F_FLOOR)
+        r2_u = r2_d / (f * f)
+    f = np.maximum(1.0 + k1 * r2_u + k2 * r2_u * r2_u, _DISTORTION_INVERT_F_FLOOR)
+    out_x = cx + dx / f * half_diag
+    out_y = cy + dy / f * half_diag
+    return np.column_stack([out_x, out_y])
+
+
 def unproject_to_plane(
     params: npt.NDArray[Any],
     screen_pts: npt.NDArray[Any],
@@ -534,12 +643,12 @@ def solve_camera_dlt(
         ]
     )
     reproj = project_points(params, world, canvas_w, canvas_h)
-    # pragma: no cover – the >20 px reprojection-residual safety net
-    # only fires for solver outputs already filtered out by
-    # decompose_homography's invariants; for the four-corner inputs
-    # the calibration overlay produces, reprojection error stays well
-    # under the threshold. Phase 11 numerical-survivor.
-    if np.max(np.abs(reproj - screen)) > 20.0:  # pragma: no cover
+    # Reject the mirror branch of the homography sign ambiguity: it yields a
+    # finite camera that puts the world points behind the lens, so they
+    # reproject to NaN. ``NaN > 20.0`` is False, so the residual must be
+    # tested for finiteness before the magnitude threshold.
+    residual = float(np.max(np.abs(reproj - screen)))
+    if not math.isfinite(residual) or residual > 20.0:
         return None
 
     return result

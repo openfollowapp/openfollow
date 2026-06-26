@@ -80,6 +80,16 @@ z_display_from_stage = true
 enabled = true
 keyboard_enabled = true
 mouse_enabled = false
+# Mouse steering: 0 px hysteresis + 0 smoothing = direct 1:1 control
+# (higher smoothing = smoother/laggier); mouse_max_y caps the upstage (Y+)
+# extent (0 = no limit); wheel adjusts marker height by step (m) per tick.
+mouse_hysteresis_px = 0
+mouse_smoothing = 0.0
+mouse_max_y = 0.0
+mouse_wheel_z_enabled = true
+mouse_wheel_invert = false
+mouse_wheel_z_step = 0.1
+mouse_double_click_reset = true
 deadzone = 0.01
 invert_y = false
 curve = "logarithmic"
@@ -178,12 +188,22 @@ pin_mode = "assist"
 assist_radius_m = 1.0
 assist_strength = 0.5
 
+# Reusable OSC connection profiles. Transmitters and trigger zones reference
+# a destination by `id`; edit one here and every consumer repoints live. The
+# `id` is a stable key (referenced by `destination_id` elsewhere) – keep it
+# fixed once other rows point at it.
+[[osc_destinations.destinations]]
+id = "default"
+name = "Default"
+host = "127.0.0.1"
+port = 8000
+protocol = "udp"   # "udp" | "tcp"
+framing = "slip"   # TCP only: "slip" | "length_prefix"
+
 [trigger_zones]
 enabled = true
 show_overlay = true
 eval_fps = 10
-default_osc_host = "127.0.0.1"
-default_osc_port = 53000
 debounce_ms = 200
 hysteresis = 0.05
 
@@ -194,7 +214,7 @@ hysteresis = 0.05
 # metric – only display formatting and form-input parsing change.
 unit_system = "metric"
 
-# Reveal experimental web-UI sections (Person Detection, Mouse Input,
-# RTTrPM Output, Device Permissions). Toggled from Station Settings.
-# Turning it off also disables mouse input and person detection.
+# Reveal experimental web-UI sections (Person Detection, RTTrPM Output,
+# Device Permissions). Toggled from Station Settings.
+# Turning it off also disables person detection.
 show_experimental_features = false

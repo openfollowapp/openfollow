@@ -24,12 +24,12 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableSequence, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
 from bottle import Bottle, HTTPResponse, abort, redirect, request, response, static_file, template
@@ -49,11 +49,14 @@ if TYPE_CHECKING:
 
 from openfollow.configuration import (
     DEFAULT_UPDATE_SERVICE_NAME,
+    MARKER_TOKEN_ALL,
     VALID_BUTTON_NAMES,
     AppConfig,
     DetectionMaskConfig,
+    OscDestinationConfig,
     OscTransmitterConfig,
     TriggerZoneConfig,
+    _coerce_marker_tokens,
     config_write_lock,
     load_config,
     save_config,
@@ -171,6 +174,7 @@ VALID_SECTIONS = {
     "rttrpm_output",
     "trigger_zones",
     "osc_bindings",
+    "osc_destinations",
 }
 _WEB_STATIC_DIR = Path(__file__).with_name("static")
 
@@ -203,6 +207,52 @@ def asset_version() -> str:
     build always refetches while an unchanged one stays cached.
     """
     return _compute_asset_version()
+
+
+def _script_safe_json(obj: Any) -> str:
+    """``json.dumps`` escaped for embedding as raw JS inside a ``<script>``.
+
+    ``json.dumps`` does not escape ``<``, ``>`` or ``&``, so a user-controlled
+    string (e.g. an OSC destination name containing ``</script>``) embedded via
+    ``{{!...}}`` could close the script element and inject markup. Escaping
+    those to ``\\uXXXX`` keeps the value a valid JS string while making the
+    breakout impossible; the U+2028/U+2029 line separators are escaped too
+    since they terminate JS string literals on older engines.
+    """
+    return (
+        json.dumps(obj, separators=(",", ":"))
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
+def osc_destinations_client_list(config: AppConfig) -> list[dict[str, Any]]:
+    """Client-facing OSC destination list (id + label + endpoint).
+
+    The single source of truth for the zone editor's destination dropdown,
+    served both at initial render (``osc_destinations_script_json``) and on the
+    ``/api/zones`` poll so the dropdown follows add/rename/delete without a full
+    page reload.
+    """
+    return [
+        {
+            "id": d.id,
+            "name": d.name,
+            "host": d.host,
+            "port": d.port,
+            "protocol": d.protocol,
+            "framing": d.framing,
+        }
+        for d in config.osc_destinations.destinations
+    ]
+
+
+def osc_destinations_script_json(config: AppConfig) -> str:
+    """OSC destinations as ``<script>``-safe JSON for the zone editor's initial render."""
+    return _script_safe_json(osc_destinations_client_list(config))
 
 
 # Help docs served as rendered HTML by ``/help/<id>.html``. A help id is a
@@ -1114,6 +1164,21 @@ def _coerce_unit_input(
     return repr(meters), None
 
 
+def _mouse_bool_fields() -> tuple[str, ...]:
+    """Bool checkboxes the mouse form submits.
+
+    The scroll-wheel checkboxes are not rendered on macOS (the wheel can't be
+    polled there), so they must be excluded from the save – ``_save_section_from_form``
+    coerces any ``bool_fields`` entry missing from the POST to ``False``, which
+    would otherwise clobber the stored ``mouse_wheel_*`` values on every macOS save.
+    Mirrors the ``_is_macos`` branch in ``partials/mouse.tpl``.
+    """
+    fields = ["mouse_enabled", "mouse_double_click_reset"]
+    if sys.platform != "darwin":
+        fields += ["mouse_wheel_z_enabled", "mouse_wheel_invert"]
+    return tuple(fields)
+
+
 def _normalize_unit_fields(
     section: str,
     form_data: dict[str, Any],
@@ -1285,8 +1350,11 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "fov": _as_float,
         "sensor_width_mm": _as_optional_float,
         "focal_length_mm": _as_optional_float,
+        "lens_k1": _as_float,
+        "lens_k2": _as_float,
     },
     "grid": {
+        "visible": _as_bool,
         "width": _as_float,
         "depth": _as_float,
         "spacing": _as_float,
@@ -1330,6 +1398,13 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "enabled": _as_bool,
         "keyboard_enabled": _as_bool,
         "mouse_enabled": _as_bool,
+        "mouse_hysteresis_px": _as_int,
+        "mouse_smoothing": _as_float,
+        "mouse_max_y": _as_float,
+        "mouse_wheel_z_enabled": _as_bool,
+        "mouse_wheel_invert": _as_bool,
+        "mouse_wheel_z_step": _as_float,
+        "mouse_double_click_reset": _as_bool,
         "deadzone": _as_float,
         "invert_y": _as_bool,
         "curve": _as_str,
@@ -1416,8 +1491,6 @@ _TRIGGER_ZONES_FIELD_PARSERS: dict[str, _FieldParser] = {
     "enabled": _as_bool,
     "show_overlay": _as_bool,
     "eval_fps": _as_int,
-    "default_osc_host": _as_str,
-    "default_osc_port": _as_int,
     "debounce_ms": _as_int,
     "hysteresis": _as_float,
 }
@@ -1431,8 +1504,7 @@ _ZONE_FIELD_PARSERS: dict[str, _FieldParser] = {
     "osc_address_additional_entry": _as_str,
     "osc_address_partial_exit": _as_str,
     "osc_address_final_exit": _as_str,
-    "osc_host": _as_str,
-    "osc_port": _as_int,
+    "destination_id": _as_str,
     "enabled": _as_bool,
 }
 
@@ -1514,19 +1586,26 @@ def _apply_mask_fields(mask: DetectionMaskConfig, data: Mapping[str, Any]) -> No
 _OSC_BINDING_FIELD_PARSERS: dict[str, _FieldParser] = {
     "enabled": _as_bool,
     "name": _as_str,
+    # Connection is chosen via a shared OSC destination; empty = no
+    # destination selected (the row skips sending).
+    "destination_id": _as_str,
+    # ``markers`` is a comma-separated list of marker ids / ``cN`` aliases /
+    # ``all``; empty means "no default marker". ``_coerce_marker_tokens``
+    # vets + canonicalises (``__post_init__`` re-runs it on save).
+    "markers": lambda value, _default: _coerce_marker_tokens(value),
+    # Default virtual fader: empty → ``None``, 1..8 preserved, junk collapses
+    # to ``None`` in ``__post_init__``.
+    "default_fader": _as_optional_int,
+}
+
+
+# Per-destination form parsers, mirroring the dataclass coercion.
+_OSC_DESTINATION_FIELD_PARSERS: dict[str, _FieldParser] = {
+    "name": _as_str,
     "host": _as_str,
     "port": _as_int,
     "protocol": _as_str,
-    # Per-binding TCP framing selector. Inert for UDP rows but always
-    # parsed so the form preserves the dropdown; ``__post_init__`` snaps
-    # invalid values back to the default.
     "framing": _as_str,
-    # ``marker_id`` is :class:`int | None`; clearing means "no default
-    # marker", not "marker 0".
-    "marker_id": _as_optional_int,
-    # Default virtual fader, same shape as ``marker_id``: empty → ``None``,
-    # 1..8 preserved, junk collapses to ``None`` in ``__post_init__``.
-    "default_fader": _as_optional_int,
 }
 
 
@@ -1661,6 +1740,98 @@ def _parse_trigger_subtable(
     return out
 
 
+def _effective_default_marker_id(
+    markers: list[str],
+    registered: frozenset[int],
+) -> int | None:
+    """Pick a representative default-marker id for the unresolved-pill
+    heuristic from a row's ``markers`` tokens.
+
+    A bare ``[x]`` resolves at runtime when the row names *any* usable
+    default marker. ``all`` / ``cN`` are dynamic – treated as resolvable
+    whenever the station controls at least one marker (the controller
+    drives a controlled marker; ``all`` enumerates them). Numeric tokens
+    count only when controlled. Returns the lowest candidate id, or
+    ``None`` when nothing usable is named (so ``[x]`` shows unresolved)."""
+    candidates: set[int] = set()
+    has_dynamic = False
+    for token in markers:
+        if token == MARKER_TOKEN_ALL or token.startswith("c"):
+            has_dynamic = True
+            continue
+        mid = int(token)
+        if mid in registered:
+            candidates.add(mid)
+    if has_dynamic and registered:
+        candidates.update(registered)
+    return min(candidates) if candidates else None
+
+
+def _osc_binding_marker_label(token: str, catalog: Any) -> str:
+    """Human label for one resolved ``markers`` token, shown in the row
+    summary badge + the nested secondary chips.
+
+    Numeric ids render as ``"<catalog name> (<id>)"`` (falling back to
+    ``"Marker <id>"``); controller aliases render as ``"Controller cN"``."""
+    if token.startswith("c"):
+        return f"Controller {token}"
+    mid = int(token)
+    entry = catalog.get(mid) if catalog is not None else None
+    name = (entry.name.strip() if entry is not None and entry.name else "") or f"Marker {mid}"
+    return f"{name} ({mid})"
+
+
+def _osc_binding_marker_entry(
+    token: str,
+    catalog: Any,
+    controlled_set: set[int],
+) -> dict[str, Any]:
+    """One marker chip: its label plus whether this station controls it.
+
+    Controller aliases (``cN``) resolve to a controlled marker at runtime, so
+    they're always reported controlled; only an explicit numeric id can be
+    uncontrolled (its send is dropped at runtime → the chip is marked)."""
+    controlled = True if token.startswith("c") else int(token) in controlled_set
+    return {"label": _osc_binding_marker_label(token, catalog), "controlled": controlled}
+
+
+def _osc_binding_marker_display(
+    cfg: AppConfig,
+    catalog: Any,
+) -> dict[str, dict[str, Any]]:
+    """Per-row marker display data for the bindings partial.
+
+    Each entry is ``{"header": <str|None>, "nested": [<chip>, …],
+    "markers_unusable": <bool>}`` where a chip is ``{"label",
+    "controlled"}``:
+
+    - **0 markers** → no header, no nested.
+    - **1 marker** → shown inline in the header badge (no nested list);
+      there's no "primary vs secondary" to confuse.
+    - **>1 markers** → *every* marker (primary included) renders as a nested
+      chip so they read uniformly; no header badge.
+
+    ``all`` expands to one chip per controlled marker. ``markers_unusable``
+    is ``True`` when the row names markers but this station controls none of
+    them (it can't send any) – the template reddens the row's status dot
+    from it, and each nested chip carries its own flag."""
+    controlled = sorted(cfg.controlled_marker_ids)
+    controlled_set = set(controlled)
+    out: dict[str, dict[str, Any]] = {}
+    for row in cfg.osc_transmitters.transmitters:
+        markers = row.markers
+        if markers == [MARKER_TOKEN_ALL]:
+            chips = [{"label": _osc_binding_marker_label(str(mid), catalog), "controlled": True} for mid in controlled]
+        else:
+            chips = [_osc_binding_marker_entry(t, catalog, controlled_set) for t in markers]
+        out[row.id] = {
+            "header": chips[0]["label"] if len(chips) == 1 else None,
+            "nested": chips if len(chips) > 1 else [],
+            "markers_unusable": bool(chips) and not any(c["controlled"] for c in chips),
+        }
+    return out
+
+
 def _osc_binding_unresolved_blur_error(
     query: Mapping[str, Any],
     cfg: AppConfig,
@@ -1683,17 +1854,9 @@ def _osc_binding_unresolved_blur_error(
     address, args = parsed
     if not address and not args:
         return None
-    raw_marker_id = query.get("marker_id", "")
-    # An invalid typed value (``"abc"``, ``"-1"``, ``"1.5"``) is already
-    # flagged by the field-level numeric blur; suppress the cross-field
-    # "needs a default marker" warning here so it doesn't read as "empty".
-    # The explicit-marker arm is independent of ``marker_id`` and still
-    # surfaces.
-    raw_marker_id_str = raw_marker_id.strip() if isinstance(raw_marker_id, str) else str(raw_marker_id)
-    parsed_marker_id = _as_optional_int(raw_marker_id, default=None)
-    marker_id_invalid_input = bool(raw_marker_id_str) and (parsed_marker_id is None or parsed_marker_id < 0)
-    marker_id = parsed_marker_id if parsed_marker_id is not None and parsed_marker_id >= 0 else None
     registered = frozenset(cfg.controlled_marker_ids)
+    markers = _coerce_marker_tokens(query.get("markers", ""))
+    marker_id = _effective_default_marker_id(markers, registered)
     from openfollow.osc.template import (
         compile_template,
         token_has_explicit_index,
@@ -1718,15 +1881,20 @@ def _osc_binding_unresolved_blur_error(
     # message names the actionable fix per category. ``unresolved`` is
     # already the operator-facing token form (``"[x]"`` / ``"[x:7]"``).
     # Classify via the grammar, not a ``:`` sniff – a transform can carry
-    # a colon. Suppress the default-marker arm when ``marker_id`` is
-    # invalid input – the field-level validator handles that case.
-    default_tokens = [] if marker_id_invalid_input else [t for t in unresolved if not token_has_explicit_index(t)]
+    # a colon. Per-token validity (malformed / non-controlled entries) is
+    # surfaced by the field-level ``markers`` validator; this arm only flags
+    # the cross-field "you use [x] but name no usable default marker".
+    # Every unresolved token is either explicit-index or not, so the two
+    # lists partition the (non-empty) ``unresolved`` set: at least one is
+    # non-empty here, so ``parts`` below is never empty.
+    default_tokens = [t for t in unresolved if not token_has_explicit_index(t)]
     explicit_tokens = [t for t in unresolved if token_has_explicit_index(t)]
-    if not default_tokens and not explicit_tokens:
-        return None
     parts: list[str] = []
     if default_tokens:
-        parts.append(f"{', '.join(default_tokens)} needs a default marker. Set 'Default marker' to a registered id.")
+        parts.append(
+            f"{', '.join(default_tokens)} needs a default marker. Set 'Default markers' to a controlled id, "
+            "a controller alias (c1, c2, …), or 'all'."
+        )
     if explicit_tokens:
         parts.append(f"{', '.join(explicit_tokens)} references a marker that isn't registered.")
     return " ".join(parts)
@@ -1836,7 +2004,7 @@ def _row_unresolved_placeholders(
     grid_max_height: float = 0.0,
 ) -> tuple[str, ...]:
     """Bracketed placeholder tokens in ``row``'s address + args that can't
-    resolve given the row's ``marker_id`` and the registered-marker registry.
+    resolve given the row's ``markers`` and the registered-marker registry.
 
     The web bindings partial uses this to:
 
@@ -1856,12 +2024,13 @@ def _row_unresolved_placeholders(
         unresolved_placeholders,
     )
 
+    effective_marker_id = _effective_default_marker_id(row.markers, registered_marker_ids)
     out: list[str] = []
     seen: set[str] = set()
     for tpl in (row.address, *row.args):
         for token in unresolved_placeholders(
             compile_template(tpl),
-            default_marker_id=row.marker_id,
+            default_marker_id=effective_marker_id,
             registered_marker_ids=registered_marker_ids,
             grid_max_height=grid_max_height,
         ):
@@ -1906,6 +2075,19 @@ def _apply_osc_binding_fields(
             grid_max_height=grid_max_height,
         ):
             row.enabled = False
+
+
+def _apply_osc_destination_fields(
+    dest: OscDestinationConfig,
+    data: Mapping[str, Any],
+) -> None:
+    """Type-coerce posted fields onto a destination, then re-run
+    ``__post_init__`` so bounds / choices match a TOML load."""
+    for field_name, parser in _OSC_DESTINATION_FIELD_PARSERS.items():
+        if field_name in data:
+            current = getattr(dest, field_name)
+            setattr(dest, field_name, parser(data[field_name], current))
+    dest.__post_init__()
 
 
 _DETECTION_FIELD_PARSERS: dict[str, _FieldParser] = {
@@ -1979,6 +2161,50 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     return d
 
 
+# Sections that travel through the config export/import file (so a
+# ``destination_id`` and its target move together) but are NEVER real-time
+# shared between stations: each station keeps its own OSC routing + zones.
+_BROADCAST_EXCLUDED_SECTIONS = frozenset(
+    {"osc_destinations", "osc_transmitters", "trigger_zones"},
+)
+
+
+def _strip_broadcast_excluded(data: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of a full-config dict without the sections that must
+    not be real-time-shared to peers (they still export/import via file)."""
+    return {k: v for k, v in data.items() if k not in _BROADCAST_EXCLUDED_SECTIONS}
+
+
+_T = TypeVar("_T")
+
+
+def _find_by_id(items: Sequence[_T], item_id: str) -> tuple[int, _T] | None:
+    """Index-and-item lookup by ``.id`` for the id-keyed config lists (OSC
+    transmitters, OSC destinations). ``None`` when nothing matches, so a route
+    can 404 on stale UI state (a row deleted in another tab) without crashing.
+    """
+    for idx, item in enumerate(items):
+        if getattr(item, "id", None) == item_id:
+            return idx, item
+    return None
+
+
+def _swap_for_direction(items: MutableSequence[Any], idx: int, direction: str) -> bool:
+    """Swap ``items[idx]`` one step ``"up"`` / ``"down"`` in place. No-op at
+    the list edge or for an unknown direction. Returns ``True`` only when a
+    swap actually happened, so the caller persists + flags ``saved`` on a real
+    move rather than on a button-mash against the boundary."""
+    target = idx
+    if direction == "up" and idx > 0:
+        target = idx - 1
+    elif direction == "down" and idx < len(items) - 1:
+        target = idx + 1
+    if target == idx:
+        return False
+    items[idx], items[target] = items[target], items[idx]
+    return True
+
+
 def _apply_import_data(
     current_cfg: AppConfig,
     data: dict[str, Any],
@@ -2021,6 +2247,24 @@ def _apply_import_data(
         if section in data and isinstance(data[section], dict):
             apply_section_data(cfg, section, data[section])
     apply_section_data(cfg, "video_source", data)
+
+    # OSC transmitters + destinations: rebuild the lists wholesale so the
+    # references (a transmitter/zone ``destination_id``) and their targets
+    # travel together through the config file. (They are excluded from
+    # real-time peer broadcast – see ``_strip_broadcast_excluded``.)
+    from openfollow.configuration import (
+        OscDestinationsConfig,
+        OscTransmittersConfig,
+    )
+
+    if "osc_transmitters" in data and isinstance(data["osc_transmitters"], dict):
+        rows = data["osc_transmitters"].get("transmitters")
+        if isinstance(rows, list):
+            cfg.osc_transmitters = OscTransmittersConfig(transmitters=rows)
+    if "osc_destinations" in data and isinstance(data["osc_destinations"], dict):
+        dests = data["osc_destinations"].get("destinations")
+        if isinstance(dests, list):
+            cfg.osc_destinations = OscDestinationsConfig(destinations=dests)
 
     # Trigger zones: import global settings + zones list atomically
     if "trigger_zones" in data and isinstance(data["trigger_zones"], dict):
@@ -2108,7 +2352,34 @@ def _load_json_body() -> Any:
     return data
 
 
+# The wizard solves the pinhole pose; lens distortion (lens_k1/lens_k2) is kept
+# separate from this vector because the DLT solve is pinhole. The wizard applies
+# the distortion warp around the pinhole projection instead (see the project /
+# unproject / solve endpoints), so the corner-pinning overlay bows to match a
+# fisheye snapshot and the solve undistorts the pinned corners first.
 _WIZARD_CAMERA_FIELDS = ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov")
+
+
+def _wizard_lens_coeffs(cam: Any) -> tuple[float, float]:
+    """Extract clamped lens-distortion coefficients from a wizard camera dict.
+
+    Absent or unparseable values fall back to ``0.0`` (pinhole), so an older
+    client that posts no coefficients keeps the previous behaviour. Bounds mirror
+    ``CameraConfig.__post_init__``.
+    """
+
+    def _clamp(value: Any, lo: float, hi: float) -> float:
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(f):
+            return 0.0
+        return max(lo, min(hi, f))
+
+    if not isinstance(cam, dict):
+        return 0.0, 0.0
+    return _clamp(cam.get("lens_k1", 0.0), -0.4, 0.4), _clamp(cam.get("lens_k2", 0.0), -0.2, 0.2)
 
 
 def _wizard_camera_params(cam: Any) -> Any:
@@ -3566,6 +3837,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             detection_storage_info=_detection_storage_info(config.detection.storage_path),
             osc_user_templates=osc_user_templates,
             osc_system_templates=osc_system_templates,
+            # Marker chips / unresolved pills / status dots must render at
+            # first paint, not only after a save – same context the section
+            # render builds.
+            **_osc_bindings_marker_context(config),
             # MIDI Devices table needs the live discovered-devices list so
             # it renders connected ports at first paint, not after the first
             # HTMX refresh.
@@ -4151,15 +4426,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/settings/experimental")
     def update_experimental() -> Any:
         """Persist ``[ui] show_experimental_features``. Turning it off also
-        disables ``controller.mouse_enabled`` and ``detection.enabled``; the
-        config-reload watcher applies those at runtime. The body-class show/
-        hide flip is done client-side. Responds empty (hx-swap="none")."""
+        disables ``detection.enabled`` (still experimental); the config-reload
+        watcher applies that at runtime. The body-class show/hide flip is done
+        client-side. Responds empty (hx-swap="none")."""
         show = _as_bool(request.forms.get("show_experimental_features"), False)
 
         def _mutate(cfg: AppConfig) -> None:
             cfg.ui.show_experimental_features = show
             if not show:
-                cfg.controller.mouse_enabled = False
                 cfg.detection.enabled = False
 
         _persist_ui_change(_mutate)
@@ -4293,7 +4567,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/grid")
     def update_grid() -> Any:
         """Update grid settings."""
-        cfg = _save_section_from_form("grid", bool_fields=("origin_visible",))
+        cfg = _save_section_from_form("grid", bool_fields=("visible", "origin_visible"))
         return template("partials/grid", config=cfg, saved=True)
 
     @app.post("/section/movement")
@@ -4344,10 +4618,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/mouse")
     def update_mouse() -> Any:
         """Update mouse settings."""
-        cfg = _save_section_from_form(
-            "mouse",
-            bool_fields=("mouse_enabled",),
-        )
+        cfg = _save_section_from_form("mouse", bool_fields=_mouse_bool_fields())
         return template("partials/mouse", config=cfg, saved=True)
 
     @app.post("/section/gamepad/detect-buttons")
@@ -4987,6 +5258,24 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     # (the move route depends on it) stays consistent and a stale form on a
     # different row can't ship an out-of-date trigger sub-form.
 
+    def _osc_bindings_marker_context(cfg: AppConfig) -> dict[str, Any]:
+        """Marker-aware template vars for the OSC bindings partial: the
+        registered-id list, each row's unresolved-placeholder tokens, and the
+        per-row marker display (header / nested chips / dot state).
+
+        Shared by the section render and the index render so the nested
+        chips, unresolved pills, and status dots appear at first paint, not
+        only after the operator saves a row."""
+        registered = frozenset(cfg.controlled_marker_ids)
+        return {
+            "registered_marker_ids": sorted(registered),
+            "unresolved_by_row": {
+                row.id: _row_unresolved_placeholders(row, registered, grid_max_height=cfg.grid.max_height)
+                for row in cfg.osc_transmitters.transmitters
+            },
+            "marker_display_by_row": _osc_binding_marker_display(cfg, server.get_marker_catalog()),
+        }
+
     def _render_osc_bindings_section(
         cfg: AppConfig,
         *,
@@ -5011,8 +5300,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         from openfollow.configuration import (
             VALID_KEY_NAMES,
             VALID_MIDI_MESSAGE_TYPES,
-            VALID_OSC_FRAMINGS,
-            VALID_OSC_TRANSMITTER_PROTOCOLS,
             VALID_OSC_TRANSMITTER_RATES,
             VALID_TRIGGER_EDGES,
             VALID_TRIGGER_KINDS,
@@ -5020,15 +5307,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         )
         from openfollow.osc.template import PLACEHOLDERS
 
-        registered = frozenset(cfg.controlled_marker_ids)
-        unresolved_by_row = {
-            row.id: _row_unresolved_placeholders(
-                row,
-                registered,
-                grid_max_height=cfg.grid.max_height,
-            )
-            for row in cfg.osc_transmitters.transmitters
-        }
         # Form-source data for the trigger forms + ``default_fader`` field.
         # Computed here (config already loaded) so the per-row partial
         # render and the trigger-swap render see identical lists.
@@ -5044,8 +5322,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             config=cfg,
             saved=saved,
             focus_id=focus_id,
-            valid_protocols=VALID_OSC_TRANSMITTER_PROTOCOLS,
-            valid_framings=VALID_OSC_FRAMINGS,
             valid_rates=VALID_OSC_TRANSMITTER_RATES,
             valid_kinds=VALID_TRIGGER_KINDS,
             valid_edges=VALID_TRIGGER_EDGES,
@@ -5055,8 +5331,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             builtin_templates=system_templates,
             user_templates=user_templates,
             placeholders=sorted(PLACEHOLDERS),
-            registered_marker_ids=sorted(registered),
-            unresolved_by_row=unresolved_by_row,
+            **_osc_bindings_marker_context(cfg),
             valid_midi_types=VALID_MIDI_MESSAGE_TYPES,
             virtual_fader_names=virtual_fader_names,
             marker_fader_names=_marker_fader_names_for_form(server),
@@ -5071,10 +5346,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         to short-circuit a 404 on stale UI state (operator deletes a row
         in tab A while tab B still has it open) without crashing the
         request."""
-        for idx, row in enumerate(cfg.osc_transmitters.transmitters):
-            if row.id == row_id:
-                return idx, row
-        return None
+        return _find_by_id(cfg.osc_transmitters.transmitters, row_id)
 
     @app.get("/section/osc_bindings")
     def get_osc_bindings_section() -> Any:
@@ -5102,7 +5374,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         template_id = _as_str(request.forms.get("template_id", ""), "").strip()
         with _config_write_lock:
             cfg = load_config(server.config_path)
-            row = OscTransmitterConfig(name="New OSC output")
+            row = OscTransmitterConfig(name="New transmitter")
             if template_id:
                 # Both system and user templates flow through one
                 # ``file:<filename>`` lookup. Dropdown values for user
@@ -5113,8 +5385,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 # Copy every persistable field the template carries (host /
                 # port / protocol / rate_hz / trigger), not just name /
                 # address / args, so applying restores full row state.
-                # ``enabled`` and ``marker_id`` are NOT copied (apply lands
-                # rows inert; default marker is per-binding).
+                # ``enabled`` and ``markers`` are NOT copied (apply lands
+                # rows inert; default markers are per-binding).
                 entry = None
                 if template_id.startswith("file:"):
                     bare = template_id[len("file:") :]
@@ -5130,7 +5402,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     row.name = payload.get("name", entry.template.name)
                     row.address = payload.get("address", "")
                     row.args = list(payload.get("args", []))
-                    for opt_field in ("host", "port", "protocol", "rate_hz"):
+                    for opt_field in ("destination_id", "rate_hz"):
                         if opt_field in payload:
                             setattr(row, opt_field, payload[opt_field])
                     if "trigger" in payload:
@@ -5249,19 +5521,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 abort(404, "Unknown binding")
                 return ""  # pragma: no cover – abort() raises before we reach here
             idx, _ = found
-            transmitters = cfg.osc_transmitters.transmitters
-            target = idx
-            if direction == "up" and idx > 0:
-                target = idx - 1
-            elif direction == "down" and idx < len(transmitters) - 1:
-                target = idx + 1
-            if target != idx:
-                transmitters[idx], transmitters[target] = (
-                    transmitters[target],
-                    transmitters[idx],
-                )
+            moved = _swap_for_direction(cfg.osc_transmitters.transmitters, idx, direction)
+            if moved:
                 save_config(cfg, server.config_path)
-        return _render_osc_bindings_section(cfg, saved=True, focus_id=row_id)
+        return _render_osc_bindings_section(cfg, saved=moved, focus_id=row_id)
 
     @app.post("/section/osc_bindings/reorder")
     def reorder_osc_bindings() -> Any:
@@ -5313,6 +5576,147 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # would otherwise block any concurrent CRUD writer for the
         # render duration.
         return _render_osc_bindings_section(cfg, saved=saved)
+
+    # -- OSC destinations CRUD -----------------------------------------
+    #
+    # Shared connection profiles in ``cfg.osc_destinations.destinations``,
+    # keyed on a stable ``id``. Transmitters and zones reference a profile
+    # by id; editing one repoints every consumer live. Same load → mutate →
+    # save → full-re-render shape as the bindings CRUD above.
+
+    def _render_osc_destinations_section(
+        cfg: AppConfig,
+        *,
+        saved: bool = False,
+        focus_id: str = "",
+    ) -> Any:
+        from openfollow.configuration import (
+            VALID_OSC_FRAMINGS,
+            VALID_OSC_TRANSMITTER_PROTOCOLS,
+        )
+
+        return template(
+            "partials/osc_destinations",
+            config=cfg,
+            saved=saved,
+            focus_id=focus_id,
+            valid_protocols=VALID_OSC_TRANSMITTER_PROTOCOLS,
+            valid_framings=VALID_OSC_FRAMINGS,
+        )
+
+    def _find_osc_destination(
+        cfg: AppConfig,
+        dest_id: str,
+    ) -> tuple[int, OscDestinationConfig] | None:
+        return _find_by_id(cfg.osc_destinations.destinations, dest_id)
+
+    @app.get("/section/osc_destinations")
+    def get_osc_destinations_section() -> Any:
+        cfg = _request_scoped_config()
+        focus_id = _as_str(request.query.get("focus", ""), "").strip()
+        return _render_osc_destinations_section(cfg, focus_id=focus_id)
+
+    @app.post("/section/osc_destinations/add")
+    def add_osc_destination() -> Any:
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            dest = OscDestinationConfig(name="New destination")
+            cfg.osc_destinations.destinations.append(dest)
+            save_config(cfg, server.config_path)
+        return _render_osc_destinations_section(cfg, saved=True, focus_id=dest.id)
+
+    @app.post("/section/osc_destination/<dest_id>")
+    def save_osc_destination(dest_id: str) -> Any:
+        form_data: dict[str, Any] = dict(request.forms)
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            found = _find_osc_destination(cfg, dest_id)
+            if found is None:
+                abort(404, "Unknown destination")
+                return ""  # pragma: no cover – abort() raises first
+            _, dest = found
+            _apply_osc_destination_fields(dest, form_data)
+            save_config(cfg, server.config_path)
+        return _render_osc_destinations_section(cfg, saved=True, focus_id=dest_id)
+
+    @app.post("/section/osc_destination/<dest_id>/duplicate")
+    def duplicate_osc_destination(dest_id: str) -> Any:
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            found = _find_osc_destination(cfg, dest_id)
+            if found is None:
+                abort(404, "Unknown destination")
+                return ""  # pragma: no cover – abort() raises first
+            idx, dest = found
+            clone = copy.deepcopy(dest)
+            clone.id = ""  # force a fresh uuid in __post_init__
+            clone.name = (dest.name or "Destination") + " (copy)"
+            clone.__post_init__()
+            cfg.osc_destinations.destinations.insert(idx + 1, clone)
+            save_config(cfg, server.config_path)
+        return _render_osc_destinations_section(cfg, saved=True, focus_id=clone.id)
+
+    @app.post("/section/osc_destination/<dest_id>/delete")
+    def delete_osc_destination(dest_id: str) -> Any:
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            found = _find_osc_destination(cfg, dest_id)
+            if found is not None:
+                idx, _ = found
+                del cfg.osc_destinations.destinations[idx]
+                save_config(cfg, server.config_path)
+        return _render_osc_destinations_section(cfg, saved=True)
+
+    @app.post("/section/osc_destination/<dest_id>/move")
+    def move_osc_destination(dest_id: str) -> Any:
+        direction = _as_str(request.forms.get("direction", ""), "")
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            found = _find_osc_destination(cfg, dest_id)
+            if found is None:
+                abort(404, "Unknown destination")
+                return ""  # pragma: no cover – abort() raises first
+            idx, _ = found
+            moved = _swap_for_direction(cfg.osc_destinations.destinations, idx, direction)
+            if moved:
+                save_config(cfg, server.config_path)
+        return _render_osc_destinations_section(cfg, saved=moved, focus_id=dest_id)
+
+    @app.post("/section/osc_destinations/reorder")
+    def reorder_osc_destinations() -> Any:
+        """Apply a complete destination ordering from the drag-handle UI.
+
+        Mirrors :func:`reorder_osc_bindings`: ``order`` is a comma-separated
+        list of destination ids in the new order. Unknown ids are dropped; any
+        current destination missing from ``order`` is appended so a stale client
+        can't delete by omission. Empty / malformed ``order`` is a no-op (no
+        success flash). The per-id ``/move`` route stays as a stable JSON-API
+        surface for single-step swaps.
+        """
+        raw_order = _as_str(request.forms.get("order", ""), "")
+        wanted_ids = [s for s in (s.strip() for s in raw_order.split(",")) if s]
+        saved = bool(wanted_ids)
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            dests = cfg.osc_destinations.destinations
+            current = {d.id: d for d in dests}
+            if wanted_ids:
+                new_order: list[OscDestinationConfig] = []
+                seen: set[str] = set()
+                for did in wanted_ids:
+                    dest = current.get(did)
+                    if dest is not None and did not in seen:
+                        new_order.append(dest)
+                        seen.add(did)
+                # Append any destinations missing from the wanted list so a
+                # stale form post can't silently drop them.
+                for dest in dests:
+                    if dest.id not in seen:
+                        new_order.append(dest)
+                if [d.id for d in new_order] != [d.id for d in dests]:
+                    cfg.osc_destinations.destinations = new_order
+                    save_config(cfg, server.config_path)
+        return _render_osc_destinations_section(cfg, saved=saved)
 
     @app.get("/section/osc_binding/<row_id>/trigger_form")
     def get_osc_binding_trigger_form(row_id: str) -> Any:
@@ -5638,15 +6042,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             )
         # Build the template payload: every persistable field except
         # ``id`` (per-row uuid), ``enabled`` (apply-time False), and
-        # ``marker_id`` (per-binding operator choice). ``template_id``
+        # ``markers`` (per-binding operator choice). ``template_id``
         # is also dropped – it's row metadata pointing at the *source*
         # template, not part of the saved-template content.
         trigger_dict = asdict(transient.trigger) if transient.trigger is not None else {"kind": "stream", "rate_hz": 30}
         payload: dict[str, Any] = {
             "name": transient.name,
-            "host": transient.host,
-            "port": transient.port,
-            "protocol": transient.protocol,
+            "destination_id": transient.destination_id,
             "address": transient.address,
             "args": list(transient.args),
             "rate_hz": transient.rate_hz,
@@ -5896,7 +6298,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             )
         if tpl.type == "osc_output":
             # Restore every persistable row field the template carries.
-            # ``enabled`` and ``marker_id`` are ignored even if a template
+            # ``enabled`` and ``markers`` are ignored even if a template
             # carries them – apply always lands the row inert with no default
             # marker. ``name`` falls back to the envelope name so a minimal
             # ``{address, args}`` template still gets a readable label.
@@ -5907,7 +6309,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "address": tpl.payload.get("address", ""),
                     "args": list(tpl.payload.get("args", [])),
                 }
-                for opt_field in ("host", "port", "protocol", "rate_hz"):
+                for opt_field in ("destination_id", "rate_hz"):
                     if opt_field in tpl.payload:
                         kwargs[opt_field] = tpl.payload[opt_field]
                 if "trigger" in tpl.payload:
@@ -5920,10 +6322,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     kwargs["trigger"] = dict(tpl.payload["trigger"])
                 row = OscTransmitterConfig(**kwargs)
                 # Defence in depth: even if a malformed template
-                # bypassed validation and carries enabled/marker_id
+                # bypassed validation and carries enabled/markers
                 # fields, we still strip them after construction.
                 row.enabled = False
-                row.marker_id = None
+                row.markers = []
                 cfg.osc_transmitters.transmitters.append(row)
                 save_config(cfg, server.config_path)
             return json.dumps({"ok": True, "row_id": row.id})
@@ -6073,9 +6475,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 )
         # Cross-field unresolved-placeholder check for OSC bindings, at blur
         # time on the message field – surfaces the same condition the partial
-        # paints as red pills. Reads sibling ``marker_id`` from the form and
+        # paints as red pills. Reads sibling ``markers`` from the form and
         # the registered-marker registry from the live config.
-        if section == "osc_binding" and field_name in ("osc_message", "marker_id"):
+        if section == "osc_binding" and field_name in ("osc_message", "markers"):
             err_msg = _osc_binding_unresolved_blur_error(
                 request.query,
                 _request_scoped_config(),
@@ -6341,7 +6743,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # web_pin/web_port are device-local and stripped on receive; also drop
         # the PIN here so the credential never travels in the broadcast body
         # (peer auth still carries it in the signed header via ``pin=``).
-        cfg_data = _config_dict_redacted(cfg)
+        # OSC destinations / transmitters / zones export via file but are never
+        # real-time shared – strip them from the broadcast body.
+        cfg_data = _strip_broadcast_excluded(_config_dict_redacted(cfg))
         peers = server.get_peers()
         pin = cfg.web_pin
         results = _broadcast_to_peers(
@@ -6411,6 +6815,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         also filters as defence-in-depth against out-of-date senders.
         """
         response.content_type = "application/json"
+
+        # OSC destinations / transmitters / zones travel via the config file
+        # only – never real-time to peers. Refuse a crafted section-broadcast.
+        if section in _BROADCAST_EXCLUDED_SECTIONS:
+            response.status = 403
+            return json.dumps({"error": "Section is not shareable between stations"})
 
         data = _load_json_body()
         if data is None:
@@ -6490,8 +6900,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "osc_address_additional_entry": z.osc_address_additional_entry,
                     "osc_address_partial_exit": z.osc_address_partial_exit,
                     "osc_address_final_exit": z.osc_address_final_exit,
-                    "osc_host": z.osc_host,
-                    "osc_port": z.osc_port,
+                    "destination_id": z.destination_id,
                     "enabled": z.enabled,
                     "is_occupied": occ,
                     "occupant_count": count,
@@ -6503,8 +6912,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "globals": {
                     "enabled": tz.enabled,
                     "show_overlay": tz.show_overlay,
-                    "default_osc_host": tz.default_osc_host,
-                    "default_osc_port": tz.default_osc_port,
                     "eval_fps": tz.eval_fps,
                     "debounce_ms": tz.debounce_ms,
                     "hysteresis": tz.hysteresis,
@@ -6518,6 +6925,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 },
                 "zones": zones_out,
                 "markers": [{"id": tid, "x": x, "y": y} for tid, x, y in server.get_marker_positions()],
+                # Shared destinations travel with the poll so the editor's
+                # dropdown follows add/rename/delete without a full reload.
+                "destinations": osc_destinations_client_list(cfg),
             }
         )
 
@@ -6581,8 +6991,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 osc_address_additional_entry=src.osc_address_additional_entry,
                 osc_address_partial_exit=src.osc_address_partial_exit,
                 osc_address_final_exit=src.osc_address_final_exit,
-                osc_host=src.osc_host,
-                osc_port=src.osc_port,
+                destination_id=src.destination_id,
                 enabled=src.enabled,
             )
             zones.append(clone)
@@ -6775,8 +7184,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         import numpy as np
 
-        from openfollow.scene.solver import project_points
+        from openfollow.scene.solver import apply_overlay_distortion, project_points
 
+        k1, k2 = _wizard_lens_coeffs(cam)
         hw, hd = w / 2.0, d / 2.0
 
         # PSN +X is stage left, so the stage-left corners (DSL, USL) sit at
@@ -6796,8 +7206,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # Reference point at ground level (where the physical mark is)
         ref_psn = np.array([[0, 0, 0]], dtype=np.float64)
 
-        screen_corners = project_points(params, corners_psn, img_w, img_h)
-        screen_ref = project_points(params, ref_psn, img_w, img_h)
+        # Bow the projected overlay to match a fisheye / wide-angle snapshot so
+        # the corner-pinning preview lines up with the distorted video.
+        screen_corners = apply_overlay_distortion(
+            project_points(params, corners_psn, img_w, img_h), img_w, img_h, k1, k2
+        )
+        screen_ref = apply_overlay_distortion(project_points(params, ref_psn, img_w, img_h), img_w, img_h, k1, k2)
         projected = [screen_corners, screen_ref]
 
         result = {
@@ -6810,10 +7224,32 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "reference": screen_ref[0].tolist(),
         }
 
+        # Bowed boundary outline so the wizard quad curves exactly like the HUD
+        # grid (which subdivides each straight world edge). Same subdivision
+        # count as the renderer keeps the two curves identical. Best-effort: a
+        # behind-camera edge point omits the outline and the client falls back to
+        # the straight corner quad.
+        from openfollow.runtime.overlay_draw_scene import _DISTORTION_SUBDIVISIONS
+
+        n_sub = _DISTORTION_SUBDIVISIONS if (k1 or k2) else 1
+        loop = np.vstack([corners_psn, corners_psn[0:1]])  # close the quad
+        edge_ts = np.linspace(0.0, 1.0, n_sub + 1)[:-1]  # drop shared join vertex
+        outline_world = np.array(
+            [loop[i] + t * (loop[i + 1] - loop[i]) for i in range(4) for t in edge_ts],
+            dtype=np.float64,
+        )
+        outline_screen = apply_overlay_distortion(
+            project_points(params, outline_world, img_w, img_h), img_w, img_h, k1, k2
+        )
+        if np.isfinite(outline_screen).all():
+            result["outline"] = outline_screen.tolist()
+
         if abs(oz) > 1e-6:
             # Elevated point at grid height (top of z-offset line)
             ref_elevated = np.array([[0, 0, oz]], dtype=np.float64)
-            screen_elevated = project_points(params, ref_elevated, img_w, img_h)
+            screen_elevated = apply_overlay_distortion(
+                project_points(params, ref_elevated, img_w, img_h), img_w, img_h, k1, k2
+            )
             projected.append(screen_elevated)
             result["reference_elevated"] = screen_elevated[0].tolist()
             result["z_offset"] = oz
@@ -6845,7 +7281,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         import numpy as np
 
-        from openfollow.scene.solver import unproject_to_plane
+        from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
         try:
             cam = data["camera"]
@@ -6855,6 +7291,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             _require_wizard_canvas(img_w, img_h)
             plane_z = float(data.get("plane_z", 0.0))
             params = _wizard_camera_params(cam)
+            k1, k2 = _wizard_lens_coeffs(cam)
             if not isinstance(screen_points, list) or not screen_points:
                 raise ValueError("screen_points must be a non-empty list")
             for p in screen_points:
@@ -6870,6 +7307,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": str(exc)})
 
+        # The clicked points sit on the distorted snapshot; undistort them to the
+        # pinhole frame before unprojecting (identity when no distortion is set).
+        pts = invert_overlay_distortion(pts, img_w, img_h, k1, k2)
         world = unproject_to_plane(params, pts, img_w, img_h, plane_z)
 
         if len(pts) == 2 and not np.any(np.isnan(world)):
@@ -6918,10 +7358,22 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         import numpy as np
 
-        from openfollow.scene.solver import project_points, solve_camera_dlt
+        from openfollow.scene.solver import (
+            apply_overlay_distortion,
+            invert_overlay_distortion,
+            project_points,
+            solve_camera_dlt,
+        )
+
+        k1, k2 = _wizard_lens_coeffs(data.get("camera"))
+
+        # The corners were pinned on the distorted snapshot. Undistort them to the
+        # pinhole frame so the pinhole DLT solve isn't biased by the lens curve.
+        screen_arr = np.array(screen_corners, dtype=np.float64)
+        screen_undistorted = invert_overlay_distortion(screen_arr, img_w, img_h, k1, k2)
 
         world_tuples = [tuple(p) for p in world_corners]
-        screen_tuples = [tuple(p) for p in screen_corners]
+        screen_tuples = [(float(p[0]), float(p[1])) for p in screen_undistorted]
 
         result = solve_camera_dlt(world_tuples, screen_tuples, img_w, img_h)
         if result is None:
@@ -6942,7 +7394,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             dtype=np.float64,
         )
         world_arr = np.array(world_corners, dtype=np.float64)
-        reprojected = project_points(params, world_arr, img_w, img_h)
+        # Re-distort the reprojected corners back into the snapshot frame so the
+        # snap feedback lands where the operator pinned (on the distorted video).
+        reprojected = apply_overlay_distortion(project_points(params, world_arr, img_w, img_h), img_w, img_h, k1, k2)
 
         return json.dumps(
             {

@@ -28,6 +28,8 @@ import pytest
 from openfollow.configuration import (
     MidiMessageTrigger,
     MidiPatch,
+    OscDestinationConfig,
+    OscDestinationsConfig,
     OscTransmitterConfig,
     OscTransmittersConfig,
 )
@@ -80,7 +82,10 @@ def _build_stack(
         marker_provider=lambda _tid: None,
         grid_provider=lambda: (10.0, 6.0, 0.0, 0.0),
     )
-    manager.restart(OscTransmittersConfig(transmitters=triggers))
+    manager.restart(
+        OscTransmittersConfig(transmitters=triggers),
+        OscDestinationsConfig(destinations=[OscDestinationConfig(id="d1", host="127.0.0.1", port=9000)]),
+    )
     manager.attach_midi_subsystem(midi)
     return midi, manager, service
 
@@ -114,10 +119,8 @@ def test_midi_event_dispatches_through_patch_after_port_rename(
     trigger_row = OscTransmitterConfig(
         id="row-1",
         enabled=True,
-        host="127.0.0.1",
-        port=9000,
-        protocol="udp",
-        marker_id=None,
+        destination_id="d1",
+        markers=[],
         address="/cc/[value]",
         args=[],
         trigger=MidiMessageTrigger(
@@ -219,9 +222,8 @@ def test_late_event_on_closed_port_callback_does_not_double_dispatch(
     trigger_row = OscTransmitterConfig(
         id="row-1",
         enabled=True,
-        host="127.0.0.1",
-        port=9000,
-        marker_id=None,
+        destination_id="d1",
+        markers=[],
         address="/cc/[value]",
         args=[],
         trigger=MidiMessageTrigger(
@@ -310,9 +312,8 @@ def test_midi_patch_reassignment_breaks_old_trigger_row(
     trigger_row = OscTransmitterConfig(
         id="row-1",
         enabled=True,
-        host="127.0.0.1",
-        port=9000,
-        marker_id=None,
+        destination_id="d1",
+        markers=[],
         address="/cc/[value]",
         args=[],
         trigger=MidiMessageTrigger(
@@ -384,9 +385,8 @@ def test_concurrent_event_during_apply_config_does_not_race(
     trigger_row = OscTransmitterConfig(
         id="row-1",
         enabled=True,
-        host="127.0.0.1",
-        port=9000,
-        marker_id=None,
+        destination_id="d1",
+        markers=[],
         address="/cc/[value]",
         args=[],
         trigger=MidiMessageTrigger(

@@ -4,7 +4,7 @@
 
 Experimental YOLO-based person detection that finds people in the camera frame and can automatically steer your markers. It ships ready to run: the quality-tier models are pre-installed and detection starts as soon as you pick a tracking mode.
 
-> **Performance.** Person detection is compute-heavy and does **not** run efficiently on a Raspberry Pi 5 today – a more powerful workstation is recommended for it. It is also not suited to very crowded scenes (many overlapping people). Where it shines is tracking an individual actor: it reacts faster than a human operator and can sharpen the followspot's position once you have parked the assist anchor on the right person.
+> **Performance.** Person detection is compute-heavy and does **not** run efficiently on a Raspberry Pi 5 today – a more powerful workstation is recommended for it. It is also not suited to very crowded scenes (many overlapping people). Where it shines is tracking an individual actor: it reacts faster than a human operator and can sharpen the marker's position once you have parked the assist anchor on the right person.
 
 ## Dependencies
 

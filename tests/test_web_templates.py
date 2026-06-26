@@ -476,7 +476,7 @@ class TestApplyOscOutput:
 
     def test_apply_restores_extended_fields(self, live_server) -> None:
         # Apply restores name / host / port / protocol / address / args /
-        # rate_hz / trigger; ``enabled`` and ``marker_id`` are forced to
+        # rate_hz / trigger; ``enabled`` and ``markers`` are forced to
         # apply-time defaults regardless of payload.
         _, base, cfg_path = live_server
         write_user_template(
@@ -485,9 +485,7 @@ class TestApplyOscOutput:
             "ETC Stage",
             {
                 "name": "ETC Stage Left",
-                "host": "10.0.0.5",
-                "port": 9001,
-                "protocol": "tcp",
+                "destination_id": "dest-5",
                 "address": "/eos/go",
                 "args": ["[x]", "[y]"],
                 "rate_hz": 60,
@@ -504,9 +502,7 @@ class TestApplyOscOutput:
         assert len(rows) == 1
         row = rows[0]
         assert row.name == "ETC Stage Left"
-        assert row.host == "10.0.0.5"
-        assert row.port == 9001
-        assert row.protocol == "tcp"
+        assert row.destination_id == "dest-5"
         assert row.address == "/eos/go"
         assert row.args == ["[x]", "[y]"]
         assert row.rate_hz == 60
@@ -519,10 +515,10 @@ class TestApplyOscOutput:
         self,
         live_server,
     ) -> None:
-        # The strict schema refuses ``enabled`` / ``marker_id`` keys at
+        # The strict schema refuses ``enabled`` / ``markers`` keys at
         # load time, so apply never sees them. This exercises the apply
         # contract for a legitimate template: force ``enabled=False`` and
-        # ``marker_id=None``.
+        # empty ``markers``.
         _, base, cfg_path = live_server
         write_user_template(
             _templates_root(cfg_path),
@@ -538,10 +534,10 @@ class TestApplyOscOutput:
         cfg = load_config(cfg_path)
         row = cfg.osc_transmitters.transmitters[0]
         assert row.enabled is False
-        assert row.marker_id is None
+        assert row.markers == []
 
     def test_strict_schema_refuses_enabled_key(self) -> None:
-        # ``enabled`` / ``marker_id`` are excluded from the schema (apply
+        # ``enabled`` / ``markers`` are excluded from the schema (apply
         # forces both; they belong to the binding, not the template).
         # The writer's strict-schema gate refuses them before any write.
         from openfollow.templates.schema import TemplateValidationError
@@ -552,7 +548,7 @@ class TestApplyOscOutput:
                 Path("/tmp"),  # noqa: S108 – never reached
                 "osc_output",
                 "Hot",
-                {"address": "/x", "enabled": True, "marker_id": 7},
+                {"address": "/x", "enabled": True, "markers": ["7"]},
             )
 
 
@@ -574,17 +570,15 @@ class TestSaveOscBindingAsTemplate:
             {
                 "template_name": "Stage Cue",
                 "name": "Stage Cue (live)",
-                "host": "192.168.10.5",
-                "port": "9001",
-                "protocol": "tcp",
-                "marker_id": "0",
+                "destination_id": "dest-99",
+                "markers": "0",
                 "trigger.type": "stream",
                 "trigger.rate_hz": "60",
                 "osc_message": "/cue/[markerid]/go [x]",
             },
         )
         assert status == 200
-        assert "OSC Output" in body
+        assert "OSC Transmitters" in body
         from openfollow.templates.loader import find_template
 
         entry = find_template(
@@ -594,18 +588,16 @@ class TestSaveOscBindingAsTemplate:
         assert entry is not None and entry.template is not None
         p = entry.template.payload
         assert p["name"] == "Stage Cue (live)"
-        assert p["host"] == "192.168.10.5"
-        assert p["port"] == 9001
-        assert p["protocol"] == "tcp"
+        assert p["destination_id"] == "dest-99"
         assert p["address"] == "/cue/[markerid]/go"
         assert p["args"] == ["[x]"]
         assert p["rate_hz"] == 60
         assert p["trigger"]["kind"] == "stream"
         assert p["trigger"]["rate_hz"] == 60
-        # ``enabled`` / ``marker_id`` are dropped even though the form
-        # supplied a marker_id.
+        # ``enabled`` / ``markers`` are dropped even though the form
+        # supplied markers.
         assert "enabled" not in p
-        assert "marker_id" not in p
+        assert "markers" not in p
 
     def test_rejects_missing_template_name(self, live_server) -> None:
         _, base, cfg_path = live_server
@@ -646,9 +638,7 @@ class TestSaveOscBindingAsTemplate:
             {
                 "template_name": "OnChangeStage",
                 "name": "On-change stage",
-                "host": "10.0.0.1",
-                "port": "9000",
-                "protocol": "udp",
+                "destination_id": "dest-1",
                 "trigger.type": "stream",
                 "trigger.rate_hz": "60",
                 "trigger.mode": "on_change",
@@ -724,9 +714,7 @@ class TestSaveOscBindingAsTemplate:
             {
                 "template_name": "RoundTrip",
                 "name": "Source row",
-                "host": "10.10.10.10",
-                "port": "5005",
-                "protocol": "udp",
+                "destination_id": "dest-7",
                 "trigger.type": "stream",
                 "trigger.rate_hz": "20",
                 "osc_message": "/round/[markerid] [x]",
@@ -740,14 +728,12 @@ class TestSaveOscBindingAsTemplate:
         cfg = load_config(cfg_path)
         applied = cfg.osc_transmitters.transmitters[-1]  # the apply row
         assert applied.name == "Source row"
-        assert applied.host == "10.10.10.10"
-        assert applied.port == 5005
-        assert applied.protocol == "udp"
+        assert applied.destination_id == "dest-7"
         assert applied.address == "/round/[markerid]"
         assert applied.args == ["[x]"]
         assert applied.rate_hz == 20
         assert applied.enabled is False  # forced
-        assert applied.marker_id is None  # forced
+        assert applied.markers == []  # forced
 
 
 class TestApplyCameraGrid:

@@ -12,7 +12,7 @@ from dataclasses import asdict
 import pytest
 
 import openfollow.video.inputs as inputs_module
-from openfollow.configuration import AppConfig
+from openfollow.configuration import AppConfig, OscDestinationConfig, OscDestinationsConfig
 from openfollow.web.routes import (
     _as_int_list,
     _as_ip_list,
@@ -22,6 +22,8 @@ from openfollow.web.routes import (
     _is_valid_web_pin,
     apply_section_data,
     get_section_data,
+    osc_destinations_client_list,
+    osc_destinations_script_json,
     strip_device_local_fields,
 )
 
@@ -97,6 +99,23 @@ def test_as_int_list_parses_csv_and_falls_back() -> None:
 # exercise the public boundary (``apply_section_data``) rather than the
 # private ``_as_float`` / ``_as_int`` helpers, so a refactor of the
 # helpers shouldn't break these.
+
+
+def test_apply_section_data_camera_lens_distortion_roundtrips() -> None:
+    config = AppConfig()
+    ok = apply_section_data(config, "camera", {"lens_k1": "-0.15", "lens_k2": "0.03"})
+    assert ok is True
+    assert config.camera.lens_k1 == pytest.approx(-0.15)
+    assert config.camera.lens_k2 == pytest.approx(0.03)
+
+
+def test_apply_section_data_camera_lens_distortion_clamps_out_of_range() -> None:
+    config = AppConfig()
+    ok = apply_section_data(config, "camera", {"lens_k1": "5", "lens_k2": "-5"})
+    assert ok is True
+    # __post_init__ re-runs after the web save, clamping to the configured band.
+    assert config.camera.lens_k1 == 0.4
+    assert config.camera.lens_k2 == -0.2
 
 
 def test_apply_section_data_grid_tolerates_huge_int_width() -> None:
@@ -312,6 +331,34 @@ def test_apply_section_data_controller_revalidates_deadzone() -> None:
 
     assert ok is True
     assert config.controller.deadzone == 1.0
+
+
+def test_apply_section_data_mouse_clamps_and_applies() -> None:
+    # A crafted POST to the mouse section must round-trip through the
+    # controller parser map + __post_init__ re-run: in-range values apply,
+    # out-of-range values clamp.
+    config = AppConfig()
+
+    ok = apply_section_data(
+        config,
+        "mouse",
+        {
+            "mouse_hysteresis_px": "4",
+            "mouse_smoothing": "0.3",
+            "mouse_max_y": "999999",  # over the 10000 m cap
+            "mouse_wheel_z_step": "0.5",
+            "mouse_wheel_invert": "true",
+            "mouse_double_click_reset": "false",
+        },
+    )
+
+    assert ok is True
+    assert config.controller.mouse_hysteresis_px == 4
+    assert config.controller.mouse_smoothing == 0.3
+    assert config.controller.mouse_max_y == 10000.0
+    assert config.controller.mouse_wheel_z_step == 0.5
+    assert config.controller.mouse_wheel_invert is True
+    assert config.controller.mouse_double_click_reset is False
 
 
 # --- __post_init__ re-run after web-form saves ---------------------------
@@ -596,7 +643,7 @@ def test_apply_zone_fields_parses_types_and_defaults_vertices() -> None:
             "name": "Stage Left",
             "color": "#FF0000",
             "enabled": "true",
-            "osc_port": "9001",
+            "destination_id": "d1",
             "vertices": [[0, 0], [10, 0], [10, 10]],
             "ignored_unknown_field": "dropped-silently",
         },
@@ -605,7 +652,7 @@ def test_apply_zone_fields_parses_types_and_defaults_vertices() -> None:
     assert zone.name == "Stage Left"
     assert zone.color == "#FF0000"
     assert zone.enabled is True
-    assert zone.osc_port == 9001
+    assert zone.destination_id == "d1"
     assert zone.vertices == [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]
     # Unknown keys must not create attributes on the dataclass.
     assert not hasattr(zone, "ignored_unknown_field")
@@ -751,6 +798,81 @@ def test_apply_import_data_replaces_trigger_zones_list() -> None:
     assert new.trigger_zones.enabled is True
     assert [z.name for z in new.trigger_zones.zones] == ["New 1", "New 2"]
     assert new.trigger_zones.zones[0].vertices == [[0.0, 0.0], [1.0, 1.0]]
+
+
+def test_apply_import_data_round_trips_osc_transmitters_and_destinations() -> None:
+    """Destinations + transmitters + zones travel through the config file so a
+    ``destination_id`` and its target arrive together with references intact."""
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    imported = {
+        "osc_destinations": {
+            "destinations": [
+                {"id": "console", "name": "Console", "host": "10.0.0.9", "port": 8000},
+            ],
+        },
+        "osc_transmitters": {
+            "transmitters": [
+                {"id": "row1", "name": "Cue", "destination_id": "console"},
+            ],
+        },
+        "trigger_zones": {
+            "zones": [{"name": "Z", "destination_id": "console"}],
+        },
+    }
+    new = _apply_import_data(current, imported)
+
+    dests = new.osc_destinations.destinations
+    assert any(d.id == "console" and d.host == "10.0.0.9" for d in dests)
+    rows = new.osc_transmitters.transmitters
+    assert rows[0].destination_id == "console"
+    assert new.trigger_zones.zones[0].destination_id == "console"
+    # The reference resolves on the importing device.
+    assert new.osc_destinations.get(rows[0].destination_id) is not None
+
+
+def test_strip_broadcast_excluded_drops_routing_sections() -> None:
+    """OSC destinations / transmitters / zones export via file but are never
+    real-time shared – the broadcast body omits them."""
+    from openfollow.web.routes import _config_dict_redacted, _strip_broadcast_excluded
+
+    full = _config_dict_redacted(AppConfig())
+    # Sanity: the full export dict carries them.
+    assert "osc_destinations" in full
+    assert "osc_transmitters" in full
+    assert "trigger_zones" in full
+
+    broadcast = _strip_broadcast_excluded(full)
+    assert "osc_destinations" not in broadcast
+    assert "osc_transmitters" not in broadcast
+    assert "trigger_zones" not in broadcast
+    # A non-excluded section still travels.
+    assert "camera" in broadcast
+
+
+def test_apply_osc_destination_fields_coerces_and_normalises() -> None:
+    from openfollow.configuration import OscDestinationConfig
+    from openfollow.web.routes import _apply_osc_destination_fields
+
+    dest = OscDestinationConfig(id="d1")
+    _apply_osc_destination_fields(
+        dest,
+        {
+            "name": "  Console  ",
+            "host": "  10.0.0.5  ",
+            "port": "70000",  # clamps to 65535
+            "protocol": "tcp",
+            "framing": "carrier-pigeon",  # snaps back to slip
+        },
+    )
+    assert dest.name == "Console"
+    assert dest.host == "10.0.0.5"
+    assert dest.port == 65535
+    assert dest.protocol == "tcp"
+    assert dest.framing == "slip"
+    # id is preserved (not minted).
+    assert dest.id == "d1"
 
 
 def test_apply_import_data_window_dims_and_pin_pass_through() -> None:
@@ -2447,3 +2569,120 @@ def test_allowed_request_hosts_blank_hostname_falls_back(monkeypatch) -> None:
     assert "127.0.0.1" in hosts and "localhost" in hosts and "::1" in hosts
     assert "" not in hosts
     assert not any(h.endswith(".local") for h in hosts)
+
+
+# ---------------------------------------------------------------------------
+# OSC destinations: client list + <script>-safe JSON embedding
+# ---------------------------------------------------------------------------
+
+
+def test_osc_destinations_client_list_shape() -> None:
+    cfg = AppConfig(
+        osc_destinations=OscDestinationsConfig(
+            destinations=[
+                OscDestinationConfig(
+                    id="d1",
+                    name="A",
+                    host="10.0.0.9",
+                    port=9000,
+                    protocol="tcp",
+                    framing="length_prefix",
+                )
+            ]
+        )
+    )
+    assert osc_destinations_client_list(cfg) == [
+        {
+            "id": "d1",
+            "name": "A",
+            "host": "10.0.0.9",
+            "port": 9000,
+            "protocol": "tcp",
+            "framing": "length_prefix",
+        }
+    ]
+
+
+def test_osc_destinations_script_json_escapes_script_breakout() -> None:
+    """A destination name/host with ``</script>`` or ``&`` must not break out of
+    the ``<script>`` block it is embedded in via ``{{! ... }}``."""
+    import json
+
+    cfg = AppConfig(
+        osc_destinations=OscDestinationsConfig(
+            destinations=[
+                OscDestinationConfig(
+                    id="d1",
+                    name="</script><img src=x onerror=alert(1)>",
+                    host="a&b",
+                )
+            ]
+        )
+    )
+    out = osc_destinations_script_json(cfg)
+    # No raw HTML-significant characters survive: a script element cannot be
+    # closed, no tag can open, no entity is introduced.
+    assert "</script>" not in out
+    assert "<" not in out and ">" not in out and "&" not in out
+    assert "\\u003c/script\\u003e" in out
+    # The payload still round-trips: a JSON/JS parser decodes the escapes back.
+    restored = json.loads(out)
+    assert restored[0]["name"] == "</script><img src=x onerror=alert(1)>"
+    assert restored[0]["host"] == "a&b"
+
+
+# --- mouse partial: macOS hides the scroll-wheel form ----------------------
+
+
+def _render_mouse_partial(platform: str, monkeypatch) -> str:
+    import os.path
+    import sys
+
+    import bottle
+
+    import openfollow.web as web_pkg
+
+    tdir = os.path.join(os.path.dirname(web_pkg.__file__), "templates")
+    if tdir not in bottle.TEMPLATE_PATH:
+        bottle.TEMPLATE_PATH.insert(0, tdir)
+    monkeypatch.setattr(sys, "platform", platform)
+    bottle.TEMPLATES.clear()  # force a fresh render under the patched platform
+    return bottle.template("partials/mouse", config=AppConfig(), saved=False)
+
+
+def test_mouse_partial_replaces_wheel_form_with_message_on_macos(monkeypatch) -> None:
+    out = _render_mouse_partial("darwin", monkeypatch)
+    assert "can not be changed by the Scroll Wheel on macOS" in out
+    assert 'name="mouse_wheel_z_step"' not in out
+    assert 'name="mouse_wheel_z_enabled"' not in out
+    assert 'name="mouse_wheel_invert"' not in out
+
+
+def test_mouse_partial_keeps_wheel_form_off_macos(monkeypatch) -> None:
+    out = _render_mouse_partial("linux", monkeypatch)
+    assert "can not be changed by the Scroll Wheel" not in out
+    assert 'name="mouse_wheel_z_step"' in out
+    assert 'name="mouse_wheel_z_enabled"' in out
+
+
+def test_mouse_bool_fields_excludes_wheel_checkboxes_on_macos(monkeypatch) -> None:
+    # On macOS the scroll-wheel checkboxes aren't rendered, so they're absent
+    # from the POST. They must NOT be in the save's bool_fields, or the missing
+    # values would be coerced to False and clobber the stored config.
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "darwin")
+    fields = routes._mouse_bool_fields()
+    assert "mouse_wheel_z_enabled" not in fields
+    assert "mouse_wheel_invert" not in fields
+    assert "mouse_enabled" in fields
+    assert "mouse_double_click_reset" in fields
+
+
+def test_mouse_bool_fields_includes_wheel_checkboxes_off_macos(monkeypatch) -> None:
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "linux")
+    fields = routes._mouse_bool_fields()
+    assert "mouse_wheel_z_enabled" in fields
+    assert "mouse_wheel_invert" in fields

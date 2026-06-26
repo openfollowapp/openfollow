@@ -153,7 +153,7 @@ class TestDrawOrigin:
 
         calls = [0]
 
-        def _fake_project(cam, pts, w, h):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
             calls[0] += 1
             if calls[0] == 1:
                 # X axis: make the endpoint NaN so the branch body is skipped.
@@ -366,7 +366,7 @@ class TestDrawMarkerBranches:
 
         calls: list[int] = []
 
-        def _fake_project(cam, pts, w, h):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             calls.append(len(arr))
             out = np.zeros((len(arr), 2), dtype=np.float64)
@@ -408,7 +408,7 @@ class TestDrawMarkerBranches:
     def test_crosshair_skips_nonfinite_axis_endpoints(self) -> None:
         from openfollow.runtime import overlay_draw_scene as mod
 
-        def _fake_project(cam, pts, w, h):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             # Only called by the crosshair path for 6 endpoints; make them
             # all NaN.  The center projection (called first) stays finite.
@@ -456,7 +456,7 @@ class TestDrawMarkerBranches:
 
         call = [0]
 
-        def _fake_project(cam, pts, w, h):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             call[0] += 1
             # First call (center radius pair) – return finite.
@@ -514,7 +514,7 @@ class TestDrawMarkerBranches:
 
         calls = [0]
 
-        def _fake_project(cam, pts, w, h):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             calls[0] += 1
             if calls[0] == 1:

@@ -21,22 +21,52 @@
 % # round-trip to the server.
 % _unresolved_by_row = defined('unresolved_by_row') and unresolved_by_row or {}
 % _registered_marker_ids = defined('registered_marker_ids') and registered_marker_ids or []
+% # per-row marker display: {row_id: {"header": <single-marker label|None>,
+% #   "nested": [<chip>...], "markers_unusable": <bool>}}. Built server-side
+% # from each row's resolved ``markers`` tokens (catalog names).
+% _marker_display_by_row = defined('marker_display_by_row') and marker_display_by_row or {}
+% # Shared OSC destinations the rows reference. Build an id→profile map so the
+% # collapsed summary + read-only endpoint display resolve without a per-row scan.
+% _destinations = config.osc_destinations.destinations
+% _dest_by_id = {d.id: d for d in _destinations}
+% def _dest_label(did):
+%     d = _dest_by_id.get(did)
+%     if d is None:
+%         return '(no destination)'
+%     end
+%     return '{}://{}:{} ({})'.format(d.protocol, d.host, d.port, d.framing if d.protocol == 'tcp' else d.protocol)
+% end
 <div id="osc-bindings-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="osc_bindings" data-help="osc_bindings">
  <div class="section-head">
- <h2>OSC Output</h2>
+ <h2>OSC Transmitters</h2>
  <span class="section-note">Outbound OSC messages – Stream / Hotkey / Controller-button triggers</span>
  </div>
 
  <div class="osc-bindings-list">
  % if not transmitters:
- <p class="empty-state">No OSC outputs configured. Use <em>+ New OSC output</em> below to create one.</p>
+ <p class="empty-state">No transmitters configured. Use <em>+ New transmitter</em> below to create one.</p>
  % end
  % for idx, row in enumerate(transmitters):
  % is_focus = (defined('focus_id') and focus_id == row.id)
  % trigger_kind = getattr(row.trigger, 'kind', 'stream')
  % row_unresolved = _unresolved_by_row.get(row.id, ())
  % has_unresolved = bool(row_unresolved)
- <details class="osc-binding-row" data-row-id="{{row.id}}" data-trigger-kind="{{trigger_kind}}" {{'open' if is_focus else ''}}>
+ % _row_marker = _marker_display_by_row.get(row.id, {})
+ % _marker_header = _row_marker.get('header')
+ % _marker_nested = _row_marker.get('nested', [])
+ % _markers_unusable = _row_marker.get('markers_unusable', False)
+ % # The row's status dot is red when this transmitter can never fire: no
+ % # destination (or a dangling one), no controlled marker among those it
+ % # names, or an invalid address/arg (an unresolvable placeholder).
+ % # Otherwise amber when enabled, grey when off. An uncontrolled *secondary*
+ % # marker (with at least one controlled) reddens its own nested chip, not
+ % # this dot.
+ % _dest_missing = (not row.destination_id) or (row.destination_id not in _dest_by_id)
+ % _dot_broken = _dest_missing or _markers_unusable or has_unresolved
+ % _dot_state = 'invalid' if _dot_broken else ('on' if row.enabled else 'off')
+ % _dot_label = 'No destination' if _dest_missing else ('No controlled marker' if _markers_unusable else ('Invalid OSC message' if has_unresolved else ('Enabled' if row.enabled else 'Disabled')))
+ <details class="osc-binding-row" data-row-id="{{row.id}}" data-trigger-kind="{{trigger_kind}}"
+ data-reorder-url="/section/osc_bindings/reorder" data-reorder-target="osc-bindings-section" {{'open' if is_focus else ''}}>
  <summary class="osc-binding-summary">
  % # The drag handle lives inside ``<summary>`` so it
  % # rides the row's collapsed-state header, but pointer
@@ -55,10 +85,13 @@
  title="Drag to reorder"
  onpointerdown="event.stopPropagation()"
  onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
- <span class="osc-binding-enabled-dot {{'on' if row.enabled else 'off'}}" aria-label="{{'Enabled' if row.enabled else 'Disabled'}}"></span>
+ <span class="osc-binding-enabled-dot {{_dot_state}}" aria-label="{{_dot_label}}"></span>
  <span class="osc-binding-title">{{row.name or '(unnamed)'}}</span>
  <span class="osc-binding-kind-badge">{{pretty_label(trigger_kind)}}</span>
- <span class="osc-binding-target">{{row.protocol}}://{{row.host}}:{{row.port}}</span>
+ % if _marker_header:
+ <span class="osc-binding-marker-badge">{{_marker_header}}</span>
+ % end
+ <span class="osc-binding-target">{{_dest_label(row.destination_id)}}</span>
  </summary>
 
  <form class="osc-binding-form"
@@ -106,21 +139,23 @@
  <input type="text" name="name" value="{{row.name}}" maxlength="64">
  </div>
  <div class="field">
- % # Default marker now optional. No min="0" (avoids
- % # stepper vs empty value). Render empty when None.
- % # Wire to validate endpoint; blur surfaces error
- % # if default-marker placeholder has no satisfying
- % # marker. hx-include pulls hidden osc_message for
- % # cross-field check.
- <label for="marker-id-{{row.id}}">Default marker</label>
- <input id="marker-id-{{row.id}}" type="number" name="marker_id" value="{{'' if row.marker_id is None else row.marker_id}}" step="1" placeholder="(none)"
- hx-get="/api/validate/osc_binding/marker_id"
+ % # Default markers: comma-separated ids / controller
+ % # aliases (cN) / ``all``. Multiple markers fan the row
+ % # out into one independent send each. Blur validates
+ % # token syntax + surfaces the cross-field "uses [x] but
+ % # names no usable default marker" warning; hx-include
+ % # pulls the hidden osc_message for that check.
+ <label for="markers-{{row.id}}">Default markers</label>
+ <input id="markers-{{row.id}}" type="text" name="markers" value="{{', '.join(row.markers)}}" placeholder="(none)"
+ maxlength="256"
+ hx-get="/api/validate/osc_binding/markers"
  hx-trigger="blur changed delay:200ms"
- hx-target="#marker-id-{{row.id}}-error"
+ hx-target="#markers-{{row.id}}-error"
  hx-swap="innerHTML"
  hx-include="closest form"
- aria-describedby="marker-id-{{row.id}}-error">
- <span id="marker-id-{{row.id}}-error" class="field-error"></span>
+ aria-describedby="markers-{{row.id}}-error"
+ aria-invalid="false">
+ <span id="markers-{{row.id}}-error" class="field-error"></span>
  </div>
  <div class="field">
  % # default
@@ -148,35 +183,27 @@
  </div>
  <div class="row">
  <div class="field">
- <label>Host</label>
- <input type="text" name="host" value="{{row.host}}" maxlength="255">
- </div>
- <div class="field">
- <label>Port</label>
- <input type="number" name="port" value="{{row.port}}" min="1" max="65535" step="1">
- </div>
- <div class="field">
- <label>Protocol</label>
- % # ``data-osc-protocol-select`` is the JS hook
- % # base.tpl uses to toggle the sibling
- % # ``framing`` field's visibility – TCP shows
- % # it, UDP hides it.
- <select name="protocol" data-osc-protocol-select>
- % for p in valid_protocols:
- <option value="{{p}}" {{'selected' if p == row.protocol else ''}}>{{p.upper()}}</option>
+ <label for="destination-id-{{row.id}}">Destination</label>
+ <select id="destination-id-{{row.id}}" name="destination_id"
+ hx-get="/api/validate/osc_binding/destination_id"
+ hx-trigger="blur changed delay:200ms"
+ hx-target="#destination-id-{{row.id}}-error"
+ hx-swap="innerHTML"
+ hx-include="closest form"
+ aria-describedby="destination-id-{{row.id}}-error"
+ aria-invalid="false">
+ <option value="" {{'selected' if not row.destination_id else ''}}>(none – row will not send)</option>
+ % # A row pointing at a deleted destination keeps its dangling id: show it as
+ % # a selected (disabled) option so the dropdown reflects the stored state
+ % # instead of silently falling back to "(none)".
+ % if row.destination_id and row.destination_id not in _dest_by_id:
+ <option value="{{row.destination_id}}" selected disabled>(missing destination)</option>
+ % end
+ % for d in _destinations:
+ <option value="{{d.id}}" {{'selected' if d.id == row.destination_id else ''}}>{{d.name or '(unnamed)'}} – {{d.protocol}}://{{d.host}}:{{d.port}}</option>
  % end
  </select>
- </div>
- % # TCP framing selector. Wrapper always rendered for
- % # round-trip; hidden by JS in base.tpl for non-TCP.
- % # Initial state inline so field shows on first render.
- <div class="field" data-osc-framing-field {{'style="display:none"' if row.protocol != 'tcp' else ''}}>
- <label>Framing</label>
- <select name="framing">
- % for f in valid_framings:
- <option value="{{f}}" {{'selected' if f == row.framing else ''}}>{{'SLIP (RFC 1055)' if f == 'slip' else 'Length-prefix (OSC 1.0)'}}</option>
- % end
- </select>
+ <span id="destination-id-{{row.id}}-error" class="field-error"></span>
  </div>
  </div>
  </div>
@@ -233,7 +260,7 @@
  % # list of unmet dependencies (server-side).
  % # Pill JS applies data-unresolved="true" for CSS.
  % # data-osc-registered-marker-ids for re-eval as
- % # operator edits marker_id. data-osc-placeholder-names:
+ % # operator edits markers. data-osc-placeholder-names:
  % # full set so client mirror doesn't drift vs server.
  <div id="osc-message-{{row.id}}"
  class="osc-message-editor"
@@ -244,13 +271,13 @@
  data-osc-unresolved-placeholders="{{json.dumps(list(row_unresolved))}}"
  data-osc-placeholder-names="{{json.dumps(list(placeholders))}}"
  data-osc-registered-marker-ids="{{json.dumps(list(_registered_marker_ids))}}"
- data-osc-row-marker-id="{{'' if row.marker_id is None else row.marker_id}}"
+ data-osc-row-markers="{{', '.join(row.markers)}}"
  data-osc-grid-max-height="{{config.grid.max_height}}"
  hx-get="/api/validate/osc_binding/osc_message"
  hx-trigger="osc-validate"
  hx-target="#osc-message-{{row.id}}-error"
  hx-swap="innerHTML"
- hx-vals='js:{"osc_message": (document.getElementById("osc-message-{{row.id}}-hidden") || {}).value, "marker_id": (document.getElementById("marker-id-{{row.id}}") || {}).value}'
+ hx-vals='js:{"osc_message": (document.getElementById("osc-message-{{row.id}}-hidden") || {}).value, "markers": (document.getElementById("markers-{{row.id}}") || {}).value}'
  aria-labelledby="osc-message-{{row.id}}-label"
  aria-describedby="osc-message-{{row.id}}-error"
  aria-multiline="false"
@@ -402,10 +429,25 @@
  hx-post="/section/osc_binding/{{row.id}}/delete"
  hx-target="#osc-bindings-section"
  hx-swap="outerHTML"
- hx-confirm="Delete this OSC output?">Delete</button>
+ hx-confirm="Delete this transmitter?">Delete</button>
  </div>
  </form>
  </details>
+ % # Secondary markers from this row's ``markers`` field, shown as
+ % # read-only chips nested under the primary row. They share the row's
+ % # destination / message / trigger; edit the set via "Default markers".
+ % # Each carries the same status dot as a transmitter row: red when the id
+ % # isn't controlled by this station (its send is dropped at runtime).
+ % if _marker_nested:
+ <div class="osc-binding-nested" aria-label="Additional markers">
+ % for _entry in _marker_nested:
+ <span class="osc-binding-nested-row{{'' if _entry['controlled'] else ' is-invalid'}}"{{!'' if _entry['controlled'] else ' title=\"Not controlled by this station (ignored)\"'}}>
+ <span class="osc-binding-enabled-dot {{'on' if _entry['controlled'] else 'invalid'}}" aria-label="{{'Controlled' if _entry['controlled'] else 'Not controlled'}}"></span>
+ <span>{{_entry['label']}}</span>
+ </span>
+ % end
+ </div>
+ % end
  % end
  </div>
 
@@ -445,6 +487,6 @@
  </optgroup>
  % end
  </select>
- <button type="submit" class="save-btn">+ New OSC output</button>
+ <button type="submit" class="save-btn">+ New transmitter</button>
  </form>
 </div>

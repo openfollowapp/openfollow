@@ -525,6 +525,8 @@
       <!-- Grid quad (isometric) -->
       <polygon id="cp-grid" fill="rgba(255,188,0,0.06)" stroke="rgba(255,188,0,0.5)" stroke-width="1.5"/>
       <g id="cp-grid-lines"></g>
+      <!-- Field-of-view ground footprint on the grid plane -->
+      <polygon id="cp-fov-area" fill="rgba(255,188,0,0.08)" stroke="rgba(255,188,0,0.4)" stroke-width="1" stroke-dasharray="3,3"/>
       <!-- Corner labels -->
       <text id="cp-label-dsl" fill="rgba(247,245,233,0.5)" font-size="9" font-weight="600">DSL</text>
       <text id="cp-label-dsr" fill="rgba(247,245,233,0.5)" font-size="9" font-weight="600">DSR</text>
@@ -558,10 +560,11 @@
       <circle id="cp-floor-dot" r="3" fill="rgba(159,201,255,0.4)"/>
       <!-- Dashed line from camera to ref -->
       <line id="cp-sight-line" stroke="rgba(255,255,255,0.15)" stroke-width="1" stroke-dasharray="4,4"/>
-      <!-- FOV cone lines -->
-      <line id="cp-fov-left" stroke="rgba(255,188,0,0.3)" stroke-width="1" stroke-dasharray="3,3"/>
-      <line id="cp-fov-right" stroke="rgba(255,188,0,0.3)" stroke-width="1" stroke-dasharray="3,3"/>
-      <line id="cp-fov-line" stroke="rgba(255,255,255,0.35)" stroke-width="1"/>
+      <!-- FOV frustum edges (lens to ground footprint corners) -->
+      <line id="cp-fov-bl" stroke="rgba(255,188,0,0.3)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line id="cp-fov-br" stroke="rgba(255,188,0,0.3)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line id="cp-fov-tl" stroke="rgba(255,188,0,0.22)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line id="cp-fov-tr" stroke="rgba(255,188,0,0.22)" stroke-width="1" stroke-dasharray="3,3"/>
       <text id="cp-fov-label" fill="rgba(255,188,0,0.6)" font-size="9" font-weight="600" text-anchor="middle"></text>
       <!-- Axis labels -->
       <text id="cp-ds-label" fill="rgba(247,245,233,0.3)" font-size="9" font-weight="600" text-anchor="middle">DOWNSTAGE</text>
@@ -776,6 +779,30 @@
               title="Load a snapshot first">Fine adjust</button>
     </div>
 
+    <div id="cp-lens-controls" class="experimental-feature" style="margin-top:0.72rem;display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end;">
+      <div class="field" style="flex:1;min-width:200px;">
+        <label for="cp_lens_k1">Lens distortion <span class="badge-experimental">Experimental</span> &ndash; barrel / fisheye (k1)</label>
+        <div style="display:flex;gap:0.5rem;align-items:center;">
+          <input type="range" id="cp_lens_k1_range" min="-0.4" max="0.4" step="0.005"
+                 value="{{config.camera.lens_k1}}" style="flex:1;" oninput="onWizardLensRange('k1')"
+                 aria-label="Lens distortion barrel / fisheye (k1) slider">
+          <input type="number" id="cp_lens_k1" min="-0.4" max="0.4" step="0.005"
+                 value="{{config.camera.lens_k1}}" style="width:6rem;" oninput="onWizardLensNumber('k1')">
+        </div>
+      </div>
+      <div class="field" style="flex:1;min-width:200px;">
+        <label for="cp_lens_k2">Edge fit (k2)</label>
+        <div style="display:flex;gap:0.5rem;align-items:center;">
+          <input type="range" id="cp_lens_k2_range" min="-0.2" max="0.2" step="0.005"
+                 value="{{config.camera.lens_k2}}" style="flex:1;" oninput="onWizardLensRange('k2')"
+                 aria-label="Lens distortion edge fit (k2) slider">
+          <input type="number" id="cp_lens_k2" min="-0.2" max="0.2" step="0.005"
+                 value="{{config.camera.lens_k2}}" style="width:6rem;" oninput="onWizardLensNumber('k2')">
+        </div>
+      </div>
+    </div>
+    <p class="wizard-tip experimental-feature" style="margin-top:0.4rem;">Bow the projected grid to match a fisheye / wide-angle lens before pinning the corners. Only the overlay is bent; the video is unchanged.</p>
+
     <p class="wizard-help" style="margin-top:0.72rem;">
       <strong>Drag each corner marker</strong> to its physical mark on the stage. The labels are stage positions: <strong>DSL</strong>/<strong>USL</strong> are stage left, <strong>DSR</strong>/<strong>USR</strong> are stage right (D = downstage/front, U = upstage/back). With a front-of-house camera you see the audience's view, so stage left is on the right of the image (audience right) and stage right is on the left (audience left).
     </p>
@@ -978,6 +1005,8 @@
         yaw: parseFloat(document.getElementById('cam_yaw').value),
         roll: parseFloat(document.getElementById('cam_roll').value),
         fov: parseFloat(document.getElementById('cam_fov').value),
+        lens_k1: wizReadLensCoeff('cp_lens_k1'),
+        lens_k2: wizReadLensCoeff('cp_lens_k2'),
       },
       lens: {
         sensor_id: (document.getElementById('cam_sensor') || {}).value || '',
@@ -994,6 +1023,43 @@
       }
     };
   }
+
+  // Lens-distortion coefficient bounds (mirror CameraConfig + the server clamp).
+  var LENS_BOUNDS = { cp_lens_k1: [-0.4, 0.4], cp_lens_k2: [-0.2, 0.2] };
+
+  function wizReadLensCoeff(id) {
+    var el = document.getElementById(id);
+    if (!el) return 0;
+    var v = parseFloat(el.value);
+    if (!isFinite(v)) return 0;
+    var b = LENS_BOUNDS[id];
+    return Math.max(b[0], Math.min(b[1], v));
+  }
+
+  function wizWriteLensCoeff(id, value) {
+    var num = document.getElementById(id);
+    var range = document.getElementById(id + '_range');
+    if (num) num.value = value;
+    if (range) range.value = value;
+  }
+
+  // Mirror the slider into the number box, redraw the projected overlay so the
+  // grid bows to match the lens, and persist.
+  window.onWizardLensRange = function(which) {
+    var num = document.getElementById('cp_lens_' + which);
+    var range = document.getElementById('cp_lens_' + which + '_range');
+    if (num && range) num.value = range.value;
+    projectAndOverlay();
+    saveToSession();
+  };
+
+  window.onWizardLensNumber = function(which) {
+    var num = document.getElementById('cp_lens_' + which);
+    var range = document.getElementById('cp_lens_' + which + '_range');
+    if (num && range) range.value = num.value;
+    projectAndOverlay();
+    saveToSession();
+  };
 
   function saveToSession() {
     try {
@@ -1018,6 +1084,8 @@
         document.getElementById('cam_yaw').value = state.camera.yaw;
         document.getElementById('cam_roll').value = state.camera.roll;
         document.getElementById('cam_fov').value = state.camera.fov;
+        if (state.camera.lens_k1 !== undefined) wizWriteLensCoeff('cp_lens_k1', state.camera.lens_k1);
+        if (state.camera.lens_k2 !== undefined) wizWriteLensCoeff('cp_lens_k2', state.camera.lens_k2);
       }
       if (state.grid) {
         wizWriteLen('grid_width', state.grid.width);
@@ -1745,22 +1813,45 @@
     var lookY = Math.cos(pitchR) * Math.cos(yawR);
     var lookZ = Math.sin(pitchR);
 
-    // FOV cone: project a horizontal line at a distance where it intersects grid plane
-    // Distance from camera to grid plane (z=goz) along look direction
+    // Sight line: where the look direction hits the grid plane (z=goz).
     var floorDist = ((cz - goz) > 0 && lookZ < 0) ? -(cz - goz) / lookZ : 10;
-    var fovHalfRad = (fov / 2) * rad;
-    var fovHalfWidth = floorDist * Math.tan(fovHalfRad);
-    // FOV target point on floor
     var fovTargetX = cx + lookX * floorDist;
     var fovTargetY = cy + lookY * floorDist;
-    // Perpendicular direction on floor (for FOV width)
-    var lookFloorLen = Math.sqrt(lookX * lookX + lookY * lookY) || 1;
-    var perpX = -lookY / lookFloorLen;
-    var perpY = lookX / lookFloorLen;
-    var fovLeftX = fovTargetX + perpX * fovHalfWidth;
-    var fovLeftY = fovTargetY + perpY * fovHalfWidth;
-    var fovRightX = fovTargetX - perpX * fovHalfWidth;
-    var fovRightY = fovTargetY - perpY * fovHalfWidth;
+
+    // Field-of-view footprint on the grid plane. Assume a 16:9 frame, so the
+    // vertical FOV follows from the horizontal one. Build a camera frame from
+    // the look direction L, a horizontal right vector R, and an in-image up U,
+    // then intersect the four corner rays with the grid plane.
+    var vfov = (2 * Math.atan(Math.tan((fov / 2) * rad) * 9 / 16)) / rad;
+    var th = Math.tan((fov / 2) * rad);
+    var tv = Math.tan((vfov / 2) * rad);
+    var Rv = [Math.cos(yawR), -Math.sin(yawR), 0];
+    var Uv = [-Math.sin(yawR) * Math.sin(pitchR), -Math.cos(yawR) * Math.sin(pitchR), Math.cos(pitchR)];
+    var capGround = Math.max(gw, gd) * 2 + Math.abs(cx) + Math.abs(cy) + 4;
+    function cornerDir(sx, sy) {
+      var dx = lookX + sx * th * Rv[0] + sy * tv * Uv[0];
+      var dy = lookY + sx * th * Rv[1] + sy * tv * Uv[1];
+      var dz = lookZ + sx * th * Rv[2] + sy * tv * Uv[2];
+      var len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+      return [dx / len, dy / len, dz / len];
+    }
+    function floorHit(D) {
+      if (D[2] < -1e-3) {
+        var t = (goz - cz) / D[2];
+        if (t > 0) {
+          var hx = cx + D[0] * t, hy = cy + D[1] * t;
+          if (Math.sqrt((hx - cx) * (hx - cx) + (hy - cy) * (hy - cy)) <= capGround) return [hx, hy];
+        }
+      }
+      // Ray points at/above the horizon or past the cap: clamp onto the plane
+      // at the max ground reach so the footprint stays bounded.
+      var hlen = Math.sqrt(D[0] * D[0] + D[1] * D[1]) || 1;
+      return [cx + (D[0] / hlen) * capGround, cy + (D[1] / hlen) * capGround];
+    }
+    var fovBL = floorHit(cornerDir(-1, -1));
+    var fovBR = floorHit(cornerDir(1, -1));
+    var fovTR = floorHit(cornerDir(1, 1));
+    var fovTL = floorHit(cornerDir(-1, 1));
 
     // Collect all world points for auto-scale bounding
     var screenPts = [];
@@ -1772,8 +1863,12 @@
     screenPts.push(isoProject(0, 0, goz));
     if (Math.abs(goz) > 0.01) screenPts.push(isoProject(0, 0, 0));
     screenPts.push(isoProject(cx, cy, 0));
-    screenPts.push(isoProject(fovLeftX, fovLeftY, goz));
-    screenPts.push(isoProject(fovRightX, fovRightY, goz));
+    // Anchor the auto-scale to the grid, camera, centre sightline and the near
+    // coverage edge. The far coverage edge can run far upstage at shallow
+    // angles, so leave it out of the bounds and let it clip at the frame.
+    screenPts.push(isoProject(fovTargetX, fovTargetY, goz));
+    screenPts.push(isoProject(fovBL[0], fovBL[1], goz));
+    screenPts.push(isoProject(fovBR[0], fovBR[1], goz));
     screenPts.push(isoProject(cx, cy, cz));
 
     var minSx = Infinity, maxSx = -Infinity, minSy = Infinity, maxSy = -Infinity;
@@ -1975,28 +2070,28 @@
     camLabel.setAttribute('y', camLabelY);
     camLabel.setAttribute('text-anchor', 'middle');
 
-    // FOV cone lines and horizontal width line on grid plane
-    var fovLSvg = toSvg(fovLeftX, fovLeftY, goz);
-    var fovRSvg = toSvg(fovRightX, fovRightY, goz);
-    document.getElementById('cp-fov-left').setAttribute('x1', camTop[0]);
-    document.getElementById('cp-fov-left').setAttribute('y1', camTop[1]);
-    document.getElementById('cp-fov-left').setAttribute('x2', fovLSvg[0]);
-    document.getElementById('cp-fov-left').setAttribute('y2', fovLSvg[1]);
-    document.getElementById('cp-fov-right').setAttribute('x1', camTop[0]);
-    document.getElementById('cp-fov-right').setAttribute('y1', camTop[1]);
-    document.getElementById('cp-fov-right').setAttribute('x2', fovRSvg[0]);
-    document.getElementById('cp-fov-right').setAttribute('y2', fovRSvg[1]);
-    // Horizontal FOV width line at floor level
-    document.getElementById('cp-fov-line').setAttribute('x1', fovLSvg[0]);
-    document.getElementById('cp-fov-line').setAttribute('y1', fovLSvg[1]);
-    document.getElementById('cp-fov-line').setAttribute('x2', fovRSvg[0]);
-    document.getElementById('cp-fov-line').setAttribute('y2', fovRSvg[1]);
+    // FOV ground footprint: shaded quad + the four frustum edges from the lens
+    var aBL = toSvg(fovBL[0], fovBL[1], goz);
+    var aBR = toSvg(fovBR[0], fovBR[1], goz);
+    var aTR = toSvg(fovTR[0], fovTR[1], goz);
+    var aTL = toSvg(fovTL[0], fovTL[1], goz);
+    document.getElementById('cp-fov-area').setAttribute('points',
+      aBL[0]+','+aBL[1]+' '+aBR[0]+','+aBR[1]+' '+aTR[0]+','+aTR[1]+' '+aTL[0]+','+aTL[1]);
+    function setFovEdge(id, p) {
+      var el = document.getElementById(id);
+      el.setAttribute('x1', camTop[0]); el.setAttribute('y1', camTop[1]);
+      el.setAttribute('x2', p[0]); el.setAttribute('y2', p[1]);
+    }
+    setFovEdge('cp-fov-bl', aBL);
+    setFovEdge('cp-fov-br', aBR);
+    setFovEdge('cp-fov-tl', aTL);
+    setFovEdge('cp-fov-tr', aTR);
     // FOV label – left of the lens
     var fovLabel = document.getElementById('cp-fov-label');
     fovLabel.setAttribute('x', camTop[0] - camSize - 6);
     fovLabel.setAttribute('y', camTop[1] + 4);
     fovLabel.setAttribute('text-anchor', 'end');
-    fovLabel.textContent = 'FOV ' + fov.toFixed(0) + '\u00b0';
+    fovLabel.textContent = 'FOV ' + fov.toFixed(0) + '\u00b0H \u00b7 ' + vfov.toFixed(0) + '\u00b0V';
 
     // Downstage label near the downstage stage-right (DSR) corner; upstage
     // label centered on the upstage edge.
@@ -2196,8 +2291,15 @@
       document.getElementById(id).setAttribute('viewBox', vb);
     });
 
-    // Quad points
-    var quadPts = c.DSL[0]+','+c.DSL[1]+' '+c.DSR[0]+','+c.DSR[1]+' '+c.USR[0]+','+c.USR[1]+' '+c.USL[0]+','+c.USL[1];
+    // Quad points. Prefer the server's bowed boundary outline so the preview
+    // curves exactly like the rendered HUD grid; fall back to a straight
+    // 4-corner quad when distortion is off or an edge is behind the camera.
+    var quadPts;
+    if (data.outline && data.outline.length) {
+      quadPts = data.outline.map(function(p) { return p[0] + ',' + p[1]; }).join(' ');
+    } else {
+      quadPts = c.DSL[0]+','+c.DSL[1]+' '+c.DSR[0]+','+c.DSR[1]+' '+c.USR[0]+','+c.USR[1]+' '+c.USL[0]+','+c.USL[1];
+    }
     ['coarse-quad', 'fine-quad', 'review-quad'].forEach(function(id) {
       document.getElementById(id).setAttribute('points', quadPts);
     });
@@ -2225,6 +2327,11 @@
     cornerPositions.DSR = c.DSR.slice();
     cornerPositions.USR = c.USR.slice();
     cornerPositions.USL = c.USL.slice();
+
+    // Bowed edges for the fine-zoom view, only when the server supplied a bowed
+    // outline (no edge behind the camera) so the zoom boxes match the straight
+    // main quad in the behind-camera fallback instead of curving on their own.
+    fineBowedEdges = (data.outline && data.outline.length) ? buildBowedEdges() : null;
 
     // Refresh fine-zoom boxes AFTER cornerPositions updated so boxes
     // render new positions. Try/catch so zoom code failures don't break
@@ -2557,6 +2664,7 @@
         screen_corners: screenCorners,
         image_width: imageWidth,
         image_height: imageHeight,
+        camera: { lens_k1: wizReadLensCoeff('cp_lens_k1'), lens_k2: wizReadLensCoeff('cp_lens_k2') },
       }),
     }).then(function(r) { return r.json(); })
     .then(function(data) {
@@ -2694,8 +2802,18 @@
   }
 
   function updateFineQuad() {
+    // Refresh the bowed boundary shape from the moved pins, but only when bowing
+    // is already active for this projection. Keeps the curve live during a drag
+    // without re-enabling it in the behind-camera fallback where the full quad is
+    // straight.
+    if (fineBowedEdges) fineBowedEdges = buildBowedEdges();
     var pts = cornerPositions;
-    var quadPts = pts.DSL[0]+','+pts.DSL[1]+' '+pts.DSR[0]+','+pts.DSR[1]+' '+pts.USR[0]+','+pts.USR[1]+' '+pts.USL[0]+','+pts.USL[1];
+    var quadPts;
+    if (fineBowedEdges) {
+      quadPts = bowedOutlinePoints(fineBowedEdges);
+    } else {
+      quadPts = pts.DSL[0]+','+pts.DSL[1]+' '+pts.DSR[0]+','+pts.DSR[1]+' '+pts.USR[0]+','+pts.USR[1]+' '+pts.USL[0]+','+pts.USL[1];
+    }
     document.getElementById('fine-quad').setAttribute('points', quadPts);
   }
 
@@ -2718,6 +2836,100 @@
     USR: ['USL', 'DSR'],
     USL: ['USR', 'DSL'],
   };
+
+  // Bowed boundary-edge polylines keyed 'A>B', so the fine-zoom view curves like
+  // the full overlay / HUD. Rebuilt from the current pins by ``buildBowedEdges``
+  // on every projection and on every manual corner move (see updateFineQuad), so
+  // a dragged corner keeps its curve. null when distortion is off → straight.
+  var fineBowedEdges = null;
+
+  // Radial overlay-distortion mirror of scene/solver.py. Used to bow the
+  // corner-pinning boundary purely from the pin positions, so the preview curves
+  // exactly like the rendered HUD and stays correct live while a corner is
+  // dragged (no server round-trip needed).
+  var DISTORTION_SUBDIVISIONS = 12;
+  var DISTORTION_INVERT_ITERS = 10;
+  var DISTORTION_INVERT_F_FLOOR = 0.2;
+
+  function wizApplyDistortion(pt, k1, k2) {
+    if (k1 === 0 && k2 === 0) return [pt[0], pt[1]];
+    var cx = imageWidth / 2, cy = imageHeight / 2;
+    var halfDiag = 0.5 * Math.sqrt(imageWidth * imageWidth + imageHeight * imageHeight);
+    var dx = (pt[0] - cx) / halfDiag;
+    var dy = (pt[1] - cy) / halfDiag;
+    var r2 = dx * dx + dy * dy;
+    var f = 1 + k1 * r2 + k2 * r2 * r2;
+    return [cx + dx * f * halfDiag, cy + dy * f * halfDiag];
+  }
+
+  function wizInvertDistortion(pt, k1, k2) {
+    if (k1 === 0 && k2 === 0) return [pt[0], pt[1]];
+    var cx = imageWidth / 2, cy = imageHeight / 2;
+    var halfDiag = 0.5 * Math.sqrt(imageWidth * imageWidth + imageHeight * imageHeight);
+    var dx = (pt[0] - cx) / halfDiag;
+    var dy = (pt[1] - cy) / halfDiag;
+    var r2d = dx * dx + dy * dy;
+    var r2u = r2d;
+    for (var i = 0; i < DISTORTION_INVERT_ITERS; i++) {
+      var fi = 1 + k1 * r2u + k2 * r2u * r2u;
+      if (fi < DISTORTION_INVERT_F_FLOOR) fi = DISTORTION_INVERT_F_FLOOR;
+      r2u = r2d / (fi * fi);
+    }
+    var f = 1 + k1 * r2u + k2 * r2u * r2u;
+    if (f < DISTORTION_INVERT_F_FLOOR) f = DISTORTION_INVERT_F_FLOOR;
+    return [cx + (dx / f) * halfDiag, cy + (dy / f) * halfDiag];
+  }
+
+  // Bowed boundary edge between two corner pins, in screen space. A grid edge is
+  // a straight WORLD line, so under pinhole it is a straight segment in the
+  // undistorted frame: invert-distort both pins, walk that straight segment, and
+  // re-distort each step. The chord set traces the same curve the HUD draws and
+  // passes through both handles – computed only from the pins, so it stays valid
+  // while a corner is dragged.
+  function wizBowEdge(p0, p1, k1, k2) {
+    var u0 = wizInvertDistortion(p0, k1, k2);
+    var u1 = wizInvertDistortion(p1, k1, k2);
+    var n = DISTORTION_SUBDIVISIONS;
+    var poly = [];
+    for (var i = 0; i <= n; i++) {
+      var t = i / n;
+      poly.push(wizApplyDistortion([u0[0] + t * (u1[0] - u0[0]), u0[1] + t * (u1[1] - u0[1])], k1, k2));
+    }
+    // Pin the endpoints exactly to the handles (guards sub-pixel inverse drift).
+    poly[0] = [p0[0], p0[1]];
+    poly[n] = [p1[0], p1[1]];
+    return poly;
+  }
+
+  // All four bowed boundary edges keyed 'A>B' (+ reverse), from the current pins
+  // and lens coefficients. null when distortion is off or the corners aren't
+  // ready, so callers fall back to straight edges.
+  function buildBowedEdges() {
+    if (!fineZoomReady()) return null;
+    var k1 = wizReadLensCoeff('cp_lens_k1');
+    var k2 = wizReadLensCoeff('cp_lens_k2');
+    if (k1 === 0 && k2 === 0) return null;
+    var edges = {};
+    for (var k = 0; k < 4; k++) {
+      var a = CORNER_NAMES[k];
+      var b = CORNER_NAMES[(k + 1) % 4];
+      var poly = wizBowEdge(cornerPositions[a], cornerPositions[b], k1, k2);
+      edges[a + '>' + b] = poly;
+      edges[b + '>' + a] = poly.slice().reverse();
+    }
+    return edges;
+  }
+
+  // Flatten the four bowed edges (CORNER_NAMES order) into an SVG points string
+  // for the closed boundary polygon, dropping each edge's duplicate end corner.
+  function bowedOutlinePoints(edges) {
+    var pts = [];
+    for (var k = 0; k < 4; k++) {
+      var poly = edges[CORNER_NAMES[k] + '>' + CORNER_NAMES[(k + 1) % 4]];
+      for (var j = 0; j < poly.length - 1; j++) pts.push(poly[j][0] + ',' + poly[j][1]);
+    }
+    return pts.join(' ');
+  }
   // Per-corner viewBox state. Each entry is [vbX, vbY, vbW, vbH] in
   // image-pixel coordinates. Lazily populated when zoom mode is first
   // activated for a snapshot – so we don't carry stale state across
@@ -2767,16 +2979,26 @@
     edgesG.innerHTML = '';
     var here = cornerPositions[corner];
     FINE_NEIGHBOURS[corner].forEach(function(neighbour) {
-      var n = cornerPositions[neighbour];
-      var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-      line.setAttribute('x1', here[0]);
-      line.setAttribute('y1', here[1]);
-      line.setAttribute('x2', n[0]);
-      line.setAttribute('y2', n[1]);
-      line.setAttribute('stroke', 'rgba(255,188,0,0.7)');
-      line.setAttribute('stroke-width', '2');
-      line.setAttribute('vector-effect', 'non-scaling-stroke');
-      edgesG.appendChild(line);
+      var bowed = fineBowedEdges && fineBowedEdges[corner + '>' + neighbour];
+      var el;
+      if (bowed && bowed.length > 2) {
+        // Curved boundary edge, matching the full overlay / rendered HUD.
+        el = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+        el.setAttribute('points', bowed.map(function(p) { return p[0] + ',' + p[1]; }).join(' '));
+        el.setAttribute('fill', 'none');
+      } else {
+        // Straight edge to the neighbour pin (no distortion, or mid-drag).
+        var n = cornerPositions[neighbour];
+        el = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        el.setAttribute('x1', here[0]);
+        el.setAttribute('y1', here[1]);
+        el.setAttribute('x2', n[0]);
+        el.setAttribute('y2', n[1]);
+      }
+      el.setAttribute('stroke', 'rgba(255,188,0,0.7)');
+      el.setAttribute('stroke-width', '2');
+      el.setAttribute('vector-effect', 'non-scaling-stroke');
+      edgesG.appendChild(el);
     });
 
     // Centre marker – same visual style as the full-view handle but
@@ -3087,6 +3309,7 @@
         screen_corners: screenCorners,
         image_width: imageWidth,
         image_height: imageHeight,
+        camera: { lens_k1: wizReadLensCoeff('cp_lens_k1'), lens_k2: wizReadLensCoeff('cp_lens_k2') },
       }),
     }).then(function(r) { return r.json(); })
     .then(function(data) {
@@ -3224,33 +3447,12 @@
     document.getElementById('review-grid-y-offset').textContent = WUNIT.formatLength(Number(g.y_offset));
     document.getElementById('review-grid-z-offset').textContent = WUNIT.formatLength(Number(g.z_offset));
 
-    // Re-project with final values for the review overlay
-    if (imageWidth && imageHeight) {
-      fetch('/api/wizard/project', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          camera: cam,
-          grid: g,
-          image_width: imageWidth,
-          image_height: imageHeight,
-        }),
-      }).then(function(r) { return r.json(); })
-      .then(function(data) {
-        var vb = '0 0 ' + imageWidth + ' ' + imageHeight;
-        document.getElementById('review-overlay').setAttribute('viewBox', vb);
-        var c = data.corners;
-        var quadPts = c.DSL[0]+','+c.DSL[1]+' '+c.DSR[0]+','+c.DSR[1]+' '+c.USR[0]+','+c.USR[1]+' '+c.USL[0]+','+c.USL[1];
-        document.getElementById('review-quad').setAttribute('points', quadPts);
-        renderCornerMarkers('review-corners', c, false);
-        renderRefMarker('review-ref', data.reference, false);
-        var zg = document.getElementById('review-zoff');
-        zg.innerHTML = '';
-        if (data.reference_elevated && data.z_offset) {
-          renderZOffsetLine(zg, data.reference, data.reference_elevated, data.z_offset);
-        }
-      });
-    }
+    // The review overlay (viewBox, bowed quad, corners, ref, z-offset) is drawn
+    // by ``loadSnapshot`` -> ``projectAndOverlay`` -> ``updateAllOverlays`` on
+    // entering this step, using the live form values (which already carry the
+    // solved camera + lens coefficients) and the server's bowed boundary
+    // outline. A second projection here would race that one and briefly paint a
+    // straight, lens-free quad – so populateReview only fills the text summary.
   }
 
   window.applyAndFinish = function() {
@@ -3285,6 +3487,10 @@
       pitch: camData.pitch, yaw: camData.yaw, roll: camData.roll, fov: camData.fov,
       sensor_width_mm: sensorWidth,
       focal_length_mm: focalLength,
+      // The DLT solve is pinhole and doesn't return distortion; carry the
+      // operator's lens sliders through from the wizard state.
+      lens_k1: state.camera.lens_k1,
+      lens_k2: state.camera.lens_k2,
     };
 
     Promise.all([

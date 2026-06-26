@@ -1309,19 +1309,20 @@
  }
  .row-tab-panel { display: none; }
  .row-tab-panel.active { display: block; }
- .osc-binding-row { margin-bottom: 0.6rem; border: 1px solid var(--border-soft); border-radius: 0.6rem; padding: 0.5rem 0.8rem; background: var(--surface); }
- .osc-binding-summary { display: flex; gap: 0.6rem; align-items: center; cursor: pointer; padding-bottom: 0.2rem; }
+ .osc-binding-row, .osc-destination-row { margin-bottom: 0.6rem; border: 1px solid var(--border-soft); border-radius: 0.6rem; padding: 0.5rem 0.8rem; background: var(--surface); }
+ .osc-binding-summary, .osc-destination-summary { display: flex; gap: 0.6rem; align-items: center; cursor: pointer; padding-bottom: 0.2rem; }
  /* Breathing room between the summary and the editor body when the
  row is expanded (``<details open>``). When collapsed the
  ``.osc-binding-form`` is ``display: none`` so the margin is a
  no-op. */
- .osc-binding-row[open] > .osc-binding-form { margin-top: 0.9rem; }
+ .osc-binding-row[open] > .osc-binding-form,
+ .osc-destination-row[open] > .osc-destination-form { margin-top: 0.9rem; }
  /* Drag handle: visible click target inside the collapsed-row
  summary that the operator grabs to reorder rows. The actual
  drag-and-drop wiring lives in the document-level JS at the
  bottom of this file. ``cursor: grab`` flips to ``grabbing``
  while the row is mid-drag. */
- .osc-binding-drag-handle {
+ .osc-binding-drag-handle, .osc-destination-drag-handle {
  cursor: grab;
  color: var(--muted);
  font-family: ui-monospace, monospace;
@@ -1330,14 +1331,29 @@
  user-select: none;
  letter-spacing: -0.1em;
  }
- .osc-binding-drag-handle:hover { color: var(--text); }
- .osc-binding-drag-handle:active { cursor: grabbing; }
- .osc-binding-row.dragging { opacity: 0.55; }
- .osc-binding-row.drop-target { outline: 2px dashed var(--accent); outline-offset: 2px; }
- .osc-binding-enabled-dot { width: 0.55rem; height: 0.55rem; border-radius: 999px; background: var(--muted); }
+ .osc-binding-drag-handle:hover, .osc-destination-drag-handle:hover { color: var(--text); }
+ .osc-binding-drag-handle:active, .osc-destination-drag-handle:active { cursor: grabbing; }
+ .osc-binding-row.dragging, .osc-destination-row.dragging { opacity: 0.55; }
+ .osc-binding-row.drop-target, .osc-destination-row.drop-target { outline: 2px dashed var(--accent); outline-offset: 2px; }
+ .osc-binding-enabled-dot { width: 0.55rem; height: 0.55rem; border-radius: 999px; background: var(--muted); flex: none; }
  .osc-binding-enabled-dot.on { background: var(--accent); }
- .osc-binding-kind-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
+ .osc-binding-enabled-dot.invalid { background: var(--danger); }
+ .osc-binding-kind-badge, .osc-destination-proto-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
+ .osc-binding-marker-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
  .osc-binding-target { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
+ /* Secondary markers nested under a fanned-out transmitter row: read-only
+ chips sharing the parent's destination / message / trigger. */
+ /* Negative top pulls the chips up under their parent row (the row's
+    0.6rem bottom margin otherwise floats them); the bottom margin keeps a
+    clear gap before the next transmitter so they don't touch. */
+ .osc-binding-nested { display: flex; flex-direction: column; gap: 0.4rem; margin: -0.2rem 0 0.7rem 1.4rem; }
+ .osc-binding-nested-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--muted); padding: 0.45rem 0.8rem; border: 1px solid var(--border-soft); border-radius: 0.5rem; background: rgba(255,255,255,0.02); }
+ /* The red dot alone marks an uncontrolled marker – no red border. */
+ .osc-binding-nested-row.is-invalid { color: var(--danger); }
+ /* Destination collapsed summary: host:port sits right after the name; the
+ protocol badge anchors to the right. */
+ .osc-destination-addr { color: var(--muted); font-size: 0.8rem; }
+ .osc-destination-proto-badge { margin-left: auto; }
  .args-list { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.4rem; }
  .arg-pill-input { font-family: ui-monospace, monospace; }
  .args-buttons { display: flex; gap: 0.3rem; }
@@ -3226,14 +3242,14 @@
  }, 2000);
  });
  }
- // Toggle the <body> gate class. When turning off, uncheck the mouse and
- // detection Enabled boxes to mirror the server-side cascade; selectors
- // must match the route's cascade fields.
+ // Toggle the <body> gate class. When turning off, uncheck the detection
+ // Enabled box to mirror the server-side cascade; the selector must match
+ // the route's cascade fields.
  function onExperimentalToggle(cb) {
  document.body.classList.toggle('show-experimental', cb.checked);
  if (cb.checked) return;
  document.querySelectorAll(
- '#mouse-section input[name="mouse_enabled"], #detection-section input[name="enabled"]'
+ '#detection-section input[name="enabled"]'
  ).forEach(function (el) { el.checked = false; });
  }
  function switchTab(tabId) {
@@ -3518,7 +3534,7 @@
  // client-side mirror of Python's
  // ``unresolved_placeholders``. Rebuilds the unresolved-set from the
  // editor's current text + the live marker registry + the row's
- // ``marker_id`` so the operator sees red pills update as they edit,
+ // ``markers`` so the operator sees red pills update as they edit,
  // without a server round-trip. Only position + ``markerid`` slots
  // surface here (mirrors the server's ``_EDIT_TIME_SOURCES``); fader /
  // ``markerfader`` slots surface as runtime skips. This parse regex
@@ -3534,8 +3550,20 @@
  oscEditorParseJsonAttr(editor, 'oscRegisteredMarkerIds', [])
  .map(v => Number(v)),
  );
- const markerIdRaw = (editor.dataset.oscRowMarkerId || '').trim();
- const markerId = markerIdRaw === '' ? null : Number(markerIdRaw);
+ // Mirror of Python's ``_effective_default_marker_id``: a bare ``[x]``
+ // resolves when the row names any usable default marker. ``all`` / ``cN``
+ // are dynamic – treated as resolvable whenever at least one marker is
+ // controlled; a numeric token counts only when controlled.
+ const markerTokens = (editor.dataset.oscRowMarkers || '')
+ .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+ let hasDefaultMarker = false;
+ for (const tok of markerTokens) {
+ if (tok === 'all' || /^c[1-9][0-9]*$/.test(tok)) {
+ if (registered.size > 0) { hasDefaultMarker = true; break; }
+ } else if (/^[0-9]+$/.test(tok) && registered.has(Number(tok))) {
+ hasDefaultMarker = true; break;
+ }
+ }
  const gridMaxHeightRaw = (editor.dataset.oscGridMaxHeight || '').trim();
  const gridMaxHeight = gridMaxHeightRaw === ''
  ? 0
@@ -3560,7 +3588,7 @@
  const isZFrac = source === 'z' && chain.indexOf('.frac') !== -1;
  let unresolved = false;
  if (index === undefined) {
- unresolved = markerId === null || !registered.has(markerId);
+ unresolved = !hasDefaultMarker;
  if (!unresolved && isZFrac && gridUnset) {
  unresolved = true;
  }
@@ -3635,7 +3663,7 @@
  const messageError = form.querySelector(
  '[id$="-error"][id^="osc-message-"]',
  );
- const markerInput = form.querySelector('input[name="marker_id"]');
+ const markerInput = form.querySelector('input[name="markers"]');
  const markerError = markerInput
  ? document.getElementById(
  markerInput.getAttribute('aria-describedby') || '',
@@ -3682,16 +3710,16 @@
  // Fire the HTMX validation we wired with ``hx-trigger="osc-validate"``.
  window.htmx.trigger(editor, 'osc-validate');
  }, true); // capture: ``blur`` doesn't bubble.
- // Re-evaluate unresolved pills as operator edits Default marker field.
+ // Re-evaluate unresolved pills as operator edits the Default markers field.
  // Mirrors Python's ``_row_unresolved_placeholders`` for real-time pill state.
  document.addEventListener('input', (event) => {
- const input = event.target.closest('input[name="marker_id"]');
+ const input = event.target.closest('input[name="markers"]');
  if (!input) return;
  const form = input.closest('form');
  if (!form) return;
  const editor = form.querySelector('[data-osc-message-editor]');
  if (!editor) return;
- editor.dataset.oscRowMarkerId = (input.value || '').trim();
+ editor.dataset.oscRowMarkers = (input.value || '').trim();
  oscEditorRecomputeUnresolved(editor);
  oscEditorRenderPills(editor);
  oscEditorSyncEnabledUnresolved(editor);
@@ -3781,7 +3809,7 @@
  editor.dispatchEvent(new Event('input', { bubbles: true }));
  });
  // "Save as template…" button captures the whole row form to endpoint.
- // Template carries all operator-tunable fields; ``enabled`` and ``marker_id`` dropped server-side.
+ // Template carries all operator-tunable fields; ``enabled`` and ``markers`` dropped server-side.
  //
  // We use ``FormData`` to gather the live form state (matches
  // what the row's normal Save POST would send), then append the
@@ -4085,11 +4113,17 @@
  if (mode === 'replace') { el.removeAttribute('hidden'); } else { el.setAttribute('hidden', ''); }
  });
  });
+ // Generic drag-reorder shared by the OSC Transmitters + OSC Destinations
+ // row lists: same ⋮⋮ handle on both. Each row carries the bulk-reorder
+ // endpoint + swap target in ``data-reorder-url`` / ``data-reorder-target``,
+ // so one set of listeners drives both lists.
+ const OSC_REORDER_HANDLE_SEL = '.osc-binding-drag-handle, .osc-destination-drag-handle';
+ const OSC_REORDER_ROW_SEL = '.osc-binding-row, .osc-destination-row';
  let oscDragSourceId = null;
  document.addEventListener('dragstart', (event) => {
- const handle = event.target.closest('.osc-binding-drag-handle');
+ const handle = event.target.closest(OSC_REORDER_HANDLE_SEL);
  if (!handle) return;
- const row = handle.closest('.osc-binding-row');
+ const row = handle.closest(OSC_REORDER_ROW_SEL);
  if (!row) return;
  oscDragSourceId = row.dataset.rowId;
  row.classList.add('dragging');
@@ -4103,21 +4137,21 @@
  }
  });
  document.addEventListener('dragend', (event) => {
- const handle = event.target.closest('.osc-binding-drag-handle');
- const row = handle ? handle.closest('.osc-binding-row') : null;
+ const handle = event.target.closest(OSC_REORDER_HANDLE_SEL);
+ const row = handle ? handle.closest(OSC_REORDER_ROW_SEL) : null;
  if (row) row.classList.remove('dragging');
- document.querySelectorAll('.osc-binding-row.drop-target').forEach(el => {
+ document.querySelectorAll('.drop-target').forEach(el => {
  el.classList.remove('drop-target');
  });
  oscDragSourceId = null;
  });
  document.addEventListener('dragover', (event) => {
  if (!oscDragSourceId) return;
- const targetRow = event.target.closest('.osc-binding-row');
+ const targetRow = event.target.closest(OSC_REORDER_ROW_SEL);
  if (!targetRow) return;
  event.preventDefault();
  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
- document.querySelectorAll('.osc-binding-row.drop-target').forEach(el => {
+ document.querySelectorAll('.drop-target').forEach(el => {
  if (el !== targetRow) el.classList.remove('drop-target');
  });
  if (targetRow.dataset.rowId !== oscDragSourceId) {
@@ -4126,11 +4160,12 @@
  });
  document.addEventListener('drop', (event) => {
  if (!oscDragSourceId) return;
- const targetRow = event.target.closest('.osc-binding-row');
+ const targetRow = event.target.closest(OSC_REORDER_ROW_SEL);
  if (!targetRow) return;
  event.preventDefault();
  const list = targetRow.parentElement;
  if (!list) return;
+ // Don't cross lists: a drag started in one list only reorders within it.
  const sourceRow = list.querySelector('[data-row-id="' + oscDragSourceId + '"]');
  if (!sourceRow || sourceRow === targetRow) {
  oscDragSourceId = null;
@@ -4142,17 +4177,21 @@
  const rect = targetRow.getBoundingClientRect();
  const after = (event.clientY - rect.top) > rect.height / 2;
  list.insertBefore(sourceRow, after ? targetRow.nextSibling : targetRow);
- // Build the new ordering and POST it. HTMX is already loaded so
- // ``htmx.ajax`` is the cleanest path – keeps the re-render flow
- // identical to every other CRUD round-trip in this section.
- const order = Array.from(list.querySelectorAll('.osc-binding-row'))
+ // Build the new ordering and POST it to the row's own reorder
+ // endpoint. HTMX is already loaded so ``htmx.ajax`` keeps the
+ // re-render flow identical to every other CRUD round-trip.
+ const url = targetRow.dataset.reorderUrl;
+ const targetId = targetRow.dataset.reorderTarget;
+ if (url && targetId) {
+ const order = Array.from(list.querySelectorAll(OSC_REORDER_ROW_SEL))
  .map(el => el.dataset.rowId)
  .join(',');
- window.htmx.ajax('POST', '/section/osc_bindings/reorder', {
- target: '#osc-bindings-section',
+ window.htmx.ajax('POST', url, {
+ target: '#' + targetId,
  swap: 'outerHTML',
  values: { order },
  });
+ }
  oscDragSourceId = null;
  });
  document.addEventListener('DOMContentLoaded', () => {

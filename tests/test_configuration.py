@@ -105,6 +105,10 @@ class _DummyRuntimeServices:
     def swap_video(self, new_cfg: AppConfig) -> None:
         self.video_swaps.append(new_cfg)
 
+    def apply_osc_transmitters_change(self, new_cfg, destinations=None) -> None:  # noqa: ANN001
+        # No-op base; subclasses that assert on OSC routing override + record.
+        pass
+
 
 class _DummyWebServer:
     def __init__(self) -> None:
@@ -261,6 +265,32 @@ def test_testpattern_dataclass_defaults_match_plugin_config_fields() -> None:
 # --------------------------------------------------------------------------- #
 # bootstrap_config_if_missing – first-run seed from config.example.toml
 # --------------------------------------------------------------------------- #
+
+
+def test_example_config_matches_current_schema() -> None:
+    """The shipped ``config.example.toml`` must not declare fields the code
+    dropped (they'd be silently filtered on load) and must show the OSC
+    destinations shape transmitters/zones now reference, so an operator
+    copying it as a starting point has a working template."""
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    example_path = repo_root / "config.example.toml"
+    data = tomllib.loads(example_path.read_text(encoding="utf-8"))
+
+    tz = data.get("trigger_zones", {})
+    assert "default_osc_host" not in tz
+    assert "default_osc_port" not in tz
+
+    dests = data.get("osc_destinations", {}).get("destinations", [])
+    assert dests, "example must seed at least one [[osc_destinations.destinations]]"
+    assert {"id", "host", "port", "protocol"} <= set(dests[0])
+
+    # And it loads into a config whose seeded destination is resolvable.
+    cfg = load_config(str(example_path))
+    assert cfg.osc_destinations.destinations
+    first = cfg.osc_destinations.destinations[0]
+    assert cfg.osc_destinations.get(first.id) is first
 
 
 def test_bootstrap_copies_example_when_config_absent(tmp_path) -> None:
@@ -554,7 +584,7 @@ def test_fader_on_change_marker_source_survives_save_reload(
             transmitters=[
                 OscTransmitterConfig(
                     id="r1",
-                    marker_id=4,
+                    markers=["4"],
                     trigger=FaderOnChangeTrigger(marker_id=4, rate_hz=30),
                 ),
             ]
@@ -1815,6 +1845,50 @@ def test_camera_config_preserves_optional_float_none() -> None:
     assert cfg.focal_length_mm is None
 
 
+def test_camera_config_lens_distortion_defaults_to_pinhole() -> None:
+    # Existing configs (no lens_k1/lens_k2 in TOML) must render byte-for-byte
+    # as a pinhole overlay – both coefficients default to 0.0.
+    cfg = CameraConfig()
+    assert cfg.lens_k1 == 0.0
+    assert cfg.lens_k2 == 0.0
+
+
+@pytest.mark.parametrize(
+    "bad_k,expected",
+    [
+        (0.1, 0.1),
+        ("0.15", 0.15),
+        (1.5, 0.4),  # above clamp
+        (-1.5, -0.4),  # below clamp
+        (None, 0.0),
+        ("nope", 0.0),
+        (float("inf"), 0.0),  # non-finite -> declared default, not the clamp
+        (float("nan"), 0.0),
+    ],
+)
+def test_camera_config_coerces_and_clamps_lens_k1(bad_k: object, expected: float) -> None:
+    cfg = CameraConfig(lens_k1=bad_k)  # type: ignore[arg-type]
+    assert cfg.lens_k1 == expected
+
+
+@pytest.mark.parametrize(
+    "bad_k,expected",
+    [
+        (0.03, 0.03),
+        ("0.04", 0.04),
+        (1.5, 0.2),
+        (-1.5, -0.2),
+        (None, 0.0),
+        ("nope", 0.0),
+        (float("inf"), 0.0),
+        (float("nan"), 0.0),
+    ],
+)
+def test_camera_config_coerces_and_clamps_lens_k2(bad_k: object, expected: float) -> None:
+    cfg = CameraConfig(lens_k2=bad_k)  # type: ignore[arg-type]
+    assert cfg.lens_k2 == expected
+
+
 def test_camera_config_rejects_inf_fov_to_default() -> None:
     # TOML allows ``inf``/``-inf`` as float literals. ``_coerce_float`` must
     # not raise *and* must not let ``inf`` pass through – an infinite fov
@@ -1894,6 +1968,35 @@ def test_grid_config_coerces_origin_visible_strings(value: str, expected: bool) 
 def test_grid_config_rejects_unparseable_origin_visible_to_default(bad_value: object) -> None:
     cfg = GridConfig(origin_visible=bad_value)  # type: ignore[arg-type]
     assert cfg.origin_visible is False
+
+
+def test_grid_config_visible_defaults_true() -> None:
+    # Master grid toggle defaults on so existing configs keep drawing the grid.
+    assert GridConfig().visible is True
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("true", True),
+        ("on", True),
+        ("1", True),
+        ("false", False),
+        ("off", False),
+        ("0", False),
+        ("no", False),
+    ],
+)
+def test_grid_config_coerces_visible_strings(value: str, expected: bool) -> None:
+    cfg = GridConfig(visible=value)  # type: ignore[arg-type]
+    assert cfg.visible is expected
+
+
+@pytest.mark.parametrize("bad_value", ["maybe", "", "42", 42, None, [True]])
+def test_grid_config_rejects_unparseable_visible_to_default(bad_value: object) -> None:
+    # Junk falls back to the default (True), never a silently-hidden grid.
+    cfg = GridConfig(visible=bad_value)  # type: ignore[arg-type]
+    assert cfg.visible is True
 
 
 # GridConfig.max_height – denominator for [fz] / [ifz].
@@ -2417,12 +2520,25 @@ def test_trigger_zones_config_clamps_high_debounce_and_hysteresis() -> None:
     assert zones.hysteresis == 10.0
 
 
-def test_trigger_zones_config_clamps_default_osc_port() -> None:
-    # Port must be in range 1-65535.
+def test_trigger_zones_config_drops_legacy_default_osc_keys() -> None:
+    # Clean break: the section no longer carries default host/port; a
+    # hand-edited TOML keeps the keys out via ``_filter_known``.
     from openfollow.configuration import TriggerZonesConfig
 
-    assert TriggerZonesConfig(default_osc_port=70000).default_osc_port == 65535
-    assert TriggerZonesConfig(default_osc_port=0).default_osc_port == 1
+    tz = TriggerZonesConfig()
+    assert not hasattr(tz, "default_osc_host")
+    assert not hasattr(tz, "default_osc_port")
+
+
+def test_trigger_zone_config_destination_id() -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    zone = TriggerZoneConfig(destination_id="  d1  ")
+    assert zone.destination_id == "d1"
+    assert not hasattr(zone, "osc_host")
+    assert not hasattr(zone, "osc_port")
+    # Non-string collapses to empty.
+    assert TriggerZoneConfig(destination_id=5).destination_id == ""  # type: ignore[arg-type]
 
 
 def test_trigger_zones_config_converts_dict_zones_to_dataclasses() -> None:
@@ -2606,6 +2722,83 @@ def test_controller_mouse_enabled_default_is_false() -> None:
     # Default matches config.example.toml (false); explicit true is honoured.
     assert ControllerConfig().mouse_enabled is False
     assert ControllerConfig(mouse_enabled=True).mouse_enabled is True
+
+
+def test_controller_mouse_steering_defaults_are_back_compatible() -> None:
+    # Defaults reproduce direct 1:1 control with wheel-Z on, as before:
+    # smoothing 0 = instant (the glide alpha is 1 - smoothing).
+    cfg = ControllerConfig()
+    assert cfg.mouse_hysteresis_px == 0
+    assert cfg.mouse_smoothing == 0.0
+    assert cfg.mouse_max_y == 0.0
+    assert cfg.mouse_wheel_z_enabled is True
+    assert cfg.mouse_wheel_invert is False
+    assert cfg.mouse_wheel_z_step == 0.1
+    assert cfg.mouse_double_click_reset is True
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("false", False), ("no", False), ("true", True), (0, True), ("garbage", True)],
+)
+def test_controller_mouse_double_click_reset_coerced(value: object, expected: bool) -> None:
+    assert ControllerConfig(mouse_double_click_reset=value).mouse_double_click_reset is expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(-5, 0), (500, 200), ("abc", 0), (None, 0), (10, 10), (12.5, 12), ("3.5", 0)],
+)
+def test_controller_mouse_hysteresis_coerced_to_int(value: object, expected: int) -> None:
+    # Pixel deadband is a whole number of pixels: clamped to [0, 200]; a
+    # non-integral float truncates; a non-integer string falls back to default.
+    result = ControllerConfig(mouse_hysteresis_px=value).mouse_hysteresis_px
+    assert result == expected
+    assert isinstance(result, int)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    # 0 = instant is in range now; out-of-range / non-numeric fall back to the
+    # 0.0 default; the upper clamp is 1.0.
+    [(0.0, 0.0), (1.0, 1.0), (5.0, 1.0), (-1.0, 0.0), ("nope", 0.0), (None, 0.0), (0.4, 0.4)],
+)
+def test_controller_mouse_smoothing_coerced(value: object, expected: float) -> None:
+    assert ControllerConfig(mouse_smoothing=value).mouse_smoothing == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(-1.0, 0.0), (99999.0, 10000.0), ("x", 0.0), (None, 0.0), (25.0, 25.0)],
+)
+def test_controller_mouse_max_y_coerced(value: object, expected: float) -> None:
+    assert ControllerConfig(mouse_max_y=value).mouse_max_y == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(-2.0, 0.0), (50.0, 10.0), ("x", 0.1), (None, 0.1), (0.25, 0.25)],
+)
+def test_controller_mouse_wheel_z_step_coerced(value: object, expected: float) -> None:
+    assert ControllerConfig(mouse_wheel_z_step=value).mouse_wheel_z_step == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("false", False), ("no", False), ("true", True), (0, True), ("garbage", True)],
+)
+def test_controller_mouse_wheel_z_enabled_coerced(value: object, expected: bool) -> None:
+    # Non-bool / unrecognised input falls back to the default (True); a TOML
+    # string "false" is correctly read as False (not truthy).
+    assert ControllerConfig(mouse_wheel_z_enabled=value).mouse_wheel_z_enabled is expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("true", True), ("on", True), ("false", False), ("garbage", False)],
+)
+def test_controller_mouse_wheel_invert_coerced(value: object, expected: bool) -> None:
+    assert ControllerConfig(mouse_wheel_invert=value).mouse_wheel_invert is expected
 
 
 def test_controller_z_movement_default_keys() -> None:
@@ -2854,9 +3047,11 @@ class _DummyCamera:
 class _DummyZoneEngine:
     def __init__(self) -> None:
         self.reloaded: list[object] = []
+        self.reloaded_destinations: list[object] = []
 
-    def reload_config(self, zones) -> None:
+    def reload_config(self, zones, destinations=None) -> None:  # noqa: ANN001
         self.reloaded.append(zones)
+        self.reloaded_destinations.append(destinations)
 
 
 class _DummyOtpServer:
@@ -3236,6 +3431,7 @@ def test_apply_runtime_applies_osc_transmitters_change_live() -> None:
         def apply_osc_transmitters_change(
             self,
             new_cfg: OscTransmittersConfig,
+            destinations=None,  # noqa: ANN001
         ) -> None:
             self.transmitter_changes.append(new_cfg)
 
@@ -3243,7 +3439,7 @@ def test_apply_runtime_applies_osc_transmitters_change_live() -> None:
     app._runtime_services = _RecordingRuntimeServices()
     new_cfg = OscTransmittersConfig(
         transmitters=[
-            OscTransmitterConfig(id="row-a", host="10.0.0.5"),
+            OscTransmitterConfig(id="row-a", destination_id="d1"),
         ]
     )
     new_config = AppConfig(osc_transmitters=new_cfg)
@@ -3268,6 +3464,7 @@ def test_apply_runtime_osc_transmitters_failure_reverts_config() -> None:
         def apply_osc_transmitters_change(
             self,
             new_cfg: OscTransmittersConfig,
+            destinations=None,  # noqa: ANN001
         ) -> None:
             raise OSError("simulated apply failure")
 
@@ -3276,7 +3473,7 @@ def test_apply_runtime_osc_transmitters_failure_reverts_config() -> None:
     app._runtime_services = _FailingRuntimeServices()
     new_cfg = OscTransmittersConfig(
         transmitters=[
-            OscTransmitterConfig(id="r1", host="10.0.0.5"),
+            OscTransmitterConfig(id="r1", destination_id="d1"),
         ]
     )
     new_config = AppConfig(osc_transmitters=new_cfg, viewer_marker_ids=[9])
@@ -3459,8 +3656,6 @@ def test_apply_runtime_reloads_trigger_zones() -> None:
 
     new_zones = TriggerZonesConfig(
         enabled=True,
-        default_osc_host="10.0.0.5",
-        default_osc_port=4242,
         zones=[TriggerZoneConfig(name="Main", vertices=[[0, 0], [1, 0], [1, 1]])],
     )
     new_config = AppConfig(trigger_zones=new_zones)
@@ -3469,6 +3664,206 @@ def test_apply_runtime_reloads_trigger_zones() -> None:
 
     assert zone_engine.reloaded == [new_zones]
     assert app._config.trigger_zones == new_zones
+
+
+def test_apply_runtime_osc_destinations_change_reapplies_both_consumers() -> None:
+    """A destination-only edit (e.g. an IP change) re-resolves at BOTH the
+    transmitter manager and the zone engine, live, with no restart."""
+    from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
+
+    class _RecordingRuntimeServices(_DummyRuntimeServices):
+        def __init__(self) -> None:
+            super().__init__()
+            self.transmitter_dests: list[object] = []
+
+        def apply_osc_transmitters_change(self, new_cfg, destinations=None) -> None:  # noqa: ANN001
+            self.transmitter_dests.append(destinations)
+
+    app = _app_with()
+    app._runtime_services = _RecordingRuntimeServices()
+    zone_engine = _DummyZoneEngine()
+    app._runtime_services._zone_engine = zone_engine  # type: ignore[attr-defined]
+
+    new_dests = OscDestinationsConfig(
+        destinations=[OscDestinationConfig(id="default", name="Default", host="10.0.0.9")],
+    )
+    new_config = AppConfig(osc_destinations=new_dests)
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.osc_destinations == new_dests
+    # Transmitter manager re-resolved against the new destinations.
+    assert app._runtime_services.transmitter_dests == [new_dests]
+    # Zone engine re-resolved against the new destinations.
+    assert zone_engine.reloaded_destinations == [new_dests]
+    assert app._web_commands.restart_requested is False
+
+
+def test_apply_runtime_osc_destinations_change_without_zone_engine() -> None:
+    """When no zone engine is wired (``getattr`` → ``None``), the destination
+    change still re-resolves the transmitter manager and updates config."""
+    from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
+
+    class _RecordingRuntimeServices(_DummyRuntimeServices):
+        def __init__(self) -> None:
+            super().__init__()
+            self.transmitter_dests: list[object] = []
+
+        def apply_osc_transmitters_change(self, new_cfg, destinations=None) -> None:  # noqa: ANN001
+            self.transmitter_dests.append(destinations)
+
+    app = _app_with()
+    app._runtime_services = _RecordingRuntimeServices()
+    # Deliberately no ``_zone_engine`` attribute → getattr returns None.
+
+    new_dests = OscDestinationsConfig(
+        destinations=[OscDestinationConfig(id="default", name="Default", host="10.0.0.9")],
+    )
+    apply_runtime_config_changes(app, AppConfig(osc_destinations=new_dests))
+
+    assert app._config.osc_destinations == new_dests
+    assert app._runtime_services.transmitter_dests == [new_dests]
+
+
+def test_apply_runtime_osc_destinations_change_failure_reverts() -> None:
+    """If the re-resolve raises (and the revert re-apply also raises), the
+    destination change reverts config and the zone engine is never reloaded."""
+    from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
+
+    class _FailingRuntimeServices(_DummyRuntimeServices):
+        def apply_osc_transmitters_change(self, new_cfg, destinations=None) -> None:  # noqa: ANN001
+            raise RuntimeError("boom")
+
+    app = _app_with()
+    app._runtime_services = _FailingRuntimeServices()
+    zone_engine = _DummyZoneEngine()
+    app._runtime_services._zone_engine = zone_engine  # type: ignore[attr-defined]
+    old_dests = app._config.osc_destinations
+
+    new_dests = OscDestinationsConfig(
+        destinations=[OscDestinationConfig(id="default", name="Default", host="10.0.0.9")],
+    )
+    apply_runtime_config_changes(app, AppConfig(osc_destinations=new_dests))
+
+    # Reverted to the prior destinations; zone engine never reloaded.
+    assert app._config.osc_destinations == old_dests
+    assert zone_engine.reloaded == []
+
+
+def test_apply_runtime_osc_routing_combined_change_applies_once() -> None:
+    """A transmitter AND destination change in one pass applies as a single
+    coherent unit: one manager re-stage (no double restart) against the new
+    transmitters + destinations, and one zone-engine reload with the new set."""
+    from openfollow.configuration import (
+        OscDestinationConfig,
+        OscDestinationsConfig,
+        OscTransmitterConfig,
+        OscTransmittersConfig,
+    )
+
+    class _RecordingRuntimeServices(_DummyRuntimeServices):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[tuple[object, object]] = []
+
+        def apply_osc_transmitters_change(self, new_cfg, destinations=None) -> None:  # noqa: ANN001
+            self.calls.append((new_cfg, destinations))
+
+    app = _app_with()
+    app._runtime_services = _RecordingRuntimeServices()
+    zone_engine = _DummyZoneEngine()
+    app._runtime_services._zone_engine = zone_engine  # type: ignore[attr-defined]
+
+    new_txs = OscTransmittersConfig(
+        transmitters=[OscTransmitterConfig(id="r1", name="R1", destination_id="default")],
+    )
+    new_dests = OscDestinationsConfig(
+        destinations=[OscDestinationConfig(id="default", name="Default", host="10.0.0.9")],
+    )
+    apply_runtime_config_changes(
+        app,
+        AppConfig(osc_transmitters=new_txs, osc_destinations=new_dests),
+    )
+
+    # Single apply (not one per section), carrying the new transmitters + dests.
+    assert app._runtime_services.calls == [(new_txs, new_dests)]
+    assert zone_engine.reloaded_destinations == [new_dests]
+    assert app._config.osc_transmitters == new_txs
+    assert app._config.osc_destinations == new_dests
+
+
+def test_apply_runtime_osc_routing_failure_restages_old_routing() -> None:
+    """A failed routing apply re-stages the OLD routing into the manager + zone
+    engine so it can't be left on the new endpoints while config holds the old
+    ones – the split-brain guard. The new apply fails, the revert apply succeeds."""
+    from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
+
+    class _FlakyRuntimeServices(_DummyRuntimeServices):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[tuple[object, object]] = []
+
+        def apply_osc_transmitters_change(self, new_cfg, destinations=None) -> None:  # noqa: ANN001
+            self.calls.append((new_cfg, destinations))
+            if len(self.calls) == 1:
+                raise RuntimeError("boom")  # fail only the NEW apply
+
+    app = _app_with()
+    app._runtime_services = _FlakyRuntimeServices()
+    zone_engine = _DummyZoneEngine()
+    app._runtime_services._zone_engine = zone_engine  # type: ignore[attr-defined]
+    old_txs = app._config.osc_transmitters
+    old_dests = app._config.osc_destinations
+
+    new_dests = OscDestinationsConfig(
+        destinations=[OscDestinationConfig(id="default", name="Default", host="10.0.0.9")],
+    )
+    apply_runtime_config_changes(app, AppConfig(osc_destinations=new_dests))
+
+    # Two applies: the failed new one, then the revert re-staging the OLD set.
+    assert len(app._runtime_services.calls) == 2
+    assert app._runtime_services.calls[0][1] == new_dests
+    assert app._runtime_services.calls[1] == (old_txs, old_dests)
+    # Config reverted, and the manager + zone engine are coherent with it
+    # (last apply + last reload both carry the OLD destinations), not split.
+    assert app._config.osc_transmitters == old_txs
+    assert app._config.osc_destinations == old_dests
+    assert zone_engine.reloaded_destinations == [old_dests]
+
+
+def test_apply_runtime_osc_destinations_and_zones_reload_engine_once() -> None:
+    """Changing destinations AND trigger zones in one pass reloads the zone
+    engine exactly once (the trigger_zones block owns the single reload, with
+    the committed destinations) rather than twice."""
+    from openfollow.configuration import (
+        OscDestinationConfig,
+        OscDestinationsConfig,
+        TriggerZoneConfig,
+        TriggerZonesConfig,
+    )
+
+    app = _app_with()
+    app._runtime_services = _DummyRuntimeServices()
+    zone_engine = _DummyZoneEngine()
+    app._runtime_services._zone_engine = zone_engine  # type: ignore[attr-defined]
+
+    new_dests = OscDestinationsConfig(
+        destinations=[OscDestinationConfig(id="default", name="Default", host="10.0.0.9")],
+    )
+    new_zones = TriggerZonesConfig(
+        enabled=True,
+        zones=[TriggerZoneConfig(name="Main", vertices=[[0, 0], [1, 0], [1, 1]])],
+    )
+    apply_runtime_config_changes(
+        app,
+        AppConfig(osc_destinations=new_dests, trigger_zones=new_zones),
+    )
+
+    # Single reload, carrying the new zones + the committed new destinations.
+    assert zone_engine.reloaded == [new_zones]
+    assert zone_engine.reloaded_destinations == [new_dests]
+    assert app._config.trigger_zones == new_zones
+    assert app._config.osc_destinations == new_dests
 
 
 def test_apply_runtime_reapplies_midi_devices_to_subsystem() -> None:
@@ -3916,6 +4311,8 @@ def test_apply_with_fallback_without_on_failure_logs_and_returns(caplog) -> None
 # ---------------------------------------------------------------------------
 
 from openfollow.configuration import (  # noqa: E402
+    OscDestinationConfig,
+    OscDestinationsConfig,
     OscTransmitterConfig,
     OscTransmittersConfig,
 )
@@ -3947,117 +4344,82 @@ class TestOscTransmitterConfig:
         cfg = OscTransmitterConfig(name="  Stage Left  ")
         assert cfg.name == "Stage Left"
 
-    def test_non_string_host_falls_back_to_default(self) -> None:
-        cfg = OscTransmitterConfig(host=123)  # type: ignore[arg-type]
-        assert cfg.host == "127.0.0.1"
+    def test_destination_id_default_is_empty(self) -> None:
+        """A fresh row has no destination selected – it skips sending."""
+        assert OscTransmitterConfig().destination_id == ""
 
-    def test_blank_host_falls_back_to_default(self) -> None:
-        cfg = OscTransmitterConfig(host="   ")
-        assert cfg.host == "127.0.0.1"
+    def test_destination_id_is_stripped(self) -> None:
+        cfg = OscTransmitterConfig(destination_id="  dest-1  ")
+        assert cfg.destination_id == "dest-1"
 
-    def test_host_is_stripped(self) -> None:
-        cfg = OscTransmitterConfig(host="  10.0.0.5  ")
-        assert cfg.host == "10.0.0.5"
+    def test_non_string_destination_id_falls_back_to_empty(self) -> None:
+        cfg = OscTransmitterConfig(destination_id=99)  # type: ignore[arg-type]
+        assert cfg.destination_id == ""
 
-    def test_port_clamped_to_valid_range(self) -> None:
-        assert OscTransmitterConfig(port=0).port == 1
-        assert OscTransmitterConfig(port=70000).port == 65535
-        assert OscTransmitterConfig(port="bogus").port == 8000  # type: ignore[arg-type]
+    def test_legacy_connection_keys_are_dropped_on_load(self) -> None:
+        """Clean break: a TOML row carrying the old inline connection keys
+        loads without them – ``_filter_known`` discards the unknown keys,
+        leaving ``destination_id`` blank."""
+        cfg = OscTransmittersConfig(
+            transmitters=[
+                {
+                    "id": "row1",
+                    "host": "10.0.0.5",
+                    "port": 9000,
+                    "protocol": "tcp",
+                    "framing": "length_prefix",
+                },
+            ],
+        )
+        row = cfg.transmitters[0]
+        assert not hasattr(row, "host")
+        assert not hasattr(row, "port")
+        assert not hasattr(row, "protocol")
+        assert not hasattr(row, "framing")
+        assert row.destination_id == ""
 
-    @pytest.mark.parametrize("good", ["udp", "tcp"])
-    def test_protocol_accepts_known_values(self, good: str) -> None:
-        assert OscTransmitterConfig(protocol=good).protocol == good
+    def test_markers_default_is_empty(self) -> None:
+        """markers defaults to [] (no default marker chosen yet)."""
+        assert OscTransmitterConfig().markers == []
 
-    @pytest.mark.parametrize("bad", ["", "raw", None, 7])
-    def test_protocol_falls_back_to_udp_on_unknown(self, bad: object) -> None:
-        cfg = OscTransmitterConfig(protocol=bad)  # type: ignore[arg-type]
-        assert cfg.protocol == "udp"
-
-    def test_default_framing_is_slip(self) -> None:
-        """SLIP is the default framing for new bindings."""
-        cfg = OscTransmitterConfig()
-        assert cfg.framing == "slip"
-
-    @pytest.mark.parametrize("good", ["slip", "length_prefix"])
-    def test_framing_accepts_known_values(self, good: str) -> None:
-        assert OscTransmitterConfig(framing=good).framing == good
-
-    @pytest.mark.parametrize("bad", ["", "raw", None, 7, "SLIP"])
-    def test_framing_falls_back_to_slip_on_unknown(
-        self,
-        bad: object,
-    ) -> None:
-        """Hand-edited TOML or programmatic construction passing an
-        invalid value snaps to ``"slip"`` – same shape as the protocol
-        coercion. ``"SLIP"`` upper-case is intentionally rejected so
-        the on-disk format stays canonical lower-case."""
-        cfg = OscTransmitterConfig(framing=bad)  # type: ignore[arg-type]
-        assert cfg.framing == "slip"
-
-    def test_marker_id_default_is_none(self) -> None:
-        """marker_id defaults to None (not yet chosen by operator)."""
-        assert OscTransmitterConfig().marker_id is None
-
-    def test_marker_id_explicit_zero_preserved(self) -> None:
+    def test_markers_explicit_zero_preserved(self) -> None:
         """An operator who deliberately picks marker 0 must see that
-        choice round-trip through the schema – distinct from
-        "unset" (``None``)."""
-        assert OscTransmitterConfig(marker_id=0).marker_id == 0
+        choice round-trip through the schema – distinct from "unset"."""
+        assert OscTransmitterConfig(markers=["0"]).markers == ["0"]
 
-    def test_marker_id_explicit_int_preserved(self) -> None:
-        assert OscTransmitterConfig(marker_id=5).marker_id == 5
+    def test_markers_explicit_int_preserved(self) -> None:
+        assert OscTransmitterConfig(markers=["5"]).markers == ["5"]
 
-    def test_marker_id_negative_collapses_to_none(self) -> None:
-        """Invalid input collapses to None so the runtime surfaces
-        "no default marker configured" instead of using marker 0."""
-        assert OscTransmitterConfig(marker_id=-3).marker_id is None
+    def test_markers_csv_string_parses_sorts_and_dedupes(self) -> None:
+        """A hand-edited comma-separated string canonicalises: numeric ids
+        sort ascending, duplicates drop."""
+        assert OscTransmitterConfig(markers="7, 3, 1, 3").markers == ["1", "3", "7"]  # type: ignore[arg-type]
 
-    def test_marker_id_bogus_string_collapses_to_none(self) -> None:
-        assert (
-            OscTransmitterConfig(
-                marker_id="bogus",  # type: ignore[arg-type]
-            ).marker_id
-            is None
-        )
+    def test_markers_controller_alias_preserved(self) -> None:
+        assert OscTransmitterConfig(markers="c2, 1").markers == ["1", "c2"]  # type: ignore[arg-type]
 
-    def test_marker_id_empty_string_collapses_to_none(self) -> None:
-        """Web form posts an empty string when the operator clears
-        the input; that must mean ``None``, not "marker 0"."""
-        assert (
-            OscTransmitterConfig(
-                marker_id="",  # type: ignore[arg-type]
-            ).marker_id
-            is None
-        )
+    def test_markers_all_keyword_collapses_list(self) -> None:
+        """``all`` subsumes every other entry."""
+        assert OscTransmitterConfig(markers="1, all, c3").markers == ["all"]  # type: ignore[arg-type]
 
-    def test_marker_id_whitespace_string_collapses_to_none(self) -> None:
-        assert (
-            OscTransmitterConfig(
-                marker_id="   ",  # type: ignore[arg-type]
-            ).marker_id
-            is None
-        )
+    def test_markers_invalid_entries_are_dropped(self) -> None:
+        """Negatives, floats, bad aliases (c0 / c01), and junk are ignored
+        rather than collapsing the whole field."""
+        assert OscTransmitterConfig(markers="1, -3, bogus, 1.5, c0, c01, 4").markers == ["1", "4"]  # type: ignore[arg-type]
 
-    def test_marker_id_bool_collapses_to_none(self) -> None:
-        """``True`` is an ``int`` subclass – accepting it would silently
-        promote a hand-edited ``marker_id = true`` to marker 1.
-        Mirrors the bool guard in :func:`_coerce_int`."""
-        assert (
-            OscTransmitterConfig(
-                marker_id=True,  # type: ignore[arg-type]
-            ).marker_id
-            is None
-        )
+    def test_markers_empty_string_is_empty_list(self) -> None:
+        assert OscTransmitterConfig(markers="   ").markers == []  # type: ignore[arg-type]
 
-    def test_marker_id_float_collapses_to_none(self) -> None:
-        """Float marker_id must reject (could silently truncate to wrong marker)."""
-        for bad in (1.5, 0.1, -0.5, 1.0, float("inf"), float("nan")):
-            assert (
-                OscTransmitterConfig(
-                    marker_id=bad,  # type: ignore[arg-type]
-                ).marker_id
-                is None
-            ), f"expected None for marker_id={bad!r}"
+    def test_markers_bool_collapses_to_empty(self) -> None:
+        """``True`` is an ``int`` subclass – a hand-edited ``markers = true``
+        must not become marker 1."""
+        assert OscTransmitterConfig(markers=True).markers == []  # type: ignore[arg-type]
+
+    def test_markers_legacy_int_lift(self) -> None:
+        """A bare int (the legacy single ``marker_id``) lifts to a one-token
+        list; a negative lifts to empty."""
+        assert OscTransmitterConfig(markers=5).markers == ["5"]  # type: ignore[arg-type]
+        assert OscTransmitterConfig(markers=-3).markers == []  # type: ignore[arg-type]
 
     def test_non_string_template_id_collapses_to_empty(self) -> None:
         cfg = OscTransmitterConfig(template_id=99)  # type: ignore[arg-type]
@@ -4115,15 +4477,161 @@ class TestOscTransmitterConfig:
 class TestOscTransmittersConfig:
     def test_dict_entries_are_promoted_to_dataclasses(self) -> None:
         cfg = OscTransmittersConfig(
-            transmitters=[{"id": "row1", "host": "10.0.0.5"}],
+            transmitters=[{"id": "row1", "destination_id": "d1"}],
         )
         assert isinstance(cfg.transmitters[0], OscTransmitterConfig)
-        assert cfg.transmitters[0].host == "10.0.0.5"
+        assert cfg.transmitters[0].destination_id == "d1"
 
     def test_existing_dataclass_entries_pass_through(self) -> None:
-        row = OscTransmitterConfig(id="r1", host="2.2.2.2")
+        row = OscTransmitterConfig(id="r1", destination_id="d2")
         cfg = OscTransmittersConfig(transmitters=[row])
         assert cfg.transmitters[0] is row
+
+
+class TestOscDestinationConfig:
+    def test_blank_id_is_minted_as_uuid_hex(self) -> None:
+        cfg = OscDestinationConfig()
+        assert len(cfg.id) == 32
+        assert all(c in "0123456789abcdef" for c in cfg.id)
+
+    def test_existing_id_is_preserved_and_stripped(self) -> None:
+        assert OscDestinationConfig(id="  dest-1  ").id == "dest-1"
+
+    def test_non_string_name_falls_back_to_empty(self) -> None:
+        assert OscDestinationConfig(name=99).name == ""  # type: ignore[arg-type]
+
+    def test_name_is_stripped(self) -> None:
+        assert OscDestinationConfig(name="  Console  ").name == "Console"
+
+    def test_non_string_host_falls_back_to_default(self) -> None:
+        assert OscDestinationConfig(host=123).host == "127.0.0.1"  # type: ignore[arg-type]
+
+    def test_blank_host_falls_back_to_default(self) -> None:
+        assert OscDestinationConfig(host="   ").host == "127.0.0.1"
+
+    def test_host_is_stripped(self) -> None:
+        assert OscDestinationConfig(host="  10.0.0.5  ").host == "10.0.0.5"
+
+    def test_port_clamped_to_valid_range(self) -> None:
+        assert OscDestinationConfig(port=0).port == 1
+        assert OscDestinationConfig(port=70000).port == 65535
+        assert OscDestinationConfig(port="bogus").port == 8000  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("good", ["udp", "tcp"])
+    def test_protocol_accepts_known_values(self, good: str) -> None:
+        assert OscDestinationConfig(protocol=good).protocol == good
+
+    @pytest.mark.parametrize("bad", ["", "raw", None, 7])
+    def test_protocol_falls_back_to_udp_on_unknown(self, bad: object) -> None:
+        assert OscDestinationConfig(protocol=bad).protocol == "udp"  # type: ignore[arg-type]
+
+    def test_default_framing_is_slip(self) -> None:
+        assert OscDestinationConfig().framing == "slip"
+
+    @pytest.mark.parametrize("good", ["slip", "length_prefix"])
+    def test_framing_accepts_known_values(self, good: str) -> None:
+        assert OscDestinationConfig(framing=good).framing == good
+
+    @pytest.mark.parametrize("bad", ["", "raw", None, 7, "SLIP"])
+    def test_framing_falls_back_to_slip_on_unknown(self, bad: object) -> None:
+        assert OscDestinationConfig(framing=bad).framing == "slip"  # type: ignore[arg-type]
+
+
+class TestOscDestinationsConfig:
+    def test_default_seeds_one_pickable_destination(self) -> None:
+        cfg = OscDestinationsConfig()
+        assert len(cfg.destinations) == 1
+        assert cfg.destinations[0].id == "default"
+        assert cfg.destinations[0].name == "Default"
+
+    def test_default_config_compares_equal(self) -> None:
+        """The seeded destination uses a fixed id so two default configs
+        compare equal (the hot-reload diff depends on this)."""
+        assert OscDestinationsConfig() == OscDestinationsConfig()
+
+    def test_dict_entries_are_promoted_to_dataclasses(self) -> None:
+        cfg = OscDestinationsConfig(
+            destinations=[{"id": "d1", "host": "10.0.0.9"}],
+        )
+        assert isinstance(cfg.destinations[0], OscDestinationConfig)
+        assert cfg.destinations[0].host == "10.0.0.9"
+
+    def test_filter_known_drops_unknown_keys(self) -> None:
+        cfg = OscDestinationsConfig(
+            destinations=[{"id": "d1", "bogus": "x"}],
+        )
+        assert not hasattr(cfg.destinations[0], "bogus")
+
+    def test_non_object_entries_are_dropped(self) -> None:
+        """A hand-edited TOML / crafted import with bare entries must not
+        persist a str/int/None: ``get()`` and template rendering dereference
+        ``d.id`` / ``d.host`` and would raise AttributeError otherwise. Dict
+        and already-typed entries survive; everything else is dropped."""
+        typed = OscDestinationConfig(id="keep", name="Keep")
+        cfg = OscDestinationsConfig(
+            destinations=["evil", 123, None, {"id": "d1", "host": "10.0.0.9"}, typed],  # type: ignore[list-item]
+        )
+        assert all(isinstance(d, OscDestinationConfig) for d in cfg.destinations)
+        assert [d.id for d in cfg.destinations] == ["d1", "keep"]
+        resolved = cfg.get("d1")
+        assert resolved is not None and resolved.host == "10.0.0.9"
+
+    def test_get_returns_matching_destination(self) -> None:
+        d = OscDestinationConfig(id="d1", name="A")
+        cfg = OscDestinationsConfig(destinations=[d])
+        assert cfg.get("d1") is d
+
+    def test_get_unknown_id_returns_none(self) -> None:
+        cfg = OscDestinationsConfig(destinations=[OscDestinationConfig(id="d1")])
+        assert cfg.get("nope") is None
+
+    def test_get_blank_id_returns_none(self) -> None:
+        cfg = OscDestinationsConfig(destinations=[OscDestinationConfig(id="d1")])
+        assert cfg.get("") is None
+
+    def test_duplicate_ids_are_made_unique(self) -> None:
+        """The id is the key transmitters/zones reference, so it must be
+        unique. A hand-edited TOML / crafted import with two entries sharing
+        an id keeps the first occurrence stable (existing references stay
+        valid) and re-mints a fresh id for each later collision instead of
+        leaving ``get()`` to resolve ambiguously to the first match."""
+        cfg = OscDestinationsConfig(
+            destinations=[
+                OscDestinationConfig(id="dup", name="First", host="10.0.0.1"),
+                OscDestinationConfig(id="dup", name="Second", host="10.0.0.2"),
+            ],
+        )
+        ids = [d.id for d in cfg.destinations]
+        assert ids[0] == "dup"  # first occurrence kept stable
+        assert ids[1] != "dup"  # later collision re-minted
+        assert len(set(ids)) == 2  # all unique
+        first = cfg.get("dup")
+        second = cfg.get(ids[1])
+        assert first is not None and first.name == "First"
+        assert second is not None and second.name == "Second"
+
+    def test_duplicate_ids_across_three_entries_all_unique(self) -> None:
+        cfg = OscDestinationsConfig(
+            destinations=[
+                OscDestinationConfig(id="x", name="A"),
+                OscDestinationConfig(id="x", name="B"),
+                OscDestinationConfig(id="x", name="C"),
+            ],
+        )
+        ids = [d.id for d in cfg.destinations]
+        assert ids[0] == "x"  # first occurrence kept stable
+        assert len(set(ids)) == 3  # all unique
+
+    def test_by_id_indexes_every_destination(self) -> None:
+        """``by_id`` is the O(1) index hot consumers stage instead of a
+        per-tick linear scan; it must agree with ``get`` for every id."""
+        a = OscDestinationConfig(id="a", host="10.0.0.1")
+        b = OscDestinationConfig(id="b", host="10.0.0.2")
+        cfg = OscDestinationsConfig(destinations=[a, b])
+        index = cfg.by_id()
+        assert index == {"a": a, "b": b}
+        assert index.get("a") is cfg.get("a")
+        assert index.get("nope") is cfg.get("nope")  # both None for unknown id
 
 
 # ---------------------------------------------------------------------------
@@ -4598,7 +5106,7 @@ class TestOscTransmittersConfigLegacyLift:
         sees a synthesised trigger sub-table."""
         cfg = OscTransmittersConfig(
             transmitters=[
-                {"rate_hz": 60, "host": "10.0.0.5"},
+                {"rate_hz": 60, "destination_id": "d1"},
             ]
         )
         row = cfg.transmitters[0]
@@ -4636,25 +5144,13 @@ class TestOscTransmittersConfigLegacyLift:
                 transmitters=[
                     OscTransmitterConfig(
                         id="abc",
-                        host="10.0.0.5",
-                        port=9000,
+                        destination_id="d1",
                         rate_hz=20,
                         template_id="etc",
                     ),
-                    # TCP framing must round-trip correctly.
                     OscTransmitterConfig(
-                        id="tcp-slip",
-                        host="10.0.0.6",
-                        port=9001,
-                        protocol="tcp",
-                        framing="slip",
-                    ),
-                    OscTransmitterConfig(
-                        id="tcp-lp",
-                        host="10.0.0.7",
-                        port=9002,
-                        protocol="tcp",
-                        framing="length_prefix",
+                        id="row2",
+                        destination_id="d2",
                     ),
                 ],
             ),
@@ -4662,51 +5158,38 @@ class TestOscTransmittersConfigLegacyLift:
         save_config(original, str(temp_config_path))
         reloaded = load_config(str(temp_config_path))
         rows = reloaded.osc_transmitters.transmitters
-        assert len(rows) == 3
+        assert len(rows) == 2
         assert rows[0].id == "abc"
-        assert rows[0].host == "10.0.0.5"
+        assert rows[0].destination_id == "d1"
         assert rows[0].rate_hz == 20
-        # Default framing on the original (unspecified) row stays SLIP.
-        assert rows[0].framing == "slip"
-        assert rows[1].id == "tcp-slip"
-        assert rows[1].framing == "slip"
-        assert rows[2].id == "tcp-lp"
-        assert rows[2].framing == "length_prefix"
+        assert rows[1].id == "row2"
+        assert rows[1].destination_id == "d2"
 
-    def test_marker_id_none_round_trips_through_toml(
+    def test_markers_empty_round_trips_through_toml(
         self,
         temp_config_path,  # noqa: ANN001
     ) -> None:
         original = AppConfig(
             osc_transmitters=OscTransmittersConfig(
                 transmitters=[
-                    OscTransmitterConfig(id="r1", marker_id=None),
+                    OscTransmitterConfig(id="r1", markers=[]),
                 ],
             ),
         )
         save_config(original, str(temp_config_path))
-        # Confirm the dump didn't write a ``marker_id`` key for the
-        # row – otherwise a future reader that *does* coerce the
-        # absent-value branch differently could disagree with us.
-        with open(temp_config_path, "rb") as f:
-            raw = tomllib.load(f)
-        row = raw["osc_transmitters"]["transmitters"][0]
-        assert "marker_id" not in row
         reloaded = load_config(str(temp_config_path))
-        assert reloaded.osc_transmitters.transmitters[0].marker_id is None
+        assert reloaded.osc_transmitters.transmitters[0].markers == []
 
-    def test_marker_id_explicit_zero_round_trips_through_toml(
+    def test_markers_multi_round_trips_through_toml(
         self,
         temp_config_path,  # noqa: ANN001
     ) -> None:
-        """An operator who deliberately set marker 0 must see that
-        choice survive a save / reload cycle – distinct from
-        "unset" (``None``). ``0`` is not stripped by
-        :func:`_strip_none` because it isn't ``None``."""
+        """A multi-marker row (ids + alias) survives a save / reload cycle
+        in canonical order."""
         original = AppConfig(
             osc_transmitters=OscTransmittersConfig(
                 transmitters=[
-                    OscTransmitterConfig(id="r1", marker_id=0),
+                    OscTransmitterConfig(id="r1", markers=["7", "0", "c1"]),
                 ],
             ),
         )
@@ -4714,24 +5197,22 @@ class TestOscTransmittersConfigLegacyLift:
         with open(temp_config_path, "rb") as f:
             raw = tomllib.load(f)
         row = raw["osc_transmitters"]["transmitters"][0]
-        assert row["marker_id"] == 0
+        assert row["markers"] == ["0", "7", "c1"]
         reloaded = load_config(str(temp_config_path))
-        assert reloaded.osc_transmitters.transmitters[0].marker_id == 0
+        assert reloaded.osc_transmitters.transmitters[0].markers == ["0", "7", "c1"]
 
-    def test_marker_id_explicit_int_round_trips_through_toml(
+    def test_legacy_marker_id_lifts_into_markers(
         self,
         temp_config_path,  # noqa: ANN001
     ) -> None:
-        original = AppConfig(
-            osc_transmitters=OscTransmittersConfig(
-                transmitters=[
-                    OscTransmitterConfig(id="r1", marker_id=7),
-                ],
-            ),
+        """A hand-edited TOML row carrying the legacy single ``marker_id``
+        key lifts into the one-token ``markers`` list on load."""
+        temp_config_path.write_text(
+            "[[osc_transmitters.transmitters]]\nid = 'r1'\nmarker_id = 4\n",
+            encoding="utf-8",
         )
-        save_config(original, str(temp_config_path))
         reloaded = load_config(str(temp_config_path))
-        assert reloaded.osc_transmitters.transmitters[0].marker_id == 7
+        assert reloaded.osc_transmitters.transmitters[0].markers == ["4"]
 
 
 def test_new_uuid_hex_returns_unique_strings_each_call() -> None:

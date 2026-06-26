@@ -211,6 +211,9 @@ def sync_grid_config(state: OverlayState, cfg: Any) -> None:
         _soft_float(g.y_offset, d.y_offset),
         _soft_float(g.z_offset, d.z_offset),
     )
+    # getattr keeps the per-tick path safe if a shim/partial grid object
+    # predates this field; a real GridConfig always carries it.
+    state.grid_visible = _soft_bool(getattr(g, "visible", d.visible), d.visible)
     state.grid_color = g.color.lower() if isinstance(g.color, str) and _HEX_COLOR_RE.match(g.color) else d.color
     state.grid_thickness = _soft_int(g.thickness, d.thickness, lo=1)
     # ``_soft_float`` rejects non-finite (inf/nan) to ``default``; the
@@ -601,6 +604,11 @@ def build_marker_visual_state(
     cam_params_buffer[5] = cam_cfg.roll
     cam_params_buffer[6] = cam_cfg.fov
     state.camera_params = cam_params_buffer.copy()
+    # Lens-distortion coefficients live on the app config (the Camera object is
+    # pinhole and doesn't carry them); read them straight from the live config so
+    # slider edits hot-reload onto the HUD.
+    state.lens_k1 = cfg.camera.lens_k1
+    state.lens_k2 = cfg.camera.lens_k2
 
     state.selected_id = app._selected_id
 
@@ -688,6 +696,7 @@ def build_marker_visual_state(
         and app._input_manager.is_keyboard_connected()
     )
     state.mouse_enabled = cfg.controller.mouse_enabled
+    state.mouse_double_click_reset = cfg.controller.mouse_double_click_reset
     state.show_hud_help = app._show_hud_help
 
     # Virtual fader stack. Read from the running bus and surface only the

@@ -245,9 +245,7 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
                 "address",
                 "args",
                 "name",
-                "host",
-                "port",
-                "protocol",
+                "destination_id",
                 "rate_hz",
                 "trigger",
             }
@@ -281,38 +279,12 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
                     f"osc_output payload 'args[{i}]' must be str, got {type(arg).__name__}",
                 )
         # Optional fields: validate bounds to catch silent coercions at apply.
-        from openfollow.configuration import (
-            VALID_OSC_TRANSMITTER_PROTOCOLS,
-            VALID_OSC_TRANSMITTER_RATES,
-        )
+        from openfollow.configuration import VALID_OSC_TRANSMITTER_RATES
 
-        for field_name in ("name", "host"):
+        for field_name in ("name", "destination_id"):
             if field_name in payload and not isinstance(payload[field_name], str):
                 raise TemplateValidationError(
                     f"osc_output payload {field_name!r} must be str, got {type(payload[field_name]).__name__}",
-                )
-        if "protocol" in payload:
-            protocol = payload["protocol"]
-            if not isinstance(protocol, str):
-                raise TemplateValidationError(
-                    f"osc_output payload 'protocol' must be str, got {type(protocol).__name__}",
-                )
-            if protocol not in VALID_OSC_TRANSMITTER_PROTOCOLS:
-                raise TemplateValidationError(
-                    f"osc_output payload 'protocol' must be one of "
-                    f"{', '.join(VALID_OSC_TRANSMITTER_PROTOCOLS)} "
-                    f"(got {protocol!r})",
-                )
-        if "port" in payload:
-            port = payload["port"]
-            if not isinstance(port, int) or isinstance(port, bool):
-                # bool is int subclass; reject to avoid port=true → 1.
-                raise TemplateValidationError(
-                    f"osc_output payload 'port' must be int, got {type(port).__name__}",
-                )
-            if not 1 <= port <= 65535:
-                raise TemplateValidationError(
-                    f"osc_output payload 'port' must be in 1..65535 (got {port})",
                 )
         if "rate_hz" in payload:
             rate = payload["rate_hz"]

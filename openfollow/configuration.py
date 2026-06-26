@@ -202,6 +202,85 @@ def _coerce_optional_marker_id(value: Any) -> int | None:
     return out
 
 
+# Marker-token grammar for an OSC transmitter row's ``markers`` field. Each
+# token is one of: a non-negative integer marker id, a controller alias
+# ``cN`` (1-based, no leading zero – mirrors the ``:cN`` reference grammar in
+# ``osc/template.py``), or the keyword ``all`` (every id in
+# ``controlled_marker_ids``). ``all`` and the aliases resolve dynamically, so
+# they're stored verbatim and only mapped to concrete ids by the transmitter
+# manager at render time.
+MARKER_TOKEN_ALL = "all"
+_CONTROLLER_ALIAS_RE = re.compile(r"^c[1-9][0-9]*$")
+
+
+def _canonical_marker_token(raw: Any) -> str | None:
+    """Canonicalise one ``markers`` entry, or ``None`` when invalid.
+
+    Accepts an int (non-negative) or a string token (``"all"`` / ``"cN"`` /
+    a decimal id). Invalid entries – floats, ``True``, negatives, ``c0`` /
+    ``c01``, junk – return ``None`` so the caller drops them (the field
+    ignores invalid ids by spec).
+    """
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if not s:
+            return None
+        if s == MARKER_TOKEN_ALL:
+            return MARKER_TOKEN_ALL
+        if _CONTROLLER_ALIAS_RE.match(s):
+            return s
+        # Fall through to the numeric coercer (rejects bool / float / junk).
+        mid = _coerce_optional_marker_id(s)
+        return None if mid is None else str(mid)
+    mid = _coerce_optional_marker_id(raw)
+    return None if mid is None else str(mid)
+
+
+def _marker_token_sort_key(token: str) -> tuple[int, int]:
+    """Display order: numeric ids ascending, then controller aliases by
+    index. ``all`` collapses the list so it never reaches here."""
+    if _CONTROLLER_ALIAS_RE.match(token):
+        return (1, int(token[1:]))
+    return (0, int(token))
+
+
+def _coerce_marker_tokens(value: Any) -> list[str]:
+    """Normalise an OSC transmitter row's ``markers`` field to a sorted,
+    de-duplicated list of canonical tokens.
+
+    Accepts a list (TOML array), a comma-separated string (hand-edited TOML
+    / web form), or a bare int (legacy single ``marker_id`` lift). ``all``
+    subsumes every other entry, so its presence collapses the result to
+    ``["all"]``. Numeric tokens sort ascending ahead of controller aliases.
+    """
+    if value is None or isinstance(value, bool):
+        return []
+    if isinstance(value, str):
+        raw_items: list[Any] = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        raw_items = list(value)
+    else:
+        # Bare int (legacy lift) or anything else the canonicaliser vets.
+        raw_items = [value]
+    canonical: list[str] = []
+    seen: set[str] = set()
+    has_all = False
+    for item in raw_items:
+        token = _canonical_marker_token(item)
+        if token is None:
+            continue
+        if token == MARKER_TOKEN_ALL:
+            has_all = True
+            continue
+        if token not in seen:
+            seen.add(token)
+            canonical.append(token)
+    if has_all:
+        return [MARKER_TOKEN_ALL]
+    canonical.sort(key=_marker_token_sort_key)
+    return canonical
+
+
 def _coerce_choice(value: Any, choices: tuple[str, ...], default: str) -> str:
     """Return ``value`` when it matches one of ``choices``, else ``default``."""
     if isinstance(value, str) and value in choices:
@@ -289,6 +368,12 @@ class CameraConfig:
     # the projection math; ``fov`` remains the source of truth.
     sensor_width_mm: float | None = None
     focal_length_mm: float | None = None
+    # Radial lens-distortion coefficients for the overlay-curvature correction.
+    # Bow the rendered HUD to match a fisheye / wide-angle lens via
+    # f = 1 + k1*r^2 + k2*r^4 (r normalised to the image half-diagonal). The
+    # video frame is never warped. 0/0 = pinhole (no curvature).
+    lens_k1: float = 0.0
+    lens_k2: float = 0.0
 
     def __post_init__(self) -> None:
         # These feed ``project_points`` via a numpy float array. Clamp fov out
@@ -302,6 +387,13 @@ class CameraConfig:
         self.fov = _coerce_float(self.fov, 60.0, lo=1.0, hi=179.0)
         self.sensor_width_mm = _coerce_optional_float(self.sensor_width_mm, None, lo=0.0)
         self.focal_length_mm = _coerce_optional_float(self.focal_length_mm, None, lo=0.0)
+        # Bounds cover strong wide-angle / fisheye lenses. The radial map
+        # f = 1 + k1*r^2 + k2*r^4 stays positive and monotonic across the bulk
+        # of the frame; near the extreme corner a strong barrel setting can
+        # compress past monotonic, but the floored inverse (input path) stays
+        # bounded there, so control never diverges.
+        self.lens_k1 = _coerce_float(self.lens_k1, 0.0, lo=-0.4, hi=0.4)
+        self.lens_k2 = _coerce_float(self.lens_k2, 0.0, lo=-0.2, hi=0.2)
 
 
 _GRID_COLOR_DEFAULT = "#545454"
@@ -311,6 +403,9 @@ _GRID_TRANSPARENCY_DEFAULT = 0.6
 
 @dataclass
 class GridConfig:
+    # Master show/hide for the grid overlay. Default on so existing configs
+    # keep drawing the grid.
+    visible: bool = True
     width: float = 10.0
     depth: float = 6.0
     spacing: float = 1.0
@@ -332,6 +427,7 @@ class GridConfig:
     def __post_init__(self) -> None:
         # Dimensions/offsets reach numpy float buffers in draw_grid; appearance
         # fields reach Cairo.
+        self.visible = _coerce_bool(self.visible, True)
         self.width = _coerce_float(self.width, 10.0, lo=0.1)
         self.depth = _coerce_float(self.depth, 6.0, lo=0.1)
         self.spacing = _coerce_float(self.spacing, 1.0, lo=0.1)
@@ -613,8 +709,9 @@ class TriggerZoneConfig:
     osc_address_additional_entry: str = ""
     osc_address_partial_exit: str = ""
     osc_address_final_exit: str = ""
-    osc_host: str = ""
-    osc_port: int = 0
+    # Reference to an :class:`OscDestinationConfig`. Empty = no destination
+    # selected → the zone emits nothing.
+    destination_id: str = ""
     enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -651,6 +748,9 @@ class TriggerZoneConfig:
             except (TypeError, ValueError):
                 continue
         self.triggered_by = cleaned_ids
+        if not isinstance(self.destination_id, str):
+            self.destination_id = ""
+        self.destination_id = self.destination_id.strip()
 
 
 @dataclass
@@ -660,8 +760,6 @@ class TriggerZonesConfig:
     enabled: bool = False
     show_overlay: bool = True
     eval_fps: int = 10
-    default_osc_host: str = "127.0.0.1"
-    default_osc_port: int = 53000
     debounce_ms: int = 200
     hysteresis: float = 0.05  # metres – inward polygon offset for exit threshold
     zones: list[TriggerZoneConfig] = field(default_factory=list)
@@ -680,12 +778,6 @@ class TriggerZonesConfig:
         # survive. Upper bounds mirror ``openfollow/web/validation.py``.
         self.debounce_ms = _coerce_int(self.debounce_ms, 200, lo=0, hi=60000)
         self.hysteresis = _coerce_float(self.hysteresis, 0.05, lo=0.0, hi=10.0)
-        self.default_osc_port = _coerce_int(
-            self.default_osc_port,
-            53000,
-            lo=1,
-            hi=65535,
-        )
         # Drop non-object zone entries instead of keeping them verbatim: a
         # hand-edited inline TOML array (``zones = ["evil"]``) or a crafted
         # payload would otherwise persist a bare str/int that the zone engine
@@ -1277,17 +1369,17 @@ class OscTransmitterConfig:
     id: str = ""
     enabled: bool = False
     name: str = ""
-    host: str = "127.0.0.1"
-    port: int = 8000
-    protocol: str = "udp"
-    # TCP framing selector. Inert for UDP rows but round-trippable so the UI
-    # swap doesn't hide it on protocol toggle.
-    framing: str = "slip"
-    # ``None`` = no default marker picked. Rows using only literals or
-    # explicit-marker refs (``[x:markerN]``) still dispatch; rows using a
-    # default-marker placeholder (``[x]`` / ``[fy]`` / ``[markerId]``) skip
-    # with "no default marker configured" until set.
-    marker_id: int | None = None
+    # Reference to an :class:`OscDestinationConfig` (host/port/protocol/framing
+    # live there). Empty = no destination selected → the row skips sending.
+    destination_id: str = ""
+    # Default markers driving ``[x]`` / ``[markerid]`` / ``[markerfader]``.
+    # Each token is a marker id, a controller alias ``cN``, or ``all`` (every
+    # controlled marker). Multiple tokens fan the row out into one
+    # independent send per resolved marker. Empty list = no default marker:
+    # rows using only literals or explicit refs (``[x:markerN]``) still
+    # dispatch; rows using a default-marker placeholder skip with "no default
+    # marker configured" until a token is set.
+    markers: list[str] = field(default_factory=list)
     # Optional default virtual fader. Bare placeholders (``[fader]``,
     # ``[float]``, ``[int:min-max]``) resolve through this; explicit refs
     # (``[fader:3]``) ignore it. ``None`` = unset; ``0`` is rejected at
@@ -1313,21 +1405,10 @@ class OscTransmitterConfig:
         if not isinstance(self.name, str):
             self.name = ""
         self.name = self.name.strip()
-        if not isinstance(self.host, str):
-            self.host = "127.0.0.1"
-        self.host = self.host.strip() or "127.0.0.1"
-        self.port = _coerce_int(self.port, 8000, lo=1, hi=65535)
-        self.protocol = _coerce_choice(
-            self.protocol,
-            VALID_OSC_TRANSMITTER_PROTOCOLS,
-            "udp",
-        )
-        self.framing = _coerce_choice(
-            self.framing,
-            VALID_OSC_FRAMINGS,
-            "slip",
-        )
-        self.marker_id = _coerce_optional_marker_id(self.marker_id)
+        if not isinstance(self.destination_id, str):
+            self.destination_id = ""
+        self.destination_id = self.destination_id.strip()
+        self.markers = _coerce_marker_tokens(self.markers)
         # ``None`` for unset, else 1..VIRTUAL_FADER_COUNT; out-of-range/junk
         # collapses to ``None`` rather than routing to a valid-but-wrong fader.
         self.default_fader = _coerce_optional_int(
@@ -1396,6 +1477,12 @@ class OscTransmittersConfig:
                         "kind": "stream",
                         "rate_hz": row_data["rate_hz"],
                     }
+                # Legacy lift: a single ``marker_id`` becomes the one-token
+                # ``markers`` list (``_coerce_marker_tokens`` handles the
+                # scalar). ``_filter_known`` would otherwise drop the unknown
+                # key and lose the operator's default marker.
+                if "markers" not in row_data and "marker_id" in row_data:
+                    row_data["markers"] = row_data["marker_id"]
                 coerced_transmitters.append(
                     OscTransmitterConfig(
                         **_filter_known(OscTransmitterConfig, row_data),
@@ -1404,6 +1491,113 @@ class OscTransmittersConfig:
             else:
                 coerced_transmitters.append(t)
         self.transmitters = coerced_transmitters
+
+
+@dataclass
+class OscDestinationConfig:
+    """A named, reusable OSC connection profile.
+
+    Transmitters and trigger zones reference a destination by ``id`` instead
+    of carrying host/port/protocol/framing inline, so re-pointing a single
+    destination repoints every consumer at once.
+    """
+
+    id: str = ""
+    name: str = ""
+    host: str = "127.0.0.1"
+    port: int = 8000
+    protocol: str = "udp"
+    # TCP framing selector. Inert for UDP but round-trippable so the UI swap
+    # doesn't hide it on protocol toggle.
+    framing: str = "slip"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or not self.id.strip():
+            self.id = _new_uuid_hex()
+        else:
+            self.id = self.id.strip()
+        if not isinstance(self.name, str):
+            self.name = ""
+        self.name = self.name.strip()
+        if not isinstance(self.host, str):
+            self.host = "127.0.0.1"
+        self.host = self.host.strip() or "127.0.0.1"
+        self.port = _coerce_int(self.port, 8000, lo=1, hi=65535)
+        self.protocol = _coerce_choice(
+            self.protocol,
+            VALID_OSC_TRANSMITTER_PROTOCOLS,
+            "udp",
+        )
+        self.framing = _coerce_choice(
+            self.framing,
+            VALID_OSC_FRAMINGS,
+            "slip",
+        )
+
+
+def _default_osc_destinations() -> list[OscDestinationConfig]:
+    """Seed one pickable destination so fresh installs have a non-empty list.
+
+    The id is fixed (not minted) so two default configs compare equal – the
+    hot-reload diff and a pile of ``AppConfig() == AppConfig()`` tests rely on
+    default-config equality.
+    """
+    return [OscDestinationConfig(id="default", name="Default")]
+
+
+@dataclass
+class OscDestinationsConfig:
+    """Container for the shared OSC destination profiles."""
+
+    destinations: list[OscDestinationConfig] = field(
+        default_factory=_default_osc_destinations,
+    )
+
+    def __post_init__(self) -> None:
+        # Drop non-object destination entries instead of keeping them verbatim:
+        # a hand-edited inline TOML array (``destinations = ["evil"]``) or a
+        # crafted import would otherwise persist a bare str that ``get()`` and
+        # the template dereference (``d.id`` / ``d.host``) → AttributeError.
+        # Already-typed ``OscDestinationConfig`` entries pass through.
+        self.destinations = [
+            OscDestinationConfig(**_filter_known(OscDestinationConfig, d)) if isinstance(d, dict) else d
+            for d in self.destinations
+            if isinstance(d, (dict, OscDestinationConfig))
+        ]
+        # The id is the key transmitters/zones reference, so it must be unique:
+        # a hand-edited TOML or crafted import with two entries sharing an id
+        # would make ``get()`` resolve ambiguously (first match wins) and hide
+        # the duplicate from editing. Keep the first occurrence's id stable so
+        # existing references stay valid; re-mint a fresh uuid for each later
+        # collision rather than dropping the entry.
+        seen_ids: set[str] = set()
+        for dest in self.destinations:
+            if dest.id in seen_ids:
+                dest.id = _new_uuid_hex()
+            seen_ids.add(dest.id)
+
+    def get(self, destination_id: str) -> OscDestinationConfig | None:
+        """Resolve a destination id to its profile, or ``None`` if unknown.
+
+        Linear scan – fine for one-off lookups (web routes, wizard). Hot
+        per-tick consumers stage an :meth:`by_id` index instead.
+        """
+        if not destination_id:
+            return None
+        for d in self.destinations:
+            if d.id == destination_id:
+                return d
+        return None
+
+    def by_id(self) -> dict[str, OscDestinationConfig]:
+        """Index destinations by id for O(1) resolution on the hot path.
+
+        Built once when the set is staged into a consumer (the transmitter
+        manager / zone engine) so per-row, per-tick resolution is a dict
+        lookup rather than a linear scan under the lock. Ids are unique
+        (see ``__post_init__``), so the comprehension is unambiguous.
+        """
+        return {d.id: d for d in self.destinations}
 
 
 VALID_CURVES = ("linear", "logarithmic", "quadratic", "s-law")
@@ -1537,6 +1731,22 @@ class ControllerConfig:
     keyboard_enabled: bool = True
     # Default matches config.example.toml; an explicit ``true`` is honoured.
     mouse_enabled: bool = False
+    # Mouse steering refinements (see input/mouse.py).
+    # Cursor deadband in whole screen pixels; 0 = off (apply every move).
+    mouse_hysteresis_px: int = 0
+    # Glide toward the cursor target; 0 = instant (no smoothing), higher = smoother/laggier.
+    mouse_smoothing: float = 0.0
+    # Cap the marker's upstage (Y+) position when steering by mouse; 0 = no
+    # limit. Near the camera horizon the unprojected Y runs away, so a move
+    # beyond this holds the marker rather than placing it far upstage.
+    mouse_max_y: float = 0.0
+    # Scroll wheel adjusts marker Z height.
+    mouse_wheel_z_enabled: bool = True
+    mouse_wheel_invert: bool = False
+    # Height change per wheel tick (m).
+    mouse_wheel_z_step: float = 0.1
+    # Double right-click resets the controlled marker to the default position.
+    mouse_double_click_reset: bool = True
     deadzone: float = 0.15
     invert_y: bool = False
     curve: str = "logarithmic"
@@ -1624,6 +1834,15 @@ class ControllerConfig:
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
+        # Mouse steering refinements – coerce so a hand-edited / imported TOML
+        # can't feed a string or out-of-range value into the input loop.
+        self.mouse_hysteresis_px = _coerce_int(self.mouse_hysteresis_px, 0, lo=0, hi=200)
+        self.mouse_smoothing = _coerce_float(self.mouse_smoothing, 0.0, lo=0.0, hi=1.0)
+        self.mouse_max_y = _coerce_float(self.mouse_max_y, 0.0, lo=0.0, hi=10000.0)
+        self.mouse_wheel_z_step = _coerce_float(self.mouse_wheel_z_step, 0.1, lo=0.0, hi=10.0)
+        self.mouse_wheel_z_enabled = _coerce_bool(self.mouse_wheel_z_enabled, True)
+        self.mouse_wheel_invert = _coerce_bool(self.mouse_wheel_invert, False)
+        self.mouse_double_click_reset = _coerce_bool(self.mouse_double_click_reset, True)
         if not 0.0 <= self.deadzone <= 1.0:
             logger.warning(
                 "Invalid controller deadzone %s, clamping to [0.0, 1.0]",
@@ -1857,6 +2076,7 @@ class AppConfig:
     otp_output: OtpOutputConfig = field(default_factory=OtpOutputConfig)
     rttrpm_output: RttrpmOutputConfig = field(default_factory=RttrpmOutputConfig)
     osc_transmitters: OscTransmittersConfig = field(default_factory=OscTransmittersConfig)
+    osc_destinations: OscDestinationsConfig = field(default_factory=OscDestinationsConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     trigger_zones: TriggerZonesConfig = field(default_factory=TriggerZonesConfig)
     midi: MidiConfig = field(default_factory=MidiConfig)
@@ -1955,6 +2175,7 @@ _SUB_CONFIG_MAP: dict[str, type] = {
     "otp_output": OtpOutputConfig,
     "rttrpm_output": RttrpmOutputConfig,
     "osc_transmitters": OscTransmittersConfig,
+    "osc_destinations": OscDestinationsConfig,
     "detection": DetectionConfig,
     "trigger_zones": TriggerZonesConfig,
     "midi": MidiConfig,
@@ -2801,17 +3022,56 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         ):
             app._config.rttrpm_output = old_rttrpm_output
 
-    if new_config.osc_transmitters != app._config.osc_transmitters:
+    # OSC routing: transmitter rows reference a shared destination set, and the
+    # zone engine resolves zone sends against the same set. A transmitter or
+    # destination edit (e.g. an IP change) re-resolves at both consumers so
+    # every referencing row and zone repoints live, no restart. Apply both as
+    # one unit – the manager and the zone engine must agree on the same
+    # destination set, and a partial apply would split routing across the two
+    # consumers (manager on the new endpoints while config + zone engine hold
+    # the old ones). Manager always exists once initialised (no on→off teardown).
+    osc_transmitters_changed = new_config.osc_transmitters != app._config.osc_transmitters
+    osc_destinations_changed = new_config.osc_destinations != app._config.osc_destinations
+    # The trigger_zones block below reloads the zone engine too; when zones also
+    # changed, let that block own the single reload so a combined edit doesn't
+    # reload the engine twice in one pass.
+    trigger_zones_changed = new_config.trigger_zones != app._config.trigger_zones
+    if osc_transmitters_changed or osc_destinations_changed:
         old_osc_transmitters = app._config.osc_transmitters
+        old_osc_destinations = app._config.osc_destinations
         app._config.osc_transmitters = new_config.osc_transmitters
-        # Manager always exists once initialised (no on→off teardown).
-        if not _apply(
-            "osc_transmitters",
+        app._config.osc_destinations = new_config.osc_destinations
+
+        def _reload_zone_destinations(destinations: OscDestinationsConfig) -> None:
+            zone_engine = getattr(app._runtime_services, "_zone_engine", None)
+            if zone_engine is not None:
+                zone_engine.reload_config(app._config.trigger_zones, destinations)
+
+        def _revert_osc_routing() -> None:
+            # Restore config first, then re-stage the old routing into the
+            # manager + zone engine so a failed apply can't leave the manager
+            # on the new endpoints while config and the zone engine hold the
+            # old ones. A re-raise here is caught and logged by the helper.
+            app._config.osc_transmitters = old_osc_transmitters
+            app._config.osc_destinations = old_osc_destinations
+            app._runtime_services.apply_osc_transmitters_change(
+                old_osc_transmitters,
+                old_osc_destinations,
+            )
+            _reload_zone_destinations(old_osc_destinations)
+
+        if _apply(
+            "osc_routing",
             lambda: app._runtime_services.apply_osc_transmitters_change(
                 new_config.osc_transmitters,
+                new_config.osc_destinations,
             ),
+            on_failure=_revert_osc_routing,
         ):
-            app._config.osc_transmitters = old_osc_transmitters
+            # Skip when the trigger_zones block will reload the engine anyway
+            # (with the same committed destinations) – avoids a double reload.
+            if not trigger_zones_changed:
+                _reload_zone_destinations(new_config.osc_destinations)
 
     if new_config.detection != app._config.detection:
         old_detection = app._config.detection
@@ -2867,12 +3127,17 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         app._config.trigger_zones = new_config.trigger_zones
         zone_engine = getattr(app._runtime_services, "_zone_engine", None)
         if zone_engine is not None:
-            zone_engine.reload_config(new_config.trigger_zones)
-        # Default OSC host/port flows through ``reload_config`` (the engine
-        # reads ``default_osc_*`` at send time). Stale per-target sockets in
-        # the shared ``OscService`` cache are left in place – they're reused if
-        # a future row targets the same destination and can't be safely evicted
-        # without per-caller ownership tracking.
+            # Use the committed destinations (``app._config``) so a zones edit
+            # stays coherent with an OSC-routing apply that was reverted above.
+            zone_engine.reload_config(
+                new_config.trigger_zones,
+                app._config.osc_destinations,
+            )
+        # The endpoint is resolved from ``osc_destinations`` at send time.
+        # Stale per-target sockets in the shared ``OscService`` cache are left
+        # in place – they're reused if a future row targets the same
+        # destination and can't be safely evicted without per-caller
+        # ownership tracking.
 
     # The MIDI ``apply_config`` is idempotent (same device on same patch is a
     # no-op), so re-applying on every reload pass is safe.

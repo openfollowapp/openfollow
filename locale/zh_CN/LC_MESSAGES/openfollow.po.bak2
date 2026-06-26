@@ -1,0 +1,1641 @@
+# OpenFollow Chinese (Simplified) translation
+# Copyright (C) 2026 OpenFollow Project
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: OpenFollow 0.3.0\n"
+"Language: zh_CN\n"
+"Language-Team: Chinese (Simplified)\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+# ==============================================
+# Tab names & common UI
+# ==============================================
+
+msgid "Overview"
+msgstr "总览"
+
+msgid "General"
+msgstr "通用设置"
+
+msgid "Camera & Grid"
+msgstr "相机与网格"
+
+msgid "Markers & Zones"
+msgstr "标记与区域"
+
+msgid "Input"
+msgstr "输入"
+
+msgid "Output"
+msgstr "输出"
+
+msgid "Person Detection"
+msgstr "人物检测"
+
+msgid "Save"
+msgstr "保存"
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "Delete"
+msgstr "删除"
+
+msgid "Duplicate"
+msgstr "复制"
+
+msgid "Refresh"
+msgstr "刷新"
+
+msgid "Enabled"
+msgstr "启用"
+
+msgid "Disabled"
+msgstr "禁用"
+
+msgid "Apply"
+msgstr "应用"
+
+msgid "Back"
+msgstr "上一步"
+
+msgid "Next"
+msgstr "下一步"
+
+msgid "Close"
+msgstr "关闭"
+
+msgid "Edit"
+msgstr "编辑"
+
+msgid "Add"
+msgstr "添加"
+
+msgid "Remove"
+msgstr "移除"
+
+msgid "Reset"
+msgstr "重置"
+
+msgid "Test"
+msgstr "测试"
+
+msgid "Loading…"
+msgstr "加载中…"
+
+msgid "No data available."
+msgstr "暂无数据。"
+
+msgid "Status"
+msgstr "状态"
+
+msgid "Name"
+msgstr "名称"
+
+msgid "Value"
+msgstr "值"
+
+msgid "Host"
+msgstr "主机"
+
+msgid "Port"
+msgstr "端口"
+
+msgid "IP Address"
+msgstr "IP 地址"
+
+# ==============================================
+# Overview tab
+# ==============================================
+
+msgid "Server Network"
+msgstr "服务网络"
+
+msgid "Detected OpenFollow web peers"
+msgstr "检测到的 OpenFollow 节点"
+
+msgid "No other OpenFollow stations detected on the network."
+msgstr "网络上未检测到其他 OpenFollow 站点。"
+
+msgid "Live Statistics"
+msgstr "实时统计"
+
+# ==============================================
+# General tab
+# ==============================================
+
+msgid "Web Access"
+msgstr "网页访问"
+
+msgid "PIN"
+msgstr "PIN 码"
+
+msgid "PIN (confirm)"
+msgstr "PIN 码（确认）"
+
+msgid "Set a PIN to protect the web configuration UI."
+msgstr "设置 PIN 码以保护网页配置界面。"
+
+msgid "Software Update"
+msgstr "软件更新"
+
+msgid "Current version"
+msgstr "当前版本"
+
+msgid "Check for updates"
+msgstr "检查更新"
+
+msgid "Update available"
+msgstr "有可用更新"
+
+msgid "Up to date"
+msgstr "已是最新"
+
+msgid "Install update"
+msgstr "安装更新"
+
+msgid "Update log"
+msgstr "更新日志"
+
+msgid "Station Name"
+msgstr "站点名称"
+
+msgid "Controlled Markers"
+msgstr "控制的标记"
+
+msgid "Viewer Markers"
+msgstr "显示的标记"
+
+msgid "Language"
+msgstr "语言"
+
+# ==============================================
+# Camera & Grid
+# ==============================================
+
+msgid "Camera"
+msgstr "相机"
+
+msgid "Video Source"
+msgstr "视频源"
+
+msgid "Open Setup Wizard"
+msgstr "打开设置向导"
+
+msgid "PSN-space position and orientation"
+msgstr "PSN 坐标系位置与方向"
+
+msgid "Position"
+msgstr "位置"
+
+msgid "Orientation"
+msgstr "方向"
+
+msgid "Lens"
+msgstr "镜头"
+
+msgid "Sensor Size"
+msgstr "传感器尺寸"
+
+msgid "Sensor Width (mm)"
+msgstr "传感器宽度 (mm)"
+
+msgid "Focal Length (mm)"
+msgstr "焦距 (mm)"
+
+msgid "Horizontal Field of View"
+msgstr "水平视场角"
+
+msgid "Apply to all stations"
+msgstr "应用到所有站点"
+
+msgid "Save as template…"
+msgstr "另存为模板…"
+
+msgid "Load template…"
+msgstr "加载模板…"
+
+msgid "Grid"
+msgstr "网格"
+
+msgid "Width"
+msgstr "宽度"
+
+msgid "Depth"
+msgstr "深度"
+
+msgid "Z Offset"
+msgstr "Z 偏移"
+
+msgid "Spacing"
+msgstr "间距"
+
+msgid "X Offset"
+msgstr "X 偏移"
+
+msgid "Y Offset"
+msgstr "Y 偏移"
+
+msgid "Show origin axes"
+msgstr "显示原点坐标轴"
+
+# ==============================================
+# Markers & Zones
+# ==============================================
+
+msgid "Marker Control & Visibility"
+msgstr "标记控制与可见性"
+
+msgid "Marker ID"
+msgstr "标记 ID"
+
+msgid "Marker Name"
+msgstr "标记名称"
+
+msgid "Colour"
+msgstr "颜色"
+
+msgid "Add Marker"
+msgstr "添加标记"
+
+msgid "Delete Marker"
+msgstr "删除标记"
+
+msgid "Marker Visuals"
+msgstr "标记外观"
+
+msgid "Ball size (m)"
+msgstr "球体大小 (m)"
+
+msgid "Crosshair size"
+msgstr "十字线大小"
+
+msgid "Crosshair thickness"
+msgstr "十字线粗细"
+
+msgid "Show drop line"
+msgstr "显示垂线"
+
+msgid "Show ground circle"
+msgstr "显示地面圆"
+
+msgid "Show Z display"
+msgstr "显示 Z 坐标"
+
+msgid "Z relative to stage"
+msgstr "Z 相对于舞台"
+
+msgid "Marker Movement"
+msgstr "标记移动"
+
+msgid "Min Speed (m/s)"
+msgstr "最低速度 (m/s)"
+
+msgid "Max Speed (m/s)"
+msgstr "最高速度 (m/s)"
+
+msgid "Default Speed (m/s)"
+msgstr "默认速度 (m/s)"
+
+msgid "Default X"
+msgstr "默认 X"
+
+msgid "Default Y"
+msgstr "默认 Y"
+
+msgid "Default Z"
+msgstr "默认 Z"
+
+msgid "Trigger Zones"
+msgstr "触发区域"
+
+msgid "Show Overlay"
+msgstr "显示覆盖层"
+
+msgid "Eval Rate (FPS)"
+msgstr "评估速率 (FPS)"
+
+msgid "Debounce (ms)"
+msgstr "防抖 (ms)"
+
+msgid "Hysteresis (m)"
+msgstr "滞后 (m)"
+
+msgid "Default OSC Host"
+msgstr "默认 OSC 主机"
+
+msgid "Default OSC Port"
+msgstr "默认 OSC 端口"
+
+msgid "Zone Editor"
+msgstr "区域编辑器"
+
+msgid "New Zone"
+msgstr "新建区域"
+
+msgid "+ New Zone"
+msgstr "+ 新建区域"
+
+msgid "Delete Selected"
+msgstr "删除选中"
+
+msgid "Cancel Drawing"
+msgstr "取消绘制"
+
+msgid "First entry"
+msgstr "首次进入"
+
+msgid "Additional entry"
+msgstr "额外进入"
+
+msgid "Partial exit"
+msgstr "部分离开"
+
+msgid "Final exit"
+msgstr "最终离开"
+
+# ==============================================
+# Gamepad / Keyboard / Mouse
+# ==============================================
+
+msgid "Gamepad"
+msgstr "手柄"
+
+msgid "Keyboard"
+msgstr "键盘"
+
+msgid "Mouse"
+msgstr "鼠标"
+
+msgid "Move stick"
+msgstr "移动摇杆"
+
+msgid "Axis Deadzone"
+msgstr "摇杆死区"
+
+msgid "Response Curve"
+msgstr "响应曲线"
+
+msgid "Linear"
+msgstr "线性"
+
+msgid "Logarithmic"
+msgstr "对数"
+
+msgid "Quadratic"
+msgstr "二次方"
+
+msgid "S-Law"
+msgstr "S 曲线"
+
+msgid "Invert Y"
+msgstr "反转 Y"
+
+msgid "Invert Z"
+msgstr "反转 Z"
+
+msgid "Button Detection Map"
+msgstr "按键检测映射"
+
+msgid "Start Button Detection Wizard"
+msgstr "启动按键检测向导"
+
+msgid "Movement layout"
+msgstr "移动布局"
+
+msgid "Z+ (raise marker)"
+msgstr "Z+ (升高标记)"
+
+msgid "Z− (lower marker)"
+msgstr "Z− (降低标记)"
+
+msgid "Reset Marker"
+msgstr "重置标记"
+
+msgid "Toggle Help overlay"
+msgstr "切换帮助覆盖层"
+
+msgid "Toggle Zone overlay"
+msgstr "切换区域覆盖层"
+
+msgid "Speed −"
+msgstr "减速"
+
+msgid "Speed +"
+msgstr "加速"
+
+msgid "Settings menu"
+msgstr "设置菜单"
+
+msgid "Next marker"
+msgstr "下一标记"
+
+msgid "Prev marker"
+msgstr "上一标记"
+
+# ==============================================
+# OSC Input / Output
+# ==============================================
+
+msgid "OSC Input"
+msgstr "OSC 输入"
+
+msgid "UDP Port"
+msgstr "UDP 端口"
+
+msgid "Multicast Group"
+msgstr "组播组"
+
+msgid "Allowed Sender IPs"
+msgstr "允许的发送方 IP"
+
+msgid "OSC Output"
+msgstr "OSC 输出"
+
+msgid "New OSC output"
+msgstr "新建 OSC 输出"
+
+msgid "+ New OSC output"
+msgstr "+ 新建 OSC 输出"
+
+msgid "Default marker"
+msgstr "默认标记"
+
+msgid "Protocol"
+msgstr "协议"
+
+msgid "Trigger"
+msgstr "触发"
+
+msgid "Message"
+msgstr "消息"
+
+msgid "Stream"
+msgstr "连续发送"
+
+msgid "Hotkey"
+msgstr "快捷键"
+
+msgid "Controller button"
+msgstr "手柄按钮"
+
+msgid "MIDI message"
+msgstr "MIDI 消息"
+
+msgid "Fader on change"
+msgstr "推子变化时"
+
+msgid "Rate"
+msgstr "速率"
+
+msgid "Mode"
+msgstr "模式"
+
+msgid "Send always"
+msgstr "始终发送"
+
+msgid "Send only on change"
+msgstr "仅变化时发送"
+
+msgid "min change (m)"
+msgstr "最小变化 (m)"
+
+# ==============================================
+# PSN Output
+# ==============================================
+
+msgid "PSN Output"
+msgstr "PSN 输出"
+
+msgid "System Name"
+msgstr "系统名称"
+
+msgid "Multicast IP"
+msgstr "组播 IP"
+
+msgid "Network Interface"
+msgstr "网络接口"
+
+# ==============================================
+# MIDI
+# ==============================================
+
+msgid "MIDI"
+msgstr "MIDI"
+
+msgid "MIDI Input"
+msgstr "MIDI 输入"
+
+msgid "MIDI Devices"
+msgstr "MIDI 设备"
+
+msgid "Discovered Devices"
+msgstr "已发现设备"
+
+msgid "Virtual Faders"
+msgstr "虚拟推子"
+
+msgid "Fader"
+msgstr "推子"
+
+msgid "Marker Faders"
+msgstr "标记推子"
+
+# ==============================================
+# Person Detection (Experimental)
+# ==============================================
+
+msgid "Detection Backend"
+msgstr "检测后端"
+
+msgid "Not installed"
+msgstr "未安装"
+
+msgid "Install"
+msgstr "安装"
+
+msgid "Uninstall"
+msgstr "卸载"
+
+msgid "Detection Settings"
+msgstr "检测设置"
+
+msgid "Model"
+msgstr "模型"
+
+msgid "Confidence Threshold"
+msgstr "置信度阈值"
+
+msgid "Detection Resolution"
+msgstr "检测分辨率"
+
+# ==============================================
+# Operator Messages
+# ==============================================
+
+msgid "Operator Messages"
+msgstr "操作员消息"
+
+msgid "OSC Port for operator messages"
+msgstr "操作员消息 OSC 端口"
+
+# ==============================================
+# Network Configuration
+# ==============================================
+
+msgid "Interface"
+msgstr "网络接口"
+
+msgid "IPv4"
+msgstr "IPv4"
+
+msgid "DNS Servers"
+msgstr "DNS 服务器"
+
+msgid "Apply Changes"
+msgstr "应用更改"
+
+msgid "Renew Lease"
+msgstr "续租 DHCP"
+
+# ==============================================
+# Diagnostics
+# ==============================================
+
+msgid "Diagnostics"
+msgstr "诊断"
+
+msgid "Download diagnostics bundle"
+msgstr "下载诊断包"
+
+# ==============================================
+# Camera & Grid Wizard Steps
+# ==============================================
+
+msgid "Setup Wizard"
+msgstr "设置向导"
+
+msgid "Preparation"
+msgstr "准备工作"
+
+msgid "Grid Setup"
+msgstr "网格设置"
+
+msgid "Camera Position"
+msgstr "相机位置"
+
+msgid "Reference Mapping"
+msgstr "参考点对准"
+
+msgid "Corner Pinning"
+msgstr "四角精调"
+
+msgid "Review & Apply"
+msgstr "审核并应用"
+
+msgid "Apply & Finish"
+msgstr "应用并完成"
+
+msgid "Discard & Leave"
+msgstr "放弃并退出"
+
+msgid "Reset Corners"
+msgstr "重置四角"
+
+msgid "Fine adjust"
+msgstr "精细调整"
+
+msgid "Show full image"
+msgstr "显示完整画面"
+
+msgid "Refresh Image"
+msgstr "刷新画面"
+
+# ==============================================
+# Misc
+# ==============================================
+
+msgid "Experimental"
+msgstr "实验性"
+
+msgid "Copy to clipboard"
+msgstr "复制到剪贴板"
+
+msgid "Copied!"
+msgstr "已复制！"
+
+msgid "Unknown error"
+msgstr "未知错误"
+
+msgid "Connection lost"
+msgstr "连接丢失"
+
+msgid "Connected"
+msgstr "已连接"
+
+msgid "Disconnected"
+msgstr "已断开"
+
+msgid "Preview"
+msgstr "预览"
+
+msgid "Live preview"
+msgstr "实时预览"
+
+msgid "Test send"
+msgstr "测试发送"
+
+msgid "Send"
+msgstr "发送"
+
+msgid "Address"
+msgstr "地址"
+
+msgid "Arguments"
+msgstr "参数"
+
+msgid "Auto"
+msgstr "自动"
+
+msgid "Custom"
+msgstr "自定义"
+
+msgid "On"
+msgstr "开"
+
+msgid "Off"
+msgstr "关"
+
+msgid "Yes"
+msgstr "是"
+
+msgid "No"
+msgstr "否"
+
+msgid "None"
+msgstr "无"
+
+msgid "OK"
+msgstr "确定"
+
+msgid "Warning"
+msgstr "警告"
+
+msgid "Error"
+msgstr "错误"
+
+msgid "Info"
+msgstr "信息"
+
+msgid "Success"
+msgstr "成功"
+
+msgid "Please wait..."
+msgstr "请稍候..."
+
+msgid "Are you sure?"
+msgstr "确定吗？"
+
+msgid "This action cannot be undone."
+msgstr "此操作无法撤销。"
+
+msgid "Changes saved."
+msgstr "更改已保存。"
+
+msgid "Failed to save."
+msgstr "保存失败。"
+
+msgid "Discard changes?"
+msgstr "放弃更改？"
+
+msgid "Guided camera positioning and grid calibration"
+msgstr "引导式相机定位与网格标定"
+
+msgid "App is restarting… Please wait."
+msgstr "应用重启中… 请稍候。"
+
+msgid "Core status first, advanced diagnostics on demand"
+msgstr "核心状态优先，高级诊断按需展开"
+
+#: overview
+msgid "this server"
+msgstr "本服务器"
+
+#: overview
+msgid "No other servers discovered yet. Make sure other OpenFollow instances are running on this network."
+msgstr "尚未发现其他服务器。请确保此网络上有其他 OpenFollow 实例正在运行。"
+
+#: statistics
+msgid "Live indicators for operation and troubleshooting."
+msgstr "运行和故障排查的实时指标。"
+
+#: statistics
+msgid "Video"
+msgstr "视频"
+
+#: statistics
+msgid "Source"
+msgstr "源"
+
+#: statistics
+msgid "Signal"
+msgstr "信号"
+
+#: statistics
+msgid "Resolution"
+msgstr "分辨率"
+
+#: statistics
+msgid "Frame Rate (measured)"
+msgstr "帧率（实测）"
+
+#: statistics
+msgid "Frame Rate (source)"
+msgstr "帧率（源）"
+
+#: statistics
+msgid "Pipeline"
+msgstr "管线"
+
+#: statistics
+msgid "Device"
+msgstr "设备"
+
+#: statistics
+msgid "IP"
+msgstr "IP"
+
+#: statistics
+msgid "Controllers"
+msgstr "控制器"
+
+#: statistics
+msgid "connected"
+msgstr "已连接"
+
+#: statistics
+msgid "CPU"
+msgstr "CPU"
+
+#: statistics
+msgid "RAM"
+msgstr "RAM"
+
+#: statistics
+msgid "Temperature"
+msgstr "温度"
+
+#: statistics
+msgid "Missing packages:"
+msgstr "缺少包："
+
+#: statistics
+msgid "Install them from the Person Detection section, then restart."
+msgstr "请从人形检测区域安装后重启。"
+
+#: statistics
+msgid "Tracked People"
+msgstr "追踪人数"
+
+#: statistics
+msgid "Inference (avg)"
+msgstr "推理（平均）"
+
+#: statistics
+msgid "Inference Rate"
+msgstr "推理率"
+
+#: statistics
+msgid "Detections (last)"
+msgstr "检测数（最近）"
+
+#: statistics
+msgid "Running"
+msgstr "运行中"
+
+#: statistics
+msgid "Idle"
+msgstr "空闲"
+
+#: statistics
+msgid "Unavailable"
+msgstr "不可用"
+
+#: diagnostics
+msgid "Live runtime state and one-click bundle download for issue reports."
+msgstr "实时运行时状态和用于问题报告的一键诊断包下载。"
+
+#: diagnostics
+msgid "Bundle &amp; tools"
+msgstr "打包与工具"
+
+#: diagnostics
+msgid "Test peer connectivity"
+msgstr "测试对等连接"
+
+#: diagnostics
+msgid "Show recent log tail (last 100 lines)"
+msgstr "显示最近日志尾部（最近 100 行）"
+
+#: diagnostics
+msgid "Restart application"
+msgstr "重启应用"
+
+#: diagnostics
+msgid "Web server"
+msgstr "Web 服务器"
+
+#: diagnostics
+msgid "fallback"
+msgstr "回退"
+
+#: diagnostics
+msgid "Configured"
+msgstr "已配置"
+
+#: diagnostics
+msgid "Serving on"
+msgstr "服务端口"
+
+#: diagnostics
+msgid "Uptime"
+msgstr "运行时间"
+
+#: diagnostics
+msgid "Beacon sender"
+msgstr "信标发送器"
+
+#: diagnostics
+msgid "Last sent"
+msgstr "上次发送"
+
+#: diagnostics
+msgid "Errors"
+msgstr "错误"
+
+#: diagnostics
+msgid "Sent count"
+msgstr "发送总数"
+
+#: diagnostics
+msgid "Beacon receiver"
+msgstr "信标接收器"
+
+#: diagnostics
+msgid "Peers seen"
+msgstr "已发现对等站点"
+
+#: diagnostics
+msgid "Last packet"
+msgstr "最近数据包"
+
+#: diagnostics
+msgid "Packets total"
+msgstr "数据包总数"
+
+#: diagnostics
+msgid "Logs"
+msgstr "日志"
+
+#: general/network
+msgid "Station Settings"
+msgstr "站点设置"
+
+#: general/network
+msgid "Identity, display units, and web access"
+msgstr "标识、显示单位与 Web 访问"
+
+#: general/network
+msgid "Identifies this station in PSN output and on the network."
+msgstr "在 PSN 输出和网络上标识此站点。"
+
+#: general/network
+msgid "Web access"
+msgstr "Web 访问"
+
+#: general/network
+msgid "PIN (leave empty to disable)"
+msgstr "PIN（留空禁用）"
+
+#: general/network
+msgid "No PIN set"
+msgstr "未设置 PIN"
+
+#: general/network
+msgid "Display units"
+msgstr "显示单位"
+
+#: general/network
+msgid "Unit system"
+msgstr "单位系统"
+
+#: general/network
+msgid "Metric (m, m/s)"
+msgstr "公制 (m, m/s)"
+
+#: general/network
+msgid "Imperial (ft / in, ft/s)"
+msgstr "英制 (ft / in, ft/s)"
+
+#: general/network
+msgid "Units shown in the web UI and on-device overlay. Storage, OSC, and PSN/RTTrPM/OTP stay metric regardless."
+msgstr "Web UI 和设备叠加层中显示的单位。存储、OSC 和 PSN/RTTrPM/OTP 始终使用公制。"
+
+#: general/network
+msgid "Experimental features"
+msgstr "实验性功能"
+
+#: general/network
+msgid "Show experimental features"
+msgstr "显示实验性功能"
+
+#: general/network
+msgid "Network Settings"
+msgstr "网络设置"
+
+#: general/network
+msgid "Device IP address configuration"
+msgstr "设备 IP 地址配置"
+
+#: general/network
+msgid "Loading network configuration…"
+msgstr "正在加载网络配置…"
+
+#: general/network
+msgid "Install the latest release from GitHub"
+msgstr "从 GitHub 安装最新发布"
+
+#: general/network
+msgid "Check &amp; Install Latest"
+msgstr "检查并安装最新版"
+
+#: general/network
+msgid "Offline install"
+msgstr "离线安装"
+
+#: general/network
+msgid "Install an .ofupdate release bundle without internet access."
+msgstr "无互联网时安装 .ofupdate 发布包。"
+
+#: general/network
+msgid "Choose file"
+msgstr "选择文件"
+
+#: general/network
+msgid "Upload &amp; Install"
+msgstr "上传并安装"
+
+#: general/network
+msgid "Edit mode"
+msgstr "编辑模式"
+
+#: general/network
+msgid "View mode"
+msgstr "查看模式"
+
+#: general/network
+msgid "Read only"
+msgstr "只读"
+
+#: general/network
+msgid "Network settings are protected from change by mistake."
+msgstr "网络设置受保护防止误改。"
+
+#: general/network
+msgid "Switch to edit view"
+msgstr "切换到编辑视图"
+
+#: general/network
+msgid "Applying network changes may disconnect this web session. A static / manual address reloads the UI at the new address automatically; otherwise reconnect manually."
+msgstr "应用网络更改可能导致当前 Web 会话断开。静态/手动地址会自动在新地址重新加载 UI；否则请手动重连。"
+
+#: general/network
+msgid "Connection"
+msgstr "连接"
+
+#: general/network
+msgid "Addressing"
+msgstr "寻址"
+
+#: general/network
+msgid "DNS"
+msgstr "DNS"
+
+#: general/network
+msgid "Lease"
+msgstr "租约"
+
+#: general/network
+msgid "Remaining"
+msgstr "剩余"
+
+#: general/network
+msgid "Renew DHCP lease"
+msgstr "续租 DHCP"
+
+#: general/network
+msgid "DHCP (automatic)"
+msgstr "DHCP（自动）"
+
+#: general/network
+msgid "DHCP with manual address"
+msgstr "DHCP 手动地址"
+
+#: general/network
+msgid "Static"
+msgstr "静态"
+
+#: general/network
+msgid "IP address"
+msgstr "IP 地址"
+
+#: general/network
+msgid "Subnet mask"
+msgstr "子网掩码"
+
+#: general/network
+msgid "Router (optional)"
+msgstr "路由器（可选）"
+
+#: general/network
+msgid "Server"
+msgstr "服务器"
+
+#: general/network
+msgid "Configure network settings from the device on-screen menu."
+msgstr "通过设备屏幕菜单配置网络设置。"
+
+#: config/operator
+msgid "Configuration Transfer"
+msgstr "配置迁移"
+
+#: config/operator
+msgid "Export and import device settings"
+msgstr "导出和导入设备设置"
+
+#: config/operator
+msgid "Please wait."
+msgstr "请稍候。"
+
+#: config/operator
+msgid "Export"
+msgstr "导出"
+
+#: config/operator
+msgid "Download the current configuration as a JSON file."
+msgstr "将当前配置下载为 JSON 文件。"
+
+#: config/operator
+msgid "Export Configuration"
+msgstr "导出配置"
+
+#: config/operator
+msgid "Import"
+msgstr "导入"
+
+#: config/operator
+msgid "Import Configuration"
+msgstr "导入配置"
+
+#: config/operator
+msgid "Restart Required"
+msgstr "需要重启"
+
+#: config/operator
+msgid "Restart Now"
+msgstr "立即重启"
+
+#: config/operator
+msgid "Apply Without Restart"
+msgstr "不重启应用"
+
+#: config/operator
+msgid "OSC-driven next-cue text shown on the Operator Screen"
+msgstr "OSC 驱动的操作员屏幕提示文本"
+
+#: config/operator
+msgid "Route by marker"
+msgstr "按标记路由"
+
+#: config/operator
+msgid "Placement"
+msgstr "位置"
+
+#: config/operator
+msgid "Bottom-center"
+msgstr "底部居中"
+
+#: config/operator
+msgid "Top-center"
+msgstr "顶部居中"
+
+#: config/operator
+msgid "Max visible"
+msgstr "最大可见数"
+
+#: config/operator
+msgid "Scale"
+msgstr "缩放"
+
+#: config/operator
+msgid "Load a previously exported configuration file. The device's network IP address will be preserved."
+msgstr "加载之前导出的配置文件。设备的网络 IP 地址将被保留。"
+
+#: config/operator
+msgid "The imported configuration has been validated. Some changes require an app restart to take effect:"
+msgstr "导入的配置已验证。部分更改需要应用重启才能生效："
+
+#: config/operator
+msgid "Configuration File (.openfollowsettings)"
+msgstr "配置文件 (.openfollowsettings)"
+
+#: camera/grid
+msgid "Stored"
+msgstr "已存储"
+
+#: video_source
+msgid "No preview available – waiting for video source."
+msgstr "暂无预览——等待视频源。"
+
+msgid "Back to Settings"
+msgstr "返回设置"
+
+msgid "Camera Setup"
+msgstr "相机设置"
+
+msgid "Review"
+msgstr "检查"
+
+msgid "Alignment"
+msgstr "对齐"
+
+msgid "Understand the setup and prepare the physical space"
+msgstr "了解设置流程并准备物理空间"
+
+msgid "Select and configure the camera input"
+msgstr "选择并配置相机输入"
+
+msgid "Verify all values before applying"
+msgstr "应用前验证所有数值"
+
+msgid "Before proceeding, physically mark the Reference Point and the four grid corners on the stage with visible markers, so they are easily visible on camera (tape, gaffer marks, etc.)."
+msgstr "继续前请在舞台上用可见标记（胶带、灯光贴等）标出参考点和四个网格角点，确保在相机中清晰可见。"
+
+msgid "Take your time with accurate markings - the precision of the final calibration depends on them."
+msgstr "花时间做好精确标记——最终标定的精度取决于它们。"
+
+msgid "Load Defaults"
+msgstr "加载默认值"
+
+msgid "Restore Last"
+msgstr "恢复上次"
+
+msgid "All measurements in this wizard are relative to a single Reference Point. This should be the same reference point for all show control systems that you plan to connect to OpenFollow. If your venue has a defined origin point, you should use that. If you do not have an existing reference point, we recommend the"
+msgstr "本向导所有测量均相对于单个参考点。此参考点应与你计划连接到 OpenFollow 的所有演出控制系统使用同一参考点。如果场地有定义的原点，请使用它。如果没有现有参考点，我们推荐使用"
+
+msgid "center of the stage front edge"
+msgstr "舞台前缘中心"
+
+msgid "as the default."
+msgstr "作为默认值。"
+
+msgid "Drag the crosshair marker to the physical Reference Point mark visible on the stage. All corners move together with the reference point to roughly align the overlay with your stage."
+msgstr "将十字准星标记拖到舞台上可见的物理参考点标记处。所有角点随参考点一起移动，将叠加层大致与舞台对齐。"
+
+msgid "Drag the crosshair to the physical Reference Point mark"
+msgstr "将十字准星拖到物理参考点标记处"
+
+msgid "Reference Point:"
+msgstr "参考点："
+
+msgid "Enter the width and depth of the rectangular tracking area you marked on stage."
+msgstr "输入你在舞台上标记的矩形追踪区域的宽度和深度。"
+
+msgid "Dimensions and position of the rectangular tracking area"
+msgstr "矩形追踪区域的尺寸和位置"
+
+msgid "The Grid:"
+msgstr "网格："
+
+msgid "The grid area must be a"
+msgstr "网格区域必须是"
+
+msgid "right-angled rectangle"
+msgstr "直角矩形"
+
+msgid "as large as possible that lies flat on the main performance level. All four corners must be"
+msgstr "尽可能大且平贴在主表演面上。所有四个角点必须"
+
+msgid "clearly visible in the camera feed"
+msgstr "在相机画面中清晰可见"
+
+msgid "Do not worry, you can follow performers outside this grid, as long as they are in the area visible to the camera."
+msgstr "不用担心，只要演员在相机可见区域内，你可以在网格之外追踪他们。"
+
+msgid "Verify your grid is rectangular: measure both diagonals on stage - they must be equal. The expected diagonal is shown above."
+msgstr "验证网格为矩形：在舞台上测量两条对角线——它们必须相等。预期对角线长度显示在上方。"
+
+msgid "Diagonal"
+msgstr "对角线"
+
+msgid "Drag each corner marker to its physical mark on the stage. The labels are stage positions: DSL/USL are stage left, DSR/USR are stage right (D = downstage/front, U = upstage/back). With a front-of-house camera you see the audience view, so stage left is on the right of the image (audience right) and stage right is on the left (audience left)."
+msgstr "将每个角点标记拖到舞台上的物理标记处。标签为舞台位置：DSL/USL 为舞台左侧，DSR/USR 为舞台右侧（D = 舞台前方，U = 舞台后方）。使用观众席相机时看到的是观众视角，因此舞台左侧在画面右边（观众右侧），舞台右侧在画面左边（观众左侧）。"
+
+msgid "Drag each corner to its physical stage mark for precise calibration"
+msgstr "将每个角点拖到其物理舞台标记处以进行精确标定"
+
+msgid "Click a corner or use Tab to select it, then use arrow keys to nudge (hold Shift for larger steps)."
+msgstr "点击角点或用 Tab 选择，然后使用方向键微调（按住 Shift 可大步移动）。"
+
+msgid "Zoom in on your browser (Ctrl/Cmd + scroll) for more precision. You can also click the crosshair and use arrow keys to nudge it precisely (hold Shift for larger steps)."
+msgstr "在浏览器中放大（Ctrl/Cmd + 滚轮）以获得更高精度。也可以点击十字准星使用方向键精确微调（按住 Shift 可大步移动）。"
+
+msgid "Start with the two downstage corners (front), then adjust the upstage corners (back). If a corner turns red, the shape is invalid. For pixel-precise placement, click"
+msgstr "先从两个舞台前角开始，然后调整舞台后角。如果角点变红，表示形状无效。需要像素级精确定位时，点击"
+
+msgid "to switch to a 4x-zoomed per-corner view."
+msgstr "可切换到每个角点的 4 倍放大视图。"
+
+msgid "If your corners are invalid, three things could be wrong: The position of your camera relative to the reference point, your marked rectangle has not the same size as the grid, or the corners of your rectangle are not 90 degrees."
+msgstr "如果角点无效，可能有三方面问题：相机相对于参考点的位置、标记的矩形与实际网格尺寸不一致，或矩形角点不是 90 度。"
+
+msgid "Define where the Reference Point sits within the grid. By default, it is at the center of the front edge (X Offset = 0, Y Offset = depth / 2)."
+msgstr "定义参考点在网格内的位置。默认位于前缘中心（X 偏移 = 0，Y 偏移 = 深度/2）。"
+
+msgid "Measure between the marks you placed on stage. Precision matters - even 10cm off will affect tracking accuracy. Spacing controls the visual grid density (does not affect calibration). If your Reference Point is 1m left of the grid center: set X Offset = -1."
+msgstr "测量舞台上标记之间的距离。精度很重要——即使 10 厘米的偏差也会影响追踪精度。间距控制视觉网格密度（不影响标定）。如果参考点在网格中心左侧 1 米处：设 X 偏移 = -1。"
+
+msgid "Choose the video input that matches your camera setup. The change applies live - the new pipeline starts within ~1 s of saving."
+msgstr "选择匹配相机设置的视频输入。更改实时生效——保存后约 1 秒内新管线启动。"
+
+msgid "No video feed available. Values below are still valid, but the visual review is unavailable."
+msgstr "无可用视频信号。下方数值仍然有效，但无法进行目视检查。"
+
+msgid "Enter the camera physical position relative to the Reference Point, in"
+msgstr "输入相机相对于参考点的物理位置，单位"
+
+msgid "These use PSN theatrical coordinates: X = stage left, Y = upstage, Z = up."
+msgstr "使用 PSN 剧场坐标：X = 舞台左，Y = 舞台深处，Z = 向上。"
+
+msgid "Physical camera position and orientation relative to the Reference Point"
+msgstr "相机相对于参考点的物理位置和朝向"
+
+msgid "Enter the camera angle. If the camera points straight at the stage, start with Pitch approx -30 degrees (looking down), Yaw = 0 degrees, Roll = 0 degrees."
+msgstr "输入相机角度。如果相机正对舞台，起始值约为 Pitch -30 度（向下看），Yaw = 0 度，Roll = 0 度。"
+
+msgid "Enter the horizontal FOV from your camera datasheet, or pick your sensor size and focal length and we will compute it."
+msgstr "从相机数据手册输入水平视场角，或选择传感器尺寸和焦距，将自动计算。"
+
+msgid "Pitch must be between -0.5 degrees and -90 degrees"
+msgstr "Pitch 必须介于 -0.5 度到 -90 度之间"
+
+msgid "Dimensions"
+msgstr "尺寸"
+
+msgid "DOWNSTAGE"
+msgstr "舞台前方"
+
+msgid "UPSTAGE"
+msgstr "舞台深处"
+
+#: batch
+msgid "Position X"
+msgstr "位置 X"
+
+#: batch
+msgid "Position Y"
+msgstr "位置 Y"
+
+#: batch
+msgid "Position Z"
+msgstr "位置 Z"
+
+#: batch
+msgid "Pitch"
+msgstr "俯仰"
+
+#: batch
+msgid "Yaw"
+msgstr "偏航"
+
+#: batch
+msgid "Roll"
+msgstr "翻滚"
+
+#: batch
+msgid "Sensor Width"
+msgstr "传感器宽度"
+
+#: batch
+msgid "Focal Length"
+msgstr "焦距"
+
+#: batch
+msgid "FOV is horizontal (as printed on camera datasheets). Pick your sensor size and focal length and we will compute FOV automatically."
+msgstr "FOV 为水平方向（如相机数据手册所示）。选择传感器尺寸和焦距，我们将自动计算 FOV。"
+
+#: batch
+msgid "Stage reference plane settings"
+msgstr "舞台参考面设置"
+
+#: batch
+msgid "Appearance"
+msgstr "外观"
+
+#: batch
+msgid "Line Color"
+msgstr "线条颜色"
+
+#: batch
+msgid "Line Thickness"
+msgstr "线条粗细"
+
+#: batch
+msgid "Transparency"
+msgstr "透明度"
+
+#: batch
+msgid "Offset Position"
+msgstr "偏移位置"
+
+#: batch
+msgid "Origin Marker"
+msgstr "原点标记"
+
+#: batch
+msgid "Show Origin"
+msgstr "显示原点"
+
+#: batch
+msgid "Length"
+msgstr "长度"
+
+#: batch
+msgid "Thickness"
+msgstr "粗细"
+
+#: batch
+msgid "Maximum Height"
+msgstr "最大高度"
+
+#: batch
+msgid "optional"
+msgstr "可选"
+
+#: batch
+msgid "OpenFollow"
+msgstr "OpenFollow"
+
+#: batch
+msgid "Station name"
+msgstr "站点名称"
+
+#: batch
+msgid "Min Speed"
+msgstr "最低速度"
+
+#: batch
+msgid "Default Speed"
+msgstr "默认速度"
+
+#: batch
+msgid "Max Speed"
+msgstr "最高速度"
+
+#: batch
+msgid "on reset"
+msgstr "重置时"
+
+#: batch
+msgid "Marker speed limits, default speed, and default position"
+msgstr "标记速度限制、默认速度与默认位置"
+
+#: batch
+msgid "Method"
+msgstr "方式"
+
+#: batch
+msgid "Network configuration is unavailable – no network adapter is configured on this host (or this build has none wired), so there is nothing to edit."
+msgstr "网络配置不可用——此主机未配置网络适配器（或此构建没有有线适配器），因此无可编辑内容。"
+
+#: batch
+msgid "Network state unavailable – no detected interface or adapter on this host."
+msgstr "网络状态不可用——此主机未检测到接口或适配器。"
+
+#: batch
+msgid "Backend"
+msgstr "后端"
+
+#: batch
+msgid "Router"
+msgstr "路由器"
+
+#: batch
+msgid "Mouse Input"
+msgstr "鼠标输入"
+
+#: batch
+msgid "Mouse controls for the on-display UI"
+msgstr "屏幕 UI 的鼠标控制"
+
+msgid "Camera input and live preview"
+msgstr "相机输入与实时预览"
+
+msgid "Source Type"
+msgstr "源类型"
+
+msgid "Stall Timeout"
+msgstr "卡顿超时"
+
+msgid "Heal Interval"
+msgstr "恢复间隔"
+
+msgid "Show Preview"
+msgstr "显示预览"
+
+msgid "Framing"
+msgstr "帧格式"
+
+msgid "OSC Destinations"
+msgstr "OSC 目标"
+
+msgid "No OSC destinations configured. Use "
+msgstr "未配置 OSC 目标。使用 "
+
+msgid "Reusable connections (host, port, transport) referenced by transmitters and zones"
+msgstr "发送器和区域引用的可复用连接（主机、端口、传输）"
+
+msgid "NDI® Source"
+msgstr "NDI® 源"
+
+msgid "Pattern"
+msgstr "图案"
+
+msgid "Some English text"
+msgstr "一些英文文本"
+
+msgid "Static test image – useful for debugging overlay, Operator Screen, and detection without a live source."
+msgstr "静态测试图像——用于调试叠加层、操作员屏幕和检测而无需实时视频源。"
+
+msgid "Logout"
+msgstr "退出登录"
+
+msgid "(this server)"
+msgstr "（本服务器）"
+
+msgid "Bundle & tools"
+msgstr "诊断包与工具"
+
+msgid "Drop Line"
+msgstr "垂线"
+
+msgid "Drop Line Thickness (px)"
+msgstr "垂线粗细（像素）"
+
+msgid "Circle Size"
+msgstr "圆大小"
+
+msgid "Z Display"
+msgstr "Z 轴显示"
+
+msgid "Opacity (0–1)"
+msgstr "不透明度（0–1）"
+
+msgid "Ground Circle"
+msgstr "地面圆"
+
+msgid "Z from Stage Level"
+msgstr "舞台水平面 Z 轴"
+
+msgid "Crosshair Thickness (px)"
+msgstr "十字线粗细（像素）"
+
+msgid "Crosshair Color"
+msgstr "十字线颜色"
+
+msgid "Stored:"
+msgstr "已保存："
+
+msgid "Crosshair colour"
+msgstr "十字线颜色"
+
+msgid "Show Crosshair"
+msgstr "显示十字线"
+
+msgid "Filled"
+msgstr "填充"
+
+msgid "Ball Size"
+msgstr "球体大小"
+
+msgid "Show Ball"
+msgstr "显示球体"
+
+msgid "Body"
+msgstr "身体"
+
+msgid "Crosshair Size"
+msgstr "十字线大小"
+
+msgid "On-screen appearance of each marker"
+msgstr "每个标记的屏幕显示外观"
+
+msgid "Shared catalog + this station's selection"
+msgstr "共享目录 + 本站选择"
+
+msgid "Fire OSC messages when markers or detections enter/leave polygon regions"
+msgstr "标记或检测进入/离开多边形区域时触发 OSC 消息"
+
+msgid "Shared catalog"
+msgstr "共享目录"
+
+msgid "Marker colour"
+msgstr "标记颜色"
+
+msgid "✓ Added marker "
+msgstr "✓ 已添加标记 "
+
+msgid "Adding…"
+msgstr "添加中…"
+
+msgid "Enter an id ≥ 1"
+msgstr "请输入 ≥ 1 的 ID"
+
+msgid " already exists – edit it above"
+msgstr " 已存在 – 请在上方编辑"
+
+msgid "Synced across all stations on the LAN."
+msgstr "同步到局域网内所有站点。"
+
+msgid "⚠ Could not add marker "
+msgstr "⚠ 无法添加标记 "
+msgid "Delete marker "
+msgstr "删除标记 "
+
+msgid "Controlled by"
+msgstr "控制方"
+
+msgid "Viewed by"
+msgstr "查看方"
+
+msgid "This station's selection"
+msgstr "本站选择"
+
+msgid "More than one station claims control"
+msgstr "多个站点声明控制权"
+
+msgid "Color"
+msgstr "颜色"
+
+msgid "ID"
+msgstr "ID"
+
+msgid "Control"
+msgstr "控制"
+
+msgid "View"
+msgstr "查看"

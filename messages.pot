@@ -1,0 +1,1852 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid " (e.g. "
+msgstr ""
+
+msgid " (read-only)"
+msgstr ""
+
+msgid " already exists – edit it above"
+msgstr ""
+
+msgid " below to create one."
+msgstr ""
+
+msgid " filters: "
+msgstr ""
+
+msgid " for the full grammar and more examples. "
+msgstr ""
+
+msgid " is available (installed: "
+msgstr ""
+
+msgid " station(s) successfully."
+msgstr ""
+
+msgid " stations. Failed: "
+msgstr ""
+
+msgid " to render the message."
+msgstr ""
+
+msgid " to target a specific marker or fader – e.g. "
+msgstr ""
+
+msgid " – and chain "
+msgstr ""
+
+msgid "" and restart the device? It uploads over your local network – only install files you trust."
+msgstr ""
+
+msgid "%.1f %%"
+msgstr ""
+
+msgid "%.1f C"
+msgstr ""
+
+msgid "%.1f fps"
+msgstr ""
+
+msgid "%.1f ms"
+msgstr ""
+
+msgid "%.2f Hz"
+msgstr ""
+
+msgid "(any patch)"
+msgstr ""
+
+msgid "(any)"
+msgstr ""
+
+msgid "(missing destination)"
+msgstr ""
+
+msgid "(missing)"
+msgstr ""
+
+msgid "(no destination)"
+msgstr ""
+
+msgid "(none – row will not send)"
+msgstr ""
+
+msgid "(none)"
+msgstr ""
+
+msgid "(not connected)"
+msgstr ""
+
+msgid "(not controlled)"
+msgstr ""
+
+msgid "(optional)"
+msgstr ""
+
+msgid "(unnamed)"
+msgstr ""
+
+msgid "(unsupported)"
+msgstr ""
+
+msgid ") to enable downloads."
+msgstr ""
+
+msgid "). Install it now? The device restarts automatically when finished."
+msgstr ""
+
+msgid "). See "
+msgstr ""
+
+msgid "+ New Zone"
+msgstr ""
+
+msgid "+ New destination"
+msgstr ""
+
+msgid "+ New transmitter"
+msgstr ""
+
+msgid ", then restart."
+msgstr ""
+
+msgid "-- Loading... --"
+msgstr ""
+
+msgid "."
+msgstr ""
+
+msgid "0 = any. 1–16 matches one specific channel."
+msgstr ""
+
+msgid "0.00 to 1.00. Sets the value at startup."
+msgstr ""
+
+msgid "0=any"
+msgstr ""
+
+msgid "1 FPS"
+msgstr ""
+
+msgid "1.25×"
+msgstr ""
+
+msgid "1.5×"
+msgstr ""
+
+msgid "1.75×"
+msgstr ""
+
+msgid "10 FPS"
+msgstr ""
+
+msgid "15 FPS"
+msgstr ""
+
+msgid "1×"
+msgstr ""
+
+msgid "2 FPS"
+msgstr ""
+
+msgid "2×"
+msgstr ""
+
+msgid "30 FPS"
+msgstr ""
+
+msgid "320 (faster)"
+msgstr ""
+
+msgid "416"
+msgstr ""
+
+msgid "5 FPS"
+msgstr ""
+
+msgid "512"
+msgstr ""
+
+msgid "60 FPS"
+msgstr ""
+
+msgid "640 (default, slower)"
+msgstr ""
+
+msgid "? This removes the file from disk."
+msgstr ""
+
+msgid "AI Assisted"
+msgstr ""
+
+msgid "ANSI E1.59 Object Transform Protocol – parallel output alongside PSN"
+msgstr ""
+
+msgid "Actions"
+msgstr ""
+
+msgid "Add"
+msgstr ""
+
+msgid "Add a patch with a connected device in the MIDI Patches section above, then try again."
+msgstr ""
+
+msgid "Add new MIDI Patch"
+msgstr ""
+
+msgid "Adding…"
+msgstr ""
+
+msgid "Addressing"
+msgstr ""
+
+msgid "Advertisement:"
+msgstr ""
+
+msgid "Alias"
+msgstr ""
+
+msgid "Allowed sender IPs"
+msgstr ""
+
+msgid "Any"
+msgstr ""
+
+msgid "App is restarting&hellip; Please wait."
+msgstr ""
+
+msgid "App is restarting... Please wait."
+msgstr ""
+
+msgid "App is restarting… Please wait."
+msgstr ""
+
+msgid "Appearance"
+msgstr ""
+
+msgid "Apply"
+msgstr ""
+
+msgid "Apply Without Restart"
+msgstr ""
+
+msgid "Apply to all stations"
+msgstr ""
+
+msgid "Arrow keys are reserved for on-display menu navigation."
+msgstr ""
+
+msgid "Assist Radius"
+msgstr ""
+
+msgid "Assisted Tracking"
+msgstr ""
+
+msgid "Auto-pin the largest person"
+msgstr ""
+
+msgid "Axis Deadzone (0–1)"
+msgstr ""
+
+msgid "Backend"
+msgstr ""
+
+msgid "Ball Size"
+msgstr ""
+
+msgid "Basics"
+msgstr ""
+
+msgid "Beacon receiver"
+msgstr ""
+
+msgid "Beacon sender"
+msgstr ""
+
+msgid "Body"
+msgstr ""
+
+msgid "Bottom (Feet)"
+msgstr ""
+
+msgid "Bottom-center"
+msgstr ""
+
+msgid "Box Color"
+msgstr ""
+
+msgid "Box Thickness"
+msgstr ""
+
+msgid "Broadcast failed. Check your network connection."
+msgstr ""
+
+msgid "Bundle & tools"
+msgstr ""
+
+msgid "Button"
+msgstr ""
+
+msgid "Button Detection Map"
+msgstr ""
+
+msgid "Button Mapping"
+msgstr ""
+
+msgid "CC / Note number"
+msgstr ""
+
+msgid "CLAHE Preprocess"
+msgstr ""
+
+msgid "CPU"
+msgstr ""
+
+msgid "Camera"
+msgstr ""
+
+msgid "Camera & Grid"
+msgstr ""
+
+msgid "Camera input and live preview"
+msgstr ""
+
+msgid "Cancel"
+msgstr ""
+
+msgid "Cancel Drawing"
+msgstr ""
+
+msgid "Cancel wizard"
+msgstr ""
+
+msgid "Cancelled – another capture started"
+msgstr ""
+
+msgid "Cancelled – another row started capturing"
+msgstr ""
+
+msgid "Cannot be W, A, S, D, E, or F (reserved for movement)"
+msgstr ""
+
+msgid "Capture"
+msgstr ""
+
+msgid "Capture again"
+msgstr ""
+
+msgid "Captured"
+msgstr ""
+
+msgid "Channel"
+msgstr ""
+
+msgid "Check & Install Latest"
+msgstr ""
+
+msgid "Checking…"
+msgstr ""
+
+msgid "Choose an .ofupdate release bundle to install first."
+msgstr ""
+
+msgid "Choose file"
+msgstr ""
+
+msgid "Circle Size"
+msgstr ""
+
+msgid "Clear Messages"
+msgstr ""
+
+msgid "Click "
+msgstr ""
+
+msgid "Click any pill to edit it."
+msgstr ""
+
+msgid "Click to place vertices. Click the first vertex or double-click to close. Click a zone to select it. Drag vertices to move them."
+msgstr ""
+
+msgid "Clip strength"
+msgstr ""
+
+msgid "Close"
+msgstr ""
+
+msgid "Color"
+msgstr ""
+
+msgid "Colour"
+msgstr ""
+
+msgid "Computed OTP multicast addresses"
+msgstr ""
+
+msgid "Confidence"
+msgstr ""
+
+msgid "Configuration File (.openfollowsettings)"
+msgstr ""
+
+msgid "Configuration Transfer"
+msgstr ""
+
+msgid "Configuration imported (some changes need a restart)"
+msgstr ""
+
+msgid "Configuration imported successfully"
+msgstr ""
+
+msgid "Configure network settings from the device on-screen menu."
+msgstr ""
+
+msgid "Configured"
+msgstr ""
+
+msgid "Confirm"
+msgstr ""
+
+msgid "Connection"
+msgstr ""
+
+msgid "Context"
+msgstr ""
+
+msgid "Control"
+msgstr ""
+
+msgid "Controlled by"
+msgstr ""
+
+msgid "Controllers"
+msgstr ""
+
+msgid "Core inference settings and what the overlay draws."
+msgstr ""
+
+msgid "Core status first, advanced diagnostics on demand"
+msgstr ""
+
+msgid "Could not install that file:"
+msgstr ""
+
+msgid "Could not reach the update server:"
+msgstr ""
+
+msgid "Could not read the selected file."
+msgstr ""
+
+msgid "Could not save template."
+msgstr ""
+
+msgid "Could not start update"
+msgstr ""
+
+msgid "Crosshair"
+msgstr ""
+
+msgid "Crosshair Color"
+msgstr ""
+
+msgid "Crosshair Size"
+msgstr ""
+
+msgid "Crosshair Thickness"
+msgstr ""
+
+msgid "Crosshair colour"
+msgstr ""
+
+msgid "Currently selected (controller)"
+msgstr ""
+
+msgid "Custom Templates"
+msgstr ""
+
+msgid "DHCP (automatic)"
+msgstr ""
+
+msgid "DHCP with manual address"
+msgstr ""
+
+msgid "DNS"
+msgstr ""
+
+msgid "Debounce"
+msgstr ""
+
+msgid "Default Templates"
+msgstr ""
+
+msgid "Default fader"
+msgstr ""
+
+msgid "Default marker"
+msgstr ""
+
+msgid "Default value"
+msgstr ""
+
+msgid "Delete"
+msgstr ""
+
+msgid "Delete "
+msgstr ""
+
+msgid "Delete Selected"
+msgstr ""
+
+msgid "Delete marker "
+msgstr ""
+
+msgid "Delete patch"
+msgstr ""
+
+msgid "Delete this destination? Transmitters and zones referencing it will stop sending until repointed."
+msgstr ""
+
+msgid "Delete this transmitter?"
+msgstr ""
+
+msgid "Depth"
+msgstr ""
+
+msgid "Destination"
+msgstr ""
+
+msgid "Destination Host"
+msgstr ""
+
+msgid "Detected As"
+msgstr ""
+
+msgid "Detection"
+msgstr ""
+
+msgid "Detection & Display"
+msgstr ""
+
+msgid "Detection Rate"
+msgstr ""
+
+msgid "Detection box colour"
+msgstr ""
+
+msgid "Detection needs extra components:"
+msgstr ""
+
+msgid "Detections (last)"
+msgstr ""
+
+msgid "Device"
+msgstr ""
+
+msgid "Device IP address configuration"
+msgstr ""
+
+msgid "Device password"
+msgstr ""
+
+msgid "Device password required:"
+msgstr ""
+
+msgid "Device unreachable"
+msgstr ""
+
+msgid "Diagnostics"
+msgstr ""
+
+msgid "Dimensions"
+msgstr ""
+
+msgid "Disabled"
+msgstr ""
+
+msgid "Discard"
+msgstr ""
+
+msgid "Discard unsaved changes to this row?"
+msgstr ""
+
+msgid "Display"
+msgstr ""
+
+msgid "Display name"
+msgstr ""
+
+msgid "Display units"
+msgstr ""
+
+msgid "Done"
+msgstr ""
+
+msgid "Download Model"
+msgstr ""
+
+msgid "Download diagnostics bundle"
+msgstr ""
+
+msgid "Download model"
+msgstr ""
+
+msgid "Download the current configuration as a JSON file."
+msgstr ""
+
+msgid "Drag to reorder"
+msgstr ""
+
+msgid "Drop Line"
+msgstr ""
+
+msgid "Drop Line Thickness"
+msgstr ""
+
+msgid "Duplicate"
+msgstr ""
+
+msgid "Edge"
+msgstr ""
+
+msgid "Edit mode"
+msgstr ""
+
+msgid "Enabled"
+msgstr ""
+
+msgid "Enter an id ≥ 1"
+msgstr ""
+
+msgid "Errors"
+msgstr ""
+
+msgid "Eval Rate"
+msgstr ""
+
+msgid "Experimental"
+msgstr ""
+
+msgid "Experimental features"
+msgstr ""
+
+msgid "Export"
+msgstr ""
+
+msgid "Export Configuration"
+msgstr ""
+
+msgid "Export a YOLO model to ONNX into the storage folder. Needs the model-export tools and an internet connection – slow on a Pi."
+msgstr ""
+
+msgid "Export and import device settings"
+msgstr ""
+
+msgid "Export image size"
+msgstr ""
+
+msgid "FOV is horizontal (as printed on camera datasheets). Pick your sensor size and focal length and we will compute FOV automatically."
+msgstr ""
+
+msgid "Fader"
+msgstr ""
+
+msgid "Fader %d"
+msgstr ""
+
+msgid "Fader colour"
+msgstr ""
+
+msgid "Filled"
+msgstr ""
+
+msgid "Finish Polygon"
+msgstr ""
+
+msgid "Fire OSC messages when markers or detections enter/leave polygon regions"
+msgstr ""
+
+msgid "First token is the OSC address; the rest are arguments. Click a placeholder below to insert it. Add "
+msgstr ""
+
+msgid "Focal Length"
+msgstr ""
+
+msgid "Force one packet to the configured destination. Bypasses the row's Enabled flag so a disabled row can still be probed before flipping it on."
+msgstr ""
+
+msgid "Frame Rate (measured)"
+msgstr ""
+
+msgid "Frame Rate (source)"
+msgstr ""
+
+msgid "Framing"
+msgstr ""
+
+msgid "Fully Automatic"
+msgstr ""
+
+msgid "Gamepad Input"
+msgstr ""
+
+msgid "General"
+msgstr ""
+
+msgid "Global"
+msgstr ""
+
+msgid "Grace Period"
+msgstr ""
+
+msgid "Grid"
+msgstr ""
+
+msgid "Ground Circle"
+msgstr ""
+
+msgid "Guided camera positioning and grid calibration"
+msgstr ""
+
+msgid "Heal Interval"
+msgstr ""
+
+msgid "Help (?)"
+msgstr ""
+
+msgid "Horizontal Field of View"
+msgstr ""
+
+msgid "Host"
+msgstr ""
+
+msgid "Hysteresis"
+msgstr ""
+
+msgid "ID"
+msgstr ""
+
+msgid "IJKL"
+msgstr ""
+
+msgid "IP"
+msgstr ""
+
+msgid "IP address"
+msgstr ""
+
+msgid "IP address of the RTTrPM receiver"
+msgstr ""
+
+msgid "Identifies this station in PSN output and on the network."
+msgstr ""
+
+msgid "Identity, display units, and web access"
+msgstr ""
+
+msgid "Ignored for"
+msgstr ""
+
+msgid "Imperial (ft / in, ft/s)"
+msgstr ""
+
+msgid "Import"
+msgstr ""
+
+msgid "Import Configuration"
+msgstr ""
+
+msgid "Import failed: "
+msgstr ""
+
+msgid "Import request failed. Check your network connection."
+msgstr ""
+
+msgid "Importing…"
+msgstr ""
+
+msgid "Inference (avg)"
+msgstr ""
+
+msgid "Inference Rate"
+msgstr ""
+
+msgid "Inference Size"
+msgstr ""
+
+msgid "Input"
+msgstr ""
+
+msgid "Input behavior for game controllers"
+msgstr ""
+
+msgid "Install ""
+msgstr ""
+
+msgid "Install an .ofupdate release bundle without internet access."
+msgstr ""
+
+msgid "Install now"
+msgstr ""
+
+msgid "Install the latest release from GitHub"
+msgstr ""
+
+msgid "Install the model-export tools (run"
+msgstr ""
+
+msgid "Install them from the Person Detection section, then restart."
+msgstr ""
+
+msgid "Install this file?"
+msgstr ""
+
+msgid "Install with"
+msgstr ""
+
+msgid "Installed"
+msgstr ""
+
+msgid "Installed models"
+msgstr ""
+
+msgid "Installing update"
+msgstr ""
+
+msgid "Installing version "
+msgstr ""
+
+msgid "Interface"
+msgstr ""
+
+msgid "Invert Y/Z Mapping"
+msgstr ""
+
+msgid "Keep this device powered on. It restarts automatically and this page reloads when the update finishes."
+msgstr ""
+
+msgid "Key"
+msgstr ""
+
+msgid "Keyboard Input"
+msgstr ""
+
+msgid "Keyboard controls for the on-display UI"
+msgstr ""
+
+msgid "LT / RT Triggers:"
+msgstr ""
+
+msgid "Language"
+msgstr ""
+
+msgid "Last packet"
+msgstr ""
+
+msgid "Last sent"
+msgstr ""
+
+msgid "Learn"
+msgstr ""
+
+msgid "Learn again"
+msgstr ""
+
+msgid "Lease"
+msgstr ""
+
+msgid "Left Stick"
+msgstr ""
+
+msgid "Left Stick Y"
+msgstr ""
+
+msgid "Length"
+msgstr ""
+
+msgid "Length-prefix (OSC 1.0)"
+msgstr ""
+
+msgid "Lens"
+msgstr ""
+
+msgid "Line Color"
+msgstr ""
+
+msgid "Line Thickness"
+msgstr ""
+
+msgid "Linear"
+msgstr ""
+
+msgid "Listening for MIDI…"
+msgstr ""
+
+msgid "Live Statistics"
+msgstr ""
+
+msgid "Live indicators for operation and troubleshooting."
+msgstr ""
+
+msgid "Live runtime state and one-click bundle download for issue reports."
+msgstr ""
+
+msgid "Live status"
+msgstr ""
+
+msgid "Load template…"
+msgstr ""
+
+msgid "Loading network configuration…"
+msgstr ""
+
+msgid "Loading…"
+msgstr ""
+
+msgid "Logarithmic"
+msgstr ""
+
+msgid "Logs"
+msgstr ""
+
+msgid "MIDI"
+msgstr ""
+
+msgid "MIDI Patches"
+msgstr ""
+
+msgid "MIDI subsystem not running"
+msgstr ""
+
+msgid "Mapped with"
+msgstr ""
+
+msgid "Marker"
+msgstr ""
+
+msgid "Marker "
+msgstr ""
+
+msgid "Marker Control & Visibility"
+msgstr ""
+
+msgid "Marker Faders"
+msgstr ""
+
+msgid "Marker Visuals"
+msgstr ""
+
+msgid "Marker colour"
+msgstr ""
+
+msgid "Marker fader speed (s)"
+msgstr ""
+
+msgid "Marker fader stick"
+msgstr ""
+
+msgid "Marker faders"
+msgstr ""
+
+msgid "Markers & Zones"
+msgstr ""
+
+msgid "Match the model's export image size."
+msgstr ""
+
+msgid "Max Persons"
+msgstr ""
+
+msgid "Max visible"
+msgstr ""
+
+msgid "Maximum Height"
+msgstr ""
+
+msgid "Menu Navigation"
+msgstr ""
+
+msgid "Message Type"
+msgstr ""
+
+msgid "Method"
+msgstr ""
+
+msgid "Metric (m, m/s)"
+msgstr ""
+
+msgid "Min change (m)"
+msgstr ""
+
+msgid "Missing packages:"
+msgstr ""
+
+msgid "Model"
+msgstr ""
+
+msgid "Models"
+msgstr ""
+
+msgid "Models disk:"
+msgstr ""
+
+msgid "Modifiers"
+msgstr ""
+
+msgid "More than one station claims control"
+msgstr ""
+
+msgid "Mouse Input"
+msgstr ""
+
+msgid "Mouse controls for the on-display UI"
+msgstr ""
+
+msgid "Move X/Y"
+msgstr ""
+
+msgid "Move Z+"
+msgstr ""
+
+msgid "Move Z-"
+msgstr ""
+
+msgid "Move the fader / turn the knob to assign it (10-second window)."
+msgstr ""
+
+msgid "Move the fader / turn the knob you want to drive this fader; Learn fills the fields above from the next incoming MIDI message (10-second window)."
+msgstr ""
+
+msgid "Move the fader or turn the knob you want to assign."
+msgstr ""
+
+msgid "Movement"
+msgstr ""
+
+msgid "Multicast addresses"
+msgstr ""
+
+msgid "Multicast group"
+msgstr ""
+
+msgid "N/A"
+msgstr ""
+
+msgid "Name"
+msgstr ""
+
+msgid "Network Identity"
+msgstr ""
+
+msgid "Network Settings"
+msgstr ""
+
+msgid "Network configuration is unavailable – no network adapter is configured on this host (or this build has none wired), so there is nothing to edit."
+msgstr ""
+
+msgid "Network settings are protected from change by mistake."
+msgstr ""
+
+msgid "Network state unavailable – no detected interface or adapter on this host."
+msgstr ""
+
+msgid "New marker colour"
+msgstr ""
+
+msgid "Next Marker"
+msgstr ""
+
+msgid "No MIDI patches yet. Add one, give it an alias, and assign a connected device."
+msgstr ""
+
+msgid "No OSC destinations configured. Use "
+msgstr ""
+
+msgid "No PIN set"
+msgstr ""
+
+msgid "No controlled markers yet. Add markers under Controlled markers and assign a gamepad to see their faders here."
+msgstr ""
+
+msgid "No file selected"
+msgstr ""
+
+msgid "No models installed yet – download one below."
+msgstr ""
+
+msgid "No other stations discovered on the network."
+msgstr ""
+
+msgid "No source"
+msgstr ""
+
+msgid "No test packet sent yet."
+msgstr ""
+
+msgid "No transmitters configured. Use "
+msgstr ""
+
+msgid "No unsaved changes."
+msgstr ""
+
+msgid "Normal"
+msgstr ""
+
+msgid "Normal Mode"
+msgstr ""
+
+msgid "Not now"
+msgstr ""
+
+msgid "Number"
+msgstr ""
+
+msgid "Numpad (8/4/2/6)"
+msgstr ""
+
+msgid "OK"
+msgstr ""
+
+msgid "OSC Destinations"
+msgstr ""
+
+msgid "OSC Input"
+msgstr ""
+
+msgid "OSC Server"
+msgstr ""
+
+msgid "OSC Transmitters"
+msgstr ""
+
+msgid "OSC message"
+msgstr ""
+
+msgid "OSC-driven next-cue text shown on the Operator Screen"
+msgstr ""
+
+msgid "OTP Network"
+msgstr ""
+
+msgid "OTP Output"
+msgstr ""
+
+msgid "Offline install"
+msgstr ""
+
+msgid "Offset Position"
+msgstr ""
+
+msgid "On-screen appearance of each marker"
+msgstr ""
+
+msgid "Only models present in the storage folder are listed."
+msgstr ""
+
+msgid "Opacity"
+msgstr ""
+
+msgid "Open Setup Wizard"
+msgstr ""
+
+msgid "Open the Input → MIDI page to wire a backend, then come back here."
+msgstr ""
+
+msgid "Operator Messages"
+msgstr ""
+
+msgid "Optional YOLO person detection. Compute-heavy – a workstation is recommended over a Pi 5; see each box's help. Each box saves on its own."
+msgstr ""
+
+msgid "Orientation"
+msgstr ""
+
+msgid "Origin Marker"
+msgstr ""
+
+msgid "Outbound OSC messages – Stream / Hotkey / Controller-button triggers"
+msgstr ""
+
+msgid "Output"
+msgstr ""
+
+msgid "Overview"
+msgstr ""
+
+msgid "PIN (leave empty to disable)"
+msgstr ""
+
+msgid "PSN Multicast IP"
+msgstr ""
+
+msgid "PSN Network Interface"
+msgstr ""
+
+msgid "PSN Output"
+msgstr ""
+
+msgid "PSN System Name"
+msgstr ""
+
+msgid "PSN-space position and orientation"
+msgstr ""
+
+msgid "Packets total"
+msgstr ""
+
+msgid "Patch"
+msgstr ""
+
+msgid "Peers seen"
+msgstr ""
+
+msgid "Person Detection"
+msgstr ""
+
+msgid "Physical Button"
+msgstr ""
+
+msgid "Pick how detection drives the marker, then tune the motion."
+msgstr ""
+
+msgid "Pick the active model, download new ones, and remove ones you no longer need."
+msgstr ""
+
+msgid "Pin Marker"
+msgstr ""
+
+msgid "Pin Point"
+msgstr ""
+
+msgid "Pin To Marker"
+msgstr ""
+
+msgid "Pipeline"
+msgstr ""
+
+msgid "Pitch"
+msgstr ""
+
+msgid "Placement"
+msgstr ""
+
+msgid "Please select a configuration file."
+msgstr ""
+
+msgid "Port"
+msgstr ""
+
+msgid "PosiStageNet (PSN) – identity and multicast configuration"
+msgstr ""
+
+msgid "Position"
+msgstr ""
+
+msgid "Position X"
+msgstr ""
+
+msgid "Position Y"
+msgstr ""
+
+msgid "Position Z"
+msgstr ""
+
+msgid "Prediction"
+msgstr ""
+
+msgid "Press a key, turn a knob, or move a fader."
+msgstr ""
+
+msgid "Press a key, turn a knob, or move a fader. Capture populates the fields above with the next incoming MIDI message (10-second window)."
+msgstr ""
+
+msgid "Prev Marker"
+msgstr ""
+
+msgid "Preview"
+msgstr ""
+
+msgid "Priority"
+msgstr ""
+
+msgid "Protocol"
+msgstr ""
+
+msgid "Quadratic"
+msgstr ""
+
+msgid "RAM"
+msgstr ""
+
+msgid "RTTrPM Network"
+msgstr ""
+
+msgid "RTTrPM Output"
+msgstr ""
+
+msgid "Rate (Hz)"
+msgstr ""
+
+msgid "Raw ID"
+msgstr ""
+
+msgid "Read only"
+msgstr ""
+
+msgid "Read-only – set it in General → Station Settings."
+msgstr ""
+
+msgid "Real Time Tracking Protocol – Motion – unicast UDP send-only output"
+msgstr ""
+
+msgid "Receive marker positions via OSC"
+msgstr ""
+
+msgid "Refine your manual control"
+msgstr ""
+
+msgid "Refresh"
+msgstr ""
+
+msgid "Reload"
+msgstr ""
+
+msgid "Remaining"
+msgstr ""
+
+msgid "Render the message that would be sent right now using the current marker position. Doesn't fire on the wire."
+msgstr ""
+
+msgid "Renew DHCP lease"
+msgstr ""
+
+msgid "Reset Marker"
+msgstr ""
+
+msgid "Reset to Defaults"
+msgstr ""
+
+msgid "Resolution"
+msgstr ""
+
+msgid "Response Curve"
+msgstr ""
+
+msgid "Restart Now"
+msgstr ""
+
+msgid "Restart Required"
+msgstr ""
+
+msgid "Restart application"
+msgstr ""
+
+msgid "Restarting onto version "
+msgstr ""
+
+msgid "Retry"
+msgstr ""
+
+msgid "Reusable connections (host, port, transport) referenced by transmitters and zones"
+msgstr ""
+
+msgid "Right Stick"
+msgstr ""
+
+msgid "Right Stick Y"
+msgstr ""
+
+msgid "Roll"
+msgstr ""
+
+msgid "Route by marker"
+msgstr ""
+
+msgid "Router"
+msgstr ""
+
+msgid "Router (optional)"
+msgstr ""
+
+msgid "Run the wizard on the app display to detect your controller's button layout."
+msgstr ""
+
+msgid "S-Law"
+msgstr ""
+
+msgid "SLIP (RFC 1055)"
+msgstr ""
+
+msgid "Save"
+msgstr ""
+
+msgid "Save as template…"
+msgstr ""
+
+msgid "Save fader"
+msgstr ""
+
+msgid "Scale"
+msgstr ""
+
+msgid "Scan"
+msgstr ""
+
+msgid "Select a zone to edit its OSC addresses and trigger source."
+msgstr ""
+
+msgid "Send"
+msgstr ""
+
+msgid "Send All Settings"
+msgstr ""
+
+msgid "Send Config to Other Stations"
+msgstr ""
+
+msgid "Send Rate (FPS)"
+msgstr ""
+
+msgid "Send always"
+msgstr ""
+
+msgid "Send only on change"
+msgstr ""
+
+msgid "Send test packet"
+msgstr ""
+
+msgid "Sending…"
+msgstr ""
+
+msgid "Sensor Size"
+msgstr ""
+
+msgid "Sensor Width"
+msgstr ""
+
+msgid "Sent count"
+msgstr ""
+
+msgid "Sent to "
+msgstr ""
+
+msgid "Server"
+msgstr ""
+
+msgid "Serving on"
+msgstr ""
+
+msgid "Settings"
+msgstr ""
+
+msgid "Settings Menu"
+msgstr ""
+
+msgid "Settings sent to "
+msgstr ""
+
+msgid "Shared by the Settings menu, source / interface selection, and calibration apply/cancel."
+msgstr ""
+
+msgid "Shared catalog"
+msgstr ""
+
+msgid "Shared catalog + this station's selection"
+msgstr ""
+
+msgid "Show Ball"
+msgstr ""
+
+msgid "Show Boxes"
+msgstr ""
+
+msgid "Show Crosshair"
+msgstr ""
+
+msgid "Show Labels"
+msgstr ""
+
+msgid "Show Origin"
+msgstr ""
+
+msgid "Show Overlay"
+msgstr ""
+
+msgid "Show Preview"
+msgstr ""
+
+msgid "Show experimental features"
+msgstr ""
+
+msgid "Show on Operator Screen"
+msgstr ""
+
+msgid "Show recent log tail (last 100 lines)"
+msgstr ""
+
+msgid "Signal"
+msgstr ""
+
+msgid "Smoothing / glide"
+msgstr ""
+
+msgid "Snapped to a multiple of 32; match the Inference Size you run."
+msgstr ""
+
+msgid "Software Update"
+msgstr ""
+
+msgid "Source"
+msgstr ""
+
+msgid "Source Interface (optional)"
+msgstr ""
+
+msgid "Source Type"
+msgstr ""
+
+msgid "Spacing"
+msgstr ""
+
+msgid "Speed +"
+msgstr ""
+
+msgid "Speed -"
+msgstr ""
+
+msgid "Stage reference plane settings"
+msgstr ""
+
+msgid "Stall Timeout"
+msgstr ""
+
+msgid "Start Button Detection Wizard"
+msgstr ""
+
+msgid "Static"
+msgstr ""
+
+msgid "Station Settings"
+msgstr ""
+
+msgid "Station name"
+msgstr ""
+
+msgid "Status"
+msgstr ""
+
+msgid "Still working…"
+msgstr ""
+
+msgid "Stored"
+msgstr ""
+
+msgid "Stored:"
+msgstr ""
+
+msgid "Submit"
+msgstr ""
+
+msgid "Subnet mask"
+msgstr ""
+
+msgid "Swapped"
+msgstr ""
+
+msgid "Switch to edit view"
+msgstr ""
+
+msgid "Synced across all stations on the LAN."
+msgstr ""
+
+msgid "System Number"
+msgstr ""
+
+msgid "Temperature"
+msgstr ""
+
+msgid "Template"
+msgstr ""
+
+msgid "Template saved."
+msgstr ""
+
+msgid "Test peer connectivity"
+msgstr ""
+
+msgid "Test send"
+msgstr ""
+
+msgid "The box attached to a marker is drawn in that marker's colour."
+msgstr ""
+
+msgid "The device has been unreachable for several minutes. Check that it is powered on, then reload this page."
+msgstr ""
+
+msgid "The imported configuration has been validated. Some changes require an app restart to take effect:"
+msgstr ""
+
+msgid "The selected file is not valid JSON."
+msgstr ""
+
+msgid "The update could not be started."
+msgstr ""
+
+msgid "The update did not complete."
+msgstr ""
+
+msgid "The update did not start – the device may already be up to date."
+msgstr ""
+
+msgid "The update is taking longer than expected. Reload the page to check the current version."
+msgstr ""
+
+msgid "Thickness"
+msgstr ""
+
+msgid "This device already runs the latest version ("
+msgstr ""
+
+msgid "This station's selection"
+msgstr ""
+
+msgid "Timed out – no MIDI received"
+msgstr ""
+
+msgid "Toggle Help"
+msgstr ""
+
+msgid "Toggle Zone Overlay"
+msgstr ""
+
+msgid "Top (Head)"
+msgstr ""
+
+msgid "Top-center"
+msgstr ""
+
+msgid "Tracked People"
+msgstr ""
+
+msgid "Tracking"
+msgstr ""
+
+msgid "Tracking Mode"
+msgstr ""
+
+msgid "Tracking mode"
+msgstr ""
+
+msgid "Transform:"
+msgstr ""
+
+msgid "Trigger"
+msgstr ""
+
+msgid "Trigger Zones"
+msgstr ""
+
+msgid "Trigger type"
+msgstr ""
+
+msgid "Type"
+msgstr ""
+
+msgid "UDP Port"
+msgstr ""
+
+msgid "Unit system"
+msgstr ""
+
+msgid "Units shown in the web UI and on-device overlay. Storage, OSC, and PSN/RTTrPM/OTP stay metric regardless."
+msgstr ""
+
+msgid "Unknown error"
+msgstr ""
+
+msgid "Up to date"
+msgstr ""
+
+msgid "Update available"
+msgstr ""
+
+msgid "Update check failed"
+msgstr ""
+
+msgid "Update complete"
+msgstr ""
+
+msgid "Update complete – reloading…"
+msgstr ""
+
+msgid "Update did not start"
+msgstr ""
+
+msgid "Update failed"
+msgstr ""
+
+msgid "Update failed."
+msgstr ""
+
+msgid "Upload & Install"
+msgstr ""
+
+msgid "Upload failed"
+msgstr ""
+
+msgid "Uploading…"
+msgstr ""
+
+msgid "Uptime"
+msgstr ""
+
+msgid "User-defined context value (0–4294967295)"
+msgstr ""
+
+msgid "Value"
+msgstr ""
+
+msgid "Version "
+msgstr ""
+
+msgid "Video"
+msgstr ""
+
+msgid "Video Source"
+msgstr ""
+
+msgid "View"
+msgstr ""
+
+msgid "View mode"
+msgstr ""
+
+msgid "Viewed by"
+msgstr ""
+
+msgid "Virtual Faders"
+msgstr ""
+
+msgid "Virtual faders"
+msgstr ""
+
+msgid "WASD"
+msgstr ""
+
+msgid "Web access"
+msgstr ""
+
+msgid "Web server"
+msgstr ""
+
+msgid "Where the AI output sits relative to your manual anchor."
+msgstr ""
+
+msgid "Width"
+msgstr ""
+
+msgid "Will save disabled: this row uses placeholder values that are not resolved yet (no default marker, or an explicit marker reference targets an unregistered marker)."
+msgstr ""
+
+msgid "Wizard running on app display"
+msgstr ""
+
+msgid "X / Y Layout"
+msgstr ""
+
+msgid "Yaw"
+msgstr ""
+
+msgid "Z Display"
+msgstr ""
+
+msgid "Z from Stage Level"
+msgstr ""
+
+msgid "Z+"
+msgstr ""
+
+msgid "Z-"
+msgstr ""
+
+msgid "Zone Editor"
+msgstr ""
+
+msgid "connected"
+msgstr ""
+
+msgid "e.g. 192.168.1.10, 192.168.1.20"
+msgstr ""
+
+msgid "e.g. 239.10.10.10 (blank = off)"
+msgstr ""
+
+msgid "empty"
+msgstr ""
+
+msgid "fallback"
+msgstr ""
+
+msgid "free"
+msgstr ""
+
+msgid "manage in OSC Destinations"
+msgstr ""
+
+msgid "not picked up"
+msgstr ""
+
+msgid "of"
+msgstr ""
+
+msgid "optional"
+msgstr ""
+
+msgid "placeholder."
+msgstr ""
+
+msgid "settings"
+msgstr ""
+
+msgid "this station"
+msgstr ""
+
+msgid "this station ("
+msgstr ""
+
+msgid "unavailable"
+msgstr ""
+
+msgid "{}://{}:{} ({})"
+msgstr ""
+
+msgid "–"
+msgstr ""
+
+msgid "– (unused)"
+msgstr ""
+
+msgid "– Fader"
+msgstr ""
+
+msgid "– none –"
+msgstr ""
+
+msgid "⚠ Applying network changes may disconnect this web session. A static / manual address reloads the UI at the new address automatically; otherwise reconnect manually."
+msgstr ""
+
+msgid "⚠ Could not add marker "
+msgstr ""
+
+msgid "⚠ save failed"
+msgstr ""
+
+msgid "✓ Added marker "
+msgstr ""
+
+msgid "✓ saved"
+msgstr ""
+

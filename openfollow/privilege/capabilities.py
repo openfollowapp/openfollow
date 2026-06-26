@@ -466,6 +466,22 @@ DEVICE_VISUDO_VALIDATE = Capability(
     sudoers_pattern="/usr/sbin/visudo -cf *",
 )
 
+# Anchored sudoers regex matching ONE ``@<epoch-seconds>`` token. The auto
+# time-sync sets the clock to an absolute Unix instant; bounding the slot to
+# ``@<digits>`` (not a ``*``) keeps the grant from being turned into an
+# arbitrary ``date`` invocation that could set a time string with spaces /
+# options. ``@`` makes ``date -s`` parse the value as absolute UTC seconds.
+_EPOCH_ARG_RE = "^@[0-9]+$"
+
+SYSTEM_SET_CLOCK = Capability(
+    name="system.set_clock",
+    probe_argv=("/usr/bin/date", "-s", _PROBE_PLACEHOLDER),
+    description="Set the system clock from a trusted time source",
+    # Anchored ``@<digits>`` regex, NOT a trailing ``*`` – see _EPOCH_ARG_RE.
+    sudoers_pattern=f"/usr/bin/date -s {_EPOCH_ARG_RE}",
+    arg_pattern=_EPOCH_ARG_RE,
+)
+
 
 # Registry of every capability the broker knows about. Ordering is the
 # order capabilities appear in the diagnostics bundle's permissions section.
@@ -489,6 +505,8 @@ ALL_CAPABILITIES: tuple[Capability, ...] = (
     # service control + package update
     SERVICE_RESTART,
     PACKAGE_SELF_UPDATE,
+    # system clock (auto time-sync)
+    SYSTEM_SET_CLOCK,
     # network apply
     NETWORK_DHCPCD_RENEW,
     NETWORK_DHCPCD_RELEASE,

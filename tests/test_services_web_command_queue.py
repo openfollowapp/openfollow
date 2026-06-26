@@ -32,6 +32,43 @@ def test_restart_request_consume_once() -> None:
 
 
 # ---------------------------------------------------------------------------
+# update-available holder (drives the banner + footer flag)
+# ---------------------------------------------------------------------------
+
+
+def test_update_available_defaults_empty() -> None:
+    assert WebCommandQueue().get_update_available() == ""
+
+
+def test_set_and_get_update_available_strips() -> None:
+    q = WebCommandQueue()
+    q.set_update_available("  0.4.0 ")
+    assert q.get_update_available() == "0.4.0"
+
+
+def test_update_available_can_be_cleared() -> None:
+    q = WebCommandQueue()
+    q.set_update_available("0.4.0")
+    q.set_update_available("")
+    assert q.get_update_available() == ""
+
+
+def test_update_available_none_clears() -> None:
+    q = WebCommandQueue()
+    q.set_update_available("0.4.0")
+    q.set_update_available(None)  # type: ignore[arg-type]
+    assert q.get_update_available() == ""
+
+
+def test_update_available_independent_of_install_status() -> None:
+    # A queued install must not wipe the discovered-version banner state.
+    q = WebCommandQueue()
+    q.set_update_available("0.4.0")
+    q.set_update_status("running", message="installing")
+    assert q.get_update_available() == "0.4.0"
+
+
+# ---------------------------------------------------------------------------
 # button detection
 # ---------------------------------------------------------------------------
 

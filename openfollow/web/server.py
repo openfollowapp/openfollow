@@ -428,6 +428,10 @@ class ConfigWebServer:
         """Get current web-visible status of the update workflow."""
         return self._command_queue.get_update_status()
 
+    def get_update_available(self) -> str:
+        """Newest release the background online-sync found ("" if up to date)."""
+        return self._command_queue.get_update_available()
+
     def pending_privilege_password_request(self) -> dict[str, str] | None:
         """Return the active privilege-password prompt or None."""
         return self._command_queue.pending_privilege_password_request()

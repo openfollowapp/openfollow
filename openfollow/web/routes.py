@@ -763,6 +763,9 @@ def _build_general_template_data(
     }
     if update_feedback:
         data["update_feedback"] = update_feedback
+    latest = server.get_update_available()
+    data["update_available"] = bool(latest)
+    data["latest_version"] = latest
     return data
 
 
@@ -3603,6 +3606,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # index.tpl includes the General partial directly, so the initial
             # render must supply the Software Update section's version label.
             current_version=openfollow.__version__,
+            # Update-available banner (General section) + footer flag (base.tpl).
+            update_available=bool(server.get_update_available()),
+            latest_version=server.get_update_available(),
             button_names=sorted(VALID_BUTTON_NAMES),
             detection_missing=_get_detection_missing_deps(config),
             detection_extras_installed=extras,
@@ -4245,7 +4251,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         cfg = load_config(server.config_path)
         response.content_type = "application/json"
         try:
-            info = check_for_update(cfg.update_github_repo, openfollow.__version__)
+            info = check_for_update(
+                cfg.update_github_repo,
+                openfollow.__version__,
+                include_prereleases=cfg.update_include_prereleases,
+            )
             return json.dumps({"ok": True, **info})
         except Exception as exc:  # surface any network/API error as feedback
             return json.dumps({"ok": False, "error": str(exc)})

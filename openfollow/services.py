@@ -836,22 +836,14 @@ class AppRuntimeServices:
     def _resolve_web_bind(self) -> str:
         """Resolve the web UI listen address.
 
-        ``web_bind`` set → that explicit address. Empty → pin to the PSN
-        source interface's IPv4 when one is configured and resolvable, else
-        ``0.0.0.0`` (all interfaces). The server additionally serves loopback
-        whenever this pins a specific IP, so the on-screen browser is
-        unaffected.
+        ``web_bind`` set → that explicit address. Empty → ``0.0.0.0`` (all
+        interfaces) so the web UI keeps serving across an interface IP change
+        (static → DHCP, new lease) without a restart – a listen socket pinned
+        to a concrete IP goes dead when that IP moves. Access stays gated by
+        ``web_pin`` plus the CSRF / DNS-rebind guards. An operator who needs to
+        pin the UI to one address sets ``web_bind`` explicitly.
         """
-        cfg = self._app._config
-        if cfg.web_bind:
-            return cfg.web_bind
-        if cfg.psn_source_iface:
-            from openfollow.net_utils import get_iface_ipv4
-
-            ip = get_iface_ipv4(cfg.psn_source_iface)
-            if ip:
-                return ip
-        return "0.0.0.0"
+        return self._app._config.web_bind or "0.0.0.0"
 
     def init_psn(self) -> None:
         source_ip = self._resolved_source_ip()

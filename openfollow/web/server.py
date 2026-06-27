@@ -50,6 +50,11 @@ _request_semaphore_rejections = 0
 # twice.
 _FALLBACK_PORTS: tuple[int, ...] = (8080, 2010)
 
+# Min seconds between live local-IP re-resolutions; the refresh runs on request
+# paths and the resolver enumerates interfaces, so an IP change is picked up
+# within this window rather than re-resolving on every request.
+_LOCAL_IP_REFRESH_TTL = 5.0
+
 _REQUEST_BUSY_BODY = b"Server busy; retry"
 _REQUEST_BUSY_RESPONSE = (
     b"HTTP/1.1 503 Service Unavailable\r\n"
@@ -119,6 +124,7 @@ class ConfigWebServer:
         system_name: str = "OpenFollow",
         command_queue: WebCommandQueue | None = None,
         local_ip: str = "",
+        local_ip_provider: Callable[[], str] | None = None,
         runtime_stats_provider: Callable[[], dict[str, Any]] | None = None,
         preview_snapshot_provider: Callable[[], bytes | None] | None = None,
         zone_state_provider: Callable[[], list[tuple[int, bool, int]]] | None = None,
@@ -187,6 +193,11 @@ class ConfigWebServer:
             if local_ip:
                 logger.warning("Configured source IP %s is not a local interface, using auto-detected IP.", local_ip)
             self._local_ip = get_primary_local_ipv4(default="127.0.0.1")
+        # Re-resolves the local IP live so an IP change is picked up without a
+        # restart; the lock guards the cached IP + beacon repoint.
+        self._local_ip_provider = local_ip_provider
+        self._local_ip_lock = threading.Lock()
+        self._local_ip_refresh_ts = 0.0  # monotonic; throttles _refresh_local_ip
         self._command_queue = command_queue or WebCommandQueue()
         self._runtime_stats_provider = runtime_stats_provider
         self._preview_snapshot_provider = preview_snapshot_provider
@@ -376,8 +387,47 @@ class ConfigWebServer:
             logger.exception("PSN source advisory provider raised")
             return empty
 
+    def _refresh_local_ip(self) -> None:
+        """Re-resolve this host's primary IP and adopt it if it changed.
+
+        The IP captured at startup goes stale when the operator switches the
+        interface from static to DHCP (or a lease hands back a new address)
+        without restarting. Peers already track us by the beacon's UDP source
+        address, so this keeps our own self-row and the beacon's send/receive
+        interface in step with them. An unresolved (offline / loopback) result
+        is ignored so the last known good IP is never downgraded to blank.
+
+        Throttled to ``_LOCAL_IP_REFRESH_TTL``: this runs on request paths
+        (overview poll, /api/info, /api/peers) and the provider does interface
+        enumeration, so it must not re-resolve on every hit.
+        """
+        if self._local_ip_provider is None:
+            return
+        now = time.monotonic()
+        with self._local_ip_lock:
+            if now - self._local_ip_refresh_ts < _LOCAL_IP_REFRESH_TTL:
+                return
+            self._local_ip_refresh_ts = now
+        try:
+            candidate = self._local_ip_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("local_ip provider raised")
+            return
+        if not candidate or candidate.startswith("127."):
+            return
+        with self._local_ip_lock:
+            if candidate == self._local_ip:
+                return
+            self._local_ip = candidate
+            # Repoint beacons under the lock so IP + interface stay consistent
+            # under concurrent refreshes (update_iface_ip never blocks).
+            self._beacon_sender.update_iface_ip(candidate)
+            self._beacon_receiver.update_iface_ip(candidate)
+        logger.info("Local IP changed to %s; beacon interface repointed.", candidate)
+
     def get_local_peer_info(self) -> PeerInfo:
         """Get info about this server as a PeerInfo object."""
+        self._refresh_local_ip()
         return PeerInfo(
             name=self._system_name,
             ip=self._local_ip,

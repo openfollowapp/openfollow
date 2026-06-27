@@ -128,6 +128,8 @@ class BeaconSender:
         self._packet = BeaconPacket(name=name, web_port=web_port, version=version)
         self._iface_ip = iface_ip
         self._stop_event = threading.Event()
+        # Signals the send loop to rebuild its socket on the new interface.
+        self._reopen = threading.Event()
         self._thread: threading.Thread | None = None
         # Health metrics for diagnostics bundle.
         # Reads of monotonic floats / int counters are atomic under
@@ -141,6 +143,32 @@ class BeaconSender:
     def update_name(self, name: str) -> None:
         """Update the beacon name (e.g., after config change)."""
         self._packet.name = name
+
+    def update_iface_ip(self, iface_ip: str) -> None:
+        """Repoint the multicast send interface after a host IP change.
+
+        The send loop rebuilds its socket on the next iteration so beacons
+        egress from the new source address. A no-op when the IP is unchanged.
+        """
+        if iface_ip == self._iface_ip:
+            return
+        self._iface_ip = iface_ip
+        self._reopen.set()
+
+    def _drain_reopen(self, sock: socket.socket | None) -> socket.socket | None:
+        """Drop the socket on a pending repoint so the loop rebuilds it.
+
+        Returns the socket to keep, or None to force a rebuild.
+        """
+        if not self._reopen.is_set():
+            return sock
+        self._reopen.clear()
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        return None
 
     def start(self) -> None:
         if self._thread is not None:
@@ -187,6 +215,7 @@ class BeaconSender:
         last_error_log = 0.0
         try:
             while not self._stop_event.is_set():
+                sock = self._drain_reopen(sock)
                 if sock is None:
                     try:
                         sock = self._open_socket()
@@ -298,6 +327,8 @@ class BeaconReceiver:
         self._thread: threading.Thread | None = None
         self._on_peer_discovered = on_peer_discovered
         self._iface_ip = iface_ip
+        # Signals the receive loop to rebuild its socket on the new interface.
+        self._reopen = threading.Event()
         self._local_port: int | None = None  # To filter out self
         self._local_ips: set[str] = set()
         self._local_ips_ts: float = 0.0  # timestamp of last refresh
@@ -319,6 +350,21 @@ class BeaconReceiver:
     def set_local_port(self, port: int) -> None:
         """Set local web port to filter out self-discovery."""
         self._local_port = port
+
+    def update_iface_ip(self, iface_ip: str) -> None:
+        """Rejoin the multicast group on a new interface after a host IP change.
+
+        The receive loop rebuilds its socket on the next iteration so membership
+        moves to the new interface. A no-op when the IP is unchanged.
+        """
+        if iface_ip == self._iface_ip:
+            return
+        self._iface_ip = iface_ip
+        # Force the self-filter cache to re-resolve so the new IP is recognised
+        # as local immediately; otherwise our own looped-back beacon passes the
+        # filter and we self-list as a peer until the next TTL refresh.
+        self._local_ips_ts = 0.0
+        self._reopen.set()
 
     def start(self) -> None:
         if self._thread is not None:
@@ -404,14 +450,25 @@ class BeaconReceiver:
                 continue
             consecutive = 0
             try:
-                while not self._stop_event.is_set():
-                    try:
-                        data, addr = sock.recvfrom(1024)
-                        self._handle_packet(data, addr[0])
-                    except TimeoutError:
-                        continue
+                self._recv_loop(sock)
             finally:
                 sock.close()
+
+    def _recv_loop(self, sock: socket.socket) -> None:
+        """Receive + dispatch packets until stop, or a repoint is requested.
+
+        Returns on a pending repoint so the caller rebuilds the socket and
+        rejoins multicast on the new interface.
+        """
+        while not self._stop_event.is_set():
+            if self._reopen.is_set():
+                self._reopen.clear()
+                return
+            try:
+                data, addr = sock.recvfrom(1024)
+                self._handle_packet(data, addr[0])
+            except TimeoutError:
+                continue
 
     def _handle_packet(self, data: bytes, sender_ip: str) -> None:
         packet = BeaconPacket.from_bytes(data)

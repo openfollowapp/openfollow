@@ -1130,3 +1130,130 @@ def test_beacon_receiver_counts_remote_packets() -> None:
     peers = receiver.get_peers()
     assert len(peers) == 1
     assert peers[0].name == "remote"
+
+
+# ---------------------------------------------------------------------------
+# update_iface_ip – repoint the beacon interface after a host IP change
+# ---------------------------------------------------------------------------
+
+
+def test_beacon_sender_update_iface_ip_flags_reopen_on_change() -> None:
+    from openfollow.web.discovery import BeaconSender
+
+    sender = BeaconSender(name="N", web_port=80, iface_ip="10.0.0.1")
+    sender.update_iface_ip("10.0.0.2")
+
+    assert sender._iface_ip == "10.0.0.2"
+    assert sender._reopen.is_set()
+
+
+def test_beacon_sender_update_iface_ip_noop_when_unchanged() -> None:
+    from openfollow.web.discovery import BeaconSender
+
+    sender = BeaconSender(name="N", web_port=80, iface_ip="10.0.0.1")
+    sender.update_iface_ip("10.0.0.1")
+
+    assert sender._iface_ip == "10.0.0.1"
+    assert not sender._reopen.is_set()
+
+
+def test_beacon_sender_drain_reopen_keeps_socket_when_no_request() -> None:
+    from openfollow.web.discovery import BeaconSender
+
+    sender = BeaconSender(name="N", web_port=80)
+    sock = _FakeSocket()
+    assert sender._drain_reopen(sock) is sock
+    assert not sock.closed
+
+
+def test_beacon_sender_drain_reopen_closes_socket_and_forces_rebuild() -> None:
+    from openfollow.web.discovery import BeaconSender
+
+    sender = BeaconSender(name="N", web_port=80)
+    sock = _FakeSocket()
+    sender._reopen.set()
+    assert sender._drain_reopen(sock) is None
+    assert sock.closed
+    assert not sender._reopen.is_set()
+
+
+def test_beacon_sender_drain_reopen_with_no_open_socket() -> None:
+    from openfollow.web.discovery import BeaconSender
+
+    sender = BeaconSender(name="N", web_port=80)
+    sender._reopen.set()
+    assert sender._drain_reopen(None) is None
+    assert not sender._reopen.is_set()
+
+
+def test_beacon_sender_drain_reopen_swallows_close_error() -> None:
+    from openfollow.web.discovery import BeaconSender
+
+    class _BadCloseSocket(_FakeSocket):
+        def close(self) -> None:
+            raise OSError("interface already gone")
+
+    sender = BeaconSender(name="N", web_port=80)
+    sender._reopen.set()
+    assert sender._drain_reopen(_BadCloseSocket()) is None
+
+
+def test_beacon_receiver_update_iface_ip_flags_reopen_on_change() -> None:
+    receiver = BeaconReceiver(iface_ip="10.0.0.1")
+    receiver.update_iface_ip("10.0.0.2")
+
+    assert receiver._iface_ip == "10.0.0.2"
+    assert receiver._reopen.is_set()
+
+
+def test_beacon_receiver_update_iface_ip_noop_when_unchanged() -> None:
+    receiver = BeaconReceiver(iface_ip="10.0.0.1")
+    receiver.update_iface_ip("10.0.0.1")
+
+    assert receiver._iface_ip == "10.0.0.1"
+    assert not receiver._reopen.is_set()
+
+
+def test_beacon_receiver_update_iface_ip_resets_self_filter_cache() -> None:
+    """The new IP must be re-resolved into the self-filter immediately, else the
+    host's own looped-back beacon passes the filter and it self-lists as a peer."""
+    receiver = BeaconReceiver(iface_ip="10.0.0.1")
+    receiver._local_ips_ts = 99999.0  # pretend a recent self-filter refresh
+    receiver.update_iface_ip("10.0.0.2")
+    assert receiver._local_ips_ts == 0.0  # forced re-resolve on the next packet
+
+
+def test_beacon_receiver_recv_loop_returns_on_reopen() -> None:
+    """A pending repoint makes the loop return at once without reading."""
+    receiver = BeaconReceiver()
+    receiver._reopen.set()
+
+    class _NeverRead:
+        def recvfrom(self, _n: int) -> tuple[bytes, tuple[str, int]]:
+            raise AssertionError("recvfrom must not run while a repoint is pending")
+
+    receiver._recv_loop(_NeverRead())
+    assert not receiver._reopen.is_set()
+
+
+def test_beacon_receiver_recv_loop_dispatches_then_exits_on_stop() -> None:
+    """Normal path: one datagram is dispatched, the timeout branch then lets
+    the stop flag terminate the loop."""
+    receiver = BeaconReceiver()
+    receiver._local_port = 99  # not our port -> packet isn't self-filtered
+
+    beacon = _beacon_bytes(name="remote", web_port=80)
+
+    class _OneThenStop:
+        def __init__(self) -> None:
+            self._calls = 0
+
+        def recvfrom(self, _n: int) -> tuple[bytes, tuple[str, int]]:
+            self._calls += 1
+            if self._calls == 1:
+                return beacon, ("10.0.0.5", 50505)
+            receiver._stop_event.set()
+            raise TimeoutError
+
+    receiver._recv_loop(_OneThenStop())
+    assert receiver.packets_received == 1

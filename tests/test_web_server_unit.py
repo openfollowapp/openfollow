@@ -1064,3 +1064,116 @@ def test_quiet_handler_log_request_is_noop() -> None:
     assert handler.log_request() is None
     assert handler.log_request(200, "100") is None
     assert handler.log_request(code=500, size="0") is None
+
+
+# ---------------------------------------------------------------------------
+# get_local_peer_info – live local-IP refresh after a runtime IP change
+# ---------------------------------------------------------------------------
+
+
+def test_get_local_peer_info_adopts_live_ip_change(tmp_path, monkeypatch) -> None:
+    """A static→DHCP switch (new address, same interface) is picked up without
+    a restart: the self-row IP and both beacon interfaces follow the provider."""
+    monkeypatch.setattr(
+        "openfollow.web.server.get_local_ipv4_addresses",
+        lambda: {"10.0.0.1", "10.0.0.2"},
+    )
+    current = {"ip": "10.0.0.1"}
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        local_ip="10.0.0.1",
+        local_ip_provider=lambda: current["ip"],
+    )
+
+    assert srv.get_local_peer_info().ip == "10.0.0.1"
+
+    current["ip"] = "10.0.0.2"
+    srv._local_ip_refresh_ts -= 1000.0  # elapse the refresh throttle window
+    assert srv.get_local_peer_info().ip == "10.0.0.2"
+    assert srv.local_ip == "10.0.0.2"
+    assert srv._beacon_sender._iface_ip == "10.0.0.2"
+    assert srv._beacon_receiver._iface_ip == "10.0.0.2"
+
+
+@pytest.mark.parametrize("unresolved", ["", "127.0.0.1"])
+def test_get_local_peer_info_keeps_ip_when_provider_unresolved(
+    tmp_path,
+    monkeypatch,
+    unresolved: str,
+) -> None:
+    """An offline / loopback resolution must not downgrade the last known IP."""
+    monkeypatch.setattr(
+        "openfollow.web.server.get_local_ipv4_addresses",
+        lambda: {"10.0.0.1"},
+    )
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        local_ip="10.0.0.1",
+        local_ip_provider=lambda: unresolved,
+    )
+
+    assert srv.get_local_peer_info().ip == "10.0.0.1"
+    assert srv._beacon_sender._iface_ip == "10.0.0.1"
+
+
+def test_get_local_peer_info_without_provider_uses_startup_ip(tmp_path, monkeypatch) -> None:
+    """No provider wired (e.g. test harness) keeps the boot-time resolution."""
+    monkeypatch.setattr(
+        "openfollow.web.server.get_local_ipv4_addresses",
+        lambda: {"10.0.0.1"},
+    )
+    srv = _make_quiet_server(tmp_path, monkeypatch, local_ip="10.0.0.1")
+
+    assert srv.get_local_peer_info().ip == "10.0.0.1"
+
+
+def test_get_local_peer_info_survives_provider_exception(tmp_path, monkeypatch, caplog) -> None:
+    """A raising provider is logged and ignored – the self-row stays usable."""
+    monkeypatch.setattr(
+        "openfollow.web.server.get_local_ipv4_addresses",
+        lambda: {"10.0.0.1"},
+    )
+
+    def _boom() -> str:
+        raise RuntimeError("nic enumeration failed")
+
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        local_ip="10.0.0.1",
+        local_ip_provider=_boom,
+    )
+
+    with caplog.at_level("ERROR", logger="openfollow.web.server"):
+        peer = srv.get_local_peer_info()
+
+    assert peer.ip == "10.0.0.1"
+    assert any("local_ip provider raised" in r.message for r in caplog.records)
+
+
+def test_get_local_peer_info_throttles_ip_refresh(tmp_path, monkeypatch) -> None:
+    """The live IP refresh runs on request paths; it must re-resolve at most
+    once per TTL, not on every call (the provider enumerates interfaces)."""
+    monkeypatch.setattr(
+        "openfollow.web.server.get_local_ipv4_addresses",
+        lambda: {"10.0.0.1", "10.0.0.2"},
+    )
+    calls = {"n": 0}
+
+    def _provider() -> str:
+        calls["n"] += 1
+        return "10.0.0.1"
+
+    srv = _make_quiet_server(tmp_path, monkeypatch, local_ip="10.0.0.1", local_ip_provider=_provider)
+
+    srv.get_local_peer_info()
+    assert calls["n"] == 1  # first call resolves
+    srv.get_local_peer_info()
+    assert calls["n"] == 1  # within TTL -> throttled, provider not called again
+
+    # Simulate the TTL elapsing -> the next call re-resolves.
+    srv._local_ip_refresh_ts -= 1000.0
+    srv.get_local_peer_info()
+    assert calls["n"] == 2

@@ -1840,8 +1840,11 @@ class AppRuntimeServices:
             system_name=self._app._config.psn_system_name,
             command_queue=self._app._web_commands,
             # Resolved PSN bind IP for the web UI header so iface-pinned
-            # boxes don't display empty/stale.
+            # boxes don't display empty/stale. The provider re-resolves it
+            # live so a runtime IP change (static → DHCP) updates the
+            # self-row + beacon interface without a restart.
             local_ip=self._resolved_source_ip(),
+            local_ip_provider=self._resolved_source_ip,
             runtime_stats_provider=self.get_runtime_stats_snapshot,
             preview_snapshot_provider=self._preview_provider.get_snapshot,
             zone_state_provider=self._get_zone_states_snapshot,

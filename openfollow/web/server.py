@@ -119,6 +119,7 @@ class ConfigWebServer:
         system_name: str = "OpenFollow",
         command_queue: WebCommandQueue | None = None,
         local_ip: str = "",
+        local_ip_provider: Callable[[], str] | None = None,
         runtime_stats_provider: Callable[[], dict[str, Any]] | None = None,
         preview_snapshot_provider: Callable[[], bytes | None] | None = None,
         zone_state_provider: Callable[[], list[tuple[int, bool, int]]] | None = None,
@@ -187,6 +188,11 @@ class ConfigWebServer:
             if local_ip:
                 logger.warning("Configured source IP %s is not a local interface, using auto-detected IP.", local_ip)
             self._local_ip = get_primary_local_ipv4(default="127.0.0.1")
+        # Live re-resolver so a runtime IP change (static → DHCP, new lease)
+        # is picked up without a restart. Guards the cached ``_local_ip`` +
+        # beacon-interface repoint against concurrent overview requests.
+        self._local_ip_provider = local_ip_provider
+        self._local_ip_lock = threading.Lock()
         self._command_queue = command_queue or WebCommandQueue()
         self._runtime_stats_provider = runtime_stats_provider
         self._preview_snapshot_provider = preview_snapshot_provider
@@ -376,8 +382,36 @@ class ConfigWebServer:
             logger.exception("PSN source advisory provider raised")
             return empty
 
+    def _refresh_local_ip(self) -> None:
+        """Re-resolve this host's primary IP and adopt it if it changed.
+
+        The IP captured at startup goes stale when the operator switches the
+        interface from static to DHCP (or a lease hands back a new address)
+        without restarting. Peers already track us by the beacon's UDP source
+        address, so this keeps our own self-row and the beacon's send/receive
+        interface in step with them. An unresolved (offline / loopback) result
+        is ignored so the last known good IP is never downgraded to blank.
+        """
+        if self._local_ip_provider is None:
+            return
+        try:
+            candidate = self._local_ip_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("local_ip provider raised")
+            return
+        if not candidate or candidate.startswith("127."):
+            return
+        with self._local_ip_lock:
+            if candidate == self._local_ip:
+                return
+            self._local_ip = candidate
+        self._beacon_sender.update_iface_ip(candidate)
+        self._beacon_receiver.update_iface_ip(candidate)
+        logger.info("Local IP changed to %s; beacon interface repointed.", candidate)
+
     def get_local_peer_info(self) -> PeerInfo:
         """Get info about this server as a PeerInfo object."""
+        self._refresh_local_ip()
         return PeerInfo(
             name=self._system_name,
             ip=self._local_ip,

@@ -810,31 +810,18 @@ class TestResolveWebBind:
         services._app._config = replace(services._app._config, web_bind="192.168.5.5", psn_source_iface="eth0")
         assert services._resolve_web_bind() == "192.168.5.5"
 
-    def test_auto_pins_to_psn_iface_ip(self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch) -> None:
-        import socket as _socket
-        from types import SimpleNamespace
-
-        from openfollow import net_utils
-
-        monkeypatch.setattr(
-            net_utils.psutil,
-            "net_if_addrs",
-            lambda: {"eth0": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.7")]},
-        )
-        services._app._config = replace(services._app._config, web_bind="", psn_source_iface="eth0")
-        assert services._resolve_web_bind() == "10.0.0.7"
-
-    def test_auto_falls_back_to_all_interfaces_without_iface(self, services: AppRuntimeServices) -> None:
-        services._app._config = replace(services._app._config, web_bind="", psn_source_iface="")
+    @pytest.mark.parametrize("psn_source_iface", ["eth0", ""])
+    def test_default_binds_all_interfaces_independent_of_psn_iface(
+        self, services: AppRuntimeServices, psn_source_iface: str
+    ) -> None:
+        """Empty web_bind -> 0.0.0.0 regardless of psn_source_iface, so the
+        listen socket survives an interface IP change instead of being pinned
+        to a concrete address that goes dead when the IP moves."""
+        services._app._config = replace(services._app._config, web_bind="", psn_source_iface=psn_source_iface)
         assert services._resolve_web_bind() == "0.0.0.0"
 
-    def test_auto_falls_back_when_iface_has_no_ip(
-        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from openfollow import net_utils
-
-        monkeypatch.setattr(net_utils.psutil, "net_if_addrs", lambda: {})  # iface absent
-        services._app._config = replace(services._app._config, web_bind="", psn_source_iface="eth0")
+    def test_explicit_web_bind_all_interfaces_passthrough(self, services: AppRuntimeServices) -> None:
+        services._app._config = replace(services._app._config, web_bind="0.0.0.0", psn_source_iface="eth0")
         assert services._resolve_web_bind() == "0.0.0.0"
 
 

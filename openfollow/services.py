@@ -837,11 +837,10 @@ class AppRuntimeServices:
         """Resolve the web UI listen address.
 
         ``web_bind`` set → that explicit address. Empty → ``0.0.0.0`` (all
-        interfaces) so the web UI keeps serving across an interface IP change
-        (static → DHCP, new lease) without a restart – a listen socket pinned
-        to a concrete IP goes dead when that IP moves. Access stays gated by
-        ``web_pin`` plus the CSRF / DNS-rebind guards. An operator who needs to
-        pin the UI to one address sets ``web_bind`` explicitly.
+        interfaces) so the UI stays reachable across an interface IP change
+        without a restart. When ``web_pin`` is set, access is gated by session
+        auth plus the CSRF / DNS-rebind guards; with it empty those are
+        disabled. Set ``web_bind`` to pin the UI to a single address.
         """
         return self._app._config.web_bind or "0.0.0.0"
 

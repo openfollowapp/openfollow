@@ -3101,7 +3101,7 @@ def _register_marker_catalog_routes(
             # told the write failed, and the value never gets
             # ``request_delta``'d to peers.
             prev = catalog.get_any(marker_id)
-            entry = catalog.upsert(marker_id, name, color)
+            entry = catalog.upsert(marker_id, name, color, origin=cfg.station_id)
             try:
                 save_catalog(
                     catalog,
@@ -3161,7 +3161,7 @@ def _register_marker_catalog_routes(
             # operator was told the delete failed, and the tombstone
             # never reaches peers via ``request_delta``.
             prev = catalog.get_any(marker_id)
-            tomb = catalog.delete(marker_id)
+            tomb = catalog.delete(marker_id, origin=cfg.station_id)
             if tomb is None:
                 response.status = 404
                 return json.dumps({"error": "unknown marker id"})

@@ -80,6 +80,8 @@ def _entry_to_dict(entry: MarkerEntry) -> dict[str, object]:
         "color": entry.color,
         "updated_at": entry.updated_at,
         "tombstone": entry.tombstone,
+        "version": entry.version,
+        "origin": entry.origin,
     }
 
 
@@ -96,7 +98,9 @@ def _entry_from_dict(raw: object) -> MarkerEntry | None:
     raw_id = raw.get("id", 0)
     if not isinstance(raw_id, int) or isinstance(raw_id, bool):
         return None
-    # Leave name as-is; MarkerEntry.__post_init__ normalises it.
+    # Pass version/origin raw; MarkerEntry.__post_init__ normalises both (caps
+    # version, sanitises + length-bounds origin) for disk and wire alike.
+    # Absent from old-format peers -> 0 / "" (sort below any real edit).
     try:
         return MarkerEntry(
             id=raw_id,
@@ -104,6 +108,8 @@ def _entry_from_dict(raw: object) -> MarkerEntry | None:
             color=str(raw.get("color", "#ffffff")),
             updated_at=float(raw.get("updated_at", 0.0)),
             tombstone=tombstone,
+            version=raw.get("version", 0),
+            origin=raw.get("origin", ""),
         )
     except (TypeError, ValueError):
         return None

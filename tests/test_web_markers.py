@@ -275,12 +275,15 @@ class TestCatalogEndpoints:
             # Mid-save peer race: a newer remote entry merges into the
             # catalog before save_catalog raises. ``catalog_arg`` is
             # the same MarkerCatalog instance the route handler passed.
+            # Higher version than the local edit -> the peer write wins.
+            local_version = catalog_arg.get_any(1).version
             peer = MarkerEntry(
                 id=1,
                 name="From peer",
                 color="#0000ff",
                 updated_at=time.time() + 10.0,
                 tombstone=False,
+                version=local_version + 1,
             )
             catalog_arg.merge_entry(peer)
             raise OSError("disk full")
@@ -345,13 +348,15 @@ class TestCatalogEndpoints:
         def boom_with_peer_merge(catalog_arg, _path):
             # Peer broadcasts a newer live entry while our save_catalog
             # is in flight. ``merge_entry`` replaces our local tombstone
-            # because the remote ``updated_at`` is strictly greater.
+            # because the remote ``version`` is higher.
+            local_version = catalog_arg.get_any(1).version
             peer = MarkerEntry(
                 id=1,
                 name="Revived by peer",
                 color="#0000ff",
                 updated_at=time.time() + 10.0,
                 tombstone=False,
+                version=local_version + 1,
             )
             catalog_arg.merge_entry(peer)
             raise OSError("disk full")

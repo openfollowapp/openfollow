@@ -4605,6 +4605,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ``detect-input.js`` widget writes into the field.
         """
         response.content_type = "application/json"
+        response.set_header("Cache-Control", "no-store")
         return json.dumps({"button": server.latest_mouse3d_button()})
 
     @app.post("/section/gamepad/detect-buttons")

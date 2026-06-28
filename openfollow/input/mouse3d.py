@@ -125,10 +125,11 @@ def _finite_axis(value: Any) -> float:
 class Mouse3DHandler:
     """Reads a 3D Mouse on a background thread; maps deflection to marker input.
 
-    The read thread runs for the handler's lifetime (started by the
-    InputManager); ``Mouse3DConfig.enabled`` gates movement application in the
-    InputManager, not the read, so the Detect flow and the connected-status
-    badge work without a mode toggle.
+    The read thread runs only while the feature is enabled: the InputManager
+    starts it on enable and stops it on disable to match ``Mouse3DConfig.enabled``,
+    which gates both the device read and movement application. The web Detect
+    flow still works while disabled – ``detect_pressed_button`` opens the device
+    for a one-shot poll when the thread isn't running.
     """
 
     def __init__(

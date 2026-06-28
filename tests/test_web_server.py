@@ -3689,8 +3689,12 @@ def test_latest_mouse3d_button_none_without_provider(tmp_path) -> None:
 
 def test_section_mouse3d_detect_route_returns_json(live_server) -> None:
     _server, base = live_server
-    status, body = _get(base, "/section/mouse3d/detect")
+    with urllib.request.urlopen(f"{base}/section/mouse3d/detect", timeout=5) as r:
+        status, body = r.status, r.read().decode()
+        # Live per-click data must not be served from a browser/proxy cache.
+        cache_control = r.headers.get("Cache-Control")
     assert status == 200
+    assert cache_control == "no-store"
     # No provider wired in the live server -> button is null.
     assert json.loads(body) == {"button": None}
 

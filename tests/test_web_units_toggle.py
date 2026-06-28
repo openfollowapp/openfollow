@@ -310,6 +310,9 @@ class TestDetectInputWidget:
         assert status == 200
         assert "data-detect-input" in body
         assert "data-detect-url" in body
+        # The detect poll must bypass the browser cache so a stale {button: null}
+        # (or a previous button) can't satisfy the live fetch.
+        assert "cache: 'no-store'" in body
 
     def test_mouse3d_section_wires_detect_widget(self, live_server) -> None:
         server, base = live_server

@@ -57,7 +57,7 @@
         btn.disabled = true;
         btn.textContent = LISTENING;
 
-        fetch(url, { headers: { Accept: 'application/json' } })
+        fetch(url, { headers: { Accept: 'application/json' }, cache: 'no-store' })
             .then(function (resp) { return resp.ok ? resp.json() : null; })
             .then(function (data) {
                 if (data && typeof data === 'object') {

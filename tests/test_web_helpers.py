@@ -143,6 +143,13 @@ def test_apply_section_data_mouse3d_roundtrips() -> None:
     assert config.mouse3d.btn_settings == 4
 
 
+def test_as_button_index_none_is_unbound() -> None:
+    from openfollow.web.routes import _as_button_index
+
+    # A ``None`` value (cleared field) maps to the -1 unbound sentinel.
+    assert _as_button_index(None, 5) == -1
+
+
 def test_apply_section_data_mouse3d_blank_button_unbinds() -> None:
     config = AppConfig()
     config.mouse3d.btn_reset = 5  # currently bound

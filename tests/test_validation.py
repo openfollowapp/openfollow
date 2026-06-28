@@ -1042,6 +1042,16 @@ class TestZoneOscAddressRules:
         assert "2048" in err
 
 
+@pytest.mark.parametrize(
+    "raw,expect_error",
+    [("", False), ("0", False), ("3", False), ("abc", True)],
+)
+def test_mouse3d_button_validation(raw: str, expect_error: bool) -> None:
+    # Blank = unbound (no error); a 0+ index is valid; junk is a type error.
+    err = validate("mouse3d", "btn_reset", raw)
+    assert (err is not None) is expect_error
+
+
 def test_needs_cfg_false_for_every_rule() -> None:
     """No registered ``FieldRule`` currently reads ``AppConfig``, so
     ``needs_cfg`` returns ``False`` for all of them – the ``/api/validate``

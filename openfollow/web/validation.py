@@ -37,6 +37,7 @@ from openfollow.configuration import (
 )
 from openfollow.web.routes import (
     _as_bool,
+    _as_button_index,
     _as_float,
     _as_float_or_zero,
     _as_int,
@@ -78,6 +79,7 @@ def _default_sanitiser(s: str) -> str:
 # the registry/parser drift before this fallback would matter at runtime.
 _TYPE_ERRORS: dict[_FieldParser, str] = {
     _as_int: "Must be a whole number.",
+    _as_button_index: "Must be a button number (0 or higher), or blank for none.",
     _as_optional_int: "Must be a whole number (or empty).",
     _as_positive_int: "Must be a whole number (1 or greater).",
     _as_float: "Must be a number.",
@@ -774,8 +776,10 @@ for _axis in MOUSE3D_AXES:
     )
     _mouse3d_rules[f"invert_{_axis}"] = FieldRule(_as_bool)
 for _btn in MOUSE3D_BUTTON_FIELDS:
+    # lo=-1 matches __post_init__ (the unbound sentinel); the form submits blank
+    # for unbound and a 0+ index when bound, so the operator never types -1.
     _mouse3d_rules[_btn] = FieldRule(
-        _as_int, lo=-1, human_error="Button index must be -1 (unbound) or a device button number."
+        _as_button_index, lo=-1, human_error="Button number (0 or higher), or blank for none."
     )
 FIELD_RULES["mouse3d"] = _mouse3d_rules
 

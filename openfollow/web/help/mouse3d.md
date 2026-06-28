@@ -35,9 +35,9 @@ By default the three translations map to x / y / z and the rotations are off, so
 
 ## Buttons
 
-Every action binds to a device button by its **index** (a whole number). `-1` means unbound. Button counts vary by model – a compact unit has two, larger ones have many.
+Every action binds to a device button by its **index** (a whole number). Leave a binding **blank** to unbind it. Button counts vary by model – a compact unit has two, larger ones have many.
 
-**Detect** – click **Detect**, then press the button you want to bind; its index is shown so you can type it into a binding. It works whether or not the feature is enabled, as long as the device is connected.
+**Detect** – click a binding's **Detect** button, then press the button on the device; the field fills in automatically. It works whether or not the feature is enabled, as long as the device is connected.
 
 Bindable actions: **Reset marker** (return the marker to its default position), **Next / Previous marker** (cycle the selected marker), **Speed up / Speed down** (step the move-speed), **Toggle help**, **Toggle zones**, and **Settings menu**.
 

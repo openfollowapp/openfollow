@@ -34,7 +34,6 @@
 
     <div class="group">
         <h3 class="group-title">Axis Mapping</h3>
-        <span class="section-note">Each device axis drives a target with its own sensitivity and invert</span>
 
         %# pan_x
         <div class="row">
@@ -183,81 +182,100 @@
 
     <div class="group">
         <h3 class="group-title">Buttons</h3>
-        <div class="row">
-            <button type="button" class="secondary small" hx-get="/section/mouse3d/detect"
-                    hx-target="#mouse3d-detect-result" hx-swap="innerHTML"
-                    hx-on::before-request="document.getElementById('mouse3d-detect-result').textContent='Listening – press a button now…'">Detect</button>
-            <span id="mouse3d-detect-result" class="muted">Click Detect, then press a button on the device.</span>
-        </div>
+        <span class="section-note">Click Detect, then press a button. Blank = unbound.</span>
         <div class="row">
             <div class="field">
                 <label for="m3d-btn_reset">Reset marker</label>
-                <input id="m3d-btn_reset" type="number" name="btn_reset" value="{{m.btn_reset}}" min="-1" step="1"
-                       hx-get="/api/validate/mouse3d/btn_reset" hx-trigger="blur changed delay:200ms"
-                       hx-target="#m3d-btn_reset-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="m3d-btn_reset-error" aria-invalid="false">
+                <div class="detect-input">
+                    <input id="m3d-btn_reset" type="number" name="btn_reset" value="{{m.btn_reset if m.btn_reset >= 0 else ''}}" min="0" step="1" placeholder="none"
+                           hx-get="/api/validate/mouse3d/btn_reset" hx-trigger="blur changed delay:200ms"
+                           hx-target="#m3d-btn_reset-error" hx-swap="innerHTML" hx-include="closest form"
+                           aria-describedby="m3d-btn_reset-error" aria-invalid="false">
+                    <button type="button" class="secondary small detect-btn" data-detect-input="m3d-btn_reset" data-detect-url="/section/mouse3d/detect">Detect</button>
+                </div>
                 <span id="m3d-btn_reset-error" class="field-error"></span>
             </div>
             <div class="field">
                 <label for="m3d-btn_settings">Settings menu</label>
-                <input id="m3d-btn_settings" type="number" name="btn_settings" value="{{m.btn_settings}}" min="-1" step="1"
-                       hx-get="/api/validate/mouse3d/btn_settings" hx-trigger="blur changed delay:200ms"
-                       hx-target="#m3d-btn_settings-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="m3d-btn_settings-error" aria-invalid="false">
+                <div class="detect-input">
+                    <input id="m3d-btn_settings" type="number" name="btn_settings" value="{{m.btn_settings if m.btn_settings >= 0 else ''}}" min="0" step="1" placeholder="none"
+                           hx-get="/api/validate/mouse3d/btn_settings" hx-trigger="blur changed delay:200ms"
+                           hx-target="#m3d-btn_settings-error" hx-swap="innerHTML" hx-include="closest form"
+                           aria-describedby="m3d-btn_settings-error" aria-invalid="false">
+                    <button type="button" class="secondary small detect-btn" data-detect-input="m3d-btn_settings" data-detect-url="/section/mouse3d/detect">Detect</button>
+                </div>
                 <span id="m3d-btn_settings-error" class="field-error"></span>
             </div>
         </div>
         <div class="row">
             <div class="field">
                 <label for="m3d-btn_next_marker">Next marker</label>
-                <input id="m3d-btn_next_marker" type="number" name="btn_next_marker" value="{{m.btn_next_marker}}" min="-1" step="1"
-                       hx-get="/api/validate/mouse3d/btn_next_marker" hx-trigger="blur changed delay:200ms"
-                       hx-target="#m3d-btn_next_marker-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="m3d-btn_next_marker-error" aria-invalid="false">
+                <div class="detect-input">
+                    <input id="m3d-btn_next_marker" type="number" name="btn_next_marker" value="{{m.btn_next_marker if m.btn_next_marker >= 0 else ''}}" min="0" step="1" placeholder="none"
+                           hx-get="/api/validate/mouse3d/btn_next_marker" hx-trigger="blur changed delay:200ms"
+                           hx-target="#m3d-btn_next_marker-error" hx-swap="innerHTML" hx-include="closest form"
+                           aria-describedby="m3d-btn_next_marker-error" aria-invalid="false">
+                    <button type="button" class="secondary small detect-btn" data-detect-input="m3d-btn_next_marker" data-detect-url="/section/mouse3d/detect">Detect</button>
+                </div>
                 <span id="m3d-btn_next_marker-error" class="field-error"></span>
             </div>
             <div class="field">
                 <label for="m3d-btn_prev_marker">Previous marker</label>
-                <input id="m3d-btn_prev_marker" type="number" name="btn_prev_marker" value="{{m.btn_prev_marker}}" min="-1" step="1"
-                       hx-get="/api/validate/mouse3d/btn_prev_marker" hx-trigger="blur changed delay:200ms"
-                       hx-target="#m3d-btn_prev_marker-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="m3d-btn_prev_marker-error" aria-invalid="false">
+                <div class="detect-input">
+                    <input id="m3d-btn_prev_marker" type="number" name="btn_prev_marker" value="{{m.btn_prev_marker if m.btn_prev_marker >= 0 else ''}}" min="0" step="1" placeholder="none"
+                           hx-get="/api/validate/mouse3d/btn_prev_marker" hx-trigger="blur changed delay:200ms"
+                           hx-target="#m3d-btn_prev_marker-error" hx-swap="innerHTML" hx-include="closest form"
+                           aria-describedby="m3d-btn_prev_marker-error" aria-invalid="false">
+                    <button type="button" class="secondary small detect-btn" data-detect-input="m3d-btn_prev_marker" data-detect-url="/section/mouse3d/detect">Detect</button>
+                </div>
                 <span id="m3d-btn_prev_marker-error" class="field-error"></span>
             </div>
         </div>
         <div class="row">
             <div class="field">
                 <label for="m3d-btn_speed_up">Speed up</label>
-                <input id="m3d-btn_speed_up" type="number" name="btn_speed_up" value="{{m.btn_speed_up}}" min="-1" step="1"
-                       hx-get="/api/validate/mouse3d/btn_speed_up" hx-trigger="blur changed delay:200ms"
-                       hx-target="#m3d-btn_speed_up-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="m3d-btn_speed_up-error" aria-invalid="false">
+                <div class="detect-input">
+                    <input id="m3d-btn_speed_up" type="number" name="btn_speed_up" value="{{m.btn_speed_up if m.btn_speed_up >= 0 else ''}}" min="0" step="1" placeholder="none"
+                           hx-get="/api/validate/mouse3d/btn_speed_up" hx-trigger="blur changed delay:200ms"
+                           hx-target="#m3d-btn_speed_up-error" hx-swap="innerHTML" hx-include="closest form"
+                           aria-describedby="m3d-btn_speed_up-error" aria-invalid="false">
+                    <button type="button" class="secondary small detect-btn" data-detect-input="m3d-btn_speed_up" data-detect-url="/section/mouse3d/detect">Detect</button>
+                </div>
                 <span id="m3d-btn_speed_up-error" class="field-error"></span>
             </div>
             <div class="field">
                 <label for="m3d-btn_speed_down">Speed down</label>
-                <input id="m3d-btn_speed_down" type="number" name="btn_speed_down" value="{{m.btn_speed_down}}" min="-1" step="1"
-                       hx-get="/api/validate/mouse3d/btn_speed_down" hx-trigger="blur changed delay:200ms"
-                       hx-target="#m3d-btn_speed_down-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="m3d-btn_speed_down-error" aria-invalid="false">
+                <div class="detect-input">
+                    <input id="m3d-btn_speed_down" type="number" name="btn_speed_down" value="{{m.btn_speed_down if m.btn_speed_down >= 0 else ''}}" min="0" step="1" placeholder="none"
+                           hx-get="/api/validate/mouse3d/btn_speed_down" hx-trigger="blur changed delay:200ms"
+                           hx-target="#m3d-btn_speed_down-error" hx-swap="innerHTML" hx-include="closest form"
+                           aria-describedby="m3d-btn_speed_down-error" aria-invalid="false">
+                    <button type="button" class="secondary small detect-btn" data-detect-input="m3d-btn_speed_down" data-detect-url="/section/mouse3d/detect">Detect</button>
+                </div>
                 <span id="m3d-btn_speed_down-error" class="field-error"></span>
             </div>
         </div>
         <div class="row">
             <div class="field">
                 <label for="m3d-btn_toggle_help">Toggle help</label>
-                <input id="m3d-btn_toggle_help" type="number" name="btn_toggle_help" value="{{m.btn_toggle_help}}" min="-1" step="1"
-                       hx-get="/api/validate/mouse3d/btn_toggle_help" hx-trigger="blur changed delay:200ms"
-                       hx-target="#m3d-btn_toggle_help-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="m3d-btn_toggle_help-error" aria-invalid="false">
+                <div class="detect-input">
+                    <input id="m3d-btn_toggle_help" type="number" name="btn_toggle_help" value="{{m.btn_toggle_help if m.btn_toggle_help >= 0 else ''}}" min="0" step="1" placeholder="none"
+                           hx-get="/api/validate/mouse3d/btn_toggle_help" hx-trigger="blur changed delay:200ms"
+                           hx-target="#m3d-btn_toggle_help-error" hx-swap="innerHTML" hx-include="closest form"
+                           aria-describedby="m3d-btn_toggle_help-error" aria-invalid="false">
+                    <button type="button" class="secondary small detect-btn" data-detect-input="m3d-btn_toggle_help" data-detect-url="/section/mouse3d/detect">Detect</button>
+                </div>
                 <span id="m3d-btn_toggle_help-error" class="field-error"></span>
             </div>
             <div class="field">
                 <label for="m3d-btn_toggle_zones">Toggle zones</label>
-                <input id="m3d-btn_toggle_zones" type="number" name="btn_toggle_zones" value="{{m.btn_toggle_zones}}" min="-1" step="1"
-                       hx-get="/api/validate/mouse3d/btn_toggle_zones" hx-trigger="blur changed delay:200ms"
-                       hx-target="#m3d-btn_toggle_zones-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="m3d-btn_toggle_zones-error" aria-invalid="false">
+                <div class="detect-input">
+                    <input id="m3d-btn_toggle_zones" type="number" name="btn_toggle_zones" value="{{m.btn_toggle_zones if m.btn_toggle_zones >= 0 else ''}}" min="0" step="1" placeholder="none"
+                           hx-get="/api/validate/mouse3d/btn_toggle_zones" hx-trigger="blur changed delay:200ms"
+                           hx-target="#m3d-btn_toggle_zones-error" hx-swap="innerHTML" hx-include="closest form"
+                           aria-describedby="m3d-btn_toggle_zones-error" aria-invalid="false">
+                    <button type="button" class="secondary small detect-btn" data-detect-input="m3d-btn_toggle_zones" data-detect-url="/section/mouse3d/detect">Detect</button>
+                </div>
                 <span id="m3d-btn_toggle_zones-error" class="field-error"></span>
             </div>
         </div>

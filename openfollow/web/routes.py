@@ -1172,6 +1172,24 @@ def _as_positive_int(value: Any, default: int) -> int:
     return result if result >= 1 else 1
 
 
+def _as_button_index(value: Any, default: int) -> int:
+    """Parse a device button index where blank means "unbound" (-1).
+
+    A cleared field (``None`` / empty / whitespace) maps to the ``-1`` unbound
+    sentinel regardless of the prior value, so clearing a binding actually
+    unbinds it. Non-numeric junk falls back to ``default`` (the validate path
+    passes a sentinel here to surface a type error). For 3D Mouse button binds.
+    """
+    if value is None:
+        return -1
+    if isinstance(value, str) and not value.strip():
+        return -1
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _as_optional_int(value: Any, default: int | None) -> int | None:
     """Like :func:`_as_int` but treats empty / whitespace-only / ``None``
     input as the unset state.
@@ -1449,7 +1467,7 @@ for _axis in MOUSE3D_AXES:
     _mouse3d_parsers[f"sens_{_axis}"] = _as_float
     _mouse3d_parsers[f"invert_{_axis}"] = _as_bool
 for _btn in MOUSE3D_BUTTON_FIELDS:
-    _mouse3d_parsers[_btn] = _as_int
+    _mouse3d_parsers[_btn] = _as_button_index
 _SECTION_FIELD_PARSERS["mouse3d"] = _mouse3d_parsers
 
 
@@ -4574,16 +4592,15 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/mouse3d/detect")
     def detect_mouse3d_button() -> Any:
-        """Watch for a 3D Mouse button press, for the bind helper.
+        """Watch for a 3D Mouse button press, for the inline Detect bind widget.
 
-        The operator clicks Detect, then presses the button to bind; the
-        handler polls briefly (working whether or not the feature is enabled).
-        Returns an HTML fragment so HTMX can swap it into the result span.
+        The operator clicks a field's Detect button, then presses the device
+        button to bind; the handler polls briefly (working whether or not the
+        feature is enabled). Returns JSON ``{"button": <int|null>}`` which the
+        ``detect-input.js`` widget writes into the field.
         """
-        idx = server.latest_mouse3d_button()
-        if idx is None:
-            return '<span class="muted">No button detected. Click Detect, then press a button.</span>'
-        return f"Detected button <strong>{idx}</strong> – enter this index in a binding above."
+        response.content_type = "application/json"
+        return json.dumps({"button": server.latest_mouse3d_button()})
 
     @app.post("/section/gamepad/detect-buttons")
     def start_button_detection() -> Any:

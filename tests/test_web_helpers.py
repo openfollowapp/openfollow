@@ -143,6 +143,15 @@ def test_apply_section_data_mouse3d_roundtrips() -> None:
     assert config.mouse3d.btn_settings == 4
 
 
+def test_apply_section_data_mouse3d_blank_button_unbinds() -> None:
+    config = AppConfig()
+    config.mouse3d.btn_reset = 5  # currently bound
+    ok = apply_section_data(config, "mouse3d", {"btn_reset": "", "btn_settings": "2"})
+    assert ok is True
+    assert config.mouse3d.btn_reset == -1  # blank clears the bind (unbound)
+    assert config.mouse3d.btn_settings == 2
+
+
 def test_apply_section_data_mouse3d_clamps_and_falls_back() -> None:
     config = AppConfig()
     # __post_init__ re-runs after the web save, so a crafted POST is clamped /

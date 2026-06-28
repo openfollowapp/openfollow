@@ -368,5 +368,8 @@ class TestConfigAndLabels:
         # form's hx-target and replaces the whole form on load.
         assert 'hx-target="this"' in html
         assert "openfollowGalleryUpload" in html  # upload control + handler
+        # The upload trigger is a real button, not a <label> (which the form's
+        # label CSS would render as an uppercase header).
+        assert '<button type="button" class="btn-link gallery-upload-btn"' in html
         assert 'name="testpattern_selected_media"' in html  # round-trip field
         assert 'value="default:grey"' in html

@@ -284,9 +284,12 @@ class MediaGalleryInput(VideoInputBase):
             "Capture a frame from any live source, or upload your own.</p>"
             f'<input type="hidden" name="testpattern_selected_media" value="{cls._esc(selected)}">'
             '<div class="gallery-toolbar">'
-            '<label class="btn-link gallery-upload-btn">Upload image or clip'
+            # A real <button> (not a <label>) so the form's label styling doesn't
+            # render it as an uppercase header; it clicks the hidden file input.
+            '<button type="button" class="btn-link gallery-upload-btn" '
+            'onclick="this.nextElementSibling.click()">Upload image or clip</button>'
             '<input type="file" accept="image/jpeg,image/png,image/webp,video/webm" '
-            'onchange="openfollowGalleryUpload(this)" hidden></label>'
+            'onchange="openfollowGalleryUpload(this)" hidden>'
             "</div>"
             # hx-target="this" is required: without it the grid inherits the
             # parent video-source form's hx-target and would replace the whole

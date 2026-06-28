@@ -92,13 +92,16 @@ class Mouse3DUpdate:
 
     ``velocity`` is a unit rate (the caller multiplies by the marker's
     move-speed). ``speed_steps`` is the signed number of discrete move-speed
-    adjustments to apply this frame (button edges + ``speed``-axis ramp). The
-    booleans fold into the shared action flags so the app's existing dispatch
-    handles them.
+    adjustments to apply this frame (button edges + ``speed``-axis ramp).
+    ``fader_signal`` is a unit rate for ``fader``-mapped axes (the caller scales
+    it by ``dt / marker_fader_max_speed_s`` and integrates into the marker's
+    fader). The booleans fold into the shared action flags so the app's existing
+    dispatch handles them.
     """
 
     velocity: tuple[float, float, float] = (0.0, 0.0, 0.0)
     speed_steps: int = 0
+    fader_signal: float = 0.0
     reset: bool = False
     next_marker: bool = False
     prev_marker: bool = False
@@ -270,6 +273,7 @@ class Mouse3DHandler:
 
         vx = vy = vz = 0.0
         speed_signal = 0.0
+        fader_signal = 0.0
         for axis in MOUSE3D_AXES:
             raw = getattr(snap, _AXIS_SOURCE[axis])
             if getattr(cfg, f"invert_{axis}"):
@@ -285,12 +289,15 @@ class Mouse3DHandler:
                 vz += shaped
             elif target == "speed":
                 speed_signal += shaped
+            elif target == "fader":
+                fader_signal += shaped
             # "none" -> ignore
 
         speed_steps = self._accumulate_speed(speed_signal, dt)
         edges = self._button_edges(snap.buttons)
         return Mouse3DUpdate(
             velocity=(vx, vy, vz),
+            fader_signal=fader_signal,
             speed_steps=speed_steps
             + (1 if self._fired(cfg.btn_speed_up, edges) else 0)
             - (1 if self._fired(cfg.btn_speed_down, edges) else 0),

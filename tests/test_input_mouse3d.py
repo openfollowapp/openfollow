@@ -189,6 +189,15 @@ def test_speed_axis_resets_accumulator_when_centered() -> None:
     assert h.update(1.0).speed_steps == 0
 
 
+def test_fader_axis_accumulates_into_signal() -> None:
+    # A "fader"-mapped axis produces a unit fader_signal, no velocity.
+    h = _handler(_cfg(map_pitch="fader"), snapshot=_state(pitch=1.0))
+    out = h.update(0.016)
+    assert out.velocity == pytest.approx((0.0, 0.0, 0.0))
+    assert out.fader_signal == pytest.approx(1.0)
+    assert out.speed_steps == 0
+
+
 # --------------------------------------------------------------------------- #
 # Buttons + edge detection
 # --------------------------------------------------------------------------- #
@@ -585,6 +594,27 @@ def test_mouse_routes_to_its_slot_not_selected_in_multi_mode(wired) -> None:  # 
     manager.update(1.0)
     assert app._server.get_marker(10).pos == pytest.approx((2.0, 0.0, 0.0))  # mouse's slot 0
     assert app._server.get_marker(11).pos == pytest.approx((0.0, 0.0, 0.0))  # selected, untouched
+
+
+def test_mouse3d_fader_signal_drives_marker_fader(wired) -> None:  # noqa: ANN001
+    manager, app = wired
+    app._config.mouse3d.enabled = True  # sole controller -> selected marker (10)
+    app._config.controller.marker_fader_max_speed_s = 2.0
+    calls: list[tuple[int, float]] = []
+    app._runtime_services._virtual_faders = SimpleNamespace(
+        set_marker_fader_from_velocity_delta=lambda mid, delta: calls.append((mid, delta)),
+    )
+    manager.mouse3d_handler.next_update = Mouse3DUpdate(fader_signal=1.0)
+    manager.update(1.0)  # delta = signal(1.0) * dt(1.0) / max_speed_s(2.0) = 0.5
+    assert calls == [(10, pytest.approx(0.5))]
+
+
+def test_mouse3d_fader_no_op_without_bus(wired) -> None:  # noqa: ANN001
+    manager, app = wired
+    app._config.mouse3d.enabled = True
+    app._runtime_services._virtual_faders = None  # no fader bus wired
+    manager.mouse3d_handler.next_update = Mouse3DUpdate(fader_signal=1.0)
+    manager.update(1.0)  # no crash, nothing to drive
 
 
 def test_mouse_cycling_suppressed_with_second_controller(wired) -> None:  # noqa: ANN001

@@ -393,6 +393,14 @@ class InputManager:
             speed = self.app.get_marker_move_speed(marker_id)
             x, y, z = marker.pos
             marker.set_pos(x + vx * speed * dt, y + vy * speed * dt, z + vz * speed * dt)
+        if m3d.fader_signal:
+            # ``fader``-mapped axes integrate into the marker's fader, mirroring
+            # the gamepad marker-fader stick: delta = signal × dt / max_speed_s.
+            # A marker with no provisioned fader is a clean no-op in the bus.
+            bus = getattr(self.app._runtime_services, "_virtual_faders", None)
+            if bus is not None:
+                max_speed_s = self.app._config.controller.marker_fader_max_speed_s
+                bus.set_marker_fader_from_velocity_delta(marker_id, m3d.fader_signal * dt / max_speed_s)
 
     def get_controller_info(self) -> list[dict[str, Any]]:
         """Unified controller list (3D mice first, then gamepads) for the HUD

@@ -1894,7 +1894,7 @@ class ControllerConfig:
 # truth shared by the config, the handler, the web parsers, and the validation
 # rules.
 MOUSE3D_AXES = ("pan_x", "pan_y", "lift", "pitch", "yaw", "roll")
-MOUSE3D_AXIS_TARGETS = ("none", "x", "y", "z", "speed")
+MOUSE3D_AXIS_TARGETS = ("none", "x", "y", "z", "speed", "fader")
 # Per-axis defaults (single source of truth for the field defaults and the
 # __post_init__ coercion fallbacks). Translations drive x/y/z, lift is geared
 # down and dampened, yaw ramps move-speed, pitch/roll are off.

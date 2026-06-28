@@ -1679,6 +1679,11 @@ def test_mouse3d_config_falls_back_on_unknown_axis_target(bad: object) -> None:
     assert Mouse3DConfig(map_pitch=bad).map_pitch == "none"  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("target", ["none", "x", "y", "z", "speed", "fader"])
+def test_mouse3d_config_accepts_all_axis_targets(target: str) -> None:
+    assert Mouse3DConfig(map_pan_x=target).map_pan_x == target
+
+
 @pytest.mark.parametrize(
     "bad,expected",
     [(-5, -1), (-1, -1), (3, 3), ("x", -1), (None, -1), (True, -1)],

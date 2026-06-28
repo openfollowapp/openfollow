@@ -52,12 +52,17 @@ pragma without an entry here is treated as a review blocker.
 | [`openfollow/video/detection.py`][detection]            | `except ImportError as _cv2_err: # pragma: no cover - depends on runtime opencv-python presence` | Fires only when `opencv-python` isn't installed. The fallback path sets `cv2 = None` + captures the error string for `check_detection_dependencies` – both are read-only state consumed by tests that monkeypatch them directly (`tests/test_detection.py::test_check_detection_dependencies_reports_cv2_when_import_failed`). |
 | [`openfollow/video/detection.py`][detection]            | `...  # pragma: no cover - Protocol method body, never executed` on `_InferenceBackend.predict` | `typing.Protocol` method bodies are type-stub ellipses – at runtime the Protocol registers the signature for `isinstance`/structural checks but never executes the body. Coverage.py reports it as a missing statement regardless. |
 | [`openfollow/video/detection.py`][detection]            | `if not keep_indices: # pragma: no cover - unreachable: _nms always keeps >=1 on non-empty input` in `_OnnxBackend.predict` | Defensive guard: `_nms` is only called after `np.any(keep_mask)` has already returned empty for the empty case, so the input boxes are guaranteed non-empty. On non-empty input `_nms` always keeps at least one index (the top-scored box – it's appended unconditionally before any IoU filtering). The guard can't fire without a future bug in `_nms`. |
+| [`openfollow/video/media_store.py`][media_store]        | `def _render_jpeg(...): # pragma: no cover - GStreamer, verified on-device` | The image/video decode-scale-encode pipeline only runs with a live `gi.repository.Gst` binding, absent in the unit sandbox. Tests monkeypatch the seam; the validation logic that drives it (format allowlist, caps, limits) is covered directly in `tests/test_media_store.py`. |
+| [`openfollow/video/media_store.py`][media_store]        | `def _probe_video(...): # pragma: no cover - GStreamer, verified on-device` | `GstPbutils.Discoverer` needs a live GStreamer binding, absent in the sandbox. Tests monkeypatch the seam and exercise `validate_video_probe` (the rule logic) against synthetic `VideoProbe`s for every reject path. |
+| [`openfollow/video/media_store.py`][media_store]        | `def _webp_supported(): # pragma: no cover - GStreamer, verified on-device` | Probing for the `webpdec` element needs a live GStreamer binding, absent in the sandbox. Both allowed/disallowed WebP upload paths are covered by monkeypatching `_webp_supported` in `tests/test_media_store.py`. |
+| [`openfollow/video/media_store.py`][media_store]        | `if match is None: # pragma: no cover - callers pass only regex-matched paths` in `_user_item` | `_user_item` is only ever called with paths already filtered through `_USER_FILE_RE`, so the re-match never fails. The guard is defense-in-depth against a future caller bypassing the filter. |
 
 [receiver]: ../openfollow/video/receiver.py
 [gamepad]: ../openfollow/input/gamepad.py
 [osc]: ../openfollow/input/osc.py
 [keyboard]: ../openfollow/input/keyboard.py
 [detection]: ../openfollow/video/detection.py
+[media_store]: ../openfollow/video/media_store.py
 
 ## Mutation testing
 

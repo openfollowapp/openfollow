@@ -3387,10 +3387,9 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
             path = None
         if path is None or not path.is_file():
             return abort(404, "No thumbnail")
-        result = static_file(path.name, root=str(path.parent))
-        if isinstance(result, HTTPResponse):
-            result.set_header("Cache-Control", "no-store")
-        return result
+        # Thumbnails are immutable per id (ids are unique per upload), so they
+        # are safe to cache.
+        return static_file(path.name, root=str(path.parent))
 
     @app.post(_GALLERY_PREFIX + "/select")
     def gallery_select() -> Any:

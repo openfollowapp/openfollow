@@ -5539,3 +5539,62 @@ def test_video_source_section_shows_capture_for_live_source(live_server) -> None
     status, body = _get(base, "/section/video_source")
     assert status == 200
     assert "Capture frame to gallery" in body  # live sources offer capture
+
+
+def test_gallery_thumb_user_media(gallery_server) -> None:
+    _, base, media_dir = gallery_server
+    _post_bytes(base, f"{_GP}/upload", _PNG)
+    media_id = _user_files(media_dir)[0].removesuffix(".jpg")
+    status, body = _get_raw(base, f"{_GP}/thumb/{media_id}")
+    assert status == 200 and body[:3] == b"\xff\xd8\xff"
+
+
+def test_gallery_thumb_invalid_id_404(gallery_server) -> None:
+    _, base, _ = gallery_server
+    status, _body = _get_raw(base, f"{_GP}/thumb/not-a-valid-id")
+    assert status == 404
+
+
+def test_gallery_upload_empty(gallery_server) -> None:
+    _, base, media_dir = gallery_server
+    status, body = _post_bytes(base, f"{_GP}/upload", b"")
+    assert status == 200
+    assert "Empty upload" in body
+    assert _user_files(media_dir) == []
+
+
+def test_gallery_upload_unexpected_error(gallery_server, monkeypatch) -> None:
+    from openfollow.video import media_store
+
+    _, base, _ = gallery_server
+
+    def boom(staged):
+        raise RuntimeError("disk exploded")
+
+    monkeypatch.setattr(media_store, "save_upload", boom)
+    status, body = _post_bytes(base, f"{_GP}/upload", _PNG)
+    assert status == 200
+    assert "Upload failed" in body
+
+
+def test_gallery_capture_store_error(gallery_server, monkeypatch) -> None:
+    from openfollow.video import media_store
+
+    server, base, _ = gallery_server
+    monkeypatch.setattr(server, "get_full_snapshot", lambda: _JPEG + b"frame")
+
+    def boom(jpeg):
+        raise media_store.MediaStoreError("gallery full")
+
+    monkeypatch.setattr(media_store, "save_captured_frame", boom)
+    status, body = _post_bytes(base, f"{_GP}/capture", b"")
+    assert status == 200
+    assert json.loads(body) == {"ok": False, "error": "gallery full"}
+
+
+def test_gallery_download_user_media(gallery_server) -> None:
+    _, base, media_dir = gallery_server
+    _post_bytes(base, f"{_GP}/upload", _PNG)
+    media_id = _user_files(media_dir)[0].removesuffix(".jpg")
+    status, body = _get_raw(base, f"{_GP}/download/{media_id}")
+    assert status == 200 and body[:3] == b"\xff\xd8\xff"

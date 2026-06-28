@@ -94,6 +94,11 @@ class TestGreyChain:
         with pytest.raises(RuntimeError, match="Failed to link videotestsrc"):
             _build({"testpattern_selected_media": media_store.DEFAULT_GREY_ID}, fake=fake)
 
+    def test_capsfilter_to_convert_link_failure_raises(self) -> None:
+        fake = make_fake_gst(link_fail_kinds={"capsfilter"})
+        with pytest.raises(RuntimeError, match="capsfilter → videoconvert"):
+            _build({"testpattern_selected_media": media_store.DEFAULT_GREY_ID}, fake=fake)
+
 
 # --------------------------------------------------------------------------- #
 # Image chain (stage default + user image)
@@ -144,6 +149,14 @@ class TestImageChain:
         with pytest.raises(RuntimeError, match="Failed to link"):
             _build({"testpattern_selected_media": media_store.DEFAULT_STAGE_ID}, fake=fake)
 
+    def test_image_missing_filesrc_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        jpg = tmp_path / "stage_default.jpg"
+        jpg.write_bytes(b"fake")
+        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
+        fake = make_fake_gst(missing_elements={"filesrc"})
+        with pytest.raises(RuntimeError, match="filesrc"):
+            _build({"testpattern_selected_media": media_store.DEFAULT_STAGE_ID}, fake=fake)
+
     def test_unresolvable_selection_falls_back_to_stage(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Empty store -> a valid-but-absent user id does not resolve.
         monkeypatch.setattr(media_store, "resolve_media_storage_path", lambda: tmp_path / "empty")
@@ -182,6 +195,32 @@ class TestClipChain:
         monkeypatch.setattr(media_store, "resolve", lambda mid: _user_item("0123456789abcdef", "video", clip))
         fake = make_fake_gst(missing_elements={"decodebin"})
         with pytest.raises(RuntimeError, match="decodebin"):
+            _build({"testpattern_selected_media": "0123456789abcdef"}, fake=fake)
+
+    def test_missing_filesrc_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        clip = tmp_path / "loop.webm"
+        clip.write_bytes(b"webm")
+        monkeypatch.setattr(media_store, "resolve", lambda mid: _user_item("0123456789abcdef", "video", clip))
+        fake = make_fake_gst(missing_elements={"filesrc"})
+        with pytest.raises(RuntimeError, match="filesrc"):
+            _build({"testpattern_selected_media": "0123456789abcdef"}, fake=fake)
+
+    @pytest.mark.parametrize(
+        ("fail_kind", "msg"),
+        [
+            ("filesrc", "Failed to link filesrc"),
+            ("videoscale", "Failed to link videoscale"),
+            ("capsfilter", "capsfilter → videoconvert"),
+        ],
+    )
+    def test_link_failures_name_the_pair(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_kind: str, msg: str
+    ) -> None:
+        clip = tmp_path / "loop.webm"
+        clip.write_bytes(b"webm")
+        monkeypatch.setattr(media_store, "resolve", lambda mid: _user_item("0123456789abcdef", "video", clip))
+        fake = make_fake_gst(link_fail_kinds={fail_kind})
+        with pytest.raises(RuntimeError, match=msg):
             _build({"testpattern_selected_media": "0123456789abcdef"}, fake=fake)
 
 
@@ -257,6 +296,14 @@ class TestSharedAndHooks:
         pipeline.seek_ok = False
         with patch("gi.repository.Gst", fake):
             assert plugin.on_bus_eos(pipeline) is False
+
+    def test_base_on_bus_eos_defaults_unhandled(self) -> None:
+        # A non-looping input inherits VideoInputBase.on_bus_eos -> False.
+        from openfollow.video.inputs import get_input_class
+
+        cls = get_input_class("rtsp")
+        assert cls is not None
+        assert cls().on_bus_eos(None) is False
 
 
 # --------------------------------------------------------------------------- #

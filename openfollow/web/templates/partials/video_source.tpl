@@ -10,7 +10,7 @@
             <div class="field">
                 <label>Source Type</label>
                 <select name="video_source_type" id="video-source-type"
-                        onchange="document.querySelectorAll('[data-input-type]').forEach(function(el){el.style.display=el.dataset.inputType===this.value?'':'none';}.bind(this));">
+                        onchange="document.querySelectorAll('[data-input-type]').forEach(function(el){el.style.display=el.dataset.inputType===this.value?'':'none';}.bind(this));var _cr=document.getElementById('capture-frame-row');if(_cr)_cr.style.display=this.value==='testpattern'?'none':'';">
                     % for iid, iname in available_inputs:
                     <option value="{{iid}}" {{'selected' if config.video_source_type == iid else ''}}>{{iname}}</option>
                     % end
@@ -22,8 +22,9 @@
             {{!html_fragment}}
         </div>
         % end
-        % if config.video_source_type != "testpattern":
-        <div class="row" style="margin-top:0.5rem;">
+        <!-- Capture is for live sources only; hidden when the Media Gallery
+             (testpattern) is selected, and toggled by the Source Type onchange. -->
+        <div class="row" id="capture-frame-row" style="margin-top:0.5rem;display:{{'none' if config.video_source_type == 'testpattern' else ''}}">
             <div class="field wide">
                 <button type="button" class="btn-link capture-btn"
                         hx-post="/video-input/testpattern/capture" hx-swap="none"
@@ -41,7 +42,6 @@
             fb.textContent = msg;
         };
         </script>
-        % end
         <div class="row">
             <div class="field">
                 <label>Stall Timeout (s)</label>

@@ -5521,12 +5521,13 @@ def test_gallery_thumb_stage_serves_asset(gallery_server) -> None:
     assert body[:3] == b"\xff\xd8\xff"  # JPEG
 
 
-def test_video_source_section_embeds_gallery_grid(live_server) -> None:
+def test_video_source_section_hides_capture_for_gallery(live_server) -> None:
     _, base = live_server  # default source is the gallery (testpattern)
     status, body = _get(base, "/section/video_source")
     assert status == 200
     assert 'id="gallery-grid"' in body  # grid container loads via HTMX
-    assert "Capture frame to gallery" not in body  # the gallery source uploads, not captures
+    # Capture is present but hidden when the gallery is the selected source.
+    assert 'id="capture-frame-row" style="margin-top:0.5rem;display:none"' in body
 
 
 def test_video_source_section_shows_capture_for_live_source(live_server) -> None:
@@ -5538,6 +5539,7 @@ def test_video_source_section_shows_capture_for_live_source(live_server) -> None
     status, body = _get(base, "/section/video_source")
     assert status == 200
     assert "Capture frame to gallery" in body  # live sources offer capture
+    assert 'id="capture-frame-row" style="margin-top:0.5rem;display:"' in body  # shown
 
 
 def test_gallery_thumb_user_media(gallery_server) -> None:

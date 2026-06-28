@@ -30,7 +30,7 @@
         %# pan_x
         <div class="row">
             <div class="field">
-                <label for="m3d-map-pan_x">Pan X target</label>
+                <label for="m3d-map-pan_x">Push left / right (pan_x)</label>
                 <select id="m3d-map-pan_x" name="map_pan_x">
                     % for t in MOUSE3D_AXIS_TARGETS:
                     <option value="{{t}}" {{'selected' if m.map_pan_x == t else ''}}>{{t}}</option>
@@ -62,7 +62,7 @@
         %# pan_y
         <div class="row">
             <div class="field">
-                <label for="m3d-map-pan_y">Pan Y target</label>
+                <label for="m3d-map-pan_y">Push forward / back (pan_y)</label>
                 <select id="m3d-map-pan_y" name="map_pan_y">
                     % for t in MOUSE3D_AXIS_TARGETS:
                     <option value="{{t}}" {{'selected' if m.map_pan_y == t else ''}}>{{t}}</option>
@@ -94,7 +94,7 @@
         %# lift
         <div class="row">
             <div class="field">
-                <label for="m3d-map-lift">Lift target</label>
+                <label for="m3d-map-lift">Pull up / push down (lift)</label>
                 <select id="m3d-map-lift" name="map_lift">
                     % for t in MOUSE3D_AXIS_TARGETS:
                     <option value="{{t}}" {{'selected' if m.map_lift == t else ''}}>{{t}}</option>
@@ -126,7 +126,7 @@
         %# pitch
         <div class="row">
             <div class="field">
-                <label for="m3d-map-pitch">Pitch target</label>
+                <label for="m3d-map-pitch">Tilt forward / back (pitch)</label>
                 <select id="m3d-map-pitch" name="map_pitch">
                     % for t in MOUSE3D_AXIS_TARGETS:
                     <option value="{{t}}" {{'selected' if m.map_pitch == t else ''}}>{{t}}</option>
@@ -158,7 +158,7 @@
         %# yaw
         <div class="row">
             <div class="field">
-                <label for="m3d-map-yaw">Yaw target</label>
+                <label for="m3d-map-yaw">Twist / spin (yaw)</label>
                 <select id="m3d-map-yaw" name="map_yaw">
                     % for t in MOUSE3D_AXIS_TARGETS:
                     <option value="{{t}}" {{'selected' if m.map_yaw == t else ''}}>{{t}}</option>
@@ -190,7 +190,7 @@
         %# roll
         <div class="row">
             <div class="field">
-                <label for="m3d-map-roll">Roll target</label>
+                <label for="m3d-map-roll">Tilt left / right (roll)</label>
                 <select id="m3d-map-roll" name="map_roll">
                     % for t in MOUSE3D_AXIS_TARGETS:
                     <option value="{{t}}" {{'selected' if m.map_roll == t else ''}}>{{t}}</option>

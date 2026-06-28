@@ -33,13 +33,14 @@ class BottomLeftInfoPanelLayout:
 
 
 # Friendly labels for the 3D Mouse help section (axis -> name, target -> action).
+# Named for the puck gesture, matching the 3Dconnexion manual's vocabulary.
 _MOUSE3D_AXIS_NAMES: dict[str, str] = {
-    "pan_x": "Pan X",
-    "pan_y": "Pan Y",
-    "lift": "Lift",
-    "pitch": "Pitch",
-    "yaw": "Yaw",
-    "roll": "Roll",
+    "pan_x": "Push L/R",
+    "pan_y": "Push fwd/back",
+    "lift": "Pull up/down",
+    "pitch": "Tilt fwd/back",
+    "yaw": "Twist",
+    "roll": "Tilt L/R",
 }
 _MOUSE3D_TARGET_LABELS: dict[str, str] = {
     "x": "Move X",

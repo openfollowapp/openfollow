@@ -11,16 +11,27 @@ Steer the selected marker with a 6DOF "3D Mouse" – a spring-centred puck you p
 
 ## Axis mapping
 
-The puck has six source axes: three translations – **Pan X** (left/right), **Pan Y** (forward/back) and **Lift** (up/down) – and three rotations – **Pitch**, **Yaw** and **Roll**. Each axis has its own row:
+The puck senses six motions. Each gets its own row in the form, named for the gesture you make – the same push / pull / tilt / twist motions shown in the 3Dconnexion manual. The config-file key is in parentheses.
 
-**Target** – where that axis sends its motion:
+| | Motion | Sends to (default) |
+|---|---|---|
+| ![Cap pushed left and right](/assets/help/mouse3d-pan-x.svg) | **Push left / right** (`pan_x`) | Move X |
+| ![Cap pushed forward and back](/assets/help/mouse3d-pan-y.svg) | **Push forward / back** (`pan_y`) | Move Y |
+| ![Cap pulled up and pushed down](/assets/help/mouse3d-lift.svg) | **Pull up / push down** (`lift`) | Move Z (height) |
+| ![Cap tilted forward and back](/assets/help/mouse3d-pitch.svg) | **Tilt forward / back** (`pitch`) | off |
+| ![Cap twisted](/assets/help/mouse3d-yaw.svg) | **Twist / spin** (`yaw`) | Speed |
+| ![Cap tilted left and right](/assets/help/mouse3d-roll.svg) | **Tilt left / right** (`roll`) | off |
+
+Each row has four controls:
+
+**Target** – where that motion sends its movement:
 
 - **x / y / z** – move the marker along that stage axis (X = stage left/right, Y = upstage/downstage, Z = height).
 - **speed** – instead of moving the marker, the axis ramps the marker's move-speed while held: push one way to speed up, the other to slow down. Useful for trimming speed on the fly without reaching for a key.
 - **fader** – drives the controlled marker's fader (0–1) while held: push one way to raise it, the other to lower. Same integrator the gamepad's marker-fader stick uses, so the fader-speed setting (under Gamepad) sets how fast full deflection travels.
 - **none** – ignore the axis.
 
-By default the three translations map to x / y / z (with lift geared down for gentler height), twisting the puck (yaw) ramps the move-speed, and pitch / roll are off. Re-point any axis at any target – e.g. map Yaw to z if you'd rather twist for height.
+The defaults are in the table above (push drives x / y / z with the up/down motion geared down for gentler height, twist ramps the move-speed, the two tilts are off). Re-point any motion at any target – e.g. send twist to z if you'd rather twist for height.
 
 **Sensitivity** – a per-axis multiplier (0–10). `1` means full deflection moves at the marker's configured move-speed; `2` doubles it; values below `1` make that axis finer. Set it per axis so, say, height is gentler than lateral movement.
 

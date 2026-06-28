@@ -144,14 +144,15 @@ def test_build_help_sections_mouse3d_shows_axis_and_button_bindings() -> None:
     )
     assert "3D Mouse" in sections
     lines = sections["3D Mouse"]
-    assert "Pan X: Move X" in lines
-    assert "Lift: Move Z" in lines
-    assert "Yaw: Speed" in lines
-    assert "Roll: Fader" in lines
+    # Axis labels use the gesture vocabulary (matches the 3Dconnexion manual).
+    assert "Push L/R: Move X" in lines
+    assert "Pull up/down: Move Z" in lines
+    assert "Twist: Speed" in lines
+    assert "Tilt L/R: Fader" in lines
     assert "Btn 0: Marker next" in lines
     assert "Btn 1: Marker prev" in lines
-    # "none"-mapped axis and an unbound (-1) button are omitted.
-    assert not any("Pitch" in line for line in lines)
+    # "none"-mapped axis (pitch) and an unbound (-1) button are omitted.
+    assert not any("Tilt fwd/back" in line for line in lines)
     assert not any("Reset" in line for line in lines)
 
 
@@ -184,7 +185,7 @@ def test_build_help_sections_mouse3d_hides_marker_cycle_in_multi_controller() ->
         )
     )
     lines = sections["3D Mouse"]
-    assert "Pan X: Move X" in lines
+    assert "Push L/R: Move X" in lines
     assert "Btn 2: Reset marker" in lines
     assert not any("Marker next" in line or "Marker prev" in line for line in lines)
 

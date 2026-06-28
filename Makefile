@@ -13,17 +13,22 @@ COVERAGE_MIN ?= 100
 
 # Parallelize the suite with pytest-xdist.
 #
-# ``-n logical`` (not ``auto``): ``auto`` counts physical cores, so on a 2-vCPU
-# single-core-with-hyperthreads CI runner it resolves to one worker and runs
-# sequentially. ``logical`` uses both hyperthreads, which the I/O-bound
-# integration/smoke step keeps busy.
+# Worker count is headroom-aware (not ``-n logical``/``-n auto``): small
+# CI/Pi runners (≤4 logical CPUs) use every core, but a fat interactive dev
+# workstation leaves 2 cores free so the OS/UI stays responsive – ``-n logical``
+# pins all 10 cores on a 10-core Mac with zero headroom and the WindowServer
+# starves, freezing the machine mid-run. ``getconf`` is portable across
+# macOS/Linux; the ``|| echo 2`` keeps the 2-vCPU CI default if it's absent.
 #
 # ``--dist load`` distributes individual tests across workers; ``loadscope``
 # would pin each large module to one worker and bottleneck on the slowest. Safe
 # because the suite has no cross-test shared state (function-scoped fixtures,
 # ephemeral ports, ``tmp_path`` I/O). pytest-cov combines per-worker coverage, so
-# the gate is unaffected. Override with ``PYTEST_PARALLEL=`` for a sequential run.
-PYTEST_PARALLEL ?= -n logical --dist load
+# the gate is unaffected. Override with ``PYTEST_PARALLEL=`` for a sequential run,
+# or ``PYTEST_WORKERS=N`` to pin the worker count.
+PYTEST_WORKERS ?= $(shell n=$$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2); \
+                          if [ "$$n" -gt 4 ]; then echo $$((n - 2)); else echo "$$n"; fi)
+PYTEST_PARALLEL ?= -n $(PYTEST_WORKERS) --dist load
 
 ci: lint typecheck security test build
 

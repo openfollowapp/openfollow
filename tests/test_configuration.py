@@ -1625,29 +1625,34 @@ def test_osc_config_clamps_port_to_blur_bounds() -> None:
 def test_mouse3d_config_defaults() -> None:
     cfg = Mouse3DConfig()
     assert cfg.enabled is False
-    assert cfg.curve == "linear"
-    # Translation axes drive x/y/z; rotation axes default off.
+    assert cfg.curve == "logarithmic"
+    # Translations drive x/y/z, yaw ramps speed, pitch/roll are off.
     assert (cfg.map_pan_x, cfg.map_pan_y, cfg.map_lift) == ("x", "y", "z")
-    assert (cfg.map_pitch, cfg.map_yaw, cfg.map_roll) == ("none", "none", "none")
-    assert cfg.sens_pan_x == 1.0 and cfg.invert_pan_x is False
-    # Deadzone is per axis, defaulting to 0.1 on each.
-    assert cfg.deadzone_pan_x == 0.1
+    assert cfg.map_yaw == "speed"
+    assert (cfg.map_pitch, cfg.map_roll) == ("none", "none")
+    # Lift is geared down (gentler height control).
+    assert cfg.sens_lift == 0.3
+    assert cfg.invert_pan_x is False
+    # Per-axis deadzone: tight on the translations, wider on geared/speed axes.
+    assert cfg.deadzone_pan_x == 0.05
+    assert cfg.deadzone_lift == 0.3
+    assert cfg.deadzone_yaw == 0.3
     assert cfg.deadzone_roll == 0.1
-    # The first two buttons seed sensible defaults; the rest are unbound.
-    assert cfg.btn_reset == 0
-    assert cfg.btn_next_marker == 1
+    # Default button binds (2-button device): left = next, right = prev.
+    assert cfg.btn_next_marker == 0
+    assert cfg.btn_prev_marker == 1
+    assert cfg.btn_reset == -1
     assert cfg.btn_settings == -1
 
 
 @pytest.mark.parametrize(
     "bad,expected",
-    # ``True`` coerces via float()==1.0 then clamps (same as ControllerConfig).
-    [(-1.0, 0.0), (2.0, 1.0), ("abc", 0.1), (None, 0.1), (True, 1.0)],
+    # ``True`` coerces via float()==1.0 then clamps (same as ControllerConfig);
+    # wrong-type / unparseable falls back to the axis default (pan_x = 0.05).
+    [(-1.0, 0.0), (2.0, 1.0), ("abc", 0.05), (None, 0.05), (True, 1.0)],
 )
 def test_mouse3d_config_clamps_deadzone(bad: object, expected: float) -> None:
-    cfg = Mouse3DConfig(deadzone_pan_x=bad, deadzone_yaw=bad)  # type: ignore[arg-type]
-    assert cfg.deadzone_pan_x == expected
-    assert cfg.deadzone_yaw == expected
+    assert Mouse3DConfig(deadzone_pan_x=bad).deadzone_pan_x == expected  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -1663,7 +1668,7 @@ def test_mouse3d_config_clamps_sensitivity(bad: object, expected: float) -> None
 
 @pytest.mark.parametrize("bad", ["wobble", 5, None, True, ""])
 def test_mouse3d_config_falls_back_on_unknown_curve(bad: object) -> None:
-    assert Mouse3DConfig(curve=bad).curve == "linear"  # type: ignore[arg-type]
+    assert Mouse3DConfig(curve=bad).curve == "logarithmic"  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("bad", ["sideways", "X", 1, None, True])

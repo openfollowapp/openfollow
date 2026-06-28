@@ -16,7 +16,7 @@ The puck has six source axes: three translations – **Pan X** (left/right), **P
 - **speed** – instead of moving the marker, the axis ramps the marker's move-speed while held: push one way to speed up, the other to slow down. Useful for trimming speed on the fly without reaching for a key.
 - **none** – ignore the axis.
 
-By default the three translations map to x / y / z and the rotations are off, so pushing the puck moves the marker across the stage and lifting it changes height. Re-point any axis at any target – e.g. map Yaw to z if you'd rather twist for height.
+By default the three translations map to x / y / z (with lift geared down for gentler height), twisting the puck (yaw) ramps the move-speed, and pitch / roll are off. Re-point any axis at any target – e.g. map Yaw to z if you'd rather twist for height.
 
 **Sensitivity** – a per-axis multiplier (0–10). `1` means full deflection moves at the marker's configured move-speed; `2` doubles it; values below `1` make that axis finer. Set it per axis so, say, height is gentler than lateral movement.
 

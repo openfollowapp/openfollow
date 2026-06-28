@@ -1895,14 +1895,32 @@ class ControllerConfig:
 # rules.
 MOUSE3D_AXES = ("pan_x", "pan_y", "lift", "pitch", "yaw", "roll")
 MOUSE3D_AXIS_TARGETS = ("none", "x", "y", "z", "speed")
-# Default target per source axis: translation axes drive x/y/z, rotation is off.
+# Per-axis defaults (single source of truth for the field defaults and the
+# __post_init__ coercion fallbacks). Translations drive x/y/z, lift is geared
+# down and dampened, yaw ramps move-speed, pitch/roll are off.
 _MOUSE3D_DEFAULT_MAP = {
     "pan_x": "x",
     "pan_y": "y",
     "lift": "z",
     "pitch": "none",
-    "yaw": "none",
+    "yaw": "speed",
     "roll": "none",
+}
+_MOUSE3D_DEFAULT_SENS = {
+    "pan_x": 1.0,
+    "pan_y": 1.0,
+    "lift": 0.3,
+    "pitch": 1.0,
+    "yaw": 1.0,
+    "roll": 1.0,
+}
+_MOUSE3D_DEFAULT_DEADZONE = {
+    "pan_x": 0.05,
+    "pan_y": 0.05,
+    "lift": 0.3,
+    "pitch": 0.1,
+    "yaw": 0.3,
+    "roll": 0.1,
 }
 MOUSE3D_BUTTON_FIELDS = (
     "btn_reset",
@@ -1927,36 +1945,36 @@ class Mouse3DConfig:
     """
 
     enabled: bool = False
-    curve: str = "linear"
+    curve: str = "logarithmic"
 
     map_pan_x: str = "x"
     sens_pan_x: float = 1.0
-    deadzone_pan_x: float = 0.1
+    deadzone_pan_x: float = 0.05
     invert_pan_x: bool = False
     map_pan_y: str = "y"
     sens_pan_y: float = 1.0
-    deadzone_pan_y: float = 0.1
+    deadzone_pan_y: float = 0.05
     invert_pan_y: bool = False
     map_lift: str = "z"
-    sens_lift: float = 1.0
-    deadzone_lift: float = 0.1
+    sens_lift: float = 0.3
+    deadzone_lift: float = 0.3
     invert_lift: bool = False
     map_pitch: str = "none"
     sens_pitch: float = 1.0
     deadzone_pitch: float = 0.1
     invert_pitch: bool = False
-    map_yaw: str = "none"
+    map_yaw: str = "speed"
     sens_yaw: float = 1.0
-    deadzone_yaw: float = 0.1
+    deadzone_yaw: float = 0.3
     invert_yaw: bool = False
     map_roll: str = "none"
     sens_roll: float = 1.0
     deadzone_roll: float = 0.1
     invert_roll: bool = False
 
-    btn_reset: int = 0
-    btn_next_marker: int = 1
-    btn_prev_marker: int = -1
+    btn_reset: int = -1
+    btn_next_marker: int = 0
+    btn_prev_marker: int = 1
     btn_speed_up: int = -1
     btn_speed_down: int = -1
     btn_toggle_help: int = -1
@@ -1965,7 +1983,7 @@ class Mouse3DConfig:
 
     def __post_init__(self) -> None:
         self.enabled = _coerce_bool(self.enabled, False)
-        self.curve = _coerce_choice(self.curve, VALID_CURVES, "linear")
+        self.curve = _coerce_choice(self.curve, VALID_CURVES, "logarithmic")
         for axis in MOUSE3D_AXES:
             setattr(
                 self,
@@ -1979,12 +1997,12 @@ class Mouse3DConfig:
             setattr(
                 self,
                 f"sens_{axis}",
-                _coerce_float(getattr(self, f"sens_{axis}"), 1.0, lo=0.0, hi=10.0),
+                _coerce_float(getattr(self, f"sens_{axis}"), _MOUSE3D_DEFAULT_SENS[axis], lo=0.0, hi=10.0),
             )
             setattr(
                 self,
                 f"deadzone_{axis}",
-                _coerce_float(getattr(self, f"deadzone_{axis}"), 0.1, lo=0.0, hi=1.0),
+                _coerce_float(getattr(self, f"deadzone_{axis}"), _MOUSE3D_DEFAULT_DEADZONE[axis], lo=0.0, hi=1.0),
             )
             setattr(
                 self,

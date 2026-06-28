@@ -164,7 +164,7 @@ def test_apply_section_data_mouse3d_clamps_and_falls_back() -> None:
             "deadzone_pan_x": "5",  # > 1 -> clamp 1
             "map_pitch": "sideways",  # invalid -> default "none"
             "btn_reset": "-7",  # < -1 -> clamp -1 (unbound)
-            "curve": "wobble",  # invalid -> "linear"
+            "curve": "wobble",  # invalid -> default "logarithmic"
         },
     )
     assert ok is True
@@ -172,7 +172,7 @@ def test_apply_section_data_mouse3d_clamps_and_falls_back() -> None:
     assert config.mouse3d.deadzone_pan_x == 1.0
     assert config.mouse3d.map_pitch == "none"
     assert config.mouse3d.btn_reset == -1
-    assert config.mouse3d.curve == "linear"
+    assert config.mouse3d.curve == "logarithmic"
 
 
 def test_apply_section_data_grid_tolerates_huge_int_width() -> None:

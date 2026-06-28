@@ -180,12 +180,21 @@ class Mouse3DHandler:
         self._thread = threading.Thread(target=self._run, args=(stop,), daemon=True, name="Mouse3D")
         self._thread.start()
 
-    def stop(self) -> None:
-        """Stop the read thread and release the device."""
+    def stop(self, *, wait: bool = False) -> None:
+        """Signal the read thread to stop and release the device.
+
+        Non-blocking by default: a live *disable* runs on the GTK main loop, so
+        joining a worker parked in a blocking HID read would stall the HUD. We
+        only set the (per-worker) stop Event and return; the daemon worker exits
+        on its next stop check and closes the device in its ``finally``, and the
+        pre-publish guard in ``_pump`` keeps a stopping worker from writing a
+        reading after the stop (so the snapshot-clear below holds). App shutdown
+        passes ``wait=True`` to join so the device is released before teardown.
+        """
         self._stop.set()
         thread = self._thread
         self._thread = None
-        if thread is not None:
+        if wait and thread is not None:
             thread.join(timeout=2.0)
         # Drop the last reading so re-enabling never re-applies a stale deflection.
         with self._lock:
@@ -453,6 +462,11 @@ class Mouse3DHandler:
                 yaw=_finite_axis(getattr(state, "yaw", 0.0)),
                 buttons=tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ())),
             )
+            # A stop may have arrived during the read. Don't publish a now-stale
+            # reading: a non-blocking ``stop()`` clears the snapshot and relies on
+            # the stopping worker not writing one back before it exits.
+            if stop.is_set():
+                return read_any
             with self._lock:
                 self._snapshot = snapshot
             if stop.wait(_POLL_S):

@@ -573,7 +573,9 @@ class InputManager:
     def stop(self) -> None:
         """Stop input subsystems and release resources."""
         self.gamepad_handler.stop()
-        self.mouse3d_handler.stop()
+        # Shutdown: join the worker so the device is released before teardown.
+        # The live-disable path (restart_mouse3d) uses the non-blocking default.
+        self.mouse3d_handler.stop(wait=True)
         self._stop_operator_message_handler()
         if self.osc_handler is not None:
             self.osc_handler.stop()

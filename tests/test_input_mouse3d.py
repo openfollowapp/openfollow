@@ -329,7 +329,9 @@ def test_worker_publishes_snapshot_from_device() -> None:
         assert _wait_until(lambda: h.update(0.016).velocity[0] == pytest.approx(0.5))
     finally:
         h.stop()
-    assert dev.closed is True
+    # stop() is non-blocking (no join), so the worker closes the device
+    # asynchronously as it exits.
+    assert _wait_until(lambda: dev.closed)
 
 
 def test_worker_marks_disconnected_when_no_device() -> None:
@@ -397,6 +399,58 @@ def test_stop_clears_snapshot() -> None:
     assert h._snapshot is not None
     h.stop()
     assert h._snapshot is None
+
+
+class _SpyThread:
+    """Stand-in thread that records whether ``join`` was called."""
+
+    def __init__(self) -> None:
+        self.joined = False
+
+    def is_alive(self) -> bool:
+        return True
+
+    def join(self, timeout: float | None = None) -> None:
+        self.joined = True
+
+
+def test_stop_is_nonblocking_by_default() -> None:
+    # A live disable runs on the GTK main loop; stop() must not join the worker
+    # (a blocked HID read would otherwise stall the HUD up to the join timeout).
+    h = _handler()
+    spy = _SpyThread()
+    h._thread = spy  # type: ignore[assignment]
+    h.stop()
+    assert spy.joined is False
+    assert h._thread is None
+    assert h._stop.is_set()
+
+
+def test_stop_wait_joins_for_shutdown() -> None:
+    # App shutdown passes wait=True so the device is released before teardown.
+    h = _handler()
+    spy = _SpyThread()
+    h._thread = spy  # type: ignore[assignment]
+    h.stop(wait=True)
+    assert spy.joined is True
+    assert h._thread is None
+
+
+def test_pump_does_not_publish_after_stop_requested() -> None:
+    # If a stop arrives mid-read, the stopping worker must not write the reading
+    # back (which would undo a non-blocking stop()'s snapshot-clear).
+    h = _handler()
+
+    class _StopDuringRead:
+        def read(self):  # noqa: ANN202
+            h._stop.set()  # stop requested during this read
+            return _state(x=0.9)
+
+        def close(self) -> None:
+            pass
+
+    assert h._pump(_StopDuringRead(), h._stop) is True  # it did read
+    assert h._snapshot is None  # but did not publish the post-stop reading
 
 
 def test_reconnect_does_not_replay_stale_deflection() -> None:

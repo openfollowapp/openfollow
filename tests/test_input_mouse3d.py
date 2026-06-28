@@ -385,9 +385,128 @@ def test_run_marks_unavailable_when_import_fails(monkeypatch) -> None:
         raise OSError("libhidapi not found")
 
     monkeypatch.setattr(h, "_resolve_factory", _boom)
-    h._run()  # synchronous; returns immediately on the import failure
+    h._run(h._stop)  # synchronous; returns immediately on the import failure
     assert h.available is False
     assert h._import_error is not None
+
+
+def test_stop_clears_snapshot() -> None:
+    # A stale deflection must not survive a stop()->start() (disable/enable),
+    # otherwise re-enabling re-applies the last reading before a fresh one.
+    h = _handler(snapshot=_state(x=0.8))
+    assert h._snapshot is not None
+    h.stop()
+    assert h._snapshot is None
+
+
+def test_reconnect_does_not_replay_stale_deflection() -> None:
+    # Device delivers one deflection then drops; on reconnect the worker reports
+    # connected but, until a fresh HID report arrives, must serve NO stale input.
+    class _OneReadThenDrop:
+        def __init__(self) -> None:
+            self.n = 0
+            self.closed = False
+
+        def read(self) -> object:
+            self.n += 1
+            if self.n == 1:
+                return _state(x=0.8)
+            raise OSError("unplugged")
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _Idle:
+        """Connected but silent – a real puck only reports on change."""
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        def read(self) -> object | None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    seq: list[object] = [_OneReadThenDrop(), _Idle()]
+    h = Mouse3DHandler(_cfg(), device_factory=lambda: seq.pop(0) if seq else _Idle())
+    h.start()
+    try:
+        # Both devices opened: the flaky one dropped, the idle one reconnected.
+        assert _wait_until(lambda: h.connected and not seq)
+        # The idle device never publishes, so the stale 0.8 must not return.
+        assert _wait_until(lambda: h._snapshot is None)
+        assert h.update(0.016).velocity == (0.0, 0.0, 0.0)
+    finally:
+        h.stop()
+
+
+def test_pump_reports_no_read_on_immediate_failure() -> None:
+    # An open that errors on the first read returns read_any=False so the caller
+    # backs off instead of tight-looping open->read-fail->reopen.
+    class _Dead:
+        def read(self) -> object:
+            raise OSError("nope")
+
+        def close(self) -> None:
+            pass
+
+    h = _handler()
+    assert h._pump(_Dead(), h._stop) is False
+
+
+def test_pump_reports_read_after_delivering_state() -> None:
+    # A connection that delivers at least one reading returns read_any=True so
+    # the caller resets the backoff for a prompt reconnect.
+    h = _handler()
+
+    class _OneThenStop:
+        def __init__(self, stop: object) -> None:
+            self._stop = stop
+            self.n = 0
+
+        def read(self) -> object | None:
+            self.n += 1
+            if self.n == 1:
+                return _state(x=0.3)
+            self._stop.set()  # end the pump loop after the first reading
+            return None
+
+        def close(self) -> None:
+            pass
+
+    assert h._pump(_OneThenStop(h._stop), h._stop) is True
+
+
+def test_concurrent_detect_is_serialized() -> None:
+    # While one detect holds the lock, a second concurrent detect no-ops instead
+    # of opening the singleton HID device a second time.
+    h = Mouse3DHandler(
+        Mouse3DConfig(enabled=False),
+        device_factory=lambda: FakeDevice([_state(buttons=[1])]),
+    )
+    h._detect_lock.acquire()  # simulate a detect already in progress
+    try:
+        assert h.detect_pressed_button(timeout=0.05) is None
+    finally:
+        h._detect_lock.release()
+
+
+def test_each_worker_gets_a_fresh_stop_event() -> None:
+    # stop() sets the current worker's event; a later start() creates a new one,
+    # leaving the old set so a straggler worker can't resume on a shared event.
+    h = Mouse3DHandler(Mouse3DConfig(enabled=True), device_factory=lambda: FakeDevice())
+    h.start()
+    first_stop = h._stop
+    h.stop()
+    assert first_stop.is_set()
+    h.start()
+    try:
+        assert h._stop is not first_stop
+        assert first_stop.is_set()
+        assert not h._stop.is_set()
+    finally:
+        h.stop()
 
 
 # --------------------------------------------------------------------------- #
@@ -796,7 +915,7 @@ def test_pump_publishes_snapshot_then_exits() -> None:
             h._stop.set()  # end the loop on the idle pass
             return None
 
-    h._pump(_Dev())  # synchronous
+    assert h._pump(_Dev(), h._stop) is True  # synchronous; delivered a reading
     assert h._snapshot is not None
     assert h._snapshot.x == 0.5
 
@@ -808,7 +927,7 @@ def test_pump_returns_on_read_oserror() -> None:
         def read(self):  # noqa: ANN202
             raise OSError("unplugged")
 
-    h._pump(_Dev())  # returns without raising
+    assert h._pump(_Dev(), h._stop) is False  # returns without raising, no read
     assert h._snapshot is None
 
 
@@ -820,7 +939,7 @@ def test_pump_exits_immediately_when_already_stopped() -> None:
         def read(self):  # noqa: ANN202
             raise AssertionError("read must not be called when already stopped")
 
-    h._pump(_Dev())  # returns without reading
+    assert h._pump(_Dev(), h._stop) is False  # returns without reading
     assert h._snapshot is None
 
 
@@ -840,7 +959,7 @@ def test_run_reconnects_when_device_absent(monkeypatch) -> None:  # noqa: ANN001
         return None  # no device present
 
     h._device_factory = _factory
-    h._run()
+    h._run(h._stop)
     assert len(calls) >= 2
     assert h.connected is False
     assert h.available is True
@@ -868,11 +987,40 @@ def test_run_opens_pumps_and_closes(monkeypatch) -> None:  # noqa: ANN001
             closed.append(1)
 
     h._device_factory = lambda: _Dev()
-    h._run()
-    assert h._snapshot is not None
-    assert h._snapshot.x == 0.5
+    h._run(h._stop)
     assert closed == [1]  # the finally block closed the device
     assert h.available is True
+    # The connection ended, so the published reading is dropped – a reconnect
+    # must not replay the last deflection.
+    assert h._snapshot is None
+
+
+def test_run_backs_off_when_open_succeeds_but_read_fails(monkeypatch) -> None:  # noqa: ANN001
+    # An open that succeeds but whose read fails immediately must back off like a
+    # failed open (read_any=False), not tight-loop open->read-fail->reopen.
+    import openfollow.input.mouse3d as m3d_mod
+
+    monkeypatch.setattr(m3d_mod, "_RECONNECT_MIN_S", 0.001)
+    h = Mouse3DHandler(Mouse3DConfig(enabled=True))
+    opens: list[int] = []
+
+    class _DeadDev:
+        def read(self):  # noqa: ANN202
+            raise OSError("read fails immediately")
+
+        def close(self) -> None:
+            pass
+
+    def _factory():  # noqa: ANN202
+        opens.append(1)
+        if len(opens) >= 2:
+            h._stop.set()  # end the loop after the 2nd open attempt
+        return _DeadDev()
+
+    h._device_factory = _factory
+    h._run(h._stop)
+    assert len(opens) >= 2  # it retried (backed off) rather than giving up
+    assert h.connected is False
 
 
 def test_detect_snapshot_poll_times_out() -> None:

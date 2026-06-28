@@ -150,6 +150,26 @@ def test_as_button_index_none_is_unbound() -> None:
     assert _as_button_index(None, 5) == -1
 
 
+@pytest.mark.parametrize("value", [True, False])
+def test_as_button_index_rejects_bool(value: bool) -> None:
+    from openfollow.web.routes import _as_button_index
+
+    # ``bool`` is an ``int`` subclass, so without a guard a JSON ``true`` would
+    # become button index 1. It must fall back to ``default`` so the JSON/peer
+    # path agrees with a hand-edited TOML (``_coerce_int`` also rejects bool).
+    assert _as_button_index(value, 5) == 5
+
+
+def test_apply_section_data_mouse3d_json_bool_button_does_not_bind_index_1() -> None:
+    config = AppConfig()
+    config.mouse3d.btn_reset = 3  # currently bound
+    # A JSON/peer body carrying a bool for a button field must not silently
+    # bind index 1; it falls back to the current value, then __post_init__ keeps it.
+    ok = apply_section_data(config, "mouse3d", {"btn_reset": True})
+    assert ok is True
+    assert config.mouse3d.btn_reset == 3
+
+
 def test_apply_section_data_mouse3d_blank_button_unbinds() -> None:
     config = AppConfig()
     config.mouse3d.btn_reset = 5  # currently bound

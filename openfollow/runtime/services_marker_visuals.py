@@ -677,7 +677,12 @@ def build_marker_visual_state(
 
     _populate_zone_overlay(state, cfg, app)
 
-    state.controller_connected = cfg.controller.enabled and any(bool(info["connected"]) for info in controller_info)
+    # Only a gamepad lights the gamepad help section / status: a 3D mouse is a
+    # unified controller (it gets a card badge) but has its own help section, so
+    # its presence must not advertise gamepad-only controls.
+    state.controller_connected = cfg.controller.enabled and any(
+        bool(info["connected"]) for info in controller_info if info.get("backend") != "mouse3d"
+    )
     # Connected pads that map to no marker (more pads than
     # ``controlled_marker_ids``) are surfaced in the Settings menu's info
     # card; there is no bottom-center status panel.

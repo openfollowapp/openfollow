@@ -746,6 +746,53 @@ class TestInputFlags:
         state = _build(app, pool)
         assert state.controller_connected is False
 
+    def test_3d_mouse_alone_does_not_report_controller_connected(self, pool: OverlayStatePool) -> None:
+        # A connected 3D mouse is a unified controller (it gets a card badge) but
+        # has its own help section; it must NOT light the gamepad help/status,
+        # which advertises L-Stick / DPAD / bumper controls a puck doesn't have.
+        mgr = _FakeInputManager(
+            controller_info=[
+                {
+                    "connected": True,
+                    "marker_id": None,
+                    "name": "3D Mouse",
+                    "controller_index": 0,
+                    "effective_speed": 0.0,
+                    "backend": "mouse3d",
+                },
+            ]
+        )
+        app = _build_app(input_manager=mgr)
+        app._config.controller.enabled = True
+        state = _build(app, pool)
+        assert state.controller_connected is False
+
+    def test_gamepad_alongside_3d_mouse_still_reports_connected(self, pool: OverlayStatePool) -> None:
+        mgr = _FakeInputManager(
+            controller_info=[
+                {
+                    "connected": True,
+                    "marker_id": None,
+                    "name": "3D Mouse",
+                    "controller_index": 0,
+                    "effective_speed": 0.0,
+                    "backend": "mouse3d",
+                },
+                {
+                    "connected": True,
+                    "marker_id": 1,
+                    "name": "Pad",
+                    "controller_index": 1,
+                    "effective_speed": 1.0,
+                    "backend": "pygame",
+                },
+            ]
+        )
+        app = _build_app(input_manager=mgr)
+        app._config.controller.enabled = True
+        state = _build(app, pool)
+        assert state.controller_connected is True
+
 
 class TestMouse3dHelpBindings:
     """The HUD help overlay surfaces the 3D mouse axis / button map."""

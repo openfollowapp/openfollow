@@ -1180,6 +1180,11 @@ def _as_button_index(value: Any, default: int) -> int:
     unbinds it. Non-numeric junk falls back to ``default`` (the validate path
     passes a sentinel here to surface a type error). For 3D Mouse button binds.
     """
+    # Guard ``bool`` before ``int`` (``bool`` is an ``int`` subclass, so a JSON
+    # ``true`` would otherwise become index 1). Mirrors ``_coerce_int`` so the
+    # JSON/peer path and a hand-edited TOML agree on rejecting it.
+    if isinstance(value, bool):
+        return default
     if value is None:
         return -1
     if isinstance(value, str) and not value.strip():

@@ -140,6 +140,9 @@ class Mouse3DHandler:
         # ``None`` -> lazy ``pyspacemouse.open`` resolved on the worker thread.
         self._device_factory = device_factory
         self._lock = threading.Lock()
+        # Serialises the web Detect flow so two concurrent requests can't both
+        # open the singleton HID device.
+        self._detect_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._snapshot: _Snapshot | None = None
@@ -168,17 +171,24 @@ class Mouse3DHandler:
             with self._lock:
                 self._available = False
             return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True, name="Mouse3D")
+        # A fresh stop Event per worker: a prior worker whose join timed out keeps
+        # watching its own (still-set) event, so it can't resurrect by reading a
+        # shared event the new worker cleared.
+        stop = threading.Event()
+        self._stop = stop
+        self._thread = threading.Thread(target=self._run, args=(stop,), daemon=True, name="Mouse3D")
         self._thread.start()
 
     def stop(self) -> None:
         """Stop the read thread and release the device."""
         self._stop.set()
         thread = self._thread
+        self._thread = None
         if thread is not None:
             thread.join(timeout=2.0)
-            self._thread = None
+        # Drop the last reading so re-enabling never re-applies a stale deflection.
+        with self._lock:
+            self._snapshot = None
 
     def reload_config(self, config: Mouse3DConfig) -> None:
         """Swap the mapping config (mapping is read on the GTK side)."""
@@ -219,11 +229,19 @@ class Mouse3DHandler:
         can be bound while the feature is still disabled. Returns the first
         pressed index seen within ``timeout`` seconds, or ``None``.
         """
-        with self._lock:
-            running = self._thread is not None and self._thread.is_alive()
-        if running:
-            return self._poll_snapshot_button(timeout)
-        return self._poll_device_button(timeout)
+        # Serialise so two concurrent web requests can't both open the singleton
+        # HID device; a second concurrent detect no-ops rather than racing
+        # open/read/close on the same node.
+        if not self._detect_lock.acquire(blocking=False):
+            return None
+        try:
+            with self._lock:
+                running = self._thread is not None and self._thread.is_alive()
+            if running:
+                return self._poll_snapshot_button(timeout)
+            return self._poll_device_button(timeout)
+        finally:
+            self._detect_lock.release()
 
     def _poll_snapshot_button(self, timeout: float) -> int | None:
         deadline = time.monotonic() + timeout
@@ -361,7 +379,7 @@ class Mouse3DHandler:
 
     # -- worker thread -----------------------------------------------------
 
-    def _run(self) -> None:
+    def _run(self, stop: threading.Event) -> None:
         try:
             factory = self._resolve_factory()
         except (ImportError, OSError) as exc:
@@ -373,24 +391,34 @@ class Mouse3DHandler:
         with self._lock:
             self._available = True
         backoff = _RECONNECT_MIN_S
-        while not self._stop.is_set():
+        while not stop.is_set():
             device = self._open_device(factory)
             if device is None:
                 with self._lock:
                     self._connected = False
-                if self._stop.wait(backoff):
+                if stop.wait(backoff):
                     break
                 backoff = min(backoff * 2.0, _RECONNECT_MAX_S)
                 continue
-            backoff = _RECONNECT_MIN_S
             with self._lock:
                 self._connected = True
             try:
-                self._pump(device)
+                read_any = self._pump(device, stop)
             finally:
                 with self._lock:
                     self._connected = False
+                    # Don't serve the last deflection on the next connect.
+                    self._snapshot = None
                 _safe_close(device)
+            # Reset the backoff only once a connection actually delivered a
+            # reading; an open that never reads (immediate read error) backs off
+            # like a failed open so a flaky device can't drive a tight reopen loop.
+            if read_any:
+                backoff = _RECONNECT_MIN_S
+            elif stop.wait(backoff):
+                break
+            else:
+                backoff = min(backoff * 2.0, _RECONNECT_MAX_S)
 
     def _resolve_factory(self) -> Callable[[], Any]:
         if self._device_factory is not None:
@@ -410,17 +438,25 @@ class Mouse3DHandler:
         # ``pyspacemouse.open`` returns ``False`` when no device is present.
         return device or None
 
-    def _pump(self, device: Any) -> None:
-        while not self._stop.is_set():
+    def _pump(self, device: Any, stop: threading.Event) -> bool:
+        """Pump device readings into ``_snapshot`` until stop or disconnect.
+
+        Returns whether at least one reading was delivered, so the caller can
+        tell a healthy connection (reset backoff) from an open that immediately
+        failed to read (back off instead of tight-looping).
+        """
+        read_any = False
+        while not stop.is_set():
             try:
                 state = device.read()
             except OSError as exc:
                 logger.info("3D Mouse read failed (disconnect?): %s", exc)
-                return
+                return read_any
             if state is None:
-                if self._stop.wait(_IDLE_POLL_S):
-                    return
+                if stop.wait(_IDLE_POLL_S):
+                    return read_any
                 continue
+            read_any = True
             snapshot = _Snapshot(
                 x=_finite_axis(getattr(state, "x", 0.0)),
                 y=_finite_axis(getattr(state, "y", 0.0)),
@@ -432,8 +468,9 @@ class Mouse3DHandler:
             )
             with self._lock:
                 self._snapshot = snapshot
-            if self._stop.wait(_POLL_S):
-                return
+            if stop.wait(_POLL_S):
+                return read_any
+        return read_any
 
 
 def _safe_close(device: Any) -> None:

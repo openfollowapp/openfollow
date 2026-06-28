@@ -5433,6 +5433,8 @@ def test_gallery_list_shows_defaults(gallery_server) -> None:
     assert status == 200
     assert 'id="gallery-grid"' in body
     assert "Stage" in body and "Grey" in body
+    assert "gallery-label" not in body  # no visible per-tile labels
+    assert 'title="Stage"' in body  # name kept as hover/aria name only
 
 
 def test_gallery_select_persists(gallery_server) -> None:

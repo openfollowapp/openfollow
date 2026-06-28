@@ -3356,9 +3356,10 @@ def _render_gallery_grid(server: ConfigWebServer, *, error: str = "") -> str:
             )
         tiles.append(
             f'<div class="gallery-tile{sel}">'
-            f'<button class="gallery-select" type="button" hx-post="{_GALLERY_PREFIX}/select" '
+            f'<button class="gallery-select" type="button" title="{label}" aria-label="{label}" '
+            f'hx-post="{_GALLERY_PREFIX}/select" '
             f'hx-vals=\'{{"media_id": "{eid}"}}\' hx-target="#gallery-grid" hx-swap="outerHTML">'
-            f'{thumb}<span class="gallery-label">{label}</span>'
+            f"{thumb}"
             "</button>"
             f"{actions}"
             "</div>"

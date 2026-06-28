@@ -560,15 +560,6 @@
  background: var(--bg-soft);
  }
  .gallery-grey { background: #808080; }
- .gallery-label {
- display: block;
- font-size: 0.72rem;
- padding: 0.2rem;
- text-align: center;
- white-space: nowrap;
- overflow: hidden;
- text-overflow: ellipsis;
- }
  .gallery-actions {
  position: absolute;
  top: 4px;

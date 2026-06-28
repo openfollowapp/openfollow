@@ -119,7 +119,7 @@ All config lives in `config.toml` (auto-reloaded when file changes on disk).
 ### AppConfig top-level fields
 | Field | Default | Notes |
 |---|---|---|
-| `video_source_type` | `"rtsp"` | `"ndi"`, `"srt"`, `"rtsp"`, `"rtp"`, `"picam"`, `"v4l2"` (Linux USB camera), `"avf"` (macOS USB camera), or any registered plugin ID |
+| `video_source_type` | `"testpattern"` | `"testpattern"` (Media Gallery, the default), `"ndi"`, `"srt"`, `"rtsp"`, `"rtp"`, `"picam"`, `"v4l2"` (Linux USB camera), `"avf"` (macOS USB camera), or any registered plugin ID |
 | `ndi_source_name` | `""` | NDI source string (read by NDI plugin) |
 | `srt_host` | `"srt://0.0.0.0:5000"` | SRT URL (read by SRT plugin) |
 | `window_width/height` | `1280×720` | |
@@ -193,8 +193,11 @@ video/inputs/
     picam.py        # Raspberry Pi camera plugin (libcamerasrc, CSI/MIPI)
     v4l2.py         # USB camera / capture card plugin (v4l2src, UVC, Linux-only)
     avf.py          # USB camera / capture card plugin (avfvideosrc, macOS-only)
-    testpattern.py  # Synthetic test-pattern source (videotestsrc) – always available
+    testpattern.py  # Media Gallery source (id stays "testpattern"): plays a stored image / VP8 clip
+                    #   or the Stage / Grey defaults from media_store.py – always available
 ```
+
+The **Media Gallery** (`MediaGalleryInput`, `input_id` stays `testpattern`) plays a device-local image / looping VP8 clip / bundled default selected via `testpattern_selected_media`. Its library lives in [`video/media_store.py`](openfollow/video/media_store.py) (storage resolver, id rules, hard cap, magic-byte + `GstDiscoverer` validation, thumbnails); the web management routes (`/video-input/testpattern/*` in [`web/routes.py`](openfollow/web/routes.py)) handle list / upload / capture / select / download / delete. The selection is device-local (web-only via `ConfigField.device_editable=False`; stripped on export, preserved on import) and silently falls back to Stage when unresolvable. Clips loop via the `on_bus_eos` hook (the receiver does not treat a looping clip's EOS as a disconnect).
 
 **Adding a new protocol:** create `video/inputs/<name>.py` with a `VideoInputBase` subclass. No other files need changes – the registry auto-discovers it, the web UI renders its fields, the receiver delegates to it.
 

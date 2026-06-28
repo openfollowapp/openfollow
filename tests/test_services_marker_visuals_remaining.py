@@ -93,6 +93,10 @@ class _FakeInputManager:
     def get_controller_info(self) -> list[dict]:
         return list(self._controller_info)
 
+    def marker_cycle_active(self) -> bool:
+        # Mirrors InputManager: one entry per unified controller slot.
+        return len(self._controller_info) <= 1
+
     def is_keyboard_connected(self) -> bool:
         return self._kbd_connected
 

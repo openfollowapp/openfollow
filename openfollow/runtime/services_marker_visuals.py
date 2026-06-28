@@ -643,9 +643,9 @@ def build_marker_visual_state(
     # controllers connected (gamepads + 3D mice, the unified slot space), the
     # InputManager suppresses the cycling action so operators don't fight over
     # the selection; mirror that by hiding the next/prev rows from the gamepad
-    # and 3D mouse help so neither promises a no-op control. ``controller_info``
-    # has one entry per unified controller slot, matching the action gate.
-    state.marker_cycle_enabled = len(controller_info) <= 1
+    # and 3D mouse help so neither promises a no-op control. Read the same
+    # predicate the action gate uses so the help and the action can't drift.
+    state.marker_cycle_enabled = app._input_manager is None or app._input_manager.marker_cycle_active()
     state.button_labels = {
         "reset": cc.btn_reset,
         "toggle_help": cc.btn_toggle_help,
@@ -700,12 +700,18 @@ def build_marker_visual_state(
     state.mouse_double_click_reset = cfg.controller.mouse_double_click_reset
     # 3D Mouse help: show its axis / button bindings when the feature is enabled
     # and a device is actually connected (mirrors the gamepad-connected gate).
+    # The maps are only read by the help overlay (gated on mouse3d_connected), so
+    # skip building them every frame on the common feature-off path.
     m3d_cfg = cfg.mouse3d
     state.mouse3d_connected = bool(
         m3d_cfg.enabled and app._input_manager is not None and app._input_manager.mouse3d_handler.connected
     )
-    state.mouse3d_axis_map = {axis: getattr(m3d_cfg, f"map_{axis}") for axis in MOUSE3D_AXES}
-    state.mouse3d_buttons = {name[4:]: getattr(m3d_cfg, name) for name in MOUSE3D_BUTTON_FIELDS}
+    if state.mouse3d_connected:
+        state.mouse3d_axis_map = {axis: getattr(m3d_cfg, f"map_{axis}") for axis in MOUSE3D_AXES}
+        state.mouse3d_buttons = {name[4:]: getattr(m3d_cfg, name) for name in MOUSE3D_BUTTON_FIELDS}
+    else:
+        state.mouse3d_axis_map = {}
+        state.mouse3d_buttons = {}
     state.show_hud_help = app._show_hud_help
 
     # Virtual fader stack. Read from the running bus and surface only the

@@ -16,6 +16,7 @@ import pytest
 
 from openfollow.configuration import (
     DEFAULT_UPDATE_SERVICE_NAME,
+    MOUSE3D_AXES,
     RESERVED_MOVEMENT_KEYS,
     AppConfig,
     CameraConfig,
@@ -1643,6 +1644,22 @@ def test_mouse3d_config_defaults() -> None:
     assert cfg.btn_prev_marker == 1
     assert cfg.btn_reset == -1
     assert cfg.btn_settings == -1
+
+
+def test_mouse3d_invalid_value_falls_back_to_declared_field_default() -> None:
+    # __post_init__ derives its per-axis fallback from the field declarations
+    # (single source), so an invalid value lands on the SAME default as an
+    # omitted field – for every axis, not just the few spot-checked elsewhere.
+    defaults = Mouse3DConfig()
+    junk = Mouse3DConfig(
+        **{f"sens_{a}": "x" for a in MOUSE3D_AXES},  # type: ignore[arg-type]
+        **{f"deadzone_{a}": "x" for a in MOUSE3D_AXES},
+        **{f"map_{a}": "bogus" for a in MOUSE3D_AXES},
+    )
+    for axis in MOUSE3D_AXES:
+        assert getattr(junk, f"sens_{axis}") == getattr(defaults, f"sens_{axis}")
+        assert getattr(junk, f"deadzone_{axis}") == getattr(defaults, f"deadzone_{axis}")
+        assert getattr(junk, f"map_{axis}") == getattr(defaults, f"map_{axis}")
 
 
 @pytest.mark.parametrize(

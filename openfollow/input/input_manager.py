@@ -171,7 +171,7 @@ class InputManager:
             slots.append(("gamepad", idx))
         return slots
 
-    def _controller_marker_id(self, unified_idx: int | None) -> int | None:
+    def _controller_marker_id(self, unified_idx: int | None, slots: list[tuple[str, int]] | None = None) -> int | None:
         """Resolve the marker a unified controller index drives.
 
         Exactly one controller total (a lone gamepad or a lone 3D mouse) and a
@@ -179,10 +179,14 @@ class InputManager:
         switches what the operator moves. Otherwise the fixed slot
         ``app._controlled_ids[unified_idx]`` so per-operator assignments stay
         stable. ``None`` when the index isn't a live controller or has no slot.
+
+        Pass ``slots`` to reuse a single per-frame snapshot instead of
+        recomputing the controller list on every lookup.
         """
         if unified_idx is None:
             return None
-        slots = self._controller_slots()
+        if slots is None:
+            slots = self._controller_slots()
         if not 0 <= unified_idx < len(slots):
             return None
         if len(slots) == 1 and self.app._selected_id is not None:
@@ -192,24 +196,44 @@ class InputManager:
             return controlled[unified_idx]
         return None
 
-    def _gamepad_unified_idx(self, controller_idx: int) -> int | None:
+    def _gamepad_unified_idx(self, controller_idx: int, slots: list[tuple[str, int]] | None = None) -> int | None:
         """Unified index for a gamepad's pygame index, or ``None`` if absent."""
-        for i, (kind, local_idx) in enumerate(self._controller_slots()):
+        if slots is None:
+            slots = self._controller_slots()
+        for i, (kind, local_idx) in enumerate(slots):
             if kind == "gamepad" and local_idx == controller_idx:
                 return i
         return None
 
-    def _mouse3d_unified_idx(self) -> int | None:
+    def _mouse3d_unified_idx(self, slots: list[tuple[str, int]] | None = None) -> int | None:
         """Unified index of the 3D mouse controller, or ``None`` if not live."""
-        for i, (kind, _local) in enumerate(self._controller_slots()):
+        if slots is None:
+            slots = self._controller_slots()
+        for i, (kind, _local) in enumerate(slots):
             if kind == "mouse3d":
                 return i
         return None
 
-    def _gamepad_marker_id(self, controller_idx: int) -> int | None:
+    def _gamepad_marker_id(self, controller_idx: int, slots: list[tuple[str, int]] | None = None) -> int | None:
         """Marker a gamepad's movement/reset targets, routed through the shared
         controller-id space (the gamepad's pygame index -> its unified slot)."""
-        return self._controller_marker_id(self._gamepad_unified_idx(controller_idx))
+        if slots is None:
+            slots = self._controller_slots()
+        return self._controller_marker_id(self._gamepad_unified_idx(controller_idx, slots), slots)
+
+    def marker_cycle_active(self, slots: list[tuple[str, int]] | None = None) -> bool:
+        """Whether next/prev marker cycling should be honoured this frame.
+
+        Cycling rotates the shared ``_selected_id``, so it is a single-controller
+        affordance: active only when at most one unified controller (a lone
+        gamepad or a lone 3D mouse) is present. The action suppression
+        (``update`` / ``_apply_mouse3d``) and the help-overlay gate both read
+        this one predicate so they can't drift. Pass ``slots`` to reuse a
+        per-frame snapshot.
+        """
+        if slots is None:
+            slots = self._controller_slots()
+        return len(slots) <= 1
 
     def controller_marker_id(self, controller_idx: int) -> int | None:
         """Public seam for the OSC ``:cN`` reference. ``controller_idx`` is the
@@ -231,12 +255,14 @@ class InputManager:
         # controlled markers. Movement application remains gated below.
         gamepad_result = self.gamepad_handler.update(dt)
 
-        # Next/prev marker cycling is a single-controller affordance. The gamepad
-        # handler only self-suppresses for >1 gamepad, so suppress here whenever
-        # the unified count (3D mice + gamepads) exceeds one – e.g. a gamepad
-        # paired with a 3D mouse.
-        controller_count = len(self._controller_slots())
-        if controller_count > 1:
+        # One unified-controller snapshot drives all routing this frame (also
+        # avoids rebuilding the slot list per lookup). Next/prev marker cycling
+        # is a single-controller affordance: the gamepad handler only
+        # self-suppresses for >1 gamepad, so suppress here whenever the unified
+        # count (3D mice + gamepads) exceeds one – e.g. a gamepad paired with a
+        # 3D mouse.
+        slots = self._controller_slots()
+        if not self.marker_cycle_active(slots):
             gamepad_result.next_marker_pressed = False
             gamepad_result.prev_marker_pressed = False
 
@@ -245,7 +271,7 @@ class InputManager:
         # the mouse's unified controller slot drives. Gated on the live enabled flag.
         if self.app._config.mouse3d.enabled:
             try:
-                self._apply_mouse3d(self.mouse3d_handler.update(dt), dt, gamepad_result, controller_count)
+                self._apply_mouse3d(self.mouse3d_handler.update(dt), dt, gamepad_result, slots)
             except Exception:
                 self._mouse3d_update_err_log.log()
 
@@ -293,7 +319,7 @@ class InputManager:
 
         # Apply gamepad resets (X button -> configurable default position)
         for controller_idx in gamepad_result.resets:
-            marker_id = self._gamepad_marker_id(controller_idx)
+            marker_id = self._gamepad_marker_id(controller_idx, slots)
             if marker_id is None:
                 continue
             marker = self._get_marker(marker_id)
@@ -311,7 +337,7 @@ class InputManager:
 
         # Apply gamepad movements to corresponding markers
         for controller_idx, (vx, vy, vz) in gamepad_result.movements.items():
-            marker_id = self._gamepad_marker_id(controller_idx)
+            marker_id = self._gamepad_marker_id(controller_idx, slots)
             if marker_id is None:
                 continue
             marker = self._get_marker(marker_id)
@@ -352,7 +378,7 @@ class InputManager:
         m3d: Mouse3DUpdate,
         dt: float,
         gamepad_result: GamepadUpdate,
-        controller_count: int,
+        slots: list[tuple[str, int]],
     ) -> None:
         """Apply one 3D Mouse frame.
 
@@ -362,9 +388,10 @@ class InputManager:
         when this is the sole controller. Movement, reset and speed target the
         marker the 3D mouse's unified slot drives (the selected marker when it's
         the only controller, its fixed slot otherwise); the velocity is a unit
-        rate scaled here by the marker's move-speed.
+        rate scaled here by the marker's move-speed. ``slots`` is the frame's
+        unified-controller snapshot.
         """
-        if controller_count == 1:
+        if self.marker_cycle_active(slots):
             if m3d.next_marker:
                 gamepad_result.next_marker_pressed = True
             if m3d.prev_marker:
@@ -376,7 +403,7 @@ class InputManager:
         if m3d.settings:
             gamepad_result.settings_open_pressed = True
 
-        marker_id = self._controller_marker_id(self._mouse3d_unified_idx())
+        marker_id = self._controller_marker_id(self._mouse3d_unified_idx(slots), slots)
         if marker_id is None:
             return
         marker = self._get_marker(marker_id)
@@ -412,8 +439,9 @@ class InputManager:
         """
         gamepad_info = {int(item["controller_index"]): item for item in self.gamepad_handler.get_controller_info()}
         out: list[dict[str, Any]] = []
-        for unified_idx, (kind, local_idx) in enumerate(self._controller_slots()):
-            marker_id = self._controller_marker_id(unified_idx)
+        slots = self._controller_slots()
+        for unified_idx, (kind, local_idx) in enumerate(slots):
+            marker_id = self._controller_marker_id(unified_idx, slots)
             if kind == "mouse3d":
                 out.append(
                     {

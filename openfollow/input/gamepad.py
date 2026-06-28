@@ -20,6 +20,7 @@ except ImportError:  # pragma: no cover - depends on runtime pygame build
     sdl2_controller = None  # type: ignore[assignment]
 
 from openfollow.input._joystick_protocol import ControllerProtocol, JoystickProtocol
+from openfollow.input.shaping import apply_curve, shape_axis
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -583,41 +584,12 @@ class GamepadHandler:
             logger.error("Error detecting controllers: %s", e)
 
     def _apply_deadzone(self, value: float) -> float:
-        """
-        Apply deadzone to analog stick value and scale to full range.
-
-        Args:
-            value: Raw axis value in range [-1.0, 1.0]
-
-        Returns:
-            Filtered and scaled value, or 0.0 if within deadzone
-        """
-        if abs(value) < self.deadzone:
-            return 0.0
-        # Scale to full range after deadzone
-        sign = 1.0 if value > 0 else -1.0
-        scaled = (abs(value) - self.deadzone) / (1.0 - self.deadzone)
-        return sign * self._apply_curve(scaled)
+        """Deadzone + response curve for a raw stick value (shared with the 3D mouse)."""
+        return shape_axis(value, self.deadzone, self.curve)
 
     def _apply_curve(self, value: float) -> float:
-        """
-        Apply response curve to a normalized magnitude in [0.0, 1.0].
-
-        The curve reshapes the stick-to-velocity relationship:
-        - linear:      y = x  (direct 1:1 mapping)
-        - logarithmic: y = log(1 + 9x) / log(10)  (fine control near center)
-        - quadratic:   y = x^2  (finer near center, fast at edges)
-        - s-law:       y = 3x^2 - 2x^3  (smooth ease-in / ease-out)
-        """
-        if self.curve == "linear":
-            return value
-        if self.curve == "logarithmic":
-            return math.log1p(9.0 * value) / math.log(10.0)
-        if self.curve == "quadratic":
-            return value * value
-        if self.curve == "s-law":
-            return 3.0 * value * value - 2.0 * value * value * value
-        return value
+        """Response curve for a normalised magnitude in [0, 1] (shared helper)."""
+        return apply_curve(value, self.curve)
 
     @staticmethod
     def _normalize_controller_axis(value: int, *, trigger: bool = False) -> float:
@@ -1309,7 +1281,10 @@ class GamepadHandler:
                 # _get_button reads LT/RT as triggers and unbound as released.
                 if self._detect_button_edge(controller_idx, self._btn_clear_messages_id):
                     result.clear_messages_pressed = True
-                # Multi-pad: suppress DPAD next/prev to avoid rotating shared _selected_id.
+                # Multi-pad: suppress DPAD next/prev to avoid rotating shared
+                # _selected_id. Gamepad-scoped inner guard; the authoritative
+                # cross-device gate is InputManager.marker_cycle_active (which
+                # also catches a gamepad paired with a 3D mouse).
                 multi_pad = len(self.joysticks) > 1
                 if (
                     self._detect_button_edge(

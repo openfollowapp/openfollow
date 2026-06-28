@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from openfollow.configuration import MOUSE3D_AXES
+from openfollow.input.shaping import shape_axis
 
 if TYPE_CHECKING:
     from openfollow.configuration import Mouse3DConfig
@@ -328,22 +329,8 @@ class Mouse3DHandler:
         )
 
     def _shape(self, value: float, deadzone: float, curve: str) -> float:
-        """Per-axis deadzone + response curve, mirroring the gamepad shaping."""
-        if deadzone >= 1.0 or abs(value) < deadzone:
-            return 0.0
-        sign = 1.0 if value > 0 else -1.0
-        scaled = (abs(value) - deadzone) / (1.0 - deadzone)
-        return sign * self._curve(scaled, curve)
-
-    @staticmethod
-    def _curve(value: float, curve: str) -> float:
-        if curve == "logarithmic":
-            return math.log1p(9.0 * value) / math.log(10.0)
-        if curve == "quadratic":
-            return value * value
-        if curve == "s-law":
-            return 3.0 * value * value - 2.0 * value * value * value
-        return value  # linear
+        """Per-axis deadzone + response curve (shared with the gamepad)."""
+        return shape_axis(value, deadzone, curve)
 
     def _accumulate_speed(self, signal: float, dt: float) -> int:
         """Integrate a ``speed``-axis signal into discrete steps (held ramps)."""

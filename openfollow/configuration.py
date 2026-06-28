@@ -120,6 +120,15 @@ def _coerce_hex_color(value: Any, default: str) -> str:
     return default
 
 
+def _field_default(instance: Any, name: str) -> Any:
+    """Declared default of a dataclass field, for use as a coercion fallback.
+
+    Lets ``__post_init__`` read the per-field defaults straight off the field
+    declarations instead of a parallel table that could drift.
+    """
+    return instance.__dataclass_fields__[name].default
+
+
 def _coerce_multicast_ipv4(value: Any, default: str = "") -> str:
     """Return a validated IPv4 multicast address, or ``default``.
 
@@ -1895,33 +1904,6 @@ class ControllerConfig:
 # rules.
 MOUSE3D_AXES = ("pan_x", "pan_y", "lift", "pitch", "yaw", "roll")
 MOUSE3D_AXIS_TARGETS = ("none", "x", "y", "z", "speed", "fader")
-# Per-axis defaults (single source of truth for the field defaults and the
-# __post_init__ coercion fallbacks). Translations drive x/y/z, lift is geared
-# down and dampened, yaw ramps move-speed, pitch/roll are off.
-_MOUSE3D_DEFAULT_MAP = {
-    "pan_x": "x",
-    "pan_y": "y",
-    "lift": "z",
-    "pitch": "none",
-    "yaw": "speed",
-    "roll": "none",
-}
-_MOUSE3D_DEFAULT_SENS = {
-    "pan_x": 1.0,
-    "pan_y": 1.0,
-    "lift": 0.3,
-    "pitch": 1.0,
-    "yaw": 1.0,
-    "roll": 1.0,
-}
-_MOUSE3D_DEFAULT_DEADZONE = {
-    "pan_x": 0.05,
-    "pan_y": 0.05,
-    "lift": 0.3,
-    "pitch": 0.1,
-    "yaw": 0.3,
-    "roll": 0.1,
-}
 MOUSE3D_BUTTON_FIELDS = (
     "btn_reset",
     "btn_next_marker",
@@ -1985,6 +1967,9 @@ class Mouse3DConfig:
     def __post_init__(self) -> None:
         self.enabled = _coerce_bool(self.enabled, False)
         self.curve = _coerce_choice(self.curve, VALID_CURVES, "logarithmic")
+        # The field declarations are the single source of per-axis defaults; the
+        # coercion fallback reads them back so an absent-key default and an
+        # invalid-value fallback can't drift apart.
         for axis in MOUSE3D_AXES:
             setattr(
                 self,
@@ -1992,23 +1977,25 @@ class Mouse3DConfig:
                 _coerce_choice(
                     getattr(self, f"map_{axis}"),
                     MOUSE3D_AXIS_TARGETS,
-                    _MOUSE3D_DEFAULT_MAP[axis],
+                    _field_default(self, f"map_{axis}"),
                 ),
             )
             setattr(
                 self,
                 f"sens_{axis}",
-                _coerce_float(getattr(self, f"sens_{axis}"), _MOUSE3D_DEFAULT_SENS[axis], lo=0.0, hi=10.0),
+                _coerce_float(getattr(self, f"sens_{axis}"), _field_default(self, f"sens_{axis}"), lo=0.0, hi=10.0),
             )
             setattr(
                 self,
                 f"deadzone_{axis}",
-                _coerce_float(getattr(self, f"deadzone_{axis}"), _MOUSE3D_DEFAULT_DEADZONE[axis], lo=0.0, hi=1.0),
+                _coerce_float(
+                    getattr(self, f"deadzone_{axis}"), _field_default(self, f"deadzone_{axis}"), lo=0.0, hi=1.0
+                ),
             )
             setattr(
                 self,
                 f"invert_{axis}",
-                _coerce_bool(getattr(self, f"invert_{axis}"), False),
+                _coerce_bool(getattr(self, f"invert_{axis}"), _field_default(self, f"invert_{axis}")),
             )
         # Invalid / out-of-range button index falls back to unbound (-1) rather
         # than rebinding to a default index the operator didn't choose.

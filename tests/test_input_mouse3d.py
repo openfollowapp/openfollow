@@ -819,6 +819,22 @@ def test_mouse3d_no_movement_when_disconnected(wired) -> None:  # noqa: ANN001
     assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
 
 
+def test_marker_cycle_active_and_unified_idx_use_live_snapshot(wired) -> None:  # noqa: ANN001
+    # The shared predicate + unified-index helpers default to a fresh
+    # controller snapshot when called without one (the OSC seam / status paths).
+    manager, app = wired
+    app._config.mouse3d.enabled = True
+    manager.mouse3d_handler.connected = True
+    # Lone 3D mouse: one unified controller -> cycling active, mouse is slot 0.
+    manager.gamepad_handler.joysticks = {}
+    assert manager.marker_cycle_active() is True
+    assert manager._mouse3d_unified_idx() == 0
+    # Add a gamepad: two controllers -> cycling suppressed, gamepad is slot 1.
+    manager.gamepad_handler.joysticks = {0: object()}
+    assert manager.marker_cycle_active() is False
+    assert manager._gamepad_unified_idx(0) == 1
+
+
 # --------------------------------------------------------------------------- #
 # Handler internals (dependency probe, axis coercion, device helpers, worker)
 # --------------------------------------------------------------------------- #

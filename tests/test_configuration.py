@@ -1625,12 +1625,14 @@ def test_osc_config_clamps_port_to_blur_bounds() -> None:
 def test_mouse3d_config_defaults() -> None:
     cfg = Mouse3DConfig()
     assert cfg.enabled is False
-    assert cfg.deadzone == 0.1
     assert cfg.curve == "linear"
     # Translation axes drive x/y/z; rotation axes default off.
     assert (cfg.map_pan_x, cfg.map_pan_y, cfg.map_lift) == ("x", "y", "z")
     assert (cfg.map_pitch, cfg.map_yaw, cfg.map_roll) == ("none", "none", "none")
     assert cfg.sens_pan_x == 1.0 and cfg.invert_pan_x is False
+    # Deadzone is per axis, defaulting to 0.1 on each.
+    assert cfg.deadzone_pan_x == 0.1
+    assert cfg.deadzone_roll == 0.1
     # The first two buttons seed sensible defaults; the rest are unbound.
     assert cfg.btn_reset == 0
     assert cfg.btn_next_marker == 1
@@ -1643,7 +1645,9 @@ def test_mouse3d_config_defaults() -> None:
     [(-1.0, 0.0), (2.0, 1.0), ("abc", 0.1), (None, 0.1), (True, 1.0)],
 )
 def test_mouse3d_config_clamps_deadzone(bad: object, expected: float) -> None:
-    assert Mouse3DConfig(deadzone=bad).deadzone == expected  # type: ignore[arg-type]
+    cfg = Mouse3DConfig(deadzone_pan_x=bad, deadzone_yaw=bad)  # type: ignore[arg-type]
+    assert cfg.deadzone_pan_x == expected
+    assert cfg.deadzone_yaw == expected
 
 
 @pytest.mark.parametrize(
@@ -1694,7 +1698,7 @@ def test_mouse3d_config_survives_save_reload(temp_config_path) -> None:
     config = AppConfig(
         mouse3d=Mouse3DConfig(
             enabled=True,
-            deadzone=0.25,
+            deadzone_pitch=0.25,
             curve="s-law",
             map_pitch="speed",
             sens_pitch=2.5,
@@ -1705,7 +1709,7 @@ def test_mouse3d_config_survives_save_reload(temp_config_path) -> None:
     save_config(config, str(temp_config_path))
     reloaded = load_config(str(temp_config_path)).mouse3d
     assert reloaded.enabled is True
-    assert reloaded.deadzone == 0.25
+    assert reloaded.deadzone_pitch == 0.25
     assert reloaded.curve == "s-law"
     assert reloaded.map_pitch == "speed"
     assert reloaded.sens_pitch == 2.5

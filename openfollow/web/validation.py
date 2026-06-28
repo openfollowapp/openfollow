@@ -762,7 +762,6 @@ FIELD_RULES["mouse"] = FIELD_RULES["controller"]
 # so the parser-identity and template-consistency tests both hold.
 _mouse3d_rules: dict[str, FieldRule] = {
     "enabled": FieldRule(_as_bool),
-    "deadzone": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Deadzone must be between 0 and 1."),
     "curve": FieldRule(_as_str, choices=VALID_CURVES, human_error=f"Curve must be one of: {', '.join(VALID_CURVES)}."),
 }
 for _axis in MOUSE3D_AXES:
@@ -773,6 +772,9 @@ for _axis in MOUSE3D_AXES:
     )
     _mouse3d_rules[f"sens_{_axis}"] = FieldRule(
         _as_float, lo=0.0, hi=10.0, human_error="Sensitivity must be between 0 and 10."
+    )
+    _mouse3d_rules[f"deadzone_{_axis}"] = FieldRule(
+        _as_float, lo=0.0, hi=1.0, human_error="Deadzone must be between 0 and 1."
     )
     _mouse3d_rules[f"invert_{_axis}"] = FieldRule(_as_bool)
 for _btn in MOUSE3D_BUTTON_FIELDS:

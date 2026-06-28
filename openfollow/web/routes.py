@@ -1459,12 +1459,12 @@ _SECTION_FIELD_PARSERS["mouse"] = _SECTION_FIELD_PARSERS["controller"]
 # can't drift from the dataclass fields. Mirrored by FIELD_RULES["mouse3d"].
 _mouse3d_parsers: dict[str, _FieldParser] = {
     "enabled": _as_bool,
-    "deadzone": _as_float,
     "curve": _as_str,
 }
 for _axis in MOUSE3D_AXES:
     _mouse3d_parsers[f"map_{_axis}"] = _as_str
     _mouse3d_parsers[f"sens_{_axis}"] = _as_float
+    _mouse3d_parsers[f"deadzone_{_axis}"] = _as_float
     _mouse3d_parsers[f"invert_{_axis}"] = _as_bool
 for _btn in MOUSE3D_BUTTON_FIELDS:
     _mouse3d_parsers[_btn] = _as_button_index

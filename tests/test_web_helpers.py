@@ -125,7 +125,7 @@ def test_apply_section_data_mouse3d_roundtrips() -> None:
         "mouse3d",
         {
             "enabled": True,
-            "deadzone": "0.2",
+            "deadzone_pan_x": "0.2",
             "curve": "quadratic",
             "map_pan_x": "z",
             "sens_pan_x": "2.5",
@@ -135,7 +135,7 @@ def test_apply_section_data_mouse3d_roundtrips() -> None:
     )
     assert ok is True
     assert config.mouse3d.enabled is True
-    assert config.mouse3d.deadzone == pytest.approx(0.2)
+    assert config.mouse3d.deadzone_pan_x == pytest.approx(0.2)
     assert config.mouse3d.curve == "quadratic"
     assert config.mouse3d.map_pan_x == "z"
     assert config.mouse3d.sens_pan_x == pytest.approx(2.5)
@@ -161,7 +161,7 @@ def test_apply_section_data_mouse3d_clamps_and_falls_back() -> None:
         "mouse3d",
         {
             "sens_pan_x": "99",  # > 10 -> clamp 10
-            "deadzone": "5",  # > 1 -> clamp 1
+            "deadzone_pan_x": "5",  # > 1 -> clamp 1
             "map_pitch": "sideways",  # invalid -> default "none"
             "btn_reset": "-7",  # < -1 -> clamp -1 (unbound)
             "curve": "wobble",  # invalid -> "linear"
@@ -169,7 +169,7 @@ def test_apply_section_data_mouse3d_clamps_and_falls_back() -> None:
     )
     assert ok is True
     assert config.mouse3d.sens_pan_x == 10.0
-    assert config.mouse3d.deadzone == 1.0
+    assert config.mouse3d.deadzone_pan_x == 1.0
     assert config.mouse3d.map_pitch == "none"
     assert config.mouse3d.btn_reset == -1
     assert config.mouse3d.curve == "linear"

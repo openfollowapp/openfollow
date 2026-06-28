@@ -1921,32 +1921,37 @@ class Mouse3DConfig:
     """Optional ``[mouse3d]`` section – 3D Mouse (3Dconnexion 6DOF) input.
 
     Disabled by default. Each of the six source axes resolves to a marker
-    target (``none``/``x``/``y``/``z``/``speed``) with a per-axis sensitivity
-    and invert; the shared ``deadzone`` + ``curve`` reuse the gamepad shaping.
+    target (``none``/``x``/``y``/``z``/``speed``) with its own sensitivity,
+    deadzone and invert; the shared ``curve`` reuses the gamepad shaping.
     Buttons bind to actions by device button index (``-1`` = unbound).
     """
 
     enabled: bool = False
-    deadzone: float = 0.1
     curve: str = "linear"
 
     map_pan_x: str = "x"
     sens_pan_x: float = 1.0
+    deadzone_pan_x: float = 0.1
     invert_pan_x: bool = False
     map_pan_y: str = "y"
     sens_pan_y: float = 1.0
+    deadzone_pan_y: float = 0.1
     invert_pan_y: bool = False
     map_lift: str = "z"
     sens_lift: float = 1.0
+    deadzone_lift: float = 0.1
     invert_lift: bool = False
     map_pitch: str = "none"
     sens_pitch: float = 1.0
+    deadzone_pitch: float = 0.1
     invert_pitch: bool = False
     map_yaw: str = "none"
     sens_yaw: float = 1.0
+    deadzone_yaw: float = 0.1
     invert_yaw: bool = False
     map_roll: str = "none"
     sens_roll: float = 1.0
+    deadzone_roll: float = 0.1
     invert_roll: bool = False
 
     btn_reset: int = 0
@@ -1960,7 +1965,6 @@ class Mouse3DConfig:
 
     def __post_init__(self) -> None:
         self.enabled = _coerce_bool(self.enabled, False)
-        self.deadzone = _coerce_float(self.deadzone, 0.1, lo=0.0, hi=1.0)
         self.curve = _coerce_choice(self.curve, VALID_CURVES, "linear")
         for axis in MOUSE3D_AXES:
             setattr(
@@ -1976,6 +1980,11 @@ class Mouse3DConfig:
                 self,
                 f"sens_{axis}",
                 _coerce_float(getattr(self, f"sens_{axis}"), 1.0, lo=0.0, hi=10.0),
+            )
+            setattr(
+                self,
+                f"deadzone_{axis}",
+                _coerce_float(getattr(self, f"deadzone_{axis}"), 0.1, lo=0.0, hi=1.0),
             )
             setattr(
                 self,

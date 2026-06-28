@@ -14,14 +14,6 @@
                 <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if m.enabled else ''}}></div>
             </div>
             <div class="field">
-                <label for="m3d-deadzone">Deadzone</label>
-                <input id="m3d-deadzone" type="number" name="deadzone" value="{{m.deadzone}}" min="0" max="1" step="any"
-                       hx-get="/api/validate/mouse3d/deadzone" hx-trigger="blur changed delay:200ms"
-                       hx-target="#m3d-deadzone-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="m3d-deadzone-error" aria-invalid="false">
-                <span id="m3d-deadzone-error" class="field-error"></span>
-            </div>
-            <div class="field">
                 <label for="m3d-curve">Response curve</label>
                 <select id="m3d-curve" name="curve">
                     % for c in VALID_CURVES:
@@ -53,6 +45,14 @@
                        aria-describedby="m3d-sens-pan_x-error" aria-invalid="false">
                 <span id="m3d-sens-pan_x-error" class="field-error"></span>
             </div>
+            <div class="field">
+                <label for="m3d-dz-pan_x">Deadzone</label>
+                <input id="m3d-dz-pan_x" type="number" name="deadzone_pan_x" value="{{m.deadzone_pan_x}}" min="0" max="1" step="any"
+                       hx-get="/api/validate/mouse3d/deadzone_pan_x" hx-trigger="blur changed delay:200ms"
+                       hx-target="#m3d-dz-pan_x-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="m3d-dz-pan_x-error" aria-invalid="false">
+                <span id="m3d-dz-pan_x-error" class="field-error"></span>
+            </div>
             <div class="field checkbox-field">
                 <label>Invert</label>
                 <div class="checkbox-wrap"><input type="checkbox" name="invert_pan_x" {{'checked' if m.invert_pan_x else ''}}></div>
@@ -76,6 +76,14 @@
                        hx-target="#m3d-sens-pan_y-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="m3d-sens-pan_y-error" aria-invalid="false">
                 <span id="m3d-sens-pan_y-error" class="field-error"></span>
+            </div>
+            <div class="field">
+                <label for="m3d-dz-pan_y">Deadzone</label>
+                <input id="m3d-dz-pan_y" type="number" name="deadzone_pan_y" value="{{m.deadzone_pan_y}}" min="0" max="1" step="any"
+                       hx-get="/api/validate/mouse3d/deadzone_pan_y" hx-trigger="blur changed delay:200ms"
+                       hx-target="#m3d-dz-pan_y-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="m3d-dz-pan_y-error" aria-invalid="false">
+                <span id="m3d-dz-pan_y-error" class="field-error"></span>
             </div>
             <div class="field checkbox-field">
                 <label>Invert</label>
@@ -101,6 +109,14 @@
                        aria-describedby="m3d-sens-lift-error" aria-invalid="false">
                 <span id="m3d-sens-lift-error" class="field-error"></span>
             </div>
+            <div class="field">
+                <label for="m3d-dz-lift">Deadzone</label>
+                <input id="m3d-dz-lift" type="number" name="deadzone_lift" value="{{m.deadzone_lift}}" min="0" max="1" step="any"
+                       hx-get="/api/validate/mouse3d/deadzone_lift" hx-trigger="blur changed delay:200ms"
+                       hx-target="#m3d-dz-lift-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="m3d-dz-lift-error" aria-invalid="false">
+                <span id="m3d-dz-lift-error" class="field-error"></span>
+            </div>
             <div class="field checkbox-field">
                 <label>Invert</label>
                 <div class="checkbox-wrap"><input type="checkbox" name="invert_lift" {{'checked' if m.invert_lift else ''}}></div>
@@ -124,6 +140,14 @@
                        hx-target="#m3d-sens-pitch-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="m3d-sens-pitch-error" aria-invalid="false">
                 <span id="m3d-sens-pitch-error" class="field-error"></span>
+            </div>
+            <div class="field">
+                <label for="m3d-dz-pitch">Deadzone</label>
+                <input id="m3d-dz-pitch" type="number" name="deadzone_pitch" value="{{m.deadzone_pitch}}" min="0" max="1" step="any"
+                       hx-get="/api/validate/mouse3d/deadzone_pitch" hx-trigger="blur changed delay:200ms"
+                       hx-target="#m3d-dz-pitch-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="m3d-dz-pitch-error" aria-invalid="false">
+                <span id="m3d-dz-pitch-error" class="field-error"></span>
             </div>
             <div class="field checkbox-field">
                 <label>Invert</label>
@@ -149,6 +173,14 @@
                        aria-describedby="m3d-sens-yaw-error" aria-invalid="false">
                 <span id="m3d-sens-yaw-error" class="field-error"></span>
             </div>
+            <div class="field">
+                <label for="m3d-dz-yaw">Deadzone</label>
+                <input id="m3d-dz-yaw" type="number" name="deadzone_yaw" value="{{m.deadzone_yaw}}" min="0" max="1" step="any"
+                       hx-get="/api/validate/mouse3d/deadzone_yaw" hx-trigger="blur changed delay:200ms"
+                       hx-target="#m3d-dz-yaw-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="m3d-dz-yaw-error" aria-invalid="false">
+                <span id="m3d-dz-yaw-error" class="field-error"></span>
+            </div>
             <div class="field checkbox-field">
                 <label>Invert</label>
                 <div class="checkbox-wrap"><input type="checkbox" name="invert_yaw" {{'checked' if m.invert_yaw else ''}}></div>
@@ -172,6 +204,14 @@
                        hx-target="#m3d-sens-roll-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="m3d-sens-roll-error" aria-invalid="false">
                 <span id="m3d-sens-roll-error" class="field-error"></span>
+            </div>
+            <div class="field">
+                <label for="m3d-dz-roll">Deadzone</label>
+                <input id="m3d-dz-roll" type="number" name="deadzone_roll" value="{{m.deadzone_roll}}" min="0" max="1" step="any"
+                       hx-get="/api/validate/mouse3d/deadzone_roll" hx-trigger="blur changed delay:200ms"
+                       hx-target="#m3d-dz-roll-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="m3d-dz-roll-error" aria-invalid="false">
+                <span id="m3d-dz-roll-error" class="field-error"></span>
             </div>
             <div class="field checkbox-field">
                 <label>Invert</label>

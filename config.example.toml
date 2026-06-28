@@ -132,29 +132,34 @@ key_speed_up = "t"
 [controller.button_raw_indices]
 
 # 3D Mouse (3Dconnexion 6DOF) input. Off by default. Each source axis maps to a
-# target (none/x/y/z/speed) with its own sensitivity and invert; buttons bind to
-# a device button index (-1 = unbound). Edit in the web UI under Input.
+# target (none/x/y/z/speed) with its own sensitivity, deadzone and invert;
+# buttons bind to a device button index (-1 = unbound). Edit in the web UI.
 [mouse3d]
 enabled = false
-deadzone = 0.1
 curve = "linear"
 map_pan_x = "x"
 sens_pan_x = 1.0
+deadzone_pan_x = 0.1
 invert_pan_x = false
 map_pan_y = "y"
 sens_pan_y = 1.0
+deadzone_pan_y = 0.1
 invert_pan_y = false
 map_lift = "z"
 sens_lift = 1.0
+deadzone_lift = 0.1
 invert_lift = false
 map_pitch = "none"
 sens_pitch = 1.0
+deadzone_pitch = 0.1
 invert_pitch = false
 map_yaw = "none"
 sens_yaw = 1.0
+deadzone_yaw = 0.1
 invert_yaw = false
 map_roll = "none"
 sens_roll = 1.0
+deadzone_roll = 0.1
 invert_roll = false
 btn_reset = 0
 btn_next_marker = 1

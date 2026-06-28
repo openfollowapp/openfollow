@@ -109,25 +109,34 @@ def test_two_axes_summing_into_same_target() -> None:
 
 
 def test_deadzone_suppresses_small_deflection() -> None:
-    h = _handler(Mouse3DConfig(deadzone=0.2), snapshot=_state(x=0.1))
+    h = _handler(Mouse3DConfig(deadzone_pan_x=0.2), snapshot=_state(x=0.1))
     assert h.update(0.016).velocity[0] == 0.0
 
 
 def test_deadzone_rescales_above_threshold() -> None:
     # At deadzone 0.5, an input of 0.75 maps to (0.75-0.5)/(1-0.5) = 0.5 (linear).
-    h = _handler(Mouse3DConfig(deadzone=0.5), snapshot=_state(x=0.75))
+    h = _handler(Mouse3DConfig(deadzone_pan_x=0.5), snapshot=_state(x=0.75))
     assert h.update(0.016).velocity[0] == pytest.approx(0.5)
+
+
+def test_deadzone_is_per_axis() -> None:
+    # A big deadzone on pan_x suppresses x; pan_y (its own deadzone) still moves.
+    cfg = Mouse3DConfig(deadzone_pan_x=0.9, deadzone_pan_y=0.0)
+    h = _handler(cfg, snapshot=_state(x=0.5, y=0.5))
+    vx, vy, _ = h.update(0.016).velocity
+    assert vx == 0.0
+    assert vy == pytest.approx(0.5)
 
 
 def test_quadratic_curve_shapes_magnitude() -> None:
     # quadratic, no deadzone: 0.5 -> 0.25.
-    h = _handler(Mouse3DConfig(deadzone=0.0, curve="quadratic"), snapshot=_state(x=0.5))
+    h = _handler(Mouse3DConfig(deadzone_pan_x=0.0, curve="quadratic"), snapshot=_state(x=0.5))
     assert h.update(0.016).velocity[0] == pytest.approx(0.25)
 
 
 def test_full_deadzone_is_inert() -> None:
     # deadzone 1.0 must not divide by zero, even at full deflection.
-    h = _handler(Mouse3DConfig(deadzone=1.0), snapshot=_state(x=1.0))
+    h = _handler(Mouse3DConfig(deadzone_pan_x=1.0), snapshot=_state(x=1.0))
     assert h.update(0.016).velocity[0] == 0.0
 
 
@@ -277,7 +286,7 @@ def _wait_until(predicate, timeout=2.0) -> bool:  # noqa: ANN001
 def test_worker_publishes_snapshot_from_device() -> None:
     dev = FakeDevice([_state(x=0.5, buttons=[1, 0])])
     # deadzone 0 -> identity mapping so the published 0.5 reads back as 0.5.
-    h = Mouse3DHandler(Mouse3DConfig(enabled=True, deadzone=0.0), device_factory=lambda: dev)
+    h = Mouse3DHandler(Mouse3DConfig(enabled=True, deadzone_pan_x=0.0), device_factory=lambda: dev)
     h.start()
     try:
         assert _wait_until(lambda: h.connected and h._snapshot is not None)

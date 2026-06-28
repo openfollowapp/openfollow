@@ -271,7 +271,8 @@ class Mouse3DHandler:
             raw = getattr(snap, _AXIS_SOURCE[axis])
             if getattr(cfg, f"invert_{axis}"):
                 raw = -raw
-            shaped = self._shape(raw, cfg) * float(getattr(cfg, f"sens_{axis}"))
+            deadzone = float(getattr(cfg, f"deadzone_{axis}"))
+            shaped = self._shape(raw, deadzone, cfg.curve) * float(getattr(cfg, f"sens_{axis}"))
             target = getattr(cfg, f"map_{axis}")
             if target == "x":
                 vx += shaped
@@ -298,14 +299,13 @@ class Mouse3DHandler:
             settings=self._fired(cfg.btn_settings, edges),
         )
 
-    def _shape(self, value: float, cfg: Mouse3DConfig) -> float:
-        """Deadzone + response curve, mirroring the gamepad shaping."""
-        dz = cfg.deadzone
-        if dz >= 1.0 or abs(value) < dz:
+    def _shape(self, value: float, deadzone: float, curve: str) -> float:
+        """Per-axis deadzone + response curve, mirroring the gamepad shaping."""
+        if deadzone >= 1.0 or abs(value) < deadzone:
             return 0.0
         sign = 1.0 if value > 0 else -1.0
-        scaled = (abs(value) - dz) / (1.0 - dz)
-        return sign * self._curve(scaled, cfg.curve)
+        scaled = (abs(value) - deadzone) / (1.0 - deadzone)
+        return sign * self._curve(scaled, curve)
 
     @staticmethod
     def _curve(value: float, curve: str) -> float:

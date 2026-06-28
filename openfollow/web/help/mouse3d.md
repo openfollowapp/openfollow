@@ -20,11 +20,11 @@ By default the three translations map to x / y / z and the rotations are off, so
 
 **Sensitivity** – a per-axis multiplier (0–10). `1` means full deflection moves at the marker's configured move-speed; `2` doubles it; values below `1` make that axis finer. Set it per axis so, say, height is gentler than lateral movement.
 
+**Deadzone** (0–1) – a per-axis dead band near centre: deflection below it is ignored so the marker doesn't creep when your hand rests on the puck. Set it per axis – e.g. a larger deadzone on a twitchy rotation axis than on the translations. Raise an axis's deadzone if the marker drifts at rest on it.
+
 **Invert** – flips that axis's direction.
 
-## Feel: deadzone and curve
-
-**Deadzone** (0–1) – ignores tiny deflections near centre so the marker doesn't creep when your hand rests on the puck. Raise it if the marker drifts at rest.
+## Response curve
 
 **Response curve** – shapes how deflection maps to speed, shared across all axes:
 

@@ -280,8 +280,6 @@ class MediaGalleryInput(VideoInputBase):
         selected = config.get("testpattern_selected_media", media_store.DEFAULT_SELECTED_MEDIA)
         return (
             '<div class="row"><div class="field wide">'
-            '<p class="section-note">Click an image or clip to make it the source. '
-            "Capture a frame from any live source, or upload your own.</p>"
             f'<input type="hidden" name="testpattern_selected_media" value="{cls._esc(selected)}">'
             '<div class="gallery-toolbar">'
             # A real <button> (not a <label>) so the form's label styling doesn't

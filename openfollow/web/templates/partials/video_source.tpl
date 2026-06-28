@@ -10,7 +10,7 @@
             <div class="field">
                 <label>Source Type</label>
                 <select name="video_source_type" id="video-source-type"
-                        onchange="document.querySelectorAll('[data-input-type]').forEach(function(el){el.style.display=el.dataset.inputType===this.value?'':'none';}.bind(this));var _cr=document.getElementById('capture-frame-row');if(_cr)_cr.style.display=this.value==='testpattern'?'none':'';">
+                        onchange="ofVideoSourceToggle(this.value)">
                     % for iid, iname in available_inputs:
                     <option value="{{iid}}" {{'selected' if config.video_source_type == iid else ''}}>{{iname}}</option>
                     % end
@@ -41,8 +41,21 @@
                   msg = d.ok ? 'Captured frame saved to the gallery.' : (d.error || msg); } catch(e){}
             fb.textContent = msg;
         };
+        // Source Type drives which controls apply: capture (live sources only),
+        // connection recovery (network sources only), preview (not the gallery).
+        window.ofVideoSourceToggle = function(value){
+            document.querySelectorAll('[data-input-type]').forEach(function(el){
+                el.style.display = el.dataset.inputType === value ? '' : 'none';
+            });
+            var net = (value === 'rtsp' || value === 'srt' || value === 'rtp');
+            function vis(id, on){ var el = document.getElementById(id); if(el) el.style.display = on ? '' : 'none'; }
+            vis('capture-frame-row', value !== 'testpattern');
+            vis('recovery-row', net);
+            vis('preview-row', value !== 'testpattern');
+        };
         </script>
-        <div class="row">
+        <!-- Connection recovery applies to network inputs only (RTSP/SRT/RTP). -->
+        <div class="row" id="recovery-row" style="display:{{'' if config.video_source_type in ('rtsp', 'srt', 'rtp') else 'none'}}">
             <div class="field">
                 <label>Stall Timeout (s)</label>
                 <input type="number" name="stall_timeout" value="{{config.stall_timeout}}"
@@ -54,7 +67,8 @@
                        min="0" step="0.1" placeholder="5.0">
             </div>
         </div>
-        <div class="row" style="margin-top:0.5rem;">
+        <!-- Live preview is redundant for the Media Gallery's static content. -->
+        <div class="row" id="preview-row" style="margin-top:0.5rem;display:{{'none' if config.video_source_type == 'testpattern' else ''}}">
             <div class="field checkbox-field inline">
                 <input type="checkbox" id="show-preview-cb">
                 <label for="show-preview-cb">Show Preview</label>

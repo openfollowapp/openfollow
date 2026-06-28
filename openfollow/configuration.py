@@ -1939,8 +1939,9 @@ class Mouse3DConfig:
     """Optional ``[mouse3d]`` section – 3D Mouse (3Dconnexion 6DOF) input.
 
     Disabled by default. Each of the six source axes resolves to a marker
-    target (``none``/``x``/``y``/``z``/``speed``) with its own sensitivity,
-    deadzone and invert; the shared ``curve`` reuses the gamepad shaping.
+    target (``none``/``x``/``y``/``z``/``speed``/``fader``) with its own
+    sensitivity, deadzone and invert; the shared ``curve`` reuses the gamepad
+    shaping.
     Buttons bind to actions by device button index (``-1`` = unbound).
     """
 

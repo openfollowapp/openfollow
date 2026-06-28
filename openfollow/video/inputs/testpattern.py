@@ -272,15 +272,34 @@ class MediaGalleryInput(VideoInputBase):
     def web_ui_html(cls, config: dict[str, Any]) -> str:
         from openfollow.video import media_store
 
-        # The thumbnail-grid gallery UI is rendered by the Media Gallery web
-        # section (added in a later phase); this fragment orients and carries
-        # the current selection so a video-source save round-trips it.
+        # The grid is loaded + re-rendered by the gallery management routes; the
+        # hidden field carries the current selection so a video-source save
+        # round-trips it. Upload streams the raw file body to the upload route.
         selected = config.get("testpattern_selected_media", media_store.DEFAULT_SELECTED_MEDIA)
         return (
             '<div class="row"><div class="field wide">'
-            '<p class="section-note">Pick an image or clip from the gallery, or capture a frame '
-            "from any source. The gallery is managed below.</p>"
+            '<p class="section-note">Click an image or clip to make it the source. '
+            "Capture a frame from any live source, or upload your own.</p>"
             f'<input type="hidden" name="testpattern_selected_media" value="{cls._esc(selected)}">'
+            '<div class="gallery-toolbar">'
+            '<label class="btn-link gallery-upload-btn">Upload image or clip'
+            '<input type="file" accept="image/jpeg,image/png,image/webp,video/webm" '
+            'onchange="openfollowGalleryUpload(this)" hidden></label>'
+            "</div>"
+            '<div id="gallery-grid" class="gallery-grid" '
+            'hx-get="/video-input/testpattern/list" hx-trigger="load" hx-swap="outerHTML"></div>'
+            "<script>"
+            "function openfollowGalleryUpload(input){"
+            "var f=input.files[0];if(!f)return;"
+            "var g=document.getElementById('gallery-grid');if(g)g.classList.add('is-loading');"
+            "fetch('/video-input/testpattern/upload',{method:'POST',body:f})"
+            ".then(function(r){return r.text();})"
+            ".then(function(html){var el=document.getElementById('gallery-grid');"
+            "if(el){var t=document.createElement('template');t.innerHTML=html.trim();"
+            "el.replaceWith(t.content.firstChild);if(window.htmx)htmx.process(document.getElementById('gallery-grid'));}})"
+            ".catch(function(){var el=document.getElementById('gallery-grid');"
+            "if(el)el.classList.remove('is-loading');});input.value='';}"
+            "</script>"
             "</div></div>"
         )
 

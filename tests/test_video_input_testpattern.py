@@ -301,6 +301,10 @@ class TestConfigAndLabels:
         monkeypatch.setattr(media_store, "resolve", lambda mid: None)
         assert MediaGalleryInput.get_source_label({"testpattern_selected_media": "whatever"}) == "Media Gallery"
 
-    def test_web_ui_html_is_a_fragment(self) -> None:
-        html = MediaGalleryInput.web_ui_html({})
-        assert "section-note" in html and "gallery" in html.lower()
+    def test_web_ui_html_renders_grid_and_upload(self) -> None:
+        html = MediaGalleryInput.web_ui_html({"testpattern_selected_media": "default:grey"})
+        assert 'id="gallery-grid"' in html
+        assert 'hx-get="/video-input/testpattern/list"' in html  # grid loads via HTMX
+        assert "openfollowGalleryUpload" in html  # upload control + handler
+        assert 'name="testpattern_selected_media"' in html  # round-trip field
+        assert 'value="default:grey"' in html

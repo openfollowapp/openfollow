@@ -22,6 +22,26 @@
             {{!html_fragment}}
         </div>
         % end
+        % if config.video_source_type != "testpattern":
+        <div class="row" style="margin-top:0.5rem;">
+            <div class="field wide">
+                <button type="button" class="btn-link capture-btn"
+                        hx-post="/video-input/testpattern/capture" hx-swap="none"
+                        hx-on::after-request="window.openfollowCaptureFeedback(event)">Capture frame to gallery</button>
+                <span id="capture-feedback" class="field-note" role="status" aria-live="polite"></span>
+            </div>
+        </div>
+        <script>
+        window.openfollowCaptureFeedback = function(evt){
+            var fb = document.getElementById('capture-feedback');
+            if(!fb) return;
+            var msg = 'Capture failed.';
+            try { var d = JSON.parse(evt.detail.xhr.responseText || '{}');
+                  msg = d.ok ? 'Captured frame saved to the gallery.' : (d.error || msg); } catch(e){}
+            fb.textContent = msg;
+        };
+        </script>
+        % end
         <div class="row">
             <div class="field">
                 <label>Stall Timeout (s)</label>

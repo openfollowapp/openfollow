@@ -10,7 +10,7 @@ Depends: @PYTHON_DEP@, python3-gi, python3-gi-cairo,
  libgstreamer1.0-0, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good,
  gstreamer1.0-plugins-bad, gstreamer1.0-libav, gstreamer1.0-libcamera, gstreamer1.0-gtk3,
  gstreamer1.0-tools, libglfw3, @ALSA_DEP@, cage, seatd, kanshi, librsvg2-bin,
- adwaita-icon-theme, adduser
+ adwaita-icon-theme, adduser, libhidapi-hidraw0
 Recommends: gir1.2-webkit2-4.1
 Description: Live video stage-tracking with 3D position output for show control
  OpenFollow tracks people and objects in 3D from a video feed and a gamepad,

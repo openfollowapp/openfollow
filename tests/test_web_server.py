@@ -3673,6 +3673,20 @@ def test_get_psn_source_advisory_empty_without_provider(tmp_path) -> None:
     }
 
 
+def test_latest_mouse3d_button_uses_provider(tmp_path) -> None:
+    """The 3D Mouse Detect bridge returns the live handler's held button."""
+    server = ConfigWebServer(
+        config_path=str(tmp_path / "config.toml"),
+        mouse3d_button_provider=lambda: 2,
+    )
+    assert server.latest_mouse3d_button() == 2
+
+
+def test_latest_mouse3d_button_none_without_provider(tmp_path) -> None:
+    server = ConfigWebServer(config_path=str(tmp_path / "config.toml"))
+    assert server.latest_mouse3d_button() is None
+
+
 def test_get_psn_source_advisory_swallows_provider_error(tmp_path) -> None:
 
     def boom() -> dict:

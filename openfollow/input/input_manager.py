@@ -11,6 +11,7 @@ from openfollow.input.events import InputEventBus
 from openfollow.input.gamepad import GamepadHandler, GamepadUpdate
 from openfollow.input.keyboard import KeyboardHandler
 from openfollow.input.mouse import MouseHandler
+from openfollow.input.mouse3d import Mouse3DHandler, Mouse3DUpdate
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.osc.input import OscMarkerAdapter
 from openfollow.osc.operator_message import OperatorMessageOscAdapter
@@ -21,6 +22,7 @@ from openfollow.runtime.services_detection_pin import (
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
+    from openfollow.configuration import Mouse3DConfig
     from openfollow.psn.marker import Marker
 
 logger = logging.getLogger(__name__)
@@ -77,6 +79,11 @@ class InputManager:
         # The mouse glide runs every frame; a persistent failure must not flood
         # the log at the display tick rate.
         self._mouse_update_err_log = ThrottledExceptionLogger(logger, "Mouse update failed this tick.")
+        # 3D Mouse (6DOF). The read thread runs for the handler's lifetime;
+        # movement application is gated on ``mouse3d.enabled`` in ``update``.
+        self.mouse3d_handler = Mouse3DHandler(app._config.mouse3d)
+        self.mouse3d_handler.start()
+        self._mouse3d_update_err_log = ThrottledExceptionLogger(logger, "3D Mouse update failed this tick.")
 
         osc_cfg = app._config.osc
         # Marker-position OSC input flows through the unified OSC
@@ -192,6 +199,16 @@ class InputManager:
         # controlled markers. Movement application remains gated below.
         gamepad_result = self.gamepad_handler.update(dt)
 
+        # 3D Mouse (6DOF): consume the latest device snapshot. Button edges fold
+        # into the shared action flags (the app's existing dispatch handles
+        # them, so they work even before the early-exit below); movement, reset
+        # and speed apply to the selected marker. Gated on the live enabled flag.
+        if self.app._config.mouse3d.enabled:
+            try:
+                self._apply_mouse3d(self.mouse3d_handler.update(dt), dt, gamepad_result)
+            except Exception:
+                self._mouse3d_update_err_log.log()
+
         # Mouse marker control glides toward the cursor target every frame so
         # smoothing is independent of pointer-event rate. The handler no-ops
         # when not actively grabbing a marker.
@@ -290,6 +307,49 @@ class InputManager:
 
         return gamepad_result
 
+    def _apply_mouse3d(
+        self,
+        m3d: Mouse3DUpdate,
+        dt: float,
+        gamepad_result: GamepadUpdate,
+    ) -> None:
+        """Apply one 3D Mouse frame.
+
+        Discrete button edges fold into the shared :class:`GamepadUpdate` flags
+        so the app's existing dispatch (settings / help / zones / marker cycle)
+        handles them with no second dispatch site. Movement, reset and speed
+        target the selected marker; the velocity is a unit rate scaled here by
+        the marker's move-speed so the handler stays free of app state.
+        """
+        if m3d.next_marker:
+            gamepad_result.next_marker_pressed = True
+        if m3d.prev_marker:
+            gamepad_result.prev_marker_pressed = True
+        if m3d.toggle_help:
+            gamepad_result.toggle_help_pressed = True
+        if m3d.toggle_zones:
+            gamepad_result.toggle_zones_pressed = True
+        if m3d.settings:
+            gamepad_result.settings_open_pressed = True
+
+        selected = self.app._selected_id
+        if selected is None:
+            return
+        marker = self._get_marker(selected)
+        if marker is None:
+            return
+        if m3d.reset:
+            marker.set_pos(*self.app._get_default_marker_position())
+        if m3d.speed_steps:
+            direction = 1 if m3d.speed_steps > 0 else -1
+            for _ in range(abs(m3d.speed_steps)):
+                self.app.adjust_move_speed(direction, marker_id=selected)
+        vx, vy, vz = m3d.velocity
+        if vx or vy or vz:
+            speed = self.app.get_marker_move_speed(selected)
+            x, y, z = marker.pos
+            marker.set_pos(x + vx * speed * dt, y + vy * speed * dt, z + vz * speed * dt)
+
     def get_controller_info(self) -> list[dict[str, Any]]:
         """
         Get controller connection and mapping info for HUD display.
@@ -368,6 +428,20 @@ class InputManager:
                 self.osc_handler = None
         self._rebuild_operator_message_handler()
 
+    def restart_mouse3d(self, config: Mouse3DConfig) -> None:
+        """Live-apply a 3D Mouse config change.
+
+        Swaps the mapping config, then starts or stops the read thread to match
+        ``enabled`` (the device is only read while the feature is on). Movement
+        application is additionally gated on the live ``enabled`` read in
+        :meth:`update`.
+        """
+        self.mouse3d_handler.reload_config(config)
+        if config.enabled:
+            self.mouse3d_handler.start()
+        else:
+            self.mouse3d_handler.stop()
+
     def restart_operator_messages(self) -> None:
         """Re-evaluate the operator-message adapter against current config.
 
@@ -404,6 +478,7 @@ class InputManager:
     def stop(self) -> None:
         """Stop input subsystems and release resources."""
         self.gamepad_handler.stop()
+        self.mouse3d_handler.stop()
         self._stop_operator_message_handler()
         if self.osc_handler is not None:
             self.osc_handler.stop()

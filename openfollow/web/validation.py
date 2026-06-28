@@ -15,6 +15,9 @@ from typing import Any
 from openfollow.configuration import (
     _DEFAULT_PSN_MCAST_IP,
     _DEFAULT_PSN_SYSTEM_NAME,
+    MOUSE3D_AXES,
+    MOUSE3D_AXIS_TARGETS,
+    MOUSE3D_BUTTON_FIELDS,
     RESERVED_MOVEMENT_KEYS,
     VALID_BUTTON_NAMES,
     VALID_CURVES,
@@ -751,6 +754,30 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
 FIELD_RULES["gamepad"] = FIELD_RULES["controller"]
 FIELD_RULES["keyboard"] = FIELD_RULES["controller"]
 FIELD_RULES["mouse"] = FIELD_RULES["controller"]
+
+# 3D Mouse: built from the same axis / button constants as
+# routes._SECTION_FIELD_PARSERS, with the identical imported parser callables,
+# so the parser-identity and template-consistency tests both hold.
+_mouse3d_rules: dict[str, FieldRule] = {
+    "enabled": FieldRule(_as_bool),
+    "deadzone": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Deadzone must be between 0 and 1."),
+    "curve": FieldRule(_as_str, choices=VALID_CURVES, human_error=f"Curve must be one of: {', '.join(VALID_CURVES)}."),
+}
+for _axis in MOUSE3D_AXES:
+    _mouse3d_rules[f"map_{_axis}"] = FieldRule(
+        _as_str,
+        choices=MOUSE3D_AXIS_TARGETS,
+        human_error=f"Axis target must be one of: {', '.join(MOUSE3D_AXIS_TARGETS)}.",
+    )
+    _mouse3d_rules[f"sens_{_axis}"] = FieldRule(
+        _as_float, lo=0.0, hi=10.0, human_error="Sensitivity must be between 0 and 10."
+    )
+    _mouse3d_rules[f"invert_{_axis}"] = FieldRule(_as_bool)
+for _btn in MOUSE3D_BUTTON_FIELDS:
+    _mouse3d_rules[_btn] = FieldRule(
+        _as_int, lo=-1, human_error="Button index must be -1 (unbound) or a device button number."
+    )
+FIELD_RULES["mouse3d"] = _mouse3d_rules
 
 
 # --- Public API -------------------------------------------------------------

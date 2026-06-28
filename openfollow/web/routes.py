@@ -50,6 +50,8 @@ if TYPE_CHECKING:
 from openfollow.configuration import (
     DEFAULT_UPDATE_SERVICE_NAME,
     MARKER_TOKEN_ALL,
+    MOUSE3D_AXES,
+    MOUSE3D_BUTTON_FIELDS,
     VALID_BUTTON_NAMES,
     AppConfig,
     OscDestinationConfig,
@@ -166,6 +168,7 @@ VALID_SECTIONS = {
     "gamepad",
     "keyboard",
     "mouse",
+    "mouse3d",
     "osc",
     "operator_messages",
     "detection",
@@ -269,6 +272,7 @@ _SECTION_CONFIG_ATTRS = {
     "gamepad": "controller",
     "keyboard": "controller",
     "mouse": "controller",
+    "mouse3d": "mouse3d",
     "osc": "osc",
     "operator_messages": "operator_messages",
     "detection": "detection",
@@ -952,6 +956,8 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
     # protect crafted POSTs. See "Validation contract" in CLAUDE.md.
     if section in ("controller", "gamepad", "keyboard", "mouse"):
         cfg.controller.__post_init__()
+    elif section == "mouse3d":
+        cfg.mouse3d.__post_init__()
     elif section == "grid":
         cfg.grid.__post_init__()
     elif section == "camera":
@@ -1430,6 +1436,21 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
 _SECTION_FIELD_PARSERS["gamepad"] = _SECTION_FIELD_PARSERS["controller"]
 _SECTION_FIELD_PARSERS["keyboard"] = _SECTION_FIELD_PARSERS["controller"]
 _SECTION_FIELD_PARSERS["mouse"] = _SECTION_FIELD_PARSERS["controller"]
+
+# 3D Mouse: built from the shared axis / button constants so the parser map
+# can't drift from the dataclass fields. Mirrored by FIELD_RULES["mouse3d"].
+_mouse3d_parsers: dict[str, _FieldParser] = {
+    "enabled": _as_bool,
+    "deadzone": _as_float,
+    "curve": _as_str,
+}
+for _axis in MOUSE3D_AXES:
+    _mouse3d_parsers[f"map_{_axis}"] = _as_str
+    _mouse3d_parsers[f"sens_{_axis}"] = _as_float
+    _mouse3d_parsers[f"invert_{_axis}"] = _as_bool
+for _btn in MOUSE3D_BUTTON_FIELDS:
+    _mouse3d_parsers[_btn] = _as_int
+_SECTION_FIELD_PARSERS["mouse3d"] = _mouse3d_parsers
 
 
 _TRIGGER_ZONES_FIELD_PARSERS: dict[str, _FieldParser] = {
@@ -4543,6 +4564,26 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update mouse settings."""
         cfg = _save_section_from_form("mouse", bool_fields=_mouse_bool_fields())
         return template("partials/mouse", config=cfg, saved=True)
+
+    @app.post("/section/mouse3d")
+    def update_mouse3d() -> Any:
+        """Update 3D Mouse settings."""
+        bool_fields = ("enabled", *(f"invert_{axis}" for axis in MOUSE3D_AXES))
+        cfg = _save_section_from_form("mouse3d", bool_fields=bool_fields)
+        return template("partials/mouse3d", config=cfg, saved=True)
+
+    @app.get("/section/mouse3d/detect")
+    def detect_mouse3d_button() -> Any:
+        """Return the 3D Mouse button currently held, for the bind helper.
+
+        Reads the live handler's latest snapshot; the operator holds a device
+        button and clicks Detect to read its index. Returns an HTML fragment so
+        HTMX can swap it into the result span.
+        """
+        idx = server.latest_mouse3d_button()
+        if idx is None:
+            return '<span class="muted">Hold a button on the device, then click Detect.</span>'
+        return f"Last button: <strong>{idx}</strong> – enter this index in a binding above."
 
     @app.post("/section/gamepad/detect-buttons")
     def start_button_detection() -> Any:

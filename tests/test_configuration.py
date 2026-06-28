@@ -23,6 +23,7 @@ from openfollow.configuration import (
     DetectionConfig,
     GridConfig,
     MarkerConfig,
+    Mouse3DConfig,
     OscConfig,
     OtpOutputConfig,
     RttrpmOutputConfig,
@@ -175,6 +176,10 @@ class _DummyInputManager:
         self.osc_restarts: list[tuple[bool, int]] = []
         self.osc_multicast_groups: list[str] = []
         self.operator_message_restarts = 0
+        self.mouse3d_restarts: list[Mouse3DConfig] = []
+
+    def restart_mouse3d(self, config: Mouse3DConfig) -> None:
+        self.mouse3d_restarts.append(config)
 
     def restart_osc(
         self,
@@ -1055,6 +1060,46 @@ def test_apply_runtime_osc_multicast_group_threads_into_restart() -> None:
     assert app._input_manager.osc_multicast_groups == ["239.1.2.3"]
 
 
+def test_apply_runtime_mouse3d_enabled_toggle_reaches_input_manager() -> None:
+    """Enabling 3D Mouse applies live: stored config updates and the handler is
+    reloaded, with no process restart."""
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig()
+    new_config.mouse3d.enabled = True  # differs from default-off
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.mouse3d.enabled is True
+    assert len(app._input_manager.mouse3d_restarts) == 1
+    assert app._input_manager.mouse3d_restarts[0] is new_config.mouse3d
+    assert app._web_commands.restart_requested is False
+
+
+def test_apply_runtime_mouse3d_field_change_reaches_input_manager() -> None:
+    """A mapping/sensitivity edit (enabled unchanged) still live-applies."""
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig()
+    new_config.mouse3d.map_pitch = "speed"
+    new_config.mouse3d.sens_pan_x = 3.0
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.mouse3d.map_pitch == "speed"
+    assert app._config.mouse3d.sens_pan_x == 3.0
+    assert len(app._input_manager.mouse3d_restarts) == 1
+
+
+def test_apply_runtime_mouse3d_unchanged_does_not_restart() -> None:
+    """An unrelated config save must not churn the 3D Mouse handler."""
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig()
+    new_config.psn_system_name = "Renamed"  # unrelated change
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._input_manager.mouse3d_restarts == []
+
+
 def test_apply_runtime_operator_messages_restarts_handler() -> None:
     """An ``[operator_messages]`` change applies live: stored config updates
     and the adapter is re-evaluated, with no process restart."""
@@ -1572,6 +1617,100 @@ def test_osc_config_clamps_port_to_blur_bounds() -> None:
     assert OscConfig(port=0).port == 1
     assert OscConfig(port=70000).port == 65535
     assert OscConfig(port="not-a-port").port == 8765  # type: ignore[arg-type]
+
+
+# Mouse3DConfig.__post_init__ – 3D Mouse (6DOF) coercion
+
+
+def test_mouse3d_config_defaults() -> None:
+    cfg = Mouse3DConfig()
+    assert cfg.enabled is False
+    assert cfg.deadzone == 0.1
+    assert cfg.curve == "linear"
+    # Translation axes drive x/y/z; rotation axes default off.
+    assert (cfg.map_pan_x, cfg.map_pan_y, cfg.map_lift) == ("x", "y", "z")
+    assert (cfg.map_pitch, cfg.map_yaw, cfg.map_roll) == ("none", "none", "none")
+    assert cfg.sens_pan_x == 1.0 and cfg.invert_pan_x is False
+    # The first two buttons seed sensible defaults; the rest are unbound.
+    assert cfg.btn_reset == 0
+    assert cfg.btn_next_marker == 1
+    assert cfg.btn_settings == -1
+
+
+@pytest.mark.parametrize(
+    "bad,expected",
+    # ``True`` coerces via float()==1.0 then clamps (same as ControllerConfig).
+    [(-1.0, 0.0), (2.0, 1.0), ("abc", 0.1), (None, 0.1), (True, 1.0)],
+)
+def test_mouse3d_config_clamps_deadzone(bad: object, expected: float) -> None:
+    assert Mouse3DConfig(deadzone=bad).deadzone == expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "bad,expected",
+    [(-1.0, 0.0), (99.0, 10.0), ("nope", 1.0), (None, 1.0)],
+)
+def test_mouse3d_config_clamps_sensitivity(bad: object, expected: float) -> None:
+    # Out-of-range / wrong-type sensitivity clamps or falls back per axis.
+    cfg = Mouse3DConfig(sens_pan_x=bad, sens_roll=bad)  # type: ignore[arg-type]
+    assert cfg.sens_pan_x == expected
+    assert cfg.sens_roll == expected
+
+
+@pytest.mark.parametrize("bad", ["wobble", 5, None, True, ""])
+def test_mouse3d_config_falls_back_on_unknown_curve(bad: object) -> None:
+    assert Mouse3DConfig(curve=bad).curve == "linear"  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("bad", ["sideways", "X", 1, None, True])
+def test_mouse3d_config_falls_back_on_unknown_axis_target(bad: object) -> None:
+    # An unknown map target falls back to that axis's default (pan_x → "x").
+    assert Mouse3DConfig(map_pan_x=bad).map_pan_x == "x"  # type: ignore[arg-type]
+    # And a default-"none" axis falls back to "none".
+    assert Mouse3DConfig(map_pitch=bad).map_pitch == "none"  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "bad,expected",
+    [(-5, -1), (-1, -1), (3, 3), ("x", -1), (None, -1), (True, -1)],
+)
+def test_mouse3d_config_button_coercion(bad: object, expected: int) -> None:
+    # Invalid / out-of-range button index collapses to unbound (-1).
+    assert Mouse3DConfig(btn_reset=bad).btn_reset == expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    # _coerce_bool accepts real bools + recognised strings only; a bare int is
+    # not a bool form, so it falls to the default (False).
+    [("true", True), ("false", False), (True, True), ("junk", False), (1, False)],
+)
+def test_mouse3d_config_enabled_and_invert_coercion(raw: object, expected: bool) -> None:
+    assert Mouse3DConfig(enabled=raw).enabled is expected  # type: ignore[arg-type]
+    assert Mouse3DConfig(invert_lift=raw).invert_lift is expected  # type: ignore[arg-type]
+
+
+def test_mouse3d_config_survives_save_reload(temp_config_path) -> None:
+    config = AppConfig(
+        mouse3d=Mouse3DConfig(
+            enabled=True,
+            deadzone=0.25,
+            curve="s-law",
+            map_pitch="speed",
+            sens_pitch=2.5,
+            invert_pan_y=True,
+            btn_settings=4,
+        )
+    )
+    save_config(config, str(temp_config_path))
+    reloaded = load_config(str(temp_config_path)).mouse3d
+    assert reloaded.enabled is True
+    assert reloaded.deadzone == 0.25
+    assert reloaded.curve == "s-law"
+    assert reloaded.map_pitch == "speed"
+    assert reloaded.sens_pitch == 2.5
+    assert reloaded.invert_pan_y is True
+    assert reloaded.btn_settings == 4
 
 
 # RttrpmOutputConfig.__post_init__ – fps clamp

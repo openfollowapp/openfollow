@@ -118,6 +118,54 @@ def test_apply_section_data_camera_lens_distortion_clamps_out_of_range() -> None
     assert config.camera.lens_k2 == -0.2
 
 
+def test_apply_section_data_mouse3d_roundtrips() -> None:
+    config = AppConfig()
+    ok = apply_section_data(
+        config,
+        "mouse3d",
+        {
+            "enabled": True,
+            "deadzone": "0.2",
+            "curve": "quadratic",
+            "map_pan_x": "z",
+            "sens_pan_x": "2.5",
+            "invert_lift": True,
+            "btn_settings": "4",
+        },
+    )
+    assert ok is True
+    assert config.mouse3d.enabled is True
+    assert config.mouse3d.deadzone == pytest.approx(0.2)
+    assert config.mouse3d.curve == "quadratic"
+    assert config.mouse3d.map_pan_x == "z"
+    assert config.mouse3d.sens_pan_x == pytest.approx(2.5)
+    assert config.mouse3d.invert_lift is True
+    assert config.mouse3d.btn_settings == 4
+
+
+def test_apply_section_data_mouse3d_clamps_and_falls_back() -> None:
+    config = AppConfig()
+    # __post_init__ re-runs after the web save, so a crafted POST is clamped /
+    # falls back the same as a hand-edited config.toml would be.
+    ok = apply_section_data(
+        config,
+        "mouse3d",
+        {
+            "sens_pan_x": "99",  # > 10 -> clamp 10
+            "deadzone": "5",  # > 1 -> clamp 1
+            "map_pitch": "sideways",  # invalid -> default "none"
+            "btn_reset": "-7",  # < -1 -> clamp -1 (unbound)
+            "curve": "wobble",  # invalid -> "linear"
+        },
+    )
+    assert ok is True
+    assert config.mouse3d.sens_pan_x == 10.0
+    assert config.mouse3d.deadzone == 1.0
+    assert config.mouse3d.map_pitch == "none"
+    assert config.mouse3d.btn_reset == -1
+    assert config.mouse3d.curve == "linear"
+
+
 def test_apply_section_data_grid_tolerates_huge_int_width() -> None:
     config = AppConfig()
     ok = apply_section_data(config, "grid", {"width": 10**5000})

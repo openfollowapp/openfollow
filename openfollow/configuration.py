@@ -1914,6 +1914,27 @@ MOUSE3D_BUTTON_FIELDS = (
     "btn_toggle_zones",
     "btn_settings",
 )
+# Web-form row labels (gesture-first, config key in parens) in display order.
+# Single source for the form's axis/button loops; the consistency test asserts
+# they cover exactly MOUSE3D_AXES / MOUSE3D_BUTTON_FIELDS so neither can drift.
+MOUSE3D_AXIS_FORM_LABELS = (
+    ("pan_x", "Push left / right (pan_x)"),
+    ("pan_y", "Push forward / back (pan_y)"),
+    ("lift", "Pull up / push down (lift)"),
+    ("pitch", "Tilt forward / back (pitch)"),
+    ("yaw", "Twist / spin (yaw)"),
+    ("roll", "Tilt left / right (roll)"),
+)
+MOUSE3D_BUTTON_FORM_LABELS = (
+    ("btn_reset", "Reset marker"),
+    ("btn_settings", "Settings menu"),
+    ("btn_next_marker", "Next marker"),
+    ("btn_prev_marker", "Previous marker"),
+    ("btn_speed_up", "Speed up"),
+    ("btn_speed_down", "Speed down"),
+    ("btn_toggle_help", "Toggle help"),
+    ("btn_toggle_zones", "Toggle zones"),
+)
 
 
 @dataclass

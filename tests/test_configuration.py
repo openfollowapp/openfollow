@@ -1646,6 +1646,20 @@ def test_mouse3d_config_defaults() -> None:
     assert cfg.btn_settings == -1
 
 
+def test_mouse3d_form_labels_cover_every_axis_and_button() -> None:
+    # The web form loops over these label lists; if one omits (or misnames) an
+    # axis / button, that control silently drops out of the form. Pin them to
+    # the canonical field tuples so they can't drift.
+    from openfollow.configuration import (
+        MOUSE3D_AXIS_FORM_LABELS,
+        MOUSE3D_BUTTON_FIELDS,
+        MOUSE3D_BUTTON_FORM_LABELS,
+    )
+
+    assert tuple(axis for axis, _label in MOUSE3D_AXIS_FORM_LABELS) == MOUSE3D_AXES
+    assert {field for field, _label in MOUSE3D_BUTTON_FORM_LABELS} == set(MOUSE3D_BUTTON_FIELDS)
+
+
 def test_mouse3d_invalid_value_falls_back_to_declared_field_default() -> None:
     # __post_init__ derives its per-axis fallback from the field declarations
     # (single source), so an invalid value lands on the SAME default as an

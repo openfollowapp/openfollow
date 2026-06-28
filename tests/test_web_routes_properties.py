@@ -179,7 +179,7 @@ _VIDEO_DATA = st.dictionaries(
                 "picam_width",
                 "v4l2_device",
                 "avf_device_index",
-                "testpattern_pattern",
+                "testpattern_selected_media",
             ]
         ),
         st.text(max_size=8),

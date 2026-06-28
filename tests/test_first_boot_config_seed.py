@@ -46,7 +46,7 @@ def test_bootstrapping_the_shipped_example_yields_stage_and_default_marker(tmp_p
 
     cfg = load_config(str(config_path))
     assert cfg.video_source_type == "testpattern"
-    assert cfg.testpattern_pattern == "stage"
+    assert cfg.testpattern_selected_media == "default:stage"
     # init_markers() registers one marker per controlled id; a non-empty list is
     # what makes Marker 1 appear at its default position on first launch.
     assert cfg.controlled_marker_ids == [1]

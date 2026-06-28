@@ -71,13 +71,13 @@ def _drive_real_testpattern_pipeline() -> None:
     """Build the REAL testpattern pipeline via the app's own builder, drive it to
     PLAYING with a headless ``fakesink``, assert no bus error, tear it down.
 
-    Uses ``TestPatternInput.create_pipeline`` (not a hand-rolled pipeline) so the
+    Uses ``MediaGalleryInput.create_pipeline`` (not a hand-rolled pipeline) so the
     actual element construction + linking is exercised. The HUD is a separate
     ``Gtk.DrawingArea``, so a head→sink overlay tail is faithful.
     """
     from gi.repository import Gst
 
-    from openfollow.video.inputs.testpattern import TestPatternInput
+    from openfollow.video.inputs.testpattern import MediaGalleryInput
 
     Gst.init(None)
 
@@ -90,8 +90,8 @@ def _drive_real_testpattern_pipeline() -> None:
         if not head.link(sink):
             raise AssertionError("testpattern head failed to link to sink")
 
-    pipeline = TestPatternInput().create_pipeline(
-        {"testpattern_pattern": "grey", "testpattern_resolution": "720p"},
+    pipeline = MediaGalleryInput().create_pipeline(
+        {"testpattern_selected_media": "default:grey"},
         None,
         build_overlay_tail,
         prepare_sink,

@@ -2089,6 +2089,9 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     # ``detection`` is always present (asdict of a dataclass field); drop the
     # host-local storage path so it never travels to another machine.
     d["detection"].pop("storage_path", None)
+    # ``testpattern_selected_media`` is a device-local gallery item id; media
+    # files never travel, so a foreign id would just dangle on another host.
+    d.pop("testpattern_selected_media", None)
     return d
 
 
@@ -2161,6 +2164,9 @@ def _apply_import_data(
     # ``detection.storage_path`` is an absolute path on THIS host – a path from
     # the exporting machine would be unwritable here. Keep the device's own.
     original_storage_path = cfg.detection.storage_path
+    # ``testpattern_selected_media`` is a device-local gallery id (media files
+    # don't travel), so an imported selection must not replace this station's.
+    original_selected_media = cfg.testpattern_selected_media
 
     # General section (top-level scalar fields)
     apply_section_data(cfg, "general", data)
@@ -2246,6 +2252,7 @@ def _apply_import_data(
     cfg.web_pin = original_pin
     cfg.web_port = original_port
     cfg.detection.storage_path = original_storage_path
+    cfg.testpattern_selected_media = original_selected_media
     return cfg
 
 

@@ -1965,8 +1965,11 @@ class AppConfig:
     avf_width: int = 1920
     avf_height: int = 1080
     avf_framerate: int = 30
-    testpattern_resolution: str = "1080p"
-    testpattern_pattern: str = "stage"
+    # Media Gallery selection. The default + reserved ids are defined in
+    # openfollow.video.media_store (DEFAULT_SELECTED_MEDIA); kept literal here to
+    # avoid importing the video package into this early-loaded module (a test
+    # pins the two together).
+    testpattern_selected_media: str = "default:stage"
 
     # Video recovery (network inputs: RTSP/SRT/RTP). ``stall_timeout`` is the
     # silent-stall watchdog – seconds an established stream may deliver no

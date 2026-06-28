@@ -76,6 +76,7 @@ class ConfigField:
     default: Any  # default value
     label: str  # human-readable label for web UI
     choices: tuple[tuple[str, str], ...] = field(default_factory=tuple)  # enum-style choices for list picker
+    device_editable: bool = True  # False = web-only field; the on-device URL editor / list picker skip it
 
 
 @dataclass
@@ -211,6 +212,12 @@ class VideoInputBase(ABC):
 
     def on_bus_async_done(self, pipeline: Any) -> None:  # noqa: B027 – intentional optional hook
         """Called on ``ASYNC_DONE`` bus message.  Override for latency tuning."""
+
+    def on_bus_eos(self, pipeline: Any) -> bool:
+        """Called on ``EOS``. Return ``True`` if the input handled it (e.g. a
+        looping clip seeking back to the start) so the receiver does NOT treat
+        end-of-stream as a disconnect. The default reports it unhandled."""
+        return False
 
     def on_caps_changed(self, width: int, height: int) -> None:  # noqa: B027 – intentional optional hook
         """Called when video resolution is detected from caps-changed."""

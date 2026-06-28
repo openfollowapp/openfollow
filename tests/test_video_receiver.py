@@ -1539,6 +1539,27 @@ class TestBusHandling:
         assert r._state.connected is False
         assert fake_glib.timers
 
+    def test_handle_bus_eos_skips_reconnect_when_input_loops(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        # A looping clip handles EOS by seeking back to start; the receiver must
+        # NOT treat end-of-stream as a disconnect.
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._state.connected = True
+        r._pipeline = FakePipeline()
+        r._input.on_bus_eos = lambda _pipeline: True  # type: ignore[attr-defined]
+        fake_glib.timers.clear()
+        r._handle_bus_eos()
+        assert r._state.connected is True  # stayed connected
+        assert not fake_glib.timers  # no reconnect scheduled
+
+    def test_handle_bus_eos_reconnects_when_input_does_not_handle(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._state.connected = True
+        r._pipeline = FakePipeline()
+        r._input.on_bus_eos = lambda _pipeline: False  # type: ignore[attr-defined]
+        r._handle_bus_eos()
+        assert r._state.connected is False
+        assert fake_glib.timers
+
     def test_handle_bus_async_done_delegates_to_input(self, fake_gst, fake_glib, fake_input_cls) -> None:
         r = _make_receiver()
         pipeline = FakePipeline()

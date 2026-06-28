@@ -838,6 +838,10 @@ class GstNativeSinkReceiver:
         self._schedule_reconnect(error_message)
 
     def _handle_bus_eos(self) -> None:
+        # A looping input (Media Gallery clip) seeks back to start on EOS and
+        # reports it handled, so end-of-stream is not a disconnect for it.
+        if self._pipeline is not None and self._input.on_bus_eos(self._pipeline):
+            return
         self._state.mark_disconnected()
         self._schedule_reconnect("End of stream")
 

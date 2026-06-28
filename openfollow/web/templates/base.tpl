@@ -555,7 +555,7 @@
  .gallery-thumb {
  display: block;
  width: 100%;
- height: 90px;
+ aspect-ratio: 16 / 9;
  object-fit: cover;
  background: var(--bg-soft);
  }

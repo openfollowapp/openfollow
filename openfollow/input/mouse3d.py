@@ -35,6 +35,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# User-facing controller name (HUD / web status) for a 3D Mouse "controller".
+MOUSE3D_NAME = "3D Mouse"
+
 # Reconnect backoff bounds (seconds) and poll cadence. The poll is interruptible
 # via the stop Event so shutdown is prompt.
 _RECONNECT_MIN_S = 0.5

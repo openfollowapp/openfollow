@@ -581,8 +581,9 @@ def _draw_settings_info_card(
         ("Station:", station_value),
     ]
     # Surface unbound controller pads so operators can spot stray input.
+    # 1-based to match the marker-card badge + OSC ``:cN``.
     if state.unbound_controller_indices:
-        joined = ", ".join(f"Ctrl{i}" for i in state.unbound_controller_indices)
+        joined = ", ".join(f"Ctrl{i + 1}" for i in state.unbound_controller_indices)
         rows.append(("Unbound controllers:", joined))
     row_h = 20.0
     card_h = row_h * len(rows) + 14.0
@@ -1094,15 +1095,16 @@ def draw_marker_card(
             cr.arc(dot_x, dot_y, dot_r + 1.5, 0, 6.2832)
             cr.stroke()
 
-        # Controller badge top-left (controlled markers only); disconnected pads render with dot suffix.
+        # Controller badge top-left (controlled markers only); disconnected pads
+        # render with dot suffix. 1-based to match the OSC ``:cN`` reference.
         if t.is_controlled and t.controller_idx is not None:
             renderer._set_ui_font(cr, 9)
             if t.controller_connected:
                 cr.set_source_rgb(*COLOR_TEXT)
-                badge = f"C{t.controller_idx}"
+                badge = f"C{t.controller_idx + 1}"
             else:
                 cr.set_source_rgba(*COLOR_TEXT_MUTED)
-                badge = f"C{t.controller_idx}·"
+                badge = f"C{t.controller_idx + 1}·"
             cr.move_to(x + 8, y + 14)
             cr.show_text(badge)
 

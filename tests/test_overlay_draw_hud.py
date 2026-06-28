@@ -1490,7 +1490,8 @@ class TestMarkerCardRendering:
             selected=False,
             state=None,
         )
-        assert "C0" in cr.show_text_strings()
+        # 1-based to match OSC :cN: controller_idx 0 -> "C1".
+        assert "C1" in cr.show_text_strings()
 
     def test_disconnected_pad_renders_muted_badge_suffix(self) -> None:
         """A bound but disconnected pad still shows the badge so the
@@ -1508,9 +1509,9 @@ class TestMarkerCardRendering:
             selected=False,
             state=None,
         )
-        assert any(t.startswith("C1") for t in cr.show_text_strings())
-        # Connected badge would be "C1"; disconnected is "C1·" (dot suffix).
-        assert "C1·" in cr.show_text_strings()
+        # 1-based: controller_idx 1 -> "C2". Disconnected adds the dot suffix.
+        assert any(t.startswith("C2") for t in cr.show_text_strings())
+        assert "C2·" in cr.show_text_strings()
 
     def test_unbound_controlled_marker_omits_badge(self) -> None:
         cr = FakeCairo()
@@ -1619,7 +1620,8 @@ class TestSettingsInfoCardOrphans:
         _draw_settings_info_card(FakeRenderer(state=state), cr, state, 0, 0, 400)
         texts = cr.show_text_strings()
         assert "Unbound controllers:" in texts
-        assert any("Ctrl2" in t and "Ctrl3" in t for t in texts)
+        # 1-based display: indices 2, 3 -> "Ctrl3", "Ctrl4".
+        assert any("Ctrl3" in t and "Ctrl4" in t for t in texts)
 
     def test_unbound_controllers_row_omitted_when_empty(self) -> None:
         from openfollow.runtime.overlay_draw_hud import _draw_settings_info_card

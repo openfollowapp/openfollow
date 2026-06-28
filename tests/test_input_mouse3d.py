@@ -387,13 +387,20 @@ class _FakeKeyboardHandler:
 class _FakeGamepadHandler:
     def __init__(self, app, *, event_bus=None, virtual_faders=None, marker_resolver=None) -> None:  # noqa: ANN001
         self.app = app
-        self.joysticks = {0: object()}
+        # No gamepads by default, so a connected 3D mouse is the *sole* controller
+        # (single-controller mode -> follows the selected marker). Tests that want
+        # a gamepad alongside set ``joysticks`` after construction.
+        self.joysticks: dict = {}
+        self.next_update = GamepadUpdate()
 
     def update(self, _dt: float) -> GamepadUpdate:
-        return GamepadUpdate()
+        return self.next_update
 
     def get_controller_info(self) -> list[dict]:
-        return []
+        return [
+            {"controller_index": idx, "name": "Pad", "connected": True, "effective_speed": 0.0, "backend": "joystick"}
+            for idx in sorted(self.joysticks)
+        ]
 
     def stop(self) -> None:
         pass
@@ -409,6 +416,7 @@ class _FakeMouse3DHandler:
         self.started = False
         self.stopped = False
         self.reloaded_with = None
+        self.connected = True  # counts as a live controller when enabled
 
     def start(self) -> None:
         self.started = True
@@ -529,3 +537,55 @@ def test_restart_mouse3d_disabled_stops(wired) -> None:  # noqa: ANN001
     manager, _ = wired
     manager.restart_mouse3d(Mouse3DConfig(enabled=False))
     assert manager.mouse3d_handler.stopped is True
+
+
+# --------------------------------------------------------------------------- #
+# Unified controller-id space (3D mouse counts like a gamepad)
+# --------------------------------------------------------------------------- #
+
+
+def test_mouse_and_gamepad_unified_ordering(wired) -> None:  # noqa: ANN001
+    manager, app = wired
+    app._config.mouse3d.enabled = True
+    manager.gamepad_handler.joysticks = {0: object()}  # one gamepad beside the mouse
+    # Mice first: mouse = unified 0 (c1) -> slot 0; gamepad = unified 1 (c2) -> slot 1.
+    assert manager.controller_marker_id(0) == app._controlled_ids[0]  # mouse -> 10
+    assert manager.controller_marker_id(1) == app._controlled_ids[1]  # gamepad -> 11
+    info = manager.get_controller_info()
+    assert info[0]["name"] == "3D Mouse"
+    assert info[0]["controller_index"] == 0
+    assert info[0]["marker_id"] == app._controlled_ids[0]
+    assert info[1]["controller_index"] == 1
+    assert info[1]["marker_id"] == app._controlled_ids[1]
+
+
+def test_mouse_routes_to_its_slot_not_selected_in_multi_mode(wired) -> None:  # noqa: ANN001
+    manager, app = wired
+    app._config.mouse3d.enabled = True
+    app._selected_id = 11  # selection differs from the mouse's slot 0 (marker 10)
+    manager.gamepad_handler.joysticks = {0: object()}  # 2 controllers -> slot mode
+    manager.mouse3d_handler.next_update = Mouse3DUpdate(velocity=(1.0, 0.0, 0.0))
+    manager.update(1.0)
+    assert app._server.get_marker(10).pos == pytest.approx((2.0, 0.0, 0.0))  # mouse's slot 0
+    assert app._server.get_marker(11).pos == pytest.approx((0.0, 0.0, 0.0))  # selected, untouched
+
+
+def test_mouse_cycling_suppressed_with_second_controller(wired) -> None:  # noqa: ANN001
+    manager, app = wired
+    app._config.mouse3d.enabled = True
+    manager.gamepad_handler.joysticks = {0: object()}  # 2 controllers
+    manager.mouse3d_handler.next_update = Mouse3DUpdate(next_marker=True, settings=True)
+    result = manager.update(0.016)
+    assert result.next_marker_pressed is False  # cycling is a single-controller affordance
+    assert result.settings_open_pressed is True  # global toggles still fold
+
+
+def test_disconnected_mouse_is_not_a_controller(wired) -> None:  # noqa: ANN001
+    manager, app = wired
+    app._config.mouse3d.enabled = True
+    manager.mouse3d_handler.connected = False  # enabled but no device
+    manager.gamepad_handler.joysticks = {0: object()}
+    # Only the gamepad counts -> it takes unified index 0 (c1).
+    info = manager.get_controller_info()
+    assert [c["name"] for c in info] == ["Pad"]
+    assert manager.controller_marker_id(0) == app._controlled_ids[0]

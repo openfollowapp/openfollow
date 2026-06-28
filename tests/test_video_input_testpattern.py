@@ -352,6 +352,9 @@ class TestConfigAndLabels:
         html = MediaGalleryInput.web_ui_html({"testpattern_selected_media": "default:grey"})
         assert 'id="gallery-grid"' in html
         assert 'hx-get="/video-input/testpattern/list"' in html  # grid loads via HTMX
+        # Must pin its own target; otherwise it inherits the parent video-source
+        # form's hx-target and replaces the whole form on load.
+        assert 'hx-target="this"' in html
         assert "openfollowGalleryUpload" in html  # upload control + handler
         assert 'name="testpattern_selected_media"' in html  # round-trip field
         assert 'value="default:grey"' in html

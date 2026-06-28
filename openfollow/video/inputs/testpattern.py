@@ -286,8 +286,11 @@ class MediaGalleryInput(VideoInputBase):
             '<input type="file" accept="image/jpeg,image/png,image/webp,video/webm" '
             'onchange="openfollowGalleryUpload(this)" hidden></label>'
             "</div>"
+            # hx-target="this" is required: without it the grid inherits the
+            # parent video-source form's hx-target and would replace the whole
+            # form on load instead of just itself.
             '<div id="gallery-grid" class="gallery-grid" '
-            'hx-get="/video-input/testpattern/list" hx-trigger="load" hx-swap="outerHTML"></div>'
+            'hx-get="/video-input/testpattern/list" hx-trigger="load" hx-target="this" hx-swap="outerHTML"></div>'
             "<script>"
             "function openfollowGalleryUpload(input){"
             "var f=input.files[0];if(!f)return;"

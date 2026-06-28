@@ -447,6 +447,15 @@ class GstNativeSinkReceiver:
         self._source_type = source_type
         self._input_config = dict(input_config)
 
+        # Drop any cached preview/snapshot frame from the old source so a
+        # request during the new source's connect window returns "no feed"
+        # instead of the previous source's stale frame (e.g. the Setup Wizard
+        # preview after switching the video source).
+        if self._snapshot_provider is not None:
+            self._snapshot_provider.clear_cache()
+        if self._preview_provider is not None:
+            self._preview_provider.clear_cache()
+
         # Reset per-plugin state that doesn't carry over across a
         # plugin swap (sources discovered for the old type are
         # meaningless for the new one; the placeholder flag will be

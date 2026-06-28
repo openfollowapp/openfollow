@@ -3067,6 +3067,32 @@ class TestSwapInput:
         assert old_input.cleanup_calls == 1  # type: ignore[attr-defined]
         assert FakeState.NULL in old_pipeline.state_changes
 
+    def test_swap_clears_snapshot_and_preview_caches(
+        self,
+        fake_gst,
+        fake_glib,
+        fake_input_pair,
+        monkeypatch,
+    ) -> None:
+        # A swap must drop any cached frame from the old source so a snapshot
+        # during the new source's connect window isn't the stale old frame.
+        from openfollow.video.preview import PreviewProvider, SnapshotProvider
+
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        snap = SnapshotProvider()
+        prev = PreviewProvider()
+        snap._jpeg_bytes = b"old-stage-frame"
+        prev._jpeg_bytes = b"old-stage-frame"
+        r._snapshot_provider = snap
+        r._preview_provider = prev
+        FakeInput.create_pipeline_result = FakePipeline()
+        monkeypatch.setattr(threading, "Thread", _SyncSwapThread)
+
+        r.swap_input("fake", {"fake_source": "cam-2"})
+
+        assert snap._jpeg_bytes is None
+        assert prev._jpeg_bytes is None
+
     def test_swap_tolerates_old_pipeline_with_no_bus(
         self,
         fake_gst,

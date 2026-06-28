@@ -114,6 +114,13 @@ class PreviewProvider:
                 return None
             return self._jpeg_bytes
 
+    def clear_cache(self) -> None:
+        """Drop the cached frame so a source swap doesn't briefly show the
+        previous source's image before the new one delivers a frame."""
+        with self._lock:
+            self._jpeg_bytes = None
+            self._timestamp = 0.0
+
     def _run(self) -> None:
         """Background loop: pull JPEG samples from appsink."""
         try:
@@ -222,6 +229,13 @@ class SnapshotProvider:
         with self._state_lock:
             if self._valve is valve:
                 self._valve = None
+
+    def clear_cache(self) -> None:
+        """Drop the cached frame so a snapshot taken right after a source swap
+        returns None (no feed) instead of the previous source's frame while the
+        new source is still connecting."""
+        with self._state_lock:
+            self._jpeg_bytes = None
 
     def get_snapshot(self) -> bytes | None:
         """Pull a single full-res JPEG frame (serialised; cached between calls)."""

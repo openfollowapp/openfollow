@@ -405,6 +405,20 @@ def save_uploaded_video(staged: Path) -> MediaItem:
     return _user_item(dest)
 
 
+def save_upload(staged: Path) -> MediaItem:
+    """Validate and store an uploaded file, dispatching on its sniffed format.
+
+    Images (JPEG/PNG/WebP) are normalised to JPEG; WebM/VP8 clips are stored
+    verbatim. Anything else is rejected before any heavy work.
+    """
+    fmt = _sniff_format(_read_header(staged))
+    if fmt in {"jpeg", "png", "webp"}:
+        return save_uploaded_image(staged)
+    if fmt == "webm":
+        return save_uploaded_video(staged)
+    raise MediaStoreError("Unsupported file. Upload a JPEG, PNG, or WebP image, or a VP8 WebM clip.")
+
+
 def delete(media_id: str) -> None:
     """Remove a user media file and its thumbnail. Refuses defaults / unknowns."""
     if is_read_only(media_id):

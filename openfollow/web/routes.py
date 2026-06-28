@@ -3318,6 +3318,143 @@ def _register_input_plugin_routes(
             )
 
 
+# Media Gallery: the management surface for the ``testpattern`` input's
+# device-local image / clip library. These are top-level routes (not plugin
+# ``web_routes``) because they need ``server`` for the snapshot provider and
+# config writes. The whole library is web-only and device-local.
+_GALLERY_PREFIX = "/video-input/testpattern"
+
+
+def _render_gallery_grid(server: ConfigWebServer, *, error: str = "") -> str:
+    """Render the thumbnail grid for the Media Gallery as an HTMX partial.
+
+    The selected tile gets the ``selected`` class (amber border in CSS); each
+    user tile carries download + delete overlay actions, defaults do not. An
+    optional error banner lives *inside* the grid container so the next render
+    clears it.
+    """
+    from openfollow.video import media_store
+
+    selected = load_config(server.config_path).testpattern_selected_media
+    tiles: list[str] = []
+    for item in media_store.list_media():
+        eid = html_mod.escape(item.media_id, quote=True)
+        label = html_mod.escape(item.label)
+        sel = " selected" if item.media_id == selected else ""
+        if item.media_id == media_store.DEFAULT_GREY_ID:
+            thumb = '<span class="gallery-thumb gallery-grey"></span>'
+        else:
+            thumb = f'<img class="gallery-thumb" src="{_GALLERY_PREFIX}/thumb/{eid}" alt="{label}" loading="lazy">'
+        actions = ""
+        if not item.read_only:
+            actions = (
+                '<div class="gallery-actions">'
+                f'<a class="gallery-dl" href="{_GALLERY_PREFIX}/download/{eid}" title="Download" download>&#8681;</a>'
+                f'<button class="gallery-del" type="button" title="Delete" hx-post="{_GALLERY_PREFIX}/delete/{eid}" '
+                'hx-target="#gallery-grid" hx-swap="outerHTML" hx-confirm="Delete this media?">&#215;</button>'
+                "</div>"
+            )
+        tiles.append(
+            f'<div class="gallery-tile{sel}">'
+            f'<button class="gallery-select" type="button" hx-post="{_GALLERY_PREFIX}/select" '
+            f'hx-vals=\'{{"media_id": "{eid}"}}\' hx-target="#gallery-grid" hx-swap="outerHTML">'
+            f'{thumb}<span class="gallery-label">{label}</span>'
+            "</button>"
+            f"{actions}"
+            "</div>"
+        )
+    banner = f'<div class="gallery-error" role="alert">{html_mod.escape(error)}</div>' if error else ""
+    return f'<div id="gallery-grid" class="gallery-grid">{banner}{"".join(tiles)}</div>'
+
+
+def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
+    """Register the Media Gallery management routes."""
+    from openfollow.video import media_store
+    from openfollow.video.media_store import MediaStoreError
+
+    @app.get(_GALLERY_PREFIX + "/list")
+    def gallery_list() -> Any:
+        return _render_gallery_grid(server)
+
+    @app.get(_GALLERY_PREFIX + "/thumb/<media_id>")
+    def gallery_thumb(media_id: str) -> Any:
+        if media_id == media_store.DEFAULT_STAGE_ID:
+            item = media_store.resolve(media_id)
+            path = item.path if item is not None else None
+        elif media_store.is_valid_id(media_id) and not media_store.is_default(media_id):
+            path = media_store.thumb_path(media_id)
+        else:
+            path = None
+        if path is None or not path.is_file():
+            return abort(404, "No thumbnail")
+        result = static_file(path.name, root=str(path.parent))
+        if isinstance(result, HTTPResponse):
+            result.set_header("Cache-Control", "no-store")
+        return result
+
+    @app.post(_GALLERY_PREFIX + "/select")
+    def gallery_select() -> Any:
+        media_id = (request.forms.get("media_id") or "").strip()
+        if not media_store.is_valid_id(media_id) or media_store.resolve(media_id) is None:
+            response.status = 400
+            return _render_gallery_grid(server, error="Unknown media.")
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            cfg.testpattern_selected_media = media_id
+            save_config(cfg, server.config_path)
+        return _render_gallery_grid(server)
+
+    @app.post(_GALLERY_PREFIX + "/upload")
+    def gallery_upload() -> Any:
+        total = request.content_length or 0
+        if total <= 0:
+            return _render_gallery_grid(server, error="Empty upload.")
+        if total > media_store.MAX_VIDEO_UPLOAD_BYTES:
+            mb = media_store.MAX_VIDEO_UPLOAD_BYTES // (1024 * 1024)
+            return _render_gallery_grid(server, error=f"File too large (max {mb} MB).")
+        staged = f"/tmp/openfollow-media-{secrets.token_hex(8)}"  # nosec B108 - device-local staging
+        try:
+            _stream_to_file(request.environ["wsgi.input"], staged, total)
+            media_store.save_upload(Path(staged))
+        except MediaStoreError as exc:
+            return _render_gallery_grid(server, error=exc.message)
+        except Exception:
+            logger.exception("Media upload failed")
+            return _render_gallery_grid(server, error="Upload failed.")
+        finally:
+            _discard_staged(staged)
+        return _render_gallery_grid(server)
+
+    @app.post(_GALLERY_PREFIX + "/capture")
+    def gallery_capture() -> Any:
+        response.content_type = "application/json"
+        jpeg = server.get_full_snapshot()
+        if jpeg is None:
+            response.status = 503
+            return json.dumps({"ok": False, "error": "No video frame available to capture."})
+        try:
+            item = media_store.save_captured_frame(jpeg)
+        except MediaStoreError as exc:
+            return json.dumps({"ok": False, "error": exc.message})
+        return json.dumps({"ok": True, "media_id": item.media_id})
+
+    @app.get(_GALLERY_PREFIX + "/download/<media_id>")
+    def gallery_download(media_id: str) -> Any:
+        path = media_store.download_path(media_id)
+        if path is None:
+            return abort(404, "Not found")
+        return static_file(path.name, root=str(path.parent), download=path.name)
+
+    @app.post(_GALLERY_PREFIX + "/delete/<media_id>")
+    def gallery_delete(media_id: str) -> Any:
+        try:
+            media_store.delete(media_id)
+        except MediaStoreError as exc:
+            response.status = 400
+            return _render_gallery_grid(server, error=exc.message)
+        return _render_gallery_grid(server)
+
+
 def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     """Register all routes on the Bottle app."""
 
@@ -7262,3 +7399,4 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     # -- Video input plugin routes ----------------------------------
 
     _register_input_plugin_routes(app, server)
+    _register_gallery_routes(app, server)

@@ -245,6 +245,25 @@ def test_save_uploaded_video_rejects_bad_codec(storage: Path, tmp_path: Path, mo
         ms.save_uploaded_video(_staged(tmp_path, "clip.webm", _WEBM))
 
 
+# -- upload dispatch ----------------------------------------------------------
+
+
+def test_save_upload_dispatches_image(storage: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ms, "_render_jpeg", _fake_render)
+    assert ms.save_upload(_staged(tmp_path, "u.png", _PNG)).kind == "image"
+
+
+def test_save_upload_dispatches_video(storage: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ms, "_probe_video", lambda src: _valid_probe())
+    monkeypatch.setattr(ms, "_render_jpeg", _fake_render)
+    assert ms.save_upload(_staged(tmp_path, "clip.webm", _WEBM + b"vp8")).kind == "video"
+
+
+def test_save_upload_rejects_unknown_format(storage: Path, tmp_path: Path) -> None:
+    with pytest.raises(ms.MediaStoreError, match="Unsupported file"):
+        ms.save_upload(_staged(tmp_path, "x.gif", _GIF))
+
+
 # -- capacity -----------------------------------------------------------------
 
 

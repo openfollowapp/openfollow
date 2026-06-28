@@ -5371,3 +5371,152 @@ def test_csrf_safe_method_ignores_foreign_origin(pin_protected_server) -> None:
         base, "/api/config", extra_headers={"Origin": "http://evil.example.com"}, method="GET", data=None
     )
     assert status != 403
+
+
+# ---------------------------------------------------------------------------
+# Media Gallery management routes (/video-input/testpattern/*)
+# ---------------------------------------------------------------------------
+
+_GP = "/video-input/testpattern"
+_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+_GIF = b"GIF89a" + b"\x00" * 10
+_JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 12
+
+
+def _post_bytes(base: str, path: str, data: bytes) -> tuple[int, str]:
+    req = urllib.request.Request(
+        f"{base}{path}",
+        data=data,
+        headers={"Content-Type": "application/octet-stream"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace")
+
+
+def _get_raw(base: str, path: str) -> tuple[int, bytes]:
+    try:
+        with urllib.request.urlopen(f"{base}{path}", timeout=5) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+@pytest.fixture()
+def gallery_server(live_server, tmp_path, monkeypatch):
+    """A live server with the media store pointed at a temp dir and the
+    GStreamer decode/probe seams mocked, so uploads need no real pipeline."""
+    from openfollow.video import media_store
+
+    server, base = live_server
+    media_dir = tmp_path / "gallery-media"
+    monkeypatch.setattr(media_store, "resolve_media_storage_path", lambda: media_dir)
+    monkeypatch.setattr(media_store, "_webp_supported", lambda: False)
+    monkeypatch.setattr(media_store, "_render_jpeg", lambda src, *, max_dim: b"\xff\xd8\xff" + str(max_dim).encode())
+    monkeypatch.setattr(
+        media_store,
+        "_probe_video",
+        lambda src: media_store.VideoProbe("vp8", 1280, 720, 30.0, 10.0),
+    )
+    return server, base, media_dir
+
+
+def _user_files(media_dir) -> list:
+    return sorted(p.name for p in media_dir.glob("*.jpg") if ".thumb." not in p.name) if media_dir.is_dir() else []
+
+
+def test_gallery_list_shows_defaults(gallery_server) -> None:
+    _, base, _ = gallery_server
+    status, body = _get(base, f"{_GP}/list")
+    assert status == 200
+    assert 'id="gallery-grid"' in body
+    assert "Stage" in body and "Grey" in body
+
+
+def test_gallery_select_persists(gallery_server) -> None:
+    server, base, _ = gallery_server
+    status, body = _post_form(base, f"{_GP}/select", {"media_id": "default:grey"})
+    assert status == 200
+    assert load_config(server.config_path).testpattern_selected_media == "default:grey"
+
+
+def test_gallery_select_unknown_rejected(gallery_server) -> None:
+    server, base, _ = gallery_server
+    status, _body = _post_form(base, f"{_GP}/select", {"media_id": "ffffffffffffffff"})
+    assert status == 400
+    assert load_config(server.config_path).testpattern_selected_media == "default:stage"  # unchanged
+
+
+def test_gallery_upload_image_stores_file(gallery_server) -> None:
+    _, base, media_dir = gallery_server
+    status, body = _post_bytes(base, f"{_GP}/upload", _PNG)
+    assert status == 200
+    assert len(_user_files(media_dir)) == 1  # one normalised image landed
+
+
+def test_gallery_upload_rejects_unknown_format(gallery_server) -> None:
+    _, base, media_dir = gallery_server
+    status, body = _post_bytes(base, f"{_GP}/upload", _GIF)
+    assert status == 200  # HTMX swap with an inline error banner
+    assert "Unsupported file" in body
+    assert _user_files(media_dir) == []
+
+
+def test_gallery_upload_rejects_oversize(gallery_server, monkeypatch) -> None:
+    from openfollow.video import media_store
+
+    _, base, media_dir = gallery_server
+    monkeypatch.setattr(media_store, "MAX_VIDEO_UPLOAD_BYTES", 4)
+    status, body = _post_bytes(base, f"{_GP}/upload", _PNG + b"xxxxxxxx")
+    assert status == 200
+    assert "too large" in body.lower()
+    assert _user_files(media_dir) == []
+
+
+def test_gallery_capture_503_without_feed(gallery_server) -> None:
+    _, base, _ = gallery_server
+    status, body = _post_bytes(base, f"{_GP}/capture", b"")
+    assert status == 503
+    assert json.loads(body)["ok"] is False
+
+
+def test_gallery_capture_saves_frame(gallery_server, monkeypatch) -> None:
+    server, base, media_dir = gallery_server
+    monkeypatch.setattr(server, "get_full_snapshot", lambda: _JPEG + b"clean-frame")
+    status, body = _post_bytes(base, f"{_GP}/capture", b"")
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["ok"] is True
+    assert len(_user_files(media_dir)) == 1
+
+
+def test_gallery_delete_default_refused(gallery_server) -> None:
+    _, base, _ = gallery_server
+    status, body = _post_bytes(base, f"{_GP}/delete/default:stage", b"")
+    assert status == 400
+    assert "cannot be deleted" in body
+
+
+def test_gallery_delete_user_media(gallery_server) -> None:
+    _, base, media_dir = gallery_server
+    _post_bytes(base, f"{_GP}/upload", _PNG)
+    media_id = _user_files(media_dir)[0].removesuffix(".jpg")
+    status, _body = _post_bytes(base, f"{_GP}/delete/{media_id}", b"")
+    assert status == 200
+    assert _user_files(media_dir) == []
+
+
+def test_gallery_download_default_404(gallery_server) -> None:
+    _, base, _ = gallery_server
+    status, _body = _get(base, f"{_GP}/download/default:stage")
+    assert status == 404
+
+
+def test_gallery_thumb_stage_serves_asset(gallery_server) -> None:
+    _, base, _ = gallery_server
+    status, body = _get_raw(base, f"{_GP}/thumb/default:stage")
+    assert status == 200  # the bundled Stage asset
+    assert body[:3] == b"\xff\xd8\xff"  # JPEG

@@ -3,7 +3,7 @@
 <form id="mouse3d-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="mouse3d" data-help="mouse3d"
       hx-post="/section/mouse3d" hx-target="#mouse3d-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
-        <h2>3D Mouse</h2>
+        <h2>3D Mouse Input</h2>
         <span class="section-note">Steer the selected marker with a connected 6DOF 3D Mouse</span>
     </div>
 
@@ -185,8 +185,9 @@
         <h3 class="group-title">Buttons</h3>
         <div class="row">
             <button type="button" class="secondary small" hx-get="/section/mouse3d/detect"
-                    hx-target="#mouse3d-detect-result" hx-swap="innerHTML">Detect</button>
-            <span id="mouse3d-detect-result" class="muted">Hold a button on the device, then click Detect.</span>
+                    hx-target="#mouse3d-detect-result" hx-swap="innerHTML"
+                    hx-on::before-request="document.getElementById('mouse3d-detect-result').textContent='Listening – press a button now…'">Detect</button>
+            <span id="mouse3d-detect-result" class="muted">Click Detect, then press a button on the device.</span>
         </div>
         <div class="row">
             <div class="field">

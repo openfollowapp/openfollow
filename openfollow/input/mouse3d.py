@@ -23,6 +23,7 @@ import importlib.util
 import logging
 import math
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -42,6 +43,10 @@ _IDLE_POLL_S = 0.005
 _POLL_S = 0.004
 # Move-speed steps per second at full deflection for a ``speed``-mapped axis.
 _SPEED_AXIS_RATE = 6.0
+# Web "Detect" flow: how long to watch for a button press after the click, and
+# the poll cadence within that window.
+_DETECT_TIMEOUT_S = 2.0
+_DETECT_POLL_S = 0.01
 
 # Config source-axis name -> device State attribute.
 _AXIS_SOURCE = {
@@ -189,7 +194,7 @@ class Mouse3DHandler:
             return self._connected
 
     def latest_button(self) -> int | None:
-        """Return a currently-pressed button index, or ``None`` (Detect flow)."""
+        """Return a currently-pressed button index from the latest snapshot."""
         with self._lock:
             snap = self._snapshot
         if snap is None:
@@ -198,6 +203,57 @@ class Mouse3DHandler:
             if pressed:
                 return idx
         return None
+
+    def detect_pressed_button(self, timeout: float = _DETECT_TIMEOUT_S) -> int | None:
+        """Watch briefly for a button press, for the web Detect bind flow.
+
+        The operator clicks Detect, then presses the button to bind. When the
+        read thread is running (feature enabled) this watches the published
+        snapshot; otherwise it opens the device for a one-shot poll so buttons
+        can be bound while the feature is still disabled. Returns the first
+        pressed index seen within ``timeout`` seconds, or ``None``.
+        """
+        with self._lock:
+            running = self._thread is not None and self._thread.is_alive()
+        if running:
+            return self._poll_snapshot_button(timeout)
+        return self._poll_device_button(timeout)
+
+    def _poll_snapshot_button(self, timeout: float) -> int | None:
+        deadline = time.monotonic() + timeout
+        while True:
+            idx = self.latest_button()
+            if idx is not None:
+                return idx
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(_DETECT_POLL_S)
+
+    def _poll_device_button(self, timeout: float) -> int | None:
+        try:
+            factory = self._resolve_factory()
+        except (ImportError, OSError) as exc:
+            logger.debug("3D Mouse detect unavailable: %s", exc)
+            return None
+        device = self._open_device(factory)
+        if device is None:
+            return None
+        try:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    state = device.read()
+                except OSError:
+                    return None
+                if state is not None:
+                    buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
+                    for idx, pressed in enumerate(buttons):
+                        if pressed:
+                            return idx
+                time.sleep(_DETECT_POLL_S)
+            return None
+        finally:
+            _safe_close(device)
 
     # -- per-frame consume (GTK thread) ------------------------------------
 

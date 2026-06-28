@@ -1,10 +1,10 @@
-# 3D Mouse
+# 3D Mouse Input
 
-Steer the selected marker with a 6DOF "3D Mouse" – a spring-centred puck you push, pull, lift and twist. Off by default; turn it on with the **Enabled** checkbox. Because the puck is a rate device (it springs back to centre), deflection sets a *velocity*: hold it off-centre and the marker keeps moving; let go and the marker stops.
+Steer the selected marker with a 6DOF "3D Mouse" – a spring-centred puck you push, pull, lift and twist. Off by default; turn it on with the **Enabled** checkbox.
 
 **One device, the selected marker.** A single 3D Mouse drives whichever marker is currently selected, the same as the keyboard and the on-screen mouse. Use the marker-cycle buttons (below) to change which marker it steers.
 
-**Device not found.** If no 3D Mouse is connected – or the system library isn't installed – the section still saves, but nothing moves. On a fresh device, plug the unit in and the connection is picked up automatically; unplugging and re-plugging recovers on its own.
+**Device not found.** If no 3D Mouse is connected the section still saves, but nothing moves. On a fresh device, plug the unit in and the connection is picked up automatically; unplugging and re-plugging recovers on its own.
 
 ## Axis mapping
 
@@ -37,7 +37,7 @@ By default the three translations map to x / y / z and the rotations are off, so
 
 Every action binds to a device button by its **index** (a whole number). `-1` means unbound. Button counts vary by model – a compact unit has two, larger ones have many.
 
-**Detect** – hold a button on the device and click **Detect**; the index of the held button is shown so you can type it into a binding. (The device must be connected for Detect to read it.)
+**Detect** – click **Detect**, then press the button you want to bind; its index is shown so you can type it into a binding. It works whether or not the feature is enabled, as long as the device is connected.
 
 Bindable actions: **Reset marker** (return the marker to its default position), **Next / Previous marker** (cycle the selected marker), **Speed up / Speed down** (step the move-speed), **Toggle help**, **Toggle zones**, and **Settings menu**.
 

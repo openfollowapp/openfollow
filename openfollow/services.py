@@ -2454,11 +2454,16 @@ class AppRuntimeServices:
         return [(tid, x, y) for (_kind, tid), x, y in positions]
 
     def _mouse3d_latest_button(self) -> int | None:
-        """Latest 3D Mouse button held, for the web bind helper (or None)."""
+        """Watch briefly for a 3D Mouse button press, for the web bind helper.
+
+        Blocks up to the handler's detect window; runs on the web request
+        thread, so a Detect click feels responsive but can catch a press that
+        lands just after the click.
+        """
         im = self._app._input_manager
         if im is None:
             return None
-        return im.mouse3d_handler.latest_button()
+        return im.mouse3d_handler.detect_pressed_button()
 
     def update_window_title(self, title: str) -> None:
         self._apply_window_title(title)

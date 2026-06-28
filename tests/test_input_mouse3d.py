@@ -233,6 +233,33 @@ def test_latest_button_none_without_press() -> None:
     assert _handler().latest_button() is None  # no snapshot
 
 
+def test_detect_pressed_button_one_shot_when_not_running() -> None:
+    # Feature disabled / thread not started -> one-shot device open finds a press
+    # so buttons can be bound while configuring.
+    dev = FakeDevice([_state(buttons=[0, 1])])
+    h = Mouse3DHandler(Mouse3DConfig(enabled=False), device_factory=lambda: dev)
+    assert h._thread is None
+    assert h.detect_pressed_button(timeout=0.5) == 1
+    assert dev.closed is True  # one-shot probe opens then closes
+
+
+def test_detect_pressed_button_times_out_to_none() -> None:
+    dev = FakeDevice([_state(buttons=[0, 0])])  # no press, then read() -> None
+    h = Mouse3DHandler(Mouse3DConfig(enabled=False), device_factory=lambda: dev)
+    assert h.detect_pressed_button(timeout=0.05) is None
+
+
+def test_detect_pressed_button_uses_snapshot_when_running() -> None:
+    dev = FakeDevice([_state(buttons=[1, 0])])
+    h = Mouse3DHandler(Mouse3DConfig(enabled=True), device_factory=lambda: dev)
+    h.start()
+    try:
+        assert _wait_until(lambda: h._snapshot is not None)
+        assert h.detect_pressed_button(timeout=1.0) == 0
+    finally:
+        h.stop()
+
+
 # --------------------------------------------------------------------------- #
 # Worker thread (fake device)
 # --------------------------------------------------------------------------- #

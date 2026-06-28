@@ -4574,16 +4574,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/mouse3d/detect")
     def detect_mouse3d_button() -> Any:
-        """Return the 3D Mouse button currently held, for the bind helper.
+        """Watch for a 3D Mouse button press, for the bind helper.
 
-        Reads the live handler's latest snapshot; the operator holds a device
-        button and clicks Detect to read its index. Returns an HTML fragment so
-        HTMX can swap it into the result span.
+        The operator clicks Detect, then presses the button to bind; the
+        handler polls briefly (working whether or not the feature is enabled).
+        Returns an HTML fragment so HTMX can swap it into the result span.
         """
         idx = server.latest_mouse3d_button()
         if idx is None:
-            return '<span class="muted">Hold a button on the device, then click Detect.</span>'
-        return f"Last button: <strong>{idx}</strong> – enter this index in a binding above."
+            return '<span class="muted">No button detected. Click Detect, then press a button.</span>'
+        return f"Detected button <strong>{idx}</strong> – enter this index in a binding above."
 
     @app.post("/section/gamepad/detect-buttons")
     def start_button_detection() -> Any:

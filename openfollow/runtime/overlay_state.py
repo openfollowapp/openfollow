@@ -255,6 +255,11 @@ class OverlayState:
     mouse3d_connected: bool = False
     mouse3d_axis_map: dict[str, str] = field(default_factory=dict)
     mouse3d_buttons: dict[str, int] = field(default_factory=dict)
+    # Marker next/prev cycling is a single-controller affordance: with two or
+    # more controllers (gamepads + 3D mice) bound to their own markers, cycling
+    # the shared selection is suppressed, so the help overlay hides those rows
+    # for both gamepad and 3D mouse. Keyboard cycling is unaffected.
+    marker_cycle_enabled: bool = True
     # Virtual fader HUD stack; populated from VirtualFaderBus with show_on_display=True.
     virtual_faders_display: list[VirtualFaderDisplayData] = field(
         default_factory=list,
@@ -359,6 +364,7 @@ class OverlayState:
         self.mouse3d_connected = False
         self.mouse3d_axis_map = {}
         self.mouse3d_buttons = {}
+        self.marker_cycle_enabled = True
         self.show_zones = False
         self.zone_polygons = []
         self.zone_z_offset = 0.0

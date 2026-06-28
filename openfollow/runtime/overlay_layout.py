@@ -177,6 +177,7 @@ def build_help_sections(
     mouse3d_connected: bool = False,
     mouse3d_axis_map: dict[str, str] | None = None,
     mouse3d_buttons: dict[str, int] | None = None,
+    marker_cycle_enabled: bool = True,
 ) -> HelpSections:
     """Build titled help-line sections for overlay display."""
     keyboard: list[str] = []
@@ -247,7 +248,7 @@ def build_help_sections(
             z_down = _btn("move_z_down", "LT")
             if z_down:
                 controller.append(f"{z_down}: Z-")
-            if marker_cycle:
+            if marker_cycle and marker_cycle_enabled:
                 controller.append(marker_cycle)
             if speed_line:
                 controller.append(speed_line)
@@ -282,6 +283,10 @@ def build_help_sections(
                 if target_label is not None:  # "none" -> not shown
                     mouse3d.append(f"{axis_name}: {target_label}")
             for action, label in _MOUSE3D_BTN_LABELS:
+                # Marker next/prev hidden in multi-controller mode (the action
+                # is suppressed there, same as the gamepad cycle row).
+                if not marker_cycle_enabled and action in ("next_marker", "prev_marker"):
+                    continue
                 idx = buttons.get(action, -1)
                 if idx >= 0:
                     mouse3d.append(f"Btn {idx}: {label}")

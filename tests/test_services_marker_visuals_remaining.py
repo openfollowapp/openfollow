@@ -74,27 +74,17 @@ class _FakePsnReceiver:
         return bool(self._online.get(tid, True))
 
 
-class _FakeGamepadHandlerShim:
-    """Carries ``joysticks`` for the multi-pad help-label gate."""
-
-    def __init__(self, joystick_count: int = 0) -> None:
-        self.joysticks = {idx: object() for idx in range(joystick_count)}
-
-
 class _FakeInputManager:
     def __init__(
         self,
         marker_speeds: dict[int, float] | None = None,
         controller_info: list[dict] | None = None,
         keyboard_connected: bool = False,
-        joystick_count: int = 0,
         mouse3d_connected: bool = False,
     ) -> None:
         self._marker_speeds = marker_speeds or {}
         self._controller_info = controller_info or []
         self._kbd_connected = keyboard_connected
-        # Joystick count gates next/prev help labels in multi-pad mode.
-        self.gamepad_handler = _FakeGamepadHandlerShim(joystick_count)
         self.mouse3d_handler = SimpleNamespace(connected=mouse3d_connected)
 
     def get_marker_gamepad_speeds(self) -> dict[int, float]:
@@ -1170,32 +1160,59 @@ class TestStatusFlagsSnapshot:
         assert state.status_flags == []
 
 
-class TestMultiPadHelpLabels:
-    """DPAD next/prev is hidden in multi-pad mode."""
+def _controller_entry(unified_idx: int, *, name: str = "Pad", connected: bool = True) -> dict:
+    """A unified controller-info entry as ``get_controller_info`` returns."""
+    return {
+        "controller_index": unified_idx,
+        "name": name,
+        "connected": connected,
+        "marker_id": None,
+        "effective_speed": 1.0,
+        "backend": "pygame",
+    }
 
-    def test_single_gamepad_button_labels_include_next_prev(self, pool: OverlayStatePool) -> None:
-        app = _build_app(
-            input_manager=_FakeInputManager(joystick_count=1),
-        )
+
+class TestMultiControllerMarkerCycle:
+    """Marker next/prev cycling is hidden when ≥2 controllers (gamepads +
+    3D mice, the unified slot space) are connected."""
+
+    def test_single_controller_enables_cycle(self, pool: OverlayStatePool) -> None:
+        app = _build_app(input_manager=_FakeInputManager(controller_info=[_controller_entry(0)]))
         state = _build(app, pool)
+        assert state.marker_cycle_enabled is True
+        # The bindings stay in the label dicts; only the help row is gated.
         assert "next_marker" in state.button_labels
         assert "prev_marker" in state.button_labels
 
-    def test_multi_gamepad_button_labels_omit_next_prev(self, pool: OverlayStatePool) -> None:
+    def test_two_gamepads_disable_cycle(self, pool: OverlayStatePool) -> None:
         app = _build_app(
-            input_manager=_FakeInputManager(joystick_count=2),
+            input_manager=_FakeInputManager(
+                controller_info=[_controller_entry(0), _controller_entry(1)],
+            )
         )
         state = _build(app, pool)
-        assert "next_marker" not in state.button_labels
-        assert "prev_marker" not in state.button_labels
+        assert state.marker_cycle_enabled is False
 
-    def test_no_input_manager_includes_next_prev(self, pool: OverlayStatePool) -> None:
-        """No input manager (early startup) keeps the legacy labels –
-        gate logic uses ``<= 1`` so 0 joysticks behaves like single-pad."""
+    def test_gamepad_plus_3d_mouse_disables_cycle(self, pool: OverlayStatePool) -> None:
+        """A 3D mouse paired with a gamepad is two unified controllers, so
+        cycling is suppressed for both – the cross-type case."""
+        app = _build_app(
+            input_manager=_FakeInputManager(
+                controller_info=[
+                    _controller_entry(0, name="3D Mouse"),
+                    _controller_entry(1),
+                ],
+            )
+        )
+        state = _build(app, pool)
+        assert state.marker_cycle_enabled is False
+
+    def test_no_input_manager_enables_cycle(self, pool: OverlayStatePool) -> None:
+        """No input manager (early startup) keeps cycling enabled – zero
+        controllers behaves like a single controller (``<= 1``)."""
         app = _build_app(input_manager=None)
         state = _build(app, pool)
-        assert "next_marker" in state.button_labels
-        assert "prev_marker" in state.button_labels
+        assert state.marker_cycle_enabled is True
 
 
 # --------------------------------------------------------------------------- #

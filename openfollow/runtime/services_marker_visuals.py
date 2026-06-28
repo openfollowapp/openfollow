@@ -639,12 +639,13 @@ def build_marker_visual_state(
         state.button_detection = None
 
     cc = cfg.controller
-    # With ≥2 controllers connected, DPAD next/prev would rotate the
-    # shared ``_selected_id`` across operators. The bindings are
-    # suppressed at the gamepad layer (``GamepadHandler.update``) AND
-    # hidden from the help overlay so the operator isn't promised a
-    # no-op control. Single-gamepad keeps the full label set.
-    joystick_count = len(app._input_manager.gamepad_handler.joysticks) if app._input_manager is not None else 0
+    # Marker next/prev cycling rotates the shared ``_selected_id``. With ≥2
+    # controllers connected (gamepads + 3D mice, the unified slot space), the
+    # InputManager suppresses the cycling action so operators don't fight over
+    # the selection; mirror that by hiding the next/prev rows from the gamepad
+    # and 3D mouse help so neither promises a no-op control. ``controller_info``
+    # has one entry per unified controller slot, matching the action gate.
+    state.marker_cycle_enabled = len(controller_info) <= 1
     state.button_labels = {
         "reset": cc.btn_reset,
         "toggle_help": cc.btn_toggle_help,
@@ -653,14 +654,8 @@ def build_marker_visual_state(
         "speed_up": cc.btn_speed_up,
         "move_z_down": cc.btn_move_z_down,
         "move_z_up": cc.btn_move_z_up,
-        **(
-            {
-                "next_marker": cc.btn_next_marker,
-                "prev_marker": cc.btn_prev_marker,
-            }
-            if joystick_count <= 1
-            else {}
-        ),
+        "next_marker": cc.btn_next_marker,
+        "prev_marker": cc.btn_prev_marker,
         "settings": cc.btn_settings,
         "menu_confirm": cc.btn_menu_confirm,
         "menu_cancel": cc.btn_menu_cancel,

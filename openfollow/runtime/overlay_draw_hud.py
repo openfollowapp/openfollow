@@ -67,6 +67,7 @@ def _help_sections_for(
         state.mouse3d_connected,
         tuple(sorted((state.mouse3d_axis_map or {}).items())),
         tuple(sorted((state.mouse3d_buttons or {}).items())),
+        state.marker_cycle_enabled,
     )
     cached = renderer._help_sections_cache
     if cached is not None and cached[0] == key:
@@ -84,6 +85,7 @@ def _help_sections_for(
         mouse3d_connected=state.mouse3d_connected,
         mouse3d_axis_map=state.mouse3d_axis_map,
         mouse3d_buttons=state.mouse3d_buttons,
+        marker_cycle_enabled=state.marker_cycle_enabled,
     )
     renderer._help_sections_cache = (key, result)
     return result

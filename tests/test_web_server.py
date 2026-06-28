@@ -5414,7 +5414,6 @@ def gallery_server(live_server, tmp_path, monkeypatch):
     server, base = live_server
     media_dir = tmp_path / "gallery-media"
     monkeypatch.setattr(media_store, "resolve_media_storage_path", lambda: media_dir)
-    monkeypatch.setattr(media_store, "_webp_supported", lambda: False)
     monkeypatch.setattr(media_store, "_render_jpeg", lambda src, *, max_dim: b"\xff\xd8\xff" + str(max_dim).encode())
     monkeypatch.setattr(
         media_store,

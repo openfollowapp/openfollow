@@ -2,9 +2,9 @@
 # Copyright (C) 2026 OpenFollow Project
 """Unit tests for the Media Gallery store.
 
-The GStreamer seams (``_render_jpeg``, ``_probe_video``, ``_webp_supported``)
-are monkeypatched, so the storage layout, id rules, hard caps, format allowlist,
-and video-limit checks are all exercised without a live pipeline.
+The GStreamer seams (``_render_jpeg``, ``_probe_video``) are monkeypatched, so
+the storage layout, id rules, hard caps, format allowlist, and video-limit
+checks are all exercised without a live pipeline.
 """
 
 from __future__ import annotations
@@ -28,10 +28,9 @@ _GIF = b"GIF89a" + b"\x00" * 10
 
 @pytest.fixture
 def storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point the store at a temp dir and default WebP support off."""
+    """Point the store at a temp dir."""
     media_dir = tmp_path / "media"
     monkeypatch.setattr(ms, "resolve_media_storage_path", lambda: media_dir)
-    monkeypatch.setattr(ms, "_webp_supported", lambda: False)
     return media_dir
 
 
@@ -137,15 +136,10 @@ def test_save_uploaded_image_normalises_and_thumbnails(
     assert item in [i for i in ms.list_media() if not i.read_only] or ms.resolve(item.media_id) is not None
 
 
-def test_save_uploaded_image_accepts_webp_only_when_supported(
-    storage: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_save_uploaded_image_accepts_webp(storage: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # webpdec ships in gstreamer1.0-plugins-bad (a required dependency).
     monkeypatch.setattr(ms, "_render_jpeg", _fake_render)
-    with pytest.raises(ms.MediaStoreError, match="Unsupported image format"):
-        ms.save_uploaded_image(_staged(tmp_path, "a.webp", _WEBP))
-
-    monkeypatch.setattr(ms, "_webp_supported", lambda: True)
-    assert ms.save_uploaded_image(_staged(tmp_path, "b.webp", _WEBP)).kind == "image"
+    assert ms.save_uploaded_image(_staged(tmp_path, "a.webp", _WEBP)).kind == "image"
 
 
 @pytest.mark.parametrize("data", [_GIF, _WEBM, b"not-an-image"])

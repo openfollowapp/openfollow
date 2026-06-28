@@ -11,7 +11,7 @@ The storage directory is device-local *by construction* (resolved per host,
 never a config field), so nothing here ever crosses machines.
 
 Heavy media operations (decode, scale, encode, probe) run through GStreamer
-behind the ``_render_jpeg`` / ``_probe_video`` / ``_webp_supported`` seams.
+behind the ``_render_jpeg`` / ``_probe_video`` seams.
 Everything security-relevant – the format allowlist, the byte-size caps, the
 id / traversal rules, and the codec / dimension / fps / duration checks – is
 pure Python so it is fully exercised without a live pipeline.
@@ -349,9 +349,10 @@ def save_uploaded_image(staged: Path) -> MediaItem:
     if size > MAX_IMAGE_UPLOAD_BYTES:
         limit_mb = MAX_IMAGE_UPLOAD_BYTES // (1024 * 1024)
         raise MediaStoreError(f"Image too large (max {limit_mb} MB).")
+    # WebP decode rides on gstreamer1.0-plugins-bad (webpdec), a required
+    # system dependency the SRT/RTSP plugins also need, so it is always present.
     fmt = _sniff_format(_read_header(staged))
-    allowed = {"jpeg", "png"} | ({"webp"} if _webp_supported() else set())
-    if fmt not in allowed:
+    if fmt not in {"jpeg", "png", "webp"}:
         raise MediaStoreError("Unsupported image format. Use JPEG, PNG, or WebP.")
 
     storage = _ensure_storage_dir()
@@ -435,20 +436,6 @@ def delete(media_id: str) -> None:
 # These wrap the only GStreamer-dependent work. Tests monkeypatch them; the real
 # pipelines below are verified on-device. Each raises ``MediaStoreError`` on
 # failure so callers handle media problems uniformly.
-
-
-def _webp_supported() -> bool:  # pragma: no cover - GStreamer, verified on-device
-    """Whether this host can decode WebP (the ``webpdec`` element is present)."""
-    try:
-        import gi
-
-        gi.require_version("Gst", "1.0")
-        from gi.repository import Gst
-
-        Gst.init(None)
-        return Gst.ElementFactory.find("webpdec") is not None
-    except Exception:
-        return False
 
 
 def _render_jpeg(source: Path, *, max_dim: int) -> bytes:  # pragma: no cover - GStreamer, verified on-device

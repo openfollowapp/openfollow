@@ -88,12 +88,14 @@ class _FakeInputManager:
         controller_info: list[dict] | None = None,
         keyboard_connected: bool = False,
         joystick_count: int = 0,
+        mouse3d_connected: bool = False,
     ) -> None:
         self._marker_speeds = marker_speeds or {}
         self._controller_info = controller_info or []
         self._kbd_connected = keyboard_connected
         # Joystick count gates next/prev help labels in multi-pad mode.
         self.gamepad_handler = _FakeGamepadHandlerShim(joystick_count)
+        self.mouse3d_handler = SimpleNamespace(connected=mouse3d_connected)
 
     def get_marker_gamepad_speeds(self) -> dict[int, float]:
         return dict(self._marker_speeds)
@@ -753,6 +755,43 @@ class TestInputFlags:
         app = _build_app(input_manager=mgr)
         state = _build(app, pool)
         assert state.controller_connected is False
+
+
+class TestMouse3dHelpBindings:
+    """The HUD help overlay surfaces the 3D mouse axis / button map."""
+
+    def test_populated_when_enabled_and_connected(self, pool: OverlayStatePool) -> None:
+        mgr = _FakeInputManager(mouse3d_connected=True)
+        app = _build_app(input_manager=mgr)
+        app._config.mouse3d.enabled = True
+        state = _build(app, pool)
+        assert state.mouse3d_connected is True
+        # Axis map mirrors the per-axis targets from config (tuned defaults).
+        assert state.mouse3d_axis_map["pan_x"] == "x"
+        assert state.mouse3d_axis_map["yaw"] == "speed"
+        # Button map drops the ``btn_`` prefix and carries the raw index.
+        assert state.mouse3d_buttons["next_marker"] == 0
+        assert state.mouse3d_buttons["prev_marker"] == 1
+
+    def test_off_when_feature_disabled(self, pool: OverlayStatePool) -> None:
+        mgr = _FakeInputManager(mouse3d_connected=True)
+        app = _build_app(input_manager=mgr)
+        app._config.mouse3d.enabled = False
+        state = _build(app, pool)
+        assert state.mouse3d_connected is False
+
+    def test_off_when_device_disconnected(self, pool: OverlayStatePool) -> None:
+        mgr = _FakeInputManager(mouse3d_connected=False)
+        app = _build_app(input_manager=mgr)
+        app._config.mouse3d.enabled = True
+        state = _build(app, pool)
+        assert state.mouse3d_connected is False
+
+    def test_off_without_input_manager(self, pool: OverlayStatePool) -> None:
+        app = _build_app(input_manager=None)
+        app._config.mouse3d.enabled = True
+        state = _build(app, pool)
+        assert state.mouse3d_connected is False
 
 
 # --------------------------------------------------------------------------- #

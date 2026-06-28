@@ -250,6 +250,11 @@ class OverlayState:
     button_labels: dict[str, str] = field(default_factory=dict)
     # Configurable keyboard labels for help overlay (action -> key name)
     keyboard_labels: dict[str, str] = field(default_factory=dict)
+    # 3D Mouse bindings for the help overlay: axis -> target, action -> button
+    # index. ``mouse3d_connected`` gates the help section (enabled + a device).
+    mouse3d_connected: bool = False
+    mouse3d_axis_map: dict[str, str] = field(default_factory=dict)
+    mouse3d_buttons: dict[str, int] = field(default_factory=dict)
     # Virtual fader HUD stack; populated from VirtualFaderBus with show_on_display=True.
     virtual_faders_display: list[VirtualFaderDisplayData] = field(
         default_factory=list,
@@ -351,6 +356,9 @@ class OverlayState:
         self.button_detection = None
         self.button_labels = {}
         self.keyboard_labels = {}
+        self.mouse3d_connected = False
+        self.mouse3d_axis_map = {}
+        self.mouse3d_buttons = {}
         self.show_zones = False
         self.zone_polygons = []
         self.zone_z_offset = 0.0

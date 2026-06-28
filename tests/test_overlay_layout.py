@@ -124,6 +124,51 @@ def test_build_help_sections_mouse_omits_scroll_z_when_unavailable() -> None:
     assert any("Move: Set X/Y position" in line for line in mouse)  # other lines remain
 
 
+def test_build_help_sections_mouse3d_shows_axis_and_button_bindings() -> None:
+    sections = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=False,
+            controller_connected=False,
+            mouse3d_connected=True,
+            mouse3d_axis_map={
+                "pan_x": "x",
+                "pan_y": "y",
+                "lift": "z",
+                "pitch": "none",
+                "yaw": "speed",
+                "roll": "fader",
+            },
+            mouse3d_buttons={"next_marker": 0, "prev_marker": 1, "reset": -1},
+        )
+    )
+    assert "3D Mouse" in sections
+    lines = sections["3D Mouse"]
+    assert "Pan X: Move X" in lines
+    assert "Lift: Move Z" in lines
+    assert "Yaw: Speed" in lines
+    assert "Roll: Fader" in lines
+    assert "Btn 0: Marker next" in lines
+    assert "Btn 1: Marker prev" in lines
+    # "none"-mapped axis and an unbound (-1) button are omitted.
+    assert not any("Pitch" in line for line in lines)
+    assert not any("Reset" in line for line in lines)
+
+
+def test_build_help_sections_mouse3d_omitted_when_disconnected() -> None:
+    sections = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=False,
+            controller_connected=False,
+            mouse3d_connected=False,
+            mouse3d_axis_map={"pan_x": "x"},
+            mouse3d_buttons={"reset": 0},
+        )
+    )
+    assert "3D Mouse" not in sections
+
+
 def test_build_help_sections_reflects_keyboard_labels() -> None:
     sections = build_help_sections(
         mode="normal",

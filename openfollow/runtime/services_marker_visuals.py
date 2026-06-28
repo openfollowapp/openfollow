@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy.typing as npt
 
-from openfollow.configuration import GridConfig
+from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, GridConfig
 from openfollow.net_utils import list_iface_ipv4
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
 from openfollow.runtime.overlay_state import (
@@ -698,6 +698,14 @@ def build_marker_visual_state(
     )
     state.mouse_enabled = cfg.controller.mouse_enabled
     state.mouse_double_click_reset = cfg.controller.mouse_double_click_reset
+    # 3D Mouse help: show its axis / button bindings when the feature is enabled
+    # and a device is actually connected (mirrors the gamepad-connected gate).
+    m3d_cfg = cfg.mouse3d
+    state.mouse3d_connected = bool(
+        m3d_cfg.enabled and app._input_manager is not None and app._input_manager.mouse3d_handler.connected
+    )
+    state.mouse3d_axis_map = {axis: getattr(m3d_cfg, f"map_{axis}") for axis in MOUSE3D_AXES}
+    state.mouse3d_buttons = {name[4:]: getattr(m3d_cfg, name) for name in MOUSE3D_BUTTON_FIELDS}
     state.show_hud_help = app._show_hud_help
 
     # Virtual fader stack. Read from the running bus and surface only the

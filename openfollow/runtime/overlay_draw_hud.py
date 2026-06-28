@@ -64,6 +64,9 @@ def _help_sections_for(
         state.mouse_double_click_reset,
         tuple(sorted((state.button_labels or {}).items())),
         tuple(sorted((state.keyboard_labels or {}).items())),
+        state.mouse3d_connected,
+        tuple(sorted((state.mouse3d_axis_map or {}).items())),
+        tuple(sorted((state.mouse3d_buttons or {}).items())),
     )
     cached = renderer._help_sections_cache
     if cached is not None and cached[0] == key:
@@ -78,6 +81,9 @@ def _help_sections_for(
         scroll_z=sys.platform != "darwin",
         button_labels=state.button_labels,
         keyboard_labels=state.keyboard_labels,
+        mouse3d_connected=state.mouse3d_connected,
+        mouse3d_axis_map=state.mouse3d_axis_map,
+        mouse3d_buttons=state.mouse3d_buttons,
     )
     renderer._help_sections_cache = (key, result)
     return result

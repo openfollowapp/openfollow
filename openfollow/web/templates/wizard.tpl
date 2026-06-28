@@ -508,7 +508,7 @@
       <button type="button" class="secondary" onclick="wizardGo(1)">Back</button>
       <span class="spacer"></span>
       <button type="button" class="secondary" onclick="saveWizardVideoSource()">Save</button>
-      <button type="button" class="save-btn" onclick="wizardGo(3)">Next</button>
+      <button type="button" class="save-btn" onclick="saveWizardVideoSource(); wizardGo(3)">Save &amp; Next</button>
     </div>
   </div>
 </div>
@@ -2113,8 +2113,9 @@
     }
   }
 
-  window.loadSnapshot = function() {
-    fetch('/api/video/snapshot/full').then(function(r) {
+  window.loadSnapshot = function(attempt) {
+    attempt = attempt || 0;
+    fetch('/api/video/snapshot/full?t=' + Date.now()).then(function(r) {
       if (!r.ok) throw new Error('No feed');
       return r.blob();
     }).then(function(blob) {
@@ -2135,7 +2136,13 @@
       };
       img.src = nextUrl;
     }).catch(function() {
-      showNoFeed();
+      // A just-changed source may still be connecting – retry briefly so the
+      // new feed appears on its own, without a manual Refresh Image.
+      if (attempt < 6) {
+        setTimeout(function() { loadSnapshot(attempt + 1); }, 700);
+      } else {
+        showNoFeed();
+      }
     });
   };
 

@@ -117,6 +117,18 @@ class TestImageChain:
         assert pipeline.get_by_name("image_scale_caps") is not None
         assert pipeline.get_by_name("convert") is not None
 
+    def test_image_chain_forces_fixed_1080p_output(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A fixed output size (not a range) keeps the picture crisp on the HDMI
+        # display; a range lets the sink negotiate a tiny default (640x360).
+        jpg = tmp_path / "stage_default.jpg"
+        jpg.write_bytes(b"fake")
+        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
+        pipeline = _build({"testpattern_selected_media": media_store.DEFAULT_STAGE_ID})
+        caps = pipeline.get_by_name("image_scale_caps").properties["caps"].to_string()
+        assert "width=1920" in caps and "height=1080" in caps
+        assert "[1," not in caps  # not a range
+        assert pipeline.get_by_name("imagevideoscale").properties["add-borders"] is True
+
     def test_user_image_builds_image_chain(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         img = tmp_path / "pic.jpg"
         img.write_bytes(b"jpeg")

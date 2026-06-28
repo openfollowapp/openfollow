@@ -29,15 +29,15 @@ from openfollow.video.inputs._base import (
 
 logger = logging.getLogger(__name__)
 
-# Output resolution for the synthetic Grey pattern, and the scale ceiling for
-# images/clips. Images and clips fit within this box preserving aspect (the
-# capsfilter range never upscales); the sink scales to the window.
+# Fixed output resolution for the Grey pattern, images, and clips. It must be a
+# fixed size, not a range: with a range, videoscale defers to the gtksink's
+# preferred size (a tiny default), so the picture renders at that size and looks
+# soft on the HDMI display. videoscale runs with add-borders so non-16:9 media
+# letterboxes (preserving aspect) instead of stretching.
 _OUTPUT_WIDTH = 1920
 _OUTPUT_HEIGHT = 1080
 _FRAMERATE = "30/1"
-_FIT_CAPS = (
-    f"video/x-raw,width=(int)[1,{_OUTPUT_WIDTH}],height=(int)[1,{_OUTPUT_HEIGHT}],pixel-aspect-ratio=(fraction)1/1"
-)
+_OUTPUT_CAPS = f"video/x-raw,width={_OUTPUT_WIDTH},height={_OUTPUT_HEIGHT}"
 
 _ASSET_DIR = Path(__file__).parent / "assets"
 _STAGE_JPG = _ASSET_DIR / "stage_default.jpg"
@@ -183,8 +183,9 @@ class MediaGalleryInput(VideoInputBase):
 
         pre_convert = Gst.ElementFactory.make("videoconvert", "image_pre_convert")
         scale = Gst.ElementFactory.make("videoscale", "imagevideoscale")
+        scale.set_property("add-borders", True)
         scale_caps = Gst.ElementFactory.make("capsfilter", "image_scale_caps")
-        scale_caps.set_property("caps", Gst.Caps.from_string(_FIT_CAPS))
+        scale_caps.set_property("caps", Gst.Caps.from_string(_OUTPUT_CAPS))
 
         freeze = Gst.ElementFactory.make("imagefreeze", "image_imagefreeze")
         if freeze is None:
@@ -225,8 +226,9 @@ class MediaGalleryInput(VideoInputBase):
             raise RuntimeError("decodebin GStreamer element not found")
 
         scale = Gst.ElementFactory.make("videoscale", "clipvideoscale")
+        scale.set_property("add-borders", True)
         scale_caps = Gst.ElementFactory.make("capsfilter", "clip_scale_caps")
-        scale_caps.set_property("caps", Gst.Caps.from_string(_FIT_CAPS))
+        scale_caps.set_property("caps", Gst.Caps.from_string(_OUTPUT_CAPS))
         convert = Gst.ElementFactory.make("videoconvert", "convert")
 
         for elem in (src, decode, scale, scale_caps, convert):

@@ -159,6 +159,7 @@ class GstNativeSinkReceiver:
             on_async_done=self._handle_bus_async_done,
             on_error=self._handle_bus_error,
             on_eos=self._handle_bus_eos,
+            on_segment_done=self._handle_bus_segment_done,
             is_placeholder_pipeline=lambda: self._state.is_placeholder_pipeline,
             get_input_display_name=lambda: self._input.display_name,
         )
@@ -853,6 +854,15 @@ class GstNativeSinkReceiver:
             return
         self._state.mark_disconnected()
         self._schedule_reconnect("End of stream")
+
+    def _handle_bus_segment_done(self, message: Any) -> None:
+        # Drives a looping input's gapless loop. GstPipeline aggregates the
+        # segment-done from every sink (the video sink plus any detection /
+        # snapshot appsink) into ONE message posted by the pipeline, so this
+        # fires exactly once per loop pass regardless of sink count - no
+        # per-sink filtering is needed or wanted.
+        if self._pipeline is not None:
+            self._input.on_bus_segment_done(self._pipeline)
 
     def _on_pad_event(self, pad: Any, info: Any) -> int:
         event = info.get_event()

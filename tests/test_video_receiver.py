@@ -316,6 +316,7 @@ class FakeInput:
         super().__init__()
         self.cleanup_calls = 0
         self.async_done_calls = 0
+        self.segment_done_calls = 0
         self.discover_results: list[list[str]] | None = None
         self.discover_calls: list[float] = []
 
@@ -333,6 +334,10 @@ class FakeInput:
 
     def on_bus_async_done(self, pipeline: Any) -> None:
         self.async_done_calls += 1
+
+    def on_bus_segment_done(self, pipeline: Any) -> bool:
+        self.segment_done_calls += 1
+        return True
 
     def cleanup(self) -> None:
         self.cleanup_calls += 1
@@ -1299,6 +1304,26 @@ class TestSaveSourceToConfig:
 # --------------------------------------------------------------------------- #
 # Reconnect lifecycle
 # --------------------------------------------------------------------------- #
+
+
+class TestSegmentDoneLoop:
+    """``_handle_bus_segment_done`` drives the Media Gallery clip's gapless loop.
+
+    GstPipeline aggregates each sink's segment-done into one message posted by
+    the pipeline, so the receiver forwards it without per-sink filtering.
+    """
+
+    def test_segment_done_drives_the_loop(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline = FakePipeline()
+        r._handle_bus_segment_done(object())  # aggregated message; src not inspected
+        assert r._input.segment_done_calls == 1  # type: ignore[attr-defined]
+
+    def test_segment_done_without_pipeline_is_noop(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline = None
+        r._handle_bus_segment_done(object())
+        assert r._input.segment_done_calls == 0  # type: ignore[attr-defined]
 
 
 class TestReconnect:

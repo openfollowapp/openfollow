@@ -65,8 +65,10 @@ class MediaGalleryInput(VideoInputBase):
 
     def __init__(self) -> None:
         super().__init__()
-        # Set per build; gates EOS-driven looping (only clips loop).
+        # Set per build; gates seamless looping (only clips loop).
         self._is_video = False
+        # True once the segment-loop seek has been issued for this pipeline.
+        self._loop_armed = False
 
     @classmethod
     def config_fields(cls) -> list[ConfigField]:
@@ -114,6 +116,7 @@ class MediaGalleryInput(VideoInputBase):
             raise RuntimeError("No video sink available for media gallery pipeline")
 
         self._is_video = item.kind == "video"
+        self._loop_armed = False
         if item.media_id == media_store.DEFAULT_GREY_ID:
             head = self._build_grey_chain(pipeline)
         elif item.kind == "video":
@@ -211,8 +214,11 @@ class MediaGalleryInput(VideoInputBase):
         """``filesrc → decodebin → scale → convert`` for a looping clip.
 
         ``decodebin`` exposes the decoded video on a dynamic pad, linked on
-        ``pad-added``; audio pads (if any) are ignored. Looping is handled by
-        :meth:`on_bus_eos` seeking back to the start.
+        ``pad-added``; audio pads (if any) are ignored. Looping is seamless: a
+        segment seek (armed in :meth:`on_bus_async_done`) makes the clip post
+        ``SEGMENT_DONE`` instead of ``EOS`` at the end, and
+        :meth:`on_bus_segment_done` queues the next iteration with a
+        non-flushing seek so the sink never stops.
         """
         from gi.repository import Gst
 
@@ -253,22 +259,49 @@ class MediaGalleryInput(VideoInputBase):
         if sink_pad is not None and not sink_pad.is_linked():
             pad.link(sink_pad)
 
-    def on_bus_async_done(self, pipeline: Any) -> None:
-        pipeline.set_latency(0)
+    def _segment_seek(self, pipeline: Any, *, flush: bool) -> bool:
+        """Seek 0 → end in SEGMENT mode.
 
-    def on_bus_eos(self, pipeline: Any) -> bool:
-        """Loop a clip by seeking to the start; report handled so the receiver
-        does not treat EOS as a disconnect. Stills/Grey never reach EOS."""
-        if not self._is_video:
-            return False
+        SEGMENT mode makes the clip post ``SEGMENT_DONE`` (not ``EOS``) when it
+        reaches the end. The non-flushing variant (``flush=False``) queues the
+        next iteration gaplessly – the sink keeps running, so no frame gap, no
+        re-preroll, and the stall watchdog never trips. The flushing variant
+        arms the loop (or recovers from a stray EOS).
+        """
         from gi.repository import Gst
 
-        ok = pipeline.seek_simple(
-            Gst.Format.TIME,
-            Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
-            0,
-        )
-        return bool(ok)
+        flags = Gst.SeekFlags.SEGMENT
+        if flush:
+            flags |= Gst.SeekFlags.FLUSH
+        ok, duration = pipeline.query_duration(Gst.Format.TIME)
+        if ok and duration > 0:
+            return bool(pipeline.seek(1.0, Gst.Format.TIME, flags, Gst.SeekType.SET, 0, Gst.SeekType.SET, duration))
+        # Duration not known yet: leave the stop edge alone (plays to natural
+        # end, where SEGMENT mode still posts SEGMENT_DONE).
+        return bool(pipeline.seek(1.0, Gst.Format.TIME, flags, Gst.SeekType.SET, 0, Gst.SeekType.NONE, 0))
+
+    def on_bus_async_done(self, pipeline: Any) -> None:
+        pipeline.set_latency(0)
+        # Arm seamless looping once per pipeline. The arming seek flushes, but
+        # it happens at startup (the clip is at ~0), so there is no visible glitch.
+        if self._is_video and not self._loop_armed and self._segment_seek(pipeline, flush=True):
+            self._loop_armed = True
+
+    def on_bus_segment_done(self, pipeline: Any) -> bool:
+        """Loop the clip gaplessly with a non-flushing segment seek. Stills /
+        Grey never arm a segment, so they never reach here."""
+        if not self._is_video:
+            return False
+        return self._segment_seek(pipeline, flush=False)
+
+    def on_bus_eos(self, pipeline: Any) -> bool:
+        """SEGMENT looping suppresses EOS; a stray EOS (e.g. before the loop is
+        armed) re-arms the seamless loop rather than reading as a disconnect.
+        Report unhandled if the re-seek fails so the receiver can recover."""
+        if not self._is_video:
+            return False
+        self._loop_armed = self._segment_seek(pipeline, flush=True)
+        return self._loop_armed
 
     @classmethod
     def web_ui_html(cls, config: dict[str, Any]) -> str:

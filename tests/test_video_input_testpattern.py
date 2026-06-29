@@ -284,23 +284,97 @@ class TestSharedAndHooks:
         MediaGalleryInput().on_bus_async_done(pipeline)
         assert pipeline.latency_values == [0]
 
-    def test_on_bus_eos_loops_a_clip(self) -> None:
+    def test_on_bus_async_done_arms_segment_loop_once_for_a_clip(self) -> None:
+        # The arming seek must be SEGMENT (so the clip posts SEGMENT_DONE, not
+        # EOS) and must fire exactly once even though ASYNC_DONE repeats.
+        fake = make_fake_gst()
+        plugin = MediaGalleryInput()
+        plugin._is_video = True
+        pipeline = FakePipeline("clip")
+        with patch("gi.repository.Gst", fake):
+            plugin.on_bus_async_done(pipeline)
+            plugin.on_bus_async_done(pipeline)  # second preroll must not re-arm
+        assert plugin._loop_armed is True
+        assert len(pipeline.segment_seeks) == 1
+        flags = pipeline.segment_seeks[0][2]
+        assert flags & fake.SeekFlags.SEGMENT
+        assert flags & fake.SeekFlags.FLUSH  # arming flushes once at startup
+
+    def test_on_bus_async_done_does_not_arm_for_a_still(self) -> None:
+        fake = make_fake_gst()
+        plugin = MediaGalleryInput()  # _is_video defaults False
+        pipeline = FakePipeline("img")
+        with patch("gi.repository.Gst", fake):
+            plugin.on_bus_async_done(pipeline)
+        assert plugin._loop_armed is False
+        assert pipeline.segment_seeks == []
+
+    def test_on_bus_async_done_stays_unarmed_if_arming_seek_fails(self) -> None:
+        # A failed arming seek must not flip the armed flag (so the next
+        # ASYNC_DONE retries), but latency is still set.
+        fake = make_fake_gst()
+        plugin = MediaGalleryInput()
+        plugin._is_video = True
+        pipeline = FakePipeline("clip")
+        pipeline.seek_ok = False
+        with patch("gi.repository.Gst", fake):
+            plugin.on_bus_async_done(pipeline)
+        assert plugin._loop_armed is False
+        assert pipeline.latency_values == [0]
+
+    def test_on_bus_segment_done_loops_a_clip_without_flushing(self) -> None:
+        # The seamless loop: a non-flushing segment seek back to the start.
+        fake = make_fake_gst()
+        plugin = MediaGalleryInput()
+        plugin._is_video = True
+        pipeline = FakePipeline("clip")
+        with patch("gi.repository.Gst", fake):
+            handled = plugin.on_bus_segment_done(pipeline)
+        assert handled is True
+        _rate, _fmt, flags, _st, start, _stop_t, _stop = pipeline.segment_seeks[0]
+        assert flags & fake.SeekFlags.SEGMENT
+        assert not flags & fake.SeekFlags.FLUSH  # must not flush -> no frame gap
+        assert start == 0
+
+    def test_on_bus_segment_done_ignores_non_video(self) -> None:
+        plugin = MediaGalleryInput()  # _is_video defaults False
+        pipeline = FakePipeline("img")
+        assert plugin.on_bus_segment_done(pipeline) is False
+        assert pipeline.segment_seeks == []
+
+    def test_segment_seek_falls_back_to_open_stop_when_duration_unknown(self) -> None:
+        fake = make_fake_gst()
+        plugin = MediaGalleryInput()
+        plugin._is_video = True
+        pipeline = FakePipeline("clip")
+        pipeline.duration_ok = False  # demuxer hasn't reported duration yet
+        with patch("gi.repository.Gst", fake):
+            plugin.on_bus_segment_done(pipeline)
+        stop_type = pipeline.segment_seeks[0][5]
+        assert stop_type == fake.SeekType.NONE
+
+    def test_on_bus_eos_rearms_loop_for_a_clip(self) -> None:
+        # A stray EOS (before the loop armed) re-arms via a flushing segment
+        # seek rather than reading as a disconnect.
         fake = make_fake_gst()
         plugin = MediaGalleryInput()
         plugin._is_video = True
         pipeline = FakePipeline("clip")
         with patch("gi.repository.Gst", fake):
             handled = plugin.on_bus_eos(pipeline)
-        assert handled is True
-        assert len(pipeline.seeks) == 1 and pipeline.seeks[0][2] == 0
+        assert handled is True and plugin._loop_armed is True
+        flags = pipeline.segment_seeks[0][2]
+        assert flags & fake.SeekFlags.SEGMENT and flags & fake.SeekFlags.FLUSH
 
     def test_on_bus_eos_ignores_non_video(self) -> None:
         plugin = MediaGalleryInput()  # _is_video defaults False
         pipeline = FakePipeline("img")
         assert plugin.on_bus_eos(pipeline) is False
-        assert pipeline.seeks == []
+        assert pipeline.segment_seeks == []
 
     def test_on_bus_eos_seek_failure_reports_unhandled(self) -> None:
+        # If the recovery seek fails, report unhandled so the receiver can
+        # fall back to a reconnect instead of freezing on a dead clip.
         fake = make_fake_gst()
         plugin = MediaGalleryInput()
         plugin._is_video = True
@@ -308,14 +382,16 @@ class TestSharedAndHooks:
         pipeline.seek_ok = False
         with patch("gi.repository.Gst", fake):
             assert plugin.on_bus_eos(pipeline) is False
+        assert plugin._loop_armed is False
 
-    def test_base_on_bus_eos_defaults_unhandled(self) -> None:
-        # A non-looping input inherits VideoInputBase.on_bus_eos -> False.
+    def test_base_on_bus_eos_and_segment_done_default_unhandled(self) -> None:
+        # A non-looping input inherits the VideoInputBase defaults -> False.
         from openfollow.video.inputs import get_input_class
 
         cls = get_input_class("rtsp")
         assert cls is not None
         assert cls().on_bus_eos(None) is False
+        assert cls().on_bus_segment_done(None) is False
 
 
 # --------------------------------------------------------------------------- #

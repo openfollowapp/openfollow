@@ -219,6 +219,12 @@ class VideoInputBase(ABC):
         end-of-stream as a disconnect. The default reports it unhandled."""
         return False
 
+    def on_bus_segment_done(self, pipeline: Any) -> bool:
+        """Called on ``SEGMENT_DONE`` (only fired for an input that armed a
+        segment seek). Return ``True`` if the input handled it by queuing the
+        next iteration of a seamless loop. The default reports it unhandled."""
+        return False
+
     def on_caps_changed(self, width: int, height: int) -> None:  # noqa: B027 – intentional optional hook
         """Called when video resolution is detected from caps-changed."""
 

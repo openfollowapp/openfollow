@@ -5451,6 +5451,20 @@ def test_gallery_select_unknown_rejected(gallery_server) -> None:
     assert load_config(server.config_path).testpattern_selected_media == "default:stage"  # unchanged
 
 
+def test_gallery_grid_highlights_stage_when_selection_unresolvable(gallery_server) -> None:
+    # A stored selection that no longer resolves (deleted item / hand-edited
+    # config) plays Stage at runtime, so the grid must mark the Stage tile
+    # selected rather than leave nothing highlighted (UI vs active-source drift).
+    server, base, _ = gallery_server
+    cfg = load_config(server.config_path)
+    cfg.testpattern_selected_media = "ffffffffffffffff"  # valid form, no backing file
+    save_config(cfg, server.config_path)
+    status, body = _get(base, f"{_GP}/list")
+    assert status == 200
+    assert body.count("gallery-tile selected") == 1
+    assert '<div class="gallery-tile selected"><button class="gallery-select" type="button" title="Stage"' in body
+
+
 def test_gallery_upload_image_stores_file(gallery_server) -> None:
     _, base, media_dir = gallery_server
     status, body = _post_bytes(base, f"{_GP}/upload", _PNG)

@@ -3341,7 +3341,11 @@ def _render_gallery_grid(server: ConfigWebServer, *, error: str = "") -> str:
     """
     from openfollow.video import media_store
 
-    selected = load_config(server.config_path).testpattern_selected_media
+    # Highlight the *effective* selection: an unresolvable / deleted id plays the
+    # Stage default at runtime, so the grid must mark Stage too rather than leave
+    # no tile selected (which would disagree with the active source).
+    raw_selected = load_config(server.config_path).testpattern_selected_media
+    selected = raw_selected if media_store.resolve(raw_selected) is not None else media_store.DEFAULT_STAGE_ID
     tiles: list[str] = []
     for item in media_store.list_media():
         eid = html_mod.escape(item.media_id, quote=True)

@@ -523,10 +523,11 @@
  .gallery-upload-btn { cursor: pointer; }
  .gallery-grid {
  display: grid;
- grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+ grid-template-columns: repeat(6, minmax(0, 1fr));
  gap: 0.5rem;
  margin-top: 0.5rem;
  }
+ @media (max-width: 640px) { .gallery-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
  .gallery-grid.is-loading { opacity: 0.5; pointer-events: none; }
  .gallery-error {
  grid-column: 1 / -1;

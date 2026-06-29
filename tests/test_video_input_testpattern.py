@@ -10,10 +10,12 @@ the EOS loop hook, missing-element handling, and the source label.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
+from openfollow.configuration import AppConfig
 from openfollow.video import media_store
 from openfollow.video.inputs import testpattern as tp_module
 from openfollow.video.inputs.testpattern import MediaGalleryInput, _resolve_stage_asset
@@ -35,6 +37,15 @@ def _build(config=None, *, fake=None, plugin=None) -> FakePipeline:
             build_overlay_tail=lambda *a: None,
             prepare_sink=lambda: sink,
         )
+
+
+def _fake_gst_patch() -> Any:
+    """Patch ``gi.repository.Gst`` with a fake, importing the real submodule
+    first so the attribute exists before ``patch`` (the package lazy-loads
+    submodules; matches ``_build``)."""
+    from gi.repository import Gst  # noqa: F401
+
+    return patch("gi.repository.Gst", make_fake_gst())
 
 
 def _user_item(media_id: str, kind: str, path: Path) -> media_store.MediaItem:
@@ -238,9 +249,10 @@ class TestClipChain:
 
 class TestLinkVideoPad:
     def test_links_video_pad_to_scaler(self) -> None:
-        pad = FakePad("src_0")  # FakePad caps are "video/..." -> linked
-        scale = FakeElement("scale")
-        MediaGalleryInput._link_video_pad(pad, scale)
+        with _fake_gst_patch():
+            pad = FakePad("src_0")  # FakePad caps are "video/..." -> linked
+            scale = FakeElement("scale")
+            MediaGalleryInput._link_video_pad(pad, scale)
         assert pad.linked_to is scale.get_static_pad("sink")
 
     def test_ignores_audio_pad(self) -> None:
@@ -248,17 +260,46 @@ class TestLinkVideoPad:
             def get_current_caps(self) -> FakeCaps:
                 return FakeCaps("audio/x-raw")
 
-        pad = _AudioPad("audio_0")
-        scale = FakeElement("scale")
-        MediaGalleryInput._link_video_pad(pad, scale)
+        with _fake_gst_patch():
+            pad = _AudioPad("audio_0")
+            scale = FakeElement("scale")
+            MediaGalleryInput._link_video_pad(pad, scale)
         assert pad.linked_to is None
 
+    def test_links_unnegotiated_pad_when_caps_unresolved(self) -> None:
+        # A pad whose caps aren't resolved at pad-added time (no current caps,
+        # an ANY query result) is the clip's only video pad and must still be
+        # linked - skipping it would leave the clip with no video.
+        class _AnyPad(FakePad):
+            def get_current_caps(self) -> FakeCaps | None:
+                return None
+
+            def query_caps(self, _filter: object) -> FakeCaps:
+                return FakeCaps("ANY")
+
+        with _fake_gst_patch():
+            pad = _AnyPad("src_0")
+            scale = FakeElement("scale")
+            MediaGalleryInput._link_video_pad(pad, scale)
+        assert pad.linked_to is scale.get_static_pad("sink")
+
     def test_skips_when_sink_already_linked(self) -> None:
-        pad = FakePad("src_1")
-        scale = FakeElement("scale")
-        scale.get_static_pad("sink")._linked_into = True  # already linked
-        MediaGalleryInput._link_video_pad(pad, scale)
+        with _fake_gst_patch():
+            pad = FakePad("src_1")
+            scale = FakeElement("scale")
+            scale.get_static_pad("sink")._linked_into = True  # already linked
+            MediaGalleryInput._link_video_pad(pad, scale)
         assert pad.linked_to is None
+
+    def test_logs_when_link_fails(self, caplog: pytest.LogCaptureFixture) -> None:
+        # A refused link must be logged, not silently swallowed (a mute
+        # reconnect loop is the worst diagnostic outcome).
+        with _fake_gst_patch():
+            pad = FakePad("src_0", link_returns="refused")
+            scale = FakeElement("scale")
+            with caplog.at_level("WARNING"):
+                MediaGalleryInput._link_video_pad(pad, scale)
+        assert "failed to link" in caplog.text.lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -447,8 +488,19 @@ class TestConfigAndLabels:
         # The upload trigger is a real button, not a <label> (which the form's
         # label CSS would render as an uppercase header).
         assert '<button type="button" class="btn-link gallery-upload-btn"' in html
-        assert 'name="testpattern_selected_media"' in html  # round-trip field
-        assert 'value="default:grey"' in html
+        # The selection is NOT round-tripped through a form field: it is managed
+        # only via /video-input/testpattern/select. A hidden field would let a
+        # video-source form Save post a stale render-time value and revert a
+        # selection made via the grid.
+        assert 'name="testpattern_selected_media"' not in html
+
+    def test_form_save_without_selection_field_preserves_selection(self) -> None:
+        # The Media Gallery form carries no selection field, so a video-source
+        # Save (which posts only the fields the form renders) must leave a
+        # selection made via the grid untouched – it can't revert it.
+        cfg = AppConfig(video_source_type="testpattern", testpattern_selected_media="0123456789abcdef")
+        MediaGalleryInput.apply_config_fields(cfg, {"video_source_type": "testpattern"})
+        assert cfg.testpattern_selected_media == "0123456789abcdef"
 
     def test_upload_handler_guards_oversize_client_side(self) -> None:
         # A browser streams the whole body before reading the response, so an
@@ -470,3 +522,11 @@ class TestConfigAndLabels:
         catch = html.split(".catch(", 1)[1]
         # The error helper is invoked from the catch, not a bare spinner reset.
         assert "openfollowGalleryError(" in catch.split("}", 1)[0]
+
+    def test_upload_handler_guards_non_grid_response(self) -> None:
+        # A non-2xx status or a non-grid body (login redirect, proxy error)
+        # must NOT be swapped into #gallery-grid - that would wipe the grid
+        # container. The success handler checks r.ok and the node id first.
+        html = MediaGalleryInput.web_ui_html({"testpattern_selected_media": "default:grey"})
+        assert "res.ok" in html
+        assert "node.id!=='gallery-grid'" in html

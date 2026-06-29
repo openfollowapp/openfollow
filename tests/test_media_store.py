@@ -10,6 +10,7 @@ checks are all exercised without a live pipeline.
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -330,6 +331,66 @@ def test_list_media_orders_user_files_newest_first(
 
     user_ids = [i.media_id for i in ms.list_media() if not i.read_only]
     assert user_ids == [second.media_id, first.media_id]
+
+
+def test_list_media_skips_vanished_file(storage: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A matching-named entry whose stat() raises models a file removed between
+    # the directory listing and its stat by a concurrent delete. It must be
+    # skipped, not raise FileNotFoundError and 500 the grid render.
+    monkeypatch.setattr(ms, "_render_jpeg", _fake_render)
+    item = ms.save_uploaded_image(_staged(tmp_path, "u.png", _PNG))
+    dangling = storage / "0123456789abcdef.jpg"
+    dangling.symlink_to(storage / "missing-target.jpg")  # stat() -> FileNotFoundError
+    user_ids = [i.media_id for i in ms.list_media() if not i.read_only]
+    assert user_ids == [item.media_id]
+
+
+def test_list_media_ignores_non_regular_entry(storage: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A matching-named entry that stats fine but isn't a regular file (here a
+    # directory) is not media and must not appear in the gallery.
+    monkeypatch.setattr(ms, "_render_jpeg", _fake_render)
+    item = ms.save_uploaded_image(_staged(tmp_path, "u.png", _PNG))
+    (storage / "1111111111111111.jpg").mkdir()
+    user_ids = [i.media_id for i in ms.list_media() if not i.read_only]
+    assert user_ids == [item.media_id]
+
+
+# -- concurrency --------------------------------------------------------------
+
+
+def test_concurrent_saves_respect_item_cap(storage: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The store lock serialises the capacity-check-then-write: with MAX_ITEMS=1
+    # exactly one of two simultaneous saves wins; the other sees the gallery
+    # already full. Without the lock both could observe count 0 and overshoot.
+    monkeypatch.setattr(ms, "_render_jpeg", _fake_render)
+    monkeypatch.setattr(ms, "MAX_ITEMS", 1)
+    ms._ensure_storage_dir()  # create the dir before the threads race
+    start = threading.Barrier(2)
+    results: list[object] = []
+    lock = threading.Lock()
+
+    def worker(name: str) -> None:
+        staged = _staged(tmp_path, name, _PNG)
+        start.wait()  # release both threads together to force contention
+        try:
+            outcome: object = ms.save_uploaded_image(staged)
+        except ms.MediaStoreError as exc:
+            outcome = exc
+        with lock:
+            results.append(outcome)
+
+    threads = [threading.Thread(target=worker, args=(f"{i}.png",)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    saved = [r for r in results if isinstance(r, ms.MediaItem)]
+    errors = [r for r in results if isinstance(r, ms.MediaStoreError)]
+    assert len(saved) == 1
+    assert len(errors) == 1
+    stored = [p for p in storage.iterdir() if p.suffix == ".jpg" and ".thumb" not in p.name]
+    assert len(stored) == 1
 
 
 # -- stage asset fallback -----------------------------------------------------

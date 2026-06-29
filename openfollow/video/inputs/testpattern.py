@@ -251,13 +251,26 @@ class MediaGalleryInput(VideoInputBase):
 
     @staticmethod
     def _link_video_pad(pad: Any, scale: Any) -> None:
-        """Link a decodebin video src pad into the scaler, ignoring audio."""
+        """Link a decodebin video src pad into the scaler, ignoring audio.
+
+        A pad is skipped only when its caps positively identify it as
+        non-video (audio / subtitle). An un-negotiated pad whose caps aren't
+        resolved yet (``None`` / ``ANY``) is treated as the video pad so the
+        clip's sole video stream is never dropped. A failed link is logged
+        rather than silently swallowed, so a negotiation failure leaves a trace
+        instead of a mute reconnect loop.
+        """
+        from gi.repository import Gst
+
         caps = pad.get_current_caps() or pad.query_caps(None)
-        if caps is None or not caps.to_string().startswith("video/"):
+        media_type = caps.to_string() if caps is not None else ""
+        if media_type.startswith(("audio/", "subtitle/", "text/")):
             return
         sink_pad = scale.get_static_pad("sink")
-        if sink_pad is not None and not sink_pad.is_linked():
-            pad.link(sink_pad)
+        if sink_pad is None or sink_pad.is_linked():
+            return
+        if pad.link(sink_pad) != Gst.PadLinkReturn.OK:
+            logger.warning("Media Gallery clip: failed to link decoded video pad to the scaler")
 
     def _segment_seek(self, pipeline: Any, *, flush: bool) -> bool:
         """Seek 0 → end in SEGMENT mode.
@@ -307,15 +320,16 @@ class MediaGalleryInput(VideoInputBase):
     def web_ui_html(cls, config: dict[str, Any]) -> str:
         from openfollow.video import media_store
 
-        # The grid is loaded + re-rendered by the gallery management routes; the
-        # hidden field carries the current selection so a video-source save
-        # round-trips it. Upload streams the raw file body to the upload route.
-        selected = config.get("testpattern_selected_media", media_store.DEFAULT_SELECTED_MEDIA)
+        # The grid is loaded + re-rendered by the gallery management routes;
+        # selection is persisted there (POST /video-input/testpattern/select).
+        # The selection is deliberately NOT mirrored into a form field: a
+        # video-source form Save would otherwise post a stale render-time value
+        # and revert a selection made via the grid. Upload streams the raw file
+        # body to the upload route.
         max_bytes = media_store.MAX_VIDEO_UPLOAD_BYTES
         max_mb = max_bytes // (1024 * 1024)
         return (
             '<div class="row"><div class="field wide">'
-            f'<input type="hidden" name="testpattern_selected_media" value="{cls._esc(selected)}">'
             '<div class="gallery-toolbar">'
             # A real <button> (not a <label>) so the form's label styling doesn't
             # render it as an uppercase header; it clicks the hidden file input.
@@ -350,10 +364,16 @@ class MediaGalleryInput(VideoInputBase):
             f"'File too large (max {max_mb} MB).');input.value='';return;}}"
             "var g=document.getElementById('gallery-grid');if(g)g.classList.add('is-loading');"
             "fetch('/video-input/testpattern/upload',{method:'POST',body:f})"
-            ".then(function(r){return r.text();})"
-            ".then(function(html){var el=document.getElementById('gallery-grid');"
-            "if(el){var t=document.createElement('template');t.innerHTML=html.trim();"
-            "el.replaceWith(t.content.firstChild);if(window.htmx)htmx.process(document.getElementById('gallery-grid'));}})"
+            ".then(function(r){return r.text().then(function(html){return {ok:r.ok,html:html};});})"
+            ".then(function(res){var el=document.getElementById('gallery-grid');if(!el)return;"
+            "var t=document.createElement('template');t.innerHTML=(res.html||'').trim();"
+            "var node=t.content.firstChild;"
+            # Only swap in a real grid partial. A non-2xx status or a non-grid
+            # body (login redirect, proxy error) would otherwise replace - and
+            # wipe - the grid container, leaving it unrecoverable without reload.
+            "if(!res.ok||!node||node.id!=='gallery-grid'){openfollowGalleryError("
+            "'Upload failed. Check the connection and try again.');return;}"
+            "el.replaceWith(node);if(window.htmx)htmx.process(document.getElementById('gallery-grid'));})"
             ".catch(function(){openfollowGalleryError("
             "'Upload failed. Check the connection and try again.');});"
             "input.value='';}"

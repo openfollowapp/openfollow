@@ -262,6 +262,29 @@ def test_selected_media_dataclass_default_matches_plugin_config_field() -> None:
     assert AppConfig().testpattern_selected_media == plugin_defaults["testpattern_selected_media"]
 
 
+@pytest.mark.parametrize("bad", [5, True, None, ["x"], {"a": 1}, 3.5])
+def test_selected_media_coerces_non_string_to_default(bad: object) -> None:
+    """A hand-edited config.toml can put a non-string here (``= 5``, ``= true``).
+    Dataclasses don't coerce, so without normalisation the value flows into
+    ``media_store.resolve`` -> ``re.match`` and raises ``TypeError`` on pipeline
+    build / ``get_source_label``. ``__post_init__`` must fall back to Stage."""
+    cfg = AppConfig(testpattern_selected_media=bad)  # type: ignore[arg-type]
+    assert cfg.testpattern_selected_media == "default:stage"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("  default:grey  ", "default:grey"),  # surrounding whitespace stripped
+        ("", "default:stage"),  # blank falls back to the Stage default
+        ("   ", "default:stage"),
+    ],
+)
+def test_selected_media_strips_and_defaults_blank(raw: str, expected: str) -> None:
+    cfg = AppConfig(testpattern_selected_media=raw)
+    assert cfg.testpattern_selected_media == expected
+
+
 # --------------------------------------------------------------------------- #
 # bootstrap_config_if_missing – first-run seed from config.example.toml
 # --------------------------------------------------------------------------- #

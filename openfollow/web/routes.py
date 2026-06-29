@@ -823,6 +823,12 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     # mount or a local working dir). A path from another machine is invalid
     # here – it must never cross via broadcast/import. Blank means auto-resolve.
     "detection": frozenset({"storage_path"}),
+    # ``testpattern_selected_media`` is a device-local gallery item id; the media
+    # files live only on this host, so a foreign id would dangle on a peer and
+    # silently revert its Media Gallery to the Stage default. The video-source
+    # form save path applies this field, so the section broadcast/receive must
+    # strip it (matching the full export/import redaction).
+    "video_source": frozenset({"testpattern_selected_media"}),
 }
 
 

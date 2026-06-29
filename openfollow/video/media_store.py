@@ -24,10 +24,17 @@ import os
 import re
 import secrets
 import shutil
+import stat
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Serialises the capacity-check-then-write across concurrent web uploads so two
+# simultaneous saves can't both pass the check and overshoot MAX_ITEMS /
+# MAX_TOTAL_BYTES (the web routes run in WSGI worker threads).
+_store_lock = threading.Lock()
 
 # -- Reserved defaults --------------------------------------------------------
 
@@ -58,8 +65,8 @@ _STAGE_ASSET_SVG = _ASSET_DIR / "stage_default.svg"
 MAX_ITEMS = 100
 MAX_TOTAL_BYTES = 1024 * 1024 * 1024  # 1 GiB
 
-# Per-upload ceilings. Images are normalised down on store, so the upload cap
-# only bounds the transient spool; the clip cap is the issue's ~64 MB budget.
+# Per-upload ceilings. Images are normalised down on store, so the image cap
+# only bounds the transient upload spool; the clip cap bounds the stored clip.
 MAX_IMAGE_UPLOAD_BYTES = 32 * 1024 * 1024
 MAX_VIDEO_UPLOAD_BYTES = 64 * 1024 * 1024
 
@@ -195,27 +202,46 @@ def _default_item(media_id: str) -> MediaItem:
     return MediaItem(DEFAULT_STAGE_ID, "stage", True, asset, size, "Stage")
 
 
-def _user_item(path: Path) -> MediaItem:
+def _user_item(path: Path, *, size: int | None = None) -> MediaItem:
     match = _USER_FILE_RE.match(path.name)
     if match is None:  # pragma: no cover - callers pass only regex-matched paths
         raise MediaStoreError("Not a gallery media file.")
     ext = match.group("ext")
     kind = "video" if ext == _VIDEO_EXT else "image"
-    return MediaItem(match.group("id"), kind, False, path, path.stat().st_size, match.group("id"))
+    if size is None:
+        size = path.stat().st_size
+    return MediaItem(match.group("id"), kind, False, path, size, match.group("id"))
 
 
-def _user_media_files(storage: Path) -> list[Path]:
+def _stat_user_files(storage: Path) -> list[tuple[Path, os.stat_result]]:
+    """``(path, stat)`` for each user media file, newest first.
+
+    One guarded ``stat`` per file: an entry that vanishes between ``iterdir``
+    and its ``stat`` (a concurrent delete runs in a separate request thread) is
+    skipped rather than raised on, so a delete during a grid render can't 500
+    the listing. The single stat feeds the regular-file test, the mtime sort,
+    the listing sizes, and the capacity accounting so none of them re-stat.
+    """
     if not storage.is_dir():
         return []
-    files = [f for f in storage.iterdir() if f.is_file() and _USER_FILE_RE.match(f.name)]
-    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-    return files
+    dated: list[tuple[float, Path, os.stat_result]] = []
+    for f in storage.iterdir():
+        if not _USER_FILE_RE.match(f.name):
+            continue
+        try:
+            info = f.stat()
+        except OSError:
+            continue  # removed between iterdir() and stat()
+        if stat.S_ISREG(info.st_mode):
+            dated.append((info.st_mtime, f, info))
+    dated.sort(key=lambda entry: entry[0], reverse=True)
+    return [(f, info) for _, f, info in dated]
 
 
 def list_media() -> list[MediaItem]:
     """Every gallery entry: the two defaults first, then user media newest-first."""
     items = [_default_item(mid) for mid in DEFAULT_IDS]
-    items.extend(_user_item(f) for f in _user_media_files(resolve_media_storage_path()))
+    items.extend(_user_item(f, size=info.st_size) for f, info in _stat_user_files(resolve_media_storage_path()))
     return items
 
 
@@ -258,8 +284,8 @@ def download_path(media_id: str) -> Path | None:
 
 def _current_usage(storage: Path) -> tuple[int, int]:
     """(item count, total bytes) of user media – thumbnails and defaults excluded."""
-    files = _user_media_files(storage)
-    return len(files), sum(f.stat().st_size for f in files)
+    files = _stat_user_files(storage)
+    return len(files), sum(info.st_size for _, info in files)
 
 
 def _enforce_capacity(storage: Path, incoming_bytes: int) -> None:
@@ -357,10 +383,11 @@ def save_uploaded_image(staged: Path) -> MediaItem:
 
     storage = _ensure_storage_dir()
     normalised = _render_jpeg(staged, max_dim=IMAGE_MAX_DIM)
-    _enforce_capacity(storage, len(normalised))
-    media_id = _new_user_id(storage)
-    dest = storage / f"{media_id}.{_IMAGE_EXT}"
-    _write_atomic(dest, normalised)
+    with _store_lock:
+        _enforce_capacity(storage, len(normalised))
+        media_id = _new_user_id(storage)
+        dest = storage / f"{media_id}.{_IMAGE_EXT}"
+        _write_atomic(dest, normalised)
     _write_thumb(storage, media_id, dest)
     return _user_item(dest)
 
@@ -374,10 +401,11 @@ def save_captured_frame(jpeg_bytes: bytes) -> MediaItem:
     if _sniff_format(jpeg_bytes[:16]) != "jpeg":
         raise MediaStoreError("Captured frame is not a JPEG.")
     storage = _ensure_storage_dir()
-    _enforce_capacity(storage, len(jpeg_bytes))
-    media_id = _new_user_id(storage)
-    dest = storage / f"{media_id}.{_IMAGE_EXT}"
-    _write_atomic(dest, jpeg_bytes)
+    with _store_lock:
+        _enforce_capacity(storage, len(jpeg_bytes))
+        media_id = _new_user_id(storage)
+        dest = storage / f"{media_id}.{_IMAGE_EXT}"
+        _write_atomic(dest, jpeg_bytes)
     _write_thumb(storage, media_id, dest)
     return _user_item(dest)
 
@@ -398,10 +426,11 @@ def save_uploaded_video(staged: Path) -> MediaItem:
     validate_video_probe(_probe_video(staged))
 
     storage = _ensure_storage_dir()
-    _enforce_capacity(storage, size)
-    media_id = _new_user_id(storage)
-    dest = storage / f"{media_id}.{_VIDEO_EXT}"
-    shutil.move(str(staged), str(dest))
+    with _store_lock:
+        _enforce_capacity(storage, size)
+        media_id = _new_user_id(storage)
+        dest = storage / f"{media_id}.{_VIDEO_EXT}"
+        shutil.move(str(staged), str(dest))
     _write_thumb(storage, media_id, dest)
     return _user_item(dest)
 
@@ -508,7 +537,14 @@ def _probe_video(source: Path) -> VideoProbe:  # pragma: no cover - GStreamer, v
         codec = struct.get_name().removeprefix("video/x-")
         denom = stream.get_framerate_denom() or 1
         fps = stream.get_framerate_num() / denom
-        duration_s = info.get_duration() / Gst.SECOND
+        raw_duration = info.get_duration()
+        # GstDiscoverer returns GST_CLOCK_TIME_NONE (a u64 sentinel) when the
+        # container declares no duration. Treat that as unknown (0) instead of
+        # dividing it into a ~1.8e10 s value that would falsely trip the cap.
+        if raw_duration is None or raw_duration == Gst.CLOCK_TIME_NONE:
+            duration_s = 0.0
+        else:
+            duration_s = raw_duration / Gst.SECOND
         return VideoProbe(codec, stream.get_width(), stream.get_height(), fps, duration_s)
     except MediaStoreError:
         raise

@@ -2075,6 +2075,16 @@ class AppConfig:
         if not isinstance(self.psn_system_name, str):
             self.psn_system_name = _DEFAULT_PSN_SYSTEM_NAME
         self.psn_system_name = self.psn_system_name.strip() or _DEFAULT_PSN_SYSTEM_NAME
+        # Normalise the Media Gallery selection: a hand-edited non-string (or a
+        # blank) must never reach ``media_store.resolve`` / ``re.match`` – which
+        # raise ``TypeError`` on a non-string and would crash pipeline build and
+        # ``get_source_label`` instead of degrading to Stage. A well-typed but
+        # unknown id is left as-is and falls back to Stage at resolve time. The
+        # literal mirrors ``media_store.DEFAULT_SELECTED_MEDIA`` (kept out of this
+        # early-loaded module; a test pins the two together).
+        if not isinstance(self.testpattern_selected_media, str):
+            self.testpattern_selected_media = "default:stage"
+        self.testpattern_selected_media = self.testpattern_selected_media.strip() or "default:stage"
         # TOML produces ``dict[str, Any]``; the runtime contract is
         # ``dict[int, float]`` keyed by marker_id. Drop pairs with a non-int
         # key or non-finite/negative value.

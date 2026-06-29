@@ -902,6 +902,19 @@ class TestStripDeviceLocalFields:
         assert scrubbed["enabled"] is True
         assert scrubbed["system_number"] == 3
 
+    def test_video_source_section_drops_selected_media(self) -> None:
+        """The Media Gallery selection is a device-local media id – the file
+        lives only on this host. A broadcast/import of the ``video_source``
+        section must not copy it onto a peer, whose store has no such id (it
+        would silently revert the peer's gallery to the Stage default)."""
+        scrubbed = strip_device_local_fields(
+            "video_source",
+            {"video_source_type": "testpattern", "testpattern_selected_media": "0123456789abcdef"},
+        )
+        assert "testpattern_selected_media" not in scrubbed
+        # Non-device-local video-source fields pass through untouched.
+        assert scrubbed["video_source_type"] == "testpattern"
+
     def test_other_sections_passthrough(self) -> None:
         """Sections without registered device-local fields return a
         shallow copy of the input – no mutation, no surprise drops."""

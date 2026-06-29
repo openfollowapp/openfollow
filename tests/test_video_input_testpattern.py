@@ -17,7 +17,6 @@ import pytest
 
 from openfollow.configuration import AppConfig
 from openfollow.video import media_store
-from openfollow.video.inputs import testpattern as tp_module
 from openfollow.video.inputs.testpattern import MediaGalleryInput, _resolve_stage_asset
 from tests._fake_gst import FakeCaps, FakeElement, FakePad, FakePipeline, make_fake_gst
 
@@ -61,20 +60,20 @@ class TestResolveStageAsset:
     def test_prefers_jpg(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         jpg = tmp_path / "stage_default.jpg"
         jpg.write_bytes(b"jpeg")
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
-        monkeypatch.setattr(tp_module, "_STAGE_SVG", tmp_path / "stage_default.svg")
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
+        monkeypatch.setattr(media_store, "STAGE_ASSET_SVG", tmp_path / "stage_default.svg")
         assert _resolve_stage_asset() == (jpg, "jpegdec")
 
     def test_falls_back_to_svg(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         svg = tmp_path / "stage_default.svg"
         svg.write_text("<svg/>")
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", tmp_path / "stage_default.jpg")
-        monkeypatch.setattr(tp_module, "_STAGE_SVG", svg)
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", tmp_path / "stage_default.jpg")
+        monkeypatch.setattr(media_store, "STAGE_ASSET_SVG", svg)
         assert _resolve_stage_asset() == (svg, "rsvgdec")
 
     def test_neither_present_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", tmp_path / "missing.jpg")
-        monkeypatch.setattr(tp_module, "_STAGE_SVG", tmp_path / "missing.svg")
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", tmp_path / "missing.jpg")
+        monkeypatch.setattr(media_store, "STAGE_ASSET_SVG", tmp_path / "missing.svg")
         with pytest.raises(RuntimeError, match="Stage asset not found"):
             _resolve_stage_asset()
 
@@ -120,7 +119,7 @@ class TestImageChain:
     def test_stage_default_builds_image_chain(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         jpg = tmp_path / "stage_default.jpg"
         jpg.write_bytes(b"fake")
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
         pipeline = _build({"testpattern_selected_media": media_store.DEFAULT_STAGE_ID})
         assert pipeline.get_by_name("imagefilesrc").properties["location"] == str(jpg)
         assert pipeline.get_by_name("imagedecode") is not None
@@ -133,7 +132,7 @@ class TestImageChain:
         # display; a range lets the sink negotiate a tiny default (640x360).
         jpg = tmp_path / "stage_default.jpg"
         jpg.write_bytes(b"fake")
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
         pipeline = _build({"testpattern_selected_media": media_store.DEFAULT_STAGE_ID})
         caps = pipeline.get_by_name("image_scale_caps").properties["caps"].to_string()
         assert "width=1920" in caps and "height=1080" in caps
@@ -159,7 +158,7 @@ class TestImageChain:
     def test_missing_imagefreeze_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         jpg = tmp_path / "stage_default.jpg"
         jpg.write_bytes(b"fake")
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
         fake = make_fake_gst(missing_elements={"imagefreeze"})
         with pytest.raises(RuntimeError, match="imagefreeze"):
             _build({"testpattern_selected_media": media_store.DEFAULT_STAGE_ID}, fake=fake)
@@ -167,7 +166,7 @@ class TestImageChain:
     def test_image_chain_link_failure_names_pair(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         jpg = tmp_path / "stage_default.jpg"
         jpg.write_bytes(b"fake")
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
         fake = make_fake_gst(link_fail_kinds={"filesrc"})
         with pytest.raises(RuntimeError, match="Failed to link"):
             _build({"testpattern_selected_media": media_store.DEFAULT_STAGE_ID}, fake=fake)
@@ -175,7 +174,7 @@ class TestImageChain:
     def test_image_missing_filesrc_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         jpg = tmp_path / "stage_default.jpg"
         jpg.write_bytes(b"fake")
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
         fake = make_fake_gst(missing_elements={"filesrc"})
         with pytest.raises(RuntimeError, match="filesrc"):
             _build({"testpattern_selected_media": media_store.DEFAULT_STAGE_ID}, fake=fake)
@@ -185,7 +184,7 @@ class TestImageChain:
         monkeypatch.setattr(media_store, "resolve_media_storage_path", lambda: tmp_path / "empty")
         jpg = tmp_path / "stage_default.jpg"
         jpg.write_bytes(b"fake")
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
         pipeline = _build({"testpattern_selected_media": "ffffffffffffffff"})
         # Rendered the Stage default image chain, not a blank/error pipeline.
         assert pipeline.get_by_name("imagefilesrc").properties["location"] == str(jpg)

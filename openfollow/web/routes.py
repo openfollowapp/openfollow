@@ -3416,7 +3416,7 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
         if total <= 0:
             return _render_gallery_grid(server, error="Empty upload.")
         if total > media_store.MAX_VIDEO_UPLOAD_BYTES:
-            mb = media_store.MAX_VIDEO_UPLOAD_BYTES // (1024 * 1024)
+            mb = media_store.MAX_VIDEO_UPLOAD_BYTES // media_store.BYTES_PER_MB
             return _render_gallery_grid(server, error=f"File too large (max {mb} MB).")
         staged = f"/tmp/openfollow-media-{secrets.token_hex(8)}"  # nosec B108 - device-local staging
         try:

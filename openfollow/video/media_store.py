@@ -37,6 +37,7 @@ import secrets
 import shutil
 import stat
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,21 +66,25 @@ _NVME_MOUNTPOINT = "/mnt/nvme"
 _NVME_MEDIA_STORAGE = "/mnt/nvme/openfollow/media"
 _LOCAL_STORAGE_DIRNAME = "media"
 
-_ASSET_DIR = Path(__file__).parent / "inputs" / "assets"
-_STAGE_ASSET_JPG = _ASSET_DIR / "stage_default.jpg"
-_STAGE_ASSET_SVG = _ASSET_DIR / "stage_default.svg"
+# Stage default asset – the single source of truth for its location and the
+# JPG-preferred-over-SVG ordering, shared with the gallery plugin.
+STAGE_ASSET_JPG = Path(__file__).parent / "inputs" / "assets" / "stage_default.jpg"
+STAGE_ASSET_SVG = STAGE_ASSET_JPG.with_suffix(".svg")
 
 # -- Hard caps ----------------------------------------------------------------
+
+# Byte unit for the caps below and the operator-facing "max N MB" messages.
+BYTES_PER_MB = 1024 * 1024
 
 # Gallery total budget – bundled defaults are excluded from both counts. Sized
 # to stay comfortable on an SD-card-only Pi while holding a useful library.
 MAX_ITEMS = 100
-MAX_TOTAL_BYTES = 1024 * 1024 * 1024  # 1 GiB
+MAX_TOTAL_BYTES = 1024 * BYTES_PER_MB  # 1 GiB
 
 # Per-upload ceilings. Images are normalised down on store, so the image cap
 # only bounds the transient upload spool; the clip cap bounds the stored clip.
-MAX_IMAGE_UPLOAD_BYTES = 32 * 1024 * 1024
-MAX_VIDEO_UPLOAD_BYTES = 64 * 1024 * 1024
+MAX_IMAGE_UPLOAD_BYTES = 32 * BYTES_PER_MB
+MAX_VIDEO_UPLOAD_BYTES = 64 * BYTES_PER_MB
 
 # -- Image normalisation ------------------------------------------------------
 
@@ -166,12 +171,16 @@ def _ensure_storage_dir() -> Path:
     return path
 
 
-def _stage_asset_path() -> Path | None:
-    """Backing file for the Stage default (JPG preferred, SVG fallback)."""
-    if _STAGE_ASSET_JPG.exists():
-        return _STAGE_ASSET_JPG
-    if _STAGE_ASSET_SVG.exists():
-        return _STAGE_ASSET_SVG
+def stage_asset_path() -> Path | None:
+    """Backing file for the Stage default (JPG preferred, SVG fallback).
+
+    The single resolver for the bundled Stage asset, shared with the gallery
+    plugin (which maps the returned suffix to a GStreamer decoder).
+    """
+    if STAGE_ASSET_JPG.exists():
+        return STAGE_ASSET_JPG
+    if STAGE_ASSET_SVG.exists():
+        return STAGE_ASSET_SVG
     return None
 
 
@@ -211,7 +220,7 @@ def _new_user_id(storage: Path) -> str:
 def _default_item(media_id: str) -> MediaItem:
     if media_id == DEFAULT_GREY_ID:
         return MediaItem(DEFAULT_GREY_ID, "grey", True, None, 0, "Grey")
-    asset = _stage_asset_path()
+    asset = stage_asset_path()
     size = asset.stat().st_size if asset is not None else 0
     return MediaItem(DEFAULT_STAGE_ID, "stage", True, asset, size, "Stage")
 
@@ -307,7 +316,7 @@ def _enforce_capacity(storage: Path, incoming_bytes: int) -> None:
     if count + 1 > MAX_ITEMS:
         raise MediaStoreError(f"Gallery is full ({MAX_ITEMS} items). Delete some media first.")
     if total + incoming_bytes > MAX_TOTAL_BYTES:
-        limit_mb = MAX_TOTAL_BYTES // (1024 * 1024)
+        limit_mb = MAX_TOTAL_BYTES // BYTES_PER_MB
         raise MediaStoreError(f"Gallery storage limit reached ({limit_mb} MB). Delete some media first.")
 
 
@@ -378,6 +387,23 @@ def _write_thumb(storage: Path, media_id: str, source: Path) -> None:
     _write_atomic(storage / f"{media_id}{_THUMB_SUFFIX}", data)
 
 
+def _commit_media(storage: Path, ext: str, incoming_bytes: int, writer: Callable[[Path], object]) -> MediaItem:
+    """Allocate an id and store one media file, then derive its thumbnail.
+
+    The capacity check and the write are serialised under ``_store_lock`` so two
+    concurrent uploads can't both pass the check and overshoot the caps.
+    ``writer`` performs the kind-specific write (re-encoded image, verbatim
+    JPEG, or a clip move) into the ``dest`` path it is handed.
+    """
+    with _store_lock:
+        _enforce_capacity(storage, incoming_bytes)
+        media_id = _new_user_id(storage)
+        dest = storage / f"{media_id}.{ext}"
+        writer(dest)
+    _write_thumb(storage, media_id, dest)
+    return _user_item(dest)
+
+
 def save_uploaded_image(staged: Path) -> MediaItem:
     """Validate, normalise, and store an uploaded still image.
 
@@ -387,7 +413,7 @@ def save_uploaded_image(staged: Path) -> MediaItem:
     """
     size = staged.stat().st_size
     if size > MAX_IMAGE_UPLOAD_BYTES:
-        limit_mb = MAX_IMAGE_UPLOAD_BYTES // (1024 * 1024)
+        limit_mb = MAX_IMAGE_UPLOAD_BYTES // BYTES_PER_MB
         raise MediaStoreError(f"Image too large (max {limit_mb} MB).")
     # WebP decode rides on gstreamer1.0-plugins-bad (webpdec), a required
     # system dependency the SRT/RTSP plugins also need, so it is always present.
@@ -397,13 +423,7 @@ def save_uploaded_image(staged: Path) -> MediaItem:
 
     storage = _ensure_storage_dir()
     normalised = _render_jpeg(staged, max_dim=IMAGE_MAX_DIM)
-    with _store_lock:
-        _enforce_capacity(storage, len(normalised))
-        media_id = _new_user_id(storage)
-        dest = storage / f"{media_id}.{_IMAGE_EXT}"
-        _write_atomic(dest, normalised)
-    _write_thumb(storage, media_id, dest)
-    return _user_item(dest)
+    return _commit_media(storage, _IMAGE_EXT, len(normalised), lambda dest: _write_atomic(dest, normalised))
 
 
 def save_captured_frame(jpeg_bytes: bytes) -> MediaItem:
@@ -415,13 +435,7 @@ def save_captured_frame(jpeg_bytes: bytes) -> MediaItem:
     if _sniff_format(jpeg_bytes[:16]) != "jpeg":
         raise MediaStoreError("Captured frame is not a JPEG.")
     storage = _ensure_storage_dir()
-    with _store_lock:
-        _enforce_capacity(storage, len(jpeg_bytes))
-        media_id = _new_user_id(storage)
-        dest = storage / f"{media_id}.{_IMAGE_EXT}"
-        _write_atomic(dest, jpeg_bytes)
-    _write_thumb(storage, media_id, dest)
-    return _user_item(dest)
+    return _commit_media(storage, _IMAGE_EXT, len(jpeg_bytes), lambda dest: _write_atomic(dest, jpeg_bytes))
 
 
 def save_uploaded_video(staged: Path) -> MediaItem:
@@ -432,21 +446,18 @@ def save_uploaded_video(staged: Path) -> MediaItem:
     """
     size = staged.stat().st_size
     if size > MAX_VIDEO_UPLOAD_BYTES:
-        limit_mb = MAX_VIDEO_UPLOAD_BYTES // (1024 * 1024)
+        limit_mb = MAX_VIDEO_UPLOAD_BYTES // BYTES_PER_MB
         raise MediaStoreError(f"Video too large (max {limit_mb} MB).")
     if _sniff_format(_read_header(staged)) != "webm":
         raise MediaStoreError("Unsupported video container. Use WebM (VP8).")
 
     validate_video_probe(_probe_video(staged))
 
+    # The bytes are moved in unmodified – no transcode. The container check
+    # above plus the probe limits are the only normalisation before decodebin
+    # sees this file; see the module docstring's "Trust boundary for clips".
     storage = _ensure_storage_dir()
-    with _store_lock:
-        _enforce_capacity(storage, size)
-        media_id = _new_user_id(storage)
-        dest = storage / f"{media_id}.{_VIDEO_EXT}"
-        shutil.move(str(staged), str(dest))
-    _write_thumb(storage, media_id, dest)
-    return _user_item(dest)
+    return _commit_media(storage, _VIDEO_EXT, size, lambda dest: shutil.move(str(staged), str(dest)))
 
 
 def save_upload(staged: Path) -> MediaItem:

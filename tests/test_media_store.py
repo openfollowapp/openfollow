@@ -402,14 +402,14 @@ def test_concurrent_saves_respect_item_cap(storage: Path, tmp_path: Path, monkey
 def test_stage_asset_path_prefers_jpg_then_svg_then_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     jpg = tmp_path / "s.jpg"
     svg = tmp_path / "s.svg"
-    monkeypatch.setattr(ms, "_STAGE_ASSET_JPG", jpg)
-    monkeypatch.setattr(ms, "_STAGE_ASSET_SVG", svg)
+    monkeypatch.setattr(ms, "STAGE_ASSET_JPG", jpg)
+    monkeypatch.setattr(ms, "STAGE_ASSET_SVG", svg)
 
-    assert ms._stage_asset_path() is None
+    assert ms.stage_asset_path() is None
     svg.write_bytes(b"x")
-    assert ms._stage_asset_path() == svg
+    assert ms.stage_asset_path() == svg
     jpg.write_bytes(b"x")
-    assert ms._stage_asset_path() == jpg
+    assert ms.stage_asset_path() == jpg
 
 
 # -- id collision -------------------------------------------------------------

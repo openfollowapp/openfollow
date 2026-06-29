@@ -39,22 +39,26 @@ _OUTPUT_HEIGHT = 1080
 _FRAMERATE = "30/1"
 _OUTPUT_CAPS = f"video/x-raw,width={_OUTPUT_WIDTH},height={_OUTPUT_HEIGHT}"
 
-_ASSET_DIR = Path(__file__).parent / "assets"
-_STAGE_JPG = _ASSET_DIR / "stage_default.jpg"
-_STAGE_SVG = _ASSET_DIR / "stage_default.svg"
+# Maps the Stage asset's file type to its GStreamer decoder. The asset path and
+# the JPG-preferred-over-SVG ordering live in ``media_store`` (single source).
+_STAGE_DECODERS = {".jpg": "jpegdec", ".svg": "rsvgdec"}
 
 
 def _resolve_stage_asset() -> tuple[Path, str]:
     """Return (path, gstreamer-decoder-name) for the best Stage asset.
 
-    Prefers the JPG (photoreal) over the SVG (line-art demo). Raises if neither
-    is present.
+    Reuses ``media_store.stage_asset_path`` (JPG photoreal preferred over the
+    SVG line-art demo) and maps the suffix to its decoder. Raises if neither
+    asset is present.
     """
-    if _STAGE_JPG.exists():
-        return _STAGE_JPG, "jpegdec"
-    if _STAGE_SVG.exists():
-        return _STAGE_SVG, "rsvgdec"
-    raise RuntimeError(f"Stage asset not found. Looked for {_STAGE_JPG} and {_STAGE_SVG}.")
+    from openfollow.video import media_store
+
+    path = media_store.stage_asset_path()
+    if path is None:
+        raise RuntimeError(
+            f"Stage asset not found. Looked for {media_store.STAGE_ASSET_JPG} and {media_store.STAGE_ASSET_SVG}."
+        )
+    return path, _STAGE_DECODERS[path.suffix]
 
 
 class MediaGalleryInput(VideoInputBase):
@@ -327,7 +331,7 @@ class MediaGalleryInput(VideoInputBase):
         # and revert a selection made via the grid. Upload streams the raw file
         # body to the upload route.
         max_bytes = media_store.MAX_VIDEO_UPLOAD_BYTES
-        max_mb = max_bytes // (1024 * 1024)
+        max_mb = max_bytes // media_store.BYTES_PER_MB
         return (
             '<div class="row"><div class="field wide">'
             '<div class="gallery-toolbar">'

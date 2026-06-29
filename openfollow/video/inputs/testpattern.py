@@ -278,6 +278,8 @@ class MediaGalleryInput(VideoInputBase):
         # hidden field carries the current selection so a video-source save
         # round-trips it. Upload streams the raw file body to the upload route.
         selected = config.get("testpattern_selected_media", media_store.DEFAULT_SELECTED_MEDIA)
+        max_bytes = media_store.MAX_VIDEO_UPLOAD_BYTES
+        max_mb = max_bytes // (1024 * 1024)
         return (
             '<div class="row"><div class="field wide">'
             f'<input type="hidden" name="testpattern_selected_media" value="{cls._esc(selected)}">'
@@ -295,16 +297,33 @@ class MediaGalleryInput(VideoInputBase):
             '<div id="gallery-grid" class="gallery-grid" '
             'hx-get="/video-input/testpattern/list" hx-trigger="load" hx-target="this" hx-swap="outerHTML"></div>'
             "<script>"
+            f"var OPENFOLLOW_MEDIA_MAX_BYTES={max_bytes};"
+            # Surface an inline banner without discarding the loaded tiles - the
+            # server-rendered grid uses the same .gallery-error markup, so an
+            # error never disappears silently and the next render clears it.
+            "function openfollowGalleryError(msg){"
+            "var g=document.getElementById('gallery-grid');if(!g)return;"
+            "g.classList.remove('is-loading');"
+            "var b=g.querySelector('.gallery-error');"
+            "if(!b){b=document.createElement('div');b.className='gallery-error';"
+            "b.setAttribute('role','alert');g.insertBefore(b,g.firstChild);}"
+            "b.textContent=msg;}"
             "function openfollowGalleryUpload(input){"
             "var f=input.files[0];if(!f)return;"
+            # Reject over-cap files before the fetch: a browser keeps streaming
+            # the body while the server returns early, which resets the socket
+            # mid-upload and rejects the fetch with no response to render.
+            f"if(f.size>OPENFOLLOW_MEDIA_MAX_BYTES){{openfollowGalleryError("
+            f"'File too large (max {max_mb} MB).');input.value='';return;}}"
             "var g=document.getElementById('gallery-grid');if(g)g.classList.add('is-loading');"
             "fetch('/video-input/testpattern/upload',{method:'POST',body:f})"
             ".then(function(r){return r.text();})"
             ".then(function(html){var el=document.getElementById('gallery-grid');"
             "if(el){var t=document.createElement('template');t.innerHTML=html.trim();"
             "el.replaceWith(t.content.firstChild);if(window.htmx)htmx.process(document.getElementById('gallery-grid'));}})"
-            ".catch(function(){var el=document.getElementById('gallery-grid');"
-            "if(el)el.classList.remove('is-loading');});input.value='';}"
+            ".catch(function(){openfollowGalleryError("
+            "'Upload failed. Check the connection and try again.');});"
+            "input.value='';}"
             "</script>"
             "</div></div>"
         )

@@ -373,3 +373,24 @@ class TestConfigAndLabels:
         assert '<button type="button" class="btn-link gallery-upload-btn"' in html
         assert 'name="testpattern_selected_media"' in html  # round-trip field
         assert 'value="default:grey"' in html
+
+    def test_upload_handler_guards_oversize_client_side(self) -> None:
+        # A browser streams the whole body before reading the response, so an
+        # over-cap file must be rejected client-side BEFORE the fetch - otherwise
+        # the server returns early without draining the body, wsgiref resets the
+        # socket mid-upload, and the fetch rejects with no banner (silent fail).
+        html = MediaGalleryInput.web_ui_html({"testpattern_selected_media": "default:grey"})
+        cap = media_store.MAX_VIDEO_UPLOAD_BYTES
+        cap_mb = cap // (1024 * 1024)
+        # The cap is injected so the guard and the server stay in lockstep.
+        assert str(cap) in html
+        # The client guard surfaces the same wording the server uses.
+        assert f"File too large (max {cap_mb} MB)." in html
+
+    def test_upload_handler_never_fails_silently(self) -> None:
+        # Any fetch rejection (connection reset, server down) must surface a
+        # banner - the catch path must not merely clear the loading spinner.
+        html = MediaGalleryInput.web_ui_html({"testpattern_selected_media": "default:grey"})
+        catch = html.split(".catch(", 1)[1]
+        # The error helper is invoked from the catch, not a bare spinner reset.
+        assert "openfollowGalleryError(" in catch.split("}", 1)[0]

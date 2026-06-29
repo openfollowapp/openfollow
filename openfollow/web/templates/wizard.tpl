@@ -507,8 +507,8 @@
     <div class="wizard-nav">
       <button type="button" class="secondary" onclick="wizardGo(1)">Back</button>
       <span class="spacer"></span>
-      <button type="button" class="secondary" onclick="saveWizardVideoSource()">Save</button>
-      <button type="button" class="save-btn" onclick="saveWizardVideoSource(); wizardGo(3)">Save &amp; Next</button>
+      <button type="button" class="secondary" onclick="saveWizardVideoSource().catch(wizardVideoSaveFailed)">Save</button>
+      <button type="button" class="save-btn" onclick="saveWizardVideoSource().then(function(){ wizardGo(3); }).catch(wizardVideoSaveFailed)">Save &amp; Next</button>
     </div>
   </div>
 </div>
@@ -3559,15 +3559,21 @@
       });
     }
 
-    fetch('/section/video_source', { method: 'POST', body: formData })
+    // Returns the fetch promise so callers can chain navigation AFTER the save
+    // resolves (Save & Next must not advance while the old source is still
+    // active). Rejects on a failed save so the caller's .catch can surface it
+    // without advancing.
+    return fetch('/section/video_source', { method: 'POST', body: formData })
     .then(function(r) {
       if (!r.ok) throw new Error('Save failed');
       var msgEl = document.getElementById('wizard-video-saved');
       msgEl.textContent = 'Video source saved.';
       msgEl.style.display = 'block';
-    }).catch(function() {
-      alert('Failed to save video source. Please try again.');
     });
+  };
+
+  window.wizardVideoSaveFailed = function() {
+    alert('Failed to save video source. Please try again.');
   };
 
   // ---------------------------------------------------------------

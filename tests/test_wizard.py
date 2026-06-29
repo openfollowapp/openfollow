@@ -356,6 +356,17 @@ class TestWizardPage:
         assert "wizard" in body.lower()
         assert len(body) > 1000
 
+    def test_save_and_next_advances_only_after_save_resolves(self, live_server) -> None:
+        # Save & Next must not advance while the old source is still active: the
+        # onclick chains wizardGo(3) onto the save promise's .then, and
+        # saveWizardVideoSource returns the fetch so the chain awaits it.
+        _, base = live_server
+        status, body = _get(base, "/wizard")
+        assert status == 200
+        assert "saveWizardVideoSource().then(function(){ wizardGo(3); })" in body
+        assert "saveWizardVideoSource(); wizardGo(3)" not in body  # fire-and-forget pattern gone
+        assert "return fetch('/section/video_source'" in body
+
     def test_wizard_page_contains_all_steps(self, live_server) -> None:
         _, base = live_server
         status, body = _get(base, "/wizard")

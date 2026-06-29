@@ -360,6 +360,11 @@ def validate_video_probe(probe: VideoProbe) -> None:
         )
     if probe.fps > VIDEO_MAX_FPS + _FPS_TOLERANCE:
         raise MediaStoreError(f"Video frame rate {probe.fps:.0f} fps exceeds the {VIDEO_MAX_FPS} fps limit.")
+    # A non-positive duration means the container declared no length (probe maps
+    # the unknown-duration sentinel to 0). Fail closed – an unknown-length clip
+    # must not bypass the ≤60 s cap.
+    if probe.duration_s <= 0:
+        raise MediaStoreError("Could not determine the clip's duration. Re-export it so its length is known.")
     if probe.duration_s > VIDEO_MAX_DURATION_S + _DURATION_TOLERANCE_S:
         raise MediaStoreError(f"Video is {probe.duration_s:.0f} s; the limit is {VIDEO_MAX_DURATION_S} s.")
 
@@ -564,8 +569,10 @@ def _probe_video(source: Path) -> VideoProbe:  # pragma: no cover - GStreamer, v
         fps = stream.get_framerate_num() / denom
         raw_duration = info.get_duration()
         # GstDiscoverer returns GST_CLOCK_TIME_NONE (a u64 sentinel) when the
-        # container declares no duration. Treat that as unknown (0) instead of
-        # dividing it into a ~1.8e10 s value that would falsely trip the cap.
+        # container declares no duration. Map it to 0 – ``validate_video_probe``
+        # rejects a non-positive duration, so an unknown-length clip fails closed
+        # rather than dividing the sentinel into a ~1.8e10 s value (or sneaking
+        # under the cap).
         if raw_duration is None or raw_duration == Gst.CLOCK_TIME_NONE:
             duration_s = 0.0
         else:

@@ -230,6 +230,10 @@ def test_validate_video_probe_accepts_within_limits() -> None:
         ({"width": 1921}, "resolution"),
         ({"fps": 60.0}, "frame rate"),
         ({"duration_s": 90.0}, "limit is 60"),
+        # Unknown duration (probe maps the sentinel to 0) must fail closed, not
+        # sneak under the ≤60 s cap.
+        ({"duration_s": 0.0}, "determine the clip"),
+        ({"duration_s": -1.0}, "determine the clip"),
     ],
 )
 def test_validate_video_probe_rejects(overrides: dict[str, object], match: str) -> None:

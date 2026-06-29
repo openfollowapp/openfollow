@@ -1926,6 +1926,7 @@
  background: rgba(125, 229, 159, 0.12);
  }
  .modal-list-item-apply,
+ .modal-list-item-export,
  .modal-list-item-delete {
  appearance: none;
  border: 0;
@@ -1938,6 +1939,8 @@
  cursor: pointer;
  }
  .modal-list-item-apply:hover { background: rgba(255, 188, 0, 0.16); }
+ .modal-list-item-export { color: var(--muted); }
+ .modal-list-item-export:hover { background: rgba(255, 255, 255, 0.1); }
  .modal-list-item-delete { color: var(--danger); }
  .modal-list-item-delete:hover { background: rgba(255, 140, 140, 0.14); }
  .modal-empty {
@@ -2469,13 +2472,16 @@
  return div.innerHTML;
  }
  // ``modalChooseTemplate`` opens a list-style modal showing every
- // ``.openfollowtemplate`` of a given type. Clicking a row applies
+ // ``.oftemplate`` of a given type. Clicking a row applies
  // it (after a confirm dialog when ``opts.applyConfirmMessage`` is
  // set – used for camera_grid + zones, which wholesale-replace the
  // section). The caller's ``onApplied(filename)`` fires after a
  // successful apply so the section can refresh itself. Delete
  // buttons (user templates only) call DELETE then refresh the
- // list inline.
+ // list inline. Every readable row carries an Export button
+ // (downloads the single ``.oftemplate`` file) and the footer an
+ // Import button (uploads one into the user folder); both are
+ // kind-agnostic so any template type gets them for free.
  async function modalChooseTemplate(opts) {
  const type = opts.type;
  const applyConfirm = !!opts.applyConfirmMessage;
@@ -2549,6 +2555,13 @@
  apply.textContent = 'Apply';
  apply.addEventListener('click', () => onApplyClick(tpl));
  li.appendChild(apply);
+ const exp = document.createElement('button');
+ exp.type = 'button';
+ exp.className = 'modal-list-item-export';
+ exp.textContent = 'Export';
+ // System templates export too – sharing a built-in default is fine.
+ exp.addEventListener('click', () => onExportClick(tpl));
+ li.appendChild(exp);
  if (!tpl.is_system) {
  const del = document.createElement('button');
  del.type = 'button';
@@ -2620,11 +2633,62 @@
  showToast('Delete failed: ' + (err.message || 'unknown error'));
  }
  }
+ function onExportClick(tpl) {
+ // The export route sets a ``Content-Disposition: attachment``
+ // header, so navigating to it downloads the file without leaving
+ // the page. A transient ``<a download>`` keeps the user-gesture
+ // so a pop-up blocker doesn't swallow it.
+ const a = document.createElement('a');
+ a.href = '/api/templates/' + encodeURIComponent(tpl.filename) + '/export';
+ a.download = '';
+ document.body.appendChild(a);
+ a.click();
+ a.remove();
+ }
+ async function onImportClick() {
+ // Pick a single ``.oftemplate`` and POST its raw bytes. The
+ // server validates it against the same schema a disk read uses
+ // and lands it in the user folder; we re-render so it appears.
+ const input = document.createElement('input');
+ input.type = 'file';
+ input.accept = '.oftemplate,.openfollowtemplate,application/json';
+ input.addEventListener('change', async () => {
+ const file = input.files && input.files[0];
+ if (!file) return;
+ try {
+ const buf = await file.arrayBuffer();
+ const res = await fetch(
+ '/api/templates/import?filename=' + encodeURIComponent(file.name),
+ { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: buf },
+ );
+ const text = await res.text();
+ let data = {};
+ try { data = JSON.parse(text); } catch (_) {}
+ if (!res.ok || !data.ok) {
+ showToast(data.error || 'Import failed (HTTP ' + res.status + ')');
+ return;
+ }
+ // A template of a different kind lands fine but won't show in
+ // this type-scoped list – say where it went so it's not "lost".
+ if (data.type && data.type !== type) {
+ showToast('Imported "' + (data.name || file.name) + '" as a ' + data.type
+ + ' template. Open the matching section to use it.');
+ } else {
+ showToast('Imported "' + (data.name || file.name) + '"');
+ }
+ openTemplateChooser();
+ } catch (err) {
+ showToast('Import failed: ' + (err.message || 'unknown error'));
+ }
+ });
+ input.click();
+ }
  function openTemplateChooser() {
  openModal({
  title: opts.title || 'Load template',
  bodyHTML: '<p class="modal-empty">Loading…</p>',
  footerButtons: [
+ { label: 'Import…', onClick: () => onImportClick() },
  { label: 'Close', onClick: () => closeModal() },
  ],
  });
@@ -2654,6 +2718,24 @@
  'Loading a camera + grid template replaces the current camera'
  + ' and grid settings. Continue?',
  onApplied: function() { window.location.reload(); },
+ });
+ };
+ // OSC outputs apply their templates from the toolbar dropdown; this
+ // chooser is the manage surface – apply (adds a transmitter row),
+ // delete, export, and import. Apply refreshes just the section so
+ // the new row appears without losing the rest of the page.
+ window.oscManageTemplates = function() {
+ window.modalChooseTemplate({
+ type: 'osc_output',
+ title: 'OSC output templates',
+ onApplied: function() {
+ if (window.htmx && typeof window.htmx.ajax === 'function') {
+ window.htmx.ajax('GET', '/section/osc_bindings',
+ { target: '#osc-bindings-section', swap: 'outerHTML' });
+ } else {
+ window.location.reload();
+ }
+ },
  });
  };
  // ``saveCurrentSectionAsTemplate`` is the per-section "Save as

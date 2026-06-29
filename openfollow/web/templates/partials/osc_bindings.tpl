@@ -413,7 +413,7 @@
  <!-- Per-row "Save as template…" button. Reads row's
  name + live OSC message (hidden mirror) and POSTs
  to /api/templates/osc_output/save. File lands as
- .openfollowtemplate under templates/user/ and
+ .oftemplate under templates/user/ and
  appears in OSC Outputs dropdown next render.
  data-row-id scopes JS to this row. -->
  <button type="button" class="secondary"
@@ -488,5 +488,10 @@
  % end
  </select>
  <button type="submit" class="save-btn">+ New transmitter</button>
+ <!-- Manage surface for OSC output templates: apply / delete /
+      export / import via the shared chooser. type="button" so it
+      never submits the add-transmitter form. -->
+ <button type="button" class="secondary"
+         onclick="window.oscManageTemplates()">Manage templates…</button>
  </form>
 </div>

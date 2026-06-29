@@ -85,6 +85,9 @@ def test_valid_ids(media_id: str) -> None:
         "0123456789ABCDEF",  # uppercase not generated
         "0123456789abcde",  # 15 chars
         "0123456789abcdef0",  # 17 chars
+        "0123456789abcdef\n",  # trailing newline - rejected by \Z, not $
+        "\n0123456789abcdef",  # leading newline
+        "0123456789abcdef\nx",  # embedded newline
         "",
         "default:bogus",
     ],

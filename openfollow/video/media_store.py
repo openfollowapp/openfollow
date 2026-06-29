@@ -15,6 +15,17 @@ behind the ``_render_jpeg`` / ``_probe_video`` seams.
 Everything security-relevant – the format allowlist, the byte-size caps, the
 id / traversal rules, and the codec / dimension / fps / duration checks – is
 pure Python so it is fully exercised without a live pipeline.
+
+Trust boundary for clips: uploaded WebM is stored *verbatim* (no transcode) and
+later handed to ``decodebin`` for the thumbnail and for live playback. Images
+are re-encoded on store (a JPEG round-trip discards any trailing/polyglot data),
+but a clip's bytes are not normalised, so the barrier between an uploaded file
+and the decoder is the up-front validation (magic-byte container check +
+``GstDiscoverer`` codec / dimension / fps / duration limits) plus GStreamer's
+own decode robustness. This is acceptable under the LAN threat model – the
+uploader is an authenticated operator on an isolated show network, and
+transcoding VP8 on a Pi is too costly to run on every upload. A hostile-input
+hardening step (server-side transcode / stricter demux) would go here.
 """
 
 from __future__ import annotations
@@ -90,11 +101,14 @@ _DURATION_TOLERANCE_S = 0.5
 # -- Id / file conventions ----------------------------------------------------
 
 # User media lands as ``<id>.<ext>`` with the thumbnail as ``<id>.thumb.jpg``.
-_USER_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+# ``\A``/``\Z`` (not ``^``/``$``): ``$`` also matches just before a trailing
+# newline, so ``<id>\n`` would slip past the canonical-id gate that every
+# traversal defence rests on. ``\Z`` anchors the very end of the string.
+_USER_ID_RE = re.compile(r"\A[0-9a-f]{16}\Z")
 _IMAGE_EXT = "jpg"
 _VIDEO_EXT = "webm"
 _THUMB_SUFFIX = ".thumb.jpg"
-_USER_FILE_RE = re.compile(r"^(?P<id>[0-9a-f]{16})\.(?P<ext>jpg|webm)$")
+_USER_FILE_RE = re.compile(r"\A(?P<id>[0-9a-f]{16})\.(?P<ext>jpg|webm)\Z")
 
 
 class MediaStoreError(Exception):

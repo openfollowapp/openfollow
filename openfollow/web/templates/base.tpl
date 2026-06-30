@@ -26,6 +26,7 @@
  % end
  <script src="/assets/js/color-picker.js?v={{_asset_v}}"></script>
  <script src="/assets/js/units.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/detect-input.js?v={{_asset_v}}"></script>
  <style>
  :root {
  color-scheme: dark;
@@ -562,6 +563,11 @@
  [data-input-type] > .row:last-child { margin-bottom: 0.72rem; }
  .field { display: flex; flex-direction: column; flex: 1; min-width: 130px; }
  .field.wide { flex: 2; min-width: 230px; }
+ /* Inline "press to capture" widget: an input with a Detect button beside it
+    (detect-input.js). The button keeps its .secondary.small styling. */
+ .detect-input { display: flex; gap: 0.4rem; align-items: stretch; }
+ .detect-input > input { flex: 1 1 auto; min-width: 0; }
+ .detect-input > .detect-btn { flex: 0 0 auto; white-space: nowrap; align-self: center; }
  .fields-grid {
  display: grid;
  grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -41,7 +41,7 @@ Controls active during show operation.
 - **Marker fader speed (s)** – seconds a full stick deflection takes to sweep the fader end to end. Range 0.05–60 s. Default: `1.0`. Lower values give faster response; higher values give finer resolution over slow sweeps.
 - **Speed −** / **Speed +** – step tracking speed down or up through the configured range. Defaults: `LB` / `RB`.
 - **Move Z−** / **Move Z+** – lower or raise the marker's height. Defaults: `LT` / `RT`.
-- **Next Marker** / **Prev Marker** – cycle which marker this controller drives. Defaults: `D-Pad Right` / `D-Pad Left`. These are suppressed automatically when more than one gamepad is connected, since each controller is pinned to its own marker by plug order.
+- **Next Marker** / **Prev Marker** – cycle which marker this controller drives. Defaults: `D-Pad Right` / `D-Pad Left`. These are suppressed automatically when more than one controller is connected – gamepads and 3D mice share one numbering – since each controller is pinned to its own marker by plug order.
 
 ### Menu Navigation
 

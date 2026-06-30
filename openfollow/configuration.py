@@ -120,6 +120,15 @@ def _coerce_hex_color(value: Any, default: str) -> str:
     return default
 
 
+def _field_default(instance: Any, name: str) -> Any:
+    """Declared default of a dataclass field, for use as a coercion fallback.
+
+    Lets ``__post_init__`` read the per-field defaults straight off the field
+    declarations instead of a parallel table that could drift.
+    """
+    return instance.__dataclass_fields__[name].default
+
+
 def _coerce_multicast_ipv4(value: Any, default: str = "") -> str:
     """Return a validated IPv4 multicast address, or ``default``.
 
@@ -1888,6 +1897,133 @@ class ControllerConfig:
         self.button_raw_indices = coerced_indices
 
 
+# 3D Mouse (6DOF) input. The six source axes are the device deflections; each
+# resolves to a marker target with its own sensitivity and invert. Buttons bind
+# to actions by device button index. These constants are the single source of
+# truth shared by the config, the handler, the web parsers, and the validation
+# rules.
+MOUSE3D_AXES = ("pan_x", "pan_y", "lift", "pitch", "yaw", "roll")
+MOUSE3D_AXIS_TARGETS = ("none", "x", "y", "z", "speed", "fader")
+MOUSE3D_BUTTON_FIELDS = (
+    "btn_reset",
+    "btn_next_marker",
+    "btn_prev_marker",
+    "btn_speed_up",
+    "btn_speed_down",
+    "btn_toggle_help",
+    "btn_toggle_zones",
+    "btn_settings",
+)
+# Web-form row labels (gesture-first, config key in parens) in display order.
+# Single source for the form's axis/button loops; the consistency test asserts
+# they cover exactly MOUSE3D_AXES / MOUSE3D_BUTTON_FIELDS so neither can drift.
+MOUSE3D_AXIS_FORM_LABELS = (
+    ("pan_x", "Push left / right (pan_x)"),
+    ("pan_y", "Push forward / back (pan_y)"),
+    ("lift", "Pull up / push down (lift)"),
+    ("pitch", "Tilt forward / back (pitch)"),
+    ("yaw", "Twist / spin (yaw)"),
+    ("roll", "Tilt left / right (roll)"),
+)
+MOUSE3D_BUTTON_FORM_LABELS = (
+    ("btn_reset", "Reset marker"),
+    ("btn_settings", "Settings menu"),
+    ("btn_next_marker", "Next marker"),
+    ("btn_prev_marker", "Previous marker"),
+    ("btn_speed_up", "Speed up"),
+    ("btn_speed_down", "Speed down"),
+    ("btn_toggle_help", "Toggle help"),
+    ("btn_toggle_zones", "Toggle zones"),
+)
+
+
+@dataclass
+class Mouse3DConfig:
+    """Optional ``[mouse3d]`` section – 3D Mouse (3Dconnexion 6DOF) input.
+
+    Disabled by default. Each of the six source axes resolves to a marker
+    target (``none``/``x``/``y``/``z``/``speed``/``fader``) with its own
+    sensitivity, deadzone and invert; the shared ``curve`` reuses the gamepad
+    shaping.
+    Buttons bind to actions by device button index (``-1`` = unbound).
+    """
+
+    enabled: bool = False
+    curve: str = "logarithmic"
+
+    map_pan_x: str = "x"
+    sens_pan_x: float = 1.0
+    deadzone_pan_x: float = 0.05
+    invert_pan_x: bool = False
+    map_pan_y: str = "y"
+    sens_pan_y: float = 1.0
+    deadzone_pan_y: float = 0.05
+    invert_pan_y: bool = False
+    map_lift: str = "z"
+    sens_lift: float = 0.3
+    deadzone_lift: float = 0.3
+    invert_lift: bool = False
+    map_pitch: str = "none"
+    sens_pitch: float = 1.0
+    deadzone_pitch: float = 0.1
+    invert_pitch: bool = False
+    map_yaw: str = "speed"
+    sens_yaw: float = 1.0
+    deadzone_yaw: float = 0.3
+    invert_yaw: bool = False
+    map_roll: str = "none"
+    sens_roll: float = 1.0
+    deadzone_roll: float = 0.1
+    invert_roll: bool = False
+
+    btn_reset: int = -1
+    btn_next_marker: int = 0
+    btn_prev_marker: int = 1
+    btn_speed_up: int = -1
+    btn_speed_down: int = -1
+    btn_toggle_help: int = -1
+    btn_toggle_zones: int = -1
+    btn_settings: int = -1
+
+    def __post_init__(self) -> None:
+        self.enabled = _coerce_bool(self.enabled, False)
+        self.curve = _coerce_choice(self.curve, VALID_CURVES, "logarithmic")
+        # The field declarations are the single source of per-axis defaults; the
+        # coercion fallback reads them back so an absent-key default and an
+        # invalid-value fallback can't drift apart.
+        for axis in MOUSE3D_AXES:
+            setattr(
+                self,
+                f"map_{axis}",
+                _coerce_choice(
+                    getattr(self, f"map_{axis}"),
+                    MOUSE3D_AXIS_TARGETS,
+                    _field_default(self, f"map_{axis}"),
+                ),
+            )
+            setattr(
+                self,
+                f"sens_{axis}",
+                _coerce_float(getattr(self, f"sens_{axis}"), _field_default(self, f"sens_{axis}"), lo=0.0, hi=10.0),
+            )
+            setattr(
+                self,
+                f"deadzone_{axis}",
+                _coerce_float(
+                    getattr(self, f"deadzone_{axis}"), _field_default(self, f"deadzone_{axis}"), lo=0.0, hi=1.0
+                ),
+            )
+            setattr(
+                self,
+                f"invert_{axis}",
+                _coerce_bool(getattr(self, f"invert_{axis}"), _field_default(self, f"invert_{axis}")),
+            )
+        # Invalid / out-of-range button index falls back to unbound (-1) rather
+        # than rebinding to a default index the operator didn't choose.
+        for btn in MOUSE3D_BUTTON_FIELDS:
+            setattr(self, btn, _coerce_int(getattr(self, btn), -1, lo=-1))
+
+
 # The systemd unit restarted after a successful update. Also the recovery
 # fallback when a box's persisted ``update_service_name`` is invalid.
 DEFAULT_UPDATE_SERVICE_NAME = "openfollow"
@@ -2025,6 +2161,7 @@ class AppConfig:
     grid: GridConfig = field(default_factory=GridConfig)
     marker: MarkerConfig = field(default_factory=MarkerConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
+    mouse3d: Mouse3DConfig = field(default_factory=Mouse3DConfig)
     osc: OscConfig = field(default_factory=OscConfig)
     operator_messages: OperatorMessagesConfig = field(default_factory=OperatorMessagesConfig)
     otp_output: OtpOutputConfig = field(default_factory=OtpOutputConfig)
@@ -2124,6 +2261,7 @@ _SUB_CONFIG_MAP: dict[str, type] = {
     "grid": GridConfig,
     "marker": MarkerConfig,
     "controller": ControllerConfig,
+    "mouse3d": Mouse3DConfig,
     "osc": OscConfig,
     "operator_messages": OperatorMessagesConfig,
     "otp_output": OtpOutputConfig,
@@ -2929,6 +3067,15 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         canvas = getattr(app, "_canvas", None)
         if canvas is not None and hasattr(canvas, "set_pointer_base_visible"):
             canvas.set_pointer_base_visible(new_config.controller.mouse_enabled)
+
+    if new_config.mouse3d != app._config.mouse3d:
+        app._config.mouse3d = new_config.mouse3d
+        # Live-apply: the read thread runs for the handler's lifetime, so this
+        # only swaps the mapping config (the ``enabled`` gate is read live in
+        # ``InputManager.update``). pragma: no branch – same reasoning as the
+        # controller block; the input subsystem is always up during live reload.
+        if app._input_manager is not None:  # pragma: no branch
+            app._input_manager.restart_mouse3d(new_config.mouse3d)
 
     if new_config.osc != app._config.osc:
         app._config.osc = new_config.osc

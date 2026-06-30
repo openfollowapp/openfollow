@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 66" width="58" height="53" role="img" aria-label="SpaceMouse cap twisted">
+  <title>SpaceMouse cap twisted</title>
+  <g fill="none" stroke="#cfccbd" stroke-width="2" stroke-linejoin="round">
+    <ellipse cx="36" cy="50" rx="21" ry="6" fill="#ffffff" fill-opacity="0.05"/>
+    <path d="M19 49 L24 33 Q36 28 48 33 L53 49" fill="#ffffff" fill-opacity="0.05"/>
+    <ellipse cx="36" cy="33" rx="12" ry="3.1"/>
+  </g>
+  <path d="M47 22 A 12 5 0 1 1 44 16" fill="none" stroke="#ffbc00" stroke-width="2.6" stroke-linecap="round"/><polygon points="44.0,16.0 50.2,20.7 42.3,23.5" fill="#ffbc00"/>
+</svg>

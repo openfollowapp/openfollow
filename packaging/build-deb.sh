@@ -163,6 +163,17 @@ import os, sys
 prefix = os.path.realpath(sys.prefix)
 mod = os.path.realpath(packaging.__file__)
 assert mod.startswith(prefix + os.sep), f"packaging not bundled in venv: {mod}"
+
+# The 3D Mouse stack is a base runtime dep and MUST ship in the venv so the
+# feature works on an offline Pi (libhidapi-hidraw0 is a target Depends). Probe
+# via find_spec rather than importing: importing pyspacemouse triggers easyhid's
+# libhidapi dlopen, which the build host need not have.
+import importlib.util
+spec = importlib.util.find_spec("pyspacemouse")
+origin = spec.origin if spec else None
+assert origin and os.path.realpath(origin).startswith(prefix + os.sep), (
+    f"pyspacemouse not bundled in venv: {origin}"
+)
 print("[build-deb] venv import smoke OK:", openfollow.__version__, "| Gst", Gst.version_string())
 PY
 
@@ -199,6 +210,11 @@ fi
 
 # --- static payload -----------------------------------------------------------
 install -m 0644 "$REPO_ROOT/openfollow/web/static/openfollow.svg" "$SHARE/openfollow.svg"
+# udev rule granting the service user (plugdev) access to a 3D Mouse hidraw
+# node. The postinst reloads + triggers udev so it applies without a replug.
+install -d -m 0755 "$STAGE/lib/udev/rules.d"
+install -m 0644 "$REPO_ROOT/packaging/udev/99-openfollow-3dmouse.rules" \
+  "$STAGE/lib/udev/rules.d/99-openfollow-3dmouse.rules"
 install -m 0755 "$DEBIAN_DIR/splash.sh"                           "$SHARE/splash.sh"
 install -m 0755 "$DEBIAN_DIR/session.sh"                          "$SHARE/session.sh"
 install -m 0755 "$DEBIAN_DIR/apply-update.sh"                     "$SHARE/apply-update.sh"

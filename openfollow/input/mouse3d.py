@@ -1,0 +1,485 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+"""3D Mouse (3Dconnexion 6DOF) input handler.
+
+A background daemon thread polls the device over HID and publishes the latest
+six-axis deflection plus button state under a lock; the per-frame ``update``
+runs on the GTK tick, consuming the latest snapshot so a blocking HID read
+never lands on the vsync callback. ``pyspacemouse`` is imported lazily inside
+the thread (``easyhid-ng`` ``dlopen``s ``libhidapi`` at import, so a missing
+library raises ``OSError``, not just ``ImportError``); when it can't load, the
+handler stays inert and the rest of the input subsystem is unaffected.
+
+Axis shaping (deadzone + response curve) mirrors the gamepad handler. Each of
+the six source axes resolves to a marker target (``none``/``x``/``y``/``z``/
+``speed``) with its own sensitivity and invert; ``speed``-mapped axes ramp the
+move-speed while held. The returned velocity is a unit rate – the caller scales
+it by the marker's move-speed – so the handler stays free of app state.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import logging
+import math
+import threading
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from openfollow.configuration import MOUSE3D_AXES
+from openfollow.input.shaping import shape_axis
+
+if TYPE_CHECKING:
+    from openfollow.configuration import Mouse3DConfig
+
+logger = logging.getLogger(__name__)
+
+# User-facing controller name (HUD / web status) for a 3D Mouse "controller".
+MOUSE3D_NAME = "3D Mouse"
+
+# Reconnect backoff bounds (seconds) and poll cadence. The poll is interruptible
+# via the stop Event so shutdown is prompt.
+_RECONNECT_MIN_S = 0.5
+_RECONNECT_MAX_S = 5.0
+_IDLE_POLL_S = 0.005
+_POLL_S = 0.004
+# Move-speed steps per second at full deflection for a ``speed``-mapped axis.
+_SPEED_AXIS_RATE = 6.0
+# Web "Detect" flow: how long to watch for a button press after the click, and
+# the poll cadence within that window.
+_DETECT_TIMEOUT_S = 2.0
+_DETECT_POLL_S = 0.01
+
+# Config source-axis name -> device State attribute.
+_AXIS_SOURCE = {
+    "pan_x": "x",
+    "pan_y": "y",
+    "lift": "z",
+    "pitch": "pitch",
+    "yaw": "yaw",
+    "roll": "roll",
+}
+
+
+def check_mouse3d_dependencies() -> list[str]:
+    """Return pip-install names of missing 3D Mouse deps (``[]`` when present).
+
+    Probes via :func:`importlib.util.find_spec` so the check never triggers
+    ``easyhid``'s ``libhidapi`` ``dlopen`` (which a bare import would).
+    """
+    if importlib.util.find_spec("pyspacemouse") is None:
+        return ["pyspacemouse"]
+    return []
+
+
+@dataclass(frozen=True)
+class _Snapshot:
+    """Latest raw device reading, published by the worker for ``update``."""
+
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+    roll: float = 0.0
+    pitch: float = 0.0
+    yaw: float = 0.0
+    buttons: tuple[int, ...] = ()
+
+
+@dataclass
+class Mouse3DUpdate:
+    """Per-frame result the InputManager applies.
+
+    ``velocity`` is a unit rate (the caller multiplies by the marker's
+    move-speed). ``speed_steps`` is the signed number of discrete move-speed
+    adjustments to apply this frame (button edges + ``speed``-axis ramp).
+    ``fader_signal`` is a unit rate for ``fader``-mapped axes (the caller scales
+    it by ``dt / marker_fader_max_speed_s`` and integrates into the marker's
+    fader). The booleans fold into the shared action flags so the app's existing
+    dispatch handles them.
+    """
+
+    velocity: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    speed_steps: int = 0
+    fader_signal: float = 0.0
+    reset: bool = False
+    next_marker: bool = False
+    prev_marker: bool = False
+    toggle_help: bool = False
+    toggle_zones: bool = False
+    settings: bool = False
+
+
+def _finite_axis(value: Any) -> float:
+    """Coerce a device axis to a finite float clamped to [-1, 1]."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(out):
+        return 0.0
+    return max(-1.0, min(1.0, out))
+
+
+class Mouse3DHandler:
+    """Reads a 3D Mouse on a background thread; maps deflection to marker input.
+
+    The read thread runs only while the feature is enabled: the InputManager
+    starts it on enable and stops it on disable to match ``Mouse3DConfig.enabled``,
+    which gates both the device read and movement application. The web Detect
+    flow still works while disabled – ``detect_pressed_button`` opens the device
+    for a one-shot poll when the thread isn't running.
+    """
+
+    def __init__(
+        self,
+        config: Mouse3DConfig,
+        *,
+        device_factory: Callable[[], Any] | None = None,
+    ) -> None:
+        self._cfg = config
+        # ``None`` -> lazy ``pyspacemouse.open`` resolved on the worker thread.
+        self._device_factory = device_factory
+        self._lock = threading.Lock()
+        # Serialises the web Detect flow so two concurrent requests can't both
+        # open the singleton HID device.
+        self._detect_lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._snapshot: _Snapshot | None = None
+        self._available = device_factory is not None  # real availability set by worker
+        self._connected = False
+        self._import_error: str | None = None
+        # GTK-side edge-detection + speed-ramp accumulator (consumer state).
+        self._prev_buttons: dict[int, bool] = {}
+        self._speed_accum = 0.0
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def start(self) -> None:
+        """Start the read thread (idempotent).
+
+        No-op unless the feature is enabled – the device is only read while in
+        use. Also a no-op when ``pyspacemouse`` isn't installed (no point
+        spawning a reconnect loop that can never open a device). An injected
+        ``device_factory`` (tests) bypasses the dependency check.
+        """
+        if self._thread is not None and self._thread.is_alive():
+            return
+        if not self._cfg.enabled:
+            return
+        if self._device_factory is None and check_mouse3d_dependencies():
+            with self._lock:
+                self._available = False
+            return
+        # A fresh stop Event per worker: a prior worker whose join timed out keeps
+        # watching its own (still-set) event, so it can't resurrect by reading a
+        # shared event the new worker cleared.
+        stop = threading.Event()
+        self._stop = stop
+        self._thread = threading.Thread(target=self._run, args=(stop,), daemon=True, name="Mouse3D")
+        self._thread.start()
+
+    def stop(self, *, wait: bool = False) -> None:
+        """Signal the read thread to stop and release the device.
+
+        Non-blocking by default: a live *disable* runs on the GTK main loop, so
+        joining a worker parked in a blocking HID read would stall the HUD. We
+        only set the (per-worker) stop Event and return; the daemon worker exits
+        on its next stop check and closes the device in its ``finally``, and the
+        pre-publish guard in ``_pump`` keeps a stopping worker from writing a
+        reading after the stop (so the snapshot-clear below holds). App shutdown
+        passes ``wait=True`` to join so the device is released before teardown.
+        """
+        self._stop.set()
+        thread = self._thread
+        self._thread = None
+        if wait and thread is not None:
+            thread.join(timeout=2.0)
+        # Drop the last reading so re-enabling never re-applies a stale deflection.
+        with self._lock:
+            self._snapshot = None
+
+    def reload_config(self, config: Mouse3DConfig) -> None:
+        """Swap the mapping config (mapping is read on the GTK side)."""
+        with self._lock:
+            self._cfg = config
+
+    # -- status (web/UI) ---------------------------------------------------
+
+    @property
+    def available(self) -> bool:
+        """True when ``pyspacemouse`` + ``libhidapi`` loaded."""
+        with self._lock:
+            return self._available
+
+    @property
+    def connected(self) -> bool:
+        """True when a device is currently open."""
+        with self._lock:
+            return self._connected
+
+    def latest_button(self) -> int | None:
+        """Return a currently-pressed button index from the latest snapshot."""
+        with self._lock:
+            snap = self._snapshot
+        if snap is None:
+            return None
+        for idx, pressed in enumerate(snap.buttons):
+            if pressed:
+                return idx
+        return None
+
+    def detect_pressed_button(self, timeout: float = _DETECT_TIMEOUT_S) -> int | None:
+        """Watch briefly for a button press, for the web Detect bind flow.
+
+        The operator clicks Detect, then presses the button to bind. When the
+        read thread is running (feature enabled) this watches the published
+        snapshot; otherwise it opens the device for a one-shot poll so buttons
+        can be bound while the feature is still disabled. Returns the first
+        pressed index seen within ``timeout`` seconds, or ``None``.
+        """
+        # Serialise so two concurrent web requests can't both open the singleton
+        # HID device; a second concurrent detect no-ops rather than racing
+        # open/read/close on the same node.
+        if not self._detect_lock.acquire(blocking=False):
+            return None
+        try:
+            with self._lock:
+                running = self._thread is not None and self._thread.is_alive()
+            if running:
+                return self._poll_snapshot_button(timeout)
+            return self._poll_device_button(timeout)
+        finally:
+            self._detect_lock.release()
+
+    def _poll_snapshot_button(self, timeout: float) -> int | None:
+        deadline = time.monotonic() + timeout
+        while True:
+            idx = self.latest_button()
+            if idx is not None:
+                return idx
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(_DETECT_POLL_S)
+
+    def _poll_device_button(self, timeout: float) -> int | None:
+        try:
+            factory = self._resolve_factory()
+        except (ImportError, OSError) as exc:
+            logger.debug("3D Mouse detect unavailable: %s", exc)
+            return None
+        device = self._open_device(factory)
+        if device is None:
+            return None
+        try:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    state = device.read()
+                except OSError:
+                    return None
+                if state is not None:
+                    buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
+                    for idx, pressed in enumerate(buttons):
+                        if pressed:
+                            return idx
+                time.sleep(_DETECT_POLL_S)
+            return None
+        finally:
+            _safe_close(device)
+
+    # -- per-frame consume (GTK thread) ------------------------------------
+
+    def update(self, dt: float) -> Mouse3DUpdate:
+        """Map the latest snapshot to a marker-input result for this frame."""
+        with self._lock:
+            snap = self._snapshot
+            cfg = self._cfg
+        if snap is None:
+            return Mouse3DUpdate()
+
+        vx = vy = vz = 0.0
+        speed_signal = 0.0
+        fader_signal = 0.0
+        for axis in MOUSE3D_AXES:
+            raw = getattr(snap, _AXIS_SOURCE[axis])
+            if getattr(cfg, f"invert_{axis}"):
+                raw = -raw
+            deadzone = float(getattr(cfg, f"deadzone_{axis}"))
+            shaped = self._shape(raw, deadzone, cfg.curve) * float(getattr(cfg, f"sens_{axis}"))
+            target = getattr(cfg, f"map_{axis}")
+            if target == "x":
+                vx += shaped
+            elif target == "y":
+                vy += shaped
+            elif target == "z":
+                vz += shaped
+            elif target == "speed":
+                speed_signal += shaped
+            elif target == "fader":
+                fader_signal += shaped
+            # "none" -> ignore
+
+        speed_steps = self._accumulate_speed(speed_signal, dt)
+        edges = self._button_edges(snap.buttons)
+        return Mouse3DUpdate(
+            velocity=(vx, vy, vz),
+            fader_signal=fader_signal,
+            speed_steps=speed_steps
+            + (1 if self._fired(cfg.btn_speed_up, edges) else 0)
+            - (1 if self._fired(cfg.btn_speed_down, edges) else 0),
+            reset=self._fired(cfg.btn_reset, edges),
+            next_marker=self._fired(cfg.btn_next_marker, edges),
+            prev_marker=self._fired(cfg.btn_prev_marker, edges),
+            toggle_help=self._fired(cfg.btn_toggle_help, edges),
+            toggle_zones=self._fired(cfg.btn_toggle_zones, edges),
+            settings=self._fired(cfg.btn_settings, edges),
+        )
+
+    def _shape(self, value: float, deadzone: float, curve: str) -> float:
+        """Per-axis deadzone + response curve (shared with the gamepad)."""
+        return shape_axis(value, deadzone, curve)
+
+    def _accumulate_speed(self, signal: float, dt: float) -> int:
+        """Integrate a ``speed``-axis signal into discrete steps (held ramps)."""
+        if signal == 0.0:
+            self._speed_accum = 0.0
+            return 0
+        self._speed_accum += signal * _SPEED_AXIS_RATE * dt
+        steps = 0
+        while self._speed_accum >= 1.0:
+            steps += 1
+            self._speed_accum -= 1.0
+        while self._speed_accum <= -1.0:
+            steps -= 1
+            self._speed_accum += 1.0
+        return steps
+
+    def _button_edges(self, buttons: tuple[int, ...]) -> set[int]:
+        """Rising edges since the last frame; updates the prev-state map."""
+        edges: set[int] = set()
+        new_prev: dict[int, bool] = {}
+        for idx, value in enumerate(buttons):
+            cur = bool(value)
+            new_prev[idx] = cur
+            if cur and not self._prev_buttons.get(idx, False):
+                edges.add(idx)
+        self._prev_buttons = new_prev
+        return edges
+
+    @staticmethod
+    def _fired(button_index: int, edges: set[int]) -> bool:
+        """True when a bound (``>= 0``) button index rose this frame."""
+        return button_index >= 0 and button_index in edges
+
+    # -- worker thread -----------------------------------------------------
+
+    def _run(self, stop: threading.Event) -> None:
+        try:
+            factory = self._resolve_factory()
+        except (ImportError, OSError) as exc:
+            logger.warning("3D Mouse support unavailable (pyspacemouse/libhidapi): %s", exc)
+            with self._lock:
+                self._available = False
+                self._import_error = str(exc)
+            return
+        with self._lock:
+            self._available = True
+        backoff = _RECONNECT_MIN_S
+        while not stop.is_set():
+            device = self._open_device(factory)
+            if device is None:
+                with self._lock:
+                    self._connected = False
+                if stop.wait(backoff):
+                    break
+                backoff = min(backoff * 2.0, _RECONNECT_MAX_S)
+                continue
+            with self._lock:
+                self._connected = True
+            try:
+                read_any = self._pump(device, stop)
+            finally:
+                with self._lock:
+                    self._connected = False
+                    # Don't serve the last deflection on the next connect.
+                    self._snapshot = None
+                _safe_close(device)
+            # Reset the backoff only once a connection actually delivered a
+            # reading; an open that never reads (immediate read error) backs off
+            # like a failed open so a flaky device can't drive a tight reopen loop.
+            if read_any:
+                backoff = _RECONNECT_MIN_S
+            elif stop.wait(backoff):
+                break
+            else:
+                backoff = min(backoff * 2.0, _RECONNECT_MAX_S)
+
+    def _resolve_factory(self) -> Callable[[], Any]:
+        if self._device_factory is not None:
+            return self._device_factory
+        import pyspacemouse  # lazy: easyhid dlopens libhidapi here (may raise OSError)
+
+        open_fn: Callable[[], Any] = pyspacemouse.open
+        return open_fn
+
+    @staticmethod
+    def _open_device(factory: Callable[[], Any]) -> Any | None:
+        try:
+            device = factory()
+        except OSError as exc:  # e.g. hidraw permission denied – retryable
+            logger.debug("3D Mouse open failed: %s", exc)
+            return None
+        # ``pyspacemouse.open`` returns ``False`` when no device is present.
+        return device or None
+
+    def _pump(self, device: Any, stop: threading.Event) -> bool:
+        """Pump device readings into ``_snapshot`` until stop or disconnect.
+
+        Returns whether at least one reading was delivered, so the caller can
+        tell a healthy connection (reset backoff) from an open that immediately
+        failed to read (back off instead of tight-looping).
+        """
+        read_any = False
+        while not stop.is_set():
+            try:
+                state = device.read()
+            except OSError as exc:
+                logger.info("3D Mouse read failed (disconnect?): %s", exc)
+                return read_any
+            if state is None:
+                if stop.wait(_IDLE_POLL_S):
+                    return read_any
+                continue
+            read_any = True
+            snapshot = _Snapshot(
+                x=_finite_axis(getattr(state, "x", 0.0)),
+                y=_finite_axis(getattr(state, "y", 0.0)),
+                z=_finite_axis(getattr(state, "z", 0.0)),
+                roll=_finite_axis(getattr(state, "roll", 0.0)),
+                pitch=_finite_axis(getattr(state, "pitch", 0.0)),
+                yaw=_finite_axis(getattr(state, "yaw", 0.0)),
+                buttons=tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ())),
+            )
+            # A stop may have arrived during the read. Don't publish a now-stale
+            # reading: a non-blocking ``stop()`` clears the snapshot and relies on
+            # the stopping worker not writing one back before it exits.
+            if stop.is_set():
+                return read_any
+            with self._lock:
+                self._snapshot = snapshot
+            if stop.wait(_POLL_S):
+                return read_any
+        return read_any
+
+
+def _safe_close(device: Any) -> None:
+    close = getattr(device, "close", None)
+    if close is None:
+        return
+    try:
+        close()
+    except Exception:  # noqa: BLE001 - close is best-effort on teardown
+        logger.debug("3D Mouse close raised", exc_info=True)

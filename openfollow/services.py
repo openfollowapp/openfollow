@@ -1818,6 +1818,7 @@ class AppRuntimeServices:
             zone_test_send=self._zone_test_send,
             marker_positions_provider=self._get_marker_positions_snapshot,
             full_snapshot_provider=self._snapshot_provider.get_snapshot,
+            mouse3d_button_provider=self._mouse3d_latest_button,
             # Diagnostics + conflict-probe hooks. ``init_web_server`` runs
             # before ``init_osc_transmitters``, so the manager is ``None``
             # at construction time. These providers dereference
@@ -2451,6 +2452,18 @@ class AppRuntimeServices:
         except Exception:  # noqa: BLE001
             return []
         return [(tid, x, y) for (_kind, tid), x, y in positions]
+
+    def _mouse3d_latest_button(self) -> int | None:
+        """Watch briefly for a 3D Mouse button press, for the web bind helper.
+
+        Blocks up to the handler's detect window; runs on the web request
+        thread, so a Detect click feels responsive but can catch a press that
+        lands just after the click.
+        """
+        im = self._app._input_manager
+        if im is None:
+            return None
+        return im.mouse3d_handler.detect_pressed_button()
 
     def update_window_title(self, title: str) -> None:
         self._apply_window_title(title)

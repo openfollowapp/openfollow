@@ -132,6 +132,7 @@ class ConfigWebServer:
         zone_test_send: (Callable[[int, str], dict[str, Any]] | None) = None,
         marker_positions_provider: Callable[[], list[tuple[int, float, float]]] | None = None,
         full_snapshot_provider: Callable[[], bytes | None] | None = None,
+        mouse3d_button_provider: Callable[[], int | None] | None = None,
         osc_binding_status_provider: Callable[[str], dict[str, Any] | None] | None = None,
         osc_binding_preview_provider: Callable[[str], dict[str, Any] | None] | None = None,
         osc_binding_test_send: Callable[[str], dict[str, Any]] | None = None,
@@ -206,6 +207,7 @@ class ConfigWebServer:
         self._zone_test_send = zone_test_send
         self._marker_positions_provider = marker_positions_provider
         self._full_snapshot_provider = full_snapshot_provider
+        self._mouse3d_button_provider = mouse3d_button_provider
         self._osc_binding_status_provider = osc_binding_status_provider
         self._osc_binding_preview_provider = osc_binding_preview_provider
         self._osc_binding_test_send = osc_binding_test_send
@@ -573,6 +575,12 @@ class ConfigWebServer:
         if self._full_snapshot_provider is None:
             return None
         return self._full_snapshot_provider()
+
+    def latest_mouse3d_button(self) -> int | None:
+        """Return the 3D Mouse button index currently held, or None."""
+        if self._mouse3d_button_provider is None:
+            return None
+        return self._mouse3d_button_provider()
 
     # OSC-binding diagnostics surface; optional providers fall back to "manager not running" shape.
     def is_osc_manager_attached(self) -> bool:

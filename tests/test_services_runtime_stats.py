@@ -481,6 +481,18 @@ class TestUpdateWindowTitle:
 # --------------------------------------------------------------------------- #
 
 
+class TestMouse3dLatestButton:
+    def test_none_without_input_manager(self, services: AppRuntimeServices) -> None:
+        services._app._input_manager = None
+        assert services._mouse3d_latest_button() is None
+
+    def test_delegates_to_handler(self, services: AppRuntimeServices) -> None:
+        services._app._input_manager = SimpleNamespace(
+            mouse3d_handler=SimpleNamespace(detect_pressed_button=lambda: 3),
+        )
+        assert services._mouse3d_latest_button() == 3
+
+
 class TestGamepadRuntimeSnapshot:
     def test_empty_when_no_input_manager(self, services: AppRuntimeServices) -> None:
         services._app._input_manager = None

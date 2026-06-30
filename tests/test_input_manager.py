@@ -264,6 +264,9 @@ def test_input_manager_propagates_gamepad_button_signals(monkeypatch) -> None:
     monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
     monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
 
+    # Single controller: next/prev cycling is allowed (suppressed only when more
+    # than one controller is present).
+    _FakeGamepadHandler.joystick_indices = (0,)
     _FakeKeyboardHandler.next_velocity = None
     _FakeGamepadHandler.next_update = GamepadUpdate(
         next_marker_pressed=True,

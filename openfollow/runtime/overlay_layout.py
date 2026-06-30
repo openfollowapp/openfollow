@@ -32,6 +32,35 @@ class BottomLeftInfoPanelLayout:
     value_max_w: float
 
 
+# Friendly labels for the 3D Mouse help section (axis -> name, target -> action).
+# Named for the puck gesture, matching the 3Dconnexion manual's vocabulary.
+_MOUSE3D_AXIS_NAMES: dict[str, str] = {
+    "pan_x": "Push L/R",
+    "pan_y": "Push fwd/back",
+    "lift": "Pull up/down",
+    "pitch": "Tilt fwd/back",
+    "yaw": "Twist",
+    "roll": "Tilt L/R",
+}
+_MOUSE3D_TARGET_LABELS: dict[str, str] = {
+    "x": "Move X",
+    "y": "Move Y",
+    "z": "Move Z",
+    "speed": "Speed",
+    "fader": "Fader",
+}
+_MOUSE3D_BTN_LABELS: tuple[tuple[str, str], ...] = (
+    ("reset", "Reset marker"),
+    ("next_marker", "Marker next"),
+    ("prev_marker", "Marker prev"),
+    ("speed_up", "Speed +"),
+    ("speed_down", "Speed -"),
+    ("toggle_help", "Toggle help"),
+    ("toggle_zones", "Toggle zones"),
+    ("settings", "Settings menu"),
+)
+
+
 # Friendly short names shown in the help overlay for each button code.
 _BUTTON_HELP_NAMES: dict[str, str] = {
     "A": "A",
@@ -146,11 +175,16 @@ def build_help_sections(
     scroll_z: bool = True,
     button_labels: dict[str, str] | None = None,
     keyboard_labels: dict[str, str] | None = None,
+    mouse3d_connected: bool = False,
+    mouse3d_axis_map: dict[str, str] | None = None,
+    mouse3d_buttons: dict[str, int] | None = None,
+    marker_cycle_enabled: bool = True,
 ) -> HelpSections:
     """Build titled help-line sections for overlay display."""
     keyboard: list[str] = []
     controller: list[str] = []
     mouse: list[str] = []
+    mouse3d: list[str] = []
 
     bl = button_labels or {}
     kl = keyboard_labels or {}
@@ -215,7 +249,7 @@ def build_help_sections(
             z_down = _btn("move_z_down", "LT")
             if z_down:
                 controller.append(f"{z_down}: Z-")
-            if marker_cycle:
+            if marker_cycle and marker_cycle_enabled:
                 controller.append(marker_cycle)
             if speed_line:
                 controller.append(speed_line)
@@ -242,6 +276,21 @@ def build_help_sections(
             # unavailable there – the caller passes scroll_z=False to hide it.
             if scroll_z:
                 mouse.append("Scroll wheel: Adjust Z")
+        if mouse3d_connected:
+            axis_map = mouse3d_axis_map or {}
+            buttons = mouse3d_buttons or {}
+            for axis, axis_name in _MOUSE3D_AXIS_NAMES.items():
+                target_label = _MOUSE3D_TARGET_LABELS.get(axis_map.get(axis, "none"))
+                if target_label is not None:  # "none" -> not shown
+                    mouse3d.append(f"{axis_name}: {target_label}")
+            for action, label in _MOUSE3D_BTN_LABELS:
+                # Marker next/prev hidden in multi-controller mode (the action
+                # is suppressed there, same as the gamepad cycle row).
+                if not marker_cycle_enabled and action in ("next_marker", "prev_marker"):
+                    continue
+                idx = buttons.get(action, -1)
+                if idx >= 0:
+                    mouse3d.append(f"Btn {idx}: {label}")
     elif mode == "source-selection":
         if keyboard_connected:
             keyboard = [
@@ -310,6 +359,8 @@ def build_help_sections(
         sections.append(("Controller", controller))
     if mouse:
         sections.append(("Mouse", mouse))
+    if mouse3d:
+        sections.append(("3D Mouse", mouse3d))
     return sections
 
 

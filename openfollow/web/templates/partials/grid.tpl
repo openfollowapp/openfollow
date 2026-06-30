@@ -182,8 +182,8 @@
         <button type="button" class="secondary"
                 data-template-save
                 data-template-deps="#camera-section, #grid-section"
-                onclick="window.cameraGridSaveTemplate()">Save as template…</button>
+                onclick="window.cameraGridSaveTemplate()">{{_('Save as template…')}}</button>
         <button type="button" class="secondary"
-                onclick="window.cameraGridLoadTemplate()">Load template…</button>
+                onclick="window.cameraGridLoadTemplate()">{{_('Load template…')}}</button>
     </div>
 </form>

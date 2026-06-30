@@ -3576,7 +3576,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ``locale/<code>/LC_MESSAGES/``, list it in ``_AVAILABLE_LANGUAGES``,
         and add a link in ``base.tpl``'s ``.lang-switch`` group.
         """
-        from openfollow.i18n import _AVAILABLE_LANGUAGES
+        from openfollow.i18n import _, _AVAILABLE_LANGUAGES
 
         if lang not in _AVAILABLE_LANGUAGES:
             lang = "en"
@@ -4280,8 +4280,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if not results:
             rows.append(
                 "<tr><td colspan='3'>"
-                "<span class='field-note'>No peers known yet – "
-                "wait for discovery or check beacon health above.</span>"
+                f"<span class='field-note'>{openfollow.i18n._('No peers known yet – wait for discovery or check beacon health above.')}</span>"
                 "</td></tr>"
             )
         rows.append("</tbody></table>")

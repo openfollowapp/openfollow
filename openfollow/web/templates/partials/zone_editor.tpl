@@ -23,8 +23,10 @@
                     data-template-deps="#zone-editor-section, #trigger-zones-section">{{_('Save as template…')}}</button>
             <button type="button" id="zone-template-load-btn" class="secondary">{{_('Load template…')}}</button>
             <span id="zone-editor-status" class="section-note"></span>
+        <span id="zone-no-selection-text" style="display:none">{{_('Select a zone to edit its OSC addresses and trigger source.')}}</span>
         </div>
         <div id="zone-details" class="section-note" style="margin-top:1rem;">{{_('Select a zone to edit its OSC addresses and trigger source.')}}</div>
+        
     </div>
 </div>
 
@@ -465,7 +467,7 @@
     function renderDetails() {
         state.detailsRenderedIndex = state.selectedIndex;
         if (state.selectedIndex < 0) {
-            detailsEl.innerHTML = '<div class="section-note">Select a zone to edit its OSC addresses and trigger source.</div>';
+            var nsText = document.getElementById('zone-no-selection-text').textContent; detailsEl.innerHTML = '<div class="section-note">' + nsText + '</div>';
             return;
         }
         var z = state.zones[state.selectedIndex];

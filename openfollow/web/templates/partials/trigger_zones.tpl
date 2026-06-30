@@ -55,7 +55,7 @@
         <div class="row">
             <div class="field">
                 <label>{{_('Default OSC Host')}}</label>
-                <input id="trigger-zones-default-osc-host" type="text" name="default_osc_host" value="{{config.trigger_zones.default_osc_host}}" placeholder="127.0.0.1"
+                <input id="trigger-zones-default-osc-host" type="text" name="default_osc_host" value="127.0.0.1" placeholder="127.0.0.1"
                        hx-get="/api/validate/trigger_zones/default_osc_host" hx-trigger="blur changed delay:200ms"
                        hx-target="#trigger-zones-default-osc-host-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="trigger-zones-default-osc-host-error" aria-invalid="false">
@@ -63,7 +63,7 @@
             </div>
             <div class="field">
                 <label>{{_('Default OSC Port')}}</label>
-                <input id="trigger-zones-default-osc-port" type="number" name="default_osc_port" value="{{config.trigger_zones.default_osc_port}}" min="1" max="65535" step="1"
+                <input id="trigger-zones-default-osc-port" type="number" name="default_osc_port" value="53000" min="1" max="65535" step="1"
                        hx-get="/api/validate/trigger_zones/default_osc_port" hx-trigger="blur changed delay:200ms"
                        hx-target="#trigger-zones-default-osc-port-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="trigger-zones-default-osc-port-error" aria-invalid="false">

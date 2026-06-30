@@ -11,7 +11,7 @@
 
  <div class="osc-destinations-list">
  % if not destinations:
- <p class="empty-state">{{_('No OSC destinations configured. Use ')}}<em>{{_('+ New destination')}}</em>{{_(' below to create one.')}}</p>
+ <p class="empty-state">{{!_('No OSC destinations configured. Use <em>+ New destination</em> below to create one.')}}</p>
  % end
  % for idx, dest in enumerate(destinations):
  % is_focus = (defined('focus_id') and focus_id == dest.id)

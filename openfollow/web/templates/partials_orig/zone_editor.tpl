@@ -1,7 +1,7 @@
 <div id="zone-editor-section" class="section" data-fold-key="zone_editor" data-help="zone_editor" data-template-form="1">
     <div class="section-head">
-        <h2>{{_('Zone Editor')}}</h2>
-        <span class="section-note">{{_('Click to place vertices. Click the first vertex or double-click to close. Click a zone to select it. Drag vertices to move them.')}}</span>
+        <h2>Zone Editor</h2>
+        <span class="section-note">Click to place vertices. Click the first vertex or double-click to close. Click a zone to select it. Drag vertices to move them.</span>
     </div>
 
     <div class="group">
@@ -9,10 +9,10 @@
             <canvas id="zone-canvas" width="1280" height="720" style="display:block;width:100%;height:auto;background:#111;cursor:crosshair;"></canvas>
         </div>
         <div style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;">
-            <button type="button" id="zone-add-btn" class="save-btn">{{_('+ New Zone')}}</button>
-            <button type="button" id="zone-finish-btn" class="secondary" disabled>{{_('Finish Polygon')}}</button>
-            <button type="button" id="zone-cancel-btn" class="secondary" disabled>{{_('Cancel Drawing')}}</button>
-            <button type="button" id="zone-delete-btn" class="danger" disabled>{{_('Delete Selected')}}</button>
+            <button type="button" id="zone-add-btn" class="save-btn">+ New Zone</button>
+            <button type="button" id="zone-finish-btn" class="secondary" disabled>Finish Polygon</button>
+            <button type="button" id="zone-cancel-btn" class="secondary" disabled>Cancel Drawing</button>
+            <button type="button" id="zone-delete-btn" class="danger" disabled>Delete Selected</button>
             <!-- Save / Load template buttons. Save captures entire
                  trigger_zones section (defaults + zones[]) as
                  .openfollowtemplate under templates/user/. Load lists
@@ -20,11 +20,11 @@
                  replaces section (API requires ?confirm=1). -->
             <button type="button" id="zone-template-save-btn" class="secondary"
                     data-template-save
-                    data-template-deps="#zone-editor-section, #trigger-zones-section">{{_('Save as template…')}}</button>
-            <button type="button" id="zone-template-load-btn" class="secondary">{{_('Load template…')}}</button>
+                    data-template-deps="#zone-editor-section, #trigger-zones-section">Save as template…</button>
+            <button type="button" id="zone-template-load-btn" class="secondary">Load template…</button>
             <span id="zone-editor-status" class="section-note"></span>
         </div>
-        <div id="zone-details" class="section-note" style="margin-top:1rem;">{{_('Select a zone to edit its OSC addresses and trigger source.')}}</div>
+        <div id="zone-details" class="section-note" style="margin-top:1rem;">Select a zone to edit its OSC addresses and trigger source.</div>
     </div>
 </div>
 

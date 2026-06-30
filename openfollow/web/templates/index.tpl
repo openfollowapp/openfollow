@@ -136,7 +136,7 @@
     %     placeholders=sorted(PLACEHOLDERS),
     %     registered_marker_ids=registered_marker_ids,
     %     unresolved_by_row=unresolved_by_row,
-    %     marker_display_by_row=marker_display_by_row)
+    %     marker_display_by_row=marker_display_by_row) (i18n: refine _() wrapping - remove from internals, add missing user-facing strings)
 </div>
 
 <!-- Person Detection -->

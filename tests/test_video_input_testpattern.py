@@ -1,74 +1,36 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Tests for the static test-pattern input plugin.
+"""Tests for the Media Gallery input plugin (``input_id = "testpattern"``).
 
-Covers ``_resolve_stage_asset`` selection (JPG → SVG → error),
-``create_pipeline`` for the ``grey`` and ``stage`` patterns, missing
-GStreamer element handling, and HTML rendering.
+Covers ``_resolve_stage_asset`` selection, the grey / stage / image / clip
+``create_pipeline`` chains, the Stage fallback for an unresolvable selection,
+the EOS loop hook, missing-element handling, and the source label.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
-from openfollow.video.inputs import testpattern as tp_module
-from openfollow.video.inputs.testpattern import (
-    TestPatternInput,
-    _resolve_stage_asset,
-)
-from tests._fake_gst import FakeElement, FakePipeline, make_fake_gst
+from openfollow.configuration import AppConfig
+from openfollow.video import media_store
+from openfollow.video.inputs.testpattern import MediaGalleryInput, _resolve_stage_asset
+from tests._fake_gst import FakeCaps, FakeElement, FakePad, FakePipeline, make_fake_gst
 
 pytestmark = pytest.mark.unit
 
-# --------------------------------------------------------------------------- #
-# _resolve_stage_asset
-# --------------------------------------------------------------------------- #
 
-
-class TestResolveStageAsset:
-    def test_prefers_jpg_when_available(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        jpg = tmp_path / "stage_default.jpg"
-        svg = tmp_path / "stage_default.svg"
-        jpg.write_bytes(b"jpeg")
-        svg.write_text("<svg/>")
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
-        monkeypatch.setattr(tp_module, "_STAGE_SVG", svg)
-        path, decoder = _resolve_stage_asset()
-        assert path == jpg
-        assert decoder == "jpegdec"
-
-    def test_falls_back_to_svg_when_jpg_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        jpg = tmp_path / "stage_default.jpg"
-        svg = tmp_path / "stage_default.svg"
-        svg.write_text("<svg/>")
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
-        monkeypatch.setattr(tp_module, "_STAGE_SVG", svg)
-        path, decoder = _resolve_stage_asset()
-        assert path == svg
-        assert decoder == "rsvgdec"
-
-    def test_neither_present_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", tmp_path / "missing.jpg")
-        monkeypatch.setattr(tp_module, "_STAGE_SVG", tmp_path / "missing.svg")
-        with pytest.raises(RuntimeError, match="Stage test pattern asset not found"):
-            _resolve_stage_asset()
-
-
-# --------------------------------------------------------------------------- #
-# create_pipeline – grey chain
-# --------------------------------------------------------------------------- #
-
-
-def _build(config=None, *, fake=None) -> FakePipeline:
+def _build(config=None, *, fake=None, plugin=None) -> FakePipeline:
     from gi.repository import Gst  # noqa: F401
 
     fake = fake or make_fake_gst()
     sink = FakeElement("shared_videosink")
+    plugin = plugin or MediaGalleryInput()
     with patch("gi.repository.Gst", fake):
-        return TestPatternInput().create_pipeline(
+        return plugin.create_pipeline(
             config=config or {},
             sink=sink,
             build_overlay_tail=lambda *a: None,
@@ -76,196 +38,494 @@ def _build(config=None, *, fake=None) -> FakePipeline:
         )
 
 
-class TestCreatePipelineGrey:
+def _fake_gst_patch() -> Any:
+    """Patch ``gi.repository.Gst`` with a fake, importing the real submodule
+    first so the attribute exists before ``patch`` (the package lazy-loads
+    submodules; matches ``_build``)."""
+    from gi.repository import Gst  # noqa: F401
+
+    return patch("gi.repository.Gst", make_fake_gst())
+
+
+def _user_item(media_id: str, kind: str, path: Path) -> media_store.MediaItem:
+    return media_store.MediaItem(media_id, kind, False, path, path.stat().st_size if path.exists() else 0, media_id)
+
+
+# --------------------------------------------------------------------------- #
+# _resolve_stage_asset
+# --------------------------------------------------------------------------- #
+
+
+class TestResolveStageAsset:
+    def test_prefers_jpg(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        jpg = tmp_path / "stage_default.jpg"
+        jpg.write_bytes(b"jpeg")
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
+        monkeypatch.setattr(media_store, "STAGE_ASSET_SVG", tmp_path / "stage_default.svg")
+        assert _resolve_stage_asset() == (jpg, "jpegdec")
+
+    def test_falls_back_to_svg(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        svg = tmp_path / "stage_default.svg"
+        svg.write_text("<svg/>")
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", tmp_path / "stage_default.jpg")
+        monkeypatch.setattr(media_store, "STAGE_ASSET_SVG", svg)
+        assert _resolve_stage_asset() == (svg, "rsvgdec")
+
+    def test_neither_present_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", tmp_path / "missing.jpg")
+        monkeypatch.setattr(media_store, "STAGE_ASSET_SVG", tmp_path / "missing.svg")
+        with pytest.raises(RuntimeError, match="Stage asset not found"):
+            _resolve_stage_asset()
+
+
+# --------------------------------------------------------------------------- #
+# Grey chain (default:grey)
+# --------------------------------------------------------------------------- #
+
+
+class TestGreyChain:
     def test_builds_grey_chain(self) -> None:
-        pipeline = _build({"testpattern_pattern": "grey", "testpattern_resolution": "720p"})
+        pipeline = _build({"testpattern_selected_media": media_store.DEFAULT_GREY_ID})
         src = pipeline.get_by_name("videotestsrc")
         assert src is not None
         assert src.properties["pattern"] == "solid-color"
         assert src.properties["foreground-color"] == 0xFF808080
         assert src.properties["is-live"] is True
-
-        caps = pipeline.get_by_name("capsfilter").properties["caps"].to_string()
-        assert "width=1280" in caps
-        assert "height=720" in caps
-
+        assert pipeline.get_by_name("capsfilter") is not None
         assert pipeline.get_by_name("convert") is not None
-
-    def test_unknown_pattern_falls_back_to_grey(self) -> None:
-        pipeline = _build({"testpattern_pattern": "purple-unicorn"})
-        assert pipeline.get_by_name("videotestsrc") is not None
-
-    def test_unknown_resolution_falls_back_to_1080p(self) -> None:
-        pipeline = _build({"testpattern_resolution": "9001p"})
-        caps = pipeline.get_by_name("capsfilter").properties["caps"].to_string()
-        assert "width=1920" in caps
-        assert "height=1080" in caps
 
     def test_missing_videotestsrc_raises(self) -> None:
         fake = make_fake_gst(missing_elements={"videotestsrc"})
         with pytest.raises(RuntimeError, match="videotestsrc"):
-            _build(fake=fake)
+            _build({"testpattern_selected_media": media_store.DEFAULT_GREY_ID}, fake=fake)
 
-    def test_videotestsrc_to_capsfilter_link_failure_raises(self) -> None:
+    def test_capsfilter_link_failure_raises(self) -> None:
         fake = make_fake_gst(link_fail_kinds={"videotestsrc"})
-        with pytest.raises(RuntimeError, match="videotestsrc"):
-            _build(fake=fake)
+        with pytest.raises(RuntimeError, match="Failed to link videotestsrc"):
+            _build({"testpattern_selected_media": media_store.DEFAULT_GREY_ID}, fake=fake)
 
-    def test_capsfilter_to_videoconvert_link_failure_raises(self) -> None:
+    def test_capsfilter_to_convert_link_failure_raises(self) -> None:
         fake = make_fake_gst(link_fail_kinds={"capsfilter"})
-        with pytest.raises(RuntimeError, match="capsfilter"):
-            _build(fake=fake)
+        with pytest.raises(RuntimeError, match="capsfilter → videoconvert"):
+            _build({"testpattern_selected_media": media_store.DEFAULT_GREY_ID}, fake=fake)
 
 
 # --------------------------------------------------------------------------- #
-# create_pipeline – stage chain
+# Image chain (stage default + user image)
 # --------------------------------------------------------------------------- #
 
 
-class TestCreatePipelineStage:
-    def test_builds_stage_chain_with_filesrc(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+class TestImageChain:
+    def test_stage_default_builds_image_chain(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         jpg = tmp_path / "stage_default.jpg"
         jpg.write_bytes(b"fake")
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
-
-        pipeline = _build({"testpattern_pattern": "stage", "testpattern_resolution": "1080p"})
-        filesrc = pipeline.get_by_name("stagefilesrc")
-        assert filesrc is not None
-        assert filesrc.properties["location"] == str(jpg)
-        assert pipeline.get_by_name("stagedecode") is not None
-        assert pipeline.get_by_name("stage_imagefreeze") is not None
-        assert pipeline.get_by_name("stage_scale_caps") is not None
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
+        pipeline = _build({"testpattern_selected_media": media_store.DEFAULT_STAGE_ID})
+        assert pipeline.get_by_name("imagefilesrc").properties["location"] == str(jpg)
+        assert pipeline.get_by_name("imagedecode") is not None
+        assert pipeline.get_by_name("image_imagefreeze") is not None
+        assert pipeline.get_by_name("image_scale_caps") is not None
         assert pipeline.get_by_name("convert") is not None
 
-    def test_missing_decoder_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_image_chain_forces_fixed_1080p_output(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A fixed output size (not a range) keeps the picture crisp on the HDMI
+        # display; a range lets the sink negotiate a tiny default (640x360).
         jpg = tmp_path / "stage_default.jpg"
         jpg.write_bytes(b"fake")
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
+        pipeline = _build({"testpattern_selected_media": media_store.DEFAULT_STAGE_ID})
+        caps = pipeline.get_by_name("image_scale_caps").properties["caps"].to_string()
+        assert "width=1920" in caps and "height=1080" in caps
+        assert "[1," not in caps  # not a range
+        assert pipeline.get_by_name("imagevideoscale").properties["add-borders"] is True
+
+    def test_user_image_builds_image_chain(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        img = tmp_path / "pic.jpg"
+        img.write_bytes(b"jpeg")
+        monkeypatch.setattr(media_store, "resolve", lambda mid: _user_item("0123456789abcdef", "image", img))
+        pipeline = _build({"testpattern_selected_media": "0123456789abcdef"})
+        assert pipeline.get_by_name("imagefilesrc").properties["location"] == str(img)
+        assert pipeline.get_by_name("image_imagefreeze") is not None
+
+    def test_user_image_requires_jpegdec(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        img = tmp_path / "pic.jpg"
+        img.write_bytes(b"jpeg")
+        monkeypatch.setattr(media_store, "resolve", lambda mid: _user_item("0123456789abcdef", "image", img))
         fake = make_fake_gst(missing_elements={"jpegdec"})
         with pytest.raises(RuntimeError, match="jpegdec"):
-            _build(
-                {"testpattern_pattern": "stage", "testpattern_resolution": "1080p"},
-                fake=fake,
-            )
+            _build({"testpattern_selected_media": "0123456789abcdef"}, fake=fake)
 
     def test_missing_imagefreeze_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         jpg = tmp_path / "stage_default.jpg"
         jpg.write_bytes(b"fake")
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
         fake = make_fake_gst(missing_elements={"imagefreeze"})
         with pytest.raises(RuntimeError, match="imagefreeze"):
-            _build(
-                {"testpattern_pattern": "stage", "testpattern_resolution": "1080p"},
-                fake=fake,
-            )
+            _build({"testpattern_selected_media": media_store.DEFAULT_STAGE_ID}, fake=fake)
 
-    def test_missing_filesrc_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """If GStreamer has no ``filesrc`` (an unusual but possible
-        broken install), the stage chain raises a precise error."""
+    def test_image_chain_link_failure_names_pair(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         jpg = tmp_path / "stage_default.jpg"
         jpg.write_bytes(b"fake")
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
-        fake = make_fake_gst(missing_elements={"filesrc"})
-        with pytest.raises(RuntimeError, match="filesrc"):
-            _build(
-                {"testpattern_pattern": "stage", "testpattern_resolution": "1080p"},
-                fake=fake,
-            )
-
-    def test_stage_chain_link_failure_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Any link failure in the long stage element chain surfaces a
-        precise ``Failed to link X → Y`` error with the offending pair
-        – covers the for-loop link-failure raise."""
-        jpg = tmp_path / "stage_default.jpg"
-        jpg.write_bytes(b"fake")
-        monkeypatch.setattr(tp_module, "_STAGE_JPG", jpg)
-        # Failing the filesrc element makes the very first link
-        # (filesrc → stagedecode) return False, hitting the raise.
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
         fake = make_fake_gst(link_fail_kinds={"filesrc"})
         with pytest.raises(RuntimeError, match="Failed to link"):
-            _build(
-                {"testpattern_pattern": "stage", "testpattern_resolution": "1080p"},
-                fake=fake,
-            )
+            _build({"testpattern_selected_media": media_store.DEFAULT_STAGE_ID}, fake=fake)
+
+    def test_image_missing_filesrc_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        jpg = tmp_path / "stage_default.jpg"
+        jpg.write_bytes(b"fake")
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
+        fake = make_fake_gst(missing_elements={"filesrc"})
+        with pytest.raises(RuntimeError, match="filesrc"):
+            _build({"testpattern_selected_media": media_store.DEFAULT_STAGE_ID}, fake=fake)
+
+    def test_unresolvable_selection_falls_back_to_stage(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Empty store -> a valid-but-absent user id does not resolve.
+        monkeypatch.setattr(media_store, "resolve_media_storage_path", lambda: tmp_path / "empty")
+        jpg = tmp_path / "stage_default.jpg"
+        jpg.write_bytes(b"fake")
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
+        pipeline = _build({"testpattern_selected_media": "ffffffffffffffff"})
+        # Rendered the Stage default image chain, not a blank/error pipeline.
+        assert pipeline.get_by_name("imagefilesrc").properties["location"] == str(jpg)
 
 
-class TestCreatePipelineShared:
+# --------------------------------------------------------------------------- #
+# Clip chain (user video)
+# --------------------------------------------------------------------------- #
+
+
+class TestClipChain:
+    def test_builds_clip_chain_and_marks_video(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        clip = tmp_path / "loop.webm"
+        clip.write_bytes(b"webm")
+        monkeypatch.setattr(media_store, "resolve", lambda mid: _user_item("0123456789abcdef", "video", clip))
+        plugin = MediaGalleryInput()
+        pipeline = _build({"testpattern_selected_media": "0123456789abcdef"}, plugin=plugin)
+
+        assert pipeline.get_by_name("clipfilesrc").properties["location"] == str(clip)
+        assert pipeline.get_by_name("clipdecode") is not None
+        assert pipeline.get_by_name("clip_scale_caps") is not None
+        assert pipeline.get_by_name("convert") is not None
+        # decodebin's dynamic pad is linked on pad-added.
+        assert any(sig == "pad-added" for sig, _cb in pipeline.get_by_name("clipdecode").signals)
+        assert plugin._is_video is True
+
+    def test_missing_decodebin_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        clip = tmp_path / "loop.webm"
+        clip.write_bytes(b"webm")
+        monkeypatch.setattr(media_store, "resolve", lambda mid: _user_item("0123456789abcdef", "video", clip))
+        fake = make_fake_gst(missing_elements={"decodebin"})
+        with pytest.raises(RuntimeError, match="decodebin"):
+            _build({"testpattern_selected_media": "0123456789abcdef"}, fake=fake)
+
+    def test_missing_filesrc_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        clip = tmp_path / "loop.webm"
+        clip.write_bytes(b"webm")
+        monkeypatch.setattr(media_store, "resolve", lambda mid: _user_item("0123456789abcdef", "video", clip))
+        fake = make_fake_gst(missing_elements={"filesrc"})
+        with pytest.raises(RuntimeError, match="filesrc"):
+            _build({"testpattern_selected_media": "0123456789abcdef"}, fake=fake)
+
+    @pytest.mark.parametrize(
+        ("fail_kind", "msg"),
+        [
+            ("filesrc", "Failed to link filesrc"),
+            ("videoscale", "Failed to link videoscale"),
+            ("capsfilter", "capsfilter → videoconvert"),
+        ],
+    )
+    def test_link_failures_name_the_pair(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_kind: str, msg: str
+    ) -> None:
+        clip = tmp_path / "loop.webm"
+        clip.write_bytes(b"webm")
+        monkeypatch.setattr(media_store, "resolve", lambda mid: _user_item("0123456789abcdef", "video", clip))
+        fake = make_fake_gst(link_fail_kinds={fail_kind})
+        with pytest.raises(RuntimeError, match=msg):
+            _build({"testpattern_selected_media": "0123456789abcdef"}, fake=fake)
+
+
+class TestLinkVideoPad:
+    def test_links_video_pad_to_scaler(self) -> None:
+        with _fake_gst_patch():
+            pad = FakePad("src_0")  # FakePad caps are "video/..." -> linked
+            scale = FakeElement("scale")
+            MediaGalleryInput._link_video_pad(pad, scale)
+        assert pad.linked_to is scale.get_static_pad("sink")
+
+    def test_ignores_audio_pad(self) -> None:
+        class _AudioPad(FakePad):
+            def get_current_caps(self) -> FakeCaps:
+                return FakeCaps("audio/x-raw")
+
+        with _fake_gst_patch():
+            pad = _AudioPad("audio_0")
+            scale = FakeElement("scale")
+            MediaGalleryInput._link_video_pad(pad, scale)
+        assert pad.linked_to is None
+
+    def test_links_unnegotiated_pad_when_caps_unresolved(self) -> None:
+        # A pad whose caps aren't resolved at pad-added time (no current caps,
+        # an ANY query result) is the clip's only video pad and must still be
+        # linked - skipping it would leave the clip with no video.
+        class _AnyPad(FakePad):
+            def get_current_caps(self) -> FakeCaps | None:
+                return None
+
+            def query_caps(self, _filter: object) -> FakeCaps:
+                return FakeCaps("ANY")
+
+        with _fake_gst_patch():
+            pad = _AnyPad("src_0")
+            scale = FakeElement("scale")
+            MediaGalleryInput._link_video_pad(pad, scale)
+        assert pad.linked_to is scale.get_static_pad("sink")
+
+    def test_skips_when_sink_already_linked(self) -> None:
+        with _fake_gst_patch():
+            pad = FakePad("src_1")
+            scale = FakeElement("scale")
+            scale.get_static_pad("sink")._linked_into = True  # already linked
+            MediaGalleryInput._link_video_pad(pad, scale)
+        assert pad.linked_to is None
+
+    def test_logs_when_link_fails(self, caplog: pytest.LogCaptureFixture) -> None:
+        # A refused link must be logged, not silently swallowed (a mute
+        # reconnect loop is the worst diagnostic outcome).
+        with _fake_gst_patch():
+            pad = FakePad("src_0", link_returns="refused")
+            scale = FakeElement("scale")
+            with caplog.at_level("WARNING"):
+                MediaGalleryInput._link_video_pad(pad, scale)
+        assert "failed to link" in caplog.text.lower()
+
+
+# --------------------------------------------------------------------------- #
+# Shared / hooks
+# --------------------------------------------------------------------------- #
+
+
+class TestSharedAndHooks:
     def test_prepare_sink_none_raises(self) -> None:
         from gi.repository import Gst  # noqa: F401
 
         fake = make_fake_gst()
-        with patch("gi.repository.Gst", fake):
-            with pytest.raises(RuntimeError, match="No video sink"):
-                TestPatternInput().create_pipeline(
-                    config={},
-                    sink=FakeElement("shared_videosink"),
-                    build_overlay_tail=lambda *a: None,
-                    prepare_sink=lambda: None,
-                )
+        with patch("gi.repository.Gst", fake), pytest.raises(RuntimeError, match="No video sink"):
+            MediaGalleryInput().create_pipeline(
+                config={},
+                sink=FakeElement("shared_videosink"),
+                build_overlay_tail=lambda *a: None,
+                prepare_sink=lambda: None,
+            )
 
-
-# --------------------------------------------------------------------------- #
-# Web UI
-# --------------------------------------------------------------------------- #
-
-
-class TestConfigFieldChoices:
-    """The pattern field exposes its valid values via ``ConfigField.choices``
-    so the on-device UI can render a list picker instead of a free-text
-    URL editor for what's really a 2-option enum."""
-
-    def test_pattern_field_declares_choices(self) -> None:
-        fields = {f.name: f for f in TestPatternInput.config_fields()}
-        assert "testpattern_pattern" in fields
-        choices = dict(fields["testpattern_pattern"].choices)
-        assert choices == {"grey": "50% Grey", "stage": "Stage Scene"}
-
-    def test_resolution_field_has_no_choices_yet(self) -> None:
-        """Resolution stays web-only; the on-device picker is pattern-only.
-        Locking this in prevents accidentally widening the on-device picker
-        scope without an explicit decision."""
-        fields = {f.name: f for f in TestPatternInput.config_fields()}
-        assert fields["testpattern_resolution"].choices == ()
-
-
-class TestWebUI:
-    def test_html_includes_pattern_select(self) -> None:
-        html = TestPatternInput.web_ui_html({"testpattern_pattern": "stage", "testpattern_resolution": "720p"})
-        assert 'name="testpattern_pattern"' in html
-        assert 'name="testpattern_resolution"' in html
-        assert 'value="stage" selected' in html
-        assert 'value="720p" selected' in html
-
-    def test_html_sanitises_unknown_pattern(self) -> None:
-        html = TestPatternInput.web_ui_html({"testpattern_pattern": "not-a-pattern", "testpattern_resolution": "bogus"})
-        # Falls back to grey/1080p for the ``selected`` attribute
-        assert 'value="grey" selected' in html
-        assert 'value="1080p" selected' in html
-
-
-# --------------------------------------------------------------------------- #
-# Labels + hooks
-# --------------------------------------------------------------------------- #
-
-
-class TestGetSourceLabel:
-    def test_grey_label(self) -> None:
-        label = TestPatternInput.get_source_label({"testpattern_pattern": "grey", "testpattern_resolution": "720p"})
-        assert label == "Test Pattern 50% Grey (720p)"
-
-    def test_stage_label(self) -> None:
-        label = TestPatternInput.get_source_label({"testpattern_pattern": "stage", "testpattern_resolution": "1080p"})
-        assert label == "Test Pattern Stage Scene (1080p)"
-
-    def test_unknown_pattern_falls_back(self) -> None:
-        label = TestPatternInput.get_source_label(
-            {"testpattern_pattern": "not-real", "testpattern_resolution": "1080p"}
-        )
-        assert "50% Grey" in label
-
-
-class TestOnBusAsyncDone:
-    def test_forces_zero_latency(self) -> None:
-        pipeline = FakePipeline("testpattern")
-        TestPatternInput().on_bus_async_done(pipeline)
+    def test_on_bus_async_done_forces_zero_latency(self) -> None:
+        pipeline = FakePipeline("media-gallery")
+        MediaGalleryInput().on_bus_async_done(pipeline)
         assert pipeline.latency_values == [0]
+
+    def test_on_bus_async_done_arms_segment_loop_once_for_a_clip(self) -> None:
+        # The arming seek must be SEGMENT (so the clip posts SEGMENT_DONE, not
+        # EOS) and must fire exactly once even though ASYNC_DONE repeats.
+        fake = make_fake_gst()
+        plugin = MediaGalleryInput()
+        plugin._is_video = True
+        pipeline = FakePipeline("clip")
+        with patch("gi.repository.Gst", fake):
+            plugin.on_bus_async_done(pipeline)
+            plugin.on_bus_async_done(pipeline)  # second preroll must not re-arm
+        assert plugin._loop_armed is True
+        assert len(pipeline.segment_seeks) == 1
+        flags = pipeline.segment_seeks[0][2]
+        assert flags & fake.SeekFlags.SEGMENT
+        assert flags & fake.SeekFlags.FLUSH  # arming flushes once at startup
+
+    def test_on_bus_async_done_does_not_arm_for_a_still(self) -> None:
+        fake = make_fake_gst()
+        plugin = MediaGalleryInput()  # _is_video defaults False
+        pipeline = FakePipeline("img")
+        with patch("gi.repository.Gst", fake):
+            plugin.on_bus_async_done(pipeline)
+        assert plugin._loop_armed is False
+        assert pipeline.segment_seeks == []
+
+    def test_on_bus_async_done_stays_unarmed_if_arming_seek_fails(self) -> None:
+        # A failed arming seek must not flip the armed flag (so the next
+        # ASYNC_DONE retries), but latency is still set.
+        fake = make_fake_gst()
+        plugin = MediaGalleryInput()
+        plugin._is_video = True
+        pipeline = FakePipeline("clip")
+        pipeline.seek_ok = False
+        with patch("gi.repository.Gst", fake):
+            plugin.on_bus_async_done(pipeline)
+        assert plugin._loop_armed is False
+        assert pipeline.latency_values == [0]
+
+    def test_on_bus_segment_done_loops_a_clip_without_flushing(self) -> None:
+        # The seamless loop: a non-flushing segment seek back to the start.
+        fake = make_fake_gst()
+        plugin = MediaGalleryInput()
+        plugin._is_video = True
+        pipeline = FakePipeline("clip")
+        with patch("gi.repository.Gst", fake):
+            handled = plugin.on_bus_segment_done(pipeline)
+        assert handled is True
+        _rate, _fmt, flags, _st, start, _stop_t, _stop = pipeline.segment_seeks[0]
+        assert flags & fake.SeekFlags.SEGMENT
+        assert not flags & fake.SeekFlags.FLUSH  # must not flush -> no frame gap
+        assert start == 0
+
+    def test_on_bus_segment_done_ignores_non_video(self) -> None:
+        plugin = MediaGalleryInput()  # _is_video defaults False
+        pipeline = FakePipeline("img")
+        assert plugin.on_bus_segment_done(pipeline) is False
+        assert pipeline.segment_seeks == []
+
+    def test_segment_seek_falls_back_to_open_stop_when_duration_unknown(self) -> None:
+        fake = make_fake_gst()
+        plugin = MediaGalleryInput()
+        plugin._is_video = True
+        pipeline = FakePipeline("clip")
+        pipeline.duration_ok = False  # demuxer hasn't reported duration yet
+        with patch("gi.repository.Gst", fake):
+            plugin.on_bus_segment_done(pipeline)
+        stop_type = pipeline.segment_seeks[0][5]
+        assert stop_type == fake.SeekType.NONE
+
+    def test_on_bus_eos_rearms_loop_for_a_clip(self) -> None:
+        # A stray EOS (before the loop armed) re-arms via a flushing segment
+        # seek rather than reading as a disconnect.
+        fake = make_fake_gst()
+        plugin = MediaGalleryInput()
+        plugin._is_video = True
+        pipeline = FakePipeline("clip")
+        with patch("gi.repository.Gst", fake):
+            handled = plugin.on_bus_eos(pipeline)
+        assert handled is True and plugin._loop_armed is True
+        flags = pipeline.segment_seeks[0][2]
+        assert flags & fake.SeekFlags.SEGMENT and flags & fake.SeekFlags.FLUSH
+
+    def test_on_bus_eos_ignores_non_video(self) -> None:
+        plugin = MediaGalleryInput()  # _is_video defaults False
+        pipeline = FakePipeline("img")
+        assert plugin.on_bus_eos(pipeline) is False
+        assert pipeline.segment_seeks == []
+
+    def test_on_bus_eos_seek_failure_reports_unhandled(self) -> None:
+        # If the recovery seek fails, report unhandled so the receiver can
+        # fall back to a reconnect instead of freezing on a dead clip.
+        fake = make_fake_gst()
+        plugin = MediaGalleryInput()
+        plugin._is_video = True
+        pipeline = FakePipeline("clip")
+        pipeline.seek_ok = False
+        with patch("gi.repository.Gst", fake):
+            assert plugin.on_bus_eos(pipeline) is False
+        assert plugin._loop_armed is False
+
+    def test_base_on_bus_eos_and_segment_done_default_unhandled(self) -> None:
+        # A non-looping input inherits the VideoInputBase defaults -> False.
+        from openfollow.video.inputs import get_input_class
+
+        cls = get_input_class("rtsp")
+        assert cls is not None
+        assert cls().on_bus_eos(None) is False
+        assert cls().on_bus_segment_done(None) is False
+
+
+# --------------------------------------------------------------------------- #
+# Config field + labels + web UI
+# --------------------------------------------------------------------------- #
+
+
+class TestConfigAndLabels:
+    def test_selection_field_is_web_only(self) -> None:
+        fields = {f.name: f for f in MediaGalleryInput.config_fields()}
+        field = fields["testpattern_selected_media"]
+        assert field.device_editable is False  # on-device picker/editor skip it
+        assert field.default == media_store.DEFAULT_SELECTED_MEDIA
+        assert field.choices == ()
+
+    def test_display_name_is_media_gallery(self) -> None:
+        assert MediaGalleryInput.display_name == "Media Gallery"
+
+    @pytest.mark.parametrize(
+        ("media_id", "expected"),
+        [
+            (media_store.DEFAULT_STAGE_ID, "Media Gallery (Stage)"),
+            (media_store.DEFAULT_GREY_ID, "Media Gallery (Grey)"),
+        ],
+    )
+    def test_label_for_defaults(self, media_id: str, expected: str) -> None:
+        assert MediaGalleryInput.get_source_label({"testpattern_selected_media": media_id}) == expected
+
+    def test_label_for_user_media(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        img = tmp_path / "p.jpg"
+        img.write_bytes(b"x")
+        monkeypatch.setattr(media_store, "resolve", lambda mid: _user_item("0123456789abcdef", "image", img))
+        assert MediaGalleryInput.get_source_label({"testpattern_selected_media": "0123456789abcdef"}) == (
+            "Media Gallery (Image)"
+        )
+        monkeypatch.setattr(media_store, "resolve", lambda mid: _user_item("0123456789abcdef", "video", img))
+        assert MediaGalleryInput.get_source_label({"testpattern_selected_media": "0123456789abcdef"}) == (
+            "Media Gallery (Clip)"
+        )
+
+    def test_label_unresolvable_returns_bare_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(media_store, "resolve", lambda mid: None)
+        assert MediaGalleryInput.get_source_label({"testpattern_selected_media": "whatever"}) == "Media Gallery"
+
+    def test_web_ui_html_renders_grid_and_upload(self) -> None:
+        html = MediaGalleryInput.web_ui_html({"testpattern_selected_media": "default:grey"})
+        assert 'id="gallery-grid"' in html
+        assert 'hx-get="/video-input/testpattern/list"' in html  # grid loads via HTMX
+        # Must pin its own target; otherwise it inherits the parent video-source
+        # form's hx-target and replaces the whole form on load.
+        assert 'hx-target="this"' in html
+        assert "openfollowGalleryUpload" in html  # upload control + handler
+        # The upload trigger is a real button, not a <label> (which the form's
+        # label CSS would render as an uppercase header).
+        assert '<button type="button" class="btn-link gallery-upload-btn"' in html
+        # The selection is NOT round-tripped through a form field: it is managed
+        # only via /video-input/testpattern/select. A hidden field would let a
+        # video-source form Save post a stale render-time value and revert a
+        # selection made via the grid.
+        assert 'name="testpattern_selected_media"' not in html
+
+    def test_form_save_without_selection_field_preserves_selection(self) -> None:
+        # The Media Gallery form carries no selection field, so a video-source
+        # Save (which posts only the fields the form renders) must leave a
+        # selection made via the grid untouched – it can't revert it.
+        cfg = AppConfig(video_source_type="testpattern", testpattern_selected_media="0123456789abcdef")
+        MediaGalleryInput.apply_config_fields(cfg, {"video_source_type": "testpattern"})
+        assert cfg.testpattern_selected_media == "0123456789abcdef"
+
+    def test_upload_handler_guards_oversize_client_side(self) -> None:
+        # A browser streams the whole body before reading the response, so an
+        # over-cap file must be rejected client-side BEFORE the fetch - otherwise
+        # the server returns early without draining the body, wsgiref resets the
+        # socket mid-upload, and the fetch rejects with no banner (silent fail).
+        html = MediaGalleryInput.web_ui_html({"testpattern_selected_media": "default:grey"})
+        cap = media_store.MAX_VIDEO_UPLOAD_BYTES
+        cap_mb = cap // (1024 * 1024)
+        # The cap is injected so the guard and the server stay in lockstep.
+        assert str(cap) in html
+        # The client guard surfaces the same wording the server uses.
+        assert f"File too large (max {cap_mb} MB)." in html
+
+    def test_upload_handler_never_fails_silently(self) -> None:
+        # Any fetch rejection (connection reset, server down) must surface a
+        # banner - the catch path must not merely clear the loading spinner.
+        html = MediaGalleryInput.web_ui_html({"testpattern_selected_media": "default:grey"})
+        catch = html.split(".catch(", 1)[1]
+        # The error helper is invoked from the catch, not a bare spinner reset.
+        assert "openfollowGalleryError(" in catch.split("}", 1)[0]
+
+    def test_upload_handler_guards_non_grid_response(self) -> None:
+        # A non-2xx status or a non-grid body (login redirect, proxy error)
+        # must NOT be swapped into #gallery-grid - that would wipe the grid
+        # container. The success handler checks r.ok and the node id first.
+        html = MediaGalleryInput.web_ui_html({"testpattern_selected_media": "default:grey"})
+        assert "res.ok" in html
+        assert "node.id!=='gallery-grid'" in html

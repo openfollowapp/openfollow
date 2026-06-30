@@ -278,7 +278,7 @@ def _first_video_text_field(video_source_type: str) -> tuple[str, str] | None:
     if cls is None:
         return None
     for f in cls.config_fields():
-        if f.type is str and not f.choices:
+        if f.type is str and not f.choices and f.device_editable:
             return f.name, f.label
     return None
 
@@ -300,7 +300,7 @@ def _first_video_choice_field(
     if cls is None:
         return None
     for f in cls.config_fields():
-        if f.type is str and f.choices:
+        if f.type is str and f.choices and f.device_editable:
             return f.name, f.label, tuple(f.choices)
     return None
 

@@ -1897,6 +1897,11 @@ DEFAULT_UPDATE_SERVICE_NAME = "openfollow"
 # and the ``__post_init__`` non-string fallbacks can't drift apart.
 _DEFAULT_PSN_SYSTEM_NAME = "OpenFollow"
 _DEFAULT_PSN_MCAST_IP = "236.10.10.10"
+# Mirrors ``media_store.DEFAULT_SELECTED_MEDIA`` (the Stage default). Kept as a
+# literal here – not imported – so this early-loaded module doesn't pull in the
+# video package; a test pins the two together. The constant dedupes the field
+# default and the ``__post_init__`` fallback.
+_DEFAULT_SELECTED_MEDIA = "default:stage"
 
 
 @dataclass
@@ -1965,8 +1970,8 @@ class AppConfig:
     avf_width: int = 1920
     avf_height: int = 1080
     avf_framerate: int = 30
-    testpattern_resolution: str = "1080p"
-    testpattern_pattern: str = "stage"
+    # Media Gallery selection; see ``_DEFAULT_SELECTED_MEDIA`` above.
+    testpattern_selected_media: str = _DEFAULT_SELECTED_MEDIA
 
     # Video recovery (network inputs: RTSP/SRT/RTP). ``stall_timeout`` is the
     # silent-stall watchdog – seconds an established stream may deliver no
@@ -2072,6 +2077,14 @@ class AppConfig:
         if not isinstance(self.psn_system_name, str):
             self.psn_system_name = _DEFAULT_PSN_SYSTEM_NAME
         self.psn_system_name = self.psn_system_name.strip() or _DEFAULT_PSN_SYSTEM_NAME
+        # Normalise the Media Gallery selection: a hand-edited non-string (or a
+        # blank) must never reach ``media_store.resolve`` / ``re.match`` – which
+        # raise ``TypeError`` on a non-string and would crash pipeline build and
+        # ``get_source_label`` instead of degrading to Stage. A well-typed but
+        # unknown id is left as-is and falls back to Stage at resolve time.
+        if not isinstance(self.testpattern_selected_media, str):
+            self.testpattern_selected_media = _DEFAULT_SELECTED_MEDIA
+        self.testpattern_selected_media = self.testpattern_selected_media.strip() or _DEFAULT_SELECTED_MEDIA
         # TOML produces ``dict[str, Any]``; the runtime contract is
         # ``dict[int, float]`` keyed by marker_id. Drop pairs with a non-int
         # key or non-finite/negative value.

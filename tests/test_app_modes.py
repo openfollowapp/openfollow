@@ -1627,15 +1627,15 @@ class TestFieldChoicePicker:
     def _make_app(
         self,
         *,
-        video_source_type: str = "testpattern",
-        testpattern_pattern: str = "grey",
+        video_source_type: str = "v4l2",
+        v4l2_render: str = "native",
         swap_raises: Exception | None = None,
     ) -> object:
         from openfollow.configuration import AppConfig
 
         cfg = AppConfig()
         cfg.video_source_type = video_source_type
-        cfg.testpattern_pattern = testpattern_pattern
+        cfg.v4l2_render_resolution = v4l2_render
 
         swap_calls: list[str] = []
 
@@ -1751,13 +1751,13 @@ class TestFieldChoicePicker:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr("openfollow.configuration.save_config", lambda *_a, **_k: None)
-        app = self._make_app(testpattern_pattern="stage")
+        app = self._make_app(v4l2_render="2160p")
         app_modes.enter_field_choice_picker(app)
         assert app._field_choice_active is True
-        assert app._field_choice_field_name == "testpattern_pattern"
-        assert app._field_choice_field_label == "Pattern"
-        assert app._field_choice_items == ["50% Grey", "Stage Scene"]
-        # Cursor seeds to ``stage`` (index 1) because that's the current value.
+        assert app._field_choice_field_name == "v4l2_render_resolution"
+        assert app._field_choice_field_label == "Render resolution"
+        assert app._field_choice_items == ["Native size", "2160p", "1080p", "720p"]
+        # Cursor seeds to ``2160p`` (index 1) because that's the current value.
         assert app._field_choice_selected_index == 1
 
     def test_enter_with_unknown_current_value_seeds_to_zero(
@@ -1767,7 +1767,7 @@ class TestFieldChoicePicker:
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr("openfollow.configuration.save_config", lambda *_a, **_k: None)
-        app = self._make_app(testpattern_pattern="not-a-pattern")
+        app = self._make_app(v4l2_render="not-a-res")
         app_modes.enter_field_choice_picker(app)
         assert app._field_choice_selected_index == 0
 
@@ -1804,11 +1804,11 @@ class TestFieldChoicePicker:
             "openfollow.runtime.app_modes.save_config",
             lambda cfg, _path: saved.append(cfg),
         )
-        app = self._make_app(testpattern_pattern="grey")
+        app = self._make_app(v4l2_render="native")
         app_modes.enter_field_choice_picker(app)
-        app._field_choice_selected_index = 1  # stage
+        app._field_choice_selected_index = 1  # 2160p
         app_modes.confirm_field_choice_picker(app)
-        assert app._config.testpattern_pattern == "stage"
+        assert app._config.v4l2_render_resolution == "2160p"
         assert app._field_choice_active is False
         assert len(saved) == 1
 
@@ -1822,16 +1822,16 @@ class TestFieldChoicePicker:
             "openfollow.runtime.app_modes.save_config",
             lambda *_a, **_k: None,
         )
-        app = self._make_app(testpattern_pattern="grey")
-        # No revert_type – operator is already on testpattern.
+        app = self._make_app(v4l2_render="native")
+        # No revert_type – operator is already on v4l2.
         app_modes.enter_field_choice_picker(app)
-        app._field_choice_selected_index = 1  # stage
+        app._field_choice_selected_index = 1  # 2160p
         app_modes.confirm_field_choice_picker(app)
         # The fixture records swap_video calls by source_type; on the
         # same-type path we expect a single swap onto the same type so
         # the receiver picks up the new value.
-        assert app._swap_calls == ["testpattern"]
-        assert app._config.testpattern_pattern == "stage"
+        assert app._swap_calls == ["v4l2"]
+        assert app._config.v4l2_render_resolution == "2160p"
 
     def test_confirm_same_type_swap_failure_reverts_field_value(
         self,
@@ -1844,14 +1844,14 @@ class TestFieldChoicePicker:
             lambda *_a, **_k: None,
         )
         app = self._make_app(
-            testpattern_pattern="grey",
+            v4l2_render="native",
             swap_raises=RuntimeError("pattern rejected"),
         )
         app_modes.enter_field_choice_picker(app)
-        app._field_choice_selected_index = 1  # stage – the failing value
+        app._field_choice_selected_index = 1  # 2160p – the failing value
         app_modes.confirm_field_choice_picker(app)
         # Value reverted to the pre-picker state; banner in Settings.
-        assert app._config.testpattern_pattern == "grey"
+        assert app._config.v4l2_render_resolution == "native"
         assert app._field_choice_active is False
         assert app._settings_menu_active is True
         assert "Couldn't apply" in app._settings_menu_banner
@@ -1867,12 +1867,12 @@ class TestFieldChoicePicker:
             "openfollow.runtime.app_modes.save_config",
             lambda *_a, **_k: None,
         )
-        app = self._make_app(testpattern_pattern="grey")
+        app = self._make_app(v4l2_render="native")
         app_modes.enter_field_choice_picker(app)
         app._field_choice_selected_index = 1
         app_modes.cancel_field_choice_picker(app)
         # No save fired, config still on ``grey``.
-        assert app._config.testpattern_pattern == "grey"
+        assert app._config.v4l2_render_resolution == "native"
         assert app._field_choice_active is False
         # Lands in Settings menu (matches URL editor cancel semantics).
         assert app._settings_menu_active is True
@@ -1887,8 +1887,8 @@ class TestFieldChoicePicker:
             "openfollow.runtime.app_modes.save_config",
             lambda *_a, **_k: None,
         )
-        app = self._make_app(testpattern_pattern="grey")
-        app._config.video_source_type = "testpattern"
+        app = self._make_app(v4l2_render="native")
+        app._config.video_source_type = "v4l2"
         app_modes.enter_field_choice_picker(app, revert_type="ndi")
         app_modes.cancel_field_choice_picker(app)
         assert app._config.video_source_type == "ndi"
@@ -1907,21 +1907,26 @@ class TestFieldChoicePicker:
         app_modes.enter_field_choice_picker(app, revert_type="ndi")
         app._field_choice_selected_index = 1
         app_modes.confirm_field_choice_picker(app)
-        assert app._swap_calls == ["testpattern"]
-        assert app._config.testpattern_pattern == "stage"
+        assert app._swap_calls == ["v4l2"]
+        assert app._config.v4l2_render_resolution == "2160p"
 
     def test_route_after_change_prefers_picker_over_url_editor(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """When switching to a plugin whose first text field has
-        choices (testpattern), the on-device flow opens the picker
-        instead of the free-text URL editor."""
+        """A plugin with no source-selection picker but a choices field routes
+        to the on-device list picker, not the free-text URL editor."""
         from openfollow.runtime import app_modes
 
         monkeypatch.setattr("openfollow.configuration.save_config", lambda *_a, **_k: None)
-        app = self._make_app(video_source_type="testpattern")
-        app_modes._route_after_video_source_change(app, "testpattern")
+        # Force the choice-field branch on a no-source-selection plugin (rtsp).
+        monkeypatch.setattr(
+            app_modes,
+            "_first_video_choice_field",
+            lambda _t: ("fld", "Field", (("a", "A"), ("b", "B"))),
+        )
+        app = self._make_app(video_source_type="rtsp")
+        app_modes._route_after_video_source_change(app, "rtsp")
         assert app._picker_calls == [{"revert_type": ""}]
         assert app._editor_calls == []
 
@@ -1936,7 +1941,7 @@ class TestFieldChoicePicker:
             "openfollow.runtime.app_modes.save_config",
             lambda cfg, _path: saved.append(cfg),
         )
-        app = self._make_app(testpattern_pattern="grey")
+        app = self._make_app(v4l2_render="native")
         app_modes.enter_field_choice_picker(app)
         gp = app._input_manager.gamepad_handler
 
@@ -1956,7 +1961,7 @@ class TestFieldChoicePicker:
             cancel_pressed=False,
         )
         app_modes.process_field_choice_picker_input(app)
-        assert app._config.testpattern_pattern == "stage"
+        assert app._config.v4l2_render_resolution == "2160p"
         assert app._field_choice_active is False
 
     def test_keyboard_input_navigates_and_confirms(
@@ -1970,7 +1975,7 @@ class TestFieldChoicePicker:
             "openfollow.runtime.app_modes.save_config",
             lambda cfg, _path: saved.append(cfg),
         )
-        app = self._make_app(testpattern_pattern="grey")
+        app = self._make_app(v4l2_render="native")
         app_modes.enter_field_choice_picker(app)
 
         app_modes.handle_key_press(app, "ArrowDown")
@@ -1979,7 +1984,7 @@ class TestFieldChoicePicker:
         assert app._field_choice_selected_index == 0
         app_modes.handle_key_press(app, "ArrowDown")
         app_modes.handle_key_press(app, "Enter")
-        assert app._config.testpattern_pattern == "stage"
+        assert app._config.v4l2_render_resolution == "2160p"
         assert app._field_choice_active is False
 
     def test_escape_cancels_with_revert_semantics(
@@ -1993,7 +1998,7 @@ class TestFieldChoicePicker:
             lambda *_a, **_k: None,
         )
         app = self._make_app()
-        app._config.video_source_type = "testpattern"
+        app._config.video_source_type = "v4l2"
         app_modes.enter_field_choice_picker(app, revert_type="ndi")
         app_modes.handle_key_press(app, "Escape")
         assert app._field_choice_active is False
@@ -2038,7 +2043,7 @@ class TestFieldChoicePicker:
 
         app = self._make_app()
         app._runtime_services.swap_video = _swap_fail  # type: ignore[method-assign]
-        app._config.video_source_type = "testpattern"
+        app._config.video_source_type = "v4l2"
         app_modes.enter_field_choice_picker(app, revert_type="ndi")
         app._field_choice_selected_index = 1
         app_modes.confirm_field_choice_picker(app)
@@ -2133,10 +2138,10 @@ class TestFieldChoicePicker:
             "openfollow.runtime.app_modes.save_config",
             lambda *_a, **_k: None,
         )
-        app = self._make_app(testpattern_pattern="stage")
+        app = self._make_app(v4l2_render="2160p")
         app_modes.enter_field_choice_picker(app)
         gp = app._input_manager.gamepad_handler
-        # Selected starts at index 1 (matches "stage"). Up-press → 0.
+        # Selected starts at index 1 (matches "2160p"). Up-press → 0.
         gp._next = SimpleNamespace(
             up_pressed=True,
             down_pressed=False,
@@ -2202,7 +2207,7 @@ class TestFieldChoicePicker:
             "openfollow.runtime.app_modes.save_config",
             lambda *_a, **_k: None,
         )
-        app = self._make_app(testpattern_pattern="grey")
+        app = self._make_app(v4l2_render="native")
         app_modes.enter_field_choice_picker(app)
         initial_idx = app._field_choice_selected_index
         # A printable key that matches none of the handled cases.
@@ -2210,7 +2215,7 @@ class TestFieldChoicePicker:
         # Cursor untouched, picker still active, no save fired.
         assert app._field_choice_selected_index == initial_idx
         assert app._field_choice_active is True
-        assert app._config.testpattern_pattern == "grey"
+        assert app._config.v4l2_render_resolution == "native"
 
     def test_on_key_down_short_circuits_when_picker_active(
         self,
@@ -2248,7 +2253,7 @@ class TestSourceTypeConfirmAutoChainIntoPicker:
         cfg.video_source_type = "ndi"  # current
 
         def _swap_fail(_cfg):
-            raise RuntimeError("ndi → testpattern swap blew up")
+            raise RuntimeError("ndi → v4l2 swap blew up")
 
         class _Services:
             swap_video = staticmethod(_swap_fail)
@@ -2259,7 +2264,7 @@ class TestSourceTypeConfirmAutoChainIntoPicker:
             _config_path="/dev/null",
             _config_mtime=0.0,
             _runtime_services=_Services(),
-            _available_source_types=[("testpattern", "Test Pattern")],
+            _available_source_types=[("v4l2", "USB Camera")],
             _selected_source_type_index=0,
             _source_type_selection_active=True,
             _field_choice_active=False,

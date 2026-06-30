@@ -211,6 +211,7 @@ def test_receiver_bus_handler_dispatches_core_message_types() -> None:
             ASYNC_DONE = "ASYNC_DONE"
             ERROR = "ERROR"
             EOS = "EOS"
+            SEGMENT_DONE = "SEGMENT_DONE"
             STATE_CHANGED = "STATE_CHANGED"
 
         class State:
@@ -243,6 +244,7 @@ def test_receiver_bus_handler_dispatches_core_message_types() -> None:
     async_calls: list[object] = []
     errors: list[str] = []
     eos_calls: list[bool] = []
+    segment_msgs: list[object] = []
     pipeline = object()
 
     handler = ReceiverBusHandler(
@@ -252,6 +254,7 @@ def test_receiver_bus_handler_dispatches_core_message_types() -> None:
         on_async_done=async_calls.append,
         on_error=errors.append,
         on_eos=lambda: eos_calls.append(True),
+        on_segment_done=segment_msgs.append,
         is_placeholder_pipeline=lambda: False,
         get_input_display_name=lambda: "NDI",
     )
@@ -259,11 +262,42 @@ def test_receiver_bus_handler_dispatches_core_message_types() -> None:
     handler.handle_message(None, FakeMessage(FakeGst.MessageType.ASYNC_DONE))
     handler.handle_message(None, FakeMessage(FakeGst.MessageType.ERROR))
     handler.handle_message(None, FakeMessage(FakeGst.MessageType.EOS))
+    seg = FakeMessage(FakeGst.MessageType.SEGMENT_DONE)
+    handler.handle_message(None, seg)
     handler.handle_message(None, FakeMessage(FakeGst.MessageType.STATE_CHANGED))
 
     assert async_calls == [pipeline]
     assert errors == ["boom"]
     assert eos_calls == [True]
+    assert segment_msgs == [seg]  # the message is forwarded so the receiver can filter by src
+
+
+def test_receiver_bus_handler_segment_done_without_handler_is_noop() -> None:
+    # The handler is optional (other inputs never arm a segment); a SEGMENT_DONE
+    # with no registered callback must not raise.
+    class FakeGst:
+        class MessageType:
+            ASYNC_DONE = "ASYNC_DONE"
+            ERROR = "ERROR"
+            EOS = "EOS"
+            SEGMENT_DONE = "SEGMENT_DONE"
+            STATE_CHANGED = "STATE_CHANGED"
+
+    class FakeMessage:
+        type = FakeGst.MessageType.SEGMENT_DONE
+        src = None
+
+    handler = ReceiverBusHandler(
+        gst=FakeGst,
+        logger=logging.getLogger(__name__),
+        get_pipeline=lambda: object(),
+        on_async_done=lambda _p: None,
+        on_error=lambda _m: None,
+        on_eos=lambda: None,
+        is_placeholder_pipeline=lambda: False,
+        get_input_display_name=lambda: "RTSP",
+    )
+    handler.handle_message(None, FakeMessage())  # must not raise
 
 
 def test_receiver_bus_handler_setup_bus_skips_when_pipeline_none() -> None:
@@ -441,6 +475,7 @@ def test_receiver_bus_handler_unknown_message_type_is_ignored() -> None:
             ASYNC_DONE = "ASYNC_DONE"
             ERROR = "ERROR"
             EOS = "EOS"
+            SEGMENT_DONE = "SEGMENT_DONE"
             STATE_CHANGED = "STATE_CHANGED"
 
     class FakeMessage:
@@ -469,6 +504,7 @@ def test_receiver_bus_handler_state_changed_branches() -> None:
             ASYNC_DONE = "ASYNC_DONE"
             ERROR = "ERROR"
             EOS = "EOS"
+            SEGMENT_DONE = "SEGMENT_DONE"
             STATE_CHANGED = "STATE_CHANGED"
 
         class State:

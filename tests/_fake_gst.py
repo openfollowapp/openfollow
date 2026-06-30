@@ -100,12 +100,40 @@ class FakePipeline:
         self.name = name
         self.elements: list[FakeElement] = []
         self.latency_values: list[int] = []
+        self.seeks: list[tuple[Any, int, int]] = []
+        # Full seven-arg ``seek`` calls (segment looping):
+        # (rate, fmt, flags, start_type, start, stop_type, stop).
+        self.segment_seeks: list[tuple[Any, Any, int, Any, int, Any, int]] = []
+        self.seek_ok = True
+        # Reported by ``query_duration``; 5 s in nanoseconds.
+        self.duration = 5 * 1_000_000_000
+        self.duration_ok = True
 
     def add(self, element: FakeElement) -> None:
         self.elements.append(element)
 
     def set_latency(self, value: int) -> None:
         self.latency_values.append(value)
+
+    def seek_simple(self, fmt: Any, flags: int, position: int) -> bool:
+        self.seeks.append((fmt, flags, position))
+        return self.seek_ok
+
+    def seek(
+        self,
+        rate: float,
+        fmt: Any,
+        flags: int,
+        start_type: Any,
+        start: int,
+        stop_type: Any,
+        stop: int,
+    ) -> bool:
+        self.segment_seeks.append((rate, fmt, flags, start_type, start, stop_type, stop))
+        return self.seek_ok
+
+    def query_duration(self, _fmt: Any) -> tuple[bool, int]:
+        return self.duration_ok, self.duration
 
     def get_by_name(self, name: str) -> FakeElement | None:
         for elem in self.elements:
@@ -188,10 +216,23 @@ def make_fake_gst(
     class FakeState:
         PLAYING = "playing"
 
+    class FakeFormat:
+        TIME = "time"
+
+    class FakeSeekFlags:
+        FLUSH = 1
+        SEGMENT = 8
+        KEY_UNIT = 32
+
+    class FakeSeekType:
+        NONE = 0
+        SET = 2
+
     class FakeMessageType:
         ASYNC_DONE = "async-done"
         ERROR = "error"
         EOS = "eos"
+        SEGMENT_DONE = "segment-done"
         STATE_CHANGED = "state-changed"
 
     class FakeGst:
@@ -200,6 +241,9 @@ def make_fake_gst(
         Caps = FakeCapsNs
         PadLinkReturn = FakePadLinkReturn
         State = FakeState
+        Format = FakeFormat
+        SeekFlags = FakeSeekFlags
+        SeekType = FakeSeekType
         MessageType = FakeMessageType
         Rank = _Rank
 

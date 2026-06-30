@@ -46,11 +46,15 @@ def test_is_valid_web_pin_rejects_nondigit_overlong_nonascii() -> None:
 def test_config_dict_redacted_drops_device_local_fields() -> None:
     cfg = AppConfig(web_pin="1234", web_port=8080)
     cfg.detection.storage_path = "/mnt/nvme/openfollow/yolo"
+    cfg.testpattern_selected_media = "0123456789abcdef"
     d = _config_dict_redacted(cfg)
     assert "web_pin" not in d  # login credential never exported
     # storage_path is an absolute path on the exporting host – stripped so it
     # can't land on (and break) another machine.
     assert "storage_path" not in d["detection"]
+    # the selected media id references device-local gallery files that never
+    # travel, so a foreign id would just dangle on another host.
+    assert "testpattern_selected_media" not in d
     assert d["web_port"] == 8080  # non-secret fields preserved
 
 
@@ -745,6 +749,22 @@ def test_apply_import_data_preserves_detection_storage_path() -> None:
 
     assert new.detection.storage_path == "/mnt/nvme/openfollow/yolo"  # device path kept
     assert new.detection.confidence == 0.5  # other detection fields still import
+
+
+def test_apply_import_data_preserves_testpattern_selected_media() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.testpattern_selected_media = "0123456789abcdef"  # this device's gallery item
+
+    imported = {
+        # A selection from another station whose media files don't exist here.
+        "testpattern_selected_media": "fedcba9876543210",
+        "video_source_type": "testpattern",
+    }
+    new = _apply_import_data(current, imported)
+
+    assert new.testpattern_selected_media == "0123456789abcdef"  # device selection kept
 
 
 def test_apply_import_data_skip_restart_sections_applies_every_section(

@@ -13,6 +13,7 @@ PipelineProvider = Callable[[], Any | None]
 AsyncDoneHandler = Callable[[Any], None]
 ErrorHandler = Callable[[str], None]
 EosHandler = Callable[[], None]
+SegmentDoneHandler = Callable[[Any], None]
 BoolProvider = Callable[[], bool]
 TextProvider = Callable[[], str]
 
@@ -30,6 +31,7 @@ class ReceiverBusHandler:
         on_eos: EosHandler,
         is_placeholder_pipeline: BoolProvider,
         get_input_display_name: TextProvider,
+        on_segment_done: SegmentDoneHandler | None = None,
     ) -> None:
         self._gst = gst
         self._logger = logger
@@ -37,6 +39,7 @@ class ReceiverBusHandler:
         self._on_async_done = on_async_done
         self._on_error = on_error
         self._on_eos = on_eos
+        self._on_segment_done = on_segment_done or (lambda _message: None)
         self._is_placeholder_pipeline = is_placeholder_pipeline
         self._get_input_display_name = get_input_display_name
         # Handler id from ``bus.connect("message", ...)`` so teardown can
@@ -103,6 +106,10 @@ class ReceiverBusHandler:
         if msg_type == self._gst.MessageType.EOS:
             self._logger.info("GStreamer EOS received.")
             self._on_eos()
+            return
+
+        if msg_type == self._gst.MessageType.SEGMENT_DONE:
+            self._on_segment_done(message)
             return
 
         if msg_type == self._gst.MessageType.STATE_CHANGED:

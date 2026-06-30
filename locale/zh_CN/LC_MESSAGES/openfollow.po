@@ -16,7 +16,7 @@ msgstr " 可用（已安装："
 msgid ""
 "\" and restart the device? It uploads over your local network – only install"
 " files you trust."
-msgstr " \" 并重启设备？文件通过本地网络上传 – 仅安装您信任的文件。"
+msgstr "\" 并重启设备？文件通过本地网络上传 – 请仅安装您信任的文件。"
 
 msgid "%.1f %%"
 msgstr "%.1f %%"
@@ -28,7 +28,7 @@ msgid "%.1f fps"
 msgstr "%.1f fps"
 
 msgid "%.1f ms"
-msgstr "%.1f 毫秒"
+msgstr "%.1f ms"
 
 msgid "%.2f Hz"
 msgstr "%.2f Hz"
@@ -52,7 +52,7 @@ msgid "(not connected)"
 msgstr "（未连接）"
 
 msgid "(not controlled)"
-msgstr "（未控制）"
+msgstr "（未受控）"
 
 msgid "(optional)"
 msgstr "（可选）"
@@ -67,7 +67,7 @@ msgid ") to enable downloads."
 msgstr "）以启用下载。"
 
 msgid "). Install it now? The device restarts automatically when finished."
-msgstr "）。立即安装？完成后设备将自动重启。"
+msgstr "）。是否立即安装？安装完成后设备将自动重启。"
 
 msgid "). See"
 msgstr "）。详见"
@@ -176,13 +176,13 @@ msgid ""
 msgstr "本向导中的所有测量均相对于单一参考点。所有接入的演出控制系统应共用同一参考点。若场地已有定义的原点，请使用它。如无现有参考点，建议使用"
 
 msgid "Allowed sender IPs"
-msgstr "别名"
+msgstr "允许的发送端 IP"
 
 msgid "Any"
-msgstr "允许的发送方 IP"
+msgstr "任意"
 
 msgid "App is restarting&hellip; Please wait."
-msgstr "任意"
+msgstr "应用正在重启… 请稍候。"
 
 msgid "App is restarting... Please wait."
 msgstr "应用正在重启… 请稍候。"
@@ -200,7 +200,7 @@ msgid "Apply & Finish"
 msgstr "应用并完成"
 
 msgid "Apply Without Restart"
-msgstr "不重启应用"
+msgstr "应用但不重启"
 
 msgid "Apply to all stations"
 msgstr "应用到所有站点"
@@ -212,10 +212,10 @@ msgid "Assist Radius (m)"
 msgstr "辅助半径 (m)"
 
 msgid "Assisted Tracking"
-msgstr "应用（不重启）"
+msgstr "辅助追踪"
 
 msgid "Auto-pin the largest person"
-msgstr "方向键保留用于屏幕菜单导航。"
+msgstr "自动固定最大的人员"
 
 msgid "Axis Deadzone (0–1)"
 msgstr "摇杆死区 (0–1)"
@@ -233,7 +233,7 @@ msgid "Ball Size"
 msgstr "球体大小"
 
 msgid "Basics"
-msgstr "辅助跟踪"
+msgstr "基础设置"
 
 msgid "Beacon receiver"
 msgstr "信标接收器"
@@ -251,22 +251,22 @@ msgid "Body"
 msgstr "主体"
 
 msgid "Bottom (Feet)"
-msgstr "自动锁定最大人物"
+msgstr "底部（脚）"
 
 msgid "Bottom-center"
-msgstr "底部居中"
+msgstr "底部中央"
 
 msgid "Box Color"
-msgstr "轴死区（0–1）"
+msgstr "框颜色"
 
 msgid "Box Thickness (px)"
 msgstr "框线宽度 (px)"
 
 msgid "Bundle & tools"
-msgstr "诊断包与工具"
+msgstr "捆绑包和工具"
 
 msgid "Button"
-msgstr "信标接收器"
+msgstr "按钮"
 
 msgid "Button Detection Map"
 msgstr "按键检测映射"
@@ -278,7 +278,7 @@ msgid "CC / Note number"
 msgstr "CC / 音符编号"
 
 msgid "CLAHE Preprocess"
-msgstr "底部居中"
+msgstr "CLAHE 预处理"
 
 msgid "CPU"
 msgstr "CPU"
@@ -314,10 +314,10 @@ msgid "Cannot be W, A, S, D, E, or F (reserved for movement)"
 msgstr "不能为 W、A、S、D、E 或 F（保留用于移动）"
 
 msgid "Capture"
-msgstr "按钮映射"
+msgstr "捕获"
 
 msgid "Capture again"
-msgstr "CC / 音符编号"
+msgstr "重新捕获"
 
 msgid "Captured"
 msgstr "已捕获"
@@ -329,10 +329,10 @@ msgid "Check & Install Latest"
 msgstr "检查并安装最新版本"
 
 msgid "Checking…"
-msgstr "已取消 – 另一捕获已开始"
+msgstr "正在检查…"
 
 msgid "Choose an .ofupdate release bundle to install first."
-msgstr "已取消 – 另一行已开始捕获"
+msgstr "请先选择一个 .ofupdate 发行包进行安装。"
 
 msgid "Choose file"
 msgstr "选择文件"
@@ -357,7 +357,7 @@ msgid ""
 msgstr "点击角点或按 Tab 选中，然后用方向键微调（按住 Shift 大步移动）。"
 
 msgid "Click any pill to edit it."
-msgstr "重新捕获"
+msgstr "点击任意标签进行编辑。"
 
 msgid ""
 "Click to place vertices. Click the first vertex or double-click to close. "
@@ -380,19 +380,19 @@ msgid "Confidence (0–1)"
 msgstr "置信度 (0–1)"
 
 msgid "Configuration File (.openfollowsettings)"
-msgstr "配置文件 (.openfollowsettings)"
+msgstr "配置文件（.openfollowsettings）"
 
 msgid "Configuration Transfer"
 msgstr "配置迁移"
 
 msgid "Configuration imported (some changes need a restart)"
-msgstr "配置已导入（部分更改需重启）。"
+msgstr "配置已导入（部分更改需要重启）"
 
 msgid "Configuration imported successfully"
-msgstr "选择文件"
+msgstr "配置导入成功"
 
 msgid "Configure network settings from the device on-screen menu."
-msgstr "通过设备屏幕菜单配置网络设置。"
+msgstr "通过设备的屏幕菜单配置网络设置。"
 
 msgid "Configured"
 msgstr "已配置"
@@ -404,7 +404,7 @@ msgid "Connection"
 msgstr "连接"
 
 msgid "Context"
-msgstr "点击 "
+msgstr "上下文"
 
 msgid "Control"
 msgstr "控制"
@@ -416,7 +416,7 @@ msgid "Controllers"
 msgstr "控制器"
 
 msgid "Core inference settings and what the overlay draws."
-msgstr "点击任意标签编辑。"
+msgstr "核心推理设置和叠加层绘制内容。"
 
 msgid "Core status first, advanced diagnostics on demand"
 msgstr "核心状态优先，高级诊断按需展开"
@@ -425,13 +425,13 @@ msgid "Corner Pinning"
 msgstr "四角精调"
 
 msgid "Could not install that file:"
-msgstr "点击放置顶点。点击首个顶点或双击闭合。点击区域选中。拖动顶点移动。"
+msgstr "无法安装该文件："
 
 msgid "Could not reach the update server:"
-msgstr "裁切强度"
+msgstr "无法连接到更新服务器："
 
 msgid "Could not read the selected file."
-msgstr "计算出的 OTP 多播地址"
+msgstr "无法读取所选文件。"
 
 msgid "Could not start update"
 msgstr "无法启动更新"
@@ -452,7 +452,7 @@ msgid "Crosshair colour"
 msgstr "十字准星颜色"
 
 msgid "Currently selected (controller)"
-msgstr "配置导入成功"
+msgstr "当前选择（控制器）"
 
 msgid "Custom Templates"
 msgstr "自定义模板"
@@ -491,7 +491,7 @@ msgid "Default Z"
 msgstr "默认 Z"
 
 msgid "Default fader"
-msgstr "连接"
+msgstr "默认推子"
 
 msgid "Default marker"
 msgstr "默认标记"
@@ -525,13 +525,13 @@ msgstr "删除此 OSC 输出？"
 msgid ""
 "Delete this destination? Transmitters and zones referencing it will stop "
 "sending until repointed."
-msgstr "无法安装该文件："
+msgstr "删除此目标？引用它的发送器和区域将停止发送，直到重新指定。"
 
 msgid "Depth"
 msgstr "深度"
 
 msgid "Destination Host"
-msgstr "无法保存模板。"
+msgstr "目标主机"
 
 msgid "Detected As"
 msgstr "检测为"
@@ -540,7 +540,7 @@ msgid "Detected OpenFollow web peers"
 msgstr "检测到的 OpenFollow 节点"
 
 msgid "Detection"
-msgstr "十字准线"
+msgstr "检测"
 
 msgid "Detection &amp; Display"
 msgstr "检测与显示"
@@ -549,7 +549,7 @@ msgid "Detection Rate (FPS)"
 msgstr "检测帧率 (FPS)"
 
 msgid "Detection box colour"
-msgstr "自定义模板"
+msgstr "检测框颜色"
 
 msgid "Detection needs extra components:"
 msgstr "检测功能需要额外组件："
@@ -564,13 +564,13 @@ msgid "Device IP address configuration"
 msgstr "设备 IP 地址配置"
 
 msgid "Device password"
-msgstr "DHCP 手动地址"
+msgstr "设备密码"
 
 msgid "Device password required:"
-msgstr "DNS"
+msgstr "需要设备密码："
 
 msgid "Device unreachable"
-msgstr "防抖"
+msgstr "设备不可达"
 
 msgid "Diagnostics"
 msgstr "诊断"
@@ -585,16 +585,16 @@ msgid "Dimensions and position of the rectangular tracking area"
 msgstr "矩形追踪区域的尺寸与位置"
 
 msgid "Discard"
-msgstr "默认模板"
+msgstr "放弃"
 
 msgid "Discard & Leave"
 msgstr "放弃并退出"
 
 msgid "Discard unsaved changes to this row?"
-msgstr "默认推子"
+msgstr "放弃此行未保存的更改？"
 
 msgid "Display"
-msgstr "默认值"
+msgstr "显示"
 
 msgid "Display name"
 msgstr "显示名称"
@@ -608,10 +608,10 @@ msgid ""
 msgstr "无需担心，表演者走到网格外仍可追踪，只要他们在摄像头可见区域内。"
 
 msgid "Done"
-msgstr "删除标记 "
+msgstr "完成"
 
 msgid "Download Model"
-msgstr "删除补丁"
+msgstr "下载模型"
 
 msgid "Download diagnostics bundle"
 msgstr "下载诊断包"
@@ -645,7 +645,7 @@ msgid "Drag the crosshair to the physical Reference Point mark"
 msgstr "将十字准星拖到物理参考点标记处"
 
 msgid "Drag to reorder"
-msgstr "删除此发送器？"
+msgstr "拖拽以排序"
 
 msgid "Drop Line"
 msgstr "下落线"
@@ -657,7 +657,7 @@ msgid "Duplicate"
 msgstr "复制"
 
 msgid "Edge"
-msgstr "目标主机"
+msgstr "边缘"
 
 msgid "Edit mode"
 msgstr "编辑模式"
@@ -711,13 +711,13 @@ msgstr "导出配置"
 msgid ""
 "Export a YOLO model to ONNX into the storage folder. Needs the model-export "
 "tools and an internet connection &ndash; slow on a Pi."
-msgstr "将 YOLO 模型导出为 ONNX 格式到存储文件夹。需要模型导出工具和网络连接 &ndash; 在树莓派上较慢。"
+msgstr "将 YOLO 模型导出为 ONNX 格式到存储文件夹。需要模型导出工具和网络连接 – 在树莓派上较慢。"
 
 msgid "Export and import device settings"
 msgstr "导出和导入设备设置"
 
 msgid "Export image size"
-msgstr "检测与显示"
+msgstr "导出图像尺寸"
 
 msgid ""
 "FOV is horizontal (as printed on camera datasheets). Pick your sensor size "
@@ -740,7 +740,7 @@ msgid "Fine adjust"
 msgstr "精细调整"
 
 msgid "Finish Polygon"
-msgstr "检测需要额外组件："
+msgstr "完成多边形"
 
 msgid ""
 "Fire OSC messages when markers or detections enter/leave polygon regions"
@@ -757,7 +757,7 @@ msgstr "焦距"
 msgid ""
 "Force one packet to the configured destination. Bypasses the row's Enabled "
 "flag so a disabled row can still be probed before flipping it on."
-msgstr "设备"
+msgstr "强制发送一个数据包至配置的目标地址。绕过行的启用标志，禁用的行在启用前仍可测试"
 
 msgid "Frame Rate (measured)"
 msgstr "帧率（实测）"
@@ -766,10 +766,10 @@ msgid "Frame Rate (source)"
 msgstr "帧率（源）"
 
 msgid "Framing"
-msgstr "帧格式"
+msgstr "帧协议"
 
 msgid "Fully Automatic"
-msgstr "设备 IP 地址配置"
+msgstr "全自动"
 
 msgid "Gamepad Input"
 msgstr "游戏手柄输入"
@@ -778,7 +778,7 @@ msgid "General"
 msgstr "通用设置"
 
 msgid "Global"
-msgstr "需要设备密码："
+msgstr "全局"
 
 msgid "Grace Period (ms)"
 msgstr "宽限期 (ms)"
@@ -802,7 +802,7 @@ msgid "Height"
 msgstr "高度"
 
 msgid "Help (?)"
-msgstr "放弃"
+msgstr "帮助 (?)"
 
 msgid "Horizontal Field of View"
 msgstr "水平视场角"
@@ -811,7 +811,7 @@ msgid "Host"
 msgstr "主机"
 
 msgid "Hysteresis"
-msgstr "放弃对此行未保存的更改？"
+msgstr "迟滞"
 
 msgid "Hz"
 msgstr "Hz"
@@ -829,13 +829,13 @@ msgid "IP address"
 msgstr "IP 地址"
 
 msgid "IP address of the RTTrPM receiver"
-msgstr "显示名称"
+msgstr "RTTrPM 接收器的 IP 地址"
 
 msgid "Identifies this station in PSN output and on the network."
-msgstr "在 PSN 输出和网络上标识此站点。"
+msgstr "在 PSN 输出和网络中标识此工作站。"
 
 msgid "Identity, display units, and web access"
-msgstr "标识、显示单位与 Web 访问"
+msgstr "身份、显示单位和网页访问"
 
 msgid ""
 "If your corners are invalid, three things could be wrong: The position of "
@@ -848,7 +848,7 @@ msgid "Ignored for"
 msgstr "忽略"
 
 msgid "Imperial (ft / in, ft/s)"
-msgstr "英制 (ft / in, ft/s)"
+msgstr "英制（英尺/英寸，英尺/秒）"
 
 msgid "Import"
 msgstr "导入"
@@ -857,22 +857,22 @@ msgid "Import Configuration"
 msgstr "导入配置"
 
 msgid "Import failed: "
-msgstr "完成"
+msgstr "导入失败："
 
 msgid "Import request failed. Check your network connection."
-msgstr "下载模型"
+msgstr "导入请求失败。请检查网络连接。"
 
 msgid "Importing…"
-msgstr "下载模型"
+msgstr "正在导入…"
 
 msgid "Inference (avg)"
 msgstr "推理（平均）"
 
 msgid "Inference Rate"
-msgstr "推理率"
+msgstr "推理速率"
 
 msgid "Inference Size"
-msgstr "将当前配置下载为JSON文件。"
+msgstr "推理尺寸"
 
 msgid "Input"
 msgstr "输入"
@@ -881,28 +881,28 @@ msgid "Input behavior for game controllers"
 msgstr "游戏手柄输入行为设置"
 
 msgid "Install \""
-msgstr "垂线粗细"
+msgstr "安装 \""
 
 msgid "Install an .ofupdate release bundle without internet access."
-msgstr "无互联网时安装 .ofupdate 发布包。"
+msgstr "无需网络连接，安装 .ofupdate 发行包。"
 
 msgid "Install now"
-msgstr "边缘"
+msgstr "立即安装"
 
 msgid "Install the latest release from GitHub"
 msgstr "从 GitHub 安装最新发布"
 
 msgid "Install the model-export tools (run"
-msgstr "编辑模式"
+msgstr "安装模型导出工具（运行"
 
 msgid "Install them from the Person Detection section, then restart."
-msgstr "请从人形检测区域安装后重启。"
+msgstr "从人员检测部分安装它们，然后重启。"
 
 msgid "Install this file?"
-msgstr "错误"
+msgstr "安装此文件？"
 
 msgid "Install with"
-msgstr "评估速率"
+msgstr "使用以下命令安装"
 
 msgid "Installed"
 msgstr "已安装"
@@ -925,7 +925,7 @@ msgstr "反转 Y/Z 映射"
 msgid ""
 "Keep this device powered on. It restarts automatically and this page reloads"
 " when the update finishes."
-msgstr "导出图像尺寸"
+msgstr "请保持设备开机。更新完成后自动重启，页面将重新加载。"
 
 msgid "Key"
 msgstr "按键"
@@ -943,7 +943,7 @@ msgid "Language"
 msgstr "语言"
 
 msgid "Last packet"
-msgstr "最近数据包"
+msgstr "上一个数据包"
 
 msgid "Last sent"
 msgstr "上次发送"
@@ -955,7 +955,7 @@ msgid "Learn again"
 msgstr "重新学习"
 
 msgid "Lease"
-msgstr "租约"
+msgstr "租期"
 
 msgid "Left Stick"
 msgstr "左摇杆"
@@ -988,13 +988,13 @@ msgid "Live Statistics"
 msgstr "实时统计"
 
 msgid "Live indicators for operation and troubleshooting."
-msgstr "运行和故障排查的实时指标。"
+msgstr "运行和故障排除的实时指示器。"
 
 msgid "Live runtime state and one-click bundle download for issue reports."
-msgstr "实时运行时状态和用于问题报告的一键诊断包下载。"
+msgstr "实时运行状态，一键下载诊断包用于问题报告。"
 
 msgid "Live status"
-msgstr "手柄输入"
+msgstr "实时状态"
 
 msgid "Load Defaults"
 msgstr "加载默认值"
@@ -1002,7 +1002,7 @@ msgstr "加载默认值"
 msgid ""
 "Load a previously exported configuration file. The device's network IP "
 "address will be preserved."
-msgstr "加载之前导出的配置文件。设备的网络IP地址将被保留。"
+msgstr "加载之前导出的配置文件。设备的网络 IP 地址将被保留。"
 
 msgid "Load a snapshot first"
 msgstr "请先加载快照"
@@ -1035,7 +1035,7 @@ msgid "Mapped with"
 msgstr "映射方式"
 
 msgid "Marker"
-msgstr "迟滞"
+msgstr "标记"
 
 msgid "Marker "
 msgstr "标记 "
@@ -1077,7 +1077,7 @@ msgid "Markers & Zones"
 msgstr "标记与区域"
 
 msgid "Max Persons"
-msgstr "身份标识、显示单位和网页访问"
+msgstr "最大人数"
 
 msgid "Max Speed"
 msgstr "最大速度"
@@ -1104,31 +1104,31 @@ msgid "Message Type"
 msgstr "消息类型"
 
 msgid "Method"
-msgstr "方式"
+msgstr "方法"
 
 msgid "Metric (m, m/s)"
-msgstr "公制 (m, m/s)"
+msgstr "公制（米，米/秒）"
 
 msgid "Min Speed"
 msgstr "最小速度"
 
 msgid "Min change (m)"
-msgstr "导入"
+msgstr "最小变化 (m)"
 
 msgid "Missing packages:"
-msgstr "缺少包："
+msgstr "缺少的软件包："
 
 msgid "Model"
 msgstr "模型"
 
 msgid "Models"
-msgstr "导入配置"
+msgstr "模型"
 
 msgid "Models disk:"
-msgstr "导入失败："
+msgstr "模型磁盘："
 
 msgid "Modifiers"
-msgstr "导入请求失败。请检查网络连接。"
+msgstr "修饰键"
 
 msgid "More than one station claims control"
 msgstr "多个工作站声明控制权"
@@ -1163,13 +1163,13 @@ msgid "Movement"
 msgstr "移动"
 
 msgid "Multicast addresses"
-msgstr "立即安装"
+msgstr "组播地址"
 
 msgid "Multicast group"
-msgstr "从GitHub安装最新版本"
+msgstr "组播组"
 
 msgid "N/A"
-msgstr "安装模型导出工具（运行"
+msgstr "不适用"
 
 msgid "NDI® Source"
 msgstr "NDI® 视频源"
@@ -1178,7 +1178,7 @@ msgid "Name"
 msgstr "名称"
 
 msgid "Network Identity"
-msgstr "请从人员检测部分安装，然后重启。"
+msgstr "网络身份"
 
 msgid "Network Settings"
 msgstr "网络设置"
@@ -1186,10 +1186,10 @@ msgstr "网络设置"
 msgid ""
 "Network configuration is unavailable – no network adapter is configured on "
 "this host (or this build has none wired), so there is nothing to edit."
-msgstr "网络配置不可用——此主机未配置网络适配器（或此构建没有有线适配器），因此无可编辑内容。"
+msgstr "网络配置不可用 – 此主机未配置网络适配器（或"
 
 msgid "Network settings are protected from change by mistake."
-msgstr "网络设置受保护防止误改。"
+msgstr "网络设置已保护，防止误更改。"
 
 msgid ""
 "Network settings can't be changed from the web on this station. Use the on-"
@@ -1199,7 +1199,7 @@ msgstr "此工作站无法通过网页修改网络设置。请使用屏幕上的
 
 msgid ""
 "Network state unavailable – no detected interface or adapter on this host."
-msgstr "网络状态不可用——此主机未检测到接口或适配器。"
+msgstr "网络状态不可用 – 此主机未检测到接口或适配器。"
 
 msgid "Next"
 msgstr "下一步"
@@ -1226,18 +1226,18 @@ msgstr "未设置 PIN"
 msgid ""
 "No controlled markers yet. Add markers under Controlled markers and assign a"
 " gamepad to see their faders here."
-msgstr "尚无受控标记。在受控标记下添加标记并分配手柄后即可在此查看。"
+msgstr "尚无受控标记。请在受控标记下添加标记并分配手柄，即可在此查看其推子。"
 
 msgid "No file selected"
-msgstr "正在安装更新"
+msgstr "未选择文件"
 
 msgid "No models installed yet &ndash; download one below."
-msgstr "尚未安装模型 &ndash; 请在下方下载。"
+msgstr "尚未安装模型 – 请在下方下载。"
 
 msgid ""
 "No other servers discovered yet. Make sure other OpenFollow instances are "
 "running on this network."
-msgstr "尚未发现其他服务器。请确保此网络上有其他 OpenFollow 实例正在运行。"
+msgstr "尚未发现其他服务器。请确保其他 OpenFollow 实例在此网络上"
 
 msgid "No peers known yet – wait for discovery or check beacon health above."
 msgstr "尚未发现对等节点 – 请等待发现或检查上方的信标状态。"
@@ -1246,10 +1246,10 @@ msgid "No source"
 msgstr "无信号源"
 
 msgid "No test packet sent yet."
-msgstr "按键"
+msgstr "尚未发送测试包。"
 
 msgid "No unsaved changes."
-msgstr "屏幕UI的键盘控制"
+msgstr "无未保存的更改。"
 
 msgid ""
 "No video feed available. Configure a video source in Step 3, then return "
@@ -1268,10 +1268,10 @@ msgid "Normal Mode"
 msgstr "普通模式"
 
 msgid "Not now"
-msgstr "最后发送"
+msgstr "暂不"
 
 msgid "Number"
-msgstr "学习"
+msgstr "编号"
 
 msgid "Numpad (8/4/2/6)"
 msgstr "数字键盘 (8/4/2/6)"
@@ -1292,16 +1292,16 @@ msgid "OSC Server"
 msgstr "租期"
 
 msgid "OSC message"
-msgstr "左摇杆Y"
+msgstr "OSC 消息"
 
 msgid "OSC-driven next-cue text shown on the Operator Screen"
 msgstr "OSC 驱动的操作员屏幕提示文本"
 
 msgid "OTP Network"
-msgstr "长度"
+msgstr "OTP 网络"
 
 msgid "OTP Output"
-msgstr "长度前缀（OSC 1.0）"
+msgstr "OTP 输出"
 
 msgid "Offline install"
 msgstr "离线安装"
@@ -1313,10 +1313,10 @@ msgid "On-screen appearance of each marker"
 msgstr "每个标记的屏幕外观"
 
 msgid "Only models present in the storage folder are listed."
-msgstr "线条颜色"
+msgstr "仅列出存储文件夹中存在的模型。"
 
 msgid "Opacity"
-msgstr "线条粗细"
+msgstr "不透明度"
 
 msgid "Opacity (0–1)"
 msgstr "不透明度 (0–1)"
@@ -1325,7 +1325,7 @@ msgid "Open Setup Wizard"
 msgstr "打开设置向导"
 
 msgid "Open the Input → MIDI page to wire a backend, then come back here."
-msgstr "正在监听MIDI…"
+msgstr "打开输入 → MIDI 页面配置后端，然后返回此处。"
 
 msgid "Operator Messages"
 msgstr "操作员消息"
@@ -1346,25 +1346,25 @@ msgid "Overview"
 msgstr "总览"
 
 msgid "PIN (leave empty to disable)"
-msgstr "PIN（留空禁用）"
+msgstr "PIN（留空以禁用）"
 
 msgid "PSN Multicast IP"
-msgstr "实时状态"
+msgstr "PSN 组播 IP"
 
 msgid "PSN Network Interface"
-msgstr "正在加载网络配置…"
+msgstr "PSN 网络接口"
 
 msgid "PSN Output"
 msgstr "PSN 输出"
 
 msgid "PSN System Name"
-msgstr "日志"
+msgstr "PSN 系统名称"
 
 msgid "PSN-space position and orientation"
 msgstr "PSN 坐标系位置与方向"
 
 msgid "Packets total"
-msgstr "数据包总数"
+msgstr "总数据包数"
 
 msgid "Patch"
 msgstr "补丁"
@@ -1373,7 +1373,7 @@ msgid "Pattern"
 msgstr "图案"
 
 msgid "Peers seen"
-msgstr "已发现对等站点"
+msgstr "已发现对等节点"
 
 msgid "Person Detection"
 msgstr "人物检测"
@@ -1386,21 +1386,21 @@ msgid ""
 msgstr "相机相对于参考点的物理位置与方向"
 
 msgid "Pick how detection drives the marker, then tune the motion."
-msgstr "已映射至"
+msgstr "选择检测如何驱动标记，然后调整运动参数。"
 
 msgid ""
 "Pick the active model, download new ones, and remove ones you no longer "
 "need."
-msgstr "标记"
+msgstr "选择当前模型，下载新模型并删除不再需要的。"
 
 msgid "Pin Marker"
-msgstr "标记"
+msgstr "固定标记"
 
 msgid "Pin Point"
-msgstr "标记推子速度（秒）"
+msgstr "固定点"
 
 msgid "Pin To Marker"
-msgstr "标记推子摇杆"
+msgstr "固定到标记"
 
 msgid "Pipeline"
 msgstr "管线"
@@ -1412,16 +1412,16 @@ msgid "Pitch must be between -0.5 degrees and -90 degrees"
 msgstr "俯仰必须介于 -0.5° 到 -90° 之间"
 
 msgid "Placement"
-msgstr "位置"
+msgstr "放置"
 
 msgid "Please select a configuration file."
-msgstr "标记推子"
+msgstr "请选择配置文件。"
 
 msgid "Port"
 msgstr "端口"
 
 msgid "PosiStageNet (PSN) – identity and multicast configuration"
-msgstr "匹配模型的导出图像尺寸。"
+msgstr "PosiStageNet (PSN) – 标识与组播配置"
 
 msgid "Position"
 msgstr "位置"
@@ -1436,18 +1436,18 @@ msgid "Position Z"
 msgstr "位置 Z"
 
 msgid "Prediction"
-msgstr "最大人数"
+msgstr "预测"
 
 msgid "Preparation"
 msgstr "准备工作"
 
 msgid "Press a key, turn a knob, or move a fader."
-msgstr "最大可见数"
+msgstr "按下按键、旋转旋钮或移动推子。"
 
 msgid ""
 "Press a key, turn a knob, or move a fader. Capture populates the fields "
 "above with the next incoming MIDI message (10-second window)."
-msgstr "最大高度"
+msgstr "按下按键、旋转旋钮或移动推子。"
 
 msgid "Prev Marker"
 msgstr "上一标记"
@@ -1456,7 +1456,7 @@ msgid "Preview"
 msgstr "预览"
 
 msgid "Priority"
-msgstr "消息类型"
+msgstr "优先级"
 
 msgid "Protocol"
 msgstr "协议"
@@ -1474,13 +1474,13 @@ msgid "RTSP URL"
 msgstr "RTSP 地址"
 
 msgid "RTTrPM Network"
-msgstr "方法"
+msgstr "RTTrPM 网络"
 
 msgid "RTTrPM Output"
-msgstr "公制（米，米/秒）"
+msgstr "RTTrPM 输出"
 
 msgid "Rate (Hz)"
-msgstr "最小变化量（米）"
+msgstr "频率 (Hz)"
 
 msgid "Rate controls the sample rate."
 msgstr "频率控制采样率。"
@@ -1492,10 +1492,10 @@ msgid "Read only"
 msgstr "只读"
 
 msgid "Read-only – set it in General → Station Settings."
-msgstr "模型"
+msgstr "只读 – 请在通用 → 站点设置中进行设置。"
 
 msgid "Real Time Tracking Protocol – Motion – unicast UDP send-only output"
-msgstr "模型磁盘："
+msgstr "实时追踪协议 – 运动 – 单播 UDP 仅发送输出"
 
 msgid "Receive marker positions via OSC"
 msgstr "修饰键"
@@ -1507,7 +1507,7 @@ msgid "Reference Point:"
 msgstr "参考点："
 
 msgid "Refine your manual control"
-msgstr "鼠标输入"
+msgstr "精调手动控制"
 
 msgid "Refresh"
 msgstr "刷新"
@@ -1516,7 +1516,7 @@ msgid "Refresh Image"
 msgstr "刷新画面"
 
 msgid "Reload"
-msgstr "屏幕UI的鼠标控制"
+msgstr "重新加载"
 
 msgid "Remaining"
 msgstr "剩余"
@@ -1527,10 +1527,10 @@ msgstr "渲染分辨率"
 msgid ""
 "Render the message that would be sent right now using the current marker "
 "position. Doesn't fire on the wire."
-msgstr "移动X/Y"
+msgstr "使用当前标记位置渲染即将发送的消息。不会实际发送。"
 
 msgid "Renew DHCP lease"
-msgstr "续租 DHCP"
+msgstr "更新 DHCP 租约"
 
 msgid "Reset"
 msgstr "重置"
@@ -1560,7 +1560,7 @@ msgid "Restart application"
 msgstr "重启应用"
 
 msgid "Restarting onto version "
-msgstr "Z轴负向"
+msgstr "正在重启到版本 "
 
 msgid "Restore Last"
 msgstr "恢复上次"
@@ -1571,7 +1571,7 @@ msgstr "重试"
 msgid ""
 "Reusable connections (host, port, transport) referenced by transmitters and "
 "zones"
-msgstr "发送器和区域引用的可复用连接（主机、端口、传输）"
+msgstr "可复用的连接（主机、端口、传输协议），供发送器和区域引用"
 
 msgid "Review"
 msgstr "审核"
@@ -1628,13 +1628,13 @@ msgid "Send"
 msgstr "发送"
 
 msgid "Send All Settings"
-msgstr "网络设置"
+msgstr "发送所有设置"
 
 msgid "Send Config to Other Stations"
-msgstr "网络配置不可用——此主机未配置网络适配器（或此构建未包含网络支持），因此无可编辑内容。"
+msgstr "发送配置到其他站点"
 
 msgid "Send Rate (FPS)"
-msgstr "网络设置受到保护，防止误改。"
+msgstr "发送频率 (FPS)"
 
 msgid "Send always"
 msgstr "始终发送"
@@ -1652,7 +1652,7 @@ msgid "Sensor Width"
 msgstr "传感器宽度"
 
 msgid "Sent count"
-msgstr "发送总数"
+msgstr "发送计数"
 
 msgid "Server"
 msgstr "服务器"
@@ -1661,7 +1661,7 @@ msgid "Server Network"
 msgstr "服务网络"
 
 msgid "Serving on"
-msgstr "服务端口"
+msgstr "服务地址"
 
 msgid "Settings"
 msgstr "设置"
@@ -1675,7 +1675,7 @@ msgstr "设置向导"
 msgid ""
 "Shared by the Settings menu, source / interface selection, and calibration "
 "apply/cancel."
-msgstr "未选择文件"
+msgstr "由设置菜单、视频源/接口选择和校准应用/取消共享。"
 
 msgid "Shared catalog"
 msgstr "共享目录"
@@ -1684,13 +1684,13 @@ msgid "Show Ball"
 msgstr "显示球体"
 
 msgid "Show Boxes"
-msgstr "尚未安装模型——请在下方下载。"
+msgstr "显示检测框"
 
 msgid "Show Crosshair"
 msgstr "显示十字准星"
 
 msgid "Show Labels"
-msgstr "网络上未发现其他工作站。"
+msgstr "显示标签"
 
 msgid "Show Origin"
 msgstr "显示原点"
@@ -1711,12 +1711,12 @@ msgid "Show on Operator Screen"
 msgstr "在操作员屏幕显示"
 
 msgid "Show recent log tail (last 100 lines)"
-msgstr "显示最近日志尾部（最近 100 行）"
+msgstr "显示最近日志尾（最后100行）"
 
 msgid ""
 "Shown on the operator screen when \"Show on Operator Screen\" is on, and in "
 "trigger forms that reference this fader."
-msgstr "当\"在操作员屏幕上显示\"开启时，在操作员屏幕和引用此推子的触发表单中显示。"
+msgstr "当\"在操作员屏幕显示\"开启时，在操作员屏幕和引用此推子的触发表单中显示"
 
 msgid "Signal"
 msgstr "信号"
@@ -1725,7 +1725,7 @@ msgid "Smoothing / glide (0–1)"
 msgstr "平滑/滑行 (0–1)"
 
 msgid "Snapped to a multiple of 32; match the Inference Size you run."
-msgstr "未配置发送器。请使用"
+msgstr "对齐到 32 的倍数；匹配您运行的推理尺寸。"
 
 msgid "Software Update"
 msgstr "软件更新"
@@ -1737,7 +1737,7 @@ msgid "Source"
 msgstr "源"
 
 msgid "Source Interface (optional)"
-msgstr "无未保存的更改。"
+msgstr "源接口（可选）"
 
 msgid "Source Type"
 msgstr "来源类型"
@@ -1790,13 +1790,13 @@ msgid "Stored"
 msgstr "存储"
 
 msgid "Stored:"
-msgstr "已保存："
+msgstr "已存储："
 
 msgid "Stored: "
 msgstr "已存储："
 
 msgid "Submit"
-msgstr "数值"
+msgstr "提交"
 
 msgid "Subnet mask"
 msgstr "子网掩码"
@@ -1811,7 +1811,7 @@ msgid "Synced across all stations on the LAN."
 msgstr "跨局域网所有工作站同步。"
 
 msgid "System Number"
-msgstr "OSC服务器"
+msgstr "系统编号"
 
 msgid ""
 "Take your time with accurate markings - the precision of the final "
@@ -1839,7 +1839,7 @@ msgstr "网格："
 msgid ""
 "The device has been unreachable for several minutes. Check that it is "
 "powered on, then reload this page."
-msgstr "OTP网络"
+msgstr "设备已数分钟不可达。请检查是否已通电，然后重新"
 
 msgid "The grid area must be a"
 msgstr "网格区域必须是一个"
@@ -1847,19 +1847,19 @@ msgstr "网格区域必须是一个"
 msgid ""
 "The imported configuration has been validated. Some changes require an app "
 "restart to take effect:"
-msgstr "导入的配置已验证。部分更改需要应用重启才能生效："
+msgstr "已导入的配置已验证。部分更改需要重启应用才能生效。"
 
 msgid "The selected file is not valid JSON."
-msgstr "OTP输出"
+msgstr "所选文件不是有效的 JSON。"
 
 msgid "The update could not be started."
-msgstr "离线安装"
+msgstr "无法启动更新。"
 
 msgid "The update did not complete."
 msgstr "更新未完成。"
 
 msgid "The update did not start – the device may already be up to date."
-msgstr "仅列出存储文件夹中存在的模型。"
+msgstr "更新未启动 – 设备可能已是最新版本。"
 
 msgid ""
 "The update is taking longer than expected. Reload the page to check the "
@@ -1874,13 +1874,13 @@ msgid "Thickness"
 msgstr "粗细"
 
 msgid "This device already runs the latest version ("
-msgstr "请打开输入→MIDI页面连接后端，然后返回此处。"
+msgstr "此设备已运行最新版本（"
 
 msgid ""
 "Throttles fader-driven sends to at most this rate. A sweeping MIDI fader or "
 "a moving gamepad (marker) fader produces dozens of changes per second; the "
 "throttle keeps the wire output stable regardless."
-msgstr "将推子驱动的发送限制在此频率以内。快速滑动的 MIDI 推子或移动的游戏手柄（标记）推子每秒产生数十次变化；限频可保持有线输出稳定。"
+msgstr "将推子驱动的发送限制在此频率以内。快速滑动的 MIDI 推子或移动的游戏手柄（标记）推子每秒"
 
 msgid "Timed out – no MIDI received"
 msgstr "超时 – 未收到 MIDI 信号"
@@ -1892,25 +1892,25 @@ msgid "Toggle Zone Overlay"
 msgstr "切换区域叠加"
 
 msgid "Top (Head)"
-msgstr "PIN（留空以禁用）"
+msgstr "顶部（头）"
 
 msgid "Top-center"
-msgstr "顶部居中"
+msgstr "顶部中央"
 
 msgid "Tracked People"
-msgstr "追踪人数"
+msgstr "已追踪人员"
 
 msgid "Tracking"
 msgstr "追踪"
 
 msgid "Tracking Mode"
-msgstr "PSN网络接口"
+msgstr "追踪模式"
 
 msgid "Tracking mode"
-msgstr "PSN系统名称"
+msgstr "追踪模式"
 
 msgid "Transform:"
-msgstr "数据包总数"
+msgstr "变换："
 
 msgid "Trigger"
 msgstr "触发"
@@ -1919,10 +1919,10 @@ msgid "Trigger Zones"
 msgstr "触发区域"
 
 msgid "Trigger type"
-msgstr "补丁"
+msgstr "触发类型"
 
 msgid "Type"
-msgstr "已发现的对等节点"
+msgstr "类型"
 
 msgid "UDP Port"
 msgstr "UDP 端口"
@@ -1936,7 +1936,7 @@ msgstr "单位系统"
 msgid ""
 "Units shown in the web UI and on-device overlay. Storage, OSC, and "
 "PSN/RTTrPM/OTP stay metric regardless."
-msgstr "Web UI 和设备叠加层中显示的单位。存储、OSC 和 PSN/RTTrPM/OTP 始终使用公制。"
+msgstr "Web UI 和设备叠加层中显示的单位。存储、OSC 和 PSN/RTTrPM/OTP 始终使用公制"
 
 msgid "Unknown error"
 msgstr "未知错误"
@@ -1969,16 +1969,16 @@ msgid "Upload & Install"
 msgstr "上传并安装"
 
 msgid "Upload failed"
-msgstr "俯仰"
+msgstr "上传失败"
 
 msgid "Uploading…"
-msgstr "放置"
+msgstr "正在上传…"
 
 msgid "Uptime"
 msgstr "运行时间"
 
 msgid "User-defined context value (0–4294967295)"
-msgstr "请选择配置文件。"
+msgstr "用户定义的上下文值 (0–4294967295)"
 
 msgid "Value"
 msgstr "值"
@@ -2019,13 +2019,13 @@ msgid "WASD"
 msgstr "WASD"
 
 msgid "Web access"
-msgstr "Web 访问"
+msgstr "网页访问"
 
 msgid "Web server"
 msgstr "Web 服务器"
 
 msgid "Where the AI output sits relative to your manual anchor."
-msgstr "Z 位置"
+msgstr "AI 输出相对于手动锚点的位置。"
 
 msgid "Width"
 msgstr "宽度"
@@ -2098,13 +2098,13 @@ msgid "default marker"
 msgstr "默认标记"
 
 msgid "e.g. 192.168.1.10, 192.168.1.20"
-msgstr "内存"
+msgstr "例如 192.168.1.10, 192.168.1.20"
 
 msgid "e.g. 239.10.10.10 (blank = off)"
-msgstr "RTTrPM 网络"
+msgstr "例如 239.10.10.10（留空 = 关闭）"
 
 msgid "empty"
-msgstr "RTTrPM 输出"
+msgstr "空"
 
 msgid "fallback"
 msgstr "回退"
@@ -2116,7 +2116,7 @@ msgid "for the full grammar and more examples."
 msgstr "查看完整语法和更多示例。"
 
 msgid "free"
-msgstr "速率 (Hz)"
+msgstr "空闲"
 
 msgid "hasn't moved at least"
 msgstr "移动量未超过"
@@ -2128,7 +2128,7 @@ msgid "not picked up"
 msgstr "未拾取"
 
 msgid "of"
-msgstr "只读 – 请在通用 → 站点设置中设置。"
+msgstr "/"
 
 msgid "on reset"
 msgstr "重置时"
@@ -2140,7 +2140,7 @@ msgid ""
 "placeholders) is independent. To gate on a marker that isn't in the message,"
 " set it as this row's default marker. Rows with no default marker configured"
 " fire on every tick regardless of mode."
-msgstr "占位符）是独立的。若要以不在消息中的标记作为门控，将其设为此行的默认标记。未配置默认标记的行在每个 tick 都会触发，不受模式限制。"
+msgstr "占位符）是独立的。若要以不在消息中的标记作为门控，将其设为此行的默认标记。"
 
 msgid "right-angled rectangle"
 msgstr "直角矩形"
@@ -2182,7 +2182,7 @@ msgid ""
 "⚠ Applying network changes may disconnect this web session. A static / "
 "manual address reloads the UI at the new address automatically; otherwise "
 "reconnect manually."
-msgstr "需要重启"
+msgstr "⚠ 应用网络更改可能会断开此网页会话。静态/手动地址重"
 
 msgid "⚠ Could not add marker "
 msgstr "⚠ 无法添加标记 "

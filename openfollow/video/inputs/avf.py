@@ -14,6 +14,7 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+from openfollow.video.gst_compat import unwrap_gst_structure
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -61,7 +62,7 @@ def _discover_avf_devices() -> list[dict[str, str]]:
         result: list[dict[str, str]] = []
         avf_index = 0
         for dev in devices:
-            props = dev.get_properties()
+            props = unwrap_gst_structure(dev.get_properties())
             if props is None:
                 continue
             api = props.get_string("device.api") or ""

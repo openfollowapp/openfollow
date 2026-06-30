@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -459,6 +460,25 @@ def test_sample_to_numpy_returns_copy_of_rgb_frame() -> None:
     assert int(out[0, 0, 0]) == 7
     # unmap must always run so GStreamer doesn't leak the buffer.
     assert buffer.unmapped is True
+
+
+def test_sample_to_numpy_reads_through_structure_wrapper() -> None:
+    """GStreamer 1.26.2 wraps the caps structure and drops get_value; the
+    converter must reach the wrapped structure instead of crashing the
+    detection worker thread."""
+    detection_module = _load_detection_module()
+    real = _FakeStructure(w=4, h=4)
+    # Mimic StructureWrapper: no get_value, real structure on the mangled name.
+    wrapper = SimpleNamespace(**{"_StructureWrapper__structure": real})
+    assert not hasattr(wrapper, "get_value")
+    data = np.full((4, 4, 3), 7, dtype=np.uint8).tobytes()
+    sample = _FakeSample(buffer=_FakeBuffer(data), caps=_FakeCaps(wrapper))
+
+    out = detection_module.PersonDetector._sample_to_numpy(sample, _FakeGst)
+
+    assert out is not None
+    assert out.shape == (4, 4, 3)
+    assert int(out[0, 0, 0]) == 7
 
 
 def test_sample_to_numpy_returns_none_when_map_fails() -> None:

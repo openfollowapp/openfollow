@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -253,6 +254,25 @@ class TestDiscoverAvfDevices:
                 ),
             ]
         )
+        with patch("gi.repository.Gst", fake):
+            result = _discover_avf_devices()
+        assert result == [
+            {"unique_id": "FX30", "name": "Sony", "index": "0"},
+        ]
+
+    def test_reads_through_structure_wrapper(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """GStreamer 1.26.2 wraps device-property structures in a
+        StructureWrapper without get_string; discovery must reach the wrapped
+        structure rather than raising AttributeError."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        real_props = _FakeProps({"device.api": "avf", "avf.unique_id": "FX30"})
+        wrapper = SimpleNamespace(**{"_StructureWrapper__structure": real_props})
+        assert not hasattr(wrapper, "get_string")
+        device = SimpleNamespace(
+            get_properties=lambda: wrapper,
+            get_display_name=lambda: "Sony",
+        )
+        fake = _make_fake_gst_with_devices([device])
         with patch("gi.repository.Gst", fake):
             result = _discover_avf_devices()
         assert result == [

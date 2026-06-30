@@ -33,6 +33,7 @@ else:
 import numpy as np
 import numpy.typing as npt
 
+from openfollow.video.gst_compat import unwrap_gst_structure
 from openfollow.video.tracking import LOW_DETECTION_THRESHOLD, ByteTracker
 
 if TYPE_CHECKING:
@@ -1001,7 +1002,7 @@ class PersonDetector:
         """Convert a GStreamer sample to a NumPy RGB array."""
         buf = sample.get_buffer()
         caps = sample.get_caps()
-        structure = caps.get_structure(0)
+        structure = unwrap_gst_structure(caps.get_structure(0))
         w = structure.get_value("width")
         h = structure.get_value("height")
 

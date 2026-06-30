@@ -14,6 +14,7 @@ from openfollow.runtime.receiver_bus import ReceiverBusHandler
 from openfollow.runtime.receiver_pipeline import ReceiverPipelineAssembler
 from openfollow.runtime.receiver_state import ReceiverStateMachine
 from openfollow.video.connection_status import NdiStatusMarker
+from openfollow.video.gst_compat import unwrap_gst_structure
 from openfollow.video.inputs import get_input_class
 from openfollow.video.inputs._base import InputCapabilities, ReconnectPolicy
 
@@ -846,7 +847,7 @@ class GstNativeSinkReceiver:
         if event is not None and event.type == Gst.EventType.CAPS:
             caps = event.parse_caps()
             if caps is not None:
-                structure = caps.get_structure(0)
+                structure = unwrap_gst_structure(caps.get_structure(0))
                 if structure is not None:
                     w = structure.get_value("width")
                     h = structure.get_value("height")

@@ -1588,6 +1588,26 @@ class TestPadEvent:
         assert r.connected is False
         assert r.source_framerate == 30.0
 
+    def test_caps_event_reads_through_structure_wrapper(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """GStreamer 1.26.2 hands back a StructureWrapper without get_value /
+        get_fraction. The probe must reach the wrapped structure rather than
+        raising AttributeError and leaving video stuck on 'No Signal'."""
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        real = SimpleNamespace(
+            get_value=lambda key: {"width": 1280, "height": 720}.get(key),
+            get_fraction=lambda _key: (True, 30, 1),
+        )
+        wrapper = SimpleNamespace(**{"_StructureWrapper__structure": real})
+        assert not hasattr(wrapper, "get_value")
+        caps = SimpleNamespace(get_structure=lambda _idx: wrapper)
+        event = SimpleNamespace(type=FakeEventType.CAPS, parse_caps=lambda: caps)
+        info = SimpleNamespace(get_event=lambda: event)
+
+        r._on_pad_event(object(), info)
+
+        assert r.resolution == (1280, 720)
+        assert r.source_framerate == 30.0
+
     def test_caps_event_with_invalid_dims_no_state_change(self, fake_gst, fake_glib, fake_input_cls) -> None:
         r = _make_receiver()
         info, _ = self._make_caps_event(0, 0)

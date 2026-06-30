@@ -34,7 +34,7 @@ msgid "%.2f Hz"
 msgstr "%.2f Hz"
 
 msgid "(any patch)"
-msgstr "(任意补丁)"
+msgstr "（任意预设）"
 
 msgid "(any)"
 msgstr "(任意)"
@@ -147,10 +147,10 @@ msgstr "操作"
 msgid ""
 "Add a patch with a connected device in the MIDI Patches section above, then "
 "try again."
-msgstr "在上方 MIDI 补丁中添加带连接设备的补丁后重试。"
+msgstr "在上方 MIDI 预设中添加带连接设备的预设后重试。"
 
 msgid "Add new MIDI Patch"
-msgstr "添加新 MIDI 补丁"
+msgstr "新建 MIDI 预设"
 
 msgid "Adding…"
 msgstr "正在添加…"
@@ -517,7 +517,7 @@ msgid "Delete marker "
 msgstr "删除标记 "
 
 msgid "Delete patch"
-msgstr "删除补丁"
+msgstr "删除预设"
 
 msgid "Delete this OSC output?"
 msgstr "删除此 OSC 输出？"
@@ -967,7 +967,7 @@ msgid "Length"
 msgstr "长度"
 
 msgid "Length-prefix (OSC 1.0)"
-msgstr "帧率（源）"
+msgstr "长度前缀 (OSC 1.0)"
 
 msgid "Lens"
 msgstr "镜头"
@@ -1026,7 +1026,7 @@ msgid "MIDI"
 msgstr "MIDI"
 
 msgid "MIDI Patches"
-msgstr "MIDI 补丁"
+msgstr "MIDI 预设"
 
 msgid "MIDI subsystem not running"
 msgstr "MIDI 子系统未运行"
@@ -1210,7 +1210,7 @@ msgstr "下一标记"
 msgid ""
 "No MIDI patches yet. Add one, give it an alias, and assign a connected "
 "device."
-msgstr "尚无 MIDI 补丁。添加一个，设置别名并分配已连接设备。"
+msgstr "尚无 MIDI 预设。添加一个，设置别名并分配已连接设备。"
 
 msgid ""
 "No OSC destinations configured. Use <em>+ New destination</em> below to "
@@ -1289,7 +1289,7 @@ msgid "OSC Output"
 msgstr "OSC 输出"
 
 msgid "OSC Server"
-msgstr "租期"
+msgstr "OSC 服务器"
 
 msgid "OSC message"
 msgstr "OSC 消息"
@@ -1337,7 +1337,7 @@ msgid "Origin Marker"
 msgstr "原点标记"
 
 msgid "Outbound OSC messages – Stream / Hotkey / Controller-button triggers"
-msgstr "实时运行状态，一键下载诊断包用于问题报告。"
+msgstr "出站 OSC 消息 – 流/热键/控制器按钮触发"
 
 msgid "Output"
 msgstr "输出"
@@ -1367,7 +1367,7 @@ msgid "Packets total"
 msgstr "总数据包数"
 
 msgid "Patch"
-msgstr "补丁"
+msgstr "预设"
 
 msgid "Pattern"
 msgstr "图案"
@@ -1498,7 +1498,7 @@ msgid "Real Time Tracking Protocol – Motion – unicast UDP send-only output"
 msgstr "实时追踪协议 – 运动 – 单播 UDP 仅发送输出"
 
 msgid "Receive marker positions via OSC"
-msgstr "修饰键"
+msgstr "通过 OSC 接收标记位置"
 
 msgid "Reference Mapping"
 msgstr "参考点对准"
@@ -1586,7 +1586,7 @@ msgid "Roll"
 msgstr "横滚"
 
 msgid "Route by marker"
-msgstr "按标记路由"
+msgstr "按标记分发"
 
 msgid "Router"
 msgstr "路由器"
@@ -2189,3 +2189,15 @@ msgstr "⚠ 无法添加标记 "
 
 msgid "✓ Added marker "
 msgstr "✓ 已添加标记 "
+
+msgid ""
+"USB MIDI device aliases and virtual fader sources. The OSC Transmitters "
+"trigger forms reference what's configured here."
+msgstr "USB MIDI 设备别名和虚拟推子源。OSC 发送器的触发表单引用此处配置的内容。"
+
+msgid ""
+"Read-only. One fader per controlled marker, driven by the gamepad that "
+"controls it. Send a marker's value with the OSC <code>[markerfader]</code> "
+"placeholder."
+msgstr ""
+"只读。每个受控标记对应一个推子，数值由操控该标记的手柄驱动。可通过 OSC <code>[markerfader]</code> 占位符发送标记数值。"

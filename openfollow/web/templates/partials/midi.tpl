@@ -11,7 +11,7 @@
 <div id="midi-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="midi" data-help="midi">
  <div class="section-head">
  <h2>{{_('MIDI')}}</h2>
- <span class="section-note">{{_('USB MIDI device aliases and virtual fader sources. The OSC Transmitters trigger forms reference what's configured here.')}}</span>
+ <span class="section-note">{{_("USB MIDI device aliases and virtual fader sources. The OSC Transmitters trigger forms reference what's configured here.")}}</span>
  </div>
 
  % # ----------------------------------------------------------------

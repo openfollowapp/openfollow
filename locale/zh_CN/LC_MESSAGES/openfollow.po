@@ -1,9 +1,8 @@
 #
 msgid ""
-msgstr "Content-Type: text/plain; charset=UTF-8\n"
-
-msgid " (e.g. "
-msgstr "（例如 "
+msgstr ""
+"Language: zh_CN\n"
+"Content-Type: text/plain; charset=UTF-8\n"
 
 msgid " (read-only)"
 msgstr "（只读）"
@@ -11,32 +10,8 @@ msgstr "（只读）"
 msgid " already exists – edit it above"
 msgstr " 已存在 – 请在上方编辑"
 
-msgid " below to create one."
-msgstr " 下方来创建一个。"
-
-msgid " filters: "
-msgstr " 筛选器："
-
-msgid " for the full grammar and more examples. "
-msgstr " 查看完整语法和更多示例。"
-
 msgid " is available (installed: "
 msgstr " 可用（已安装："
-
-msgid " station(s) successfully."
-msgstr " 个追踪站成功。"
-
-msgid " stations. Failed: "
-msgstr " 个追踪站。失败："
-
-msgid " to render the message."
-msgstr " 来渲染消息。"
-
-msgid " to target a specific marker or fader – e.g. "
-msgstr " 来指定特定标记或推子 – 例如 "
-
-msgid " – and chain "
-msgstr " – 并链式 "
 
 msgid ""
 "\" and restart the device? It uploads over your local network – only install"
@@ -59,25 +34,19 @@ msgid "%.2f Hz"
 msgstr "%.2f Hz"
 
 msgid "(any patch)"
-msgstr "（任意补丁）"
+msgstr "(任意补丁)"
 
 msgid "(any)"
-msgstr "（任意）"
+msgstr "(任意)"
 
-msgid "(missing destination)"
-msgstr "（缺少目标）"
+msgid "(e.g."
+msgstr "（例如"
 
 msgid "(missing)"
 msgstr "（缺失）"
 
-msgid "(no destination)"
-msgstr "（无目标）"
-
-msgid "(none – row will not send)"
-msgstr "（无 – 此行不发送）"
-
 msgid "(none)"
-msgstr "（无）"
+msgstr "(无)"
 
 msgid "(not connected)"
 msgstr "（未连接）"
@@ -100,26 +69,17 @@ msgstr "）以启用下载。"
 msgid "). Install it now? The device restarts automatically when finished."
 msgstr "）。立即安装？完成后设备将自动重启。"
 
-msgid "). See "
-msgstr "）。参见 "
+msgid "). See"
+msgstr "）。详见"
+
+msgid "+ New OSC output"
+msgstr "+ 新建 OSC 输出"
 
 msgid "+ New Zone"
 msgstr "+ 新建区域"
 
 msgid "+ New destination"
 msgstr "+ 新建目标"
-
-msgid "+ New transmitter"
-msgstr "+ 新建发送器"
-
-msgid ", then restart."
-msgstr "，然后重启。"
-
-msgid "-- Loading... --"
-msgstr "-- 加载中... --"
-
-msgid "."
-msgstr "。"
 
 msgid "0 = any. 1–16 matches one specific channel."
 msgstr "0 = 任意，1–16 匹配特定通道。"
@@ -172,14 +132,8 @@ msgstr "5 FPS"
 msgid "512"
 msgstr "512"
 
-msgid "60 FPS"
-msgstr "60 FPS"
-
 msgid "640 (default, slower)"
 msgstr "640（默认，较慢）"
-
-msgid "? This removes the file from disk."
-msgstr "？此操作将从磁盘删除该文件。"
 
 msgid "AI Assisted"
 msgstr "AI 辅助"
@@ -190,16 +144,13 @@ msgstr "ANSI E1.59 对象变换协议 – 与 PSN 并行输出"
 msgid "Actions"
 msgstr "操作"
 
-msgid "Add"
-msgstr "添加"
-
 msgid ""
 "Add a patch with a connected device in the MIDI Patches section above, then "
 "try again."
 msgstr "在上方 MIDI 补丁中添加带连接设备的补丁后重试。"
 
 msgid "Add new MIDI Patch"
-msgstr "新建 MIDI 补丁"
+msgstr "添加新 MIDI 补丁"
 
 msgid "Adding…"
 msgstr "正在添加…"
@@ -212,6 +163,17 @@ msgstr "广播："
 
 msgid "Alias"
 msgstr "别名"
+
+msgid "Alignment"
+msgstr "对齐"
+
+msgid ""
+"All measurements in this wizard are relative to a single Reference Point. "
+"This should be the same reference point for all show control systems that "
+"you plan to connect to OpenFollow. If your venue has a defined origin point,"
+" you should use that. If you do not have an existing reference point, we "
+"recommend the"
+msgstr "本向导中的所有测量均相对于单一参考点。所有接入的演出控制系统应共用同一参考点。若场地已有定义的原点，请使用它。如无现有参考点，建议使用"
 
 msgid "Allowed sender IPs"
 msgstr "别名"
@@ -234,6 +196,9 @@ msgstr "外观"
 msgid "Apply"
 msgstr "应用"
 
+msgid "Apply & Finish"
+msgstr "应用并完成"
+
 msgid "Apply Without Restart"
 msgstr "不重启应用"
 
@@ -243,8 +208,8 @@ msgstr "应用到所有站点"
 msgid "Arrow keys are reserved for on-display menu navigation."
 msgstr "方向键保留用于屏幕菜单导航。"
 
-msgid "Assist Radius"
-msgstr "外观"
+msgid "Assist Radius (m)"
+msgstr "辅助半径 (m)"
 
 msgid "Assisted Tracking"
 msgstr "应用（不重启）"
@@ -254,6 +219,12 @@ msgstr "方向键保留用于屏幕菜单导航。"
 
 msgid "Axis Deadzone (0–1)"
 msgstr "摇杆死区 (0–1)"
+
+msgid "Back"
+msgstr "上一步"
+
+msgid "Back to Settings"
+msgstr "返回设置"
 
 msgid "Backend"
 msgstr "后端"
@@ -270,6 +241,12 @@ msgstr "信标接收器"
 msgid "Beacon sender"
 msgstr "信标发送器"
 
+msgid ""
+"Before proceeding, physically mark the Reference Point and the four grid "
+"corners on the stage with visible markers, so they are easily visible on "
+"camera (tape, gaffer marks, etc.)."
+msgstr "继续前，请在舞台上用可见标记标示参考点和四个网格角（胶带等），确保在摄像头中清晰可见。"
+
 msgid "Body"
 msgstr "主体"
 
@@ -282,11 +259,8 @@ msgstr "底部居中"
 msgid "Box Color"
 msgstr "轴死区（0–1）"
 
-msgid "Box Thickness"
-msgstr "后端"
-
-msgid "Broadcast failed. Check your network connection."
-msgstr "基础"
+msgid "Box Thickness (px)"
+msgstr "框线宽度 (px)"
 
 msgid "Bundle & tools"
 msgstr "诊断包与工具"
@@ -314,6 +288,9 @@ msgstr "相机"
 
 msgid "Camera & Grid"
 msgstr "相机与网格"
+
+msgid "Camera Position"
+msgstr "相机位置"
 
 msgid "Camera input and live preview"
 msgstr "相机输入与实时预览"
@@ -360,14 +337,24 @@ msgstr "已取消 – 另一行已开始捕获"
 msgid "Choose file"
 msgstr "选择文件"
 
+msgid ""
+"Choose the video input that matches your camera setup. The change applies "
+"live - the new pipeline starts within ~1 s of saving."
+msgstr "选择匹配您相机设置的视频输入。修改即时生效 — 保存后约 1 秒内启动新的采集管线。"
+
 msgid "Circle Size"
 msgstr "圆形大小"
 
 msgid "Clear Messages"
 msgstr "清除消息"
 
-msgid "Click "
-msgstr "捕获"
+msgid "Click"
+msgstr "点击"
+
+msgid ""
+"Click a corner or use Tab to select it, then use arrow keys to nudge (hold "
+"Shift for larger steps)."
+msgstr "点击角点或按 Tab 选中，然后用方向键微调（按住 Shift 大步移动）。"
 
 msgid "Click any pill to edit it."
 msgstr "重新捕获"
@@ -377,8 +364,8 @@ msgid ""
 "Click a zone to select it. Drag vertices to move them."
 msgstr "点击以放置顶点。再次点击首个顶点或双击以闭合。点击区域以选中。拖动顶点以移动。"
 
-msgid "Clip strength"
-msgstr "通道"
+msgid "Clip strength (0–1)"
+msgstr "裁剪强度 (0–1)"
 
 msgid "Close"
 msgstr "关闭"
@@ -389,11 +376,8 @@ msgstr "颜色"
 msgid "Colour"
 msgstr "颜色"
 
-msgid "Computed OTP multicast addresses"
-msgstr "检查并安装最新版"
-
-msgid "Confidence"
-msgstr "正在检查…"
+msgid "Confidence (0–1)"
+msgstr "置信度 (0–1)"
 
 msgid "Configuration File (.openfollowsettings)"
 msgstr "配置文件 (.openfollowsettings)"
@@ -437,6 +421,9 @@ msgstr "点击任意标签编辑。"
 msgid "Core status first, advanced diagnostics on demand"
 msgstr "核心状态优先，高级诊断按需展开"
 
+msgid "Corner Pinning"
+msgstr "四角精调"
+
 msgid "Could not install that file:"
 msgstr "点击放置顶点。点击首个顶点或双击闭合。点击区域选中。拖动顶点移动。"
 
@@ -445,9 +432,6 @@ msgstr "裁切强度"
 
 msgid "Could not read the selected file."
 msgstr "计算出的 OTP 多播地址"
-
-msgid "Could not save template."
-msgstr "无法保存模板。"
 
 msgid "Could not start update"
 msgstr "无法启动更新"
@@ -461,8 +445,8 @@ msgstr "十字准星颜色"
 msgid "Crosshair Size"
 msgstr "十字准星大小"
 
-msgid "Crosshair Thickness"
-msgstr "配置已导入（部分更改需重启）"
+msgid "Crosshair Thickness (px)"
+msgstr "十字准星线宽 (px)"
 
 msgid "Crosshair colour"
 msgstr "十字准星颜色"
@@ -482,8 +466,14 @@ msgstr "DHCP 手动地址"
 msgid "DNS"
 msgstr "DNS"
 
-msgid "Debounce"
-msgstr "已配置"
+msgid "Debounce (ms)"
+msgstr "防抖 (ms)"
+
+msgid "Default OSC Host"
+msgstr "默认 OSC 主机"
+
+msgid "Default OSC Port"
+msgstr "默认 OSC 端口"
 
 msgid "Default Speed"
 msgstr "默认速度"
@@ -509,11 +499,16 @@ msgstr "默认标记"
 msgid "Default value"
 msgstr "默认值"
 
+msgid ""
+"Define where the Reference Point sits within the grid. By default, it is at "
+"the center of the front edge (X Offset = 0, Y Offset = depth / 2)."
+msgstr "定义参考点在网格中的位置。默认位于前缘中点（X 偏移 = 0，Y 偏移 = 深度 / 2）。"
+
 msgid "Delete"
 msgstr "删除"
 
-msgid "Delete "
-msgstr "控制器"
+msgid "Delete %s? This removes the file from disk."
+msgstr "删除 %s？这将从磁盘中删除该文件。"
 
 msgid "Delete Selected"
 msgstr "删除选中"
@@ -524,19 +519,16 @@ msgstr "删除标记 "
 msgid "Delete patch"
 msgstr "删除补丁"
 
+msgid "Delete this OSC output?"
+msgstr "删除此 OSC 输出？"
+
 msgid ""
 "Delete this destination? Transmitters and zones referencing it will stop "
 "sending until repointed."
 msgstr "无法安装该文件："
 
-msgid "Delete this transmitter?"
-msgstr "无法连接到更新服务器："
-
 msgid "Depth"
 msgstr "深度"
-
-msgid "Destination"
-msgstr "无法读取所选文件。"
 
 msgid "Destination Host"
 msgstr "无法保存模板。"
@@ -550,11 +542,11 @@ msgstr "检测到的 OpenFollow 节点"
 msgid "Detection"
 msgstr "十字准线"
 
-msgid "Detection & Display"
-msgstr "十字准线粗细"
+msgid "Detection &amp; Display"
+msgstr "检测与显示"
 
-msgid "Detection Rate"
-msgstr "当前选中（控制器）"
+msgid "Detection Rate (FPS)"
+msgstr "检测帧率 (FPS)"
 
 msgid "Detection box colour"
 msgstr "自定义模板"
@@ -583,14 +575,20 @@ msgstr "防抖"
 msgid "Diagnostics"
 msgstr "诊断"
 
+msgid "Diagonal"
+msgstr "对角线"
+
 msgid "Dimensions"
 msgstr "尺寸"
 
-msgid "Disabled"
-msgstr "禁用"
+msgid "Dimensions and position of the rectangular tracking area"
+msgstr "矩形追踪区域的尺寸与位置"
 
 msgid "Discard"
 msgstr "默认模板"
+
+msgid "Discard & Leave"
+msgstr "放弃并退出"
 
 msgid "Discard unsaved changes to this row?"
 msgstr "默认推子"
@@ -603,6 +601,11 @@ msgstr "显示名称"
 
 msgid "Display units"
 msgstr "显示单位"
+
+msgid ""
+"Do not worry, you can follow performers outside this grid, as long as they "
+"are in the area visible to the camera."
+msgstr "无需担心，表演者走到网格外仍可追踪，只要他们在摄像头可见区域内。"
 
 msgid "Done"
 msgstr "删除标记 "
@@ -619,14 +622,36 @@ msgstr "下载模型"
 msgid "Download the current configuration as a JSON file."
 msgstr "将当前配置下载为 JSON 文件。"
 
+msgid ""
+"Drag each corner marker to its physical mark on the stage. The labels are "
+"stage positions: DSL/USL are stage left, DSR/USR are stage right (D = "
+"downstage/front, U = upstage/back). With a front-of-house camera you see the"
+" audience view, so stage left is on the right of the image (audience right) "
+"and stage right is on the left (audience left)."
+msgstr ""
+"从相机视角出发，将各角点标记拖到舞台上对应的物理标记处。标签标示画面区域：DSL 放画面左侧前方标记，DSR 放右侧前方标记，以此类推。（注意：FOH "
+"摄像机位时，画面左侧即为舞台右侧。）"
+
+msgid "Drag each corner to its physical stage mark for precise calibration"
+msgstr "将各角点拖到对应的舞台物理标记，精确标定"
+
+msgid ""
+"Drag the crosshair marker to the physical Reference Point mark visible on "
+"the stage. All corners move together with the reference point to roughly "
+"align the overlay with your stage."
+msgstr "将十字准星拖到舞台上可见的参考点标记处。所有角点随参考点一起移动，使叠加层大致对齐舞台。"
+
+msgid "Drag the crosshair to the physical Reference Point mark"
+msgstr "将十字准星拖到物理参考点标记处"
+
 msgid "Drag to reorder"
 msgstr "删除此发送器？"
 
 msgid "Drop Line"
 msgstr "下落线"
 
-msgid "Drop Line Thickness"
-msgstr "目标"
+msgid "Drop Line Thickness (px)"
+msgstr "下落线线宽 (px)"
 
 msgid "Duplicate"
 msgstr "复制"
@@ -640,14 +665,36 @@ msgstr "编辑模式"
 msgid "Enabled"
 msgstr "启用"
 
+msgid "Encoding"
+msgstr "编码"
+
 msgid "Enter an id ≥ 1"
 msgstr "输入 id ≥ 1"
+
+msgid ""
+"Enter the camera angle. If the camera points straight at the stage, start "
+"with Pitch approx -30 degrees (looking down), Yaw = 0 degrees, Roll = 0 "
+"degrees."
+msgstr "输入相机角度。如果相机正对舞台，起始值建议：俯仰 ≈ -30°（向下看），偏航 = 0°，横滚 = 0°。"
+
+msgid "Enter the camera physical position relative to the Reference Point, in"
+msgstr "输入相机相对于参考点的物理位置，单位"
+
+msgid ""
+"Enter the horizontal FOV from your camera datasheet, or pick your sensor "
+"size and focal length and we will compute it."
+msgstr "输入相机说明上的水平 FOV，或选择传感器尺寸和焦距后系统自动计算。"
+
+msgid ""
+"Enter the width and depth of the rectangular tracking area you marked on "
+"stage."
+msgstr "输入舞台上标记的矩形追踪区域的宽度和深度。"
 
 msgid "Errors"
 msgstr "错误"
 
-msgid "Eval Rate"
-msgstr "检测为"
+msgid "Eval Rate (FPS)"
+msgstr "评估速率 (FPS)"
 
 msgid "Experimental"
 msgstr "实验性"
@@ -663,8 +710,8 @@ msgstr "导出配置"
 
 msgid ""
 "Export a YOLO model to ONNX into the storage folder. Needs the model-export "
-"tools and an internet connection – slow on a Pi."
-msgstr "检测"
+"tools and an internet connection &ndash; slow on a Pi."
+msgstr "将 YOLO 模型导出为 ONNX 格式到存储文件夹。需要模型导出工具和网络连接 &ndash; 在树莓派上较慢。"
 
 msgid "Export and import device settings"
 msgstr "导出和导入设备设置"
@@ -675,19 +722,22 @@ msgstr "检测与显示"
 msgid ""
 "FOV is horizontal (as printed on camera datasheets). Pick your sensor size "
 "and focal length and we will compute FOV automatically."
-msgstr "FOV 为水平方向（如相机数据手册所示）。选择传感器尺寸和焦距，我们将自动计算 FOV。"
+msgstr "FOV 为水平视场角（与摄像头说明书一致）。选择传感器尺寸和焦距后，系统将自动计算 FOV。"
+
+msgid "FPS"
+msgstr "帧率"
 
 msgid "Fader"
 msgstr "推子"
-
-msgid "Fader %d"
-msgstr "检测速率"
 
 msgid "Fader colour"
 msgstr "推子颜色"
 
 msgid "Filled"
 msgstr "填充"
+
+msgid "Fine adjust"
+msgstr "精细调整"
 
 msgid "Finish Polygon"
 msgstr "检测需要额外组件："
@@ -698,8 +748,8 @@ msgstr "标记或检测进入/离开多边形区域时触发 OSC 消息"
 
 msgid ""
 "First token is the OSC address; the rest are arguments. Click a placeholder "
-"below to insert it. Add "
-msgstr "检测数（最近）"
+"below to insert it. Add"
+msgstr "第一个 token 是 OSC 地址；其余为参数。点击下方占位符插入。添加"
 
 msgid "Focal Length"
 msgstr "焦距"
@@ -730,20 +780,26 @@ msgstr "通用设置"
 msgid "Global"
 msgstr "需要设备密码："
 
-msgid "Grace Period"
-msgstr "设备无法访问"
+msgid "Grace Period (ms)"
+msgstr "宽限期 (ms)"
 
 msgid "Grid"
 msgstr "网格"
 
+msgid "Grid Setup"
+msgstr "网格设置"
+
 msgid "Ground Circle"
-msgstr "地面圈"
+msgstr "地面圆"
 
 msgid "Guided camera positioning and grid calibration"
 msgstr "引导式相机定位与网格标定"
 
 msgid "Heal Interval"
 msgstr "恢复间隔"
+
+msgid "Height"
+msgstr "高度"
 
 msgid "Help (?)"
 msgstr "放弃"
@@ -756,6 +812,9 @@ msgstr "主机"
 
 msgid "Hysteresis"
 msgstr "放弃对此行未保存的更改？"
+
+msgid "Hz"
+msgstr "Hz"
 
 msgid "ID"
 msgstr "ID"
@@ -777,6 +836,13 @@ msgstr "在 PSN 输出和网络上标识此站点。"
 
 msgid "Identity, display units, and web access"
 msgstr "标识、显示单位与 Web 访问"
+
+msgid ""
+"If your corners are invalid, three things could be wrong: The position of "
+"your camera relative to the reference point, your marked rectangle has not "
+"the same size as the grid, or the corners of your rectangle are not 90 "
+"degrees."
+msgstr "如果角点无效，可能是以下三种情况之一：相机相对参考点的位置有误、标记的矩形与网格尺寸不符、矩形的角不是直角。"
 
 msgid "Ignored for"
 msgstr "忽略"
@@ -930,6 +996,17 @@ msgstr "实时运行时状态和用于问题报告的一键诊断包下载。"
 msgid "Live status"
 msgstr "手柄输入"
 
+msgid "Load Defaults"
+msgstr "加载默认值"
+
+msgid ""
+"Load a previously exported configuration file. The device's network IP "
+"address will be preserved."
+msgstr "加载之前导出的配置文件。设备的网络IP地址将被保留。"
+
+msgid "Load a snapshot first"
+msgstr "请先加载快照"
+
 msgid "Load template…"
 msgstr "加载模板…"
 
@@ -963,6 +1040,12 @@ msgstr "迟滞"
 msgid "Marker "
 msgstr "标记 "
 
+msgid "Marker %s"
+msgstr "标记 %s"
+
+msgid "Marker %s (unavailable)"
+msgstr "标记 %s（不可用）"
+
 msgid "Marker Control & Visibility"
 msgstr "标记控制与可见性"
 
@@ -993,9 +1076,6 @@ msgstr "标记速度限制、默认速度和默认位置"
 msgid "Markers & Zones"
 msgstr "标记与区域"
 
-msgid "Match the model's export image size."
-msgstr "匹配模型的导出图像尺寸。"
-
 msgid "Max Persons"
 msgstr "身份标识、显示单位和网页访问"
 
@@ -1007,6 +1087,15 @@ msgstr "最大可见数"
 
 msgid "Maximum Height"
 msgstr "最大高度"
+
+msgid ""
+"Measure between the marks you placed on stage. Precision matters - even 10cm"
+" off will affect tracking accuracy. Spacing controls the visual grid density"
+" (does not affect calibration). If your Reference Point is 1m left of the "
+"grid center: set X Offset = -1."
+msgstr ""
+"测量舞台上标记之间的距离，精度至关重要——即使 10cm 偏差也会影响追踪精度。间距只控制网格显示密度（不影响标定）。若参考点在网格中心左侧 1m，设 "
+"X 偏移 = -1。"
 
 msgid "Menu Navigation"
 msgstr "菜单导航"
@@ -1082,6 +1171,9 @@ msgstr "从GitHub安装最新版本"
 msgid "N/A"
 msgstr "安装模型导出工具（运行"
 
+msgid "NDI® Source"
+msgstr "NDI® 视频源"
+
 msgid "Name"
 msgstr "名称"
 
@@ -1100,11 +1192,17 @@ msgid "Network settings are protected from change by mistake."
 msgstr "网络设置受保护防止误改。"
 
 msgid ""
+"Network settings can't be changed from the web on this station. Use the on-"
+"screen Settings menu, or see openfollow.app for troubleshooting and how to "
+"enable web editing."
+msgstr "此工作站无法通过网页修改网络设置。请使用屏幕上的设置菜单，或访问 openfollow.app 了解故障排除和如何启用网页编辑。"
+
+msgid ""
 "Network state unavailable – no detected interface or adapter on this host."
 msgstr "网络状态不可用——此主机未检测到接口或适配器。"
 
-msgid "New marker colour"
-msgstr "安装此文件？"
+msgid "Next"
+msgstr "下一步"
 
 msgid "Next Marker"
 msgstr "下一标记"
@@ -1114,8 +1212,13 @@ msgid ""
 "device."
 msgstr "尚无 MIDI 补丁。添加一个，设置别名并分配已连接设备。"
 
-msgid "No OSC destinations configured. Use "
-msgstr "未配置 OSC 目标。使用 "
+msgid ""
+"No OSC destinations configured. Use <em>+ New destination</em> below to "
+"create one."
+msgstr "尚未配置 OSC 目标。请使用下方的 <em>+ 新建目标</em> 来创建。"
+
+msgid "No OSC outputs configured. Use"
+msgstr "尚未配置 OSC 输出。请使用"
 
 msgid "No PIN set"
 msgstr "未设置 PIN"
@@ -1128,16 +1231,16 @@ msgstr "尚无受控标记。在受控标记下添加标记并分配手柄后即
 msgid "No file selected"
 msgstr "正在安装更新"
 
-msgid "No models installed yet – download one below."
-msgstr "尚未安装模型 – 请在下方下载。"
+msgid "No models installed yet &ndash; download one below."
+msgstr "尚未安装模型 &ndash; 请在下方下载。"
 
 msgid ""
 "No other servers discovered yet. Make sure other OpenFollow instances are "
 "running on this network."
 msgstr "尚未发现其他服务器。请确保此网络上有其他 OpenFollow 实例正在运行。"
 
-msgid "No other stations discovered on the network."
-msgstr "反转Y/Z映射"
+msgid "No peers known yet – wait for discovery or check beacon health above."
+msgstr "尚未发现对等节点 – 请等待发现或检查上方的信标状态。"
 
 msgid "No source"
 msgstr "无信号源"
@@ -1145,11 +1248,18 @@ msgstr "无信号源"
 msgid "No test packet sent yet."
 msgstr "按键"
 
-msgid "No transmitters configured. Use "
-msgstr "键盘输入"
-
 msgid "No unsaved changes."
 msgstr "屏幕UI的键盘控制"
+
+msgid ""
+"No video feed available. Configure a video source in Step 3, then return "
+"here and press"
+msgstr "无视频信号。请在步骤 3 中配置视频源，然后返回此处并点击"
+
+msgid ""
+"No video feed available. Values below are still valid, but the visual review"
+" is unavailable."
+msgstr "无视频信号。以下数值仍然有效，但无法进行可视化检查。"
 
 msgid "Normal"
 msgstr "正常"
@@ -1175,11 +1285,11 @@ msgstr "OSC 目标"
 msgid "OSC Input"
 msgstr "OSC 输入"
 
+msgid "OSC Output"
+msgstr "OSC 输出"
+
 msgid "OSC Server"
 msgstr "租期"
-
-msgid "OSC Transmitters"
-msgstr "OSC 发送器"
 
 msgid "OSC message"
 msgstr "左摇杆Y"
@@ -1208,6 +1318,9 @@ msgstr "线条颜色"
 msgid "Opacity"
 msgstr "线条粗细"
 
+msgid "Opacity (0–1)"
+msgstr "不透明度 (0–1)"
+
 msgid "Open Setup Wizard"
 msgstr "打开设置向导"
 
@@ -1216,11 +1329,6 @@ msgstr "正在监听MIDI…"
 
 msgid "Operator Messages"
 msgstr "操作员消息"
-
-msgid ""
-"Optional YOLO person detection. Compute-heavy – a workstation is recommended"
-" over a Pi 5; see each box's help. Each box saves on its own."
-msgstr "用于操作和故障排查的实时指示灯。"
 
 msgid "Orientation"
 msgstr "方向"
@@ -1261,6 +1369,9 @@ msgstr "数据包总数"
 msgid "Patch"
 msgstr "补丁"
 
+msgid "Pattern"
+msgstr "图案"
+
 msgid "Peers seen"
 msgstr "已发现对等站点"
 
@@ -1269,6 +1380,10 @@ msgstr "人物检测"
 
 msgid "Physical Button"
 msgstr "物理按键"
+
+msgid ""
+"Physical camera position and orientation relative to the Reference Point"
+msgstr "相机相对于参考点的物理位置与方向"
 
 msgid "Pick how detection drives the marker, then tune the motion."
 msgstr "已映射至"
@@ -1292,6 +1407,9 @@ msgstr "管线"
 
 msgid "Pitch"
 msgstr "俯仰"
+
+msgid "Pitch must be between -0.5 degrees and -90 degrees"
+msgstr "俯仰必须介于 -0.5° 到 -90° 之间"
 
 msgid "Placement"
 msgstr "位置"
@@ -1320,6 +1438,9 @@ msgstr "位置 Z"
 msgid "Prediction"
 msgstr "最大人数"
 
+msgid "Preparation"
+msgstr "准备工作"
+
 msgid "Press a key, turn a knob, or move a fader."
 msgstr "最大可见数"
 
@@ -1346,6 +1467,12 @@ msgstr "二次方"
 msgid "RAM"
 msgstr "RAM"
 
+msgid "RTP URL"
+msgstr "RTP 地址"
+
+msgid "RTSP URL"
+msgstr "RTSP 地址"
+
 msgid "RTTrPM Network"
 msgstr "方法"
 
@@ -1354,6 +1481,9 @@ msgstr "公制（米，米/秒）"
 
 msgid "Rate (Hz)"
 msgstr "最小变化量（米）"
+
+msgid "Rate controls the sample rate."
+msgstr "频率控制采样率。"
 
 msgid "Raw ID"
 msgstr "原始 ID"
@@ -1370,17 +1500,29 @@ msgstr "模型磁盘："
 msgid "Receive marker positions via OSC"
 msgstr "修饰键"
 
+msgid "Reference Mapping"
+msgstr "参考点对准"
+
+msgid "Reference Point:"
+msgstr "参考点："
+
 msgid "Refine your manual control"
 msgstr "鼠标输入"
 
 msgid "Refresh"
 msgstr "刷新"
 
+msgid "Refresh Image"
+msgstr "刷新画面"
+
 msgid "Reload"
 msgstr "屏幕UI的鼠标控制"
 
 msgid "Remaining"
 msgstr "剩余"
+
+msgid "Render resolution"
+msgstr "渲染分辨率"
 
 msgid ""
 "Render the message that would be sent right now using the current marker "
@@ -1389,6 +1531,12 @@ msgstr "移动X/Y"
 
 msgid "Renew DHCP lease"
 msgstr "续租 DHCP"
+
+msgid "Reset"
+msgstr "重置"
+
+msgid "Reset Corners"
+msgstr "重置四角"
 
 msgid "Reset Marker"
 msgstr "重置标记"
@@ -1414,6 +1562,9 @@ msgstr "重启应用"
 msgid "Restarting onto version "
 msgstr "Z轴负向"
 
+msgid "Restore Last"
+msgstr "恢复上次"
+
 msgid "Retry"
 msgstr "重试"
 
@@ -1421,6 +1572,9 @@ msgid ""
 "Reusable connections (host, port, transport) referenced by transmitters and "
 "zones"
 msgstr "发送器和区域引用的可复用连接（主机、端口、传输）"
+
+msgid "Review"
+msgstr "审核"
 
 msgid "Right Stick"
 msgstr "右摇杆"
@@ -1440,15 +1594,14 @@ msgstr "路由器"
 msgid "Router (optional)"
 msgstr "路由器（可选）"
 
-msgid ""
-"Run the wizard on the app display to detect your controller's button layout."
-msgstr "移动"
-
 msgid "S-Law"
 msgstr "S 曲线"
 
 msgid "SLIP (RFC 1055)"
 msgstr "组播地址"
+
+msgid "SRT URL"
+msgstr "SRT 地址"
 
 msgid "Save"
 msgstr "保存"
@@ -1467,6 +1620,9 @@ msgstr "扫描"
 
 msgid "Select a zone to edit its OSC addresses and trigger source."
 msgstr "选择一个区域以编辑其OSC地址和触发源。"
+
+msgid "Select and configure the camera input"
+msgstr "选择并配置相机输入"
 
 msgid "Send"
 msgstr "发送"
@@ -1489,9 +1645,6 @@ msgstr "仅变化时发送"
 msgid "Send test packet"
 msgstr "发送测试包"
 
-msgid "Sending…"
-msgstr "新标记颜色"
-
 msgid "Sensor Size"
 msgstr "传感器尺寸"
 
@@ -1500,9 +1653,6 @@ msgstr "传感器宽度"
 
 msgid "Sent count"
 msgstr "发送总数"
-
-msgid "Sent to "
-msgstr "下一个标记"
 
 msgid "Server"
 msgstr "服务器"
@@ -1519,8 +1669,8 @@ msgstr "设置"
 msgid "Settings Menu"
 msgstr "设置菜单"
 
-msgid "Settings sent to "
-msgstr "设置已发送到 "
+msgid "Setup Wizard"
+msgstr "设置向导"
 
 msgid ""
 "Shared by the Settings menu, source / interface selection, and calibration "
@@ -1529,9 +1679,6 @@ msgstr "未选择文件"
 
 msgid "Shared catalog"
 msgstr "共享目录"
-
-msgid "Shared catalog + this station's selection"
-msgstr "共享目录 + 本站选择"
 
 msgid "Show Ball"
 msgstr "显示球体"
@@ -1557,23 +1704,34 @@ msgstr "显示预览"
 msgid "Show experimental features"
 msgstr "显示实验性功能"
 
+msgid "Show full image"
+msgstr "显示完整画面"
+
 msgid "Show on Operator Screen"
 msgstr "在操作员屏幕显示"
 
 msgid "Show recent log tail (last 100 lines)"
 msgstr "显示最近日志尾部（最近 100 行）"
 
+msgid ""
+"Shown on the operator screen when \"Show on Operator Screen\" is on, and in "
+"trigger forms that reference this fader."
+msgstr "当\"在操作员屏幕上显示\"开启时，在操作员屏幕和引用此推子的触发表单中显示。"
+
 msgid "Signal"
 msgstr "信号"
 
-msgid "Smoothing / glide"
-msgstr "尚未发送测试数据包。"
+msgid "Smoothing / glide (0–1)"
+msgstr "平滑/滑行 (0–1)"
 
 msgid "Snapped to a multiple of 32; match the Inference Size you run."
 msgstr "未配置发送器。请使用"
 
 msgid "Software Update"
 msgstr "软件更新"
+
+msgid "Some English text"
+msgstr "Some English text"
 
 msgid "Source"
 msgstr "源"
@@ -1582,7 +1740,7 @@ msgid "Source Interface (optional)"
 msgstr "无未保存的更改。"
 
 msgid "Source Type"
-msgstr "信号源类型"
+msgstr "来源类型"
 
 msgid "Spacing"
 msgstr "间距"
@@ -1594,16 +1752,27 @@ msgid "Speed -"
 msgstr "减速"
 
 msgid "Stage reference plane settings"
-msgstr "舞台参考面设置"
+msgstr "舞台参考平面设置"
 
 msgid "Stall Timeout"
-msgstr "卡顿超时"
+msgstr "断流超时"
 
 msgid "Start Button Detection Wizard"
 msgstr "启动按键检测向导"
 
+msgid ""
+"Start with the two downstage corners (front), then adjust the upstage "
+"corners (back). If a corner turns red, the shape is invalid. For pixel-"
+"precise placement, click"
+msgstr "先从两个下台口角点（前方）开始，然后调整上台口角点（后方）。若角点变红表示形状无效。如需像素级精确放置，点击"
+
 msgid "Static"
 msgstr "静态"
+
+msgid ""
+"Static test image – useful for debugging overlay, Operator Screen, and "
+"detection without a live source."
+msgstr "静态测试图像 – 用于调试叠加层、操作员画面和检测功能，无需真实视频源。"
 
 msgid "Station Settings"
 msgstr "站点设置"
@@ -1618,7 +1787,7 @@ msgid "Still working…"
 msgstr "正在处理…"
 
 msgid "Stored"
-msgstr "已存储"
+msgstr "存储"
 
 msgid "Stored:"
 msgstr "已保存："
@@ -1644,6 +1813,11 @@ msgstr "跨局域网所有工作站同步。"
 msgid "System Number"
 msgstr "OSC服务器"
 
+msgid ""
+"Take your time with accurate markings - the precision of the final "
+"calibration depends on them."
+msgstr "精确标记决定最终标定精度，请耐心操作。"
+
 msgid "Temperature"
 msgstr "温度"
 
@@ -1659,13 +1833,16 @@ msgstr "测试对等连接"
 msgid "Test send"
 msgstr "测试发送"
 
-msgid "The box attached to a marker is drawn in that marker's colour."
-msgstr "OSC驱动的操作员屏幕下一提示文本"
+msgid "The Grid:"
+msgstr "网格："
 
 msgid ""
 "The device has been unreachable for several minutes. Check that it is "
 "powered on, then reload this page."
 msgstr "OTP网络"
+
+msgid "The grid area must be a"
+msgstr "网格区域必须是一个"
 
 msgid ""
 "The imported configuration has been validated. Some changes require an app "
@@ -1689,14 +1866,21 @@ msgid ""
 "current version."
 msgstr "更新耗时比预期长。请刷新页面查看当前版本。"
 
+msgid ""
+"These use PSN theatrical coordinates: X = stage left, Y = upstage, Z = up."
+msgstr "使用 PSN 剧场坐标系：X = 舞台左，Y = 上台口方向，Z = 向上。"
+
 msgid "Thickness"
 msgstr "粗细"
 
 msgid "This device already runs the latest version ("
 msgstr "请打开输入→MIDI页面连接后端，然后返回此处。"
 
-msgid "This station's selection"
-msgstr "本站选择"
+msgid ""
+"Throttles fader-driven sends to at most this rate. A sweeping MIDI fader or "
+"a moving gamepad (marker) fader produces dozens of changes per second; the "
+"throttle keeps the wire output stable regardless."
+msgstr "将推子驱动的发送限制在此频率以内。快速滑动的 MIDI 推子或移动的游戏手柄（标记）推子每秒产生数十次变化；限频可保持有线输出稳定。"
 
 msgid "Timed out – no MIDI received"
 msgstr "超时 – 未收到 MIDI 信号"
@@ -1742,6 +1926,9 @@ msgstr "已发现的对等节点"
 
 msgid "UDP Port"
 msgstr "UDP 端口"
+
+msgid "Understand the setup and prepare the physical space"
+msgstr "了解设置流程并准备物理空间"
 
 msgid "Unit system"
 msgstr "单位系统"
@@ -1796,6 +1983,14 @@ msgstr "请选择配置文件。"
 msgid "Value"
 msgstr "值"
 
+msgid "Verify all values before applying"
+msgstr "应用前确认所有数值"
+
+msgid ""
+"Verify your grid is rectangular: measure both diagonals on stage - they must"
+" be equal. The expected diagonal is shown above."
+msgstr "验证网格为矩形：测量舞台上两条对角线，两者必须相等。预期对角线见上方。"
+
 msgid "Version "
 msgstr "版本 "
 
@@ -1835,23 +2030,26 @@ msgstr "Z 位置"
 msgid "Width"
 msgstr "宽度"
 
-msgid ""
-"Will save disabled: this row uses placeholder values that are not resolved "
-"yet (no default marker, or an explicit marker reference targets an "
-"unregistered marker)."
-msgstr "预测"
-
 msgid "Wizard running on app display"
 msgstr "向导正在设备屏幕上运行"
 
 msgid "X / Y Layout"
 msgstr "X / Y 布局"
 
+msgid "X Offset"
+msgstr "X 偏移"
+
+msgid "Y Offset"
+msgstr "Y 偏移"
+
 msgid "Yaw"
 msgstr "偏航"
 
 msgid "Z Display"
-msgstr "Z 轴显示"
+msgstr "Z 坐标"
+
+msgid "Z Offset"
+msgstr "Z 偏移"
 
 msgid "Z from Stage Level"
 msgstr "从舞台水平面 Z"
@@ -1865,8 +2063,39 @@ msgstr "Z-"
 msgid "Zone Editor"
 msgstr "区域编辑器"
 
+msgid ""
+"Zoom in on your browser (Ctrl/Cmd + scroll) for more precision. You can also"
+" click the crosshair and use arrow keys to nudge it precisely (hold Shift "
+"for larger steps)."
+msgstr "在浏览器中放大（Ctrl/Cmd + 滚轮）可获得更高精度。也可以点击十字准星后使用方向键精确微调（按住 Shift 大步移动）。"
+
+msgid ""
+"along any axis since the last send. The default marker is always the gate "
+"signal – message content (including"
+msgstr "时跳过发送。默认标记始终作为门控信号 — 消息内容（包括"
+
+msgid ""
+"as large as possible that lies flat on the main performance level. All four "
+"corners must be"
+msgstr "尽可能大且平放于主表演面。四个角必须"
+
+msgid "as the default."
+msgstr "作为默认值。"
+
+msgid "below to create one."
+msgstr "下方来创建一个。"
+
+msgid "center of the stage front edge"
+msgstr "舞台前缘中点"
+
+msgid "clearly visible in the camera feed"
+msgstr "在摄像头画面中清晰可见"
+
 msgid "connected"
 msgstr "已连接"
+
+msgid "default marker"
+msgstr "默认标记"
 
 msgid "e.g. 192.168.1.10, 192.168.1.20"
 msgstr "内存"
@@ -1880,11 +2109,20 @@ msgstr "RTTrPM 输出"
 msgid "fallback"
 msgstr "回退"
 
+msgid "filters:"
+msgstr "筛选器："
+
+msgid "for the full grammar and more examples."
+msgstr "查看完整语法和更多示例。"
+
 msgid "free"
 msgstr "速率 (Hz)"
 
-msgid "manage in OSC Destinations"
-msgstr "原始 ID"
+msgid "hasn't moved at least"
+msgstr "移动量未超过"
+
+msgid "min change"
+msgstr "最小变化"
 
 msgid "not picked up"
 msgstr "未拾取"
@@ -1898,35 +2136,44 @@ msgstr "重置时"
 msgid "optional"
 msgstr "可选"
 
-msgid "placeholder."
-msgstr "占位符。"
+msgid ""
+"placeholders) is independent. To gate on a marker that isn't in the message,"
+" set it as this row's default marker. Rows with no default marker configured"
+" fire on every tick regardless of mode."
+msgstr "占位符）是独立的。若要以不在消息中的标记作为门控，将其设为此行的默认标记。未配置默认标记的行在每个 tick 都会触发，不受模式限制。"
+
+msgid "right-angled rectangle"
+msgstr "直角矩形"
 
 msgid "settings"
 msgstr "设置"
 
+msgid "skips the wire send when this row's"
+msgstr "当此行的"
+
+msgid "then restart."
+msgstr "然后重启。"
+
 msgid "this server"
 msgstr "本服务器"
 
-msgid "this station"
-msgstr "精细调整手动控制"
+msgid "to render the message."
+msgstr "来渲染消息。"
 
-msgid "this station ("
-msgstr "重新加载"
+msgid "to switch to a 4x-zoomed per-corner view."
+msgstr "切换到 4 倍放大逐角视图。"
 
-msgid "unavailable"
-msgstr "剩余"
-
-msgid "{}://{}:{} ({})"
-msgstr "{}://{}:{} ({})"
-
-msgid "–"
-msgstr "续租 DHCP"
+msgid "to target a specific marker or fader – e.g."
+msgstr "来指定特定标记或推子 – 例如"
 
 msgid "– (unused)"
 msgstr "–（未使用）"
 
 msgid "– Fader"
 msgstr "– 推子"
+
+msgid "– and chain"
+msgstr "– 并链式"
 
 msgid "– none –"
 msgstr "– 无 –"
@@ -1940,466 +2187,5 @@ msgstr "需要重启"
 msgid "⚠ Could not add marker "
 msgstr "⚠ 无法添加标记 "
 
-msgid "⚠ save failed"
-msgstr "重启应用"
-
 msgid "✓ Added marker "
 msgstr "✓ 已添加标记 "
-
-msgid "✓ saved"
-msgstr "正在重启至版本 "
-
-msgid "(e.g."
-msgstr "（例如"
-
-msgid "). See"
-msgstr "）。详见"
-
-msgid "+ New OSC output"
-msgstr "+ 新建 OSC 输出"
-
-msgid "Alignment"
-msgstr "对齐"
-
-msgid ""
-"All measurements in this wizard are relative to a single Reference Point. "
-"This should be the same reference point for all show control systems that "
-"you plan to connect to OpenFollow. If your venue has a defined origin point,"
-" you should use that. If you do not have an existing reference point, we "
-"recommend the"
-msgstr ""
-"此向导中的所有测量均相对于单一参考点。所有计划连接到 OpenFollow "
-"的演出控制系统应使用同一参考点。如果您的场地有已定义的原点，应使用该原点。如果没有现成参考点，建议使用"
-
-msgid "Apply & Finish"
-msgstr "应用并完成"
-
-msgid "Assist Radius (m)"
-msgstr "辅助半径 (m)"
-
-msgid "Back"
-msgstr "上一步"
-
-msgid "Back to Settings"
-msgstr "返回设置"
-
-msgid ""
-"Before proceeding, physically mark the Reference Point and the four grid "
-"corners on the stage with visible markers, so they are easily visible on "
-"camera (tape, gaffer marks, etc.)."
-msgstr "开始前，在舞台上用可见标记标出参考点和四个网格角点，使其在相机中清晰可见（胶带、gaffer 标记等）。"
-
-msgid "Box Thickness (px)"
-msgstr "框线宽度 (px)"
-
-msgid "Camera Position"
-msgstr "相机位置"
-
-msgid ""
-"Choose the video input that matches your camera setup. The change applies "
-"live - the new pipeline starts within ~1 s of saving."
-msgstr "选择与您相机设置匹配的视频输入。更改即时生效 — 新视频管线在保存后约 1 秒内启动。"
-
-msgid "Click"
-msgstr "点击"
-
-msgid ""
-"Click a corner or use Tab to select it, then use arrow keys to nudge (hold "
-"Shift for larger steps)."
-msgstr "点击角点或用 Tab 选择，然后使用方向键微调（按住 Shift 可加大步长）。"
-
-msgid "Clip strength (0–1)"
-msgstr "裁剪强度 (0–1)"
-
-msgid "Confidence (0–1)"
-msgstr "置信度 (0–1)"
-
-msgid "Corner Pinning"
-msgstr "角点定位"
-
-msgid "Crosshair Thickness (px)"
-msgstr "十字准星线宽 (px)"
-
-msgid "Debounce (ms)"
-msgstr "去抖 (ms)"
-
-msgid "Default OSC Host"
-msgstr "默认 OSC 主机"
-
-msgid "Default OSC Port"
-msgstr "默认 OSC 端口"
-
-msgid ""
-"Define where the Reference Point sits within the grid. By default, it is at "
-"the center of the front edge (X Offset = 0, Y Offset = depth / 2)."
-msgstr "定义参考点在网格中的位置。默认位于前沿中心（X 偏移 = 0，Y 偏移 = 深度 / 2）。"
-
-msgid "Delete %s? This removes the file from disk."
-msgstr "删除 %s？这将从磁盘中删除该文件。"
-
-msgid "Delete this OSC output?"
-msgstr "删除此 OSC 输出？"
-
-msgid "Detection &amp; Display"
-msgstr "检测与显示"
-
-msgid "Detection Rate (FPS)"
-msgstr "检测帧率 (FPS)"
-
-msgid "Diagonal"
-msgstr "对角线"
-
-msgid "Dimensions and position of the rectangular tracking area"
-msgstr "矩形追踪区域的尺寸和位置"
-
-msgid "Discard & Leave"
-msgstr "放弃并退出"
-
-msgid ""
-"Do not worry, you can follow performers outside this grid, as long as they "
-"are in the area visible to the camera."
-msgstr "不用担心，只要表演者在相机可见区域内，即使超出此网格范围也可以追踪。"
-
-msgid ""
-"Drag each corner marker to its physical mark on the stage. The labels are "
-"stage positions: DSL/USL are stage left, DSR/USR are stage right (D = "
-"downstage/front, U = upstage/back). With a front-of-house camera you see the"
-" audience view, so stage left is on the right of the image (audience right) "
-"and stage right is on the left (audience left)."
-msgstr ""
-"将每个角点标记拖到舞台上的物理标记位置。标签为舞台位置：DSL/USL 为舞台左侧，DSR/USR 为舞台右侧（D = 台口/前方，U = "
-"舞台深处/后方）。使用观众席相机时看到的是观众视角，所以舞台左侧在画面右侧（观众右侧），舞台右侧在画面左侧（观众左侧）。"
-
-msgid "Drag each corner to its physical stage mark for precise calibration"
-msgstr "将每个角点拖到舞台上的物理标记位置以进行精确校准"
-
-msgid ""
-"Drag the crosshair marker to the physical Reference Point mark visible on "
-"the stage. All corners move together with the reference point to roughly "
-"align the overlay with your stage."
-msgstr "将十字准星拖到舞台上可见的参考点物理标记处。所有角点随参考点一起移动，将叠加层大致对准舞台。"
-
-msgid "Drag the crosshair to the physical Reference Point mark"
-msgstr "将十字准星拖到参考点物理标记处"
-
-msgid "Drop Line Thickness (px)"
-msgstr "下落线线宽 (px)"
-
-msgid ""
-"Enter the camera angle. If the camera points straight at the stage, start "
-"with Pitch approx -30 degrees (looking down), Yaw = 0 degrees, Roll = 0 "
-"degrees."
-msgstr "输入相机角度。如果相机正对舞台，起始值建议：俯仰角约 -30 度（向下看），偏航角 = 0 度，滚动角 = 0 度。"
-
-msgid "Enter the camera physical position relative to the Reference Point, in"
-msgstr "输入相机相对于参考点的物理位置，单位为"
-
-msgid ""
-"Enter the horizontal FOV from your camera datasheet, or pick your sensor "
-"size and focal length and we will compute it."
-msgstr "输入相机数据手册中的水平视场角，或选择传感器尺寸和焦距来自动计算。"
-
-msgid ""
-"Enter the width and depth of the rectangular tracking area you marked on "
-"stage."
-msgstr "输入舞台上标记的矩形追踪区域的宽度和深度。"
-
-msgid "Eval Rate (FPS)"
-msgstr "评估帧率 (FPS)"
-
-msgid ""
-"Export a YOLO model to ONNX into the storage folder. Needs the model-export "
-"tools and an internet connection &ndash; slow on a Pi."
-msgstr "将 YOLO 模型导出为 ONNX 格式到存储文件夹。需要模型导出工具和网络连接 &ndash; 在树莓派上较慢。"
-
-msgid "Fine adjust"
-msgstr "微调"
-
-msgid ""
-"First token is the OSC address; the rest are arguments. Click a placeholder "
-"below to insert it. Add"
-msgstr "第一个 token 是 OSC 地址；其余为参数。点击下方占位符插入。添加"
-
-msgid "Grace Period (ms)"
-msgstr "宽限期 (ms)"
-
-msgid "Grid Setup"
-msgstr "网格设置"
-
-msgid "Hz"
-msgstr "Hz"
-
-msgid ""
-"If your corners are invalid, three things could be wrong: The position of "
-"your camera relative to the reference point, your marked rectangle has not "
-"the same size as the grid, or the corners of your rectangle are not 90 "
-"degrees."
-msgstr "如果角点无效，可能有三方面问题：相机相对于参考点的位置、标记的矩形与网格尺寸不一致、或矩形角点不是 90 度直角。"
-
-msgid "Load Defaults"
-msgstr "加载默认值"
-
-msgid "Load a snapshot first"
-msgstr "请先加载快照"
-
-msgid "Marker %s"
-msgstr "标记 %s"
-
-msgid "Marker %s (unavailable)"
-msgstr "标记 %s（不可用）"
-
-msgid ""
-"Measure between the marks you placed on stage. Precision matters - even 10cm"
-" off will affect tracking accuracy. Spacing controls the visual grid density"
-" (does not affect calibration). If your Reference Point is 1m left of the "
-"grid center: set X Offset = -1."
-msgstr ""
-"测量舞台上标记之间的距离。精度很重要 — 即使 10 厘米的偏差也会影响追踪精度。间距控制视觉网格密度（不影响校准）。如果参考点在网格中心左侧 1 "
-"米：设置 X 偏移 = -1。"
-
-msgid "Next"
-msgstr "下一步"
-
-msgid ""
-"No OSC destinations configured. Use <em>+ New destination</em> below to "
-"create one."
-msgstr "尚未配置 OSC 目标。请使用下方的 <em>+ 新建目标</em> 来创建。"
-
-msgid "No OSC outputs configured. Use"
-msgstr "尚未配置 OSC 输出。请使用"
-
-msgid "No models installed yet &ndash; download one below."
-msgstr "尚未安装模型 &ndash; 请在下方下载。"
-
-msgid ""
-"No video feed available. Configure a video source in Step 3, then return "
-"here and press"
-msgstr "无视频画面。请在步骤 3 中配置视频源，然后返回此处点击"
-
-msgid ""
-"No video feed available. Values below are still valid, but the visual review"
-" is unavailable."
-msgstr "无视频画面。下方数值仍然有效，但无法进行可视化检查。"
-
-msgid "OSC Output"
-msgstr "OSC 输出"
-
-msgid "Opacity (0–1)"
-msgstr "不透明度 (0–1)"
-
-msgid ""
-"Physical camera position and orientation relative to the Reference Point"
-msgstr "相机相对于参考点的物理位置和朝向"
-
-msgid "Pitch must be between -0.5 degrees and -90 degrees"
-msgstr "俯仰角必须在 -0.5 度到 -90 度之间"
-
-msgid "Preparation"
-msgstr "准备工作"
-
-msgid "Rate controls the sample rate."
-msgstr "频率控制采样率。"
-
-msgid "Reference Mapping"
-msgstr "参考点映射"
-
-msgid "Reference Point:"
-msgstr "参考点："
-
-msgid "Refresh Image"
-msgstr "刷新画面"
-
-msgid "Reset"
-msgstr "重置"
-
-msgid "Reset Corners"
-msgstr "重置角点"
-
-msgid "Restore Last"
-msgstr "恢复上次"
-
-msgid "Review"
-msgstr "检查确认"
-
-msgid "Select and configure the camera input"
-msgstr "选择并配置相机输入"
-
-msgid "Setup Wizard"
-msgstr "设置向导"
-
-msgid "Show full image"
-msgstr "显示完整画面"
-
-msgid ""
-"Shown on the operator screen when \"Show on Operator Screen\" is on, and in "
-"trigger forms that reference this fader."
-msgstr "当\"在操作员屏幕上显示\"开启时，在操作员屏幕和引用此推子的触发表单中显示。"
-
-msgid "Smoothing / glide (0–1)"
-msgstr "平滑/滑行 (0–1)"
-
-msgid ""
-"Start with the two downstage corners (front), then adjust the upstage "
-"corners (back). If a corner turns red, the shape is invalid. For pixel-"
-"precise placement, click"
-msgstr "先从两个下舞台角点（前方）开始，再调整上舞台角点（后方）。如果角点变红，说明形状无效。如需像素级精确放置，请点击"
-
-msgid ""
-"Take your time with accurate markings - the precision of the final "
-"calibration depends on them."
-msgstr "请仔细做好标记 — 最终校准的精度取决于此。"
-
-msgid "The Grid:"
-msgstr "网格："
-
-msgid "The grid area must be a"
-msgstr "网格区域必须是一个"
-
-msgid ""
-"These use PSN theatrical coordinates: X = stage left, Y = upstage, Z = up."
-msgstr "使用 PSN 剧场坐标系：X = 舞台左侧，Y = 舞台深处，Z = 上方。"
-
-msgid ""
-"Throttles fader-driven sends to at most this rate. A sweeping MIDI fader or "
-"a moving gamepad (marker) fader produces dozens of changes per second; the "
-"throttle keeps the wire output stable regardless."
-msgstr "将推子驱动的发送限制在此频率以内。快速滑动的 MIDI 推子或移动的游戏手柄（标记）推子每秒产生数十次变化；限频可保持有线输出稳定。"
-
-msgid "Understand the setup and prepare the physical space"
-msgstr "了解设置流程并准备物理空间"
-
-msgid "Verify all values before applying"
-msgstr "应用前确认所有数值"
-
-msgid ""
-"Verify your grid is rectangular: measure both diagonals on stage - they must"
-" be equal. The expected diagonal is shown above."
-msgstr "验证网格为矩形：在舞台上测量两条对角线 — 必须相等。预期对角线长度见上方。"
-
-msgid "X Offset"
-msgstr "X 偏移"
-
-msgid "Y Offset"
-msgstr "Y 偏移"
-
-msgid "Z Offset"
-msgstr "Z 偏移"
-
-msgid ""
-"Zoom in on your browser (Ctrl/Cmd + scroll) for more precision. You can also"
-" click the crosshair and use arrow keys to nudge it precisely (hold Shift "
-"for larger steps)."
-msgstr "在浏览器中放大（Ctrl/Cmd + 滚轮）以获得更高精度。也可以点击十字准星并使用方向键精确微调（按住 Shift 可加大步长）。"
-
-msgid ""
-"along any axis since the last send. The default marker is always the gate "
-"signal – message content (including"
-msgstr "时跳过发送。默认标记始终作为门控信号 — 消息内容（包括"
-
-msgid ""
-"as large as possible that lies flat on the main performance level. All four "
-"corners must be"
-msgstr "尽可能大且平铺在主表演平面上。四个角点必须在相机画面中"
-
-msgid "as the default."
-msgstr "作为默认值。"
-
-msgid "below to create one."
-msgstr "下方来创建一个。"
-
-msgid "center of the stage front edge"
-msgstr "舞台前沿中央"
-
-msgid "clearly visible in the camera feed"
-msgstr "清晰可见"
-
-msgid "default marker"
-msgstr "默认标记"
-
-msgid "filters:"
-msgstr "筛选器："
-
-msgid "for the full grammar and more examples."
-msgstr "查看完整语法和更多示例。"
-
-msgid "hasn't moved at least"
-msgstr "移动量未超过"
-
-msgid "min change"
-msgstr "最小变化"
-
-msgid ""
-"placeholders) is independent. To gate on a marker that isn't in the message,"
-" set it as this row's default marker. Rows with no default marker configured"
-" fire on every tick regardless of mode."
-msgstr "占位符）是独立的。若要以不在消息中的标记作为门控，将其设为此行的默认标记。未配置默认标记的行在每个 tick 都会触发，不受模式限制。"
-
-msgid "right-angled rectangle"
-msgstr "直角矩形"
-
-msgid "skips the wire send when this row's"
-msgstr "当此行的"
-
-msgid "then restart."
-msgstr "然后重启。"
-
-msgid "to render the message."
-msgstr "来渲染消息。"
-
-msgid "to switch to a 4x-zoomed per-corner view."
-msgstr "切换到每个角点的 4 倍放大视图。"
-
-msgid "to target a specific marker or fader – e.g."
-msgstr "来指定特定标记或推子 – 例如"
-
-msgid "– and chain"
-msgstr "– 并链式"
-
-msgid "No peers known yet – wait for discovery or check beacon health above."
-msgstr "尚未发现对等节点 – 请等待发现或检查上方的信标状态。"
-
-msgid ""
-"Load a previously exported configuration file. The device's network IP "
-"address will be preserved."
-msgstr "加载之前导出的配置文件。设备的网络IP地址将被保留。"
-
-msgid ""
-"Static test image – useful for debugging overlay, Operator Screen, and "
-"detection without a live source."
-msgstr "静态测试图像 – 用于在无实时视频源时调试叠加层、操作员屏幕和检测功能。"
-
-msgid "Pattern"
-msgstr "图案"
-
-msgid "Encoding"
-msgstr ""
-
-msgid "FPS"
-msgstr ""
-
-msgid "Height"
-msgstr ""
-
-msgid "NDI® Source"
-msgstr ""
-
-msgid ""
-"Network settings can't be changed from the web on this station. Use the on-"
-"screen Settings menu, or see openfollow.app for troubleshooting and how to "
-"enable web editing."
-msgstr ""
-
-msgid "RTP URL"
-msgstr ""
-
-msgid "RTSP URL"
-msgstr ""
-
-msgid "Render resolution"
-msgstr ""
-
-msgid "SRT URL"
-msgstr ""
-
-msgid "Some English text"
-msgstr ""

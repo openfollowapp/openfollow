@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Read and validate .openfollowtemplate files from system and user folders."""
+"""Read and validate .oftemplate files from system and user folders."""
 
 from __future__ import annotations
 
@@ -12,9 +12,15 @@ from typing import Any
 
 from openfollow.templates.schema import (
     TEMPLATE_FILE_SUFFIX,
+    TEMPLATE_LEGACY_SUFFIX,
     OpenFollowTemplate,
     TemplateValidationError,
 )
+
+# Both the canonical suffix and the legacy one are read off disk so templates
+# saved by an earlier build keep loading; the writer only ever emits the
+# canonical suffix.
+_READ_SUFFIXES: tuple[str, ...] = (TEMPLATE_FILE_SUFFIX, TEMPLATE_LEGACY_SUFFIX)
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +37,7 @@ class LoadedTemplate:
 
 
 def _load_one(path: Path, *, is_system: bool) -> LoadedTemplate:
-    """Read one .openfollowtemplate file. Never raises – errors are returned in LoadedTemplate."""
+    """Read one .oftemplate file. Never raises – errors are returned in LoadedTemplate."""
     try:
         raw = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
@@ -82,7 +88,7 @@ def _load_one(path: Path, *, is_system: bool) -> LoadedTemplate:
     # so a crafted user file can't claim to be a system template.
     data["is_system"] = is_system
     try:
-        template = OpenFollowTemplate(**_envelope_kwargs(data))
+        template = parse_envelope(data)
     except TemplateValidationError as exc:
         msg = str(exc)
         logger.warning("template %s: %s", path, msg)
@@ -102,6 +108,33 @@ def _load_one(path: Path, *, is_system: bool) -> LoadedTemplate:
     )
 
 
+def _migrate_envelope(data: dict[str, Any]) -> dict[str, Any]:
+    """Forward-migrate an on-disk envelope to the current format version.
+
+    No-op for the only format version that exists today. This is the
+    single seam where a future ``version`` bump lands its migration: read
+    the incoming ``data["version"]``, transform the older shape into the
+    current one, and return it with ``version`` updated. The strict gate in
+    :meth:`OpenFollowTemplate.__post_init__` then accepts the migrated
+    envelope. A version this build doesn't know how to migrate up from is
+    left untouched and rejected by that gate with a clear message.
+    """
+    return data
+
+
+def parse_envelope(data: dict[str, Any]) -> OpenFollowTemplate:
+    """Build a validated :class:`OpenFollowTemplate` from a raw dict.
+
+    Runs the forward-migration seam, filters to known envelope fields,
+    then constructs (which validates the envelope and per-type payload).
+    Raises :class:`TemplateValidationError` on any failure. Shared by the
+    on-disk loader and the web import route so an uploaded file is held
+    to the exact same rules as one read off disk – no second, drifting
+    validator.
+    """
+    return OpenFollowTemplate(**_envelope_kwargs(_migrate_envelope(data)))
+
+
 def _envelope_kwargs(data: dict[str, Any]) -> dict[str, Any]:
     """Filter the on-disk dict down to known envelope fields.
 
@@ -115,28 +148,32 @@ def _envelope_kwargs(data: dict[str, Any]) -> dict[str, Any]:
         "id",
         "name",
         "is_system",
+        "app_version",
         "payload",
     }
     return {k: v for k, v in data.items() if k in known}
 
 
 def list_templates(templates_root: Path) -> list[LoadedTemplate]:
-    """Return every ``.openfollowtemplate`` file under
-    ``<templates_root>/system/`` and ``<templates_root>/user/``,
-    sorted by (folder, filename) for stable UI ordering.
+    """Return every template file under ``<templates_root>/system/`` and
+    ``<templates_root>/user/``, sorted by (folder, filename) for stable
+    UI ordering.
 
-    Missing folders are treated as empty – a brand-new install with no
-    seeded templates is a valid state (the bootstrap step normally
-    seeds ``system/`` first, but the loader doesn't depend on it).
-    Returns successful + failed loads in one flat list so callers can
-    render both in the UI.
+    Both the canonical ``.oftemplate`` suffix and the legacy
+    ``.openfollowtemplate`` one are picked up so templates saved by an
+    earlier build still appear. Missing folders are treated as empty – a
+    brand-new install with no seeded templates is a valid state (the
+    bootstrap step normally seeds ``system/`` first, but the loader
+    doesn't depend on it). Returns successful + failed loads in one flat
+    list so callers can render both in the UI.
     """
     out: list[LoadedTemplate] = []
     for subdir, is_system in (("system", True), ("user", False)):
         folder = templates_root / subdir
         if not folder.is_dir():
             continue
-        for path in sorted(folder.glob(f"*{TEMPLATE_FILE_SUFFIX}")):
+        paths = {p for suffix in _READ_SUFFIXES for p in folder.glob(f"*{suffix}")}
+        for path in sorted(paths):
             out.append(_load_one(path, is_system=is_system))
     return out
 

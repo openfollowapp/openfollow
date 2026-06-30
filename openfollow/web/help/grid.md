@@ -59,4 +59,5 @@ mark.
 - **Apply to all stations** – broadcast Camera and Grid to every OpenFollow
   station on the network.
 - **Save as template… / Load template…** – store Camera and Grid together as a
-  portable file.
+  portable file. The Load chooser also lets you **Export** a template as a single
+  `.oftemplate` file and **Import** one from another machine.

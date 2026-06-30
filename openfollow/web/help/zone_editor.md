@@ -72,5 +72,6 @@ At the bottom of the detail panel, for the selected zone.
 
 ## Saving & sharing
 
-- **Save as template…** – write the complete zones configuration (all polygons plus settings) as a `.openfollowtemplate` file in your user templates folder. Use it for per-show or per-venue presets.
+- **Save as template…** – write the complete zones configuration (all polygons plus settings) as a `.oftemplate` file in your user templates folder. Use it for per-show or per-venue presets.
 - **Load template…** – replace the entire current zones configuration from a saved template. You'll confirm before the current zones are overwritten; the page reloads automatically afterwards.
+- **Export / Import** – in the template chooser, each row has an **Export** button that downloads it as a single `.oftemplate` file you can email or version-control, and **Import…** loads a `.oftemplate` from another machine into your user templates. A file authored by a newer OpenFollow that this build can't read is rejected with an explanation, never applied half-way.

@@ -69,6 +69,7 @@ from openfollow.network.adapter import Ipv4Config, Ipv4Method
 from openfollow.network.validate import parse_prefix, validate_apply
 from openfollow.templates import (
     TEMPLATE_FILE_SUFFIX,
+    TEMPLATE_LEGACY_SUFFIX,
     TemplateValidationError,
 )
 from openfollow.templates import (
@@ -80,6 +81,7 @@ from openfollow.templates.loader import (
     find_template,
     list_templates,
     list_templates_by_type,
+    parse_envelope,
 )
 from openfollow.templates.writer import (
     TemplateWriteError,
@@ -123,8 +125,10 @@ def _templates_root(server: ConfigWebServer) -> Path:
 
 
 def _is_safe_template_filename(filename: str) -> bool:
-    """Reject filenames that aren't ``<type>.<slug>.openfollowtemplate`` shape.
+    """Reject filenames that aren't ``<type>.<slug>.oftemplate`` shape.
 
+    The legacy ``.openfollowtemplate`` suffix is still accepted so a file
+    written by an earlier build stays applyable / deletable / exportable.
     Defends against path traversal in route-facing inputs independent of
     Bottle's single-segment routing.
     """
@@ -136,10 +140,10 @@ def _is_safe_template_filename(filename: str) -> bool:
         return False
     if filename in (".", "..") or filename.startswith("."):
         return False
-    if not filename.endswith(TEMPLATE_FILE_SUFFIX):
+    if not filename.endswith((TEMPLATE_FILE_SUFFIX, TEMPLATE_LEGACY_SUFFIX)):
         return False
     # Reject ``..`` substring; the legal single-dot separators
-    # (``osc_output.my-cue.openfollowtemplate``) still pass.
+    # (``osc_output.my-cue.oftemplate``) still pass.
     return ".." not in filename
 
 
@@ -280,6 +284,10 @@ _SECTION_CONFIG_ATTRS = {
 
 # Cap on an uploaded .deb (the bundled-venv package is ~100s of MB).
 _MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+
+# Cap on an uploaded .oftemplate. Templates are a few KB of JSON; 1 MiB is a
+# generous ceiling that still refuses a junk payload before it's read.
+_MAX_TEMPLATE_UPLOAD_BYTES = 1024 * 1024
 
 
 def _stream_to_file(src: Any, dest_path: str, total: int, *, chunk: int = 1024 * 1024) -> None:
@@ -5232,7 +5240,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # render and the trigger-swap render see identical lists.
         virtual_fader_names = _virtual_fader_names_for_form(cfg)
         midi_patches = _midi_patches_for_form(cfg)
-        # User templates live as ``.openfollowtemplate`` files under
+        # User templates live as ``.oftemplate`` files under
         # ``<config-dir>/templates/user/``; system templates ship under
         # ``templates/system/``. Both dropdown lists come from one scan so
         # the partial's ``defined()`` fallback never collapses on first render.
@@ -5827,7 +5835,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         Required form fields ``name`` and ``osc_message``; the latter uses
         the same combined-field shape as the per-row save. Writes a
-        ``.openfollowtemplate`` file under ``<config-dir>/templates/user/``
+        ``.oftemplate`` file under ``<config-dir>/templates/user/``
         via :func:`write_user_template`.
 
         Delegates to :func:`openfollow.osc.parser.tokenize_osc_message` so
@@ -5899,7 +5907,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/osc_binding/<row_id>/save_as_template")
     def save_osc_binding_as_template(row_id: str) -> Any:
         """Capture an OSC binding row's full live form state as a
-        ``.openfollowtemplate`` file under ``templates/user/``.
+        ``.oftemplate`` file under ``templates/user/``.
 
         Mirrors the per-row Save POST shape (same form fields) plus a
         ``template_name`` field, so every form parser the row's Save uses
@@ -6048,7 +6056,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/api/templates")
     def api_list_templates() -> Any:
-        """List ``.openfollowtemplate`` files filtered by ``?type=<type>``.
+        """List template files filtered by ``?type=<type>``.
 
         ``?type`` is required – the dropdowns are per-section and
         always know which type they're showing; surfacing the global
@@ -6070,7 +6078,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "error": (f"unknown type {template_type!r} (expected one of {', '.join(TEMPLATE_VALID_TYPES)})"),
                 }
             )
-        # Filename convention ``<type>.<slug>.openfollowtemplate``. Scope
+        # Filename convention ``<type>.<slug>.oftemplate``. Scope
         # unreadable files to the requested type by prefix so a broken
         # ``osc_output`` file doesn't surface in the zones / camera_grid
         # choosers. Files lacking the prefix (hand-renamed) are dropped from
@@ -6309,6 +6317,143 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 404
             return json.dumps({"error": "template not found"})
         return json.dumps({"ok": True})
+
+    def _export_filename(filename: str) -> str:
+        """Map an on-disk basename to a safe download name.
+
+        A legacy ``.openfollowtemplate`` file is offered under the
+        canonical ``.oftemplate`` extension so the shared file carries the
+        current name. The result is sanitised to ``[A-Za-z0-9._-]`` before
+        it goes into the quoted ``Content-Disposition`` value: app-written
+        names are already slug-shaped, but ``_is_safe_template_filename``
+        admits a hand-placed file whose name contains e.g. a double quote,
+        which would otherwise break the header.
+        """
+        if filename.endswith(TEMPLATE_LEGACY_SUFFIX):
+            filename = filename[: -len(TEMPLATE_LEGACY_SUFFIX)] + TEMPLATE_FILE_SUFFIX
+        return re.sub(r"[^A-Za-z0-9._-]", "-", filename)
+
+    @app.get("/api/templates/<filename>/export")
+    def api_export_template(filename: str) -> Any:
+        """Download a single template as a ``.oftemplate`` file.
+
+        The body is the canonical envelope JSON, re-serialised from the
+        *validated* template so a file the loader can't decode is never
+        exported. Only the download filename carries the custom extension
+        (content-type stays ``application/json``), mirroring the config
+        export. Kind-agnostic: the route never inspects ``type``, so every
+        template kind exports through it."""
+        response.content_type = "application/json"
+        if not _filename_or_400(filename):
+            return json.dumps({"error": "invalid filename"})
+        entry = find_template(_templates_root(server), filename)
+        if entry is None:
+            response.status = 404
+            return json.dumps({"error": "template not found"})
+        if entry.template is None:
+            # Refuse to export a file the loader can't decode – the
+            # downloaded copy would just fail to import elsewhere.
+            response.status = 400
+            return json.dumps({"error": entry.error})
+        response.set_header(
+            "Content-Disposition",
+            f'attachment; filename="{_export_filename(entry.filename)}"',
+        )
+        return json.dumps(entry.template.to_dict(), indent=2)
+
+    def _import_error_with_skew(message: str, data: dict[str, Any]) -> str:
+        """Annotate a rejected-import error with a version-skew hint.
+
+        Diagnostics only: the file was already rejected on its merits.
+        When it carries an ``app_version`` newer than this build, the
+        operator most likely hit a forward-incompatibility (a payload
+        field / enum this version predates), so we say so instead of
+        leaving a cryptic validation message that reads like corruption.
+        """
+        authored = data.get("app_version")
+        if not (isinstance(authored, str) and authored.strip()):
+            return message
+        from packaging.version import InvalidVersion, Version
+
+        try:
+            newer = Version(authored.strip()) > Version(openfollow.__version__)
+        except InvalidVersion:
+            return message
+        if not newer:
+            return message
+        return (
+            f"{message} (this template was created by OpenFollow {authored.strip()}; "
+            f"you're running {openfollow.__version__}). It may rely on settings this build "
+            f"doesn't support, so update OpenFollow and try again."
+        )
+
+    @app.post("/api/templates/import")
+    def api_import_template() -> Any:
+        """Import an uploaded template file into ``templates/user/``.
+
+        Mirrors the offline ``.deb`` upload shape: the file is the raw
+        request body (not multipart, to dodge Bottle's multipart size
+        limit) and the original filename rides as ``?filename=``. The
+        uploaded JSON is held to the exact loader validation via
+        :func:`parse_envelope`, so a malformed envelope / payload – or a
+        file whose format ``version`` is newer than this build understands
+        – is rejected with the same message a disk read would produce.
+
+        Kind-agnostic: the landing folder + filename derive from the
+        envelope's ``type`` through :func:`write_user_template`, so every
+        current and future template kind imports through this one route.
+        The originating build's ``app_version`` is preserved on disk so
+        provenance survives the round-trip."""
+        response.content_type = "application/json"
+        filename = (request.query.get("filename") or "").strip()
+        if filename and not filename.lower().endswith((TEMPLATE_FILE_SUFFIX, TEMPLATE_LEGACY_SUFFIX)):
+            response.status = 400
+            return json.dumps({"error": "Unsupported file type. Upload a .oftemplate file."})
+        total = request.content_length or 0
+        if total <= 0:
+            response.status = 400
+            return json.dumps({"error": "Empty upload."})
+        if total > _MAX_TEMPLATE_UPLOAD_BYTES:
+            response.status = 413
+            return json.dumps({"error": f"File too large (max {_MAX_TEMPLATE_UPLOAD_BYTES // 1024} KB)."})
+        raw = request.environ["wsgi.input"].read(total)
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            response.status = 400
+            return json.dumps({"error": f"Not a valid template file: {exc}"})
+        if not isinstance(data, dict):
+            response.status = 400
+            return json.dumps({"error": "Template file must contain a JSON object."})
+        try:
+            tpl = parse_envelope(data)
+        except TemplateValidationError as exc:
+            response.status = 400
+            return json.dumps({"error": _import_error_with_skew(str(exc), data)})
+        try:
+            written_path = write_user_template(
+                _templates_root(server),
+                tpl.type,
+                tpl.name,
+                tpl.payload,
+                app_version=tpl.app_version,
+            )
+        # parse_envelope already validated the payload, so a write failure
+        # here is an OS-level fault (read-only mount / perms), not bad input.
+        except (TemplateValidationError, TemplateWriteError) as exc:  # pragma: no cover
+            response.status = 400
+            return json.dumps({"error": str(exc)})
+        entry = find_template(_templates_root(server), written_path.name)
+        if entry is None or entry.template is None:  # pragma: no cover – race
+            return json.dumps({"ok": True, "filename": written_path.name})
+        return json.dumps(
+            {
+                "ok": True,
+                "filename": entry.filename,
+                "type": entry.template.type,
+                "name": entry.template.name,
+            }
+        )
 
     @app.get("/api/validate/<section>/<field_name>")
     def api_validate(section: str, field_name: str) -> Any:

@@ -40,4 +40,4 @@ The **Setup Wizard** also carries these sliders in its Corner Pinning step (behi
 
 - **Save** – make the current values durable. Camera and Grid apply live as you type but revert on reload unless you Save.
 - **Apply to all stations** – broadcast Camera and Grid to every OpenFollow station on the network. Use it when several operators share one physical camera.
-- **Save as template… / Load template…** – store Camera and Grid together as a portable file and recall a full venue setup later.
+- **Save as template… / Load template…** – store Camera and Grid together as a portable file and recall a full venue setup later. The Load chooser also lets you **Export** a template as a single `.oftemplate` file and **Import** one from another machine.

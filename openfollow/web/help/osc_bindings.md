@@ -119,5 +119,6 @@ Read-only panels showing what the transmitter is doing right now.
 - **Save** – write the transmitter's current settings to disk. Changes apply immediately but are lost on reload unless saved.
 - **Discard** – revert the editor to the last saved state. Requires confirmation. Other open transmitters are unaffected.
 - **Save as template…** – save the transmitter's name and message as a reusable template. It appears in the **Template** dropdown under *Custom Templates*.
+- **Manage templates…** – open the template chooser to apply, delete, **Export**, or **Import** OSC output templates. Export downloads one template as a single `.oftemplate` file you can email or version-control; **Import…** loads a `.oftemplate` from another machine into your user templates. A file authored by a newer OpenFollow this build can't read is rejected with an explanation, never applied half-way.
 - **Duplicate** – copy the transmitter and insert the duplicate immediately below. Useful for a near-identical transmitter for a second marker.
 - **Delete** – permanently remove the transmitter. Requires confirmation.

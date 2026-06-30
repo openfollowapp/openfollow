@@ -55,11 +55,11 @@ openfollow = "openfollow.main:main"
 requires = ["poetry-core>=2.0.0"]
 build-backend = "poetry.core.masonry.api"
 
-# ``.openfollowtemplate`` JSON files in ``openfollow/templates/system/``
+# ``.oftemplate`` JSON files in ``openfollow/templates/system/``
 # must be explicitly listed or excluded from wheel builds.
 [tool.poetry]
 include = [
-    { path = "openfollow/templates/system/*.openfollowtemplate", format = ["sdist", "wheel"] },
+    { path = "openfollow/templates/system/*.oftemplate", format = ["sdist", "wheel"] },
     # Bundled help docs read by the ``/help/<id>.html`` route
     # (``openfollow/web/routes.py``) via the filesystem. Listed explicitly for
     # the same reason as the templates above: Poetry ships only Python modules

@@ -3678,7 +3678,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """
         if not _HELP_ID_RE.fullmatch(doc_id):
             abort(404)
-        md_path = (_WEB_HELP_DIR / f"{doc_id}.md").resolve()
+        # Try language-specific help first
+        lang = request.get_cookie("lang", default="en")
+        md_path = (_WEB_HELP_DIR / lang / f"{doc_id}.md").resolve()
+        if not md_path.is_file():
+            md_path = (_WEB_HELP_DIR / f"{doc_id}.md").resolve()
         if _WEB_HELP_DIR.resolve() not in md_path.parents or not md_path.is_file():
             abort(404)
         response.content_type = "text/html; charset=utf-8"

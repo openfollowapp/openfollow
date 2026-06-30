@@ -237,6 +237,7 @@ class I18NPlugin:
         # Wire the template bridge during plugin setup so it is scoped to
         # the plugin lifecycle rather than module import time.
         SimpleTemplate.defaults["_"] = _template_translate
+        SimpleTemplate.defaults["available_languages"] = self._available_languages
 
         # Respect the deployment scheme: set the cookie ``secure`` flag when
         # the app is served over HTTPS.  Unconditional assignment eliminates

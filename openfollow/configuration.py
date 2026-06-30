@@ -2000,6 +2000,17 @@ class AppConfig:
     # Web-triggered update settings (signed-.deb GitHub-release installer)
     update_github_repo: str = "openfollowapp/openfollow"
     update_service_name: str = DEFAULT_UPDATE_SERVICE_NAME
+    # Offer pre-release builds, not just stable releases. Hidden (config-only),
+    # off by default – set ``update_include_prereleases = true`` in config.toml.
+    update_include_prereleases: bool = False
+
+    # On startup and whenever the device IP changes, if the LAN has internet:
+    # auto-check GitHub for a newer release (drives the update banner) and
+    # sync the system clock from a trusted NTP server (Pis have no RTC and
+    # drift). Both are gated, fail silently offline, and default on.
+    auto_update_check: bool = True
+    auto_time_sync: bool = True
+    time_sync_server: str = "ptbtime1.ptb.de"
 
     # Markers – id 0 is reserved as "ignored" on the PSN wire, so
     # the default selection is empty (operator picks via the catalog UI).
@@ -2072,6 +2083,12 @@ class AppConfig:
         if not isinstance(self.psn_system_name, str):
             self.psn_system_name = _DEFAULT_PSN_SYSTEM_NAME
         self.psn_system_name = self.psn_system_name.strip() or _DEFAULT_PSN_SYSTEM_NAME
+        # Auto online-sync knobs: normalise so a hand-edited TOML can't feed a
+        # non-bool / non-string into the worker.
+        self.update_include_prereleases = _coerce_bool(self.update_include_prereleases, False)
+        self.auto_update_check = _coerce_bool(self.auto_update_check, True)
+        self.auto_time_sync = _coerce_bool(self.auto_time_sync, True)
+        self.time_sync_server = _coerce_str(self.time_sync_server, "ptbtime1.ptb.de").strip() or "ptbtime1.ptb.de"
         # TOML produces ``dict[str, Any]``; the runtime contract is
         # ``dict[int, float]`` keyed by marker_id. Drop pairs with a non-int
         # key or non-finite/negative value.

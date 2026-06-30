@@ -980,6 +980,7 @@
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl reload dhcpcd
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/journalctl -u *
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemd-run --collect --unit=openfollow-self-update /usr/share/openfollow/apply-update.sh /tmp/openfollow-update-*
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/date -s ^@[0-9]+$
 
     - name: Remove legacy openfollow-update sudoers drop-in
       ansible.builtin.file:

@@ -1153,7 +1153,40 @@ class TestInitVirtualFaders:
         assert captured[0].faders[0].name == "Master"
 
 
+class TestInitOnlineSync:
+    def test_constructs_and_starts_worker(self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch) -> None:
+        created: dict[str, Any] = {}
+
+        class _FakeWorker:
+            def __init__(self, **kwargs: Any) -> None:
+                created.update(kwargs)
+                created["started"] = False
+
+            def start(self) -> None:
+                created["started"] = True
+
+        import openfollow.runtime.online_sync as online_sync_mod
+
+        monkeypatch.setattr(online_sync_mod, "OnlineSyncWorker", _FakeWorker)
+        services.init_online_sync()
+
+        assert created["started"] is True
+        assert isinstance(services._online_sync, _FakeWorker)
+        # Wiring: broker, web_commands, version, and a config provider that
+        # reads the live config.
+        assert created["broker"] is services._privilege_broker
+        assert created["web_commands"] is services._app._web_commands
+        assert created["config_provider"]() is services._app._config
+        assert created["ip_provider"] == services._resolved_source_ip
+
+
 class TestShutdown:
+    def test_stops_online_sync_worker(self, services: AppRuntimeServices) -> None:
+        stopped: list[bool] = []
+        services._online_sync = SimpleNamespace(stop=lambda: stopped.append(True))  # type: ignore[assignment]
+        services.shutdown()
+        assert stopped == [True]
+
     def test_happy_path_stops_every_subsystem(self, services: AppRuntimeServices) -> None:
         app = services._app
         app._input_manager = _FakeInputManager(app)

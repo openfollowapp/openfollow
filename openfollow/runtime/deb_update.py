@@ -94,7 +94,8 @@ def run_deb_update(app: OpenFollowApp, request: dict[str, str]) -> None:
     try:
         _cleanup_temp_debs()  # clear any stale staging from a prior failed run
         set_status("running", "Checking for latest release…")
-        release = _fetch_latest_release(repo)
+        include_prereleases = app._config.update_include_prereleases or _is_prerelease_version(openfollow.__version__)
+        release = _fetch_latest_release(repo, include_prereleases=include_prereleases)
 
         tag: str = release.get("tag_name", "")
         latest_str = tag.removeprefix("v")
@@ -352,15 +353,20 @@ def validate_uploaded_deb(path: str, expected_arch: str | None = None) -> dict[s
     return fields
 
 
-def check_for_update(repo: str, current_version: str) -> dict[str, Any]:
+def check_for_update(repo: str, current_version: str, *, include_prereleases: bool = False) -> dict[str, Any]:
     """Query GitHub and report whether a newer release is available.
 
     Returns ``{"latest": str, "current": str, "available": bool}``.
     Raises ``RuntimeError`` on any network / API error (the caller
     surfaces the message to the operator). This is the synchronous
     "check" half of the flow – it does NOT download or install.
+
+    ``include_prereleases`` offers pre-release builds; left off, only stable
+    releases are considered – except when the running build is itself a
+    pre-release, which always tracks pre-releases so it isn't stranded.
     """
-    release = _fetch_latest_release(repo.strip())
+    effective_prereleases = include_prereleases or _is_prerelease_version(current_version)
+    release = _fetch_latest_release(repo.strip(), include_prereleases=effective_prereleases)
     latest = str(release.get("tag_name", "")).lstrip("v")
     return {
         "latest": latest,
@@ -369,11 +375,12 @@ def check_for_update(repo: str, current_version: str) -> dict[str, Any]:
     }
 
 
-def _fetch_latest_release(repo: str) -> dict[str, Any]:
-    """Return the newest published (non-draft) release from the GitHub API.
+def _fetch_latest_release(repo: str, *, include_prereleases: bool = False) -> dict[str, Any]:
+    """Return the newest published release from the GitHub API.
 
-    Uses the list endpoint (newest-first) and picks the first non-draft
-    entry so pre-releases – how this project ships updates – are included.
+    Uses the list endpoint (newest-first) and picks the first non-draft entry.
+    Pre-releases are skipped unless ``include_prereleases`` is set, so stable
+    builds are offered by default and pre-releases are strictly opt-in.
     """
     url = _GITHUB_API_RELEASES.format(repo=repo)
     req = urllib.request.Request(
@@ -399,8 +406,11 @@ def _fetch_latest_release(repo: str) -> dict[str, Any]:
         raise RuntimeError(f"GitHub API returned a {type(data).__name__}, expected a list of releases.")
 
     for release in data:
-        if isinstance(release, dict) and not release.get("draft") and "tag_name" in release:
-            return release
+        if not isinstance(release, dict) or release.get("draft") or "tag_name" not in release:
+            continue
+        if release.get("prerelease") and not include_prereleases:
+            continue
+        return release
     raise RuntimeError(f"No published releases found for {repo!r}.")
 
 
@@ -505,6 +515,20 @@ def _is_newer(latest: str, current: str) -> bool:
     except InvalidVersion:
         logger.warning("Cannot compare versions %r vs %r – assuming update needed.", latest, current)
         return latest != current
+
+
+def _is_prerelease_version(version: str) -> bool:
+    """True when *version* is a PEP 440 pre-release (``rc``/``a``/``b``/``dev``).
+
+    A device already on a pre-release build is on the pre-release track, so the
+    update check offers pre-releases to it regardless of the opt-in flag –
+    otherwise an ``rcN`` device would be stranded (the project ships updates as
+    pre-releases). Returns False for a final release or an unparseable version.
+    """
+    try:
+        return Version(version).is_prerelease
+    except InvalidVersion:
+        return False
 
 
 def _safe_unlink(path: str) -> None:

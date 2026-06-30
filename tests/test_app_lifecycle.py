@@ -92,6 +92,11 @@ class _FakeRuntimeServices:
     def init_virtual_faders(self) -> None:
         self.calls.append("init_virtual_faders")
 
+    def init_online_sync(self) -> None:
+        self.calls.append("init_online_sync")
+        if "online_sync" in self.init_errors:
+            raise self.init_errors["online_sync"]
+
     def shutdown(self) -> None:
         self.calls.append("shutdown")
 
@@ -206,6 +211,7 @@ class TestRun:
             "init_input_manager",
             "init_midi",
             "init_virtual_faders",
+            "init_online_sync",
         ]
 
     def test_init_failure_in_isolated_loop_does_not_abort_startup(

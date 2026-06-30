@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="openfollow/web/static/openfollow.svg" alt="OpenFollow" width="300" />
+  <img src="docs/openfollow-banner.svg" alt="OpenFollow" width="440" />
 </p>
 
 <p align="center">

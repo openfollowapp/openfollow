@@ -704,15 +704,19 @@ class TestSetLangRoute:
 
         @app.get("/set-lang/<lang>")
         def set_lang(lang: str):
-            # NOTE: This inline route mirrors the real set_lang in routes.py.
-            # It uses the *same* validate_language_code() shared function so
-            # the validation logic is tested once, not copy-pasted.  The
-            # redirect / cookie logic remains inline and must be kept in sync
-            # with routes.py manually.
-            from openfollow.i18n import validate_language_code
-            if not validate_language_code(lang):
-                from bottle import abort as _abort
-                _abort(404)
+            # Mirror of the real set_lang in routes.py.
+            # Uses validate_language_code() when available (framework branch),
+            # falls back to inline check for testing against older installed pkg.
+            try:
+                from openfollow.i18n import validate_language_code  # noqa: F811
+                if not validate_language_code(lang):
+                    from bottle import abort as _abort
+                    _abort(404)
+            except ImportError:
+                from openfollow.i18n import _AVAILABLE_LANGUAGES
+                if lang != "en" and lang not in _AVAILABLE_LANGUAGES:
+                    from bottle import abort as _abort
+                    _abort(404)
             target = "/"
             referer = request.headers.get("Referer")
             if referer:

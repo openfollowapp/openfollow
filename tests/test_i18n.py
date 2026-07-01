@@ -675,7 +675,13 @@ def test_lang_switch_shown_multiple_languages() -> None:
 
 @pytest.mark.unit
 class TestSetLangRoute:
-    """Tests for the /set-lang/<lang> route."""
+    """Tests for the /set-lang/<lang> route.
+
+    The validation logic is tested through the shared
+    ``validate_language_code()`` function (see TestValidateLanguageCode
+    below).  These route-level tests verify the HTTP-level behaviour
+    (status codes, cookies, redirects).
+    """
 
     @staticmethod
     def _make_set_lang_app(available: tuple[str, ...] = ("en", "zh_CN")) -> Bottle:
@@ -698,8 +704,13 @@ class TestSetLangRoute:
 
         @app.get("/set-lang/<lang>")
         def set_lang(lang: str):
-            from openfollow.i18n import _AVAILABLE_LANGUAGES
-            if lang != "en" and lang not in _AVAILABLE_LANGUAGES:
+            # NOTE: This inline route mirrors the real set_lang in routes.py.
+            # It uses the *same* validate_language_code() shared function so
+            # the validation logic is tested once, not copy-pasted.  The
+            # redirect / cookie logic remains inline and must be kept in sync
+            # with routes.py manually.
+            from openfollow.i18n import validate_language_code
+            if not validate_language_code(lang):
                 from bottle import abort as _abort
                 _abort(404)
             target = "/"
@@ -773,6 +784,51 @@ class TestSetLangRoute:
         _body, h = self._request(app, "/set-lang/en")
         assert "303" in h["status"]
         assert "lang=en" in h["Set-Cookie"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  validate_language_code — shared function tested directly (not via copy)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.unit
+class TestValidateLanguageCode:
+    """Unit tests for the standalone validate_language_code() function.
+
+    This is the same function called by the real ``/set-lang`` route in
+    ``routes.py`` — unlike the route-level tests above which use an inline
+    copy of the handler, these tests directly exercise the production code.
+    """
+
+    def test_en_always_valid(self) -> None:
+        assert i18n.validate_language_code("en")
+
+    def test_known_language_valid(self) -> None:
+        saved = i18n._AVAILABLE_LANGUAGES
+        try:
+            i18n._AVAILABLE_LANGUAGES = ("fr", "de")
+            assert i18n.validate_language_code("fr")
+            assert i18n.validate_language_code("de")
+        finally:
+            i18n._AVAILABLE_LANGUAGES = saved
+
+    def test_unknown_language_rejected(self) -> None:
+        saved = i18n._AVAILABLE_LANGUAGES
+        try:
+            i18n._AVAILABLE_LANGUAGES = ("fr",)
+            assert not i18n.validate_language_code("zh_CN")
+            assert not i18n.validate_language_code("../../etc")
+        finally:
+            i18n._AVAILABLE_LANGUAGES = saved
+
+    def test_empty_available_still_allows_en(self) -> None:
+        saved = i18n._AVAILABLE_LANGUAGES
+        try:
+            i18n._AVAILABLE_LANGUAGES = ()
+            assert i18n.validate_language_code("en")
+            assert not i18n.validate_language_code("fr")
+        finally:
+            i18n._AVAILABLE_LANGUAGES = saved
 
 
 # ═══════════════════════════════════════════════════════════════════════════

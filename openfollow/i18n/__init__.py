@@ -135,6 +135,18 @@ def _(message: str) -> str:
     """Immediate translation for per-request Python code."""
     return _template_translate(message)
 
+
+def validate_language_code(lang: str) -> bool:
+    """Return True if *lang* is a known language code.
+
+    ``"en"`` is always accepted as the fallback.  Other codes must appear
+    in ``_AVAILABLE_LANGUAGES`` (auto-discovered from .mo files at startup).
+
+    This is a standalone function so both the real ``/set-lang`` route and
+    the test suite can share the same validation logic without copy-paste.
+    """
+    return lang == "en" or lang in _AVAILABLE_LANGUAGES
+
 # Framework ships English-only.  Language pack maintainers drop a .mo under
 # locale/<code>/LC_MESSAGES/ — the framework auto-discovers it at startup.
 #

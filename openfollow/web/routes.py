@@ -3676,8 +3676,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """
         if not _HELP_ID_RE.fullmatch(doc_id):
             abort(404)
-        # Try language-specific help first
+        # Try language-specific help first.
+        # The lang cookie is validated at write time (/set-lang), but
+        # filter control chars here as defence-in-depth (consistent with
+        # _is_safe_template_filename).
         lang = request.get_cookie("lang", default="en")
+        if any(ord(c) < 0x20 for c in lang) or len(lang) > 32:
+            lang = "en"
         md_path = (_WEB_HELP_DIR / lang / f"{doc_id}.md").resolve()
         if not md_path.is_file():
             md_path = (_WEB_HELP_DIR / f"{doc_id}.md").resolve()

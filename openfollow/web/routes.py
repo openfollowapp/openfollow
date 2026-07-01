@@ -3567,8 +3567,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Persist the operator's UI language choice in a cookie and redirect.
 
         The :class:`~openfollow.i18n.I18NPlugin` reads this ``lang`` cookie on
-        every request to pick the gettext catalog. Any unknown code defaults to
-        English via the plugin – we validate here only to keep the cookie tidy.
+        every request to pick the gettext catalog. Unknown languages are
+        rejected here (404) so downstream code can trust the cookie value.
         The redirect target is the ``Referer`` header (so the operator stays on
         the tab they were on), falling back to ``/``.
 
@@ -3576,7 +3576,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ``locale/<code>/LC_MESSAGES/``, list it in ``_AVAILABLE_LANGUAGES``,
         and add a link in ``base.tpl``'s ``.lang-switch`` group.
         """
-        from openfollow.i18n import _
+        from openfollow.i18n import _, _AVAILABLE_LANGUAGES
+        if lang != "en" and lang not in _AVAILABLE_LANGUAGES:
+            abort(404)
         target = "/"
         referer = request.headers.get("Referer")
         if referer:

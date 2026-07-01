@@ -687,13 +687,21 @@ class TestSetLangRoute:
         app.config["use_https"] = False
         original = i18n._discover_languages
         try:
+            i18n._AVAILABLE_LANGUAGES = ()
             i18n._discover_languages = lambda root, domain: available
             plugin.setup(app)
+            # Sync back in case setup() is from a version that doesn't
+            # update the module-level variable (backward compat).
+            i18n._AVAILABLE_LANGUAGES = plugin._available_languages
         finally:
             i18n._discover_languages = original
 
         @app.get("/set-lang/<lang>")
         def set_lang(lang: str):
+            from openfollow.i18n import _AVAILABLE_LANGUAGES
+            if lang != "en" and lang not in _AVAILABLE_LANGUAGES:
+                from bottle import abort as _abort
+                _abort(404)
             target = "/"
             referer = request.headers.get("Referer")
             if referer:
@@ -754,6 +762,17 @@ class TestSetLangRoute:
         app = self._make_set_lang_app()
         _body, h = self._request(app, "/set-lang/zh_CN", HTTP_REFERER="http://evil.com/steal")
         assert h["Location"] == "/"
+
+    def test_rejects_unknown_language(self) -> None:
+        app = self._make_set_lang_app()
+        _body, h = self._request(app, "/set-lang/../../etc")
+        assert "404" in h["status"]
+
+    def test_en_always_allowed(self) -> None:
+        app = self._make_set_lang_app(available=())
+        _body, h = self._request(app, "/set-lang/en")
+        assert "303" in h["status"]
+        assert "lang=en" in h["Set-Cookie"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════

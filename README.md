@@ -394,13 +394,13 @@ brew install ansible
 sudo apt install -y ansible
 ```
 
-Then, from your workstation (Linux/macOS), run the installer directly against the Pi (no inventory file required):
+Then, from your workstation (Linux/macOS), run the installer directly against the Pi (no inventory file required). Run the command from the repository root, and use an existing SSH account on the Pi (usually `pi` on Raspberry Pi OS):
 
 ```bash
 ansible-playbook -i '<pi-ip>,' -u pi scripts/ansible/install-raspberry-pi.yml
 ```
 
-Replace `<pi-ip>` with your Raspberry Pi’s IP address.
+Replace `<pi-ip>` with your Raspberry Pi’s IP address. If you paste the command from a rich-text source, make sure the quotes are plain ASCII `'` characters, not curly quotes.
 
 If you need password-based SSH/sudo on first boot, add:
 

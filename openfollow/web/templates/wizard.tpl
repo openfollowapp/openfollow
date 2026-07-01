@@ -238,7 +238,7 @@
   <h2>{{_("Setup Wizard")}}</h2>
 </div>
 
-<nav class="wizard-steps" aria-label="Setup wizard steps">
+<nav class="wizard-steps" aria-label="{{_('Setup wizard steps')}}">
   <button type="button" class="wizard-step-btn" data-step="0" onclick="wizardGo(0)">1. {{_("Preparation")}}</button>
   <button type="button" class="wizard-step-btn" data-step="1" onclick="wizardGo(1)">2. {{_("Grid Setup")}}</button>
   <button type="button" class="wizard-step-btn" data-step="2" onclick="wizardGo(2)">3. {{_("Video Source")}}</button>
@@ -397,33 +397,33 @@
       <p class="wizard-help">{{_("Enter the width and depth of the rectangular tracking area you marked on stage.")}}</p>
       <div class="row">
         <div class="field">
-          <label for="grid_width">Width ({{_len}})</label>
+          <label for="grid_width">{{_('Width')}} ({{_len}})</label>
           <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.1" min="0.1"'}} id="grid_width" value="{{format_length(config.grid.width, _us) if _imp else config.grid.width}}" oninput="onGridInputChanged()">
           % if _imp:
-          <small class="metric-echo" id="grid_width-echo">Stored: {{metric_echo(config.grid.width)}}</small>
+          <small class="metric-echo" id="grid_width-echo">{{_('Stored:')}} {{metric_echo(config.grid.width)}}</small>
           % end
         </div>
         <div class="field">
-          <label for="grid_depth">Depth ({{_len}})</label>
+          <label for="grid_depth">{{_('Depth')}} ({{_len}})</label>
           <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.1" min="0.1"'}} id="grid_depth" value="{{format_length(config.grid.depth, _us) if _imp else config.grid.depth}}" oninput="onGridInputChanged()">
           % if _imp:
-          <small class="metric-echo" id="grid_depth-echo">Stored: {{metric_echo(config.grid.depth)}}</small>
+          <small class="metric-echo" id="grid_depth-echo">{{_('Stored:')}} {{metric_echo(config.grid.depth)}}</small>
           % end
         </div>
       </div>
       <div class="row">
         <div class="field">
-          <label for="grid_z_offset">Z Offset ({{_len}})</label>
+          <label for="grid_z_offset">{{_('Z Offset')}} ({{_len}})</label>
           <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="grid_z_offset" value="{{format_length(config.grid.z_offset, _us) if _imp else config.grid.z_offset}}" oninput="onGridInputChanged()">
           % if _imp:
-          <small class="metric-echo" id="grid_z_offset-echo">Stored: {{metric_echo(config.grid.z_offset)}}</small>
+          <small class="metric-echo" id="grid_z_offset-echo">{{_('Stored:')}} {{metric_echo(config.grid.z_offset)}}</small>
           % end
         </div>
         <div class="field">
-          <label for="grid_spacing">Spacing ({{_len}})</label>
+          <label for="grid_spacing">{{_('Spacing')}} ({{_len}})</label>
           <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.1" min="0.1"'}} id="grid_spacing" value="{{format_length(config.grid.spacing, _us) if _imp else config.grid.spacing}}" oninput="onGridInputChanged()">
           % if _imp:
-          <small class="metric-echo" id="grid_spacing-echo">Stored: {{metric_echo(config.grid.spacing)}}</small>
+          <small class="metric-echo" id="grid_spacing-echo">{{_('Stored:')}} {{metric_echo(config.grid.spacing)}}</small>
           % end
         </div>
       </div>
@@ -441,17 +441,17 @@
       <p class="wizard-help">{{_("Define where the Reference Point sits within the grid. By default, it is at the center of the front edge (X Offset = 0, Y Offset = depth / 2).")}}</p>
       <div class="row">
         <div class="field">
-          <label for="grid_x_offset">X Offset ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(stage left +)</span></label>
+          <label for="grid_x_offset">{{_('X Offset')}} ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(stage left +)</span></label>
           <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="grid_x_offset" value="{{format_length(config.grid.x_offset, _us) if _imp else config.grid.x_offset}}" oninput="onGridInputChanged()">
           % if _imp:
-          <small class="metric-echo" id="grid_x_offset-echo">Stored: {{metric_echo(config.grid.x_offset)}}</small>
+          <small class="metric-echo" id="grid_x_offset-echo">{{_('Stored:')}} {{metric_echo(config.grid.x_offset)}}</small>
           % end
         </div>
         <div class="field">
-          <label for="grid_y_offset">Y Offset ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(upstage +)</span></label>
+          <label for="grid_y_offset">{{_('Y Offset')}} ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(upstage +)</span></label>
           <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="grid_y_offset" value="{{format_length(config.grid.y_offset, _us) if _imp else config.grid.y_offset}}" oninput="onGridInputChanged()">
           % if _imp:
-          <small class="metric-echo" id="grid_y_offset-echo">Stored: {{metric_echo(config.grid.y_offset)}}</small>
+          <small class="metric-echo" id="grid_y_offset-echo">{{_('Stored:')}} {{metric_echo(config.grid.y_offset)}}</small>
           % end
         </div>
       </div>
@@ -576,24 +576,24 @@
       <p class="wizard-help">{{_("Enter the camera physical position relative to the Reference Point, in")}} {{_len}}. {{_("These use PSN theatrical coordinates: X = stage left, Y = upstage, Z = up.")}}</p>
       <div class="row">
         <div class="field">
-          <label for="cam_pos_x">Pos X ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(stage left +)</span></label>
+          <label for="cam_pos_x">{{_('Pos X')}} ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(stage left +)</span></label>
           <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="cam_pos_x" value="{{format_length(config.camera.pos_x, _us) if _imp else config.camera.pos_x}}" oninput="onCamInputChanged()">
           % if _imp:
-          <small class="metric-echo" id="cam_pos_x-echo">Stored: {{metric_echo(config.camera.pos_x)}}</small>
+          <small class="metric-echo" id="cam_pos_x-echo">{{_('Stored:')}} {{metric_echo(config.camera.pos_x)}}</small>
           % end
         </div>
         <div class="field">
-          <label for="cam_pos_y">Pos Y ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(upstage +)</span></label>
+          <label for="cam_pos_y">{{_('Pos Y')}} ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(upstage +)</span></label>
           <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="cam_pos_y" value="{{format_length(config.camera.pos_y, _us) if _imp else config.camera.pos_y}}" oninput="onCamInputChanged()">
           % if _imp:
-          <small class="metric-echo" id="cam_pos_y-echo">Stored: {{metric_echo(config.camera.pos_y)}}</small>
+          <small class="metric-echo" id="cam_pos_y-echo">{{_('Stored:')}} {{metric_echo(config.camera.pos_y)}}</small>
           % end
         </div>
         <div class="field">
-          <label for="cam_pos_z">Pos Z ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(height)</span></label>
+          <label for="cam_pos_z">{{_('Pos Z')}} ({{_len}}) <span style="font-weight:400;text-transform:none;letter-spacing:0;">(height)</span></label>
           <input type="{{'text' if _imp else 'number'}}"{{!'' if _imp else ' step="0.01"'}} id="cam_pos_z" value="{{format_length(config.camera.pos_z, _us) if _imp else config.camera.pos_z}}" oninput="onCamInputChanged()">
           % if _imp:
-          <small class="metric-echo" id="cam_pos_z-echo">Stored: {{metric_echo(config.camera.pos_z)}}</small>
+          <small class="metric-echo" id="cam_pos_z-echo">{{_('Stored:')}} {{metric_echo(config.camera.pos_z)}}</small>
           % end
         </div>
       </div>
@@ -603,16 +603,16 @@
       <p class="wizard-help">{{_("Enter the camera angle. If the camera points straight at the stage, start with Pitch approx -30 degrees (looking down), Yaw = 0 degrees, Roll = 0 degrees.")}}</p>
       <div class="row">
         <div class="field">
-          <label for="cam_pitch">Pitch <span style="font-weight:400;text-transform:none;letter-spacing:0;">(down &minus;)</span></label>
+          <label for="cam_pitch">{{_('Pitch')}} <span style="font-weight:400;text-transform:none;letter-spacing:0;">(down &minus;)</span></label>
           <input type="number" step="0.1" min="-90" max="-0.5" id="cam_pitch" value="{{config.camera.pitch}}" oninput="onCamInputChanged()">
           <div id="cam-pitch-error" class="wizard-field-error" style="display:none;">{{_("Pitch must be between -0.5 degrees and -90 degrees")}}</div>
         </div>
         <div class="field">
-          <label for="cam_yaw">Yaw <span style="font-weight:400;text-transform:none;letter-spacing:0;">(left &minus;)</span></label>
+          <label for="cam_yaw">{{_('Yaw')}} <span style="font-weight:400;text-transform:none;letter-spacing:0;">(left &minus;)</span></label>
           <input type="number" step="0.1" id="cam_yaw" value="{{config.camera.yaw}}" oninput="onCamInputChanged()">
         </div>
         <div class="field">
-          <label for="cam_roll">Roll</label>
+          <label for="cam_roll">{{_('Roll')}}</label>
           <input type="number" step="0.1" id="cam_roll" value="{{config.camera.roll}}" oninput="onCamInputChanged()">
         </div>
       </div>
@@ -621,19 +621,19 @@
       <div class="group-title">{{_("Lens")}}</div>
       <div class="row">
         <div class="field">
-          <label for="cam_fov">Horizontal Field of View (&deg;)</label>
+          <label for="cam_fov">{{_('Horizontal Field of View')}} (&deg;)</label>
           <input type="number" step="0.1" id="cam_fov" value="{{config.camera.fov}}" oninput="onHfovEdited()">
         </div>
         <div class="field" id="cam_sensor_field">
-          <label for="cam_sensor">Sensor Size</label>
+          <label for="cam_sensor">{{_('Sensor Size')}}</label>
           <select id="cam_sensor" onchange="onSensorOrFocalChanged()"></select>
         </div>
         <div class="field" id="cam_sensor_custom_field" style="display:none;">
-          <label for="cam_sensor_custom">Sensor Width (mm)</label>
+          <label for="cam_sensor_custom">{{_('Sensor Width')}} (mm)</label>
           <input type="number" step="0.01" min="0" id="cam_sensor_custom" oninput="onSensorOrFocalChanged()">
         </div>
         <div class="field">
-          <label for="cam_focal">Focal Length (mm)</label>
+          <label for="cam_focal">{{_('Focal Length')}} (mm)</label>
           <input type="number" step="0.1" min="0" id="cam_focal"
                  value="{{config.camera.focal_length_mm if config.camera.focal_length_mm is not None else ''}}"
                  oninput="onSensorOrFocalChanged()">
@@ -665,7 +665,7 @@
     </div>
 
     <div id="coarse-container" class="wizard-preview-container" style="display:none;">
-      <img id="coarse-image" alt="Camera snapshot">
+      <img id="coarse-image" alt="{{_('Camera snapshot')}}">
       <svg id="coarse-overlay" class="wizard-overlay" xmlns="http://www.w3.org/2000/svg">
         <polygon id="coarse-quad" fill="rgba(255,188,0,0.06)" stroke="rgba(255,188,0,0.5)" stroke-width="2" points="0,0"/>
         <g id="coarse-zoff"></g>
@@ -705,7 +705,7 @@
     <div id="fine-container" class="wizard-preview-container" style="display:none;">
       <!-- Full-image view (default). -->
       <div id="fine-full-view">
-        <img id="fine-image" alt="Camera snapshot">
+        <img id="fine-image" alt="{{_('Camera snapshot')}}">
         <svg id="fine-overlay" class="wizard-overlay" xmlns="http://www.w3.org/2000/svg">
           <polygon id="fine-quad" fill="rgba(255,188,0,0.06)" stroke="rgba(255,188,0,0.5)" stroke-width="2" points="0,0"/>
           <g id="fine-corners"></g>
@@ -721,7 +721,7 @@
       <div id="fine-zoom-view" style="display:none;">
         <div class="fine-zoom-grid" id="fine-zoom-grid">
           <div class="fine-zoom-box" data-corner="USR">
-            <svg class="fine-zoom-svg" data-corner="USR" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="group" aria-label="Fine adjust upstage-right corner">
+            <svg class="fine-zoom-svg" data-corner="USR" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="group" aria-label="{{_('Fine adjust upstage-right corner')}}">
               <image data-fine-zoom-image x="0" y="0"/>
               <g data-fine-zoom-edges></g>
               <g data-fine-zoom-marker></g>
@@ -729,7 +729,7 @@
             <span class="fine-zoom-corner-label">USR</span>
           </div>
           <div class="fine-zoom-box" data-corner="USL">
-            <svg class="fine-zoom-svg" data-corner="USL" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="group" aria-label="Fine adjust upstage-left corner">
+            <svg class="fine-zoom-svg" data-corner="USL" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="group" aria-label="{{_('Fine adjust upstage-left corner')}}">
               <image data-fine-zoom-image x="0" y="0"/>
               <g data-fine-zoom-edges></g>
               <g data-fine-zoom-marker></g>
@@ -737,7 +737,7 @@
             <span class="fine-zoom-corner-label">USL</span>
           </div>
           <div class="fine-zoom-box" data-corner="DSR">
-            <svg class="fine-zoom-svg" data-corner="DSR" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="group" aria-label="Fine adjust downstage-right corner">
+            <svg class="fine-zoom-svg" data-corner="DSR" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="group" aria-label="{{_('Fine adjust downstage-right corner')}}">
               <image data-fine-zoom-image x="0" y="0"/>
               <g data-fine-zoom-edges></g>
               <g data-fine-zoom-marker></g>
@@ -745,7 +745,7 @@
             <span class="fine-zoom-corner-label">DSR</span>
           </div>
           <div class="fine-zoom-box" data-corner="DSL">
-            <svg class="fine-zoom-svg" data-corner="DSL" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="group" aria-label="Fine adjust downstage-left corner">
+            <svg class="fine-zoom-svg" data-corner="DSL" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice" role="group" aria-label="{{_('Fine adjust downstage-left corner')}}">
               <image data-fine-zoom-image x="0" y="0"/>
               <g data-fine-zoom-edges></g>
               <g data-fine-zoom-marker></g>
@@ -776,26 +776,26 @@
            Label flips between "Fine adjust" and "Show full image". -->
       <button type="button" class="secondary" id="fine-zoom-toggle"
               onclick="toggleFineZoomMode()" disabled
-              title="Load a snapshot first">{{_("Fine adjust")}}</button>
+              title="{{_('Load a snapshot first')}}">{{_("Fine adjust")}}</button>
     </div>
 
     <div id="cp-lens-controls" class="experimental-feature" style="margin-top:0.72rem;display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end;">
       <div class="field" style="flex:1;min-width:200px;">
-        <label for="cp_lens_k1">Lens distortion <span class="badge-experimental">Experimental</span> &ndash; barrel / fisheye (k1)</label>
+        <label for="cp_lens_k1">{{_('Lens distortion')}} <span class="badge-experimental">Experimental</span> &ndash; barrel / fisheye (k1)</label>
         <div style="display:flex;gap:0.5rem;align-items:center;">
           <input type="range" id="cp_lens_k1_range" min="-0.4" max="0.4" step="0.005"
                  value="{{config.camera.lens_k1}}" style="flex:1;" oninput="onWizardLensRange('k1')"
-                 aria-label="Lens distortion barrel / fisheye (k1) slider">
+                 aria-label="{{_('Lens distortion: barrel / fisheye (k1) slider')}}">
           <input type="number" id="cp_lens_k1" min="-0.4" max="0.4" step="0.005"
                  value="{{config.camera.lens_k1}}" style="width:6rem;" oninput="onWizardLensNumber('k1')">
         </div>
       </div>
       <div class="field" style="flex:1;min-width:200px;">
-        <label for="cp_lens_k2">Edge fit (k2)</label>
+        <label for="cp_lens_k2">{{_('Edge fit')}} (k2)</label>
         <div style="display:flex;gap:0.5rem;align-items:center;">
           <input type="range" id="cp_lens_k2_range" min="-0.2" max="0.2" step="0.005"
                  value="{{config.camera.lens_k2}}" style="flex:1;" oninput="onWizardLensRange('k2')"
-                 aria-label="Lens distortion edge fit (k2) slider">
+                 aria-label="{{_('Lens distortion: edge fit (k2) slider')}}">
           <input type="number" id="cp_lens_k2" min="-0.2" max="0.2" step="0.005"
                  value="{{config.camera.lens_k2}}" style="width:6rem;" oninput="onWizardLensNumber('k2')">
         </div>
@@ -826,7 +826,7 @@
     </div>
 
     <div id="review-container" class="wizard-preview-container" style="display:none;">
-      <img id="review-image" alt="Camera snapshot">
+      <img id="review-image" alt="{{_('Camera snapshot')}}">
       <svg id="review-overlay" class="wizard-overlay" xmlns="http://www.w3.org/2000/svg">
         <polygon id="review-quad" fill="rgba(255,188,0,0.06)" stroke="rgba(125,229,159,0.6)" stroke-width="2" points="0,0"/>
         <g id="review-zoff"></g>

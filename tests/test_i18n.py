@@ -363,17 +363,6 @@ class TestI18NPlugin:
         plugin.setup(app)
         assert plugin._available_languages == ("fr", "en")
 
-    def test_cookie_opts_secure_is_per_request(self) -> None:
-        """``secure`` is computed from request.urlparts.scheme, not stored
-        statically.  verify ``apply()`` passes it through on each request."""
-        assert "secure" not in i18n._COOKIE_OPTS
-        plugin = I18NPlugin(domain="openfollow")
-        app = Bottle()
-        app.config["use_https"] = False
-        plugin.setup(app)
-        # secure is dynamic — not stored in _cookie_opts after setup
-        assert "secure" not in plugin._cookie_opts
-
     def test_setup_logs_translation_errors(self, caplog: Any, tmp_path: Path) -> None:
         """When gettext raises (e.g. permission error), log a warning."""
         import logging
@@ -566,6 +555,7 @@ class TestCookieBehaviour:
 
         return b"".join(app.wsgi(environ, start_response)), captured
 
+
     def test_first_visit_no_cookie(self) -> None:
         """No Set-Cookie on first visit (no pre-existing cookie)."""
         plugin = I18NPlugin(domain="openfollow")
@@ -581,26 +571,43 @@ class TestCookieBehaviour:
         assert "Set-Cookie" not in headers
 
     def test_bad_cookie_repaired(self) -> None:
-        """Stale/forged cookie is handled by the plugin.
-
-        Verified manually: with HTTP_COOKIE=lang=xx, the plugin calls
-        response.set_cookie("lang", "en", ...) in its apply() wrapper.
-        Bottle's test harness does not propagate plugin-set cookies to
-        the WSGI response headers, so we test the plugin state directly.
-        """
+        """Stale/forged cookie triggers a repair Set-Cookie."""
         plugin = I18NPlugin(domain="openfollow")
         app = Bottle()
         app.config["use_https"] = False
         plugin.setup(app)
 
-        # With only English available, "xx" is not a valid language
-        # and the plugin should have registered it as unavailable
-        from bottle import request
-        # Simulate the request environment that the plugin would see
-        request.environ["HTTP_COOKIE"] = "lang=xx"
-        request.environ["HTTP_HOST"] = "test"
-        cookie_val = request.get_cookie("lang")
-        assert cookie_val == "xx"  # Cookie is readable
+        @app.get("/")
+        def index() -> str:
+            return "ok"
+
+        _body, headers = self._bottle_request(app, HTTP_COOKIE="lang=xx")
+        assert "Set-Cookie" in headers
+        assert "lang=en" in headers["Set-Cookie"]
+
+    def test_cookie_opts_secure_is_per_request(self) -> None:
+        """``secure`` is dynamic: present under https, absent under http.
+
+        Uses raw WSGI to capture the actual Set-Cookie header from a
+        plugin-wrapped handler.  Validates real output, not internal state."""
+        assert "secure" not in i18n._COOKIE_OPTS
+        plugin = I18NPlugin(domain="openfollow")
+        app = Bottle()
+        plugin.setup(app)
+
+        @app.get("/")
+        def index() -> str:
+            return "ok"
+
+        # HTTPS → Secure in Set-Cookie
+        _body, headers = self._bottle_request(app, wsgi_url_scheme="https")
+        assert "Set-Cookie" in headers
+        assert "Secure" in headers["Set-Cookie"]
+
+        # HTTP → no Secure in Set-Cookie
+        _body, headers = self._bottle_request(app)
+        assert "Set-Cookie" in headers
+        assert "Secure" not in headers["Set-Cookie"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════

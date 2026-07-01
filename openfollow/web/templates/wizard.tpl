@@ -482,7 +482,7 @@
     <div class="group">
       <div class="row">
         <div class="field">
-          <label>Source Type</label>
+          <label>{{_('Source Type')}}</label>
           <select id="wizard-video-source-type"
                   onchange="document.querySelectorAll('[data-wizard-input-type]').forEach(function(el){el.style.display=el.dataset.wizardInputType===this.value?'':'none';}.bind(this));">
             % for iid, iname in available_inputs:

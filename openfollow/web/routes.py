@@ -3576,7 +3576,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ``locale/<code>/LC_MESSAGES/``, list it in ``_AVAILABLE_LANGUAGES``,
         and add a link in ``base.tpl``'s ``.lang-switch`` group.
         """
-        from openfollow.i18n import _, validate_language_code
+        from openfollow.i18n import _, _COOKIE_OPTS, validate_language_code
         if not validate_language_code(lang):
             abort(404)
         target = "/"
@@ -3590,7 +3590,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 if parsed.query:
                     target += "?" + parsed.query
         resp = HTTPResponse(status=303, headers={"Location": target})
-        resp.set_cookie("lang", lang, path="/", max_age=86400 * 365)
+        cookie_opts = dict(_COOKIE_OPTS)
+        cookie_opts["secure"] = request.urlparts.scheme == "https"
+        resp.set_cookie("lang", lang, **cookie_opts)
         raise resp
 
     # -- Helpers --------------------------------------------------------------

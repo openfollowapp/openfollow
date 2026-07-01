@@ -727,7 +727,14 @@ class TestSetLangRoute:
                     if parsed.query:
                         target += "?" + parsed.query
             resp = HTTPResponse(status=303, headers={"Location": target})
-            resp.set_cookie("lang", lang, path="/", max_age=86400 * 365)
+            # Reuse the same cookie policy as I18NPlugin.apply().
+            try:
+                from openfollow.i18n import _COOKIE_OPTS
+                cookie_opts = dict(_COOKIE_OPTS)
+            except ImportError:
+                cookie_opts = {"path": "/", "max_age": 86400 * 365}
+            cookie_opts["secure"] = request.urlparts.scheme == "https"
+            resp.set_cookie("lang", lang, **cookie_opts)
             raise resp
 
         return app

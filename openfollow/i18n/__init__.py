@@ -51,8 +51,10 @@ _LOCALE_ROOT = Path(__file__).resolve().parent.parent.parent / "locale"
 
 _translate_ctx: ContextVar[Any] = ContextVar("i18n_translate", default=None)
 
-# Base cookie options shared across all I18NPlugin instances.  The ``secure``
-# flag is per-instance, derived from ``app.config["use_https"]`` in setup().
+# Base cookie options shared across all I18NPlugin instances.
+# ``secure`` is *not* stored here — it is computed per-request from
+# ``request.urlparts.scheme`` so TLS termination behind a reverse proxy
+# works correctly without a static config flag.
 _COOKIE_OPTS = {
     "path": "/",
     "max_age": 86400 * 365,
@@ -264,11 +266,6 @@ class I18NPlugin:
         SimpleTemplate.defaults["_"] = _template_translate
         SimpleTemplate.defaults["available_languages"] = self._available_languages
 
-        # Respect the deployment scheme: set the cookie ``secure`` flag when
-        # the app is served over HTTPS.  Unconditional assignment eliminates
-        # the one-way ratchet if setup() is called more than once.
-        self._cookie_opts["secure"] = bool(app.config.get("use_https", False))
-
         for lang in self._available_languages:
             try:
                 trans = gettext.translation(
@@ -285,21 +282,25 @@ class I18NPlugin:
             self._translations[lang] = trans
 
     def apply(self, callback: Any, route: Any) -> Any:
-        cookie_opts = self._cookie_opts
-
         available = self._available_languages
 
         @functools.wraps(callback)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
+            def _cookie_opts() -> dict[str, Any]:
+                """Cookie options with per-request ``secure`` flag."""
+                opts = dict(self._cookie_opts)
+                opts["secure"] = request.urlparts.scheme == "https"
+                return opts
+
             lang = request.get_cookie("lang")
             if not lang:
                 lang = _best_language(request.headers.get("Accept-Language"), available)
-                response.set_cookie("lang", lang, **cookie_opts)
+                response.set_cookie("lang", lang, **_cookie_opts())
             if lang not in self._translations:
                 lang = available[0]
                 # Repair the cookie so the next request doesn't repeat the
                 # silent fallback (stale / forged cookie after language removal).
-                response.set_cookie("lang", lang, **cookie_opts)
+                response.set_cookie("lang", lang, **_cookie_opts())
             token = _translate_ctx.set(self._translations[lang].gettext)
             try:
                 return callback(*args, **kwargs)

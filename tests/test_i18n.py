@@ -363,35 +363,16 @@ class TestI18NPlugin:
         plugin.setup(app)
         assert plugin._available_languages == ("fr", "en")
 
-    def test_setup_sets_secure_cookie_flag_when_https(self) -> None:
-        """When app.config.use_https is True, instance cookie opts get secure=True."""
-        app = Bottle()
-        app.config["use_https"] = True
-        plugin = I18NPlugin(domain="nonexistent")
-        plugin.setup(app)
-        assert plugin._cookie_opts.get("secure") is True
+    def test_cookie_opts_secure_is_per_request(self) -> None:
+        """``secure`` is computed from request.urlparts.scheme, not stored
+        statically.  verify ``apply()`` passes it through on each request."""
         assert "secure" not in i18n._COOKIE_OPTS
-
-    def test_setup_no_secure_flag_when_http(self) -> None:
-        """When app.config lacks use_https, secure is explicitly False."""
+        plugin = I18NPlugin(domain="openfollow")
         app = Bottle()
-        plugin = I18NPlugin(domain="nonexistent")
+        app.config["use_https"] = False
         plugin.setup(app)
-        assert plugin._cookie_opts.get("secure") is False
-
-    def test_secure_flag_isolated_between_instances(self) -> None:
-        """secure flag on one instance does not leak to another."""
-        app1 = Bottle()
-        app1.config["use_https"] = True
-        p1 = I18NPlugin(domain="nonexistent")
-        p1.setup(app1)
-
-        app2 = Bottle()
-        p2 = I18NPlugin(domain="nonexistent")
-        p2.setup(app2)
-
-        assert p1._cookie_opts.get("secure") is True
-        assert p2._cookie_opts.get("secure") is False
+        # secure is dynamic — not stored in _cookie_opts after setup
+        assert "secure" not in plugin._cookie_opts
 
     def test_setup_logs_translation_errors(self, caplog: Any, tmp_path: Path) -> None:
         """When gettext raises (e.g. permission error), log a warning."""

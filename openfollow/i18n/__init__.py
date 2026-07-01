@@ -41,6 +41,12 @@ from bottle import SimpleTemplate, request, response
 
 logger = logging.getLogger(__name__)
 
+# Fallback for template rendering before I18NPlugin is installed (tests, CLI,
+# wizard). Templates call ``_('text')``; without this default, undefined ``_``
+# causes a NameError. The plugin's setup() overwrites it with the real
+# per-request translator.
+SimpleTemplate.defaults.setdefault("_", lambda x: x)
+
 _LOCALE_ROOT = Path(__file__).resolve().parent.parent.parent / "locale"
 
 _translate_ctx: ContextVar[Any] = ContextVar("i18n_translate", default=None)
@@ -226,6 +232,8 @@ class I18NPlugin:
         self._available_languages: tuple[str, ...] = ()
 
     def setup(self, app: Any) -> None:
+        global _AVAILABLE_LANGUAGES
+
         # Auto-discover available languages from .mo files on disk.
         # Set _AVAILABLE_LANGUAGES to a non-empty tuple to override
         # discovery and lock the language list manually.
@@ -233,6 +241,11 @@ class I18NPlugin:
             self._available_languages = _AVAILABLE_LANGUAGES
         else:
             self._available_languages = _discover_languages(_LOCALE_ROOT, self.domain)
+
+        # Sync the resolved list back so other code (set_lang route, etc.)
+        # that imports _AVAILABLE_LANGUAGES at request-time sees the real
+        # list instead of the sentinel empty tuple.
+        _AVAILABLE_LANGUAGES = self._available_languages
 
         # Wire the template bridge during plugin setup so it is scoped to
         # the plugin lifecycle rather than module import time.

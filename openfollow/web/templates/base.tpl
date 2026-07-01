@@ -1969,6 +1969,7 @@
  </div>
  % end
 % if len(available_languages) > 1:
+ {# TODO: iterate available_languages instead of hardcoding links. Currently only en/zh_CN are needed; adding a new language requires editing this template. #}
  <div class="lang-switch" role="group" aria-label="{{_('Language')}}">
  <a href="/set-lang/en">EN</a>
  <a href="/set-lang/zh_CN">中文</a>

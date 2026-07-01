@@ -3576,16 +3576,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ``locale/<code>/LC_MESSAGES/``, list it in ``_AVAILABLE_LANGUAGES``,
         and add a link in ``base.tpl``'s ``.lang-switch`` group.
         """
-        from openfollow.i18n import _, _AVAILABLE_LANGUAGES
-
-        if lang not in _AVAILABLE_LANGUAGES:
-            lang = "en"
+        from openfollow.i18n import _
         target = "/"
         referer = request.headers.get("Referer")
         if referer:
             from urllib.parse import urlparse
             parsed = urlparse(referer)
-            # Only bounce back to same-origin paths to prevent open redirect.
             request_host = request.headers.get("Host", "")
             if parsed.netloc == request_host:
                 target = parsed.path

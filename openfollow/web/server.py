@@ -239,7 +239,7 @@ class ConfigWebServer:
         self.camera_names_provider = camera_names_provider
         self._started_at = time.monotonic()
         self._app = Bottle()
-        # i18n: per-request language negotiation (browser Accept-Language / ?lang=)
+        # i18n: per-request language negotiation (browser Accept-Language header / lang cookie)
         self._app.install(I18NPlugin(domain="openfollow"))
         # Guards the HTTP-server slot assignment in ``_run`` against ``stop()``.
         # Without it, ``stop()`` could run in the window after ``start()`` sets

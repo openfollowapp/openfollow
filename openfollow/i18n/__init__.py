@@ -200,7 +200,7 @@ def _best_language(accept_lang_header: str | None, available: tuple[str, ...]) -
     Pure function — no global state.  Tests can pass any ``available`` tuple.
     """
     if not accept_lang_header:
-        return available[0]
+        return available[0] if available else "en"
     candidates: list[tuple[float, str]] = []
     for part in accept_lang_header.split(","):
         part = part.strip()
@@ -232,7 +232,7 @@ def _best_language(accept_lang_header: str | None, available: tuple[str, ...]) -
                     best_match = lang
         if best_match is not None:
             return best_match
-    return available[0]
+    return available[0] if available else "en"
 
 
 class I18NPlugin:
@@ -297,11 +297,17 @@ class I18NPlugin:
                 lang = _best_language(request.headers.get("Accept-Language"), available)
                 response.set_cookie("lang", lang, **_cookie_opts())
             if lang not in self._translations:
-                lang = available[0]
-                # Repair the cookie so the next request doesn't repeat the
-                # silent fallback (stale / forged cookie after language removal).
-                response.set_cookie("lang", lang, **_cookie_opts())
-            token = _translate_ctx.set(self._translations[lang].gettext)
+                # available may be empty in tests; keep the best-language
+                # guess rather than crashing when there are no translations.
+                if available:
+                    lang = available[0]
+                    # Repair the cookie so the next request doesn't repeat the
+                    # silent fallback (stale / forged cookie after language removal).
+                    response.set_cookie("lang", lang, **_cookie_opts())
+            trans = self._translations.get(lang)
+            if trans is None:
+                trans = gettext.NullTranslations()
+            token = _translate_ctx.set(trans.gettext)
             try:
                 return callback(*args, **kwargs)
             finally:

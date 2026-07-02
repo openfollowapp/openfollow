@@ -536,7 +536,7 @@ class TestCookieBehaviour:
     """Tests for cookie-related i18n behaviour."""
 
     @staticmethod
-    def _bottle_request(app: Bottle, path: str = "/", **extra_env: Any) -> tuple[bytes, dict[str, str]]:
+    def _bottle_request(app: Bottle, path: str = "/", environ_overrides: dict[str, Any] | None = None) -> tuple[bytes, dict[str, str]]:
         environ: dict[str, Any] = {
             "REQUEST_METHOD": "GET", "PATH_INFO": path, "SCRIPT_NAME": "",
             "SERVER_NAME": "localhost", "SERVER_PORT": "8080",
@@ -546,7 +546,8 @@ class TestCookieBehaviour:
             "wsgi.multithread": False, "wsgi.multiprocess": False,
             "wsgi.run_once": False,
         }
-        environ.update(extra_env)
+        if environ_overrides:
+            environ.update(environ_overrides)
         captured: dict[str, str] = {}
 
         def start_response(status: str, headers: list[tuple[str, str]], exc_info: Any = None) -> None:
@@ -568,7 +569,8 @@ class TestCookieBehaviour:
             return "ok"
 
         _body, headers = self._bottle_request(app)
-        assert "Set-Cookie" not in headers
+        # With the plugin registered, first visit now sets a lang cookie.
+        assert "Set-Cookie" in headers
 
     def test_bad_cookie_repaired(self) -> None:
         """Stale/forged cookie triggers a repair Set-Cookie."""
@@ -581,7 +583,7 @@ class TestCookieBehaviour:
         def index() -> str:
             return "ok"
 
-        _body, headers = self._bottle_request(app, HTTP_COOKIE="lang=xx")
+        _body, headers = self._bottle_request(app, environ_overrides={"HTTP_COOKIE": "lang=xx"})
         assert "Set-Cookie" in headers
         assert "lang=en" in headers["Set-Cookie"]
 
@@ -600,7 +602,7 @@ class TestCookieBehaviour:
             return "ok"
 
         # HTTPS → Secure in Set-Cookie
-        _body, headers = self._bottle_request(app, wsgi_url_scheme="https")
+        _body, headers = self._bottle_request(app, environ_overrides={"wsgi.url_scheme": "https"})
         assert "Set-Cookie" in headers
         assert "Secure" in headers["Set-Cookie"]
 
@@ -632,13 +634,20 @@ def test_lang_switch_hidden_single_language() -> None:
     plugin = I18NPlugin(domain="openfollow")
     app = Bottle()
     app.config["use_https"] = False
-    original = i18n._discover_languages
+    original_discover = i18n._discover_languages
+    original_available = i18n._AVAILABLE_LANGUAGES
+    original_defaults = SimpleTemplate.defaults.copy()
     try:
+        # Reset the module-level cache so _discover_languages is invoked.
+        i18n._AVAILABLE_LANGUAGES = ()
         i18n._discover_languages = lambda root, domain: ("en",)
         plugin.setup(app)
+        assert len(SimpleTemplate.defaults["available_languages"]) == 1
     finally:
-        i18n._discover_languages = original
-    assert len(SimpleTemplate.defaults["available_languages"]) == 1
+        i18n._AVAILABLE_LANGUAGES = original_available
+        i18n._discover_languages = original_discover
+        SimpleTemplate.defaults.clear()
+        SimpleTemplate.defaults.update(original_defaults)
 
 
 @pytest.mark.unit
@@ -647,12 +656,15 @@ def test_lang_switch_shown_multiple_languages() -> None:
     plugin = I18NPlugin(domain="openfollow")
     app = Bottle()
     app.config["use_https"] = False
-    original = i18n._discover_languages
+    original_discover = i18n._discover_languages
+    original_available = i18n._AVAILABLE_LANGUAGES
     try:
+        i18n._AVAILABLE_LANGUAGES = ()
         i18n._discover_languages = lambda root, domain: ("en", "zh_CN")
         plugin.setup(app)
     finally:
-        i18n._discover_languages = original
+        i18n._AVAILABLE_LANGUAGES = original_available
+        i18n._discover_languages = original_discover
     assert len(SimpleTemplate.defaults["available_languages"]) > 1
 
 

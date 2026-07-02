@@ -3,6 +3,7 @@
 """RTSP video input plugin with automatic codec negotiation and flexible transport."""
 
 from __future__ import annotations
+from openfollow.i18n import _, _l  # noqa: E402
 
 import logging
 from collections.abc import Callable
@@ -23,7 +24,7 @@ class RtspInput(VideoInputBase):
     """RTSP video input with auto-codec and multi-transport negotiation."""
 
     input_id = "rtsp"
-    display_name = "RTSP"
+    display_name = _l("RTSP")
 
     # -- Declarations ---------------------------------------------------------
 
@@ -198,7 +199,7 @@ class RtspInput(VideoInputBase):
         return (
             '<div class="row">'
             '    <div class="field wide">'
-            "        <label>RTSP URL</label>"
+            f"        <label>{_("RTSP URL")}</label>"
             f'        <input type="text" name="rtsp_url" value="{rtsp_url}"'
             '               placeholder="rtsp://192.168.0.182:554/stream">'
             "    </div>"

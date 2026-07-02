@@ -1,19 +1,17 @@
 <div id="send-config-section" class="section" data-fold-key="send-config">
     <div class="section-head">
-        <h2>Send Config to Other Stations</h2>
-        <span class="section-note">Push this device's full configuration to all discovered peers</span>
+        <h2>{{_('Send Config to Other Stations')}}</h2>
+        <span class="section-note">{{_('Push this device\'s full configuration to all discovered peers')}}</span>
     </div>
 
     <p style="color:var(--muted);font-size:0.88rem;margin:0 0 0.8rem;">
-        Sends all current settings to every online peer on the network.
-        Each peer's device-specific IP address will be preserved.
-        Restart-requiring changes (video source, OTP, RTTrPM, detection) are applied without automatic restart.
+        {{_('Sends all current settings to every online peer on the network. Each peer\'s device-specific IP address will be preserved. Restart-requiring changes (video source, OTP, RTTrPM, detection) are applied without automatic restart.')}}
     </p>
 
     <div id="send-config-result" style="display:none;margin-bottom:0.72rem;" class="update-notice"></div>
 
     <div class="actions">
-        <button type="button" class="broadcast-btn" id="send-all-btn" onclick="broadcastAllConfig()">Send All Settings</button>
+        <button type="button" class="broadcast-btn" id="send-all-btn" onclick="broadcastAllConfig()">{{_('Send All Settings')}}</button>
     </div>
 </div>
 

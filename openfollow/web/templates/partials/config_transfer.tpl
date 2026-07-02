@@ -1,43 +1,42 @@
 <div id="config-transfer-section" class="section" data-fold-key="config-transfer" data-help="config-transfer">
     <div class="section-head">
-        <h2>Configuration Transfer</h2>
-        <span class="section-note">Export and import device settings</span>
+        <h2>{{_('Configuration Transfer')}}</h2>
+        <span class="section-note">{{_('Export and import device settings')}}</span>
     </div>
 
     <div id="import-restart-notice" class="restart-notice" style="display:none">
-        App is restarting&hellip; Please wait.
+        {{_('App is restarting&hellip; Please wait.')}}
     </div>
 
     <div id="config-transfer-content">
         <div class="group">
-            <h3 class="group-title">Export</h3>
+            <h3 class="group-title">{{_('Export')}}</h3>
             <p style="color:var(--muted);font-size:0.88rem;margin:0 0 0.6rem;">
-                Download the current configuration as a JSON file.
+                {{_('Download the current configuration as a JSON file.')}}
             </p>
             <div class="actions">
-                <button type="button" class="save-btn" onclick="exportConfig()">Export Configuration</button>
+                <button type="button" class="save-btn" onclick="exportConfig()">{{_('Export Configuration')}}</button>
             </div>
         </div>
 
         <div class="group">
-            <h3 class="group-title">Import</h3>
+            <h3 class="group-title">{{_('Import')}}</h3>
             <p style="color:var(--muted);font-size:0.88rem;margin:0 0 0.6rem;">
-                Load a previously exported configuration file.
-                The device's network IP address will be preserved.
+                {{_("Load a previously exported configuration file. The device's network IP address will be preserved.")}}
             </p>
-            <label for="config-import-file">Configuration File (.openfollowsettings)</label>
+            <label for="config-import-file">{{_('Configuration File (.openfollowsettings)')}}</label>
             <input type="file" id="config-import-file" accept=".openfollowsettings" style="display:none"
                    onchange="document.getElementById('config-import-filename').textContent = this.files[0] ? this.files[0].name : ''">
             <div class="actions">
                 <button type="button" class="btn-secondary"
                         onclick="document.getElementById('config-import-file').click()">
-                    Choose file
+                    {{_('Choose file')}}
                 </button>
                 <span id="config-import-filename" class="field-note" style="margin:0;align-self:center"></span>
             </div>
             <div id="import-error" class="restart-notice" style="display:none;margin-top:0.72rem;border-color:rgba(255,140,140,0.35);background:rgba(255,140,140,0.13);color:#ffd7d7;"></div>
             <div class="actions" style="margin-top:0.72rem;">
-                <button type="button" class="save-btn" id="import-btn" onclick="importConfig()">Import Configuration</button>
+                <button type="button" class="save-btn" id="import-btn" onclick="importConfig()">{{_('Import Configuration')}}</button>
             </div>
         </div>
     </div>
@@ -46,17 +45,16 @@
     <div id="import-restart-overlay" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.7);backdrop-filter:blur(4px);align-items:center;justify-content:center;">
         <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:1.1rem;padding:1.5rem;max-width:480px;width:calc(100% - 2rem);">
             <div class="section-head">
-                <h2>Restart Required</h2>
+                <h2>{{_('Restart Required')}}</h2>
             </div>
             <p style="color:var(--muted);font-size:0.9rem;margin:0 0 0.6rem;">
-                The imported configuration has been validated.
-                Some changes require an app restart to take effect:
+                {{_('The imported configuration has been validated. Some changes require an app restart to take effect:')}}
             </p>
             <ul id="import-restart-reasons" style="color:var(--accent);font-size:0.9rem;margin:0 0 1rem;padding-left:1.2rem;"></ul>
             <div class="actions" style="flex-wrap:wrap;">
-                <button type="button" class="restart-btn" onclick="confirmImportRestart()">Restart Now</button>
-                <button type="button" class="secondary" onclick="skipImportRestart()">Apply Without Restart</button>
-                <button type="button" class="secondary" onclick="cancelImportRestart()">Cancel</button>
+                <button type="button" class="restart-btn" onclick="confirmImportRestart()">{{_('Restart Now')}}</button>
+                <button type="button" class="secondary" onclick="skipImportRestart()">{{_('Apply Without Restart')}}</button>
+                <button type="button" class="secondary" onclick="cancelImportRestart()">{{_('Cancel')}}</button>
             </div>
         </div>
     </div>
@@ -79,26 +77,26 @@ function importConfig() {
     _setImportError('');
     var fileInput = document.getElementById('config-import-file');
     if (!fileInput.files.length) {
-        _setImportError('Please select a configuration file.');
+        _setImportError({{_('Please select a configuration file.')}});
         return;
     }
     var btn = document.getElementById('import-btn');
     btn.disabled = true;
-    btn.textContent = 'Importing\u2026';
+    btn.textContent = {{_('Importing…')}};
 
     var reader = new FileReader();
     reader.onerror = function() {
         btn.disabled = false;
-        btn.textContent = 'Import Configuration';
-        _setImportError('Could not read the selected file.');
+        btn.textContent = {{_('Import Configuration')}};
+        _setImportError({{_('Could not read the selected file.')}});
     };
     reader.onload = function(e) {
         var raw = e.target.result;
         try { JSON.parse(raw); }
         catch (err) {
             btn.disabled = false;
-            btn.textContent = 'Import Configuration';
-            _setImportError('The selected file is not valid JSON.');
+            btn.textContent = {{_('Import Configuration')}};
+            _setImportError({{_('The selected file is not valid JSON.')}});
             return;
         }
         _sendImport(raw, '');
@@ -116,10 +114,10 @@ function _sendImport(body, queryParams) {
     .then(function(res) { return res.json(); })
     .then(function(result) {
         btn.disabled = false;
-        btn.textContent = 'Import Configuration';
+        btn.textContent = {{_('Import Configuration')}};
 
         if (result.error) {
-            _setImportError('Import failed: ' + result.error);
+            _setImportError({{_('Import failed: ')}} + result.error);
             return;
         }
         if (result.restarting) {
@@ -137,14 +135,14 @@ function _sendImport(body, queryParams) {
         }
         /* success, no restart */
         showToast(result.skipped_restart_sections
-            ? 'Configuration imported (some changes need a restart)'
-            : 'Configuration imported successfully');
+            ? {{_('Configuration imported (some changes need a restart)')}}
+            : {{_('Configuration imported successfully')}});
         setTimeout(function() { window.location.reload(); }, 600);
     })
     .catch(function() {
         btn.disabled = false;
-        btn.textContent = 'Import Configuration';
-        _setImportError('Import request failed. Check your network connection.');
+        btn.textContent = {{_('Import Configuration')}};
+        _setImportError({{_('Import request failed. Check your network connection.')}});
     });
 }
 
@@ -153,7 +151,7 @@ function confirmImportRestart() {
     if (!_pendingImportData) return;
     var btn = document.getElementById('import-btn');
     btn.disabled = true;
-    btn.textContent = 'Importing\u2026';
+    btn.textContent = {{_('Importing…')}};
     _sendImport(_pendingImportData, '?confirm_restart=1');
     _pendingImportData = null;
 }
@@ -163,7 +161,7 @@ function skipImportRestart() {
     if (!_pendingImportData) return;
     var btn = document.getElementById('import-btn');
     btn.disabled = true;
-    btn.textContent = 'Importing\u2026';
+    btn.textContent = {{_('Importing…')}};
     _sendImport(_pendingImportData, '?skip_restart=1');
     _pendingImportData = null;
 }

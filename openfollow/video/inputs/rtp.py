@@ -3,6 +3,7 @@
 """RTP video input plugin (multicast/unicast) with auto-detected codec support."""
 
 from __future__ import annotations
+from openfollow.i18n import _, _l  # noqa: E402
 
 import logging
 from collections.abc import Callable
@@ -55,7 +56,7 @@ class RtpInput(VideoInputBase):
     """RTP video input – multicast or unicast UDP receiver."""
 
     input_id = "rtp"
-    display_name = "RTP"
+    display_name = _l("RTP")
 
     # -- Declarations ---------------------------------------------------------
 
@@ -279,14 +280,14 @@ class RtpInput(VideoInputBase):
         return (
             '<div class="row">'
             '    <div class="field wide">'
-            "        <label>RTP URL</label>"
+            f"        <label>{_("RTP URL")}</label>"
             f'        <input type="text" name="rtp_url" value="{rtp_url}"'
             '               placeholder="rtp://232.255.255.255:4000">'
             "    </div>"
             "</div>"
             '<div class="row">'
             '    <div class="field">'
-            "        <label>Encoding</label>"
+            f"        <label>{_("Encoding")}</label>"
             f'        <select name="rtp_encoding">{opts_html}</select>'
             "    </div>"
             "</div>"

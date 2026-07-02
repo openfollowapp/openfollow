@@ -1,9 +1,7 @@
-% from openfollow.web.routes import osc_destinations_script_json
-% _osc_dests_json = osc_destinations_script_json(config)
 <div id="zone-editor-section" class="section" data-fold-key="zone_editor" data-help="zone_editor" data-template-form="1">
     <div class="section-head">
-        <h2>Zone Editor</h2>
-        <span class="section-note">Click to place vertices. Click the first vertex or double-click to close. Click a zone to select it. Drag vertices to move them.</span>
+        <h2>{{_('Zone Editor')}}</h2>
+        <span class="section-note">{{_('Click to place vertices. Click the first vertex or double-click to close. Click a zone to select it. Drag vertices to move them.')}}</span>
     </div>
 
     <div class="group">
@@ -11,10 +9,10 @@
             <canvas id="zone-canvas" width="1280" height="720" style="display:block;width:100%;height:auto;background:#111;cursor:crosshair;"></canvas>
         </div>
         <div style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;">
-            <button type="button" id="zone-add-btn" class="save-btn">+ New Zone</button>
-            <button type="button" id="zone-finish-btn" class="secondary" disabled>Finish Polygon</button>
-            <button type="button" id="zone-cancel-btn" class="secondary" disabled>Cancel Drawing</button>
-            <button type="button" id="zone-delete-btn" class="danger" disabled>Delete Selected</button>
+            <button type="button" id="zone-add-btn" class="save-btn">{{_('+ New Zone')}}</button>
+            <button type="button" id="zone-finish-btn" class="secondary" disabled>{{_('Finish Polygon')}}</button>
+            <button type="button" id="zone-cancel-btn" class="secondary" disabled>{{_('Cancel Drawing')}}</button>
+            <button type="button" id="zone-delete-btn" class="danger" disabled>{{_('Delete Selected')}}</button>
             <!-- Save / Load template buttons. Save captures entire
                  trigger_zones section (defaults + zones[]) as
                  .openfollowtemplate under templates/user/. Load lists
@@ -22,11 +20,13 @@
                  replaces section (API requires ?confirm=1). -->
             <button type="button" id="zone-template-save-btn" class="secondary"
                     data-template-save
-                    data-template-deps="#zone-editor-section, #trigger-zones-section">Save as template…</button>
-            <button type="button" id="zone-template-load-btn" class="secondary">Load template…</button>
+                    data-template-deps="#zone-editor-section, #trigger-zones-section">{{_('Save as template…')}}</button>
+            <button type="button" id="zone-template-load-btn" class="secondary">{{_('Load template…')}}</button>
             <span id="zone-editor-status" class="section-note"></span>
+        <span id="zone-no-selection-text" style="display:none">{{_('Select a zone to edit its OSC addresses and trigger source.')}}</span>
         </div>
-        <div id="zone-details" class="section-note" style="margin-top:1rem;">Select a zone to edit its OSC addresses and trigger source.</div>
+        <div id="zone-details" class="section-note" style="margin-top:1rem;">{{_('Select a zone to edit its OSC addresses and trigger source.')}}</div>
+        
     </div>
 </div>
 
@@ -34,12 +34,6 @@
 (function() {
     if (window.__zoneEditorInit) return;
     window.__zoneEditorInit = true;
-
-    // Shared OSC destinations a zone can target (id + label + endpoint).
-    // Seeded server-side for the first render, then refreshed from the
-    // /api/zones poll so add/rename/delete in the OSC Destinations section
-    // reaches the dropdown without a full page reload.
-    var OSC_DESTINATIONS = {{!_osc_dests_json}};
 
     // Zone color palette seeded by base.tpl via window.OPENFOLLOW_PALETTE
     // (from openfollow.palette). pickZoneColor delegates to shared
@@ -98,23 +92,14 @@
                 }
                 state.markers = data.markers || [];
                 if (data.grid) state.grid = data.grid;
-                // Refresh the shared destinations so the OSC Destination
-                // dropdown follows add/rename/delete live.
-                var newDests = data.destinations || [];
-                var destsChanged = JSON.stringify(newDests) !== JSON.stringify(OSC_DESTINATIONS);
-                OSC_DESTINATIONS = newDests;
                 if (state.selectedIndex >= state.zones.length) {
                     state.selectedIndex = -1;
                 }
                 render();
                 // Only rebuild the details panel when the selection actually
                 // changes; otherwise we'd clobber open dropdowns / color
-                // pickers / focused inputs on every poll tick. Destinations
-                // changing is the one extra reason to rebuild, but only when
-                // the operator isn't mid-edit on this zone's details.
+                // pickers / focused inputs on every poll tick.
                 if (state.selectedIndex !== state.detailsRenderedIndex) {
-                    renderDetails();
-                } else if (destsChanged && state.selectedIndex >= 0 && !editingSelected) {
                     renderDetails();
                 } else if (state.selectedIndex >= 0) {
                     // Refresh Diagnostics tab in place (don't rebuild whole
@@ -482,7 +467,7 @@
     function renderDetails() {
         state.detailsRenderedIndex = state.selectedIndex;
         if (state.selectedIndex < 0) {
-            detailsEl.innerHTML = '<div class="section-note">Select a zone to edit its OSC addresses and trigger source.</div>';
+            var nsText = document.getElementById('zone-no-selection-text').textContent; detailsEl.innerHTML = '<div class="section-note">' + nsText + '</div>';
             return;
         }
         var z = state.zones[state.selectedIndex];
@@ -570,25 +555,11 @@
         html += '    </div></div>';
         html += '  </div>';
 
-        // ---- Settings tab: OSC destination + the four addresses ----
+        // ---- Settings tab: OSC host/port + the four addresses ----
         html += '  <div class="row-tab-panel" id="row-tab-zone-settings" role="tabpanel">';
         html += '    <div class="row">';
-        html += '      <div class="field"><label>OSC Destination</label><select data-zone-field="destination_id">';
-        html += '        <option value=""' + (!z.destination_id ? ' selected' : '') + '>(none – zone will not send)</option>';
-        var destFound = false;
-        for (var di = 0; di < OSC_DESTINATIONS.length; di++) {
-            var od = OSC_DESTINATIONS[di];
-            var sel = (od.id === z.destination_id) ? ' selected' : '';
-            if (sel) destFound = true;
-            html += '<option value="' + escapeAttr(od.id) + '"' + sel + '>' + escapeAttr(od.name || '(unnamed)') + '</option>';
-        }
-        // A zone pointing at a deleted destination keeps its dangling id: show
-        // it as a selected (disabled) option so the dropdown reflects the
-        // stored state instead of silently falling back to "(none)".
-        if (z.destination_id && !destFound) {
-            html += '<option value="' + escapeAttr(z.destination_id) + '" selected disabled>(missing destination)</option>';
-        }
-        html += '      </select></div>';
+        html += '      <div class="field"><label>OSC Host (optional)</label><input type="text" data-zone-field="osc_host" value="' + escapeAttr(z.osc_host || '') + '" placeholder="use default"></div>';
+        html += '      <div class="field"><label>OSC Port (0 = default)</label><input type="number" data-zone-field="osc_port" value="' + (z.osc_port || 0) + '" min="0" max="65535"></div>';
         html += '    </div>';
         html += '    <div class="row">';
         html += oscField('First Entry Address', 'osc_address_first_entry', z.osc_address_first_entry || '', '/zone/enter');

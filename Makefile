@@ -11,15 +11,21 @@
 # value never drifts between local `make test` and CI.
 COVERAGE_MIN ?= 100
 
-# Parallelize the suite with pytest-xdist.
+# Parallelize the suite with pytest-xdist, and cap each worker's native thread
+# pools so the two don't multiply.
 #
 # Worker count is headroom-aware (not ``-n logical``/``-n auto``): small
 # CI/Pi runners (≤4 logical CPUs) use every core, but a fat interactive dev
 # workstation reserves ~1/3 of its cores so the OS/UI stays responsive – a
-# 10-core Mac runs 6 workers and keeps 4 cores free. Saturating every core
-# starves macOS's WindowServer and freezes the machine mid-run. ``getconf`` is
-# portable across macOS/Linux; the ``|| echo 2`` keeps the 2-vCPU CI default if
-# it's absent.
+# 10-core Mac runs 6 workers and keeps 4 cores free. ``getconf`` is portable
+# across macOS/Linux; the ``|| echo 2`` keeps the 2-vCPU CI default if it's
+# absent.
+#
+# Worker count alone is not enough: OpenCV and numpy-BLAS each grow a pool sized
+# to the full core count inside every worker, so N workers fan out to N x cores
+# threads and freeze an interactive workstation regardless of ``-n``.
+# ``PYTEST_THREAD_CAPS`` pins the BLAS/OpenMP pools per worker (Linux/Pi target);
+# the OpenCV pool ignores those env vars on macOS and is capped in conftest.py.
 #
 # ``--dist load`` distributes individual tests across workers; ``loadscope``
 # would pin each large module to one worker and bottleneck on the slowest. Safe
@@ -30,6 +36,11 @@ COVERAGE_MIN ?= 100
 PYTEST_WORKERS ?= $(shell n=$$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2); \
                           if [ "$$n" -gt 4 ]; then echo $$((2 * n / 3)); else echo "$$n"; fi)
 PYTEST_PARALLEL ?= -n $(PYTEST_WORKERS) --dist load
+
+# One thread per worker for the BLAS/OpenMP pools (see the note above). Prefixed
+# onto every pytest invocation so the xdist workers inherit it from the shell.
+PYTEST_THREAD_CAPS ?= OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+                      NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 
 ci: lint typecheck security test build
 
@@ -79,26 +90,26 @@ typecheck:
 test: test-unit test-integration
 
 test-unit:
-	poetry run pytest -m unit -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=term-missing
+	$(PYTEST_THREAD_CAPS) poetry run pytest -m unit -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=term-missing
 
 test-integration:
-	poetry run pytest -m "integration or smoke" -q $(PYTEST_PARALLEL) --cov=openfollow --cov-append --cov-report=term-missing --cov-fail-under=$(COVERAGE_MIN)
+	$(PYTEST_THREAD_CAPS) poetry run pytest -m "integration or smoke" -q $(PYTEST_PARALLEL) --cov=openfollow --cov-append --cov-report=term-missing --cov-fail-under=$(COVERAGE_MIN)
 
 # End-to-end smoke test. Spins a real GStreamer pipeline and PSN packet
 # through OTP/RTTrPM output sockets. Opt-in, OUT of `make ci` (needs
 # GStreamer runtime). Per-main-push signal, not a PR gate. Skips if
 # GStreamer isn't installed.
 test-smoke-e2e:
-	poetry run pytest -m smoke_e2e -q
+	$(PYTEST_THREAD_CAPS) poetry run pytest -m smoke_e2e -q
 
 coverage:
-	poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=term-missing
+	$(PYTEST_THREAD_CAPS) poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=term-missing
 
 coverage-html:
-	poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=html:htmlcov --cov-report=term
+	$(PYTEST_THREAD_CAPS) poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=html:htmlcov --cov-report=term
 
 coverage-xml:
-	poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=xml:coverage.xml --cov-report=term
+	$(PYTEST_THREAD_CAPS) poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=xml:coverage.xml --cov-report=term
 
 build:
 	poetry build --no-interaction

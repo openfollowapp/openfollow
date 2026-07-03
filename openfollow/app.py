@@ -197,6 +197,7 @@ if TYPE_CHECKING:
     from openfollow.otp import OtpServer
     from openfollow.psn import Marker, PsnReceiver, PsnServer
     from openfollow.rttrpm import RttrpmServer
+    from openfollow.runtime.services_detection_pin import DetectionPinState
     from openfollow.scene.camera import Camera
     from openfollow.video.receiver import GstNativeSinkReceiver
     from openfollow.web import ConfigWebServer
@@ -241,6 +242,11 @@ class OpenFollowApp:
         # ``_server`` (so never broadcast) – the detection pin reads them as the
         # clip anchor and writes the corrected position to the registered marker.
         self._assist_manual: dict[int, Marker] = {}
+        # Per-marker detection-pin smoothing state, keyed by marker id. Assist
+        # mode drives every controlled marker (one entry each); replace mode
+        # drives the single resolved marker (one entry). Created lazily and
+        # pruned when a marker leaves the driven set.
+        self._detection_pin_states: dict[int, DetectionPinState] = {}
         self._psn_receiver: PsnReceiver | None = None
         self._web_server: ConfigWebServer | None = None
         self._input_manager: InputManager | None = None

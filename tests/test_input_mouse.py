@@ -689,9 +689,8 @@ class TestAssistRedirect:
 
     @staticmethod
     def _assist_app() -> _DummyApp:
-        app = _DummyApp()
+        app = _DummyApp()  # _controlled_ids = [1], _selected_id = 1
         app._config.detection.enabled = True
-        app._config.detection.pin_marker = True
         app._config.detection.pin_mode = "assist"
         return app
 
@@ -723,9 +722,11 @@ class TestAssistRedirect:
         assert app._server.get_marker(1).pos[2] == 0.0
 
     def test_replace_mode_steers_registered_marker(self) -> None:
-        # Back-compat: with assist off, the mouse drives the registered marker
+        # Replace mode (with detection enabled) drives the registered marker
         # directly and never creates a ghost.
-        app = _DummyApp()  # default detection: pin_marker False / replace
+        app = _DummyApp()
+        app._config.detection.enabled = True
+        app._config.detection.pin_mode = "replace"
         handler = MouseHandler(app)
         cx, cy = _ground_center(app, 1)
         handler.on_pointer_down(cx, cy, 1)
@@ -734,6 +735,38 @@ class TestAssistRedirect:
 
         assert app._server.get_marker(1).pos != (0.0, 0.0, 0.0)
         assert app._assist_manual == {}
+
+    def test_detection_disabled_steers_registered_marker(self) -> None:
+        # Detection off: even with pin_mode "assist" left over, assist_active is
+        # False, so the mouse drives the registered marker and creates no ghost.
+        app = _DummyApp()
+        app._config.detection.enabled = False
+        app._config.detection.pin_mode = "assist"
+        handler = MouseHandler(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        handler.on_pointer_move(cx + 80, cy + 40)
+        handler.update()
+
+        assert app._server.get_marker(1).pos != (0.0, 0.0, 0.0)
+        assert app._assist_manual == {}
+
+    def test_assist_redirect_only_for_selected_controlled_id(self) -> None:
+        # The mouse only grabs a marker in controlled_marker_ids. A marker
+        # selected but outside that set can't be steered by clicking its ground
+        # circle, and never gets an assist ghost, even while assist is active.
+        app = self._assist_app()
+        app._server.add_marker(2).set_pos(8.0, 4.0, 0.0)  # off marker 1 at origin
+        app._selected_id = 2  # selected but NOT in _controlled_ids ([1])
+        handler = MouseHandler(app)
+        cx, cy = _ground_center(app, 2)
+        consumed = handler.on_pointer_down(cx, cy, 1)
+        handler.on_pointer_move(cx + 80, cy + 40)
+        handler.update()
+
+        assert consumed is False  # no controlled marker under the cursor
+        assert app._server.get_marker(2).pos == (8.0, 4.0, 0.0)  # untouched
+        assert app._assist_manual == {}  # no ghost for an uncontrolled marker
 
 
 class TestEdges:

@@ -34,9 +34,10 @@ import numpy as np
 import numpy.typing as npt
 
 from openfollow.video.tracking import LOW_DETECTION_THRESHOLD, ByteTracker
+from openfollow.zones.geometry import point_in_polygon
 
 if TYPE_CHECKING:
-    from openfollow.configuration import DetectionConfig
+    from openfollow.configuration import DetectionConfig, DetectionMaskConfig
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,18 @@ _INFERENCE_HISTORY_SIZE = 120
 # to see the low-confidence band too, so the worker retrieves well past
 # ``max_persons``; this bounds the per-frame association cost.
 _RAW_DETECTION_CAP = 60
+
+# Clamp for the per-frame Kalman time step (elapsed time ÷ nominal interval).
+# Floors a back-to-back burst and caps a long stall so neither explodes the
+# extrapolation / process noise when the real detection cadence jitters.
+_MIN_DT_REL = 0.1
+_MAX_DT_REL = 8.0
+
+# Max normalised box-centre distance for re-acquiring the followed person after
+# their track is lost/re-numbered. A performer who dimmed or was briefly occluded
+# reappears near where they were, so a candidate within this radius is treated as
+# the same person; beyond it the old target is taken to have left the frame.
+_REACQUIRE_MAX_CENTER_DIST = 0.15
 
 # Where detection storage lands when the operator leaves ``storage_path`` blank
 # on a unit whose NVMe is mounted. The appliance mounts the drive here and the
@@ -105,6 +118,36 @@ class DetectionBox:
     confidence: float
     label: str = "person"
     track_id: int = -1
+
+
+def filter_detections_to_masks(
+    boxes: list[DetectionBox],
+    masks: list[DetectionMaskConfig],
+    *,
+    masks_enabled: bool = True,
+) -> list[DetectionBox]:
+    """Keep only detections whose ground point falls inside an enabled mask.
+
+    Masks are normalised 0-1 frame polygons; a detection's ground point is its
+    box bottom-center ``((x1+x2)/2, y2)`` – where the person stands. With no
+    usable mask (none enabled, or all under 3 vertices) every box passes
+    through, so masking stays strictly opt-in.
+
+    ``masks_enabled`` is the operator's master switch: when False every box
+    passes through regardless of the drawn masks, so masking only takes effect
+    once it is turned on.
+    """
+    if not masks_enabled:
+        return boxes
+    polys = [[(v[0], v[1]) for v in m.vertices] for m in masks if m.enabled and len(m.vertices) >= 3]
+    if not polys:
+        return boxes
+    kept: list[DetectionBox] = []
+    for b in boxes:
+        ax, ay = (b.x1 + b.x2) / 2.0, b.y2
+        if any(point_in_polygon(ax, ay, poly) for poly in polys):
+            kept.append(b)
+    return kept
 
 
 @dataclass
@@ -196,19 +239,46 @@ def _letterbox(
 
 
 class _OnnxBackend:
-    """YOLO ONNX Runtime backend (CPU)."""
+    """YOLO ONNX Runtime backend.
+
+    Runs on hardware acceleration when the platform offers it (CoreML on
+    Apple Silicon) and falls back to CPU otherwise. For a medium/large
+    model on Apple Silicon, CoreML is roughly an order of magnitude faster
+    than the CPU provider.
+    """
+
+    @staticmethod
+    def _select_providers(available: list[str]) -> list[str]:
+        """Order the execution providers, fastest viable first.
+
+        CoreML (Apple Silicon GPU / Neural Engine) is preferred when present;
+        it only shows up in ``available`` on macOS onnxruntime builds, so a
+        Linux host (the Pi) lands on CPU with no OS sniffing. CPU is always
+        kept as the trailing fallback for ops the accelerator can't run.
+        """
+        providers: list[str] = []
+        if "CoreMLExecutionProvider" in available:
+            providers.append("CoreMLExecutionProvider")
+        providers.append("CPUExecutionProvider")
+        return providers
 
     def __init__(self, model_path: str) -> None:
         import onnxruntime as ort
 
         session_options = ort.SessionOptions()
+        # CPU inference of YOLO conv layers stops scaling past ~4 threads on
+        # the target hardware (more threads regress on Apple Silicon's mixed
+        # perf/efficiency cores), and CoreML offloads the bulk off-CPU anyway.
         session_options.intra_op_num_threads = 4
+
+        providers = self._select_providers(ort.get_available_providers())
 
         self._session: Any = ort.InferenceSession(
             model_path,
             sess_options=session_options,
-            providers=["CPUExecutionProvider"],
+            providers=providers,
         )
+        logger.info("ONNX detection providers: %s", ", ".join(self._session.get_providers()))
         input_meta = self._session.get_inputs()[0]
         output_meta = self._session.get_outputs()[0]
 
@@ -365,7 +435,7 @@ class PersonDetector:
         self._backend_name: str | None = None
         self._model_path = config.model
         self._inference_size = self._normalize_inference_size(config.inference_size)
-        self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)) if config.preprocess_clahe else None
+        self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         self._results: list[DetectionBox] = []
         self._running = False
         self._thread: threading.Thread | None = None
@@ -383,7 +453,13 @@ class PersonDetector:
         # so ``tracked_detection`` can hold a pinned person through occlusion.
         self._tracker = ByteTracker()
         self._tracked: list[_TrackedPerson] = []
+        # Monotonic timestamp of the previous track step, for the Kalman dt.
+        self._last_track_t: float | None = None
         self._pinned_id: int | None = None  # currently followed person
+        # Normalised centre of the box last returned for the pinned person. Lets
+        # re-acquisition re-lock onto the same person (by position) when their
+        # track is lost/re-numbered, instead of jumping to the largest box.
+        self._last_pinned_center: tuple[float, float] | None = None
         self._track_lock = threading.Lock()
 
         # Guards the backend triple (_backend / _backend_name / _model_path):
@@ -475,10 +551,9 @@ class PersonDetector:
         if model_size is not None:
             self._inference_size = self._normalize_inference_size(int(model_size))
         logger.info(
-            "Detection backend loaded: onnx (model=%s, imgsz=%d, clahe=%s)",
+            "Detection backend loaded: onnx (model=%s, imgsz=%d)",
             self._model_path,
             self._inference_size,
-            "on" if self._clahe is not None else "off",
         )
 
     @staticmethod
@@ -510,8 +585,46 @@ class PersonDetector:
         else:
             resolved_model = models_dir / model_path.name
 
+        # Fall back to an available model when the configured one isn't on disk,
+        # so detection still starts with whatever quality tier is pre-shipped on
+        # this device (the saved name may reference a model from another machine
+        # or a tier not shipped here). Prefer the Fastest tier, then any tier,
+        # then any ``.onnx`` present. An empty models dir keeps the original path
+        # so the backend load surfaces a clear missing-model error.
+        if not resolved_model.exists():
+            fallback = PersonDetector._pick_available_model(models_dir)
+            if fallback is not None:
+                logger.warning(
+                    "Detection model '%s' not found in %s; falling back to '%s'",
+                    resolved_model.name,
+                    models_dir,
+                    fallback.name,
+                )
+                resolved_model = fallback
+
         logger.info("Detection runtime storage redirected to %s", storage_root)
         return str(resolved_model)
+
+    # Preference order for the missing-model fallback: the quality tiers from
+    # Fastest to Most Accurate, so a device with the pre-shipped set lands on the
+    # lightest model rather than an arbitrary one.
+    _FALLBACK_MODEL_ORDER = (
+        "yolo26n.onnx",
+        "yolo26s.onnx",
+        "yolo26m.onnx",
+        "yolo26l.onnx",
+        "yolo26x.onnx",
+    )
+
+    @classmethod
+    def _pick_available_model(cls, models_dir: Path) -> Path | None:
+        """Pick an on-disk model to fall back to, or ``None`` if the dir is empty."""
+        for name in cls._FALLBACK_MODEL_ORDER:
+            candidate = models_dir / name
+            if candidate.is_file():
+                return candidate
+        present = sorted(models_dir.glob("*.onnx"))
+        return present[0] if present else None
 
     # Env var ``_prepare_model_path`` mutates when ``storage_path`` redirects
     # the ONNX runtime cache off the default user dir. Captured + restored
@@ -556,13 +669,22 @@ class PersonDetector:
         with self._track_lock:
             return self._results
 
+    @staticmethod
+    def _box_center(box: DetectionBox) -> tuple[float, float]:
+        """Normalised centre ``(cx, cy)`` of a detection box."""
+        return ((box.x1 + box.x2) / 2.0, (box.y1 + box.y2) / 2.0)
+
     @property
     def tracked_detection(self) -> DetectionBox | None:
         """Return the detection for the currently pinned person, or *None*.
 
-        If the pinned person is within the grace period but not visible,
-        returns their last known box. After the grace period expires,
-        falls back to the largest visible detection and pins that instead.
+        While the pinned person's track is alive (seen within the grace period)
+        their box is returned even if briefly unseen. Once the track is lost or
+        re-numbered, re-acquisition re-locks onto the detection nearest the
+        last-followed box centre – the same person at the same place – so a
+        re-numbered performer keeps being followed. It falls back to the largest
+        visible detection only on a true cold start or when no candidate lies
+        within the re-acquire gate (the old target has left the frame).
         """
         now = time.monotonic()
         grace_s = self._config.grace_period_ms / 1000.0
@@ -572,25 +694,45 @@ class PersonDetector:
             pinned_id = self._pinned_id
             tracked = self._tracked
             results = self._results
+            last_center = self._last_pinned_center
 
-        # Try to find the pinned person in current tracked list
+        # Sticky-by-track_id while the pinned person's track is still alive.
         if pinned_id is not None:
             for tp in tracked:
                 if tp.track_id == pinned_id:
                     if now - tp.last_seen <= grace_s:
+                        with self._track_lock:
+                            self._last_pinned_center = self._box_center(tp.box)
                         return tp.box
                     # Grace period expired – release pin
                     break
             with self._track_lock:
                 self._pinned_id = None
 
-        # Fall back: pin the largest visible detection
         if not results:
             return None
 
-        best = max(results, key=lambda d: (d.x2 - d.x1) * (d.y2 - d.y1))
+        # Re-acquire: prefer the detection nearest the last-followed centre so a
+        # re-numbered track stays followed rather than jumping to the largest box.
+        best: DetectionBox | None = None
+        if last_center is not None:
+            cx0, cy0 = last_center
+
+            def _dist_sq(d: DetectionBox) -> float:
+                dcx, dcy = self._box_center(d)
+                return (dcx - cx0) ** 2 + (dcy - cy0) ** 2
+
+            nearest = min(results, key=_dist_sq)
+            if _dist_sq(nearest) <= _REACQUIRE_MAX_CENTER_DIST**2:
+                best = nearest
+
+        # Cold start, or the old target left the frame: pin the largest detection.
+        if best is None:
+            best = max(results, key=lambda d: (d.x2 - d.x1) * (d.y2 - d.y1))
+
         with self._track_lock:
             self._pinned_id = best.track_id
+            self._last_pinned_center = self._box_center(best)
         return best
 
     @property
@@ -669,7 +811,9 @@ class PersonDetector:
         with self._track_lock:
             self._tracker.reset()
             self._tracked = []
+            self._last_track_t = None
             self._pinned_id = None
+            self._last_pinned_center = None
         self._thread = threading.Thread(target=self._run, daemon=True, name="PersonDetector")
         self._thread.start()
         logger.info(
@@ -717,8 +861,8 @@ class PersonDetector:
         Compares the new config against the live one and:
         - Swaps cheap hot-path fields (confidence, max_persons,
           interval_ms, grace_period_ms) with no rebuild.
-        - Recomputes live-applied derived state (e.g. ``_clahe``) when
-          its source field changes. ``inference_size`` is intentionally
+        - Rebuilds the inference backend when model / storage_path
+          changes. ``inference_size`` is intentionally
           NOT live-applied here – the GStreamer appsink caps are
           pinned at pipeline build time and live-restamping
           ``_inference_size`` would silently disagree with the
@@ -796,8 +940,6 @@ class PersonDetector:
             if not pending.storage_path and old.storage_path:
                 self._restore_storage_env(self._initial_storage_env)
 
-        if pending.preprocess_clahe != old.preprocess_clahe:
-            self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)) if pending.preprocess_clahe else None
         # ``inference_size`` is intentionally NOT live-applied here.
         # The GStreamer appsink caps were chosen at pipeline build time
         # from ``PersonDetector.input_resolution`` and the receiver
@@ -850,7 +992,19 @@ class PersonDetector:
         low = [box for box in raw if box.confidence < conf]
         max_lost_s = self._config.grace_period_ms / 1000.0
 
-        tracks = self._tracker.update(high, low, now, max_lost_s)
+        # Real elapsed time since the last step, in units of the nominal interval,
+        # so the Kalman extrapolation stays correct when frames drop or the
+        # cadence jitters (1.0 = on-time, ~2.0 = one dropped frame). This is the
+        # detection-cadence clock; the pin filter runs on a separate animate-cadence
+        # clock (``_NOMINAL_FRAME_DT`` in ``runtime/services_detection_pin``).
+        nominal_s = max(self._config.interval_ms / 1000.0, 1e-3)
+        if self._last_track_t is None:
+            dt_rel = 1.0
+        else:
+            dt_rel = min(max((now - self._last_track_t) / nominal_s, _MIN_DT_REL), _MAX_DT_REL)
+        self._last_track_t = now
+
+        tracks = self._tracker.update(high, low, now, max_lost_s, dt=dt_rel)
 
         full: list[_TrackedPerson] = []
         matched: list[DetectionBox] = []
@@ -963,6 +1117,11 @@ class PersonDetector:
                 continue
             inference_ms = (time.perf_counter() - infer_started) * 1000.0
 
+            # Confine detection to the operator's masks before tracking, so
+            # out-of-mask detections (e.g. audience) never spawn tracklets.
+            # Gated on the master switch: off ⇒ the whole frame is detected.
+            boxes = filter_detections_to_masks(boxes, self._config.masks, masks_enabled=self._config.masks_enabled)
+
             # Associate detections to tracklets (two-stage ByteTrack). Guarded
             # like inference: a numerical edge in the tracker (e.g. a singular
             # Kalman matrix raising LinAlgError) must drop this frame, not kill
@@ -990,8 +1149,6 @@ class PersonDetector:
 
     def _preprocess(self, frame: npt.NDArray[Any]) -> npt.NDArray[Any]:
         """Apply CLAHE to normalise harsh stage lighting before inference."""
-        if self._clahe is None:
-            return frame
         lab = cv2.cvtColor(frame, cv2.COLOR_RGB2LAB)
         lab[:, :, 0] = self._clahe.apply(lab[:, :, 0])
         return cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)  # type: ignore[no-any-return, unused-ignore]

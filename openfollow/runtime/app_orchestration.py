@@ -119,7 +119,7 @@ def animate(app: OpenFollowApp) -> None:
     svc = app._runtime_services
 
     svc.update_video()
-    svc.apply_detection_pin()
+    svc.apply_detection_pin(dt)
     svc.update_zone_triggers()
     svc.update_marker_visuals()
 

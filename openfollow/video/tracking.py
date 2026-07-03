@@ -37,6 +37,16 @@ _LOW_IOU_GATE = 0.5
 # Detection score floor for the low set. Boxes below this are ignored; boxes in
 # ``[floor, confidence)`` form the second-stage recovery set.
 LOW_DETECTION_THRESHOLD = 0.1
+# Distance rescue for the first (high-confidence) association. A fast mover's
+# Kalman-predicted box can stop overlapping its detection (IoU below the gate)
+# between frames; a high detection whose centre lies within this many predicted-
+# box *widths* is admitted anyway, so the track follows the person instead of
+# being dropped and re-numbered. Width (not the height-dominated diagonal) is the
+# axis stage motion happens along, keeping the reach tight enough that a missed
+# frame can't snap the track onto a different nearby person. Only the high stage
+# uses it – the low stage stays IoU-strict so noisy dim boxes can't pull a track
+# onto the wrong blob.
+_DIST_RESCUE_FACTOR = 1.5
 
 FloatArray = npt.NDArray[Any]
 
@@ -81,11 +91,12 @@ class _KalmanFilter:
     """
 
     def __init__(self) -> None:
-        ndim, dt = 4, 1.0
-        self._motion_mat: FloatArray = np.eye(2 * ndim, 2 * ndim)
-        for i in range(ndim):
-            self._motion_mat[i, ndim + i] = dt
-        self._update_mat: FloatArray = np.eye(ndim, 2 * ndim)
+        self._ndim = 4
+        self._update_mat: FloatArray = np.eye(self._ndim, 2 * self._ndim)
+        # Reused scratch for the constant-velocity transition; ``predict`` only
+        # rewrites its dt entries (the tracker runs single-threaded, so reusing
+        # it avoids allocating an 8x8 every predict).
+        self._motion_mat: FloatArray = np.eye(2 * self._ndim, 2 * self._ndim)
         # Uncertainty scales relative to box height, as in the reference impl.
         self._std_weight_position = 1.0 / 20
         self._std_weight_velocity = 1.0 / 160
@@ -109,25 +120,29 @@ class _KalmanFilter:
         )
         return mean, np.diag(np.square(std))
 
-    def predict(self, mean: FloatArray, covariance: FloatArray) -> tuple[FloatArray, FloatArray]:
-        """Advance the state one step under the constant-velocity model."""
+    def predict(self, mean: FloatArray, covariance: FloatArray, dt: float = 1.0) -> tuple[FloatArray, FloatArray]:
+        """Advance the state by ``dt`` steps under the constant-velocity model.
+
+        ``dt`` is the elapsed time in units of a nominal detection interval (1.0
+        at steady cadence). Both the centre extrapolation and the accrued process
+        noise scale with it, so a frame drop (``dt`` > 1) propagates the box
+        further and widens the gate, and a burst (``dt`` < 1) does less – keeping
+        the prediction physically consistent when the real cadence jitters.
+        """
+        ndim = self._ndim
         h = float(mean[3])
+        pos_std = self._std_weight_position * h * dt
+        vel_std = self._std_weight_velocity * h * dt
         std = np.array(
-            [
-                self._std_weight_position * h,
-                self._std_weight_position * h,
-                1e-2,
-                self._std_weight_position * h,
-                self._std_weight_velocity * h,
-                self._std_weight_velocity * h,
-                1e-5,
-                self._std_weight_velocity * h,
-            ],
+            [pos_std, pos_std, 1e-2, pos_std, vel_std, vel_std, 1e-5, vel_std],
             dtype=np.float64,
         )
         motion_cov = np.diag(np.square(std))
-        mean = self._motion_mat @ mean
-        covariance = self._motion_mat @ covariance @ self._motion_mat.T + motion_cov
+        motion_mat = self._motion_mat
+        for i in range(ndim):
+            motion_mat[i, ndim + i] = dt
+        mean = motion_mat @ mean
+        covariance = motion_mat @ covariance @ motion_mat.T + motion_cov
         return mean, covariance
 
     def _project(self, mean: FloatArray, covariance: FloatArray) -> tuple[FloatArray, FloatArray]:
@@ -182,15 +197,15 @@ class STrack:
             float(box.y2),
         )
 
-    def predict(self) -> None:
-        """Advance the Kalman state; refresh the reported box while lost."""
+    def predict(self, dt: float = 1.0) -> None:
+        """Advance the Kalman state by ``dt`` steps; refresh the box while lost."""
         if self.state == "lost":
             # Freeze aspect/height velocity so an unobserved box keeps its shape
             # and only its centre extrapolates – a drifting size wrecks the IoU
             # gate when the person reappears.
             self.mean[6] = 0.0
             self.mean[7] = 0.0
-        self.mean, self.covariance = self._kf.predict(self.mean, self.covariance)
+        self.mean, self.covariance = self._kf.predict(self.mean, self.covariance, dt)
         if self.state == "lost":
             self._tlbr = _xyah_to_tlbr(self.mean)
 
@@ -243,27 +258,37 @@ class ByteTracker:
         low: list[DetectionBox],
         now: float,
         max_lost_time: float,
+        dt: float = 1.0,
     ) -> list[STrack]:
         """Associate this frame's detections and return the live tracklets.
 
         ``high`` are detections at/above the configured confidence, ``low`` the
         recovery band ``[LOW_DETECTION_THRESHOLD, confidence)``. ``max_lost_time``
-        is how long (seconds) an unmatched track is retained before removal.
+        is how long (seconds) an unmatched track is retained before removal. ``dt``
+        is the elapsed time since the previous update in nominal-interval units
+        (1.0 at steady cadence) and drives the Kalman extrapolation.
         """
         for track in self._tracks:
-            track.predict()
+            track.predict(dt)
 
         # First association: every live track vs the high-confidence detections.
-        # A lost track matched here is re-identified (back to "tracked").
-        unmatched_tracks, unmatched_high = self._associate(self._tracks, high, _HIGH_IOU_GATE, now)
+        # A lost track matched here is re-identified (back to "tracked"). The
+        # distance rescue keeps a fast mover bound when its predicted box no
+        # longer overlaps the detection.
+        unmatched_tracks, unmatched_high = self._associate(
+            self._tracks, high, _HIGH_IOU_GATE, now, dist_factor=_DIST_RESCUE_FACTOR
+        )
 
-        # Second association: only tracks that were active last frame chase the
-        # low-confidence band – the shadow-recovery pass. Already-lost tracks are
-        # not revived from noisy low boxes; they wait for a high detection.
-        active_unmatched = [t for t in unmatched_tracks if t.state == "tracked"]
-        still_unmatched, _unmatched_low = self._associate(active_unmatched, low, _LOW_IOU_GATE, now)
+        # Second association: every unmatched track – including ones already lost
+        # – chases the low-confidence band. The shadow-recovery pass: a performer
+        # who dims below the high threshold (or stays dim across frames) keeps
+        # their track_id instead of being dropped and re-numbered. The strict
+        # _LOW_IOU_GATE against the Kalman prediction is what keeps a noisy low
+        # box from resurrecting the wrong track.
+        still_unmatched, _unmatched_low = self._associate(unmatched_tracks, low, _LOW_IOU_GATE, now)
         for track in still_unmatched:
-            track.mark_lost()
+            if track.state == "tracked":
+                track.mark_lost()
 
         # Unmatched high-confidence detections spawn new tracks. Low-only
         # detections never spawn a track – that is what suppresses noise.
@@ -281,29 +306,53 @@ class ByteTracker:
         dets: list[DetectionBox],
         gate: float,
         now: float,
+        *,
+        dist_factor: float = 0.0,
     ) -> tuple[list[STrack], list[DetectionBox]]:
-        """Greedy IoU matching (highest first). Matched tracks update in place.
+        """Greedy matching (best first). Matched tracks update in place.
 
-        Returns the still-unmatched ``(tracks, detections)``.
+        A pair is admitted when its IoU clears ``gate`` or – when ``dist_factor``
+        is set – when the detection centre lies within ``dist_factor`` predicted-
+        box widths of the track (the fast-mover distance rescue). Pairs rank by
+        ``(IoU, -centre_distance)``: IoU wins first (so an overlapping match always
+        beats a pure-distance rescue), and among equal IoU – including the IoU-0
+        rescues – the nearer detection wins, so a missed frame can't snap a track
+        onto an arbitrary farther person. Returns the still-unmatched
+        ``(tracks, detections)``.
         """
         if not tracks or not dets:
             return list(tracks), list(dets)
 
-        iou = _iou_matrix(
-            np.array([t.predicted_tlbr for t in tracks], dtype=np.float64),
-            np.array([(d.x1, d.y1, d.x2, d.y2) for d in dets], dtype=np.float64),
-        )
-        pairs: list[tuple[float, int, int]] = []
+        tracks_tlbr = np.array([t.predicted_tlbr for t in tracks], dtype=np.float64)
+        dets_tlbr = np.array([(d.x1, d.y1, d.x2, d.y2) for d in dets], dtype=np.float64)
+        iou = _iou_matrix(tracks_tlbr, dets_tlbr)
+
+        # Centre-distance matrix + per-track reach for the rescue (vectorised once).
+        if dist_factor > 0.0:
+            t_cx = (tracks_tlbr[:, 0] + tracks_tlbr[:, 2]) / 2.0
+            t_cy = (tracks_tlbr[:, 1] + tracks_tlbr[:, 3]) / 2.0
+            d_cx = (dets_tlbr[:, 0] + dets_tlbr[:, 2]) / 2.0
+            d_cy = (dets_tlbr[:, 1] + dets_tlbr[:, 3]) / 2.0
+            dist = np.hypot(t_cx[:, None] - d_cx[None, :], t_cy[:, None] - d_cy[None, :])
+            reach = dist_factor * (tracks_tlbr[:, 2] - tracks_tlbr[:, 0])
+            within_reach = dist <= reach[:, None]
+
+        pairs: list[tuple[float, float, int, int]] = []
         for ti in range(len(tracks)):
             for di in range(len(dets)):
                 score = float(iou[ti, di])
-                if score >= gate:
-                    pairs.append((score, ti, di))
+                neg_dist = 0.0
+                admit = score >= gate
+                if dist_factor > 0.0:
+                    admit = admit or bool(within_reach[ti, di])
+                    neg_dist = -float(dist[ti, di])
+                if admit:
+                    pairs.append((score, neg_dist, ti, di))
         pairs.sort(reverse=True)
 
         matched_t: set[int] = set()
         matched_d: set[int] = set()
-        for _score, ti, di in pairs:
+        for _score, _neg_dist, ti, di in pairs:
             if ti in matched_t or di in matched_d:
                 continue
             tracks[ti].update(dets[di], now)

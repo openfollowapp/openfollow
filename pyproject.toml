@@ -95,6 +95,18 @@ hypothesis = "^6"
 bandit = {extras = ["toml"], version = "^1.9.4"}
 pip-audit = "^2.10.1"
 
+# Build-only tooling for the macOS .app / .dmg (packaging/macos/). Optional and
+# off by default; ``make dmg`` pulls it in with ``--with package-macos``. Kept
+# out of the runtime deps so the offline Pi / .deb build never carries
+# PyInstaller. Date-versioned hooks-contrib uses a floor (not a caret) so a
+# newer year still resolves.
+[tool.poetry.group.package-macos]
+optional = true
+
+[tool.poetry.group.package-macos.dependencies]
+pyinstaller = ">=6.10"
+pyinstaller-hooks-contrib = ">=2024.9"
+
 # Linting: ruff check/format (faster pyflakes/pycodestyle/isort/pyupgrade bundle).
 # line-length=120 matches old flake8 setting. target-version=py310 matches requires-python.
 [tool.ruff]

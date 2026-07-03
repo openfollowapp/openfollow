@@ -17,6 +17,7 @@ import os
 from collections.abc import Callable
 from typing import Any
 
+from openfollow.i18n import _, _l  # noqa: E402
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -88,7 +89,7 @@ class NdiInput(VideoInputBase):
     """NDI video input with source discovery and on-screen selection."""
 
     input_id = "ndi"
-    display_name = "NDI®"
+    display_name = _l("NDI®")
 
     # -- Declarations ---------------------------------------------------------
 
@@ -318,7 +319,7 @@ class NdiInput(VideoInputBase):
         return warning + (
             '<div class="row ndi-row">'
             '    <div class="field wide">'
-            "        <label>NDI® Source</label>"
+            f"        <label>{_('NDI® Source')}</label>"
             '        <select name="ndi_source_name" hx-get="/video-input/ndi/sources"'
             '                hx-trigger="load, click from:#refresh-ndi"'
             '                hx-target="this" hx-swap="innerHTML">'

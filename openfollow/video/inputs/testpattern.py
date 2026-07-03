@@ -20,6 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from openfollow.i18n import _, _l  # noqa: E402
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -65,7 +66,7 @@ class MediaGalleryInput(VideoInputBase):
     """Media Gallery source: still image, looping VP8 clip, or a bundled default."""
 
     input_id = "testpattern"
-    display_name = "Media Gallery"
+    display_name = _l("Media Gallery")
 
     def __init__(self) -> None:
         super().__init__()
@@ -338,7 +339,7 @@ class MediaGalleryInput(VideoInputBase):
             # A real <button> (not a <label>) so the form's label styling doesn't
             # render it as an uppercase header; it clicks the hidden file input.
             '<button type="button" class="btn-link gallery-upload-btn" '
-            'onclick="this.nextElementSibling.click()">Upload image or clip</button>'
+            f'onclick="this.nextElementSibling.click()">{_("Upload image or clip")}</button>'
             '<input type="file" accept="image/jpeg,image/png,image/webp,video/webm" '
             'onchange="openfollowGalleryUpload(this)" hidden>'
             "</div>"

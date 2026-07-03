@@ -30,6 +30,24 @@ settings.register_profile("dev", max_examples=200, deadline=None, print_blob=Tru
 settings.register_profile("ci", parent=settings.get_profile("dev"), derandomize=True)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "dev"))
 
+# Cap native thread pools to one thread per worker. Each xdist worker's OpenCV
+# pool otherwise grows to the full core count on first use, so N workers fan out
+# to N x cores threads and freeze an interactive desktop. macOS OpenCV uses GCD
+# and ignores the OMP_/BLAS env vars, so setNumThreads is the only lever (the
+# Makefile caps BLAS for the OpenBLAS Linux/Pi target). See test_thread_headroom.
+try:
+    import cv2
+
+    cv2.setNumThreads(1)
+except Exception:  # cv2 is an optional extra, absent in minimal envs
+    pass
+try:
+    import torch
+
+    torch.set_num_threads(1)
+except Exception:  # torch is an optional extra, absent in minimal envs
+    pass
+
 # Suite markers declared in pyproject.toml [tool.pytest.ini_options]. A
 # collected test that carries none of these is defaulted to ``unit`` (with a
 # warning) by pytest_collection_modifyitems below, so it can't silently vanish.

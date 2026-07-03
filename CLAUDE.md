@@ -27,6 +27,14 @@ See `docs/PROJECT_STRUCTURE.md` for layout.
   or rewrite the sentence. This applies everywhere: code comments, docstrings,
   UI strings, templates, help text, and Markdown.
 
+## Commit messages
+
+Use [Conventional Commits](https://www.conventionalcommits.org):
+`<type>(<optional scope>): <imperative summary>`. Types: `feat`, `fix`, `test`,
+`docs`, `refactor`, `perf`, `build`, `ci`, `chore`. Keep the summary under ~72
+chars and put the rationale in the body. Do not put issue/PR numbers in the
+summary (see Code comments).
+
 ## Task Management
 
 1. Write plan with checkable items

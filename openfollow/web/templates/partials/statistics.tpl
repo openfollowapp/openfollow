@@ -32,37 +32,37 @@
 % end
 % show_missing_banner = bool(tracking_missing) and tracking_enabled
 
-<p class="stat-help">Live indicators for operation and troubleshooting.</p>
+<p class="stat-help">{{_('Live indicators for operation and troubleshooting.')}}</p>
 
 <div class="stats-columns">
     <section class="stat-panel">
         <div class="stat-panel-head">
-            <h3 class="stat-panel-title">Video</h3>
+            <h3 class="stat-panel-title">{{_('Video')}}</h3>
             <span class="stat-chip {{'ok' if video_connected else 'off'}}">{{video_state}}</span>
         </div>
         <dl class="metric-list">
             <div class="metric-row">
-                <dt class="metric-label">Source</dt>
-                <dd class="metric-value">{{video.get('source_label') or video.get('source_type', 'N/A')}}</dd>
+                <dt class="metric-label">{{_('Source')}}</dt>
+                <dd class="metric-value">{{video.get('source_label') or video.get('source_type', _('N/A'))}}</dd>
             </div>
             <div class="metric-row">
-                <dt class="metric-label">Signal</dt>
+                <dt class="metric-label">{{_('Signal')}}</dt>
                 <dd class="metric-value">{{video_state}}</dd>
             </div>
             <div class="metric-row">
-                <dt class="metric-label">Resolution</dt>
+                <dt class="metric-label">{{_('Resolution')}}</dt>
                 <dd class="metric-value">{{resolution.get('width', 0)}}x{{resolution.get('height', 0)}}</dd>
             </div>
             <div class="metric-row">
-                <dt class="metric-label">Frame Rate (measured)</dt>
-                <dd class="metric-value">{{'%.1f fps' % video.get('fps', 0.0)}}</dd>
+                <dt class="metric-label">{{_('Frame Rate (measured)')}}</dt>
+                <dd class="metric-value">{{_('%.1f fps') % video.get('fps', 0.0)}}</dd>
             </div>
             <div class="metric-row">
-                <dt class="metric-label">Frame Rate (source)</dt>
-                <dd class="metric-value">{{'%.1f fps' % video.get('source_fps', 0.0)}}</dd>
+                <dt class="metric-label">{{_('Frame Rate (source)')}}</dt>
+                <dd class="metric-value">{{_('%.1f fps') % video.get('source_fps', 0.0)}}</dd>
             </div>
             <div class="metric-row">
-                <dt class="metric-label">Pipeline</dt>
+                <dt class="metric-label">{{_('Pipeline')}}</dt>
                 <dd class="metric-value">{{str(video.get('pipeline_state', 'disconnected')).upper()}}</dd>
             </div>
         </dl>
@@ -70,62 +70,62 @@
 
     <section class="stat-panel">
         <div class="stat-panel-head">
-            <h3 class="stat-panel-title">Device</h3>
+            <h3 class="stat-panel-title">{{_('Device')}}</h3>
         </div>
         <dl class="metric-list">
             <div class="metric-row">
-                <dt class="metric-label">IP</dt>
-                <dd class="metric-value">{{system.get('ip', 'N/A')}}</dd>
+                <dt class="metric-label">{{_('IP')}}</dt>
+                <dd class="metric-value">{{system.get('ip', _('N/A'))}}</dd>
             </div>
             <div class="metric-row">
-                <dt class="metric-label">Controllers</dt>
-                <dd class="metric-value">{{controllers.get('connected_count', 0)}} connected</dd>
+                <dt class="metric-label">{{_('Controllers')}}</dt>
+                <dd class="metric-value">{{controllers.get('connected_count', 0)}} {{_('connected')}}</dd>
             </div>
             <div class="metric-row">
-                <dt class="metric-label">CPU</dt>
-                <dd class="metric-value">{{'%.1f %%' % system.get('cpu_percent', 0.0)}}</dd>
+                <dt class="metric-label">{{_('CPU')}}</dt>
+                <dd class="metric-value">{{_('%.1f %%') % system.get('cpu_percent', 0.0)}}</dd>
             </div>
             <div class="metric-row">
-                <dt class="metric-label">RAM</dt>
-                <dd class="metric-value">{{'%.1f %%' % system.get('ram_percent', 0.0)}}</dd>
+                <dt class="metric-label">{{_('RAM')}}</dt>
+                <dd class="metric-value">{{_('%.1f %%') % system.get('ram_percent', 0.0)}}</dd>
             </div>
             <div class="metric-row">
-                <dt class="metric-label">Temperature</dt>
-                <dd class="metric-value">{{'%.1f C' % temp_c if temp_c is not None else 'N/A'}}</dd>
+                <dt class="metric-label">{{_('Temperature')}}</dt>
+                <dd class="metric-value">{{_('%.1f C') % temp_c if temp_c is not None else _('N/A')}}</dd>
             </div>
         </dl>
     </section>
 
     <section class="stat-panel">
         <div class="stat-panel-head">
-            <h3 class="stat-panel-title">Person Detection</h3>
+            <h3 class="stat-panel-title">{{_('Person Detection')}}</h3>
             <span class="stat-chip {{tracking_chip_class}}">{{tracking_state}}</span>
         </div>
 % if show_missing_banner:
         <div class="stat-warn" role="alert" style="margin: 0 0 10px; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255, 120, 120, 0.45); background: rgba(255, 76, 76, 0.1); color: #ffd6d6; font-size: 0.85rem;">
-            <strong>Missing packages:</strong> {{', '.join(tracking_missing)}}.
-            Install them from the Person Detection section, then restart.
+            <strong>{{_('Missing packages:')}}</strong> {{', '.join(tracking_missing)}}.
+            {{_('Install them from the Person Detection section, then restart.')}}
         </div>
 % end
         <dl class="metric-list">
             <div class="metric-row">
-                <dt class="metric-label">Status</dt>
+                <dt class="metric-label">{{_('Status')}}</dt>
                 <dd class="metric-value">{{tracking_state}}</dd>
             </div>
             <div class="metric-row">
-                <dt class="metric-label">Tracked People</dt>
+                <dt class="metric-label">{{_('Tracked People')}}</dt>
                 <dd class="metric-value">{{tracked_people}}</dd>
             </div>
             <div class="metric-row">
-                <dt class="metric-label">Inference (avg)</dt>
-                <dd class="metric-value">{{'%.1f ms' % tracking.get('inference_avg_ms', 0.0)}}</dd>
+                <dt class="metric-label">{{_('Inference (avg)')}}</dt>
+                <dd class="metric-value">{{_('%.1f ms') % tracking.get('inference_avg_ms', 0.0)}}</dd>
             </div>
             <div class="metric-row">
-                <dt class="metric-label">Inference Rate</dt>
-                <dd class="metric-value">{{'%.2f Hz' % tracking.get('inference_hz', 0.0)}}</dd>
+                <dt class="metric-label">{{_('Inference Rate')}}</dt>
+                <dd class="metric-value">{{_('%.2f Hz') % tracking.get('inference_hz', 0.0)}}</dd>
             </div>
             <div class="metric-row">
-                <dt class="metric-label">Detections (last)</dt>
+                <dt class="metric-label">{{_('Detections (last)')}}</dt>
                 <dd class="metric-value">{{tracking.get('detections_last', 0)}}</dd>
             </div>
         </dl>

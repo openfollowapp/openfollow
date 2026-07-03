@@ -24,8 +24,8 @@
 
 <div class="section" id="diagnostics-section" data-fold-key="diagnostics" data-help="diagnostics">
     <div class="section-head">
-        <h2>Diagnostics</h2>
-        <span class="section-note">Live runtime state and one-click bundle download for issue reports.</span>
+        <h2>{{_('Diagnostics')}}</h2>
+        <span class="section-note">{{_('Live runtime state and one-click bundle download for issue reports.')}}</span>
     </div>
 
     %# Live cards refresh on their own every 5s. Keeping the poll target inside
@@ -40,22 +40,22 @@
     </div>
 
     <div class="group" style="margin-top: 1.5rem;">
-        <h3 class="group-title">Bundle &amp; tools</h3>
+        <h3 class="group-title">{{_('Bundle & tools')}}</h3>
         <div class="row">
             <a class="save-btn btn-link" href="/api/diagnostics/bundle" download>
-                Download diagnostics bundle
+                {{_('Download diagnostics bundle')}}
             </a>
             <button type="button" class="secondary"
                     hx-post="/api/diagnostics/test-peers"
                     hx-target="#diagnostics-probe-results"
                     hx-swap="innerHTML">
-                Test peer connectivity
+                {{_('Test peer connectivity')}}
             </button>
             <button type="button" class="secondary"
                     hx-get="/api/diagnostics/log-tail?n=100"
                     hx-target="#diagnostics-log-tail"
                     hx-swap="innerHTML">
-                Show recent log tail (last 100 lines)
+                {{_('Show recent log tail (last 100 lines)')}}
             </button>
             %# Restart lives here (not the top chrome) – it's rare-use
             %# and shouldn't take a permanent action slot. The button
@@ -67,7 +67,7 @@
             %# hx-* attributes.
             <button type="button" class="danger"
                     onclick="confirmRestartApp()">
-                Restart application
+                {{_('Restart application')}}
             </button>
         </div>
         %# Operator-loaded output (peer probe results / log tail). The 5s poll

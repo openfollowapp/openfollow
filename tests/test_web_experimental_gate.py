@@ -48,11 +48,13 @@ def test_section_root_carries_gate_class(rel: str, anchor: str) -> None:
 
 # Each experimental section's header must carry the Experimental badge. The
 # Person Detection page has no single header: every collapsible box carries its
-# own badge.
+# own badge.  Heading text is wrapped for i18n (``{{_('…')}}``), so the anchor
+# matches the wrapped form; ``&`` is a literal in the gettext msgid (not the
+# HTML-escaped ``&amp;``).
 _BADGED_HEADERS = [
     ("partials/detection.tpl", "Tracking"),
     ("partials/detection.tpl", "Detection Model"),
-    ("partials/detection.tpl", "Sensitivity &amp; Overlay"),
+    ("partials/detection.tpl", "Sensitivity & Overlay"),
     ("partials/detection_mask_editor.tpl", "Detection Masks"),
     ("partials/rttrpm_output.tpl", "RTTrPM Output"),
 ]
@@ -60,7 +62,7 @@ _BADGED_HEADERS = [
 
 @pytest.mark.parametrize("rel,heading", _BADGED_HEADERS)
 def test_section_header_carries_badge(rel: str, heading: str) -> None:
-    line = _line_with(_read(rel), f"<h2>{heading}")
+    line = _line_with(_read(rel), f"<h2>{{{{_('{heading}')}}}}")
     assert "badge-experimental" in line, f"{rel}: {heading!r} header is missing the Experimental badge"
 
 

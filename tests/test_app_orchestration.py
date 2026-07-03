@@ -601,11 +601,16 @@ class TestCheckMarkerSpeedsPersist:
         orch.check_marker_speeds_persist(app)
         assert observed == [True]  # lock held across the save
 
-    def test_save_failure_is_swallowed_and_stays_dirty(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_save_failure_is_swallowed_stays_dirty_and_backs_off(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A failed disk write must not crash the housekeeping loop and must leave
-        the config marked dirty so the next tick retries the flush."""
+        the config marked dirty so a later tick retries. On failure the edit
+        timestamp is advanced to now, so a persistent failure backs off to the
+        settle cadence instead of retrying + logging on every tick."""
         monkeypatch.setattr(orch.time, "monotonic", lambda: 100.0)
         app = self._app(tmp_path, {5: 2.7}, dirty=True, dirty_since=90.0)
+        before = app._marker_speeds_dirty_since
 
         def _boom(*_a, **_kw):
             raise OSError("disk full")
@@ -613,9 +618,34 @@ class TestCheckMarkerSpeedsPersist:
         monkeypatch.setattr(orch, "save_config", _boom)
         # Must not raise.
         orch.check_marker_speeds_persist(app)
-        # Still dirty → retried next tick; the lock was released.
+        # Still dirty → retried later; the lock was released.
         assert app._marker_speeds_dirty is True
         assert orch.config_write_lock.locked() is False
+        # Backoff: the timestamp was advanced to now, so the next flush attempt
+        # waits out the settle window again rather than firing every tick.
+        assert app._marker_speeds_dirty_since == 100.0
+        assert app._marker_speeds_dirty_since != before
+
+    def test_malformed_config_is_not_overwritten(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The flush loads ``strict=True``, so a malformed / unparseable
+        ``config.toml`` (e.g. an in-progress hand-edit) is left byte-for-byte
+        intact instead of being silently healed to its ``.bak`` snapshot or to
+        defaults. A background flush must never clobber a bad config."""
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 100.0)
+        app = self._app(tmp_path, {5: 2.7}, dirty=True, dirty_since=90.0)
+
+        # Corrupt the on-disk config (unterminated table header -> invalid TOML).
+        bad_bytes = b"[grid\nthis = is not valid toml ]]]"
+        config_path = tmp_path / "config.toml"
+        config_path.write_bytes(bad_bytes)
+
+        # Must not raise.
+        orch.check_marker_speeds_persist(app)
+
+        # The bad file is untouched (strict load raised before any save) and the
+        # config stays dirty so it retries once the file is valid again.
+        assert config_path.read_bytes() == bad_bytes
+        assert app._marker_speeds_dirty is True
 
     def test_flush_preserves_a_concurrently_saved_section(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The flush loads the config fresh from disk and only injects the live

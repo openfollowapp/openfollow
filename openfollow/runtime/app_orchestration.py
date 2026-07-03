@@ -192,9 +192,13 @@ def check_marker_speeds_persist(app: OpenFollowApp) -> None:
     The flush reads the config fresh from disk under ``config_write_lock`` and
     injects the live ``marker_move_speeds`` before saving, so a concurrent web
     section save (which holds the same lock) can never be clobbered by writing
-    the whole in-memory config wholesale. The mtime is deliberately left alone:
-    the benign reload that follows is a no-op for speeds (they're not reloaded)
-    and correctly picks up whatever else the disk holds.
+    the whole in-memory config wholesale. The load is ``strict=True`` (mirrors
+    ``check_config_reload``): this flush fires automatically with no operator
+    intent, so on a malformed/unparseable ``config.toml`` it must raise and retry
+    rather than silently heal the file to its ``.bak`` snapshot or to defaults.
+    The mtime is deliberately left alone: the benign reload that follows is a
+    no-op for speeds (they're not reloaded) and correctly picks up whatever else
+    the disk holds.
     """
     if not app._marker_speeds_dirty:
         return
@@ -203,10 +207,14 @@ def check_marker_speeds_persist(app: OpenFollowApp) -> None:
 
     try:
         with config_write_lock:
-            cfg = load_config(app._config_path)
+            cfg = load_config(app._config_path, strict=True)
             cfg.marker_move_speeds = dict(app._config.marker_move_speeds)
             save_config(cfg, app._config_path)
     except Exception:
         logger.exception("Failed to persist per-marker move speeds.")
+        # Back off to the settle cadence so a persistent failure (e.g. a full
+        # disk, or a transiently-malformed file) doesn't retry + log on every
+        # housekeeping tick. Stays dirty, so it still retries after the window.
+        app._marker_speeds_dirty_since = time.monotonic()
         return
     app._marker_speeds_dirty = False

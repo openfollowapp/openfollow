@@ -15,10 +15,11 @@ COVERAGE_MIN ?= 100
 #
 # Worker count is headroom-aware (not ``-n logical``/``-n auto``): small
 # CI/Pi runners (≤4 logical CPUs) use every core, but a fat interactive dev
-# workstation leaves 2 cores free so the OS/UI stays responsive – ``-n logical``
-# pins all 10 cores on a 10-core Mac with zero headroom and the WindowServer
-# starves, freezing the machine mid-run. ``getconf`` is portable across
-# macOS/Linux; the ``|| echo 2`` keeps the 2-vCPU CI default if it's absent.
+# workstation reserves ~1/3 of its cores so the OS/UI stays responsive – a
+# 10-core Mac runs 6 workers and keeps 4 cores free. Saturating every core
+# starves macOS's WindowServer and freezes the machine mid-run. ``getconf`` is
+# portable across macOS/Linux; the ``|| echo 2`` keeps the 2-vCPU CI default if
+# it's absent.
 #
 # ``--dist load`` distributes individual tests across workers; ``loadscope``
 # would pin each large module to one worker and bottleneck on the slowest. Safe
@@ -27,7 +28,7 @@ COVERAGE_MIN ?= 100
 # the gate is unaffected. Override with ``PYTEST_PARALLEL=`` for a sequential run,
 # or ``PYTEST_WORKERS=N`` to pin the worker count.
 PYTEST_WORKERS ?= $(shell n=$$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2); \
-                          if [ "$$n" -gt 4 ]; then echo $$((n - 2)); else echo "$$n"; fi)
+                          if [ "$$n" -gt 4 ]; then echo $$((2 * n / 3)); else echo "$$n"; fi)
 PYTEST_PARALLEL ?= -n $(PYTEST_WORKERS) --dist load
 
 ci: lint typecheck security test build

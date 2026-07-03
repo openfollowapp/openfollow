@@ -172,9 +172,9 @@ class TestMarkerCatalog:
 
     def test_merge_newer_wins(self) -> None:
         cat = MarkerCatalog()
-        cat.upsert(1, "Old", "#ff0000", updated_at=1.0)
+        cat.upsert(1, "Old", "#ff0000")  # version 1
         applied = cat.merge_entry(
-            MarkerEntry(id=1, name="New", color="#00ff00", updated_at=2.0),
+            MarkerEntry(id=1, name="New", color="#00ff00", updated_at=2.0, version=2),
         )
         assert applied is True
         assert cat.get(1).name == "New"
@@ -207,13 +207,14 @@ class TestMarkerCatalog:
 
     def test_merge_tombstone_overrides_live(self) -> None:
         cat = MarkerCatalog()
-        cat.upsert(1, "Live", "#ff0000", updated_at=1.0)
+        cat.upsert(1, "Live", "#ff0000")  # version 1
         tomb = MarkerEntry(
             id=1,
             name="Live",
             color="#ff0000",
             updated_at=2.0,
             tombstone=True,
+            version=2,
         )
         cat.merge_entry(tomb)
         assert cat.get(1) is None
@@ -501,3 +502,166 @@ class TestMergeEntryTombstoneGuard:
         assert cat.merge_entry(tomb) is True
         got = cat.get_any(5)
         assert got is not None and got.tombstone is True
+
+
+class TestMarkerEntryVersion:
+    @pytest.mark.parametrize("bad", [True, False, -1, "5", 1.5, None, [1]])
+    def test_bad_version_coerced_to_zero(self, bad: object) -> None:
+        entry = MarkerEntry(id=1, name="X", color="#ff0000", updated_at=0.0, version=bad)
+        assert entry.version == 0
+
+    def test_valid_version_kept(self) -> None:
+        entry = MarkerEntry(id=1, name="X", color="#ff0000", updated_at=0.0, version=7)
+        assert entry.version == 7
+
+    @pytest.mark.parametrize("bad", [123, None, [], 1.5])
+    def test_non_string_origin_coerced_to_empty(self, bad: object) -> None:
+        entry = MarkerEntry(id=1, name="X", color="#ff0000", updated_at=0.0, origin=bad)
+        assert entry.origin == ""
+
+    def test_version_capped_at_max(self) -> None:
+        # A hostile/buggy peer can't push version past the TOML 64-bit range
+        # (which would write spec-violating markers.toml or poison the clock).
+        entry = MarkerEntry(id=1, name="X", color="#ff0000", updated_at=0.0, version=2**63)
+        assert entry.version == 2**63 - 1
+
+    def test_origin_sanitised_and_length_capped(self) -> None:
+        raw = "st\x00\n\x1bX" + "y" * 300
+        entry = MarkerEntry(id=1, name="X", color="#ff0000", updated_at=0.0, origin=raw)
+        assert "\x00" not in entry.origin and "\n" not in entry.origin
+        assert entry.origin.startswith("stXy")
+        assert len(entry.origin) <= 128
+
+
+class TestLogicalClockConflictResolution:
+    """The clock-skew bug: a fresh local edit must win over a stale remote even
+    when the remote carries a larger (clock-ahead) wall-clock ``updated_at``."""
+
+    def test_local_edit_beats_stale_remote_with_higher_wallclock(self) -> None:
+        cat = MarkerCatalog()
+        # A clock-ahead peer's heartbeat arrives first: stale name, far-future
+        # wall stamp, some logical version.
+        cat.merge_entry(
+            MarkerEntry(id=1, name="OldName", color="#ffffff", updated_at=1_000_000.0, version=5),
+        )
+        # Operator renames locally now; our clock is well behind the peer's.
+        cat.upsert(1, "NewName", "#ffffff", updated_at=10.0)
+        assert cat.get(1).name == "NewName"
+        # The peer keeps re-broadcasting its stale entry; it must NOT revert us.
+        reverted = cat.merge_entry(
+            MarkerEntry(id=1, name="OldName", color="#ffffff", updated_at=1_000_000.0, version=5),
+        )
+        assert reverted is False
+        assert cat.get(1).name == "NewName"
+
+    def test_upsert_assigns_monotonic_versions(self) -> None:
+        cat = MarkerCatalog()
+        assert cat.upsert(1, "A", "#ffffff").version == 1
+        assert cat.upsert(2, "B", "#ffffff").version == 2
+        assert cat.upsert(1, "A2", "#ffffff").version == 3
+
+    def test_upsert_records_origin(self) -> None:
+        cat = MarkerCatalog()
+        assert cat.upsert(1, "A", "#ffffff", origin="station-x").origin == "station-x"
+
+    def test_delete_records_origin_and_bumps_version(self) -> None:
+        cat = MarkerCatalog()
+        cat.upsert(1, "A", "#ffffff")  # version 1
+        tomb = cat.delete(1, origin="station-y")
+        assert tomb is not None
+        assert tomb.origin == "station-y"
+        assert tomb.version == 2
+
+    def test_local_edit_outranks_seen_peer_version(self) -> None:
+        cat = MarkerCatalog()
+        cat.merge_entry(MarkerEntry(id=2, name="Peer", color="#ffffff", updated_at=0.0, version=42))
+        # Next local edit must out-rank the highest version seen from any peer.
+        assert cat.upsert(1, "Local", "#ffffff").version == 43
+
+    def test_ignored_unknown_tombstone_still_advances_clock(self) -> None:
+        """An unknown-id tombstone is ignored for memory, but its version MUST
+        still advance the logical clock. Otherwise a later local create of that
+        id gets a lower version and the peer's re-broadcast tombstone out-ranks
+        and silently deletes it. Guards the clock bump that precedes the
+        unknown-tombstone early-return in merge_entry."""
+        cat = MarkerCatalog()
+        # Peer deleted id 5 long ago at a high version; we never held it.
+        ignored = MarkerEntry(id=5, name="Gone", color="#ffffff", updated_at=0.0, version=10, tombstone=True)
+        assert cat.merge_entry(ignored) is False
+        assert cat.get_any(5) is None  # ignored, not materialised
+        # A local create must out-rank what we've already seen.
+        created = cat.upsert(5, "MyMarker", "#ffffff")
+        assert created.version > 10
+        # The peer keeps re-broadcasting its stale tombstone; it must not win.
+        restale = MarkerEntry(id=5, name="Gone", color="#ffffff", updated_at=9e9, version=10, tombstone=True)
+        assert cat.merge_entry(restale) is False
+        assert cat.get(5) is not None
+        assert cat.get(5).name == "MyMarker"
+
+    def test_higher_version_wins_regardless_of_wallclock(self) -> None:
+        cat = MarkerCatalog()
+        cat.merge_entry(MarkerEntry(id=1, name="V2", color="#ffffff", updated_at=1.0, version=2))
+        # Lower version loses even with a much larger updated_at.
+        assert cat.merge_entry(MarkerEntry(id=1, name="V1", color="#ffffff", updated_at=9e9, version=1)) is False
+        assert cat.get(1).name == "V2"
+
+    def test_same_version_falls_back_to_wallclock_then_origin(self) -> None:
+        cat = MarkerCatalog()
+        cat.merge_entry(MarkerEntry(id=1, name="early", color="#ffffff", updated_at=1.0, version=3, origin="a"))
+        # Same version, later wall stamp -> wins.
+        later = MarkerEntry(id=1, name="late", color="#ffffff", updated_at=2.0, version=3, origin="a")
+        assert cat.merge_entry(later) is True
+        # Same version and wall stamp, higher origin -> wins (deterministic tiebreak).
+        higher_origin = MarkerEntry(id=1, name="z-origin", color="#ffffff", updated_at=2.0, version=3, origin="z")
+        assert cat.merge_entry(higher_origin) is True
+        assert cat.get(1).name == "z-origin"
+
+
+class TestLogicalClockPersistence:
+    def test_save_load_round_trips_version_and_origin(self, tmp_path) -> None:
+        cat = MarkerCatalog()
+        cat.upsert(1, "A", "#ffffff", origin="st-1")  # version 1
+        cat.upsert(1, "A2", "#ffffff", origin="st-1")  # version 2
+        path = str(tmp_path / "markers.toml")
+        save_catalog(cat, path)
+        loaded = load_catalog(path)
+        entry = loaded.get(1)
+        assert entry.version == 2
+        assert entry.origin == "st-1"
+
+    def test_load_resumes_lamport_above_persisted_max(self, tmp_path) -> None:
+        cat = MarkerCatalog()
+        cat.upsert(1, "A", "#ffffff")  # version 1
+        cat.upsert(1, "A2", "#ffffff")  # version 2
+        path = str(tmp_path / "markers.toml")
+        save_catalog(cat, path)
+        loaded = load_catalog(path)
+        # A post-restart edit must keep climbing, not restart at 1.
+        assert loaded.upsert(1, "A3", "#ffffff").version == 3
+
+    def test_load_back_compat_missing_version_and_origin(self, tmp_path) -> None:
+        path = tmp_path / "markers.toml"
+        path.write_text(
+            '[[marker]]\nid = 1\nname = "Old"\ncolor = "#ffffff"\nupdated_at = 5.0\ntombstone = false\n',
+            encoding="utf-8",
+        )
+        cat = load_catalog(str(path))
+        entry = cat.get(1)
+        assert entry is not None
+        assert entry.version == 0
+        assert entry.origin == ""
+
+    def test_load_sanitises_origin_and_caps_version(self, tmp_path) -> None:
+        # A hand-edited markers.toml must go through the same origin sanitise +
+        # version cap as the wire path, not load verbatim.
+        path = tmp_path / "markers.toml"
+        path.write_text(
+            '[[marker]]\nid = 1\nname = "X"\ncolor = "#ffffff"\nupdated_at = 1.0\n'
+            'origin = "ok\\u0007bad"\nversion = 99999999999999999999\n',
+            encoding="utf-8",
+        )
+        cat = load_catalog(str(path))
+        entry = cat.get_any(1)
+        assert entry is not None
+        assert entry.origin == "okbad"  # BEL stripped
+        assert entry.version == 2**63 - 1  # clamped to the 64-bit cap

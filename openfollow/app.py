@@ -784,6 +784,7 @@ class OpenFollowApp:
                 tid,
                 f"Marker {tid}",
                 _PALETTE_AUTO_PICK_ORDER[tid % len(_PALETTE_AUTO_PICK_ORDER)],
+                origin=self._config.station_id,
             )
             seeded = True
         if seeded:

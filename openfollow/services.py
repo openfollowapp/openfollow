@@ -851,22 +851,13 @@ class AppRuntimeServices:
     def _resolve_web_bind(self) -> str:
         """Resolve the web UI listen address.
 
-        ``web_bind`` set → that explicit address. Empty → pin to the PSN
-        source interface's IPv4 when one is configured and resolvable, else
-        ``0.0.0.0`` (all interfaces). The server additionally serves loopback
-        whenever this pins a specific IP, so the on-screen browser is
-        unaffected.
+        ``web_bind`` set → that explicit address. Empty → ``0.0.0.0`` (all
+        interfaces) so the UI stays reachable across an interface IP change
+        without a restart. When ``web_pin`` is set, access is gated by session
+        auth plus the CSRF / DNS-rebind guards; with it empty those are
+        disabled. Set ``web_bind`` to pin the UI to a single address.
         """
-        cfg = self._app._config
-        if cfg.web_bind:
-            return cfg.web_bind
-        if cfg.psn_source_iface:
-            from openfollow.net_utils import get_iface_ipv4
-
-            ip = get_iface_ipv4(cfg.psn_source_iface)
-            if ip:
-                return ip
-        return "0.0.0.0"
+        return self._app._config.web_bind or "0.0.0.0"
 
     def init_psn(self) -> None:
         source_ip = self._resolved_source_ip()
@@ -1831,9 +1822,10 @@ class AppRuntimeServices:
             port=self._app._config.web_port,
             system_name=self._app._config.psn_system_name,
             command_queue=self._app._web_commands,
-            # Resolved PSN bind IP for the web UI header so iface-pinned
-            # boxes don't display empty/stale.
+            # Resolved PSN bind IP for the web UI header; the provider
+            # re-resolves it live so an IP change updates the self-row.
             local_ip=self._resolved_source_ip(),
+            local_ip_provider=self._resolved_source_ip,
             runtime_stats_provider=self.get_runtime_stats_snapshot,
             preview_snapshot_provider=self._preview_provider.get_snapshot,
             zone_state_provider=self._get_zone_states_snapshot,

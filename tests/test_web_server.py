@@ -5546,3 +5546,157 @@ def test_csrf_safe_method_ignores_foreign_origin(pin_protected_server) -> None:
         base, "/api/config", extra_headers={"Origin": "http://evil.example.com"}, method="GET", data=None
     )
     assert status != 403
+
+
+# --------------------------------------------------------------------------- #
+# Per-marker move speeds: device-local, runtime-authoritative (Web-save reset fix)
+# --------------------------------------------------------------------------- #
+
+
+def _speeds_server(tmp_path, monkeypatch, *, live_speeds, controlled_ids, disk_speeds=None):
+    """Live server with a ``marker_move_speeds_provider`` wired and an on-disk
+    config seeded with ``controlled_ids`` (and optionally ``disk_speeds``).
+
+    Models production: the disk config never carries the live runtime speeds
+    (they're written only by the debounced flush), so the provider is the only
+    source of the operator's just-ramped values during a section save.
+    """
+    monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
+
+    port = _find_free_tcp_port()
+    config_path = tmp_path / "config.toml"
+    cfg = AppConfig(controlled_marker_ids=list(controlled_ids))
+    if disk_speeds:
+        cfg.marker_move_speeds = dict(disk_speeds)
+    save_config(cfg, str(config_path))
+
+    server = ConfigWebServer(
+        config_path=str(config_path),
+        host="127.0.0.1",
+        port=port,
+        system_name="TestSystem",
+        marker_move_speeds_provider=lambda: dict(live_speeds),
+    )
+    server.start()
+    assert _wait_for_port(port)
+    return server, f"http://127.0.0.1:{port}"
+
+
+def test_section_save_preserves_live_marker_speeds_on_disk(tmp_path, monkeypatch) -> None:
+    """Canonical repro: the operator ramps marker 5's speed at runtime (live dict
+    holds {5: 2.7}), the disk config has none, then they save an UNRELATED web
+    section (Grid). The written file must carry {5: 2.7}, not the empty disk
+    value, so the follow-up hot-reload of that file is a no-op for the speeds.
+
+    (The complementary guarantee – the reload itself never clobbers the live
+    dict – is covered directly in ``test_configuration.py``.)"""
+    server, base = _speeds_server(
+        tmp_path,
+        monkeypatch,
+        live_speeds={5: 2.7},
+        controlled_ids=[5],
+    )
+    try:
+        # Sanity: the disk config genuinely has no speeds before the save, so a
+        # naive "load disk, apply section, save" would drop {5: 2.7}.
+        assert load_config(server.config_path).marker_move_speeds == {}
+
+        status, _ = _post_form(base, "/section/grid", {"width": "25"})
+        assert status == 200
+
+        reloaded = load_config(server.config_path)
+        assert reloaded.marker_move_speeds == {5: 2.7}
+        # The unrelated edit still landed.
+        assert reloaded.grid.width == 25.0
+    finally:
+        server.stop()
+
+
+def test_section_save_prunes_deselected_live_speed(tmp_path, monkeypatch) -> None:
+    """A live speed for a marker no longer in ``controlled_marker_ids`` is pruned
+    on save (``config_to_toml_dict`` prunes), even though it was overlaid from the
+    provider. Marker 5 stays; marker 9 (not controlled) is dropped."""
+    server, base = _speeds_server(
+        tmp_path,
+        monkeypatch,
+        live_speeds={5: 2.7, 9: 4.0},
+        controlled_ids=[5],
+    )
+    try:
+        status, _ = _post_form(base, "/section/grid", {"width": "25"})
+        assert status == 200
+        reloaded = load_config(server.config_path)
+        assert reloaded.marker_move_speeds == {5: 2.7}
+    finally:
+        server.stop()
+
+
+def test_import_preserves_station_speeds_ignoring_payload(tmp_path, monkeypatch) -> None:
+    """Import is device-local for speeds: this station's live {5: 2.7} survives,
+    and speeds carried in the imported payload ({7: 3.3}) are ignored."""
+    server, base = _speeds_server(
+        tmp_path,
+        monkeypatch,
+        live_speeds={5: 2.7},
+        controlled_ids=[5],
+    )
+    try:
+        payload = {
+            "controlled_marker_ids": [5, 7],
+            "marker_move_speeds": {"7": 3.3},
+            "grid": {"width": 30.0},
+        }
+        status, body = _post_json(base, "/api/config/import", payload)
+        assert status == 200
+        assert body.get("success") is True
+
+        reloaded = load_config(server.config_path)
+        # Station's live speed kept; the imported {7: 3.3} did not land.
+        assert reloaded.marker_move_speeds == {5: 2.7}
+    finally:
+        server.stop()
+
+
+def test_export_omits_marker_move_speeds(tmp_path, monkeypatch) -> None:
+    """Per-marker speeds are device-local and must never leave the box via the
+    config export."""
+    server, base = _speeds_server(
+        tmp_path,
+        monkeypatch,
+        live_speeds={5: 2.7},
+        controlled_ids=[5],
+        disk_speeds={5: 2.7},
+    )
+    try:
+        with urllib.request.urlopen(f"{base}/api/config/export", timeout=5) as resp:
+            assert resp.status == 200
+            body = json.loads(resp.read().decode())
+        assert "marker_move_speeds" not in body
+    finally:
+        server.stop()
+
+
+def test_section_broadcast_receive_does_not_carry_or_clobber_speeds(tmp_path, monkeypatch) -> None:
+    """A ``marker`` section applied via ``POST /api/config/<section>`` (the peer
+    broadcast receive) neither injects the provider's live speeds nor writes any
+    ``marker_move_speeds`` – the section apply doesn't touch that top-level field.
+    On-disk speeds (whatever they were) are left as-is."""
+    server, base = _speeds_server(
+        tmp_path,
+        monkeypatch,
+        live_speeds={5: 2.7},
+        controlled_ids=[5],
+        disk_speeds={5: 1.0},
+    )
+    try:
+        status, body = _post_json(base, "/api/config/marker", {"ball_size": 0.3})
+        assert status == 200
+        reloaded = load_config(server.config_path)
+        # The receive path does NOT overlay the live provider value; the disk
+        # value is preserved untouched by the marker-section apply.
+        assert reloaded.marker_move_speeds == {5: 1.0}
+    finally:
+        server.stop()

@@ -599,6 +599,10 @@ def adjust_move_speed(
     else:
         new_speed = min(app._config.marker.max_speed, round(current + step, 1))
     app._config.marker_move_speeds[marker_id] = new_speed
+    # Mark dirty; the housekeeping loop flushes to disk after a quiet window so a
+    # tap-streak / held bumper coalesces into one write (see check_marker_speeds_persist).
+    app._marker_speeds_dirty = True
+    app._marker_speeds_dirty_since = now
 
 
 def handle_key_press(app: OpenFollowApp, key: str) -> None:

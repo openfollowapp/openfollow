@@ -127,6 +127,7 @@ def _make_fake_app(
         _check_restart_request=_recorder("check_restart_request"),
         _check_pi_network_worker=_recorder("check_pi_network_worker"),
         _check_button_detection_request=_recorder("check_button_detection_request"),
+        _check_marker_speeds_persist=_recorder("check_marker_speeds_persist"),
         _check_video_disconnect_banner=_recorder("check_video_disconnect_banner"),
         _process_input=_recorder("process_input"),
         _refresh_iface_list=_recorder("refresh_iface_list"),
@@ -261,6 +262,7 @@ class TestHousekeeping:
             "check_restart_request",
             "check_pi_network_worker",
             "check_button_detection_request",
+            "check_marker_speeds_persist",
         ]
 
     def test_swallows_check_exception_and_keeps_timer(self) -> None:
@@ -280,6 +282,7 @@ class TestHousekeeping:
             "check_update_request",
             "check_pi_network_worker",
             "check_button_detection_request",
+            "check_marker_speeds_persist",
         ]
 
 
@@ -519,3 +522,162 @@ class TestRunNativeLoop:
         with pytest.raises(KeyboardInterrupt):
             orch.run_native_loop(app)
         assert app._runtime_services.shutdown_calls == 1
+
+
+# --------------------------------------------------------------------------- #
+# check_marker_speeds_persist
+# --------------------------------------------------------------------------- #
+
+
+class TestCheckMarkerSpeedsPersist:
+    """The debounced disk flush for the runtime-authoritative per-marker speeds.
+
+    Exercised through the public ``check_marker_speeds_persist`` boundary against
+    a real config file, so the assertions are about observable disk state, not
+    the helper's internals.
+    """
+
+    def _app(self, tmp_path, live_speeds: dict[int, float], dirty: bool, dirty_since: float):
+        from openfollow.configuration import AppConfig, save_config
+
+        config_path = tmp_path / "config.toml"
+        # Seed a real on-disk config the flush will re-load fresh.
+        save_config(AppConfig(controlled_marker_ids=list(live_speeds)), str(config_path))
+        cfg = AppConfig(
+            controlled_marker_ids=list(live_speeds),
+            marker_move_speeds=dict(live_speeds),
+        )
+        return SimpleNamespace(
+            _config_path=str(config_path),
+            _config=cfg,
+            _marker_speeds_dirty=dirty,
+            _marker_speeds_dirty_since=dirty_since,
+        )
+
+    def test_clean_app_never_flushes(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from openfollow.configuration import load_config
+
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 1000.0)
+        app = self._app(tmp_path, {5: 2.7}, dirty=False, dirty_since=0.0)
+        orch.check_marker_speeds_persist(app)
+        # Disk still has no speeds; nothing was written.
+        assert load_config(app._config_path).marker_move_speeds == {}
+        assert app._marker_speeds_dirty is False
+
+    def test_dirty_before_settle_window_does_not_flush(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from openfollow.configuration import load_config
+
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 100.0)
+        # Edited 1.0s ago; the settle window is 2.5s, so no flush yet.
+        app = self._app(tmp_path, {5: 2.7}, dirty=True, dirty_since=99.0)
+        orch.check_marker_speeds_persist(app)
+        assert load_config(app._config_path).marker_move_speeds == {}
+        assert app._marker_speeds_dirty is True  # still pending
+
+    def test_flushes_and_clears_after_settle_window(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from openfollow.configuration import load_config
+
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 100.0)
+        # Edited 3.0s ago (>= 2.5s settle) → flush.
+        app = self._app(tmp_path, {5: 2.7}, dirty=True, dirty_since=97.0)
+        orch.check_marker_speeds_persist(app)
+        assert load_config(app._config_path).marker_move_speeds == {5: 2.7}
+        assert app._marker_speeds_dirty is False
+
+    def test_flush_holds_config_write_lock(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The flush must serialise on ``config_write_lock`` so it can't race a
+        concurrent web section save."""
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 100.0)
+        app = self._app(tmp_path, {5: 2.7}, dirty=True, dirty_since=90.0)
+
+        observed: list[bool] = []
+        real_save = orch.save_config
+
+        def _spy_save(cfg, path):  # noqa: ANN001
+            observed.append(orch.config_write_lock.locked())
+            return real_save(cfg, path)
+
+        monkeypatch.setattr(orch, "save_config", _spy_save)
+        orch.check_marker_speeds_persist(app)
+        assert observed == [True]  # lock held across the save
+
+    def test_save_failure_is_swallowed_and_stays_dirty(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A failed disk write must not crash the housekeeping loop and must leave
+        the config marked dirty so the next tick retries the flush."""
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 100.0)
+        app = self._app(tmp_path, {5: 2.7}, dirty=True, dirty_since=90.0)
+
+        def _boom(*_a, **_kw):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(orch, "save_config", _boom)
+        # Must not raise.
+        orch.check_marker_speeds_persist(app)
+        # Still dirty → retried next tick; the lock was released.
+        assert app._marker_speeds_dirty is True
+        assert orch.config_write_lock.locked() is False
+
+    def test_flush_preserves_a_concurrently_saved_section(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The flush loads the config fresh from disk and only injects the live
+        speeds, so an unrelated field another writer just persisted survives –
+        it does NOT save the whole in-memory config wholesale."""
+        from openfollow.configuration import AppConfig, load_config, save_config
+
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 100.0)
+        config_path = tmp_path / "config.toml"
+        # A web save landed on disk with a changed grid width; the live app's
+        # in-memory config still has the OLD width (it hasn't reloaded yet).
+        on_disk = AppConfig(controlled_marker_ids=[5])
+        on_disk.grid.width = 42.0
+        save_config(on_disk, str(config_path))
+
+        live = AppConfig(controlled_marker_ids=[5], marker_move_speeds={5: 2.7})
+        live.grid.width = 10.0  # stale in-memory value
+        app = SimpleNamespace(
+            _config_path=str(config_path),
+            _config=live,
+            _marker_speeds_dirty=True,
+            _marker_speeds_dirty_since=90.0,
+        )
+
+        orch.check_marker_speeds_persist(app)
+
+        result = load_config(str(config_path))
+        assert result.marker_move_speeds == {5: 2.7}  # live speeds injected
+        assert result.grid.width == 42.0  # concurrent save NOT clobbered
+
+    def test_restart_survival_round_trip(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """adjust -> settle -> flush -> a fresh ``load_config`` (as a restart would
+        do) shows the persisted speed."""
+        from openfollow.configuration import AppConfig, load_config, save_config
+        from openfollow.runtime.app_modes import adjust_move_speed
+
+        config_path = tmp_path / "config.toml"
+        save_config(AppConfig(controlled_marker_ids=[1]), str(config_path))
+
+        cfg = AppConfig(controlled_marker_ids=[1], marker_move_speeds={1: 1.0})
+        app = SimpleNamespace(
+            _config_path=str(config_path),
+            _config=cfg,
+            _selected_id=1,
+            _speed_key_streak={},
+            _speed_key_last_t={},
+            _speed_key_last_dir={},
+            _marker_speeds_dirty=False,
+            _marker_speeds_dirty_since=0.0,
+            get_marker_move_speed=lambda mid: cfg.marker_move_speeds.get(mid, cfg.marker.move_speed),
+        )
+
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 100.0)
+        # app_modes uses its own ``time`` module; patch that too for a stable stamp.
+        import openfollow.runtime.app_modes as modes
+
+        monkeypatch.setattr(modes.time, "monotonic", lambda: 100.0)
+        adjust_move_speed(app, +1)  # 1.0 -> 1.1, marks dirty at t=100.0
+
+        # Settle window elapsed.
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 103.0)
+        orch.check_marker_speeds_persist(app)
+
+        reloaded = load_config(str(config_path))
+        assert reloaded.marker_move_speeds == {1: 1.1}

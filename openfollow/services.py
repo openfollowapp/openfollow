@@ -1832,6 +1832,9 @@ class AppRuntimeServices:
             zone_diagnostics_provider=self._get_zone_diagnostics_snapshot,
             zone_test_send=self._zone_test_send,
             marker_positions_provider=self._get_marker_positions_snapshot,
+            # Live per-marker move speeds; the ``dict(...)`` copy is the
+            # mutation-isolation boundary so the web thread never holds the live dict.
+            marker_move_speeds_provider=lambda: dict(self._app._config.marker_move_speeds),
             full_snapshot_provider=self._snapshot_provider.get_snapshot,
             # Diagnostics + conflict-probe hooks. ``init_web_server`` runs
             # before ``init_osc_transmitters``, so the manager is ``None``

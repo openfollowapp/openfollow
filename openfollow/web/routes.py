@@ -2150,11 +2150,15 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     ``web_pin`` is the login credential – stripped so it never travels in
     cleartext. ``detection.storage_path`` is an absolute path that only makes
     sense on this host (a path from another machine would be unwritable here),
-    so it is stripped too. On import an absent value keeps the current one
-    (``_apply_import_data`` restores both), so the round-trip can't clear them.
+    so it is stripped too. ``marker_move_speeds`` is device-local and
+    runtime-authoritative, so it is dropped as well. On import an absent value
+    keeps the current one (``_apply_import_data`` restores them), so the
+    round-trip can't clear them.
     """
     d = asdict(cfg)
     d.pop("web_pin", None)
+    # Device-local, runtime-authoritative per-marker speeds never leave this box.
+    d.pop("marker_move_speeds", None)
     # ``detection`` is always present (asdict of a dataclass field); drop the
     # host-local storage path so it never travels to another machine.
     d["detection"].pop("storage_path", None)
@@ -3663,6 +3667,20 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         data.update(_build_input_template_data(cfg))
         return template("partials/video_source", **data)
 
+    def _load_config_for_edit() -> AppConfig:
+        """Fresh disk load with the live per-marker move speeds overlaid.
+
+        The disk copy doesn't know the runtime R/T + gamepad-bumper speeds, so an
+        operator-local section save would otherwise write stale speeds. Overlaying
+        the live values makes the write faithful and the subsequent hot-reload a
+        no-op for that (device-local, runtime-authoritative) field.
+        """
+        cfg = load_config(server.config_path)
+        speeds = server.get_marker_move_speeds()
+        if speeds:
+            cfg.marker_move_speeds = dict(speeds)
+        return cfg
+
     def _save_section_from_form(
         section: str,
         *,
@@ -3675,7 +3693,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if extra_fields:
             form_data.update(extra_fields)
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _load_config_for_edit()
             # In imperial mode, length/speed fields arrive as imperial
             # strings ("5 ft 6 in"). Rewrite to canonical metric before the
             # metric-only section parsers run, so storage stays metric.
@@ -4363,7 +4381,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update video source settings."""
         form_data = dict(request.forms)
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _load_config_for_edit()
             apply_section_data(cfg, "video_source", form_data)
             save_config(cfg, server.config_path)
 
@@ -4382,7 +4400,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update general settings."""
         form_data = dict(request.forms)
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _load_config_for_edit()
             apply_section_data(cfg, "general", form_data)
             save_config(cfg, server.config_path)
 
@@ -4543,7 +4561,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update PSN output settings."""
         form_data = dict(request.forms)
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _load_config_for_edit()
             apply_section_data(cfg, "psn", form_data)
             save_config(cfg, server.config_path)
 
@@ -6731,6 +6749,15 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         with _config_write_lock:
             current = load_config(server.config_path)
+            # Per-marker move speeds are device-local + runtime-authoritative:
+            # preserve THIS station's live speeds and ignore any that rode along in
+            # the imported payload. Overlay them onto ``current`` so the deepcopy
+            # inside ``_apply_import_data`` carries them through (nothing in the
+            # section applies touches ``marker_move_speeds``, so the imported value
+            # is dropped either way – this keeps the live value, not the stale disk one).
+            speeds = server.get_marker_move_speeds()
+            if speeds:
+                current.marker_move_speeds = dict(speeds)
             full_cfg = _apply_import_data(current, data)
             save_config(full_cfg, server.config_path)
             return json.dumps({"success": True, "needs_restart": False})
@@ -6795,6 +6822,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return json.dumps({"error": "Invalid JSON"})
 
         with _config_write_lock:
+            # A peer-broadcast / external-API receive: no live-speed overlay. Section
+            # applies never touch top-level ``marker_move_speeds`` (device-local,
+            # runtime-authoritative), and Part 0 keeps the ensuing reload from
+            # clobbering the live dict, so a plain disk load is correct here.
             cfg = load_config(server.config_path)
             scrubbed = strip_device_local_fields(section, data)
             if not apply_section_data(cfg, section, scrubbed):
@@ -6827,7 +6858,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return json.dumps({"error": "Invalid JSON"})
 
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            # Local apply is an operator saving their own form, so overlay the
+            # live per-marker speeds like the other section-save flows.
+            cfg = _load_config_for_edit()
             if not apply_section_data(cfg, section, data):
                 response.status = 404
                 return json.dumps({"error": "Unknown section"})

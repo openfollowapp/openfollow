@@ -2837,10 +2837,11 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     if new_config.marker != app._config.marker:
         app._config.marker = new_config.marker
 
-    if new_config.marker_move_speeds != app._config.marker_move_speeds:
-        # Readers go through ``get_marker_move_speed``, so a direct swap
-        # suffices – no service restart.
-        app._config.marker_move_speeds = new_config.marker_move_speeds
+    # ``marker_move_speeds`` is deliberately NOT reloaded here. It is device-local
+    # and runtime-authoritative – written live by the R/T keys + gamepad bumpers, so
+    # the in-memory dict is the source of truth. A hot-reload from any config write (a
+    # web section save, the debounced self-persist, an import) must never overwrite it.
+    # Startup ``load_config`` seeds the initial value from disk; it is not reloaded after.
 
     # ``unit_system`` is read live every frame by ``sync_ui_config`` and
     # ``show_experimental_features`` gates the web UI off ``app._config``; a

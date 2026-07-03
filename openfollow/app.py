@@ -174,6 +174,9 @@ from openfollow.runtime.app_orchestration import (
     check_config_reload as runtime_check_config_reload,
 )
 from openfollow.runtime.app_orchestration import (
+    check_marker_speeds_persist as runtime_check_marker_speeds_persist,
+)
+from openfollow.runtime.app_orchestration import (
     get_config_mtime as runtime_get_config_mtime,
 )
 from openfollow.runtime.app_orchestration import (
@@ -340,6 +343,10 @@ class OpenFollowApp:
         self._speed_key_last_t: dict[int, float] = {}
         self._speed_key_last_dir: dict[int, int] = {}
 
+        # Debounced persistence of the runtime-authoritative per-marker move speeds.
+        self._marker_speeds_dirty: bool = False
+        self._marker_speeds_dirty_since: float = 0.0
+
         self._button_detection: ButtonDetectionWizard | None = None
 
         self._update_worker: threading.Thread | None = None
@@ -464,6 +471,9 @@ class OpenFollowApp:
 
     def _check_restart_request(self) -> None:
         runtime_check_restart_request(self)
+
+    def _check_marker_speeds_persist(self) -> None:
+        runtime_check_marker_speeds_persist(self)
 
     def _check_pi_network_worker(self) -> None:
         from openfollow.runtime.app_modes_network import drain_pi_network_worker

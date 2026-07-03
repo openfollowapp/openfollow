@@ -131,6 +131,10 @@ class ConfigWebServer:
         zone_diagnostics_provider: (Callable[[int], dict[str, Any] | None] | None) = None,
         zone_test_send: (Callable[[int, str], dict[str, Any]] | None) = None,
         marker_positions_provider: Callable[[], list[tuple[int, float, float]]] | None = None,
+        # Live per-marker move speeds (R/T + gamepad bumpers). Device-local and
+        # runtime-authoritative; the section-save path overlays them onto the fresh
+        # disk load so a save can't clobber a speed the operator just ramped.
+        marker_move_speeds_provider: Callable[[], dict[int, float]] | None = None,
         full_snapshot_provider: Callable[[], bytes | None] | None = None,
         osc_binding_status_provider: Callable[[str], dict[str, Any] | None] | None = None,
         osc_binding_preview_provider: Callable[[str], dict[str, Any] | None] | None = None,
@@ -205,6 +209,7 @@ class ConfigWebServer:
         self._zone_diagnostics_provider = zone_diagnostics_provider
         self._zone_test_send = zone_test_send
         self._marker_positions_provider = marker_positions_provider
+        self._marker_move_speeds_provider = marker_move_speeds_provider
         self._full_snapshot_provider = full_snapshot_provider
         self._osc_binding_status_provider = osc_binding_status_provider
         self._osc_binding_preview_provider = osc_binding_preview_provider
@@ -567,6 +572,16 @@ class ConfigWebServer:
         if self._marker_positions_provider is None:
             return []
         return self._marker_positions_provider()
+
+    def get_marker_move_speeds(self) -> dict[int, float]:
+        """Return live per-marker move speeds; empty dict when unwired.
+
+        The provider (wired in ``services``) hands back a copy, so a section save
+        can overlay these onto its fresh disk load without touching the live dict.
+        """
+        if self._marker_move_speeds_provider is None:
+            return {}
+        return self._marker_move_speeds_provider()
 
     def get_full_snapshot(self) -> bytes | None:
         """Return a full-resolution JPEG snapshot, or None."""

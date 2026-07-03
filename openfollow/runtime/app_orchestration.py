@@ -10,7 +10,12 @@ import os
 import time
 from typing import TYPE_CHECKING
 
-from openfollow.configuration import apply_runtime_config_changes, load_config
+from openfollow.configuration import (
+    apply_runtime_config_changes,
+    config_write_lock,
+    load_config,
+    save_config,
+)
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -30,6 +35,10 @@ _HOUSEKEEPING_INTERVAL_MS = 100
 # marker at the wrong speed on non-60Hz displays (≈2× on a 120 Hz panel).
 _DEFAULT_FRAME_DT = 1.0 / 60.0  # first-tick fallback before a real delta exists
 _MAX_FRAME_DT = 0.1  # clamp the step after a stall so a marker can't teleport
+
+# Quiet window after the last per-marker speed edit before it's flushed to disk,
+# so a tap-streak / held bumper coalesces into a single write.
+_SPEED_PERSIST_SETTLE_S = 2.5
 
 
 def run_native_loop(app: OpenFollowApp) -> None:
@@ -77,6 +86,7 @@ def housekeeping(app: OpenFollowApp) -> bool:
         app._check_restart_request,
         app._check_pi_network_worker,
         app._check_button_detection_request,
+        app._check_marker_speeds_persist,
     ):
         try:
             check()
@@ -173,3 +183,30 @@ def check_config_reload(app: OpenFollowApp) -> None:
 
     app._config_mtime = mtime
     logger.info("Config reloaded.")
+
+
+def check_marker_speeds_persist(app: OpenFollowApp) -> None:
+    """Flush the runtime-authoritative per-marker move speeds ~2.5s after the
+    last R/T / gamepad-bumper edit, coalescing a tap-streak into one write.
+
+    The flush reads the config fresh from disk under ``config_write_lock`` and
+    injects the live ``marker_move_speeds`` before saving, so a concurrent web
+    section save (which holds the same lock) can never be clobbered by writing
+    the whole in-memory config wholesale. The mtime is deliberately left alone:
+    the benign reload that follows is a no-op for speeds (they're not reloaded)
+    and correctly picks up whatever else the disk holds.
+    """
+    if not app._marker_speeds_dirty:
+        return
+    if time.monotonic() - app._marker_speeds_dirty_since < _SPEED_PERSIST_SETTLE_S:
+        return
+
+    try:
+        with config_write_lock:
+            cfg = load_config(app._config_path)
+            cfg.marker_move_speeds = dict(app._config.marker_move_speeds)
+            save_config(cfg, app._config_path)
+    except Exception:
+        logger.exception("Failed to persist per-marker move speeds.")
+        return
+    app._marker_speeds_dirty = False

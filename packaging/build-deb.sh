@@ -226,6 +226,10 @@ else
   EXPORT_VENV="$(mktemp -d)"
   python3 -m venv "$EXPORT_VENV"
   "$EXPORT_VENV/bin/pip" install --quiet --upgrade pip
+  # CPU-only torch first so it satisfies ultralytics before the default CUDA wheel
+  # is pulled (amd64 skips ~GBs of unused CUDA libs); fall back if no CPU build.
+  "$EXPORT_VENV/bin/pip" install --quiet --index-url https://download.pytorch.org/whl/cpu torch torchvision \
+    || "$EXPORT_VENV/bin/pip" install --quiet torch torchvision
   "$EXPORT_VENV/bin/pip" install --quiet "ultralytics>=8.4.72" onnx onnxslim
   for tier in n s m; do
     ( cd "$EXPORT_VENV" && "$EXPORT_VENV/bin/python" "$REPO_ROOT/scripts/export_onnx.py" \

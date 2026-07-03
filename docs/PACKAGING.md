@@ -98,15 +98,22 @@ pre-release sorts before the final release). Override with `OF_DEB_VERSION=…`.
 
 ## Install it (offline)
 
-On a Pi whose base image already provides the `Depends` (GStreamer, GTK, Cage,
-seatd, kanshi, the `gir1.2-*` typelibs, …):
+On a host whose base OS already provides the `Depends` (GStreamer, GTK, Cage,
+seatd, kanshi, the `gir1.2-*` typelibs, …) – a Pi, or an x86_64 machine on the
+same OS release:
 
 ```bash
 sudo apt-get install -y ./openfollow_*.deb   # or: sudo dpkg -i ./openfollow_*.deb
 ```
 
+The target must run **Debian 13 (Trixie) / Python 3.13** (Raspberry Pi OS is
+Trixie-based): the bundled venv is stamped `python3 (>= 3.13), (<< 3.14)`, so an
+older-Python host (Ubuntu 24.04, Debian 12) refuses the install. The service is a
+Cage/DRM kiosk, so the machine also needs a GPU + display – it will not come up on
+a headless server / VM.
+
 `postinst` creates the user, enables linger, and starts the service. Open the
-web UI at `http://<pi-ip>/`.
+web UI at `http://<host-ip>/`.
 
 > In a chroot/image-build context (no running systemd), the maintainer scripts
 > enable the units but skip the live start – exactly what `rpi-image-gen` needs.

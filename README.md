@@ -128,11 +128,16 @@ Open the Web UI at `http://<pi-ip>:80` to configure it.
 ### Option 2: install the `.deb` package (other Pi models, or an x86_64 PC)
 
 Needs internet so `apt` can pull the package's system dependencies. Works on a Pi
-(`arm64`) and on a commodity x86_64 box – mini-PC, NUC, or laptop – (`amd64`).
+(`arm64`) and on a commodity x86_64 box – mini-PC, NUC, or laptop – (`amd64`). Two
+requirements: the package bundles a **Python 3.13** venv, so the host must be
+**Debian 13 (Trixie)** or a derivative on the same Python (Raspberry Pi OS is
+Trixie-based) – Ubuntu 24.04 / Debian 12 ship an older Python and will refuse to
+install; and it runs a **fullscreen display kiosk**, so the machine needs a GPU +
+monitor (a headless server or VM has no display for it to drive).
 
-1. Prepare the host: flash **Raspberry Pi OS Lite (64-bit)** with **Raspberry Pi
-   Imager** (enable SSH and create a user), boot the Pi, and SSH in – or, on an
-   x86_64 machine, install a standard 64-bit **Debian** or **Ubuntu**.
+1. Prepare the host: flash the latest **Raspberry Pi OS Lite (64-bit)** with
+   **Raspberry Pi Imager** (enable SSH and create a user), boot the Pi, and SSH in
+   – or, on an x86_64 machine, install **Debian 13 (Trixie)** 64-bit.
 2. Download the `openfollow_<version>_<arch>.deb` package for your host (`arm64`
    for a Pi, `amd64` for an x86_64 PC) from the latest [release](https://github.com/openfollowapp/openfollow/releases)
    (e.g. `wget <asset-url>`).

@@ -989,15 +989,40 @@ def test_loading_default_config_does_not_emit_deprecation_warnings(
     assert not any("deprecated" in r.message for r in caplog.records)
 
 
-def test_apply_runtime_marker_move_speeds_diff() -> None:
-    """Marker speed changes apply directly; no restart needed."""
+def test_apply_runtime_does_not_reload_marker_move_speeds() -> None:
+    """Per-marker speeds are device-local + runtime-authoritative: a hot-reload
+    must NOT overwrite the live in-memory dict from disk, whatever the reloaded
+    file happens to contain. This is the fix for the reported "saving any Web UI
+    setting resets all marker speeds" bug – the web save writes the file, the
+    watcher reloads it, and that reload must leave the live speeds untouched."""
     app = _DummyApp(AppConfig(marker_move_speeds={2: 2.0}))
+    # A reloaded config carrying DIFFERENT speeds must not clobber the live ones.
     new_config = AppConfig(marker_move_speeds={2: 3.5, 1: 1.5})
 
     apply_runtime_config_changes(app, new_config)
 
-    assert app._config.marker_move_speeds == {2: 3.5, 1: 1.5}
+    assert app._config.marker_move_speeds == {2: 2.0}
     assert app._web_commands.restart_requested is False
+
+
+def test_apply_runtime_does_not_clear_marker_move_speeds_when_disk_empty() -> None:
+    """A reloaded config with EMPTY speeds (e.g. a fresh disk load that never saw
+    the runtime edits) must not wipe the live dict."""
+    app = _DummyApp(AppConfig(marker_move_speeds={2: 2.0, 3: 4.0}))
+    new_config = AppConfig()  # no speeds
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.marker_move_speeds == {2: 2.0, 3: 4.0}
+
+
+def test_startup_load_seeds_marker_move_speeds_from_disk(temp_config_path) -> None:
+    """Part 0 only skips the *reload*; the initial ``load_config`` at startup
+    still seeds the speeds from disk so a restart picks up the persisted values."""
+    config = AppConfig(controlled_marker_ids=[2, 3], marker_move_speeds={2: 1.5, 3: 4.0})
+    save_config(config, str(temp_config_path))
+    reloaded = load_config(str(temp_config_path))
+    assert reloaded.marker_move_speeds == {2: 1.5, 3: 4.0}
 
 
 def test_apply_runtime_ui_unit_system_propagates_to_config() -> None:

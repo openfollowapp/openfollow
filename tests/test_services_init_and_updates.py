@@ -910,6 +910,28 @@ class TestInitWebServer:
         # isn't stable across attribute lookups, so compare by __func__.
         assert srv.kwargs["runtime_stats_provider"].__func__ is AppRuntimeServices.get_runtime_stats_snapshot
 
+    def test_wires_marker_move_speeds_provider_returning_a_copy(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The section-save path reads the live per-marker speeds through this
+        provider. It must return the current live values as a fresh copy so the
+        web thread can never mutate the app's live dict."""
+        from openfollow import web
+
+        monkeypatch.setattr(web, "ConfigWebServer", _FakeWebServer)
+        services._preview_provider = SimpleNamespace(get_snapshot=lambda: None)
+        services._snapshot_provider = SimpleNamespace(get_snapshot=lambda: None)
+        services._app._config.marker_move_speeds = {5: 2.7}
+
+        services.init_web_server()
+        provider = services._app._web_server.kwargs["marker_move_speeds_provider"]
+
+        snapshot = provider()
+        assert snapshot == {5: 2.7}
+        # Mutation isolation: the returned dict is a copy, not the live one.
+        snapshot[9] = 4.0
+        assert services._app._config.marker_move_speeds == {5: 2.7}
+
     def test_wires_osc_binding_diagnostics_providers(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:

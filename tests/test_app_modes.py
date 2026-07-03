@@ -71,6 +71,8 @@ class TestAdjustMoveSpeed:
                 self._speed_key_last_t: dict[int, float] = {}
                 self._speed_key_streak: dict[int, int] = {}
                 self._speed_key_last_dir: dict[int, int] = {}
+                self._marker_speeds_dirty = False
+                self._marker_speeds_dirty_since = 0.0
                 # Seed the per-marker entry to the test's starting speed so
                 # the first ``adjust_move_speed`` call has a defined base.
                 if selected_id is not None:
@@ -168,6 +170,22 @@ class TestAdjustMoveSpeed:
         adjust_move_speed(app, +1)
         assert app._config.marker_move_speeds == {}
         assert app._speed_key_streak == {}
+
+    def test_marks_dirty_with_edit_timestamp(self, monkeypatch) -> None:
+        """A speed edit marks the config dirty and stamps the edit time so the
+        housekeeping loop can flush it after the settle window."""
+        app = self._make_app(move_speed=1.0)
+        monkeypatch.setattr(time, "monotonic", lambda: 123.0)
+        adjust_move_speed(app, +1)
+        assert app._marker_speeds_dirty is True
+        assert app._marker_speeds_dirty_since == 123.0
+
+    def test_no_selection_does_not_mark_dirty(self) -> None:
+        """A no-op call (no marker resolved) must not mark the config dirty –
+        there is nothing to persist."""
+        app = self._make_app(move_speed=1.0, selected_id=None)
+        adjust_move_speed(app, +1)
+        assert app._marker_speeds_dirty is False
 
     def test_explicit_marker_id_overrides_selection(self) -> None:
         """``marker_id`` passed by the gamepad bumper resolver overrides

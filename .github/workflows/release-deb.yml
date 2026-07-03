@@ -3,14 +3,16 @@
 # Release workflow: build the offline .deb, sign it into an .ofupdate bundle, build Pi OS images + SBOM.
 name: release-deb
 
-# Build the offline OpenFollow .deb on a GitHub-hosted ARM64 runner (native arm64
-# – no cross-compile) and attach it to the GitHub Release. The package bundles
-# every Python dependency in a private venv, so it installs offline and is the
+# Build the offline OpenFollow .deb natively on GitHub-hosted runners – one leg on
+# ubuntu-24.04-arm (arm64) and one on ubuntu-24.04 (amd64), no cross-compile – and
+# attach both arch bundles to the GitHub Release. The package bundles every Python
+# dependency in a private venv, so it installs offline; the arm64 .deb is also the
 # input artifact for the rpi-image-gen image build.
 #
 # The .deb build runs in a debian:trixie container so the venv's Python (3.13)
-# matches the Trixie image; the ubuntu-24.04-arm host ships 3.12. The image job
-# runs on the host directly (mmdebstrap bootstraps the Trixie rootfs regardless).
+# matches the Trixie image; the ubuntu-24.04 hosts ship 3.12. The image job runs on
+# the host directly (mmdebstrap bootstraps the Trixie rootfs regardless) and stays
+# arm64-only – x86 is .deb / .ofupdate only, with no appliance image.
 on:
   release:
     types: [published]
@@ -30,8 +32,17 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04-arm
-    # Native arm64 + Python 3.13 to match the Trixie image's venv ABI (see header).
+    strategy:
+      fail-fast: false        # one arch failing must not cancel the other's build
+      matrix:
+        include:
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+          - runner: ubuntu-24.04
+            arch: amd64
+    runs-on: ${{ matrix.runner }}
+    # Native build per arch (no cross-compile) + Python 3.13 from the debian:trixie
+    # container to match the Trixie image's venv ABI (see header).
     container:
       image: debian:trixie
     steps:
@@ -66,16 +77,16 @@ jobs:
         run: bash packaging/build-deb.sh "$GITHUB_WORKSPACE/dist"
 
       - name: Lint .deb (non-blocking)
-        run: lintian dist/openfollow_*_arm64.deb || true
+        run: lintian dist/openfollow_*_${{ matrix.arch }}.deb || true
 
       - name: List contents
-        run: dpkg-deb -c dist/openfollow_*_arm64.deb
+        run: dpkg-deb -c dist/openfollow_*_${{ matrix.arch }}.deb
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: openfollow-deb
-          path: dist/openfollow_*_arm64.deb
+          name: openfollow-deb-${{ matrix.arch }}
+          path: dist/openfollow_*_${{ matrix.arch }}.deb
           if-no-files-found: error
 
       # Wrap the .deb in a single signed update bundle (.ofupdate): the .deb, a
@@ -89,7 +100,7 @@ jobs:
           PRIVKEY: ${{ secrets.OPENFOLLOW_RELEASE_PRIVKEY }}
         run: |
           set -eu
-          deb=$(ls dist/openfollow_*_arm64.deb)
+          deb=$(ls dist/openfollow_*_${{ matrix.arch }}.deb)
           base=$(basename "$deb" .deb)
           work="$RUNNER_TEMP/bundle"; rm -rf "$work"; mkdir -p "$work"
           cp "$deb" "$work/"
@@ -103,8 +114,8 @@ jobs:
       - name: Upload bundle workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: openfollow-ofupdate
-          path: dist/openfollow_*_arm64.ofupdate
+          name: openfollow-ofupdate-${{ matrix.arch }}
+          path: dist/openfollow_*_${{ matrix.arch }}.ofupdate
           if-no-files-found: error
 
       # Attach both the signed bundle (in-app updater path) and the raw .deb
@@ -113,10 +124,10 @@ jobs:
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/openfollow_*_arm64.ofupdate dist/openfollow_*_arm64.deb --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/openfollow_*_${{ matrix.arch }}.ofupdate dist/openfollow_*_${{ matrix.arch }}.deb --clobber --repo "$GITHUB_REPOSITORY"
 
   # Build the flashable Raspberry Pi OS Lite (Trixie, arm64) appliance images, with
-  # the .deb from the build job pre-installed, using rpi-image-gen (cloned at a
+  # the arm64 .deb from the build job pre-installed, using rpi-image-gen (cloned at a
   # pinned ref). One matrix leg per board: `cm5` (16 GB eMMC, flash with rpiboot)
   # and `pi5` (standard board, SD card, flash with Raspberry Pi Imager). Both legs
   # consume the same .deb and the same packaging/image/ source; only the per-board
@@ -142,7 +153,7 @@ jobs:
       - name: Fetch the built .deb
         uses: actions/download-artifact@v8
         with:
-          name: openfollow-deb
+          name: openfollow-deb-arm64
           path: packaging/image
 
       - name: Normalise .deb name

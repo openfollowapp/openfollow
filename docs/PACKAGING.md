@@ -1,11 +1,14 @@
 # Debian packaging (offline `.deb`)
 
-OpenFollow ships as a self-contained Debian package for Raspberry Pi OS. The
+OpenFollow ships as a self-contained Debian package. The primary target is
+Raspberry Pi OS (`arm64`), and the same package is built for `amd64` so it also
+installs on a commodity x86_64 Debian/Ubuntu host (mini-PC, NUC, laptop). The
 `.deb` bundles the runtime **and all Python dependencies** in a private
 virtualenv at `/opt/openfollow/venv`, so it installs and runs **with no
 internet**. It installs the systemd service, the boot splash, and autostart, and
-is the input artifact for the `rpi-image-gen` appliance image build
-(see [Appliance image](#appliance-image-rpi-image-gen)).
+the `arm64` build is the input artifact for the `rpi-image-gen` appliance image
+build (see [Appliance image](#appliance-image-rpi-image-gen); the appliance image
+is Pi-only).
 
 > Build time is online; install time is offline. The build resolves PyPI wheels
 > and the `pypsn` git dependency and compiles any sdists, then bakes everything
@@ -33,13 +36,13 @@ is the input artifact for the `rpi-image-gen` appliance image build
 
 | Path | Purpose |
 | --- | --- |
-| `packaging/build-deb.sh` | Builds the `.deb` (run natively on the target Pi). |
+| `packaging/build-deb.sh` | Builds the `.deb` (run natively on the target arch; `arch` comes from `dpkg --print-architecture`). |
 | `packaging/debian/control.in` | Package metadata; `@VERSION@/@ARCH@/@PYTHON_DEP@/@ALSA_DEP@` are filled in by the build from the build host. |
 | `packaging/debian/openfollow.service` | Main systemd unit (Cage Wayland kiosk, runs the bundled venv). |
 | `packaging/debian/openfollow-splash.service` + `splash.sh` | Boot splash unit + KMS launcher. |
 | `packaging/debian/render-splash.sh` | Pre-renders the splash PNG at build time. |
 | `packaging/debian/{postinst,prerm,postrm}` | Create the `openfollow` user + linger, enable/disable the units. |
-| `.github/workflows/release-deb.yml` | Release CI: builds the `.deb`, signs it into an `.ofupdate` bundle, and attaches both to the release – on a GitHub-hosted ARM64 runner (inside a `debian:trixie` container). |
+| `.github/workflows/release-deb.yml` | Release CI: builds the `.deb`, signs it into an `.ofupdate` bundle, and attaches both to the release – natively per arch on GitHub-hosted `ubuntu-24.04-arm` (arm64) and `ubuntu-24.04` (amd64) runners (each inside a `debian:trixie` container). |
 
 ## Install layout
 
@@ -73,11 +76,12 @@ Wayland session. The unit binds web port 80 via `AmbientCapabilities=CAP_NET_BIN
 
 ## Build it
 
-Run **on the target architecture/OS** – the venv embeds the build host's Python
-ABI, so the package only runs on a matching Pi OS release. CI does this on a
-GitHub-hosted ARM64 runner (`ubuntu-24.04-arm`, native arm64 – no cross-compile)
-inside a `debian:trixie` container, so the venv's Python (3.13) matches the
-Trixie image; the `ubuntu-24.04-arm` host itself ships Python 3.12.
+Run **on the target architecture** – the venv embeds the build host's Python ABI,
+so an `arm64` package only runs on `arm64` and an `amd64` one only on `amd64`
+(no cross-compile). CI builds both natively as a two-leg matrix: `ubuntu-24.04-arm`
+(arm64) and `ubuntu-24.04` (amd64), each inside a `debian:trixie` container so the
+venv's Python (3.13) matches the Trixie image; the `ubuntu-24.04` hosts themselves
+ship Python 3.12.
 
 ```bash
 # Build prerequisites (CI installs these automatically):
@@ -110,9 +114,11 @@ web UI at `http://<pi-ip>/`.
 ## Release flow
 
 `.github/workflows/release-deb.yml` triggers on a published GitHub Release (or
-`workflow_dispatch`), builds on a GitHub-hosted `ubuntu-24.04-arm` runner (in a
-`debian:trixie` container), then wraps the `.deb` in a **signed update bundle**
-and attaches both the bundle and the raw `.deb` to the release.
+`workflow_dispatch`) and builds one leg per architecture on GitHub-hosted
+`ubuntu-24.04-arm` (arm64) and `ubuntu-24.04` (amd64) runners (each in a
+`debian:trixie` container). Each leg wraps its `.deb` in a **signed update bundle**
+and attaches both the bundle and the raw `.deb` to the release, so a release
+carries `arm64` and `amd64` variants side by side.
 
 The bundle `openfollow_<version>_<arch>.ofupdate` is a plain tar of three members:
 the `.deb`, a `SHA256SUMS` line for it, and `SHA256SUMS.sig` – an openssl RSA
@@ -133,8 +139,11 @@ tar xf openfollow_<version>_<arch>.ofupdate openfollow_<version>_<arch>.deb
 
 ## Appliance image (rpi-image-gen)
 
-For a turnkey deploy, the `.deb` is baked into a flashable **Raspberry Pi OS Lite
-(Trixie, arm64) image**, built with
+The appliance image is **Pi-only** (arm64): x86_64 hosts are supported through the
+`amd64` `.deb` / `.ofupdate` alone, not a flashable image.
+
+For a turnkey deploy, the `arm64` `.deb` is baked into a flashable **Raspberry Pi
+OS Lite (Trixie, arm64) image**, built with
 [`rpi-image-gen`](https://github.com/raspberrypi/rpi-image-gen). The image boots
 headless straight into the Cage Wayland kiosk. Two board targets are built from the
 **same `.deb`, the same custom layer, and a shared base config** – each per-board
@@ -252,8 +261,9 @@ field: storage is fully automatic (an absolute `detection.storage_path` in
 `.github/workflows/release-deb.yml` builds the images in an `image` job that
 `needs: build` and fans out over a `target: [cm5, pi5]` matrix. Each leg runs on
 its own GitHub-hosted `ubuntu-24.04-arm` runner – so the two boards build in
-parallel with an isolated `$RUNNER_TEMP` – downloads the `openfollow-deb` artifact
-from the same run, clones `rpi-image-gen` at the pinned `v2.6.0`, builds
+parallel with an isolated `$RUNNER_TEMP` – downloads the `openfollow-deb-arm64`
+artifact from the same run (the arm64 build leg; the image is Pi-only), clones
+`rpi-image-gen` at the pinned `v2.6.0`, builds
 `openfollow-<target>.yaml`, compresses to `.img.xz`, uploads it as the
 `openfollow-image-<target>` workflow artifact, and (on a published release)
 attaches it to the GitHub Release next to the `.ofupdate` bundle.

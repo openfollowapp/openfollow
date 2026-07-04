@@ -46,7 +46,7 @@ detection = ["onnxruntime>=1.17", "opencv-python>=4.8"]
 # detector runs. Pulls torch, so it's a workstation-only extra, never required
 # at show time. Used by ``scripts/export_onnx.py`` and the web model-export
 # action; installed on demand from the detection UI.
-export = ["ultralytics>=8.4.80"]
+export = ["ultralytics>=8.4.87"]
 
 [project.scripts]
 openfollow = "openfollow.main:main"
@@ -82,7 +82,7 @@ include = [
 ruff = "0.15.20"
 pytest = "^9.1.1"
 pytest-cov = "^7.1"
-coverage = { extras = ["toml"], version = "^7.14" }
+coverage = { extras = ["toml"], version = "^7.15" }
 pre-commit = "^4.6.0"
 mutmut = "^3.6"
 mypy = "^2.1"

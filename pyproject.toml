@@ -142,6 +142,7 @@ module = [
     "onnxruntime",
     "mido",
     "pyspacemouse",
+    "easyhid",
 ]
 ignore_missing_imports = true
 

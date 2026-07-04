@@ -2463,7 +2463,7 @@ class AppRuntimeServices:
         im = self._app._input_manager
         if im is None:
             return None
-        return im.mouse3d_handler.detect_pressed_button()
+        return im.mouse3d_manager.detect_pressed_button()
 
     def update_window_title(self, title: str) -> None:
         self._apply_window_title(title)

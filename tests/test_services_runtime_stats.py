@@ -488,7 +488,7 @@ class TestMouse3dLatestButton:
 
     def test_delegates_to_handler(self, services: AppRuntimeServices) -> None:
         services._app._input_manager = SimpleNamespace(
-            mouse3d_handler=SimpleNamespace(detect_pressed_button=lambda: 3),
+            mouse3d_manager=SimpleNamespace(detect_pressed_button=lambda: 3),
         )
         assert services._mouse3d_latest_button() == 3
 

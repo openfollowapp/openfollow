@@ -19,14 +19,16 @@ it by the marker's move-speed – so the handler stays free of app state.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import logging
 import math
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from openfollow.configuration import MOUSE3D_AXES
 from openfollow.input.shaping import shape_axis
@@ -61,6 +63,85 @@ _AXIS_SOURCE = {
     "yaw": "yaw",
     "roll": "roll",
 }
+
+# 3Dconnexion USB vendor/product range (kept in step with the udev rule in
+# packaging/udev/99-openfollow-3dmouse.rules).
+_VID_3DCONNEXION = 0x256F
+_VID_LOGITECH_LEGACY = 0x046D
+_SPACEMOUSE_PID_LO = 0xC600
+_SPACEMOUSE_PID_HI = 0xC6FF
+
+# How often the manager re-enumerates connected pucks (hotplug), seconds.
+_ENUMERATE_INTERVAL_S = 1.5
+
+
+def _is_supported_puck(vendor_id: int, product_id: int) -> bool:
+    """True for a USB VID/PID in the 3Dconnexion range the backend can drive."""
+    if vendor_id == _VID_3DCONNEXION:
+        return True
+    return vendor_id == _VID_LOGITECH_LEGACY and _SPACEMOUSE_PID_LO <= product_id <= _SPACEMOUSE_PID_HI
+
+
+@dataclass(frozen=True)
+class Mouse3DDeviceInfo:
+    """Identity of one connected 3D Mouse, keyed by its stable hidraw path."""
+
+    path: str
+    product_name: str = ""
+    serial: str = ""
+
+
+class Mouse3DBackend(Protocol):
+    """Enumerates and opens 3D mice. Injected as a fake in tests."""
+
+    def enumerate(self) -> list[Mouse3DDeviceInfo]: ...
+
+    def open(self, path: str) -> Any: ...
+
+
+class _PySpaceMouseBackend:
+    """Real backend over ``pyspacemouse`` (2.x) + ``easyhid``.
+
+    ``easyhid`` reports one entry per HID collection, so a single puck appears
+    several times at the same ``/dev/hidraw*`` node; we dedup by path and open
+    each unique node once with ``open_by_path``.
+    """
+
+    def enumerate(self) -> list[Mouse3DDeviceInfo]:
+        try:
+            from easyhid import Enumeration  # lazy: dlopens libhidapi (may raise OSError)
+        except (ImportError, OSError) as exc:
+            logger.debug("3D Mouse enumeration unavailable: %s", exc)
+            return []
+        try:
+            devices = Enumeration().find()
+        except OSError as exc:
+            logger.debug("3D Mouse enumeration failed: %s", exc)
+            return []
+        by_path: dict[str, Mouse3DDeviceInfo] = {}
+        for dev in devices:
+            vid = int(getattr(dev, "vendor_id", 0) or 0)
+            pid = int(getattr(dev, "product_id", 0) or 0)
+            if not _is_supported_puck(vid, pid):
+                continue
+            path = getattr(dev, "path", None)
+            if isinstance(path, bytes):
+                path = path.decode("utf-8", "replace")
+            if not path or path in by_path:
+                continue
+            by_path[path] = Mouse3DDeviceInfo(
+                path=path,
+                product_name=str(getattr(dev, "product_string", "") or ""),
+                serial=str(getattr(dev, "serial_number", "") or ""),
+            )
+        return [by_path[p] for p in sorted(by_path)]
+
+    def open(self, path: str) -> Any:
+        import pyspacemouse  # lazy
+
+        # ``open_by_path`` prints to stdout on success; keep the log clean.
+        with contextlib.redirect_stdout(io.StringIO()):
+            return pyspacemouse.open_by_path(path)
 
 
 def check_mouse3d_dependencies() -> list[str]:
@@ -429,10 +510,13 @@ class Mouse3DHandler:
     def _open_device(factory: Callable[[], Any]) -> Any | None:
         try:
             device = factory()
-        except OSError as exc:  # e.g. hidraw permission denied – retryable
+        except (OSError, RuntimeError) as exc:
+            # hidraw permission denied (OSError) or "no connected/supported
+            # device" (pyspacemouse raises RuntimeError) – both retryable, so the
+            # reconnect loop keeps polling instead of dying.
             logger.debug("3D Mouse open failed: %s", exc)
             return None
-        # ``pyspacemouse.open`` returns ``False`` when no device is present.
+        # An opener returns a falsy value when no device is present.
         return device or None
 
     def _pump(self, device: Any, stop: threading.Event) -> bool:
@@ -473,6 +557,228 @@ class Mouse3DHandler:
             if stop.wait(_POLL_S):
                 return read_any
         return read_any
+
+
+class Mouse3DManager:
+    """Owns one :class:`Mouse3DHandler` per connected 3D Mouse.
+
+    A background supervisor thread re-enumerates connected pucks (hotplug) and
+    keys a handler per stable hidraw path. Devices are ordered by sorted path –
+    the plug-order analog – so each connected puck's position is its local index;
+    the InputManager turns that into a unified controller slot, mirroring
+    gamepads. The axis/button mapping is shared across every puck (one
+    ``Mouse3DConfig``); each puck drives the marker at its slot.
+    """
+
+    def __init__(self, config: Mouse3DConfig, *, backend: Mouse3DBackend | None = None) -> None:
+        self._cfg = config
+        self._backend = backend
+        self._lock = threading.Lock()
+        self._detect_lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        # Ordered by sorted path; keyed handlers open one node each.
+        self._infos: list[Mouse3DDeviceInfo] = []
+        self._handlers: dict[str, Mouse3DHandler] = {}
+        self._available = backend is not None or not check_mouse3d_dependencies()
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def start(self) -> None:
+        """Start the enumeration supervisor (idempotent, no-op when disabled)."""
+        if self._thread is not None and self._thread.is_alive():
+            return
+        if not self._cfg.enabled:
+            return
+        if self._backend is None and check_mouse3d_dependencies():
+            with self._lock:
+                self._available = False
+            return
+        stop = threading.Event()
+        self._stop = stop
+        self._thread = threading.Thread(target=self._supervise, args=(stop,), daemon=True, name="Mouse3DMgr")
+        self._thread.start()
+
+    def stop(self, *, wait: bool = False) -> None:
+        """Stop the supervisor and every per-device handler."""
+        self._stop.set()
+        thread = self._thread
+        self._thread = None
+        with self._lock:
+            handlers = list(self._handlers.values())
+            self._handlers = {}
+            self._infos = []
+        for handler in handlers:
+            handler.stop(wait=wait)
+        if wait and thread is not None:
+            thread.join(timeout=2.0)
+
+    def reload_config(self, config: Mouse3DConfig) -> None:
+        """Swap the shared mapping into the manager and every live handler."""
+        with self._lock:
+            self._cfg = config
+            handlers = list(self._handlers.values())
+        for handler in handlers:
+            handler.reload_config(config)
+
+    # -- supervisor thread -------------------------------------------------
+
+    def _resolve_backend(self) -> Mouse3DBackend:
+        if self._backend is not None:
+            return self._backend
+        return _PySpaceMouseBackend()
+
+    def _supervise(self, stop: threading.Event) -> None:
+        backend = self._resolve_backend()
+        with self._lock:
+            self._backend = backend
+            self._available = True
+        while not stop.is_set():
+            try:
+                infos = backend.enumerate()
+            except Exception:  # noqa: BLE001 - a bad enumeration must not kill the loop
+                logger.debug("3D Mouse enumeration raised", exc_info=True)
+                infos = []
+            self._reconcile(backend, infos)
+            if stop.wait(_ENUMERATE_INTERVAL_S):
+                break
+
+    def _reconcile(self, backend: Mouse3DBackend, infos: list[Mouse3DDeviceInfo]) -> None:
+        """Start handlers for new paths, stop handlers for departed ones.
+
+        Dedups by hidraw path (``easyhid`` reports one entry per HID collection,
+        so a single puck shows up several times at the same node) and orders by
+        path so each connected puck's position is its stable local index.
+        """
+        deduped: dict[str, Mouse3DDeviceInfo] = {}
+        for info in infos:
+            if info.path and info.path not in deduped:
+                deduped[info.path] = info
+        infos = [deduped[path] for path in sorted(deduped)]
+        wanted = set(deduped)
+        with self._lock:
+            to_add = [info for info in infos if info.path not in self._handlers]
+            started: list[Mouse3DHandler] = []
+            for info in to_add:
+                handler = Mouse3DHandler(self._cfg, device_factory=self._opener_for(backend, info.path))
+                self._handlers[info.path] = handler
+                started.append(handler)
+            removed = [self._handlers.pop(path) for path in list(self._handlers) if path not in wanted]
+            self._infos = infos
+        for handler in started:
+            handler.start()
+        for handler in removed:
+            handler.stop()
+
+    @staticmethod
+    def _opener_for(backend: Mouse3DBackend, path: str) -> Callable[[], Any]:
+        def _open() -> Any:
+            return backend.open(path)
+
+        return _open
+
+    def _connected_ordered(self) -> list[tuple[Mouse3DDeviceInfo, Mouse3DHandler]]:
+        """Connected (info, handler) pairs in sorted-path order; position = index."""
+        with self._lock:
+            pairs = [(info, self._handlers.get(info.path)) for info in self._infos]
+        return [(info, handler) for info, handler in pairs if handler is not None and handler.connected]
+
+    # -- status (web/UI) ---------------------------------------------------
+
+    @property
+    def available(self) -> bool:
+        """True when ``pyspacemouse`` + ``libhidapi`` are usable."""
+        with self._lock:
+            return self._available
+
+    @property
+    def connected(self) -> bool:
+        """True when at least one puck is currently open."""
+        with self._lock:
+            handlers = list(self._handlers.values())
+        return any(handler.connected for handler in handlers)
+
+    def connected_indices(self) -> list[int]:
+        """Local indices (``0..N-1``, sorted-path order) of open pucks."""
+        return list(range(len(self._connected_ordered())))
+
+    def connected_devices(self) -> list[Mouse3DDeviceInfo]:
+        """Identity of each open puck, in local-index order."""
+        return [info for info, _handler in self._connected_ordered()]
+
+    def latest_button(self) -> int | None:
+        """First currently-pressed button across all open pucks (bindings shared)."""
+        for _info, handler in self._connected_ordered():
+            idx = handler.latest_button()
+            if idx is not None:
+                return idx
+        return None
+
+    def detect_pressed_button(self, timeout: float = _DETECT_TIMEOUT_S) -> int | None:
+        """Watch every connected puck for a button press (web Detect bind flow)."""
+        if not self._detect_lock.acquire(blocking=False):
+            return None
+        try:
+            handlers = [handler for _info, handler in self._connected_ordered()]
+            if handlers:
+                return self._poll_snapshot_button(handlers, timeout)
+            return self._poll_devices_button(timeout)
+        finally:
+            self._detect_lock.release()
+
+    def _poll_snapshot_button(self, handlers: list[Mouse3DHandler], timeout: float) -> int | None:
+        deadline = time.monotonic() + timeout
+        while True:
+            for handler in handlers:
+                idx = handler.latest_button()
+                if idx is not None:
+                    return idx
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(_DETECT_POLL_S)
+
+    def _poll_devices_button(self, timeout: float) -> int | None:
+        """One-shot open+poll of every enumerated puck (feature disabled path)."""
+        try:
+            backend = self._resolve_backend()
+            infos = backend.enumerate()
+        except Exception:  # noqa: BLE001 - detect is best-effort
+            return None
+        devices: list[Any] = []
+        try:
+            for info in infos:
+                try:
+                    device = backend.open(info.path)
+                except (OSError, RuntimeError) as exc:
+                    logger.debug("3D Mouse detect open failed: %s", exc)
+                    continue
+                if device:
+                    devices.append(device)
+            if not devices:
+                return None
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                for device in devices:
+                    try:
+                        state = device.read()
+                    except OSError:
+                        continue
+                    if state is not None:
+                        buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
+                        for idx, pressed in enumerate(buttons):
+                            if pressed:
+                                return idx
+                time.sleep(_DETECT_POLL_S)
+            return None
+        finally:
+            for device in devices:
+                _safe_close(device)
+
+    # -- per-frame consume (GTK thread) ------------------------------------
+
+    def update(self, dt: float) -> dict[int, Mouse3DUpdate]:
+        """Per-device results keyed by local index (only connected pucks)."""
+        return {idx: handler.update(dt) for idx, (_info, handler) in enumerate(self._connected_ordered())}
 
 
 def _safe_close(device: Any) -> None:

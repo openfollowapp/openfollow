@@ -704,7 +704,7 @@ def build_marker_visual_state(
     # skip building them every frame on the common feature-off path.
     m3d_cfg = cfg.mouse3d
     state.mouse3d_connected = bool(
-        m3d_cfg.enabled and app._input_manager is not None and app._input_manager.mouse3d_handler.connected
+        m3d_cfg.enabled and app._input_manager is not None and app._input_manager.mouse3d_manager.connected
     )
     if state.mouse3d_connected:
         state.mouse3d_axis_map = {axis: getattr(m3d_cfg, f"map_{axis}") for axis in MOUSE3D_AXES}

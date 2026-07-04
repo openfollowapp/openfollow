@@ -85,7 +85,7 @@ class _FakeInputManager:
         self._marker_speeds = marker_speeds or {}
         self._controller_info = controller_info or []
         self._kbd_connected = keyboard_connected
-        self.mouse3d_handler = SimpleNamespace(connected=mouse3d_connected)
+        self.mouse3d_manager = SimpleNamespace(connected=mouse3d_connected)
 
     def get_marker_gamepad_speeds(self) -> dict[int, float]:
         return dict(self._marker_speeds)

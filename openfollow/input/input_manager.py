@@ -11,7 +11,7 @@ from openfollow.input.events import InputEventBus
 from openfollow.input.gamepad import GamepadHandler, GamepadUpdate
 from openfollow.input.keyboard import KeyboardHandler
 from openfollow.input.mouse import MouseHandler
-from openfollow.input.mouse3d import MOUSE3D_NAME, Mouse3DHandler, Mouse3DUpdate
+from openfollow.input.mouse3d import MOUSE3D_NAME, Mouse3DManager, Mouse3DUpdate
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.osc.input import OscMarkerAdapter
 from openfollow.osc.operator_message import OperatorMessageOscAdapter
@@ -79,10 +79,11 @@ class InputManager:
         # The mouse glide runs every frame; a persistent failure must not flood
         # the log at the display tick rate.
         self._mouse_update_err_log = ThrottledExceptionLogger(logger, "Mouse update failed this tick.")
-        # 3D Mouse (6DOF). The read thread runs for the handler's lifetime;
-        # movement application is gated on ``mouse3d.enabled`` in ``update``.
-        self.mouse3d_handler = Mouse3DHandler(app._config.mouse3d)
-        self.mouse3d_handler.start()
+        # 3D Mouse (6DOF). One handler per connected puck, enumerated like
+        # gamepads; movement application is gated on ``mouse3d.enabled`` in
+        # ``update``.
+        self.mouse3d_manager = Mouse3DManager(app._config.mouse3d)
+        self.mouse3d_manager.start()
         self._mouse3d_update_err_log = ThrottledExceptionLogger(logger, "3D Mouse update failed this tick.")
 
         osc_cfg = app._config.osc
@@ -161,8 +162,9 @@ class InputManager:
         race; fall back to no gamepads for that one call rather than raise.
         """
         slots: list[tuple[str, int]] = []
-        if self.app._config.mouse3d.enabled and self.mouse3d_handler.connected:
-            slots.append(("mouse3d", 0))
+        if self.app._config.mouse3d.enabled:
+            for local_idx in self.mouse3d_manager.connected_indices():
+                slots.append(("mouse3d", local_idx))
         try:
             gamepad_keys = sorted(self.gamepad_handler.joysticks)
         except RuntimeError:  # dict changed size mid-iteration on the main loop
@@ -205,12 +207,12 @@ class InputManager:
                 return i
         return None
 
-    def _mouse3d_unified_idx(self, slots: list[tuple[str, int]] | None = None) -> int | None:
-        """Unified index of the 3D mouse controller, or ``None`` if not live."""
+    def _mouse3d_unified_idx(self, local_idx: int, slots: list[tuple[str, int]] | None = None) -> int | None:
+        """Unified index of the given 3D mouse's local index, or ``None``."""
         if slots is None:
             slots = self._controller_slots()
-        for i, (kind, _local) in enumerate(slots):
-            if kind == "mouse3d":
+        for i, (kind, idx) in enumerate(slots):
+            if kind == "mouse3d" and idx == local_idx:
                 return i
         return None
 
@@ -271,7 +273,8 @@ class InputManager:
         # the mouse's unified controller slot drives. Gated on the live enabled flag.
         if self.app._config.mouse3d.enabled:
             try:
-                self._apply_mouse3d(self.mouse3d_handler.update(dt), dt, gamepad_result, slots)
+                for local_idx, m3d in self.mouse3d_manager.update(dt).items():
+                    self._apply_mouse3d(m3d, local_idx, dt, gamepad_result, slots)
             except Exception:
                 self._mouse3d_update_err_log.log()
 
@@ -376,19 +379,20 @@ class InputManager:
     def _apply_mouse3d(
         self,
         m3d: Mouse3DUpdate,
+        local_idx: int,
         dt: float,
         gamepad_result: GamepadUpdate,
         slots: list[tuple[str, int]],
     ) -> None:
-        """Apply one 3D Mouse frame.
+        """Apply one connected 3D Mouse's frame (``local_idx`` = its device index).
 
         Discrete button edges fold into the shared :class:`GamepadUpdate` flags
         so the app's existing dispatch handles them with no second dispatch site.
         Next/prev cycling is a single-controller affordance, so it only folds
         when this is the sole controller. Movement, reset and speed target the
-        marker the 3D mouse's unified slot drives (the selected marker when it's
-        the only controller, its fixed slot otherwise); the velocity is a unit
-        rate scaled here by the marker's move-speed. ``slots`` is the frame's
+        marker this puck's unified slot drives (the selected marker when it's the
+        only controller, its fixed slot otherwise); the velocity is a unit rate
+        scaled here by the marker's move-speed. ``slots`` is the frame's
         unified-controller snapshot.
         """
         if self.marker_cycle_active(slots):
@@ -403,7 +407,7 @@ class InputManager:
         if m3d.settings:
             gamepad_result.settings_open_pressed = True
 
-        marker_id = self._controller_marker_id(self._mouse3d_unified_idx(slots), slots)
+        marker_id = self._controller_marker_id(self._mouse3d_unified_idx(local_idx, slots), slots)
         if marker_id is None:
             return
         marker = self._get_marker(marker_id)
@@ -440,19 +444,23 @@ class InputManager:
         gamepad_info = {int(item["controller_index"]): item for item in self.gamepad_handler.get_controller_info()}
         out: list[dict[str, Any]] = []
         slots = self._controller_slots()
+        mouse_devices = self.mouse3d_manager.connected_devices()
         for unified_idx, (kind, local_idx) in enumerate(slots):
             marker_id = self._controller_marker_id(unified_idx, slots)
             if kind == "mouse3d":
+                info = mouse_devices[local_idx] if 0 <= local_idx < len(mouse_devices) else None
                 out.append(
                     {
                         "controller_index": unified_idx,
                         "name": MOUSE3D_NAME,
-                        "connected": self.mouse3d_handler.connected,
+                        "connected": True,
                         "marker_id": marker_id,
                         "effective_speed": (
                             self.app.get_marker_move_speed(marker_id) if marker_id is not None else 0.0
                         ),
                         "backend": "mouse3d",
+                        "product_name": info.product_name if info is not None else "",
+                        "serial": info.serial if info is not None else "",
                     }
                 )
             else:
@@ -531,11 +539,11 @@ class InputManager:
         application is additionally gated on the live ``enabled`` read in
         :meth:`update`.
         """
-        self.mouse3d_handler.reload_config(config)
+        self.mouse3d_manager.reload_config(config)
         if config.enabled:
-            self.mouse3d_handler.start()
+            self.mouse3d_manager.start()
         else:
-            self.mouse3d_handler.stop()
+            self.mouse3d_manager.stop()
 
     def restart_operator_messages(self) -> None:
         """Re-evaluate the operator-message adapter against current config.
@@ -575,7 +583,7 @@ class InputManager:
         self.gamepad_handler.stop()
         # Shutdown: join the worker so the device is released before teardown.
         # The live-disable path (restart_mouse3d) uses the non-blocking default.
-        self.mouse3d_handler.stop(wait=True)
+        self.mouse3d_manager.stop(wait=True)
         self._stop_operator_message_handler()
         if self.osc_handler is not None:
             self.osc_handler.stop()

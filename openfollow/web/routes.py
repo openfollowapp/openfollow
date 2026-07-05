@@ -3850,6 +3850,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # if the background worker updates the value mid-render.
             update_available=bool(latest_update_version),
             latest_version=latest_update_version,
+            # The .deb installer is Pi/Linux-only, so the Software Update section
+            # (and the banner / footer flag inside it) is hidden on macOS. The
+            # section-reload path derives the same flag in _build_general_template_data.
+            update_supported=sys.platform != "darwin",
             button_names=sorted(VALID_BUTTON_NAMES),
             detection_missing=_get_detection_missing_deps(config),
             detection_extras_installed=extras,

@@ -199,10 +199,16 @@ def test_index_page_uses_locally_bundled_htmx(live_server) -> None:
         assert cdn not in body, f"CDN reference reintroduced: {cdn!r}"
 
 
-def test_update_banner_and_footer_flag_shown_when_available(live_server) -> None:
+def test_update_banner_and_footer_flag_shown_when_available(live_server, monkeypatch) -> None:
     # The background online-sync worker publishes a discovered version via the
     # command queue; the index page renders the banner (General section) and the
-    # footer flag, and the section-reload route renders the banner too.
+    # footer flag, and the section-reload route renders the banner too. Force a
+    # Linux platform: the .deb installer (and so the whole Software Update
+    # surface) is Pi-only, hidden on the macOS host that may run the suite.
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "linux")
+
     server, base = live_server
     server._command_queue.set_update_available("0.4.0")
 
@@ -214,6 +220,26 @@ def test_update_banner_and_footer_flag_shown_when_available(live_server) -> None
     status_section, section = _get(base, "/section/general")
     assert status_section == 200
     assert "is ready to install" in section
+
+
+def test_update_banner_and_footer_hidden_on_unsupported_platform(live_server, monkeypatch) -> None:
+    # macOS can't run the .deb installer, so neither the Software Update banner
+    # nor the footer flag surfaces even when a newer release was discovered.
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "darwin")
+
+    server, base = live_server
+    server._command_queue.set_update_available("0.4.0")
+
+    status, body = _get(base, "/")
+    assert status == 200
+    assert "is ready to install" not in body
+    assert "(Update available: v" not in body
+
+    status_section, section = _get(base, "/section/general")
+    assert status_section == 200
+    assert "is ready to install" not in section
 
 
 def test_update_banner_hidden_when_up_to_date(live_server) -> None:

@@ -1997,7 +1997,7 @@
  % from openfollow import __commit__, __version__
  <footer class="license-footer" role="contentinfo">
  OpenFollow v{{__version__}}{{ ' (' + __commit__ + ')' if __commit__ else '' }}
- % if defined('update_available') and update_available:
+ % if defined('update_supported') and update_supported and defined('update_available') and update_available:
  <span class="update-flag">(Update available: v{{latest_version}})</span>
  % end
  <span class="sep">·</span>

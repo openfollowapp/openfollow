@@ -3594,6 +3594,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # poll returns), so the section reads filled-in values immediately.
         diag_cards, diag_warning = _build_diagnostics_cards(server, config)
         osc_user_templates, osc_system_templates = _osc_dropdown_templates()
+        latest_update_version = server.get_update_available()
         return template(
             "index",
             config=config,
@@ -3607,8 +3608,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # render must supply the Software Update section's version label.
             current_version=openfollow.__version__,
             # Update-available banner (General section) + footer flag (base.tpl).
-            update_available=bool(server.get_update_available()),
-            latest_version=server.get_update_available(),
+            # Read once so the banner flag and version label stay consistent even
+            # if the background worker updates the value mid-render.
+            update_available=bool(latest_update_version),
+            latest_version=latest_update_version,
             button_names=sorted(VALID_BUTTON_NAMES),
             detection_missing=_get_detection_missing_deps(config),
             detection_extras_installed=extras,

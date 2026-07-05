@@ -305,8 +305,8 @@ class WebCommandQueue:
                 return detached
         return status
 
-    def set_update_available(self, latest: str) -> None:
-        """Record the newest available release tag ("" clears the banner)."""
+    def set_update_available(self, latest: str | None) -> None:
+        """Record the newest available release tag ("" / None clears the banner)."""
         with self._update_available_lock:
             self._update_available = (latest or "").strip()
 

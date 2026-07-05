@@ -117,11 +117,18 @@ class OnlineSyncWorker:
 
     def stop(self) -> None:
         self._stop_event.set()
-        if self._thread is not None:
+        thread = self._thread
+        if thread is not None:
             # A mid-cycle network call (NTP/GitHub) outlives this join; the
             # daemon thread is reaped at process exit. Don't block shutdown on it.
-            self._thread.join(timeout=2.0)
-            self._thread = None
+            thread.join(timeout=2.0)
+            # Only drop the reference once the thread has actually exited. If the
+            # join timed out on an in-flight network call, keep it so a later
+            # start() sees a live worker and won't clear _stop_event out from
+            # under it, which would let the old thread keep running as a second
+            # worker alongside the new one.
+            if not thread.is_alive():
+                self._thread = None
 
     # ----- loop ----------------------------------------------------------
 

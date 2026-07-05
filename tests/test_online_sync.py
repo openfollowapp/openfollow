@@ -329,6 +329,53 @@ def test_start_is_idempotent_and_stop_cleans_up() -> None:
     w.stop()  # already stopped -> no-op
 
 
+class _FakeThread:
+    """Stand-in whose join is a no-op so we control the post-join liveness."""
+
+    def __init__(self, *, alive: bool) -> None:
+        self._alive = alive
+        self.join_timeout: float | None = None
+
+    def join(self, timeout: float | None = None) -> None:
+        self.join_timeout = timeout
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+
+def test_stop_keeps_thread_ref_when_join_times_out() -> None:
+    # join() timing out on an in-flight NTP/GitHub call must NOT drop the
+    # reference: a later start() would otherwise clear _stop_event and spawn a
+    # second worker alongside the still-live old thread.
+    w = _worker()
+    still_running = _FakeThread(alive=True)
+    w._thread = still_running  # type: ignore[assignment]
+
+    w.stop()
+
+    assert w._stop_event.is_set()
+    assert still_running.join_timeout == 2.0
+    assert w._thread is still_running  # ref retained -> no double-spawn
+
+    # start() sees a live worker and refuses to launch a second one, leaving the
+    # stop signal in place so the old thread still winds down.
+    w.start()
+    assert w._thread is still_running
+    assert w._stop_event.is_set()
+
+
+def test_stop_drops_thread_ref_once_thread_exits() -> None:
+    # The normal path: join succeeds, thread is gone, reference is cleared so a
+    # later start() can bring the worker back up.
+    w = _worker()
+    exited = _FakeThread(alive=False)
+    w._thread = exited  # type: ignore[assignment]
+
+    w.stop()
+
+    assert w._thread is None
+
+
 def test_run_executes_startup_then_one_loop_iteration() -> None:
     seq: list[Any] = []
     w = _worker()

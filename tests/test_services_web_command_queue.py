@@ -56,7 +56,7 @@ def test_update_available_can_be_cleared() -> None:
 def test_update_available_none_clears() -> None:
     q = WebCommandQueue()
     q.set_update_available("0.4.0")
-    q.set_update_available(None)  # type: ignore[arg-type]
+    q.set_update_available(None)
     assert q.get_update_available() == ""
 
 

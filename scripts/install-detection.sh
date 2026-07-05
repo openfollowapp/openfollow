@@ -123,7 +123,7 @@ Fix the clock, then re-run this script:
   sudo systemctl restart systemd-timesyncd
   timedatectl status         # wait for: System clock synchronized: yes
 If NTP cannot reach a server (UDP port 123 is often blocked), set it by hand:
-  sudo date -s 'YYYY-MM-DD HH:MM:SS'    # real current UTC time
+  sudo date -u -s 'YYYY-MM-DD HH:MM:SS'    # real current UTC time (-u = interpret as UTC)
 MSG
 }
 
@@ -208,7 +208,7 @@ main() {
   # failure can be classified: a wrong clock surfaces a clear fix instead of a
   # raw SSL traceback.
   local pip_log
-  pip_log="$(mktemp 2>/dev/null || echo /tmp/openfollow-install-detection-pip.log)"
+  pip_log="$(mktemp 2>/dev/null || echo "/tmp/openfollow-install-detection-pip.$$.log")"
   trap 'rm -f "$pip_log"' EXIT
 
   log "Installing CPU-only torch + torchvision (PyTorch CPU index)…"

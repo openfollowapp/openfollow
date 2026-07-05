@@ -174,7 +174,11 @@ def test_broken_index_in_detects_dependency_conflicts(sample: str) -> None:
 def test_diagnostic_messages_are_actionable() -> None:
     skew = _run_diag("clock_skew_message")
     assert "clock" in skew.stdout.lower()
-    assert "timedatectl" in skew.stdout and "date -s" in skew.stdout
+    # ``date -u -s`` (not bare ``date -s``): the manual instruction tells the
+    # operator to enter UTC, and ``-u`` makes ``date`` interpret it as UTC
+    # regardless of the host's timezone.
+    assert "timedatectl" in skew.stdout and "date -u -s" in skew.stdout
+    assert "date -s '" not in skew.stdout  # the timezone-ambiguous form is gone
     broken = _run_diag("broken_index_message")
     assert "full-upgrade" in broken.stdout
 
@@ -186,3 +190,10 @@ def test_apt_failures_are_wired_to_the_diagnostics() -> None:
     assert text.count('die "$(clock_skew_message)"') >= 2
     assert 'die "$(broken_index_message)"' in text
     assert "clock_skew_in <" in text and "broken_index_in <" in text
+
+
+def test_apt_log_fallback_path_is_unique_per_run() -> None:
+    # When mktemp fails, the fallback log path must be PID-suffixed so concurrent
+    # runs can't collide on (or clobber a pre-existing) fixed /tmp file.
+    text = _install_ndi_path().read_text()
+    assert 'echo "/tmp/openfollow-install-ndi-apt.$$.log"' in text

@@ -178,7 +178,10 @@ def test_clock_skew_message_is_actionable() -> None:
     out = r.stdout
     assert "clock" in out.lower()
     assert "timedatectl" in out
-    assert "date -s" in out
+    # ``date -u -s`` so the "enter UTC" instruction is correct regardless of the
+    # host timezone; the ambiguous bare ``date -s '...'`` form must be gone.
+    assert "date -u -s" in out
+    assert "date -s '" not in out
 
 
 def test_pip_failures_route_through_clock_skew_check() -> None:
@@ -188,3 +191,10 @@ def test_pip_failures_route_through_clock_skew_check() -> None:
     assert 'die "$(clock_skew_message)"' in text
     # torch (incl. fallback) + the backend install = at least three checks.
     assert text.count("clock_skew_in <") >= 3
+
+
+def test_pip_log_fallback_path_is_unique_per_run() -> None:
+    # When mktemp fails, the fallback log path must be PID-suffixed so concurrent
+    # runs can't collide on (or clobber a pre-existing) fixed /tmp file.
+    text = _script().read_text()
+    assert 'echo "/tmp/openfollow-install-detection-pip.$$.log"' in text

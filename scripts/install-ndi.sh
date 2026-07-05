@@ -51,7 +51,7 @@ Fix the clock, then re-run this script:
   sudo systemctl restart systemd-timesyncd
   timedatectl status         # wait for: System clock synchronized: yes
 If NTP cannot reach a server (UDP port 123 is often blocked), set it by hand:
-  sudo date -s 'YYYY-MM-DD HH:MM:SS'    # real current UTC time
+  sudo date -u -s 'YYYY-MM-DD HH:MM:SS'    # real current UTC time (-u = interpret as UTC)
 Then refresh the index and re-run:
   sudo apt-get update && sudo apt-get full-upgrade -y
 MSG
@@ -66,7 +66,7 @@ wrong). Refresh and reconcile, then re-run this script:
   sudo apt-get update
   sudo apt-get full-upgrade -y
 If apt-get update reports signatures "Not live until <future date>", fix the
-system clock first (timedatectl / sudo date -s).
+system clock first (timedatectl / sudo date -u -s).
 MSG
 }
 # === end diagnostics =======================================================
@@ -110,7 +110,7 @@ fi
 # The minimal Pi OS Lite image omits several of these; install-system-deps.sh
 # covers the runtime set but not the GStreamer -dev headers the plugin needs.
 log "Installing build prerequisites (apt)…"
-apt_log="$(mktemp 2>/dev/null || echo /tmp/openfollow-install-ndi-apt.log)"
+apt_log="$(mktemp 2>/dev/null || echo "/tmp/openfollow-install-ndi-apt.$$.log")"
 trap 'rm -f "$apt_log"' EXIT
 if ! sudo env DEBIAN_FRONTEND=noninteractive apt-get update 2>&1 | tee "$apt_log"; then
   # A failed update is fatal only when it's a wrong-clock signature failure –

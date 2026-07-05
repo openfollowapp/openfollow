@@ -9,6 +9,7 @@ directly with fake clocks. No real thread is started.
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -65,6 +66,8 @@ def _worker(
     wall: Any = None,
     ip: str = "192.168.1.5",
     periodic_interval: float = 24 * 3600.0,
+    retry_interval: float = 300.0,
+    min_cycle_interval: float = 60.0,
 ) -> OnlineSyncWorker:
     return OnlineSyncWorker(
         config_provider=lambda: cfg or _cfg(),
@@ -73,6 +76,8 @@ def _worker(
         web_commands=commands or _Commands(),
         version="0.3.0",
         periodic_interval=periodic_interval,
+        retry_interval=retry_interval,
+        min_cycle_interval=min_cycle_interval,
         ntp_query=ntp_query or (lambda s, t: 1_735_700_000.0),
         set_clock=set_clock or (lambda b, e: True),
         update_check=update_check or (lambda repo, ver, **kw: {"available": False, "latest": ""}),
@@ -92,10 +97,14 @@ def _worker(
     [
         ("192.168.1.5", True),
         ("10.0.0.2", True),
+        ("2001:db8::1", True),
         ("", False),
         ("N/A", False),
         ("0.0.0.0", False),
         ("127.0.0.1", False),
+        ("169.254.10.20", False),  # link-local / APIPA – DHCP-failure address
+        ("::1", False),  # IPv6 loopback
+        ("fe80::1", False),  # IPv6 link-local
     ],
 )
 def test_is_real_ip(ip: str, expected: bool) -> None:
@@ -259,6 +268,48 @@ def test_run_cycle_time_sync_runs_before_update_check() -> None:
     assert order == ["ntp", "set", "update"]
 
 
+def test_run_cycle_marks_online_when_github_reached() -> None:
+    w = _worker(
+        cfg=_cfg(auto_time_sync=False, auto_update_check=True),
+        update_check=lambda r, v, **kw: {"available": False, "latest": ""},
+    )
+    assert w._online is False
+    w._run_cycle("test")
+    assert w._online is True  # reached GitHub
+
+
+def test_run_cycle_marks_online_when_ntp_reached_without_setting() -> None:
+    # NTP reachable but drift below threshold: clock not set, yet we DID reach
+    # the network, so the daily cadence should take over.
+    w = _worker(
+        cfg=_cfg(auto_time_sync=True, auto_update_check=False),
+        ntp_query=lambda s, t: 1_735_700_000.5,
+        wall=lambda: 1_735_700_000.0,  # drift 0.5 s < threshold
+    )
+    w._run_cycle("test")
+    assert w._online is True
+
+
+def test_run_cycle_marks_offline_when_unreachable() -> None:
+    def _boom(r: str, v: str, **kw: Any) -> dict[str, Any]:
+        raise RuntimeError("offline")
+
+    w = _worker(
+        cfg=_cfg(auto_time_sync=False, auto_update_check=True),
+        update_check=_boom,
+    )
+    w._online = True  # was online previously
+    w._run_cycle("test")
+    assert w._online is False  # couldn't reach -> back to retry cadence
+
+
+def test_run_cycle_leaves_online_untouched_when_both_flags_off() -> None:
+    w = _worker(cfg=_cfg(auto_time_sync=False, auto_update_check=False))
+    w._online = True
+    w._run_cycle("test")
+    assert w._online is True  # no network work attempted -> verdict unchanged
+
+
 # ---------------------------------------------------------------------------
 # _maybe_cycle – trigger logic
 # ---------------------------------------------------------------------------
@@ -274,7 +325,7 @@ def test_maybe_cycle_fires_on_ip_change_to_real() -> None:
     w = _worker(ip="192.168.1.9")
     fired = _spy_cycle(w)
     w._last_ip = "192.168.1.5"
-    w._last_cycle_monotonic = 0.0
+    # No prior cycle (elapsed is None) -> the IP-change rate-limit is not in play.
     w._maybe_cycle()
     assert fired == ["ip-change"]
 
@@ -297,14 +348,74 @@ def test_maybe_cycle_no_fire_when_unchanged_and_not_due() -> None:
     assert fired == []
 
 
-def test_maybe_cycle_fires_periodic_when_due() -> None:
+def test_maybe_cycle_rate_limits_ip_change() -> None:
+    # A real IP change too soon after the last cycle is suppressed (a flapping
+    # IP must not fire an NTP + GitHub cycle on every poll).
+    now = {"t": 30.0}
+    w = _worker(ip="192.168.1.9", now=lambda: now["t"], min_cycle_interval=60.0)
+    fired = _spy_cycle(w)
+    w._last_ip = "192.168.1.5"
+    w._last_cycle_monotonic = 0.0  # elapsed 30 s < 60 s floor
+    w._maybe_cycle()
+    assert fired == []
+
+
+def test_maybe_cycle_retries_sooner_when_offline() -> None:
+    # Offline: an uplink appearing after boot without an IP change is picked up
+    # on the retry cadence (minutes), well before the daily periodic backstop.
+    now = {"t": 400.0}
+    w = _worker(
+        ip="192.168.1.5",
+        now=lambda: now["t"],
+        periodic_interval=86_400.0,
+        retry_interval=300.0,
+    )
+    fired = _spy_cycle(w)
+    w._online = False
+    w._last_ip = "192.168.1.5"  # unchanged IP
+    w._last_cycle_monotonic = 0.0  # 400 s >= retry 300, < periodic 86_400
+    w._maybe_cycle()
+    assert fired == ["retry"]
+
+
+def test_maybe_cycle_fires_periodic_when_online_and_due() -> None:
     now = {"t": 10_000.0}
     w = _worker(ip="192.168.1.5", now=lambda: now["t"], periodic_interval=3600.0)
     fired = _spy_cycle(w)
+    w._online = True  # online -> daily backstop cadence
     w._last_ip = "192.168.1.5"
     w._last_cycle_monotonic = 0.0  # 10_000 s elapsed >= 3600 -> due
     w._maybe_cycle()
     assert fired == ["periodic"]
+
+
+def test_maybe_cycle_online_not_due_within_daily_window() -> None:
+    # Online and only minutes since the last cycle: the retry cadence must NOT
+    # apply once online – wait for the daily backstop.
+    now = {"t": 400.0}
+    w = _worker(ip="192.168.1.5", now=lambda: now["t"], periodic_interval=86_400.0, retry_interval=300.0)
+    fired = _spy_cycle(w)
+    w._online = True
+    w._last_ip = "192.168.1.5"
+    w._last_cycle_monotonic = 0.0  # 400 s < daily 86_400
+    w._maybe_cycle()
+    assert fired == []
+
+
+def test_maybe_cycle_skips_when_both_flags_disabled() -> None:
+    # Nothing to do -> don't even resolve the IP (interface enumeration).
+    probes = {"n": 0}
+    w = _worker(cfg=_cfg(auto_time_sync=False, auto_update_check=False))
+    fired = _spy_cycle(w)
+
+    def _ip() -> str:
+        probes["n"] += 1
+        return "192.168.1.9"
+
+    w._ip_provider = _ip  # type: ignore[assignment]
+    w._last_ip = "192.168.1.5"
+    w._maybe_cycle()
+    assert fired == [] and probes["n"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -327,16 +438,37 @@ def test_platform_can_set_clock_defaults_to_linux_check() -> None:
 
 
 def test_start_is_idempotent_and_stop_cleans_up() -> None:
+    started = threading.Event()
+    release = threading.Event()
     w = _worker()
-    w._run = lambda: None  # type: ignore[method-assign]  # trivial thread body
+
+    def _block() -> None:
+        started.set()
+        release.wait(5.0)  # keep the thread alive across the second start()
+
+    w._run = _block  # type: ignore[method-assign]
     w.start()
+    assert started.wait(1.0)
     thread = w._thread
     assert thread is not None
-    w.start()  # already running -> no second thread
+    w.start()  # already running (alive) -> no second thread
     assert w._thread is thread
+    release.set()  # let the thread exit
     w.stop()
     assert w._thread is None
     w.stop()  # already stopped -> no-op
+
+
+def test_start_restarts_after_thread_died() -> None:
+    # A stale (dead) _thread reference left by a timed-out stop() must not block
+    # a later restart – start() keys on liveness, not mere presence.
+    w = _worker()
+    w._thread = _FakeThread(alive=False)  # type: ignore[assignment]
+    ran = threading.Event()
+    w._run = ran.set  # type: ignore[method-assign]
+    w.start()
+    assert ran.wait(1.0)  # a fresh worker thread actually ran
+    assert isinstance(w._thread, threading.Thread)
 
 
 class _FakeThread:

@@ -11,6 +11,7 @@ so TLS certificate validation isn't broken by a wildly wrong clock.
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import struct
 
@@ -21,9 +22,11 @@ logger = logging.getLogger(__name__)
 
 # Seconds between the NTP epoch (1900-01-01) and the Unix epoch (1970-01-01).
 _NTP_EPOCH_OFFSET = 2_208_988_800
+# NTP timestamps roll over every 2**32 s (~136 y). A value below the era-0/Unix
+# boundary belongs to era 1 (post-2036-02-07); add this to land back in Unix
+# time instead of computing a negative epoch.
+_NTP_ERA1_OFFSET = 2**32 - _NTP_EPOCH_OFFSET
 _NTP_PORT = 123
-# 48-byte SNTP request: first byte 0x1B = LI 0, VN 3, Mode 3 (client).
-_NTP_REQUEST = b"\x1b" + 47 * b"\x00"
 
 # Plausibility window for a fetched wall-clock time. A value outside it is a
 # malformed / garbage reply, never a real drift correction, so we refuse to
@@ -36,27 +39,52 @@ _MAX_PLAUSIBLE_EPOCH = 4_102_444_800  # 2100-01-01T00:00:00Z
 DRIFT_THRESHOLD_S = 2.0
 
 
+def _ntp_seconds_to_unix(seconds: int) -> float:
+    """Convert an NTP-era seconds field to Unix epoch, era-aware.
+
+    Values at/above the NTP epoch offset are era 0 (1968-2036); smaller values
+    have wrapped into era 1 (2036-2172), so the feature keeps working past the
+    2036-02-07 rollover instead of returning a negative epoch.
+    """
+    if seconds >= _NTP_EPOCH_OFFSET:
+        return float(seconds - _NTP_EPOCH_OFFSET)
+    return float(seconds + _NTP_ERA1_OFFSET)
+
+
 def query_ntp(server: str, timeout: float = 5.0) -> float:
     """Return *server*'s current wall-clock time as Unix epoch seconds.
 
     Minimal SNTP client (RFC 4330): one UDP request, parse the transmit
     timestamp from the reply. Raises ``OSError`` (network) or ``ValueError``
-    (empty server / malformed reply); the caller swallows both.
+    (empty server / malformed reply / spoofed reply); the caller swallows both.
+
+    Anti-spoofing: the socket is ``connect()``-ed so the kernel only delivers
+    datagrams from the queried server, and the request carries a random nonce
+    in its transmit-timestamp field that the reply must echo back in its
+    originate field – a blind off-path spoofer can't reproduce it.
     """
     server = (server or "").strip()
     if not server:
         raise ValueError("empty NTP server")
+    nonce = os.urandom(8)
+    request = bytearray(48)
+    request[0] = 0x1B  # LI 0, VN 3, Mode 3 (client)
+    request[40:48] = nonce  # transmit timestamp -> echoed into the reply's originate field
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.settimeout(timeout)
-        sock.sendto(_NTP_REQUEST, (server, _NTP_PORT))
-        data, _addr = sock.recvfrom(48)
+        sock.connect((server, _NTP_PORT))
+        sock.send(bytes(request))
+        data = sock.recv(48)
     if len(data) < 48:
         raise ValueError(f"short NTP reply ({len(data)} bytes)")
+    # Originate timestamp: bytes 24-31, must echo the nonce we sent.
+    if data[24:32] != nonce:
+        raise ValueError("NTP reply originate timestamp does not echo the request nonce")
     # Transmit timestamp: bytes 40-47, seconds in the first 4 (big-endian).
     seconds: int = struct.unpack("!I", data[40:44])[0]
     if seconds == 0:
         raise ValueError("NTP reply has a zero transmit timestamp")
-    return float(seconds - _NTP_EPOCH_OFFSET)
+    return _ntp_seconds_to_unix(seconds)
 
 
 def is_plausible_epoch(epoch: float) -> bool:

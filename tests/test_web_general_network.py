@@ -183,7 +183,12 @@ class TestUpdateSupportedFlag:
 
     @pytest.mark.parametrize(
         ("platform", "expected"),
-        [("linux", True), ("darwin", False)],
+        [
+            ("linux", True),
+            ("linux2", True),  # older sys.platform spelling
+            ("darwin", False),
+            ("win32", False),  # only the Linux .deb installer is supported
+        ],
     )
     def test_update_supported_follows_platform(
         self, monkeypatch: pytest.MonkeyPatch, platform: str, expected: bool

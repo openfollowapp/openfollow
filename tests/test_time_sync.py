@@ -28,24 +28,40 @@ _NTP_OFFSET = 2_208_988_800
 
 
 def _ntp_reply(unix_epoch: int) -> bytes:
-    """48-byte SNTP reply carrying *unix_epoch* in the transmit timestamp."""
-    ntp_secs = unix_epoch + _NTP_OFFSET
+    """48-byte SNTP reply carrying *unix_epoch* in the transmit timestamp.
+
+    The NTP seconds field wraps mod 2**32, so a post-2036 (era 1) epoch is
+    represented the same way a real server would send it.
+    """
+    ntp_secs = (unix_epoch + _NTP_OFFSET) % (2**32)
     return b"\x00" * 40 + struct.pack("!I", ntp_secs) + b"\x00" * 4
 
 
 class _FakeSocket:
-    def __init__(self, reply: bytes) -> None:
+    def __init__(self, reply: bytes, *, echo_nonce: bool = True) -> None:
         self._reply = reply
-        self.sent: list[tuple[bytes, object]] = []
+        self._echo_nonce = echo_nonce
+        self.sent: list[bytes] = []
+        self.connected: object = None
 
     def settimeout(self, _t: float) -> None:
         pass
 
-    def sendto(self, data: bytes, addr: object) -> None:
-        self.sent.append((data, addr))
+    def connect(self, addr: object) -> None:
+        self.connected = addr
 
-    def recvfrom(self, _n: int) -> tuple[bytes, tuple[str, int]]:
-        return self._reply, ("203.0.113.1", 123)
+    def send(self, data: bytes) -> None:
+        self.sent.append(data)
+
+    def recv(self, _n: int) -> bytes:
+        reply = self._reply
+        # A real server echoes the request's transmit timestamp into the reply's
+        # originate field (bytes 24-31). Mirror that so the nonce check passes,
+        # unless the test wants a spoofed (non-echoing) reply.
+        if self._echo_nonce and self.sent and len(reply) >= 48:
+            nonce = self.sent[-1][40:48]
+            reply = reply[:24] + nonce + reply[32:]
+        return reply
 
     def __enter__(self) -> _FakeSocket:
         return self
@@ -54,8 +70,8 @@ class _FakeSocket:
         return False
 
 
-def _patch_socket(monkeypatch: pytest.MonkeyPatch, reply: bytes) -> _FakeSocket:
-    fake = _FakeSocket(reply)
+def _patch_socket(monkeypatch: pytest.MonkeyPatch, reply: bytes, *, echo_nonce: bool = True) -> _FakeSocket:
+    fake = _FakeSocket(reply, echo_nonce=echo_nonce)
     monkeypatch.setattr(_socket, "socket", lambda *a, **k: fake)
     return fake
 
@@ -68,9 +84,25 @@ def _patch_socket(monkeypatch: pytest.MonkeyPatch, reply: bytes) -> _FakeSocket:
 def test_query_ntp_parses_transmit_timestamp(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _patch_socket(monkeypatch, _ntp_reply(1_735_700_000))
     assert query_ntp("ptbtime1.ptb.de") == pytest.approx(1_735_700_000.0)
-    # A request was actually sent to the NTP port.
-    assert fake.sent and fake.sent[0][1] == ("ptbtime1.ptb.de", 123)
-    assert len(fake.sent[0][0]) == 48
+    # The socket was connect()-ed to the NTP server (so only its replies land).
+    assert fake.connected == ("ptbtime1.ptb.de", 123)
+    assert fake.sent and len(fake.sent[0]) == 48
+
+
+def test_query_ntp_rejects_unechoed_nonce(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A reply whose originate field doesn't echo our nonce is a spoof / stray
+    # datagram and must be rejected, not used to set the clock.
+    _patch_socket(monkeypatch, _ntp_reply(1_735_700_000), echo_nonce=False)
+    with pytest.raises(ValueError, match="does not echo"):
+        query_ntp("ptbtime1.ptb.de")
+
+
+def test_query_ntp_handles_era1_rollover(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A post-2036 (NTP era 1) timestamp must convert to the correct Unix epoch,
+    # not a negative value that silently disables time-sync forever.
+    future = 2_500_000_000  # ~2049, inside the plausibility window
+    _patch_socket(monkeypatch, _ntp_reply(future))
+    assert query_ntp("ptbtime1.ptb.de") == pytest.approx(float(future))
 
 
 def test_query_ntp_rejects_empty_server() -> None:
@@ -92,7 +124,7 @@ def test_query_ntp_rejects_zero_timestamp(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_query_ntp_propagates_socket_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Timeout(_FakeSocket):
-        def recvfrom(self, _n: int):  # type: ignore[override]
+        def recv(self, _n: int) -> bytes:
             raise TimeoutError("timed out")
 
     monkeypatch.setattr(_socket, "socket", lambda *a, **k: _Timeout(b""))

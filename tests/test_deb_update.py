@@ -425,6 +425,20 @@ class TestIsPrereleaseVersion:
     def test_is_prerelease_version(self, version: str, expected: bool) -> None:
         assert _is_prerelease_version(version) is expected
 
+    @pytest.mark.parametrize(
+        "opt_in,version,expected",
+        [
+            (True, "0.3.0", True),  # operator opt-in
+            (False, "0.3.1rc3", True),  # running a pre-release -> auto-track
+            (True, "0.3.1rc3", True),  # both
+            (False, "0.3.0", False),  # stable + no opt-in -> stable only
+        ],
+    )
+    def test_effective_include_prereleases(self, opt_in: bool, version: str, expected: bool) -> None:
+        from openfollow.runtime.deb_update import _effective_include_prereleases
+
+        assert _effective_include_prereleases(opt_in, version) is expected
+
 
 # ---------------------------------------------------------------------------
 # _download_bundle

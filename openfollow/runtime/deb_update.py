@@ -94,7 +94,9 @@ def run_deb_update(app: OpenFollowApp, request: dict[str, str]) -> None:
     try:
         _cleanup_temp_debs()  # clear any stale staging from a prior failed run
         set_status("running", "Checking for latest release…")
-        include_prereleases = app._config.update_include_prereleases or _is_prerelease_version(openfollow.__version__)
+        include_prereleases = _effective_include_prereleases(
+            app._config.update_include_prereleases, openfollow.__version__
+        )
         release = _fetch_latest_release(repo, include_prereleases=include_prereleases)
 
         tag: str = release.get("tag_name", "")
@@ -365,7 +367,7 @@ def check_for_update(repo: str, current_version: str, *, include_prereleases: bo
     releases are considered – except when the running build is itself a
     pre-release, which always tracks pre-releases so it isn't stranded.
     """
-    effective_prereleases = include_prereleases or _is_prerelease_version(current_version)
+    effective_prereleases = _effective_include_prereleases(include_prereleases, current_version)
     release = _fetch_latest_release(repo.strip(), include_prereleases=effective_prereleases)
     latest = str(release.get("tag_name", "")).lstrip("v")
     return {
@@ -529,6 +531,16 @@ def _is_prerelease_version(version: str) -> bool:
         return Version(version).is_prerelease
     except InvalidVersion:
         return False
+
+
+def _effective_include_prereleases(opt_in: bool, current_version: str) -> bool:
+    """Whether to offer pre-releases: the operator opt-in OR a running build
+    that is itself a pre-release (which auto-tracks the pre-release channel).
+
+    Single source of truth so the banner check and the installer can't drift on
+    which channel a device follows – see :func:`_is_prerelease_version`.
+    """
+    return opt_in or _is_prerelease_version(current_version)
 
 
 def _safe_unlink(path: str) -> None:

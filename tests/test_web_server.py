@@ -222,6 +222,21 @@ def test_update_banner_and_footer_flag_shown_when_available(live_server, monkeyp
     assert "is ready to install" in section
 
 
+def test_wizard_page_shows_update_footer_flag(live_server, monkeypatch) -> None:
+    # The footer "Update available" flag is global chrome, not limited to the
+    # config landing page: an update is most often discovered during setup.
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "linux")
+
+    server, base = live_server
+    server._command_queue.set_update_available("0.4.0")
+
+    status, body = _get(base, "/wizard")
+    assert status == 200
+    assert "Update available: v0.4.0" in body  # footer flag
+
+
 def test_update_banner_and_footer_hidden_on_unsupported_platform(live_server, monkeypatch) -> None:
     # macOS can't run the .deb installer, so neither the Software Update banner
     # nor the footer flag surfaces even when a newer release was discovered.

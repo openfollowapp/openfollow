@@ -24,6 +24,53 @@ die() {
   exit 1
 }
 
+# === clock / index diagnostics (pure; sourced by tests) ====================
+# True when apt output shows a future-dated signature ("Not live until …"),
+# i.e. the system clock is behind real time – the usual Pi cause being no RTC
+# plus NTP not yet synced. Reads the captured output on stdin.
+clock_skew_in() {
+  grep -qiE 'not live until|not yet valid|is not valid yet' 2>/dev/null
+}
+
+# True when apt could not resolve dependencies. On Raspberry Pi OS this is
+# almost always a stale / inconsistent index (a failed apt-get update), not a
+# genuine conflict. Reads the captured output on stdin.
+broken_index_in() {
+  grep -qiE 'held broken packages|unmet dependencies|unable to correct problems' 2>/dev/null
+}
+
+clock_skew_message() {
+  cat <<'MSG'
+the system clock is wrong, so APT rejects the repository signatures as
+"Not live until <future date>" and cannot refresh the package index. The
+dependency errors that follow are a side effect of the stale index, not a real
+package conflict.
+
+Fix the clock, then re-run this script:
+  sudo timedatectl set-ntp true
+  sudo systemctl restart systemd-timesyncd
+  timedatectl status         # wait for: System clock synchronized: yes
+If NTP cannot reach a server (UDP port 123 is often blocked), set it by hand:
+  sudo date -u -s 'YYYY-MM-DD HH:MM:SS'    # real current UTC time (-u = interpret as UTC)
+Then refresh the index and re-run:
+  sudo apt-get update && sudo apt-get full-upgrade -y
+MSG
+}
+
+broken_index_message() {
+  cat <<'MSG'
+APT could not install the build prerequisites: the package index is
+inconsistent. On Raspberry Pi OS this almost always means the index is stale
+(apt-get update did not refresh it, frequently because the system clock was
+wrong). Refresh and reconcile, then re-run this script:
+  sudo apt-get update
+  sudo apt-get full-upgrade -y
+If apt-get update reports signatures "Not live until <future date>", fix the
+system clock first (timedatectl / sudo date -u -s).
+MSG
+}
+# === end diagnostics =======================================================
+
 FORCE=0
 RESTART_SERVICE=1
 SDK_TARBALL=""
@@ -63,13 +110,31 @@ fi
 # The minimal Pi OS Lite image omits several of these; install-system-deps.sh
 # covers the runtime set but not the GStreamer -dev headers the plugin needs.
 log "Installing build prerequisites (apt)…"
-if ! sudo env DEBIAN_FRONTEND=noninteractive apt-get update; then
+apt_log="$(mktemp 2>/dev/null || echo "/tmp/openfollow-install-ndi-apt.$$.log")"
+trap 'rm -f "$apt_log"' EXIT
+if ! sudo env DEBIAN_FRONTEND=noninteractive apt-get update 2>&1 | tee "$apt_log"; then
+  # A failed update is fatal only when it's a wrong-clock signature failure –
+  # pressing on with the stale index then produces a cryptic dependency
+  # conflict. A plain unreachable-mirror failure still falls through to the
+  # cached index (works on a fully-provisioned offline Pi).
+  if clock_skew_in <"$apt_log"; then
+    die "$(clock_skew_message)"
+  fi
   log "WARN: apt-get update failed; proceeding with cached index"
 fi
-sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+if ! sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
   curl git build-essential pkg-config \
   meson ninja-build gstreamer1.0-tools \
-  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libglib2.0-dev libssl-dev
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libglib2.0-dev libssl-dev \
+  2>&1 | tee "$apt_log"; then
+  if clock_skew_in <"$apt_log"; then
+    die "$(clock_skew_message)"
+  fi
+  if broken_index_in <"$apt_log"; then
+    die "$(broken_index_message)"
+  fi
+  die "apt-get could not install the NDI build prerequisites – see the output above."
+fi
 
 # --- 2. NDI® SDK runtime (libndi.so.*) -------------------------------------
 if ls /usr/local/lib/libndi.so.* >/dev/null 2>&1; then

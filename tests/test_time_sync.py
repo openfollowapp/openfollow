@@ -129,6 +129,8 @@ def test_set_clock_passwordless_runs_date() -> None:
     call = broker.calls[0]
     assert call.capability is SYSTEM_SET_CLOCK
     assert call.argv == ["/usr/bin/date", "-s", "@1735700000"]
+    # A background sync must never be able to pop a password prompt.
+    assert call.allow_prompt is False
 
 
 def test_set_clock_skips_when_needs_password() -> None:

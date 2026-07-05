@@ -132,7 +132,7 @@ class PrivilegeBroker:
         env = {**os.environ, **_ENV_OVERRIDES}
         try:
             probe = subprocess.run(
-                ["sudo", "-n", "-ll", *capability.probe_argv],
+                ["sudo", "-n", "-ll", *capability.probe_command()],
                 capture_output=True,
                 text=True,
                 timeout=_PROBE_TIMEOUT_S,
@@ -171,8 +171,16 @@ class PrivilegeBroker:
         timeout: float = _DEFAULT_RUN_TIMEOUT_S,
         reason: str = "",
         stdin: str | None = None,
+        allow_prompt: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Run sudo argv for capability, prompting if needed. Raises PrivilegeError on failure."""
+        """Run sudo argv for capability, prompting if needed. Raises PrivilegeError on failure.
+
+        ``allow_prompt=False`` forbids the interactive password fallback: if the
+        non-interactive ``sudo -n`` attempt reports a password is required, the
+        call raises instead of prompting. Background callers (e.g. auto
+        time-sync) pass this so a sync can never pop an unsolicited prompt,
+        regardless of a stale PASSWORDLESS cache verdict.
+        """
         # Defence-in-depth: in-process allow-set must match the sudoers rule,
         # so a caller can't pair a capability with an arbitrary argv.
         try:
@@ -209,6 +217,11 @@ class PrivilegeBroker:
             raise PrivilegeError(_format_failure(capability, proc))
         # Invalidate cache; re-probe after password succeeds.
         self.invalidate(capability)
+
+        # Background callers forbid the prompt: fail closed rather than surface
+        # an unsolicited password dialog from a thread the operator didn't drive.
+        if not allow_prompt:
+            raise PrivilegeError(f"{capability.description}: password required but prompting is disabled here.")
 
         # Prompt for password and retry.
         if self._prompter is None:

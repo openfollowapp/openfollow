@@ -152,6 +152,16 @@ def test_check_update_skips_blank_repo() -> None:
     assert called == [] and cmds.values == []
 
 
+def test_check_update_swallows_bad_repo_type() -> None:
+    # A malformed (non-string) update_github_repo hits ``.strip()`` inside the
+    # try now, so a hand-edited config can't raise out of the cycle.
+    cmds = _Commands()
+    called = []
+    w = _worker(commands=cmds, update_check=lambda r, v, **kw: called.append(1) or {"available": False})
+    w._check_update(_cfg(update_github_repo=123))  # must not raise
+    assert called == [] and cmds.values == []
+
+
 # ---------------------------------------------------------------------------
 # _sync_time
 # ---------------------------------------------------------------------------
@@ -417,3 +427,26 @@ def test_run_returns_immediately_when_stopped_during_initial_delay() -> None:
     w._stop_event.set()  # initial wait returns True -> early return, no cycle
     w._run()
     assert fired == []
+
+
+def test_run_swallows_startup_cycle_exception() -> None:
+    # A raising startup cycle must be caught so the resilient poll loop still
+    # starts, not kill the daemon thread before it ever loops.
+    seq: list[str] = []
+    w = _worker()
+    w._initial_delay = 0.0
+    w._poll_interval = 0.0
+
+    def _boom(reason: str) -> None:
+        seq.append(reason)
+        raise RuntimeError("startup boom")
+
+    w._run_cycle = _boom  # type: ignore[method-assign]
+
+    def _maybe() -> None:
+        seq.append("maybe")
+        w._stop_event.set()  # exit after one loop iteration
+
+    w._maybe_cycle = _maybe  # type: ignore[method-assign]
+    w._run()  # must not raise; loop still reached
+    assert seq == ["startup", "maybe"]

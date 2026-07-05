@@ -135,8 +135,14 @@ class OnlineSyncWorker:
     def _run(self) -> None:
         if self._stop_event.wait(self._initial_delay):
             return
-        self._last_ip = self._ip_provider()
-        self._run_cycle("startup")
+        # Guard the startup cycle like every poll iteration: an exception here
+        # (a raising ip provider, a malformed config field) must not kill the
+        # daemon thread before it reaches the resilient poll loop below.
+        try:
+            self._last_ip = self._ip_provider()
+            self._run_cycle("startup")
+        except Exception:
+            logger.exception("online-sync startup cycle failed")
         while not self._stop_event.wait(self._poll_interval):
             try:
                 self._maybe_cycle()
@@ -184,17 +190,19 @@ class OnlineSyncWorker:
         self._set_clock(self._broker, round(epoch))
 
     def _check_update(self, cfg: AppConfig) -> None:
-        repo = cfg.update_github_repo.strip()
-        if not repo:
-            return
         try:
+            # Inside the try so a malformed (non-string) update_github_repo can't
+            # raise past here and abort the cycle uncaught.
+            repo = cfg.update_github_repo.strip()
+            if not repo:
+                return
             info = self._update_check(
                 repo,
                 self._version,
                 include_prereleases=cfg.update_include_prereleases,
             )
         except Exception as exc:
-            # Offline / API error – leave any prior known state untouched.
+            # Offline / API error / bad config – leave any prior known state untouched.
             logger.debug("Update check failed: %s", exc)
             return
         if info.get("available"):

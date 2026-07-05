@@ -86,11 +86,15 @@ def set_system_clock(broker: PrivilegeBroker | None, epoch: int) -> bool:
         logger.debug("Clock-set not granted passwordless; skipping auto time-sync.")
         return False
     try:
+        # ``allow_prompt=False``: if the grant vanished since the (cached) state
+        # check, fail closed rather than pop a password dialog from this
+        # background thread.
         broker.run(
             SYSTEM_SET_CLOCK,
             ["/usr/bin/date", "-s", f"@{epoch}"],
             reason="Sync system clock from a trusted time source",
             timeout=10,
+            allow_prompt=False,
         )
     except PrivilegeError as exc:
         logger.debug("Clock-set failed: %s", exc)

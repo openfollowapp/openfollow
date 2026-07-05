@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 
 import pytest
@@ -19,6 +20,7 @@ from openfollow.privilege.capabilities import (
     NETWORK_NM_CON_MOD,
     REQUIRED_HARDWARE_GROUPS_JOINED,
     SERVICE_RESTART,
+    SYSTEM_SET_CLOCK,
     Capability,
     CapabilityState,
 )
@@ -88,6 +90,26 @@ class TestProbe:
             _fake_subprocess_factory(lambda argv, **kw: (0, _NOPASSWD_LISTING, "")),
         )
         assert broker.state(SERVICE_RESTART) == CapabilityState.PASSWORDLESS
+
+    def test_set_clock_probe_satisfies_epoch_bounded_rule(self, broker, monkeypatch) -> None:
+        """Regression: system.set_clock must probe with a token the epoch-bounded
+        sudoers rule accepts. A fake sudo that NOPASSWDs only when the trailing
+        ``date -s`` arg matches ``@[0-9]+`` reports PASSWORDLESS with the
+        substituted ``@0`` probe; the raw ``_`` placeholder would fail the rule
+        and read NEEDS_PASSWORD even with the grant installed."""
+        monkeypatch.setattr("openfollow.privilege.broker.shutil.which", lambda name: "/usr/bin/sudo")
+
+        def _handler(argv, **kw):
+            slot = argv[-1]  # sudo -n -ll /usr/bin/date -s <slot>
+            if re.fullmatch(r"@[0-9]+", slot):
+                return (0, _NOPASSWD_LISTING, "")
+            return (1, "", "sudo: sorry, user is not allowed to execute that command")
+
+        monkeypatch.setattr(
+            "openfollow.privilege.broker.subprocess.run",
+            _fake_subprocess_factory(_handler),
+        )
+        assert broker.state(SYSTEM_SET_CLOCK) == CapabilityState.PASSWORDLESS
 
     def test_needs_password_when_listing_lacks_nopasswd(self, broker, monkeypatch) -> None:
         """Operator has a catch-all ``(ALL : ALL) ALL`` rule that
@@ -306,6 +328,36 @@ class TestRunPasswordless:
         assert proc.returncode == 0
         assert prompted == [SERVICE_RESTART.name]
         # Cache was dropped so the next call re-probes.
+        assert SERVICE_RESTART.name not in broker._cache
+
+    def test_allow_prompt_false_fails_closed_without_prompting(self, broker, monkeypatch) -> None:
+        # A background caller (allow_prompt=False) must never pop the prompter,
+        # even from a stale PASSWORDLESS cache: fail closed instead.
+        broker._cache[SERVICE_RESTART.name] = (
+            __import__("time").monotonic(),
+            CapabilityState.PASSWORDLESS,
+        )
+
+        def _run(argv, **kw):
+            return subprocess.CompletedProcess(argv, 1, "", f"sudo: {_PASSWORD_REQUIRED_MARKER}\n")
+
+        monkeypatch.setattr("openfollow.privilege.broker.subprocess.run", _run)
+
+        prompted: list[str] = []
+
+        def _prompter(cap, reason):
+            prompted.append(cap.name)
+            return "hunter2"
+
+        broker.set_prompter(_prompter)
+        with pytest.raises(PrivilegeError, match="prompting is disabled"):
+            broker.run(
+                SERVICE_RESTART,
+                ["/usr/bin/systemctl", "restart", "openfollow"],
+                allow_prompt=False,
+            )
+        assert prompted == []  # prompter never invoked
+        # Cache still invalidated so a later call re-probes.
         assert SERVICE_RESTART.name not in broker._cache
 
     def test_nonzero_nonpassword_failure_raises(self, broker, monkeypatch) -> None:

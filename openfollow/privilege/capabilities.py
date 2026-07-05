@@ -48,6 +48,28 @@ class Capability:
     sudoers rule – needed where it is multi-token or may contain whitespace
     (e.g. ``nmcli con mod``)."""
 
+    probe_arg: str | None = None
+    """Concrete value substituted into the free ``_PROBE_PLACEHOLDER`` slot when
+    *probing* (``sudo -n -ll``). Needed when the sudoers rule bounds the slot
+    with an :attr:`arg_pattern` the bare ``_`` placeholder can't satisfy (the
+    ``^@[0-9]+$`` epoch regex): the probe must pass a rule-matching token or
+    ``sudo`` finds no covering rule and the capability never reads as
+    PASSWORDLESS even when the grant is installed. ``None`` keeps the raw ``_``,
+    which already matches every ``*`` glob and the username regex."""
+
+    def probe_command(self) -> tuple[str, ...]:
+        """The argv passed to ``sudo -n -ll`` when probing this capability.
+
+        Fills the free placeholder slot with :attr:`probe_arg` when set so a
+        capability whose sudoers rule bounds the slot with an
+        :attr:`arg_pattern` still probes against a rule-matching token. Only
+        the security-inert probe path is affected; :meth:`assert_argv_allowed`
+        and the real ``run`` argv are unchanged.
+        """
+        if self.probe_arg is None:
+            return self.probe_argv
+        return tuple(self.probe_arg if tok == _PROBE_PLACEHOLDER else tok for tok in self.probe_argv)
+
     def assert_argv_allowed(self, argv: list[str]) -> None:
         """Fail-closed in-process allow-set check (defence-in-depth).
 
@@ -480,6 +502,9 @@ SYSTEM_SET_CLOCK = Capability(
     # Anchored ``@<digits>`` regex, NOT a trailing ``*`` – see _EPOCH_ARG_RE.
     sudoers_pattern=f"/usr/bin/date -s {_EPOCH_ARG_RE}",
     arg_pattern=_EPOCH_ARG_RE,
+    # The bare ``_`` placeholder can't satisfy the epoch regex, so probe with a
+    # concrete ``@<digits>`` token or ``sudo -n -ll`` never matches the rule.
+    probe_arg="@0",
 )
 
 

@@ -32,9 +32,7 @@ from openfollow.psn import PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
 from openfollow.runtime.overlay_state import OverlayState
-from openfollow.runtime.services_detection_pin import (
-    DetectionPinState,
-)
+from openfollow.runtime.services_detection_pin import _NOMINAL_FRAME_DT
 from openfollow.runtime.services_detection_pin import (
     apply_detection_pin as apply_detection_pin_helper,
 )
@@ -517,9 +515,6 @@ class AppRuntimeServices:
         self._unproject_cam_buffer = np.zeros(7, dtype=np.float64)
         self._screen_point_buffer = np.zeros((1, 2), dtype=np.float64)
 
-        # Detection pin state across frames (EMA + velocity prediction)
-        self._detection_pin_state = DetectionPinState()
-
         # Unified OSC service: one shared client cache and listener for
         # zone OSC output, marker OSC input, and the transmitter system.
         # Created eagerly because the constructor opens no sockets – all
@@ -727,6 +722,21 @@ class AppRuntimeServices:
     def init_camera(self) -> None:
         self._app._camera = Camera.from_config(self._app._config.camera)
 
+    def _seed_bundled_detection_models(self, cfg: AppConfig) -> None:
+        """Copy bundled tier models into the resolved storage ``models/`` folder.
+
+        No-op when nothing is bundled (a source checkout) or on any I/O error –
+        seeding is best-effort and must never block startup.
+        """
+        from openfollow.model_seed import bundled_models_dir, seed_bundled_models
+        from openfollow.video.detection import resolve_detection_storage_path
+
+        source = bundled_models_dir()
+        if source is None:
+            return
+        storage_root = Path(resolve_detection_storage_path(cfg.detection.storage_path))
+        seed_bundled_models(source, storage_root / "models")
+
     def init_video(self) -> None:
         overlay = CairoOverlayRenderer()
         self._overlay_renderer = overlay
@@ -748,6 +758,11 @@ class AppRuntimeServices:
         # at runtime; the assert is a strict-mode narrowing aid.
         assert canvas is not None, "init_canvas must run before init_video"
         cfg = self._app._config
+
+        # Seed the pre-shipped quality-tier models into the storage folder so
+        # detection (and the web tier picker) works offline out of the box.
+        # No-op on a source checkout. Runs before the web server starts.
+        self._seed_bundled_detection_models(cfg)
 
         # Optional person detection (lazy import, zero cost when disabled)
         detector = None
@@ -873,22 +888,13 @@ class AppRuntimeServices:
     def _resolve_web_bind(self) -> str:
         """Resolve the web UI listen address.
 
-        ``web_bind`` set → that explicit address. Empty → pin to the PSN
-        source interface's IPv4 when one is configured and resolvable, else
-        ``0.0.0.0`` (all interfaces). The server additionally serves loopback
-        whenever this pins a specific IP, so the on-screen browser is
-        unaffected.
+        ``web_bind`` set → that explicit address. Empty → ``0.0.0.0`` (all
+        interfaces) so the UI stays reachable across an interface IP change
+        without a restart. When ``web_pin`` is set, access is gated by session
+        auth plus the CSRF / DNS-rebind guards; with it empty those are
+        disabled. Set ``web_bind`` to pin the UI to a single address.
         """
-        cfg = self._app._config
-        if cfg.web_bind:
-            return cfg.web_bind
-        if cfg.psn_source_iface:
-            from openfollow.net_utils import get_iface_ipv4
-
-            ip = get_iface_ipv4(cfg.psn_source_iface)
-            if ip:
-                return ip
-        return "0.0.0.0"
+        return self._app._config.web_bind or "0.0.0.0"
 
     def init_psn(self) -> None:
         source_ip = self._resolved_source_ip()
@@ -1084,6 +1090,11 @@ class AppRuntimeServices:
             # :meth:`init_input_manager`), so the closure tolerates ``None``
             # until it's populated, long before any 60 Hz render.
             controller_marker_provider=self._controller_marker_provider,
+            # ``markers`` field's ``all`` token + controlled-only validity
+            # filter. Reads the live controlled-id list each tick so a
+            # hot-reload of ``controlled_marker_ids`` re-expands ``all``
+            # without a manager restart.
+            controlled_markers_provider=self._controlled_markers_provider,
         )
         manager.restart(
             self._app._config.osc_transmitters,
@@ -1187,6 +1198,15 @@ class AppRuntimeServices:
         if im is None:
             return None
         return im.controller_marker_id(controller_idx)
+
+    def _controlled_markers_provider(self) -> list[int]:
+        """Snapshot of ``controlled_marker_ids`` for the OSC transmitter
+        ``markers`` field's ``all`` token + controlled-only validity filter.
+
+        Reads ``app._controlled_ids`` (the same list the gamepad routing and
+        marker-fader provisioning use), copied so a concurrent hot-reload
+        swapping the list can't tear a mid-tick read."""
+        return list(self._app._controlled_ids)
 
     def _marker_fader_values_provider(self) -> list[dict[str, Any]]:
         """Snapshot of the per-controlled-marker faders for the MIDI
@@ -1851,6 +1871,9 @@ class AppRuntimeServices:
             zone_diagnostics_provider=self._get_zone_diagnostics_snapshot,
             zone_test_send=self._zone_test_send,
             marker_positions_provider=self._get_marker_positions_snapshot,
+            # Live per-marker move speeds; the ``dict(...)`` copy is the
+            # mutation-isolation boundary so the web thread never holds the live dict.
+            marker_move_speeds_provider=lambda: dict(self._app._config.marker_move_speeds),
             full_snapshot_provider=self._snapshot_provider.get_snapshot,
             # Diagnostics + conflict-probe hooks. ``init_web_server`` runs
             # before ``init_osc_transmitters``, so the manager is ``None``
@@ -2256,7 +2279,6 @@ class AppRuntimeServices:
             system_stats=self._system_stats,
             person_detector=self._person_detector,
             cam_params_buffer=self._cam_params_buffer,
-            pin_state=self._detection_pin_state,
         )
 
         # Atomic swap: release old state back to pool
@@ -2273,14 +2295,18 @@ class AppRuntimeServices:
         if self._overlay_renderer is not None:  # pragma: no branch
             self._overlay_renderer.state = state
 
-    def apply_detection_pin(self) -> None:
-        """Pin the selected controlled marker to the tracked detection with EMA smoothing."""
+    def apply_detection_pin(self, dt: float = _NOMINAL_FRAME_DT) -> None:
+        """Drive controlled marker(s) from detection with EMA smoothing.
+
+        ``dt`` (seconds since the previous animate frame) keeps the smoothing /
+        prediction frame-rate-independent.
+        """
         apply_detection_pin_helper(
             self._app,
             person_detector=self._person_detector,
             unproject_cam_buffer=self._unproject_cam_buffer,
             screen_point_buffer=self._screen_point_buffer,
-            pin_state=self._detection_pin_state,
+            dt=dt,
         )
 
     def init_zone_engine(self) -> None:
@@ -2362,9 +2388,12 @@ class AppRuntimeServices:
         if app._camera is None:
             return []
 
-        from openfollow.scene.solver import unproject_to_plane
+        from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
         cam_cfg = app._camera.to_config()
+        # Lens-distortion coefficients live on the config (the pinhole Camera
+        # doesn't carry them), so read them straight from there.
+        lens = app._config.camera
         params = self._zone_cam_buffer
         params[0] = cam_cfg.pos_x
         params[1] = cam_cfg.pos_y
@@ -2380,7 +2409,11 @@ class AppRuntimeServices:
         for det in detections:
             screen_pt[0, 0] = (det.x1 + det.x2) / 2.0 * w
             screen_pt[0, 1] = det.y2 * h  # foot position
-            world = unproject_to_plane(params, screen_pt, float(w), float(h), plane_z)
+            # The detection sits on the (lens-distorted) video, so undistort the
+            # foot point back to the pinhole frame before unprojecting. Identity
+            # when no lens distortion is configured.
+            undistorted = invert_overlay_distortion(screen_pt, float(w), float(h), lens.lens_k1, lens.lens_k2)
+            world = unproject_to_plane(params, undistorted, float(w), float(h), plane_z)
             if not np.all(np.isfinite(world[0])):
                 continue
             # unproject_to_plane returns PSN-absolute world coords, matching

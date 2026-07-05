@@ -153,7 +153,7 @@ class TestDrawOrigin:
 
         calls = [0]
 
-        def _fake_project(cam, pts, w, h):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
             calls[0] += 1
             if calls[0] == 1:
                 # X axis: make the endpoint NaN so the branch body is skipped.
@@ -258,8 +258,7 @@ class TestDrawDetections:
         state = _scene_state(
             detection_box_color="#808080",  # default grey
             detection_show_labels=False,
-            detection_attached_track_id=2,
-            detection_attached_color="#ff0000",  # marker red
+            detection_attached_colors={2: "#ff0000"},  # track 2 → marker red
         )
         state.detections = [
             DetectionBox(x1=0.0, y1=0.0, x2=0.1, y2=0.1, confidence=0.5, track_id=1),
@@ -273,14 +272,36 @@ class TestDrawDetections:
         assert strokes[0][1:4] == pytest.approx((grey, grey, grey))
         assert strokes[1][1:4] == pytest.approx((1.0, 0.0, 0.0))
 
+    def test_two_attached_tracks_each_use_their_own_colour(self) -> None:
+        # Assist drives every controlled marker, so the map can carry several
+        # track→colour entries; each box paints in its own marker's colour and
+        # an unmapped box falls back to the default.
+        state = _scene_state(
+            detection_box_color="#808080",  # default grey
+            detection_show_labels=False,
+            detection_attached_colors={1: "#ff0000", 3: "#00ff00"},
+        )
+        state.detections = [
+            DetectionBox(x1=0.0, y1=0.0, x2=0.1, y2=0.1, confidence=0.5, track_id=1),
+            DetectionBox(x1=0.2, y1=0.2, x2=0.3, y2=0.3, confidence=0.6, track_id=2),
+            DetectionBox(x1=0.5, y1=0.5, x2=0.6, y2=0.6, confidence=0.8, track_id=3),
+        ]
+        cr = FakeCairo()
+        draw_detections(FakeRenderer(), cr, state, 100, 100)
+        strokes = [c for c in cr.calls if c[0] == "rgba"]
+        grey = 128 / 255
+        # Box 1 → red, box 2 (unmapped) → grey default, box 3 → green.
+        assert strokes[0][1:4] == pytest.approx((1.0, 0.0, 0.0))
+        assert strokes[1][1:4] == pytest.approx((grey, grey, grey))
+        assert strokes[2][1:4] == pytest.approx((0.0, 1.0, 0.0))
+
     def test_attached_colour_ignored_when_track_not_present(self) -> None:
         # An attached track id with no matching detection leaves every box in
         # the default colour (no crash, no stray highlight).
         state = _scene_state(
             detection_box_color="#808080",
             detection_show_labels=False,
-            detection_attached_track_id=99,
-            detection_attached_color="#ff0000",
+            detection_attached_colors={99: "#ff0000"},
         )
         state.detections = [DetectionBox(x1=0.0, y1=0.0, x2=0.1, y2=0.1, confidence=0.5, track_id=1)]
         cr = FakeCairo()
@@ -345,7 +366,7 @@ class TestDrawMarkerBranches:
 
         calls: list[int] = []
 
-        def _fake_project(cam, pts, w, h):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             calls.append(len(arr))
             out = np.zeros((len(arr), 2), dtype=np.float64)
@@ -387,7 +408,7 @@ class TestDrawMarkerBranches:
     def test_crosshair_skips_nonfinite_axis_endpoints(self) -> None:
         from openfollow.runtime import overlay_draw_scene as mod
 
-        def _fake_project(cam, pts, w, h):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             # Only called by the crosshair path for 6 endpoints; make them
             # all NaN.  The center projection (called first) stays finite.
@@ -435,7 +456,7 @@ class TestDrawMarkerBranches:
 
         call = [0]
 
-        def _fake_project(cam, pts, w, h):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             call[0] += 1
             # First call (center radius pair) – return finite.
@@ -493,7 +514,7 @@ class TestDrawMarkerBranches:
 
         calls = [0]
 
-        def _fake_project(cam, pts, w, h):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             calls[0] += 1
             if calls[0] == 1:

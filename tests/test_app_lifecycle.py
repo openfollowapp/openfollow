@@ -621,6 +621,7 @@ class TestDelegators:
             ("_check_video_disconnect_banner", "runtime_check_video_disconnect_banner", ()),
             ("_restart_app", "runtime_restart_app", ()),
             ("_check_config_reload", "runtime_check_config_reload", ()),
+            ("_check_marker_speeds_persist", "runtime_check_marker_speeds_persist", ()),
         ],
     )
     def test_no_arg_delegators(

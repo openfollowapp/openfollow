@@ -48,6 +48,24 @@ class FakeGdkScrollDirection:
     DOWN = "down"
     LEFT = "left"
     RIGHT = "right"
+    SMOOTH = "smooth"
+
+
+class FakeGdkModifierType:
+    """Stand-in for ``Gdk.ModifierType`` bit-flags used in the Cmd+Q check.
+
+    The window treats these as plain int flags (``mask_a | mask_b``,
+    ``state & mask``), so int class attributes mirror real GDK semantics.
+    Quartz maps Command to MOD2; some builds surface META instead.
+    """
+
+    SHIFT_MASK = 1 << 0
+    CONTROL_MASK = 1 << 2
+    MOD1_MASK = 1 << 3  # Option / Alt
+    MOD2_MASK = 1 << 4  # Command on Quartz (NumLock on X11)
+    META_MASK = 1 << 28
+    BUTTON1_MASK = 256  # GDK_BUTTON1_MASK
+    BUTTON3_MASK = 1024  # GDK_BUTTON3_MASK
 
 
 class FakeGdkWindowHints:
@@ -131,10 +149,12 @@ class FakeGdkSurface:
 class FakeGdk:
     EventMask = FakeGdkEventMask
     ScrollDirection = FakeGdkScrollDirection
+    ModifierType = FakeGdkModifierType
     WindowHints = FakeGdkWindowHints
     Geometry = FakeGdkGeometry
     Cursor = FakeGdkCursor
     CursorType = FakeGdkCursorType
+    ModifierType = FakeGdkModifierType
 
     @staticmethod
     def keyval_name(val: int) -> str | None:
@@ -1317,43 +1337,122 @@ class TestEventDispatch:
         assert result is False
         assert received == [{"key": "a"}]
 
-    def test_scroll_event_normalises_smooth_delta_sign(self, window) -> None:
-        # GTK smooth dy > 0 means scrolling *down*; the window negates it so the
-        # emitted sign matches the discrete fallback (up = +1, down = -1). A
-        # +1.5 GTK delta (down) emits dy=-1.5; a -2.0 GTK delta (up) emits +2.0.
+    def test_scroll_event_normalises_smooth_delta_to_unit_tick(self, window) -> None:
+        # A smooth-scroll delta is collapsed to a single unit tick so one notch
+        # is exactly one ``mouse_wheel_z_step`` regardless of the device's delta
+        # magnitude. GTK dy > 0 is scroll *down* (emit -1); dy < 0 is up (+1).
+        # The magnitudes here (1.5, -2.0, 2.5) must NOT scale the tick.
         received = self._handler_list(window, "wheel")
 
-        down = SimpleNamespace(
-            get_scroll_deltas=lambda: (True, 0.0, 1.5),
-            direction=FakeGdkScrollDirection.DOWN,
+        for delta in (1.5, 2.5):  # scroll down at different per-notch magnitudes
+            window._window.fire(
+                "scroll-event",
+                SimpleNamespace(
+                    get_scroll_deltas=lambda d=delta: (True, 0.0, d),
+                    direction=FakeGdkScrollDirection.SMOOTH,
+                ),
+            )
+        window._window.fire(
+            "scroll-event",
+            SimpleNamespace(
+                get_scroll_deltas=lambda: (True, 0.0, -2.0),
+                direction=FakeGdkScrollDirection.SMOOTH,
+            ),
         )
-        window._window.fire("scroll-event", down)
-        up = SimpleNamespace(
-            get_scroll_deltas=lambda: (True, 0.0, -2.0),
-            direction=FakeGdkScrollDirection.UP,
-        )
-        window._window.fire("scroll-event", up)
-        assert received == [{"dy": -1.5}, {"dy": 2.0}]
+        assert received == [{"dy": -1.0}, {"dy": -1.0}, {"dy": 1.0}]
 
-    def test_scroll_event_falls_back_to_direction_up(self, window) -> None:
+    def test_scroll_event_horizontal_smooth_delta_emits_nothing(self, window) -> None:
+        # A horizontal-only smooth event (dy == 0) must not emit a vertical tick.
         received = self._handler_list(window, "wheel")
-
-        event = SimpleNamespace(
-            get_scroll_deltas=lambda: (False, 0.0, 0.0),
-            direction=FakeGdkScrollDirection.UP,
+        window._window.fire(
+            "scroll-event",
+            SimpleNamespace(
+                get_scroll_deltas=lambda: (True, 1.5, 0.0),
+                direction=FakeGdkScrollDirection.SMOOTH,
+            ),
         )
-        window._window.fire("scroll-event", event)
-        assert received == [{"dy": 1}]
+        assert received == []
 
-    def test_scroll_event_falls_back_to_direction_down(self, window) -> None:
+    def test_scroll_one_notch_pair_emits_single_tick(self, window) -> None:
+        # Real devices emit a legacy discrete UP/DOWN event AND a smooth event
+        # per wheel notch. Only the smooth one is processed; handling both would
+        # double-count and move Z two steps per notch. One notch up = discrete
+        # UP (ok=False) followed by smooth (ok=True, dy=-1.5) -> a single +1.
         received = self._handler_list(window, "wheel")
-
-        event = SimpleNamespace(
-            get_scroll_deltas=lambda: (False, 0.0, 0.0),
-            direction=FakeGdkScrollDirection.DOWN,
+        window._window.fire(
+            "scroll-event",
+            SimpleNamespace(
+                get_scroll_deltas=lambda: (False, 0.0, 0.0),
+                direction=FakeGdkScrollDirection.UP,
+            ),
         )
-        window._window.fire("scroll-event", event)
-        assert received == [{"dy": -1}]
+        window._window.fire(
+            "scroll-event",
+            SimpleNamespace(
+                get_scroll_deltas=lambda: (True, 0.0, -1.5),
+                direction=FakeGdkScrollDirection.SMOOTH,
+            ),
+        )
+        assert received == [{"dy": 1.0}]
+
+    def test_scroll_emulated_discrete_is_ignored(self, window) -> None:
+        """A pointer-emulated discrete event (the duplicate GDK synthesises for
+        each smooth notch) emits nothing, so a notch isn't counted twice."""
+        received = self._handler_list(window, "wheel")
+        for direction in (FakeGdkScrollDirection.UP, FakeGdkScrollDirection.DOWN):
+            window._window.fire(
+                "scroll-event",
+                SimpleNamespace(
+                    get_scroll_deltas=lambda: (False, 0.0, 0.0),
+                    direction=direction,
+                    get_pointer_emulated=lambda: True,
+                ),
+            )
+        assert received == []
+
+    def test_scroll_discrete_only_device_drives_wheel(self, window) -> None:
+        """A genuine discrete-only device (not pointer-emulated, never emits a
+        smooth event) still drives wheel-Z: UP -> +1, DOWN -> -1."""
+        received = self._handler_list(window, "wheel")
+        for direction in (FakeGdkScrollDirection.UP, FakeGdkScrollDirection.DOWN):
+            window._window.fire(
+                "scroll-event",
+                SimpleNamespace(
+                    get_scroll_deltas=lambda: (False, 0.0, 0.0),
+                    direction=direction,
+                    get_pointer_emulated=lambda: False,
+                ),
+            )
+        assert received == [{"dy": 1.0}, {"dy": -1.0}]
+
+    def test_scroll_discrete_only_horizontal_emits_nothing(self, window) -> None:
+        """A non-emulated discrete LEFT/RIGHT event has no vertical semantics, so
+        it falls through the discrete fallback without emitting."""
+        received = self._handler_list(window, "wheel")
+        for direction in (FakeGdkScrollDirection.LEFT, FakeGdkScrollDirection.RIGHT):
+            window._window.fire(
+                "scroll-event",
+                SimpleNamespace(
+                    get_scroll_deltas=lambda: (False, 0.0, 0.0),
+                    direction=direction,
+                    get_pointer_emulated=lambda: False,
+                ),
+            )
+        assert received == []
+
+    def test_scroll_discrete_without_emulated_accessor_is_dropped(self, window) -> None:
+        """When GDK's pointer-emulated accessor is unavailable the discrete event
+        is treated as a duplicate (dropped), preserving smooth-authoritative
+        behaviour rather than risking a double count."""
+        received = self._handler_list(window, "wheel")
+        window._window.fire(
+            "scroll-event",
+            SimpleNamespace(
+                get_scroll_deltas=lambda: (False, 0.0, 0.0),
+                direction=FakeGdkScrollDirection.UP,
+            ),
+        )
+        assert received == []
 
     def test_scroll_event_other_direction_emits_nothing(self, window) -> None:
         """LEFT/RIGHT scroll is a no-op: the app has no horizontal
@@ -1369,6 +1468,7 @@ class TestEventDispatch:
         assert received == []
 
     def test_button_press_and_release_payloads(self, window) -> None:
+        window._pointer_poll = False  # GTK path (Linux/Pi): handlers emit directly
         downs = self._handler_list(window, "pointer_down")
         ups = self._handler_list(window, "pointer_up")
 
@@ -1381,9 +1481,28 @@ class TestEventDispatch:
         assert ups == [{"x": 56.0, "y": 78.0, "button": 3}]
 
     def test_motion_event_payload(self, window) -> None:
+        window._pointer_poll = False  # GTK path (Linux/Pi): handler emits directly
         moves = self._handler_list(window, "pointer_move")
         window._window.fire("motion-notify-event", SimpleNamespace(x=100.0, y=200.0))
         assert moves == [{"x": 100.0, "y": 200.0}]
+
+    def test_gtk_pointer_handlers_defer_to_poll_on_macos(self, window) -> None:
+        # macOS: the per-frame poll is the authoritative pointer source. GTK also
+        # delivers these intermittently, and a duplicated right-click would read as
+        # a double-click (reset). While polling is active the GTK button/motion
+        # handlers must emit nothing so one physical click is exactly one event.
+        window._pointer_poll = True
+        downs = self._handler_list(window, "pointer_down")
+        ups = self._handler_list(window, "pointer_up")
+        moves = self._handler_list(window, "pointer_move")
+
+        window._window.fire("button-press-event", SimpleNamespace(x=12.0, y=34.0, button=3))
+        window._window.fire("button-release-event", SimpleNamespace(x=12.0, y=34.0, button=3))
+        window._window.fire("motion-notify-event", SimpleNamespace(x=100.0, y=200.0))
+
+        assert downs == []
+        assert ups == []
+        assert moves == []
 
     def test_configure_event_emits_resize(self, window) -> None:
         resizes = self._handler_list(window, "resize")
@@ -1410,3 +1529,261 @@ class TestEventDispatch:
         assert blurs == [{}]
         # Returns False so GTK keeps its default focus handling.
         assert result is False
+
+
+# --------------------------------------------------------------------------- #
+# macOS Cmd+Q quit handling
+# --------------------------------------------------------------------------- #
+
+
+class TestMacOsQuit:
+    """The Quartz bundle has no app menu, so Cmd+Q is otherwise unbound and
+    falls through to the ``q`` action binding. The window intercepts it and
+    routes to the graceful close path – but only on macOS, and only when the
+    Command modifier is actually present, so the normal ``q`` action still
+    works."""
+
+    def _q_event(self, *, state: int) -> SimpleNamespace:
+        set_keyval_mapping({17: "q"})
+        return SimpleNamespace(keyval=17, state=state)
+
+    def test_cmd_q_on_macos_quits_gracefully(self, window, monkeypatch) -> None:
+        monkeypatch.setattr(sys, "platform", "darwin")
+        closes: list[dict[str, Any]] = []
+        key_downs: list[dict[str, Any]] = []
+        window.add_event_handler(closes.append, "close")
+        window.add_event_handler(key_downs.append, "key_down")
+
+        result = window._window.fire(
+            "key-press-event",
+            self._q_event(state=FakeGdkModifierType.MOD2_MASK),
+        )
+
+        # Routed to the graceful close path – not emitted as a 'q' nudge.
+        assert result is True
+        assert closes == [{}]
+        assert key_downs == []
+        assert window._closing is True
+        assert FakeGtk.main_quit_calls == 1
+
+    def test_cmd_q_via_meta_mask_also_quits(self, window, monkeypatch) -> None:
+        """Some GTK-Quartz builds surface Command as META rather than MOD2."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        closes: list[dict[str, Any]] = []
+        window.add_event_handler(closes.append, "close")
+
+        window._window.fire(
+            "key-press-event",
+            self._q_event(state=FakeGdkModifierType.META_MASK),
+        )
+
+        assert closes == [{}]
+        assert FakeGtk.main_quit_calls == 1
+
+    def test_plain_q_on_macos_is_normal_key_down(self, window, monkeypatch) -> None:
+        """Without the Command modifier, 'q' must keep driving its action
+        binding (raise marker Z) rather than quitting the app."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        key_downs: list[dict[str, Any]] = []
+        window.add_event_handler(key_downs.append, "key_down")
+
+        result = window._window.fire("key-press-event", self._q_event(state=0))
+
+        assert key_downs == [{"key": "q"}]
+        assert FakeGtk.main_quit_calls == 0
+        assert window._closing is False
+        # No overlay mounted → absorbs the event.
+        assert result is True
+
+    def test_cmd_q_on_linux_is_normal_key_down(self, window, monkeypatch) -> None:
+        """On Linux MOD2 is NumLock, not Command – NumLock+q must not quit."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        key_downs: list[dict[str, Any]] = []
+        window.add_event_handler(key_downs.append, "key_down")
+
+        window._window.fire(
+            "key-press-event",
+            self._q_event(state=FakeGdkModifierType.MOD2_MASK),
+        )
+
+        assert key_downs == [{"key": "q"}]
+        assert FakeGtk.main_quit_calls == 0
+        assert window._closing is False
+
+    def test_cmd_plus_other_key_on_macos_does_not_quit(self, window, monkeypatch) -> None:
+        """Only Cmd+Q is intercepted – Cmd+<other> falls through normally."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        set_keyval_mapping({3: "A"})
+        key_downs: list[dict[str, Any]] = []
+        window.add_event_handler(key_downs.append, "key_down")
+
+        window._window.fire(
+            "key-press-event",
+            SimpleNamespace(keyval=3, state=FakeGdkModifierType.MOD2_MASK),
+        )
+
+        assert key_downs == [{"key": "a"}]
+        assert FakeGtk.main_quit_calls == 0
+
+    def test_key_event_without_state_attr_does_not_crash(self, window, monkeypatch) -> None:
+        """Defensive: a key event lacking ``.state`` (some synthetic events)
+        must fall through to normal handling, not raise."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        set_keyval_mapping({17: "q"})
+        key_downs: list[dict[str, Any]] = []
+        window.add_event_handler(key_downs.append, "key_down")
+
+        window._window.fire("key-press-event", SimpleNamespace(keyval=17))
+
+        assert key_downs == [{"key": "q"}]
+        assert FakeGtk.main_quit_calls == 0
+
+
+# --------------------------------------------------------------------------- #
+# macOS pointer polling
+# --------------------------------------------------------------------------- #
+
+
+class _PollSurface:
+    """Fake realised Gdk.Window returning scripted device positions."""
+
+    def __init__(self, samples: list[tuple[int, int, int]]) -> None:
+        self._samples = samples
+        self._i = 0
+
+    def get_device_position(self, _device: Any) -> tuple[Any, int, int, int]:
+        x, y, mask = self._samples[min(self._i, len(self._samples) - 1)]
+        self._i += 1
+        return (None, x, y, mask)
+
+
+_B1 = FakeGdkModifierType.BUTTON1_MASK
+_B3 = FakeGdkModifierType.BUTTON3_MASK
+
+
+class TestPointerPoll:
+    """On macOS the window polls the pointer each frame and synthesises the
+    same pointer events the GTK signal handlers would."""
+
+    def _handler_list(self, window, event: str) -> list[dict[str, Any]]:
+        collected: list[dict[str, Any]] = []
+        window.add_event_handler(collected.append, event)
+        return collected
+
+    # --- pure edge-detection helper -------------------------------------
+
+    def test_left_press_over_canvas_grabs(self, window) -> None:
+        events, state = window._poll_pointer_events((None, False, False), 100, 200, True, False, True)
+        assert events == [("pointer_down", {"x": 100, "y": 200, "button": 1})]
+        assert state == ((100, 200), True, False)
+
+    def test_press_outside_canvas_does_not_grab(self, window) -> None:
+        events, _ = window._poll_pointer_events((None, False, False), 5, 5, True, False, False)
+        assert events == []
+
+    def test_right_press_over_canvas_emits_button3(self, window) -> None:
+        events, _ = window._poll_pointer_events(((10, 10), False, False), 10, 10, False, True, True)
+        assert events == [("pointer_down", {"x": 10, "y": 10, "button": 3})]
+
+    def test_position_change_emits_move(self, window) -> None:
+        events, _ = window._poll_pointer_events(((10, 10), False, False), 30, 40, False, False, True)
+        assert events == [("pointer_move", {"x": 30, "y": 40})]
+
+    def test_unchanged_position_emits_nothing(self, window) -> None:
+        events, _ = window._poll_pointer_events(((30, 40), False, False), 30, 40, False, False, True)
+        assert events == []
+
+    def test_no_move_on_grab_frame(self, window) -> None:
+        # Cursor moved AND left-pressed in one frame: only the grab is emitted
+        # so it seeds its baseline without yanking the marker.
+        events, _ = window._poll_pointer_events((None, False, False), 50, 60, True, False, True)
+        assert events == [("pointer_down", {"x": 50, "y": 60, "button": 1})]
+
+    def test_no_move_when_outside_canvas(self, window) -> None:
+        events, _ = window._poll_pointer_events(((10, 10), False, False), 99, 99, False, False, False)
+        assert events == []
+
+    def test_held_button_is_not_a_new_press(self, window) -> None:
+        events, _ = window._poll_pointer_events(((10, 10), True, False), 10, 10, True, False, True)
+        assert events == []
+
+    # --- poll_pointer integration (GDK read -> emit) --------------------
+
+    def test_poll_pointer_is_noop_when_disabled(self, window) -> None:
+        window._pointer_poll = False
+        downs = self._handler_list(window, "pointer_down")
+        window.poll_pointer()
+        assert downs == []
+
+    def test_poll_pointer_emits_grab_then_move(self, window) -> None:
+        window._pointer_poll = True
+        window._pointer_device = object()  # skip the lazy Gdk.Display acquire
+        window._box._alloc_w = 1280
+        window._box._alloc_h = 720
+        window._window._gdk_window = _PollSurface(
+            [
+                (100, 200, _B1),  # left button down over canvas -> grab
+                (140, 260, _B1),  # held + moved -> move
+                (140, 260, 0),  # released -> no event (pointer_up is a no-op)
+            ]
+        )
+        downs = self._handler_list(window, "pointer_down")
+        moves = self._handler_list(window, "pointer_move")
+        for _ in range(3):
+            window.poll_pointer()
+        assert downs == [{"x": 100, "y": 200, "button": 1}]
+        assert moves == [{"x": 140, "y": 260}]
+
+    def test_poll_pointer_disables_when_device_unavailable(self, window) -> None:
+        # Lazy acquisition fails (FakeGdk has no Display) -> polling disables
+        # itself rather than retrying every frame.
+        window._pointer_poll = True
+        window._pointer_device = None
+        downs = self._handler_list(window, "pointer_down")
+        window.poll_pointer()
+        assert window._pointer_poll is False
+        assert downs == []
+
+    def test_poll_pointer_noop_when_window_not_realized(self, window) -> None:
+        window._pointer_poll = True
+        window._pointer_device = object()
+        window._window._gdk_window = None  # pre-realize
+        downs = self._handler_list(window, "pointer_down")
+        window.poll_pointer()
+        assert downs == []
+
+    def test_poll_pointer_acquires_device_lazily(self, window, monkeypatch) -> None:
+        class _Seat:
+            def get_pointer(self) -> Any:
+                return object()
+
+        class _Display:
+            @staticmethod
+            def get_default() -> Any:
+                return SimpleNamespace(get_default_seat=lambda: _Seat())
+
+        monkeypatch.setattr(window._Gdk, "Display", _Display, raising=False)
+        window._pointer_poll = True
+        window._pointer_device = None
+        window._box._alloc_w = 1280
+        window._box._alloc_h = 720
+        window._window._gdk_window = _PollSurface([(100, 200, _B1)])
+        downs = self._handler_list(window, "pointer_down")
+        window.poll_pointer()
+        assert window._pointer_device is not None  # acquired on first poll
+        assert downs == [{"x": 100, "y": 200, "button": 1}]
+
+    def test_pointer_poll_error_in_tick_is_isolated(self, window, caplog) -> None:
+        class _Raising:
+            def get_device_position(self, _device: Any) -> Any:
+                raise RuntimeError("poll boom")
+
+        window._pointer_poll = True
+        window._pointer_device = object()
+        window._window._gdk_window = _Raising()
+        window.start_tick_animation(lambda: None)
+        import logging
+
+        with caplog.at_level(logging.ERROR):
+            assert window._window.tick() is True
+        assert any("Pointer poll failed" in rec.message for rec in caplog.records)

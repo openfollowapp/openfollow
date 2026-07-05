@@ -50,6 +50,11 @@ _request_semaphore_rejections = 0
 # twice.
 _FALLBACK_PORTS: tuple[int, ...] = (8080, 2010)
 
+# Min seconds between live local-IP re-resolutions; the refresh runs on request
+# paths and the resolver enumerates interfaces, so an IP change is picked up
+# within this window rather than re-resolving on every request.
+_LOCAL_IP_REFRESH_TTL = 5.0
+
 _REQUEST_BUSY_BODY = b"Server busy; retry"
 _REQUEST_BUSY_RESPONSE = (
     b"HTTP/1.1 503 Service Unavailable\r\n"
@@ -126,6 +131,10 @@ class ConfigWebServer:
         zone_diagnostics_provider: (Callable[[int], dict[str, Any] | None] | None) = None,
         zone_test_send: (Callable[[int, str], dict[str, Any]] | None) = None,
         marker_positions_provider: Callable[[], list[tuple[int, float, float]]] | None = None,
+        # Live per-marker move speeds (R/T + gamepad bumpers). Device-local and
+        # runtime-authoritative; the section-save path overlays them onto the fresh
+        # disk load so a save can't clobber a speed the operator just ramped.
+        marker_move_speeds_provider: Callable[[], dict[int, float]] | None = None,
         full_snapshot_provider: Callable[[], bytes | None] | None = None,
         osc_binding_status_provider: Callable[[str], dict[str, Any] | None] | None = None,
         osc_binding_preview_provider: Callable[[str], dict[str, Any] | None] | None = None,
@@ -189,10 +198,12 @@ class ConfigWebServer:
                 logger.warning("Configured source IP %s is not a local interface, using auto-detected IP.", local_ip)
             self._local_ip = get_primary_local_ipv4(default="127.0.0.1")
         # Live re-resolver so a runtime IP change (static → DHCP, new lease)
-        # is picked up without a restart. Guards the cached ``_local_ip`` +
-        # beacon-interface repoint against concurrent overview requests.
+        # is picked up without a restart. The lock guards the cached
+        # ``_local_ip`` + beacon-interface repoint against concurrent overview
+        # requests; the throttle timestamp keeps request-path refreshes cheap.
         self._local_ip_provider = local_ip_provider
         self._local_ip_lock = threading.Lock()
+        self._local_ip_refresh_ts = 0.0  # monotonic; throttles _refresh_local_ip
         self._command_queue = command_queue or WebCommandQueue()
         self._runtime_stats_provider = runtime_stats_provider
         self._preview_snapshot_provider = preview_snapshot_provider
@@ -200,6 +211,7 @@ class ConfigWebServer:
         self._zone_diagnostics_provider = zone_diagnostics_provider
         self._zone_test_send = zone_test_send
         self._marker_positions_provider = marker_positions_provider
+        self._marker_move_speeds_provider = marker_move_speeds_provider
         self._full_snapshot_provider = full_snapshot_provider
         self._osc_binding_status_provider = osc_binding_status_provider
         self._osc_binding_preview_provider = osc_binding_preview_provider
@@ -391,9 +403,18 @@ class ConfigWebServer:
         address, so this keeps our own self-row and the beacon's send/receive
         interface in step with them. An unresolved (offline / loopback) result
         is ignored so the last known good IP is never downgraded to blank.
+
+        Throttled to ``_LOCAL_IP_REFRESH_TTL``: this runs on request paths
+        (overview poll, /api/info, /api/peers) and the provider does interface
+        enumeration, so it must not re-resolve on every hit.
         """
         if self._local_ip_provider is None:
             return
+        now = time.monotonic()
+        with self._local_ip_lock:
+            if now - self._local_ip_refresh_ts < _LOCAL_IP_REFRESH_TTL:
+                return
+            self._local_ip_refresh_ts = now
         try:
             candidate = self._local_ip_provider()
         except Exception:  # noqa: BLE001
@@ -405,8 +426,10 @@ class ConfigWebServer:
             if candidate == self._local_ip:
                 return
             self._local_ip = candidate
-        self._beacon_sender.update_iface_ip(candidate)
-        self._beacon_receiver.update_iface_ip(candidate)
+            # Repoint beacons under the lock so IP + interface stay consistent
+            # under concurrent refreshes (update_iface_ip never blocks).
+            self._beacon_sender.update_iface_ip(candidate)
+            self._beacon_receiver.update_iface_ip(candidate)
         logger.info("Local IP changed to %s; beacon interface repointed.", candidate)
 
     def get_local_peer_info(self) -> PeerInfo:
@@ -555,6 +578,16 @@ class ConfigWebServer:
         if self._marker_positions_provider is None:
             return []
         return self._marker_positions_provider()
+
+    def get_marker_move_speeds(self) -> dict[int, float]:
+        """Return live per-marker move speeds; empty dict when unwired.
+
+        The provider (wired in ``services``) hands back a copy, so a section save
+        can overlay these onto its fresh disk load without touching the live dict.
+        """
+        if self._marker_move_speeds_provider is None:
+            return {}
+        return self._marker_move_speeds_provider()
 
     def get_full_snapshot(self) -> bytes | None:
         """Return a full-resolution JPEG snapshot, or None."""

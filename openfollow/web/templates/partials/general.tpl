@@ -158,8 +158,10 @@
 %# ------------------------------------------------------------------
 %# 3. Software Update – GitHub Releases signed-bundle (.ofupdate) installer.
 %#
-%# Default-collapsed: most operators rarely update manually.
+%# Default-collapsed: most operators rarely update manually. Hidden on
+%# hosts where the .deb installer can't run (macOS) – ``update_supported``.
 %# ------------------------------------------------------------------
+% if defined('update_supported') and update_supported:
 <div id="general-software-update-section" class="section"
      data-fold-key="general-software-update" data-help="general-software-update"
      data-fold-default="{{'expanded' if (defined('update_available') and update_available) else 'collapsed'}}">
@@ -447,3 +449,4 @@ window.openfollowUploadUpdate = async function (btn) {
   openfollowPollUpdate(info.version);
 };
 </script>
+% end

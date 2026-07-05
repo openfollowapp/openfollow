@@ -3,8 +3,9 @@
 """Tests for the "Show experimental features" opt-in toggle.
 
 Exercises ``/settings/experimental`` against a live ``ConfigWebServer``:
-persist on/off, the one-way cascade-disable of mouse input + person
-detection when off, and the ``<body>`` show-experimental class + CSS gate.
+persist on/off, the one-way cascade-disable of person detection when off
+(mouse input is no longer experimental and is left alone), and the
+``<body>`` show-experimental class + CSS gate.
 """
 
 from __future__ import annotations
@@ -106,7 +107,7 @@ class TestPersist:
 
 
 class TestCascadeDisable:
-    def test_turning_off_disables_mouse_and_detection(self, live_server) -> None:
+    def test_turning_off_disables_detection_but_not_mouse(self, live_server) -> None:
         server, base = live_server
         # Start with experimental on and both features enabled.
         cfg = load_config(server.config_path)
@@ -120,19 +121,19 @@ class TestCascadeDisable:
 
         out = load_config(server.config_path)
         assert out.ui.show_experimental_features is False
-        # Both features disabled by the cascade.
-        assert out.controller.mouse_enabled is False
+        # Detection still cascades off; mouse input is no longer experimental
+        # so it is left enabled.
         assert out.detection.enabled is False
+        assert out.controller.mouse_enabled is True
 
-    def test_turning_on_does_not_reenable_features(self, live_server) -> None:
+    def test_turning_on_does_not_reenable_detection(self, live_server) -> None:
         server, base = live_server
-        # Turning on does not re-enable already-off features.
+        # Turning on does not re-enable an already-off feature.
         status, _ = _set_experimental(base, on=True)
         assert status == 200
 
         out = load_config(server.config_path)
         assert out.ui.show_experimental_features is True
-        assert out.controller.mouse_enabled is False
         assert out.detection.enabled is False
 
 

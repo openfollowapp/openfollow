@@ -855,11 +855,13 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
         psn_system_name="OF",
         marker=_make_full_marker_config(),
         grid=_make_grid_config(),
+        camera=SimpleNamespace(lens_k1=0.0, lens_k2=0.0),
         ui=SimpleNamespace(unit_system="metric"),
         controller=SimpleNamespace(
             enabled=False,
             keyboard_enabled=False,
             mouse_enabled=False,
+            mouse_double_click_reset=True,
             btn_reset="",
             btn_toggle_help="",
             btn_toggle_zones="",
@@ -887,7 +889,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
         ),
         trigger_zones=SimpleNamespace(enabled=False, show_overlay=False, zones=[]),
         operator_messages=SimpleNamespace(enabled=False),
-        detection=SimpleNamespace(enabled=False, pin_marker=False, pin_mode="replace", pin_marker_id=-1),
+        detection=SimpleNamespace(enabled=False, pin_mode="replace", pin_marker_id=-1),
     )
     video_receiver = SimpleNamespace(
         status_marker=SimpleNamespace(
@@ -931,6 +933,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
         _show_hud_help=False,
         _runtime_services=None,
         _assist_manual={},
+        _detection_pin_states={},
     )
 
 
@@ -954,3 +957,22 @@ class TestBuildMarkerVisualStateTornRead:
         # All three components must come from the same packet – the first one,
         # since a correct consumer reads ``pos`` exactly once.
         assert (card.x, card.y, card.z) == (10.0, 20.0, 30.0)
+
+    def test_lens_coefficients_are_copied_from_config(self) -> None:
+        # The overlay warp reads k1/k2 off the live config (the Camera object is
+        # pinhole), so a slider edit must land on the state for the renderer.
+        marker = _TornMarker([(0.0, 0.0, 0.0)])
+        app = _make_visual_app(marker, controlled=False)
+        app._config.camera.lens_k1 = -0.15
+        app._config.camera.lens_k2 = 0.04
+
+        state = build_marker_visual_state(
+            app,
+            overlay_state_pool=OverlayStatePool(),
+            system_stats=None,
+            person_detector=None,
+            cam_params_buffer=np.zeros(7),
+        )
+
+        assert state.lens_k1 == -0.15
+        assert state.lens_k2 == 0.04

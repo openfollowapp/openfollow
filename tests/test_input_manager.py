@@ -146,24 +146,44 @@ def test_input_manager_applies_keyboard_gamepad_and_reset(monkeypatch) -> None:
     assert app._server.get_marker(11).pos == pytest.approx((2.0, 0.0, 0.0))
 
 
-def test_get_marker_redirects_to_ghost_in_assist_mode(monkeypatch) -> None:
+def test_get_marker_redirects_every_controlled_id_to_ghost_in_assist_mode(monkeypatch) -> None:
     monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
     monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
 
-    app = _DummyApp()  # _selected_id = 10, pin_marker_id defaults to -1 (follow selected)
+    app = _DummyApp()  # _controlled_ids = [10, 11], _selected_id = 10
     app._config.detection.enabled = True
-    app._config.detection.pin_marker = True
     app._config.detection.pin_mode = "assist"
     manager = InputManager(app)
 
-    registered = app._server.get_marker(10)
-    resolved = manager._get_marker(10)
-    # The assist-pinned id resolves to a fresh manual ghost, not the registered
-    # (AI-corrected, broadcast) marker.
-    assert resolved is app._assist_manual[10]
-    assert resolved is not registered
-    # A non-pinned controlled marker still resolves to its registered object.
-    assert manager._get_marker(11) is app._server.get_marker(11)
+    # Assist refines every controlled marker, so each controlled id – not just
+    # the selected one – redirects to its own manual ghost, leaving every
+    # registered (AI-corrected, broadcast) marker for the detection pin.
+    for marker_id in (10, 11):
+        registered = app._server.get_marker(marker_id)
+        resolved = manager._get_marker(marker_id)
+        assert resolved is app._assist_manual[marker_id]
+        assert resolved is not registered
+    # The two controlled ids get distinct ghosts.
+    assert app._assist_manual[10] is not app._assist_manual[11]
+
+
+def test_get_marker_returns_registered_marker_outside_assist(monkeypatch) -> None:
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+
+    # Detection off, and replace mode: no ghost is created, input drives the
+    # registered marker directly.
+    app = _DummyApp()
+    app._config.detection.enabled = False
+    app._config.detection.pin_mode = "replace"
+    manager = InputManager(app)
+    assert manager._get_marker(10) is app._server.get_marker(10)
+    assert app._assist_manual == {}
+
+    # Replace mode while detection is enabled still drives the registered marker.
+    app._config.detection.enabled = True
+    assert manager._get_marker(10) is app._server.get_marker(10)
+    assert app._assist_manual == {}
 
 
 def test_keyboard_movement_steers_ghost_in_assist_mode(monkeypatch) -> None:
@@ -173,7 +193,6 @@ def test_keyboard_movement_steers_ghost_in_assist_mode(monkeypatch) -> None:
     _FakeKeyboardHandler.next_velocity = (0.5, 0.0, 0.0)
     app = _DummyApp()
     app._config.detection.enabled = True
-    app._config.detection.pin_marker = True
     app._config.detection.pin_mode = "assist"
     manager = InputManager(app)
     manager.update(2.0)
@@ -513,6 +532,59 @@ def test_update_isolates_osc_flush_failure(monkeypatch) -> None:
             raise RuntimeError("osc boom")
 
     manager.osc_handler = _BoomOsc()
+
+    result = manager.update(0.016)
+
+    assert result.settings_open_pressed is True
+
+
+def test_update_drives_mouse_when_enabled(monkeypatch) -> None:
+    """The per-frame mouse glide runs once per update when mouse_enabled."""
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+
+    app = _DummyApp()
+    app._config.controller.mouse_enabled = True
+    manager = InputManager(app)
+    calls: list[int] = []
+    manager.mouse_handler = SimpleNamespace(update=lambda: calls.append(1))
+
+    manager.update(1.0)
+
+    assert calls == [1]
+
+
+def test_update_skips_mouse_when_disabled(monkeypatch) -> None:
+    """With mouse disabled the per-frame glide must not run."""
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+
+    app = _DummyApp()
+    app._config.controller.mouse_enabled = False
+    manager = InputManager(app)
+    calls: list[int] = []
+    manager.mouse_handler = SimpleNamespace(update=lambda: calls.append(1))
+
+    manager.update(1.0)
+
+    assert calls == []
+
+
+def test_update_isolates_mouse_failure(monkeypatch) -> None:
+    """A raising mouse update must not drop the gamepad result."""
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    _FakeGamepadHandler.next_update = GamepadUpdate(settings_open_pressed=True)
+
+    app = _DummyApp()
+    app._config.controller.mouse_enabled = True
+    manager = InputManager(app)
+
+    class _BoomMouse:
+        def update(self) -> None:
+            raise RuntimeError("mouse boom")
+
+    manager.mouse_handler = _BoomMouse()
 
     result = manager.update(0.016)
 

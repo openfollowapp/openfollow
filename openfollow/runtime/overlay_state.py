@@ -141,6 +141,10 @@ class OverlayState:
     selected_id: int | None = None
     # Camera: [pos_x, pos_y, pos_z, pitch, yaw, roll, fov]
     camera_params: npt.NDArray[Any] | None = None
+    # Radial lens-distortion coefficients bowing the overlay to match the lens.
+    # 0/0 = pinhole (no curvature) – the renderer fast-paths to straight lines.
+    lens_k1: float = 0.0
+    lens_k2: float = 0.0
     # Grid: (width, depth, spacing, x_offset, y_offset, z_offset)
     grid_config: tuple[float, float, float, float, float, float] | None = None
     grid_visible: bool = True
@@ -174,6 +178,7 @@ class OverlayState:
     # Indices of connected gamepads not bound to any marker; shown in Settings info card.
     unbound_controller_indices: list[int] = field(default_factory=list)
     mouse_enabled: bool = False
+    mouse_double_click_reset: bool = True
     ip_text: str = ""
     show_hud_help: bool = True
     # System stats (CPU, RAM, temperature)
@@ -235,10 +240,10 @@ class OverlayState:
     detection_show_labels: bool = False
     detection_box_color: str = "#808080"
     detection_box_thickness: int = 2
-    # The detection track currently attached to a marker, painted in that
-    # marker's colour. ``None`` track id (or empty colour) = no highlight.
-    detection_attached_track_id: int | None = None
-    detection_attached_color: str = ""
+    # Detection tracks currently attached to a marker, each painted in that
+    # marker's colour: ``{track_id: hex_colour}``. Empty = no highlight. Assist
+    # drives every controlled marker, so several boxes can be attached at once.
+    detection_attached_colors: dict[int, str] = field(default_factory=dict)
     # Button detection wizard
     button_detection: ButtonDetectionState | None = None
     # Configurable button labels for help overlay (action -> button name)
@@ -269,6 +274,8 @@ class OverlayState:
         self.markers.clear()
         self.selected_id = None
         self.camera_params = None
+        self.lens_k1 = 0.0
+        self.lens_k2 = 0.0
         self.grid_config = None
         self.grid_visible = True
         self.grid_color = _GRID_COLOR_DEFAULT
@@ -296,6 +303,7 @@ class OverlayState:
         self.keyboard_connected = False
         self.unbound_controller_indices = []
         self.mouse_enabled = False
+        self.mouse_double_click_reset = True
         self.ip_text = ""
         self.show_hud_help = True
         self.cpu_percent = 0.0
@@ -338,8 +346,7 @@ class OverlayState:
         self.detection_show_labels = False
         self.detection_box_color = "#808080"
         self.detection_box_thickness = 2
-        self.detection_attached_track_id = None
-        self.detection_attached_color = ""
+        self.detection_attached_colors = {}
         self.button_detection = None
         self.button_labels = {}
         self.keyboard_labels = {}

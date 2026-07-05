@@ -30,6 +30,7 @@ from openfollow.configuration import (
     VALID_TRIGGER_KINDS,
     VALID_ZONE_EVAL_FPS,
     AppConfig,
+    _canonical_marker_token,
 )
 from openfollow.web.routes import (
     _as_bool,
@@ -241,6 +242,23 @@ def _validate_int_list(value: str, _cfg: AppConfig | None) -> str | None:
     return None
 
 
+def _validate_markers(value: str, _cfg: AppConfig | None) -> str | None:
+    """Per-entry syntax check for the OSC transmitter ``markers`` field.
+
+    Each entry must be a non-negative marker id, a controller alias
+    (``c1``, ``c2``, …), or ``all``. A syntactically-valid id this station
+    doesn't currently control is NOT flagged – it's silently ignored at
+    send time (the station may gain control of it later, and OSC routing
+    never crosses machines). Only malformed tokens block Save."""
+    if not value:
+        return None
+    entries = [e.strip() for e in value.split(",") if e.strip()]
+    for idx, entry in enumerate(entries, start=1):
+        if _canonical_marker_token(entry) is None:
+            return f"Entry {idx} ({entry!r}) must be a marker id, a controller alias (c1, c2, …), or 'all'."
+    return None
+
+
 def _validate_model(value: str, _cfg: AppConfig | None) -> str | None:
     """Model field: free-form filename, but reject traversal."""
     if not value:
@@ -357,6 +375,8 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "focal_length_mm": FieldRule(
             _as_optional_float, lo=0.0, human_error="Focal length must be a positive number (or empty)."
         ),
+        "lens_k1": FieldRule(_as_float, lo=-0.4, hi=0.4, human_error="Must be between -0.4 and 0.4."),
+        "lens_k2": FieldRule(_as_float, lo=-0.2, hi=0.2, human_error="Must be between -0.2 and 0.2."),
     },
     "grid": {
         "visible": FieldRule(_as_bool),
@@ -418,6 +438,19 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "enabled": FieldRule(_as_bool),
         "keyboard_enabled": FieldRule(_as_bool),
         "mouse_enabled": FieldRule(_as_bool),
+        "mouse_hysteresis_px": FieldRule(
+            _as_int, lo=0, hi=200, human_error="Mouse hysteresis must be a whole number of pixels between 0 and 200."
+        ),
+        "mouse_smoothing": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Mouse smoothing must be between 0 and 1."),
+        "mouse_max_y": FieldRule(
+            _as_float, lo=0.0, hi=10000.0, human_error="Maximum Y+ must be between 0 and 10000 m."
+        ),
+        "mouse_wheel_z_enabled": FieldRule(_as_bool),
+        "mouse_wheel_invert": FieldRule(_as_bool),
+        "mouse_wheel_z_step": FieldRule(
+            _as_float, lo=0.0, hi=10.0, human_error="Wheel Z step must be between 0 and 10 m."
+        ),
+        "mouse_double_click_reset": FieldRule(_as_bool),
         "deadzone": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Deadzone must be between 0 and 1."),
         "invert_y": FieldRule(_as_bool),
         "curve": FieldRule(
@@ -536,7 +569,6 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             _as_int, lo=160, hi=1280, human_error="Inference size must be between 160 and 1280."
         ),
         "pin_point": FieldRule(_as_str, choices=("top", "bottom"), human_error="Pin point must be 'top' or 'bottom'."),
-        "preprocess_clahe": FieldRule(_as_bool),
         "confidence": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Confidence must be between 0 and 1."),
         "interval_ms": FieldRule(_as_int, lo=1, hi=10000, human_error="Interval must be between 1 and 10000 ms."),
         "show_boxes": FieldRule(_as_bool),
@@ -544,7 +576,6 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "box_color": _hex_color_rule(),
         "box_thickness": FieldRule(_as_int, lo=1, hi=10, human_error="Box thickness must be between 1 and 10 px."),
         "max_persons": FieldRule(_as_int, lo=1, hi=50, human_error="Max persons must be between 1 and 50."),
-        "pin_marker": FieldRule(_as_bool),
         "pin_marker_id": FieldRule(_as_int, lo=-1, human_error="Marker ID must be -1 (selected) or ≥ 0."),
         "smoothing": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Smoothing must be between 0 and 1."),
         "prediction": FieldRule(_as_float, lo=0.0, hi=20.0, human_error="Prediction must be between 0 and 20."),
@@ -604,8 +635,15 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         # Connection chosen via a shared OSC destination; empty allowed –
         # an unselected enabled row is a soft "no send", not a blur error.
         "destination_id": FieldRule(_as_str, max_len=64),
-        # marker_id is int | None; empty input means "no default marker".
-        "marker_id": FieldRule(_as_optional_int, lo=0, human_error="Marker id must be ≥ 0."),
+        # ``markers``: comma-separated marker ids / controller aliases (cN) /
+        # ``all``; empty = no default marker. Malformed tokens block; a valid
+        # but non-controlled id is ignored at send time, not flagged here.
+        "markers": FieldRule(
+            _as_str,
+            max_len=256,
+            custom=_validate_markers,
+            human_error="Comma-separated marker ids, controller aliases (c1, c2, …), or 'all'.",
+        ),
         # address + args input; template picker handles choice at row creation time.
         "osc_message": FieldRule(
             _as_str,

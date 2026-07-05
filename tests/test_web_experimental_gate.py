@@ -36,7 +36,6 @@ _GATED_ROOTS = [
     # The detection partial self-gates so it hides even if rendered
     # outside its tab wrapper.
     ("partials/detection.tpl", 'id="detection-section"'),
-    ("partials/mouse.tpl", 'id="mouse-section"'),
     ("partials/rttrpm_output.tpl", 'id="rttrpm-output-section"'),
 ]
 
@@ -47,10 +46,14 @@ def test_section_root_carries_gate_class(rel: str, anchor: str) -> None:
     assert "experimental-feature" in line, f"{rel}: {anchor!r} root is missing the experimental-feature class"
 
 
-# Each experimental section's header must carry the Experimental badge.
+# Each experimental section's header must carry the Experimental badge. The
+# Person Detection page has no single header: every collapsible box carries its
+# own badge.
 _BADGED_HEADERS = [
-    ("partials/detection.tpl", "Person Detection"),
-    ("partials/mouse.tpl", "Mouse Input"),
+    ("partials/detection.tpl", "Tracking"),
+    ("partials/detection.tpl", "Detection Model"),
+    ("partials/detection.tpl", "Sensitivity &amp; Overlay"),
+    ("partials/detection_mask_editor.tpl", "Detection Masks"),
     ("partials/rttrpm_output.tpl", "RTTrPM Output"),
 ]
 
@@ -59,6 +62,20 @@ _BADGED_HEADERS = [
 def test_section_header_carries_badge(rel: str, heading: str) -> None:
     line = _line_with(_read(rel), f"<h2>{heading}")
     assert "badge-experimental" in line, f"{rel}: {heading!r} header is missing the Experimental badge"
+
+
+def test_wizard_lens_controls_are_experimental_gated() -> None:
+    # The corner-pinning lens-distortion sliders must hide when experimental
+    # features are off – same gate as the Camera-tab group. Both the controls
+    # and the tip below them carry the class so nothing lens-related shows.
+    wiz = _read("wizard.tpl")
+    controls = _line_with(wiz, 'id="cp-lens-controls"')
+    assert "experimental-feature" in controls, "wizard.tpl: lens controls missing the gate class"
+    tip = _line_with(wiz, "Bow the projected grid")
+    assert "experimental-feature" in tip, "wizard.tpl: lens tip missing the gate class"
+    # Marked with the Experimental badge like the Camera-tab group.
+    label = _line_with(wiz, 'for="cp_lens_k1"')
+    assert "badge-experimental" in label, "wizard.tpl: lens controls missing the Experimental badge"
 
 
 def test_base_tpl_ships_gate_css_and_body_class() -> None:
@@ -76,11 +93,11 @@ def test_general_toggle_is_a_sibling_form_not_nested_in_units() -> None:
 
 
 def test_toggle_mirrors_server_cascade_clientside() -> None:
-    # Turning the toggle off unchecks the mouse/detection Enabled boxes to
-    # mirror the server cascade.
+    # Turning the toggle off unchecks the detection Enabled box to mirror the
+    # server cascade. Mouse input is no longer experimental, so it is untouched.
     base = _read("base.tpl")
     assert "function onExperimentalToggle(cb)" in base
-    assert '#mouse-section input[name="mouse_enabled"]' in base
     assert '#detection-section input[name="enabled"]' in base
+    assert '#mouse-section input[name="mouse_enabled"]' not in base
     # Checkbox is wired to the handler.
     assert "onExperimentalToggle(this)" in _read("partials/general.tpl")

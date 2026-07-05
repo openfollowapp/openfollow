@@ -365,10 +365,8 @@ def test_detection_box_color_round_trips(live_server) -> None:
         base,
         "/section/detection/inference",
         {
-            "enabled": "on",
             "confidence": "0.5",
             "interval_ms": "100",
-            "inference_size": "320",
             "max_persons": "5",
             "show_boxes": "on",
             "show_labels": "on",
@@ -3269,9 +3267,11 @@ def test_update_video_source_post_with_restart_renders_general_partial(live_serv
     )
     assert status == 200
     assert server.check_restart_requested() is True
-    # General partial has two top-level sections; verify the right one rendered.
+    # Verify the general partial rendered (not the video-source one) via
+    # stable, platform-independent section markers. The Software Update
+    # section is gated on the host platform, so don't key on it here.
     assert 'id="general-network-section"' in body
-    assert 'id="general-software-update-section"' in body
+    assert 'data-fold-key="general-station"' in body
     assert 'id="video-source-section"' not in body
 
 
@@ -4075,53 +4075,84 @@ def test_broadcast_section_rejects_non_shareable_sections(live_server) -> None:
         assert "not shareable" in payload.get("error", "").lower()
 
 
-def test_update_detection_inference_renders_partial_with_install_state(live_server) -> None:
-    """The Detection & Display box save wires the install-state flags into the
-    rendered partial so the install/uninstall buttons reflect dependency
-    state, and the box's bool fields coerce to False when absent."""
+def test_update_detection_inference_toggles_only_display_bools(live_server) -> None:
+    """The Sensitivity & Overlay box owns only ``show_boxes`` / ``show_labels``
+    as bool fields. Saving it must not flip ``enabled`` (tracking owns that):
+    an absent checkbox coerces to False, a present one to True, and the
+    detection enabled state is untouched."""
     server, base = live_server
 
-    status, body = _post_form(
+    # Enable detection via the tracking box first; the inference save below
+    # must leave that state alone.
+    _post_form(base, "/section/detection/tracking", {"tracking_state": "replace"})
+
+    status, _ = _post_form(
         base,
         "/section/detection/inference",
         {
-            "enabled": "on",
             "confidence": "0.42",
+            "show_boxes": "on",
         },
     )
     assert status == 200
 
     saved = load_config(server.config_path)
-    assert saved.detection.enabled is True
     assert saved.detection.confidence == pytest.approx(0.42)
-    # ``preprocess_clahe`` / ``show_boxes`` / ``show_labels`` were absent –
-    # the bool_fields treatment must coerce them to False.
-    assert saved.detection.preprocess_clahe is False
+    # Present checkbox → True; absent checkbox → False.
+    assert saved.detection.show_boxes is True
+    assert saved.detection.show_labels is False
+    # The inference box does not own ``enabled`` – tracking's state survives.
+    assert saved.detection.enabled is True
 
 
-def test_update_detection_models_box_preserves_other_boxes(live_server) -> None:
-    """Each box saves only its own fields: saving the Models box must not
-    clear bool fields owned by the Detection & Display box."""
+def test_update_detection_models_saves_selected_model(live_server) -> None:
+    """The Detection Model box's quality-tier radios POST ``model``; the chosen
+    value persists and does not disturb the tracking state owned by another box."""
     server, base = live_server
-    # Enable detection via the inference box first.
-    _post_form(base, "/section/detection/inference", {"enabled": "on", "preprocess_clahe": "on"})
-    # Saving the Models box (no detection bool fields) must leave them alone.
-    status, _ = _post_form(base, "/section/detection/models", {"storage_path": "/tmp/of-models"})
+    # Turn detection on via the tracking box first.
+    _post_form(base, "/section/detection/tracking", {"tracking_state": "assist"})
+
+    status, _ = _post_form(base, "/section/detection/models", {"model": "yolo26m.onnx"})
     assert status == 200
     saved = load_config(server.config_path)
-    assert saved.detection.storage_path == "/tmp/of-models"
+    assert saved.detection.model == "yolo26m.onnx"
+    # Saving the Models box leaves the tracking state alone.
     assert saved.detection.enabled is True
-    assert saved.detection.preprocess_clahe is True
+    assert saved.detection.pin_mode == "assist"
 
 
-@pytest.mark.parametrize("mode", ["replace", "assist"])
-def test_update_detection_tracking_pin_mode_round_trips(live_server, mode) -> None:
-    """The Tracking Mode segmented toggle is radio inputs named ``pin_mode``;
-    the selected value persists via the Tracking box save."""
+def test_update_detection_tracking_assist_enables_with_assist_mode(live_server) -> None:
+    """``tracking_state=assist`` enables detection and selects assist mode."""
     server, base = live_server
-    status, _ = _post_form(base, "/section/detection/tracking", {"pin_mode": mode})
+    status, _ = _post_form(base, "/section/detection/tracking", {"tracking_state": "assist"})
     assert status == 200
-    assert load_config(server.config_path).detection.pin_mode == mode
+    saved = load_config(server.config_path)
+    assert saved.detection.enabled is True
+    assert saved.detection.pin_mode == "assist"
+
+
+def test_update_detection_tracking_replace_enables_with_replace_mode(live_server) -> None:
+    """``tracking_state=replace`` enables detection and selects replace mode."""
+    server, base = live_server
+    status, _ = _post_form(base, "/section/detection/tracking", {"tracking_state": "replace"})
+    assert status == 200
+    saved = load_config(server.config_path)
+    assert saved.detection.enabled is True
+    assert saved.detection.pin_mode == "replace"
+
+
+def test_update_detection_tracking_off_disables_and_keeps_last_mode(live_server) -> None:
+    """``tracking_state=off`` disables detection but leaves ``pin_mode`` intact
+    so re-enabling restores the operator's last mode."""
+    server, base = live_server
+    # Establish a non-default mode, then turn tracking off.
+    _post_form(base, "/section/detection/tracking", {"tracking_state": "replace"})
+    status, _ = _post_form(base, "/section/detection/tracking", {"tracking_state": "off"})
+    assert status == 200
+    saved = load_config(server.config_path)
+    assert saved.detection.enabled is False
+    # ``off`` does not touch pin_mode.
+    assert saved.detection.pin_mode == "replace"
 
 
 def test_api_video_snapshot_returns_503_when_no_preview_provider(live_server) -> None:
@@ -4583,6 +4614,150 @@ def test_api_list_zones_returns_globals_grid_zones_and_markers(live_server) -> N
     # Markers come from the marker_positions provider – empty in the
     # default fixture (no provider wired).
     assert data["markers"] == []
+
+
+# ---------------------------------------------------------------------------
+# Detection mask CRUD (/api/detection/masks)
+# ---------------------------------------------------------------------------
+
+
+def test_api_create_detection_mask_appends_with_index(live_server) -> None:
+    server, base = live_server
+    verts = [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]
+    status, body = _post_json(base, "/api/detection/masks", {"name": "Stage", "vertices": verts})
+    assert status == 200
+    assert body.get("success") is True
+    idx = body.get("index")
+    assert isinstance(idx, int) and idx >= 0
+
+    saved = load_config(server.config_path)
+    assert saved.detection.masks[idx].name == "Stage"
+    assert saved.detection.masks[idx].vertices == verts
+
+
+def test_api_list_detection_masks_round_trips(live_server) -> None:
+    _, base = live_server
+    _post_json(base, "/api/detection/masks", {"name": "M0", "vertices": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]})
+    status, data = _get_json(base, "/api/detection/masks")
+    assert status == 200
+    assert isinstance(data.get("masks"), list)
+    assert data["masks"][0]["name"] == "M0"
+    assert data["masks"][0]["enabled"] is True
+    assert data["masks"][0]["vertices"] == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+
+
+def test_api_update_detection_mask_applies_partial_fields(live_server) -> None:
+    server, base = live_server
+    _, c = _post_json(base, "/api/detection/masks", {"name": "Orig", "vertices": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]})
+    idx = c["index"]
+    status, body = _put_json(base, f"/api/detection/masks/{idx}", {"enabled": False})
+    assert status == 200
+    assert body.get("success") is True
+
+    saved = load_config(server.config_path)
+    assert saved.detection.masks[idx].enabled is False
+    # Partial PUT must not blank the polygon it didn't send.
+    assert saved.detection.masks[idx].vertices == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+
+
+def test_api_update_detection_mask_404_for_out_of_range(live_server) -> None:
+    _, base = live_server
+    status, body = _put_json(base, "/api/detection/masks/9999", {"name": "Phantom"})
+    assert status == 404
+    assert "out of range" in str(body.get("error", "")).lower()
+
+
+def test_api_delete_detection_mask_removes_existing(live_server) -> None:
+    server, base = live_server
+    _, c1 = _post_json(base, "/api/detection/masks", {"name": "Keep"})
+    _, c2 = _post_json(base, "/api/detection/masks", {"name": "Drop"})
+    status, body = _delete(base, f"/api/detection/masks/{c2['index']}")
+    assert status == 200
+    assert body.get("success") is True
+
+    names = [m.name for m in load_config(server.config_path).detection.masks]
+    assert names == ["Keep"]
+
+
+def test_api_delete_detection_mask_404_for_out_of_range(live_server) -> None:
+    _, base = live_server
+    status, body = _delete(base, "/api/detection/masks/-1")
+    assert status == 404
+    assert "out of range" in str(body.get("error", "")).lower()
+
+
+def test_api_create_detection_mask_rejects_non_object_body(live_server) -> None:
+    _, base = live_server
+    status, body = _post_raw_json(base, "/api/detection/masks", ["not", "a", "dict"])
+    assert status == 400
+    assert "object" in str(body.get("error", "")).lower()
+
+
+def test_api_list_detection_masks_includes_master_flag(live_server) -> None:
+    _, base = live_server
+    status, data = _get_json(base, "/api/detection/masks")
+    assert status == 200
+    # The masking master switch ships off.
+    assert data.get("masks_enabled") is False
+
+
+def test_api_set_detection_masks_enabled_persists(live_server) -> None:
+    server, base = live_server
+    status, body = _post_json(base, "/api/detection/masks/enabled", {"enabled": True})
+    assert status == 200
+    assert body.get("masks_enabled") is True
+    assert load_config(server.config_path).detection.masks_enabled is True
+
+    status, body = _post_json(base, "/api/detection/masks/enabled", {"enabled": False})
+    assert status == 200
+    assert body.get("masks_enabled") is False
+    assert load_config(server.config_path).detection.masks_enabled is False
+
+
+def test_api_set_detection_masks_enabled_rejects_non_object_body(live_server) -> None:
+    _, base = live_server
+    status, body = _post_raw_json(base, "/api/detection/masks/enabled", ["nope"])
+    assert status == 400
+    assert "object" in str(body.get("error", "")).lower()
+
+
+def test_api_set_detection_masks_enabled_rejects_null_body(live_server) -> None:
+    _, base = live_server
+    status, body = _post_raw_json(base, "/api/detection/masks/enabled", None)
+    assert status == 400
+    assert "Invalid JSON" in str(body.get("error", ""))
+
+
+def test_api_create_detection_mask_rejects_null_body(live_server) -> None:
+    _, base = live_server
+    status, body = _post_raw_json(base, "/api/detection/masks", None)
+    assert status == 400
+    assert "Invalid JSON" in str(body.get("error", ""))
+
+
+def test_api_update_detection_mask_rejects_null_body(live_server) -> None:
+    _, base = live_server
+    status, body = _post_raw_json(base, "/api/detection/masks/0", None, method="PUT")
+    assert status == 400
+    assert "Invalid JSON" in str(body.get("error", ""))
+
+
+def test_api_update_detection_mask_rejects_non_object_body(live_server) -> None:
+    _, base = live_server
+    status, body = _post_raw_json(base, "/api/detection/masks/0", "a string", method="PUT")
+    assert status == 400
+    assert "object" in str(body.get("error", "")).lower()
+
+
+def test_api_create_detection_mask_drops_garbage_vertices(live_server) -> None:
+    server, base = live_server
+    # A crafted payload with non-numeric, short, and wrong-type vertices:
+    # the shared parser drops them before persistence.
+    payload = {"name": "M", "vertices": [[0.0, 0.0], ["x", 1], [0.5], "nope", [1.0, 1.0]]}
+    status, body = _post_json(base, "/api/detection/masks", payload)
+    assert status == 200
+    saved = load_config(server.config_path)
+    assert saved.detection.masks[body["index"]].vertices == [[0.0, 0.0], [1.0, 1.0]]
 
 
 def test_api_broadcast_all_returns_empty_results_when_no_peers(live_server) -> None:
@@ -5400,3 +5575,157 @@ def test_csrf_safe_method_ignores_foreign_origin(pin_protected_server) -> None:
         base, "/api/config", extra_headers={"Origin": "http://evil.example.com"}, method="GET", data=None
     )
     assert status != 403
+
+
+# --------------------------------------------------------------------------- #
+# Per-marker move speeds: device-local, runtime-authoritative (Web-save reset fix)
+# --------------------------------------------------------------------------- #
+
+
+def _speeds_server(tmp_path, monkeypatch, *, live_speeds, controlled_ids, disk_speeds=None):
+    """Live server with a ``marker_move_speeds_provider`` wired and an on-disk
+    config seeded with ``controlled_ids`` (and optionally ``disk_speeds``).
+
+    Models production: the disk config never carries the live runtime speeds
+    (they're written only by the debounced flush), so the provider is the only
+    source of the operator's just-ramped values during a section save.
+    """
+    monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
+
+    port = _find_free_tcp_port()
+    config_path = tmp_path / "config.toml"
+    cfg = AppConfig(controlled_marker_ids=list(controlled_ids))
+    if disk_speeds:
+        cfg.marker_move_speeds = dict(disk_speeds)
+    save_config(cfg, str(config_path))
+
+    server = ConfigWebServer(
+        config_path=str(config_path),
+        host="127.0.0.1",
+        port=port,
+        system_name="TestSystem",
+        marker_move_speeds_provider=lambda: dict(live_speeds),
+    )
+    server.start()
+    assert _wait_for_port(port)
+    return server, f"http://127.0.0.1:{port}"
+
+
+def test_section_save_preserves_live_marker_speeds_on_disk(tmp_path, monkeypatch) -> None:
+    """Canonical repro: the operator ramps marker 5's speed at runtime (live dict
+    holds {5: 2.7}), the disk config has none, then they save an UNRELATED web
+    section (Grid). The written file must carry {5: 2.7}, not the empty disk
+    value, so the follow-up hot-reload of that file is a no-op for the speeds.
+
+    (The complementary guarantee – the reload itself never clobbers the live
+    dict – is covered directly in ``test_configuration.py``.)"""
+    server, base = _speeds_server(
+        tmp_path,
+        monkeypatch,
+        live_speeds={5: 2.7},
+        controlled_ids=[5],
+    )
+    try:
+        # Sanity: the disk config genuinely has no speeds before the save, so a
+        # naive "load disk, apply section, save" would drop {5: 2.7}.
+        assert load_config(server.config_path).marker_move_speeds == {}
+
+        status, _ = _post_form(base, "/section/grid", {"width": "25"})
+        assert status == 200
+
+        reloaded = load_config(server.config_path)
+        assert reloaded.marker_move_speeds == {5: 2.7}
+        # The unrelated edit still landed.
+        assert reloaded.grid.width == 25.0
+    finally:
+        server.stop()
+
+
+def test_section_save_prunes_deselected_live_speed(tmp_path, monkeypatch) -> None:
+    """A live speed for a marker no longer in ``controlled_marker_ids`` is pruned
+    on save (``config_to_toml_dict`` prunes), even though it was overlaid from the
+    provider. Marker 5 stays; marker 9 (not controlled) is dropped."""
+    server, base = _speeds_server(
+        tmp_path,
+        monkeypatch,
+        live_speeds={5: 2.7, 9: 4.0},
+        controlled_ids=[5],
+    )
+    try:
+        status, _ = _post_form(base, "/section/grid", {"width": "25"})
+        assert status == 200
+        reloaded = load_config(server.config_path)
+        assert reloaded.marker_move_speeds == {5: 2.7}
+    finally:
+        server.stop()
+
+
+def test_import_preserves_station_speeds_ignoring_payload(tmp_path, monkeypatch) -> None:
+    """Import is device-local for speeds: this station's live {5: 2.7} survives,
+    and speeds carried in the imported payload ({7: 3.3}) are ignored."""
+    server, base = _speeds_server(
+        tmp_path,
+        monkeypatch,
+        live_speeds={5: 2.7},
+        controlled_ids=[5],
+    )
+    try:
+        payload = {
+            "controlled_marker_ids": [5, 7],
+            "marker_move_speeds": {"7": 3.3},
+            "grid": {"width": 30.0},
+        }
+        status, body = _post_json(base, "/api/config/import", payload)
+        assert status == 200
+        assert body.get("success") is True
+
+        reloaded = load_config(server.config_path)
+        # Station's live speed kept; the imported {7: 3.3} did not land.
+        assert reloaded.marker_move_speeds == {5: 2.7}
+    finally:
+        server.stop()
+
+
+def test_export_omits_marker_move_speeds(tmp_path, monkeypatch) -> None:
+    """Per-marker speeds are device-local and must never leave the box via the
+    config export."""
+    server, base = _speeds_server(
+        tmp_path,
+        monkeypatch,
+        live_speeds={5: 2.7},
+        controlled_ids=[5],
+        disk_speeds={5: 2.7},
+    )
+    try:
+        with urllib.request.urlopen(f"{base}/api/config/export", timeout=5) as resp:
+            assert resp.status == 200
+            body = json.loads(resp.read().decode())
+        assert "marker_move_speeds" not in body
+    finally:
+        server.stop()
+
+
+def test_section_broadcast_receive_does_not_carry_or_clobber_speeds(tmp_path, monkeypatch) -> None:
+    """A ``marker`` section applied via ``POST /api/config/<section>`` (the peer
+    broadcast receive) neither injects the provider's live speeds nor writes any
+    ``marker_move_speeds`` – the section apply doesn't touch that top-level field.
+    On-disk speeds (whatever they were) are left as-is."""
+    server, base = _speeds_server(
+        tmp_path,
+        monkeypatch,
+        live_speeds={5: 2.7},
+        controlled_ids=[5],
+        disk_speeds={5: 1.0},
+    )
+    try:
+        status, body = _post_json(base, "/api/config/marker", {"ball_size": 0.3})
+        assert status == 200
+        reloaded = load_config(server.config_path)
+        # The receive path does NOT overlay the live provider value; the disk
+        # value is preserved untouched by the marker-section apply.
+        assert reloaded.marker_move_speeds == {5: 1.0}
+    finally:
+        server.stop()

@@ -12,7 +12,7 @@ import numpy.typing as npt
 
 from openfollow.runtime.overlay_draw_style import parse_hex
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
-from openfollow.scene.solver import project_points
+from openfollow.scene.solver import apply_overlay_distortion, ground_circle_world_ring, project_points
 
 # Cap grid lines per axis. A degenerate width/depth ÷ spacing (e.g. from a
 # hand-edited config.toml or peer broadcast – neither has an upper clamp) would
@@ -20,18 +20,106 @@ from openfollow.scene.solver import project_points
 # Cairo calls per frame, freezing the overlay.
 _MAX_GRID_LINES_PER_AXIS = 200
 
+# Chords per straight world line when lens distortion is active. A straight
+# world line stays straight under the pinhole projection; only the radial warp
+# bows it, so we subdivide and warp each chord endpoint to approximate the
+# curve. 1 (no subdivision) when distortion is off – the pinhole path is then
+# byte-for-byte unchanged.
+_DISTORTION_SUBDIVISIONS = 12
+
 
 def project(
     cam: npt.NDArray[Any] | None,
     pts_psn: list[Any] | npt.NDArray[Any],
     w: int,
     h: int,
+    k1: float = 0.0,
+    k2: float = 0.0,
 ) -> npt.NDArray[Any]:
     # Return NaN when camera missing; downstream np.isfinite filters handle it.
     if cam is None:  # pragma: no cover
         return np.full((np.asarray(pts_psn, dtype=np.float64).reshape(-1, 3).shape[0], 2), np.nan)
     arr = np.asarray(pts_psn, dtype=np.float64).reshape(-1, 3)
-    return project_points(cam, arr, float(w), float(h))
+    scr = project_points(cam, arr, float(w), float(h))
+    # Identity when k1 == k2 == 0, so the pinhole overlay path is unchanged.
+    return apply_overlay_distortion(scr, float(w), float(h), k1, k2)
+
+
+def _project_segments(
+    cam: npt.NDArray[Any] | None,
+    segments: npt.NDArray[Any] | list[Any],
+    w: int,
+    h: int,
+    k1: float,
+    k2: float,
+    n: int,
+) -> npt.NDArray[Any]:
+    """Project + warp ``segments`` (M, 2, 3) as ``n``-chord polylines.
+
+    Returns an (M, n+1, 2) array. Subdivision is in world space so each chord
+    endpoint is warped individually – that is what bows a straight world line
+    on screen to match the lens.
+    """
+    segs = np.asarray(segments, dtype=np.float64).reshape(-1, 2, 3)
+    ts = np.linspace(0.0, 1.0, n + 1)
+    p0 = segs[:, 0:1, :]
+    p1 = segs[:, 1:2, :]
+    world = p0 + ts[None, :, None] * (p1 - p0)
+    scr = project(cam, world.reshape(-1, 3), w, h, k1, k2)
+    return scr.reshape(segs.shape[0], ts.shape[0], 2)
+
+
+def _stroke_polyline(cr: Any, poly: npt.NDArray[Any]) -> bool:
+    """Emit move_to/line_to for one polyline; return whether anything was drawn.
+
+    Connects consecutive on-screen points, breaking the path across points
+    behind the camera (NaN) so a partially-visible line never spans the
+    singularity. A lone finite point (both neighbours behind the camera) draws
+    nothing – matching the straight-segment passes, where a segment renders only
+    when both endpoints are finite. The caller sets colour / width and strokes.
+    """
+    pen_down = False
+    drew = False
+    run_start: tuple[float, float] | None = None
+    for x, y in poly:
+        if math.isfinite(x) and math.isfinite(y):
+            if pen_down:
+                cr.line_to(x, y)
+                drew = True
+            elif run_start is None:
+                run_start = (x, y)
+            else:
+                cr.move_to(run_start[0], run_start[1])
+                cr.line_to(x, y)
+                pen_down = True
+                drew = True
+        else:
+            pen_down = False
+            run_start = None
+    return drew
+
+
+def _draw_world_lines(
+    cr: Any,
+    cam: npt.NDArray[Any] | None,
+    segments: npt.NDArray[Any] | list[Any],
+    w: int,
+    h: int,
+    k1: float,
+    k2: float,
+) -> bool:
+    """Path straight world segments, bowing them to match the lens when
+    distortion is active. Returns whether any line was drawn so the caller can
+    skip an empty stroke. The caller sets colour / width before and strokes
+    after, so several segment groups can share one stroke.
+    """
+    n = _DISTORTION_SUBDIVISIONS if (k1 or k2) else 1
+    polys = _project_segments(cam, segments, w, h, k1, k2, n)
+    drew = False
+    for poly in polys:
+        if _stroke_polyline(cr, poly):
+            drew = True
+    return drew
 
 
 def draw_grid(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
@@ -69,12 +157,8 @@ def draw_grid(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> No
         buf[idx + 1] = (x, hd + y_off, z_off)
         idx += 2
 
-    scr = project(cam, buf[:idx], w, h)
-    for i in range(0, len(scr), 2):
-        p0, p1 = scr[i], scr[i + 1]
-        if np.all(np.isfinite(p0)) and np.all(np.isfinite(p1)):
-            cr.move_to(p0[0], p0[1])
-            cr.line_to(p1[0], p1[1])
+    segments = buf[:idx].reshape(-1, 2, 3)
+    _draw_world_lines(cr, cam, segments, w, h, state.lens_k1, state.lens_k2)
     cr.stroke()
 
 
@@ -93,17 +177,14 @@ def draw_origin(cr: Any, state: OverlayState, w: int, h: int) -> None:
 
     cr.set_line_width(thickness)
     for p_start, p_end, (r, g, b) in axes:
-        scr = project(cam, [p_start, p_end], w, h)
-        if np.all(np.isfinite(scr)):
-            cr.set_source_rgba(r, g, b, 1.0)
-            cr.move_to(scr[0, 0], scr[0, 1])
-            cr.line_to(scr[1, 0], scr[1, 1])
+        cr.set_source_rgba(r, g, b, 1.0)
+        if _draw_world_lines(cr, cam, [(p_start, p_end)], w, h, state.lens_k1, state.lens_k2):
             cr.stroke()
 
 
 def draw_detections(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
     default_rgb = parse_hex(state.detection_box_color)
-    attached_rgb = parse_hex(state.detection_attached_color) if state.detection_attached_color else None
+    attached_colors = state.detection_attached_colors
     cr.set_line_width(state.detection_box_thickness)
 
     for det in state.detections:
@@ -112,10 +193,11 @@ def draw_detections(renderer: Any, cr: Any, state: OverlayState, w: int, h: int)
         x2 = det.x2 * w
         y2 = det.y2 * h
 
-        # The box attached to a marker is drawn in that marker's colour so the
-        # operator can tell which detection is driving the followspot.
-        if attached_rgb is not None and det.track_id == state.detection_attached_track_id:
-            r, g, b = attached_rgb
+        # A box attached to a marker is drawn in that marker's colour so the
+        # operator can tell which detection is driving each followspot.
+        attached_hex = attached_colors.get(det.track_id)
+        if attached_hex:
+            r, g, b = parse_hex(attached_hex)
         else:
             r, g, b = default_rgb
 
@@ -157,35 +239,18 @@ def _draw_assist_ghost(
     cs = state.crosshair_size
     cr.set_source_rgba(r, g, b, _GHOST_ALPHA)
     cr.set_line_width(max(1.0, state.crosshair_thickness))
-    axis_pts = [
-        (tx - cs, ty, tz),
-        (tx + cs, ty, tz),
-        (tx, ty - cs, tz),
-        (tx, ty + cs, tz),
-        (tx, ty, tz - cs),
-        (tx, ty, tz + cs),
+    axis_segments = [
+        ((tx - cs, ty, tz), (tx + cs, ty, tz)),
+        ((tx, ty - cs, tz), (tx, ty + cs, tz)),
+        ((tx, ty, tz - cs), (tx, ty, tz + cs)),
     ]
-    axis_scr = project(cam, axis_pts, w, h)
-    for i in range(0, 6, 2):
-        p0, p1 = axis_scr[i], axis_scr[i + 1]
-        if np.all(np.isfinite(p0)) and np.all(np.isfinite(p1)):
-            cr.move_to(p0[0], p0[1])
-            cr.line_to(p1[0], p1[1])
+    _draw_world_lines(cr, cam, axis_segments, w, h, state.lens_k1, state.lens_k2)
     cr.stroke()
 
     if state.grid_config:
         z_off = state.grid_config[5]
-        gc_radius = state.ground_circle_size
-        n_segs = 24
-        gc_pts = [
-            (
-                tx + gc_radius * math.cos(2 * math.pi * i / n_segs),
-                ty + gc_radius * math.sin(2 * math.pi * i / n_segs),
-                z_off,
-            )
-            for i in range(n_segs)
-        ]
-        gc_scr = project(cam, gc_pts, w, h)
+        gc_pts = ground_circle_world_ring(tx, ty, z_off, state.ground_circle_size)
+        gc_scr = project(cam, gc_pts, w, h, state.lens_k1, state.lens_k2)
         gc_scr = gc_scr[np.all(np.isfinite(gc_scr), axis=1)]
         if len(gc_scr) >= 3:
             cr.move_to(gc_scr[0, 0], gc_scr[0, 1])
@@ -205,7 +270,7 @@ def draw_marker(cr: Any, state: OverlayState, t: MarkerOverlayData, w: int, h: i
         (tx, ty, tz),
         (tx + t.radius, ty, tz),
     ]
-    scr = project(cam, pts, w, h)
+    scr = project(cam, pts, w, h, state.lens_k1, state.lens_k2)
     if not np.all(np.isfinite(scr[0])):
         return
 
@@ -241,46 +306,25 @@ def draw_marker(cr: Any, state: OverlayState, t: MarkerOverlayData, w: int, h: i
         ch_r, ch_g, ch_b = parse_hex(state.crosshair_color)
         cr.set_source_rgba(ch_r, ch_g, ch_b, 1.0)
         cr.set_line_width(state.crosshair_thickness)
-        axis_pts = [
-            (tx - cs, ty, tz),
-            (tx + cs, ty, tz),
-            (tx, ty - cs, tz),
-            (tx, ty + cs, tz),
-            (tx, ty, tz - cs),
-            (tx, ty, tz + cs),
+        axis_segments = [
+            ((tx - cs, ty, tz), (tx + cs, ty, tz)),
+            ((tx, ty - cs, tz), (tx, ty + cs, tz)),
+            ((tx, ty, tz - cs), (tx, ty, tz + cs)),
         ]
-        axis_scr = project(cam, axis_pts, w, h)
-        for i in range(0, 6, 2):
-            p0, p1 = axis_scr[i], axis_scr[i + 1]
-            if np.all(np.isfinite(p0)) and np.all(np.isfinite(p1)):
-                cr.move_to(p0[0], p0[1])
-                cr.line_to(p1[0], p1[1])
+        _draw_world_lines(cr, cam, axis_segments, w, h, state.lens_k1, state.lens_k2)
         cr.stroke()
 
     if state.show_drop_line and state.grid_config:
         z_off = state.grid_config[5]
-        dl_pts = [(tx, ty, tz), (tx, ty, z_off)]
-        dl_scr = project(cam, dl_pts, w, h)
-        if np.all(np.isfinite(dl_scr)):
-            cr.set_source_rgba(r, g, b, 0.8)
-            cr.set_line_width(state.drop_line_thickness)
-            cr.move_to(dl_scr[0, 0], dl_scr[0, 1])
-            cr.line_to(dl_scr[1, 0], dl_scr[1, 1])
+        cr.set_source_rgba(r, g, b, 0.8)
+        cr.set_line_width(state.drop_line_thickness)
+        if _draw_world_lines(cr, cam, [((tx, ty, tz), (tx, ty, z_off))], w, h, state.lens_k1, state.lens_k2):
             cr.stroke()
 
     if state.show_ground_circle and state.grid_config:
         z_off = state.grid_config[5]
-        gc_radius = state.ground_circle_size
-        n_segs = 24
-        gc_pts = [
-            (
-                tx + gc_radius * math.cos(2 * math.pi * i / n_segs),
-                ty + gc_radius * math.sin(2 * math.pi * i / n_segs),
-                z_off,
-            )
-            for i in range(n_segs)
-        ]
-        gc_scr = project(cam, gc_pts, w, h)
+        gc_pts = ground_circle_world_ring(tx, ty, z_off, state.ground_circle_size)
+        gc_scr = project(cam, gc_pts, w, h, state.lens_k1, state.lens_k2)
         # Keep only finite points so one segment crossing behind the camera
         # doesn't erase the whole ground circle (matches the zone treatment).
         gc_scr = gc_scr[np.all(np.isfinite(gc_scr), axis=1)]

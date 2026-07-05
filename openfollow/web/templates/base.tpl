@@ -357,6 +357,7 @@
  .detection-cards .group--assist { margin-top: 0.9rem; padding-top: 0.95rem; border-top: 1px solid rgba(255, 255, 255, 0.06); }
  /* Segmented two-option toggle (Tracking Mode): equal-width cells. */
  .seg-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 30rem; padding: 4px; border: 1px solid var(--border-soft); border-radius: 0.7rem; background: rgba(0, 0, 0, 0.22); }
+ .seg-toggle--3 { grid-template-columns: repeat(3, 1fr); max-width: 36rem; }
  .seg-toggle .seg-option { margin: 0; display: flex; cursor: pointer; }
  .seg-toggle .seg-option input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
  .seg-toggle .seg-option > span { flex: 1; display: flex; flex-direction: column; gap: 1px; padding: 0.4rem 0.95rem; border-radius: 0.5rem; color: var(--muted); text-align: center; transition: background 0.12s, color 0.12s; }
@@ -364,6 +365,16 @@
  .seg-toggle .seg-option > span small { font-size: 0.72rem; font-weight: 400; opacity: 0.8; }
  .seg-toggle .seg-option input:checked + span { background: var(--accent); color: #1a1205; }
  .seg-toggle .seg-option input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+ .tier-list { display: flex; flex-direction: column; gap: 6px; max-width: 32rem; }
+ .tier-option { margin: 0; display: flex; cursor: pointer; }
+ .tier-option input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+ .tier-option > span { flex: 1; display: flex; flex-direction: column; gap: 1px; padding: 0.5rem 0.85rem; border: 1px solid var(--border-soft); border-radius: 0.55rem; background: rgba(0, 0, 0, 0.18); color: var(--muted); transition: background 0.12s, color 0.12s, border-color 0.12s; }
+ .tier-option > span strong { font-size: 0.9rem; font-weight: 700; }
+ .tier-option > span small { font-size: 0.74rem; font-weight: 400; opacity: 0.82; }
+ .tier-option input:checked + span { background: var(--accent); color: #1a1205; border-color: var(--accent); }
+ .tier-option input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+ .tier-option input:disabled + span { opacity: 0.5; cursor: not-allowed; }
+ .tier-tag { flex: 0 0 auto; padding: 1px 7px; border-radius: 999px; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.02em; color: #1a1205; background: var(--accent); white-space: nowrap; }
  .stats-columns {
  display: grid;
  gap: 0.78rem;
@@ -1325,10 +1336,21 @@
  .osc-binding-drag-handle:active, .osc-destination-drag-handle:active { cursor: grabbing; }
  .osc-binding-row.dragging, .osc-destination-row.dragging { opacity: 0.55; }
  .osc-binding-row.drop-target, .osc-destination-row.drop-target { outline: 2px dashed var(--accent); outline-offset: 2px; }
- .osc-binding-enabled-dot { width: 0.55rem; height: 0.55rem; border-radius: 999px; background: var(--muted); }
+ .osc-binding-enabled-dot { width: 0.55rem; height: 0.55rem; border-radius: 999px; background: var(--muted); flex: none; }
  .osc-binding-enabled-dot.on { background: var(--accent); }
+ .osc-binding-enabled-dot.invalid { background: var(--danger); }
  .osc-binding-kind-badge, .osc-destination-proto-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
+ .osc-binding-marker-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
  .osc-binding-target { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
+ /* Secondary markers nested under a fanned-out transmitter row: read-only
+ chips sharing the parent's destination / message / trigger. */
+ /* Negative top pulls the chips up under their parent row (the row's
+    0.6rem bottom margin otherwise floats them); the bottom margin keeps a
+    clear gap before the next transmitter so they don't touch. */
+ .osc-binding-nested { display: flex; flex-direction: column; gap: 0.4rem; margin: -0.2rem 0 0.7rem 1.4rem; }
+ .osc-binding-nested-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--muted); padding: 0.45rem 0.8rem; border: 1px solid var(--border-soft); border-radius: 0.5rem; background: rgba(255,255,255,0.02); }
+ /* The red dot alone marks an uncontrolled marker – no red border. */
+ .osc-binding-nested-row.is-invalid { color: var(--danger); }
  /* Destination collapsed summary: host:port sits right after the name; the
  protocol badge anchors to the right. */
  .osc-destination-addr { color: var(--muted); font-size: 0.8rem; }
@@ -3224,14 +3246,14 @@
  }, 2000);
  });
  }
- // Toggle the <body> gate class. When turning off, uncheck the mouse and
- // detection Enabled boxes to mirror the server-side cascade; selectors
- // must match the route's cascade fields.
+ // Toggle the <body> gate class. When turning off, uncheck the detection
+ // Enabled box to mirror the server-side cascade; the selector must match
+ // the route's cascade fields.
  function onExperimentalToggle(cb) {
  document.body.classList.toggle('show-experimental', cb.checked);
  if (cb.checked) return;
  document.querySelectorAll(
- '#mouse-section input[name="mouse_enabled"], #detection-section input[name="enabled"]'
+ '#detection-section input[name="enabled"]'
  ).forEach(function (el) { el.checked = false; });
  }
  function switchTab(tabId) {
@@ -3516,7 +3538,7 @@
  // client-side mirror of Python's
  // ``unresolved_placeholders``. Rebuilds the unresolved-set from the
  // editor's current text + the live marker registry + the row's
- // ``marker_id`` so the operator sees red pills update as they edit,
+ // ``markers`` so the operator sees red pills update as they edit,
  // without a server round-trip. Only position + ``markerid`` slots
  // surface here (mirrors the server's ``_EDIT_TIME_SOURCES``); fader /
  // ``markerfader`` slots surface as runtime skips. This parse regex
@@ -3532,8 +3554,20 @@
  oscEditorParseJsonAttr(editor, 'oscRegisteredMarkerIds', [])
  .map(v => Number(v)),
  );
- const markerIdRaw = (editor.dataset.oscRowMarkerId || '').trim();
- const markerId = markerIdRaw === '' ? null : Number(markerIdRaw);
+ // Mirror of Python's ``_effective_default_marker_id``: a bare ``[x]``
+ // resolves when the row names any usable default marker. ``all`` / ``cN``
+ // are dynamic – treated as resolvable whenever at least one marker is
+ // controlled; a numeric token counts only when controlled.
+ const markerTokens = (editor.dataset.oscRowMarkers || '')
+ .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+ let hasDefaultMarker = false;
+ for (const tok of markerTokens) {
+ if (tok === 'all' || /^c[1-9][0-9]*$/.test(tok)) {
+ if (registered.size > 0) { hasDefaultMarker = true; break; }
+ } else if (/^[0-9]+$/.test(tok) && registered.has(Number(tok))) {
+ hasDefaultMarker = true; break;
+ }
+ }
  const gridMaxHeightRaw = (editor.dataset.oscGridMaxHeight || '').trim();
  const gridMaxHeight = gridMaxHeightRaw === ''
  ? 0
@@ -3558,7 +3592,7 @@
  const isZFrac = source === 'z' && chain.indexOf('.frac') !== -1;
  let unresolved = false;
  if (index === undefined) {
- unresolved = markerId === null || !registered.has(markerId);
+ unresolved = !hasDefaultMarker;
  if (!unresolved && isZFrac && gridUnset) {
  unresolved = true;
  }
@@ -3633,7 +3667,7 @@
  const messageError = form.querySelector(
  '[id$="-error"][id^="osc-message-"]',
  );
- const markerInput = form.querySelector('input[name="marker_id"]');
+ const markerInput = form.querySelector('input[name="markers"]');
  const markerError = markerInput
  ? document.getElementById(
  markerInput.getAttribute('aria-describedby') || '',
@@ -3680,16 +3714,16 @@
  // Fire the HTMX validation we wired with ``hx-trigger="osc-validate"``.
  window.htmx.trigger(editor, 'osc-validate');
  }, true); // capture: ``blur`` doesn't bubble.
- // Re-evaluate unresolved pills as operator edits Default marker field.
+ // Re-evaluate unresolved pills as operator edits the Default markers field.
  // Mirrors Python's ``_row_unresolved_placeholders`` for real-time pill state.
  document.addEventListener('input', (event) => {
- const input = event.target.closest('input[name="marker_id"]');
+ const input = event.target.closest('input[name="markers"]');
  if (!input) return;
  const form = input.closest('form');
  if (!form) return;
  const editor = form.querySelector('[data-osc-message-editor]');
  if (!editor) return;
- editor.dataset.oscRowMarkerId = (input.value || '').trim();
+ editor.dataset.oscRowMarkers = (input.value || '').trim();
  oscEditorRecomputeUnresolved(editor);
  oscEditorRenderPills(editor);
  oscEditorSyncEnabledUnresolved(editor);
@@ -3779,7 +3813,7 @@
  editor.dispatchEvent(new Event('input', { bubbles: true }));
  });
  // "Save as template…" button captures the whole row form to endpoint.
- // Template carries all operator-tunable fields; ``enabled`` and ``marker_id`` dropped server-side.
+ // Template carries all operator-tunable fields; ``enabled`` and ``markers`` dropped server-side.
  //
  // We use ``FormData`` to gather the live form state (matches
  // what the row's normal Save POST would send), then append the
@@ -4064,20 +4098,23 @@
  const display = (sel.value === 'midi') ? '' : 'none';
  rows.forEach((row) => { row.style.display = display; });
  });
- // Detection: reveal the "Assisted tracking" sub-block only when the
- // Tracking Mode toggle is set to AI Assisted. The server renders the block
- // with ``hidden`` when the saved mode is Fully Automatic, so the first paint
- // is correct without JS; this handles subsequent operator toggles. Scoped to
- // the closest form so a future second toggle can't collateral-toggle it.
+ // Detection: the Tracking mode radio (off / assist / replace) reveals the
+ // mode-specific sub-blocks. ``data-assist-only`` shows for AI Assisted,
+ // ``data-replace-only`` for Fully Automatic. The server renders the correct
+ // ``hidden`` state on first paint; this handles subsequent operator toggles.
+ // Scoped to the closest form so a future toggle can't collateral-toggle it.
  document.addEventListener('change', (event) => {
- const radio = event.target.closest('input[name="pin_mode"]');
+ const radio = event.target.closest('input[name="tracking_state"]');
  if (!radio) return;
  const form = radio.closest('form');
  if (!form) return;
- const checked = form.querySelector('input[name="pin_mode"]:checked');
- const show = checked !== null && checked.value === 'assist';
+ const checked = form.querySelector('input[name="tracking_state"]:checked');
+ const mode = checked !== null ? checked.value : 'off';
  form.querySelectorAll('[data-assist-only]').forEach((el) => {
- if (show) { el.removeAttribute('hidden'); } else { el.setAttribute('hidden', ''); }
+ if (mode === 'assist') { el.removeAttribute('hidden'); } else { el.setAttribute('hidden', ''); }
+ });
+ form.querySelectorAll('[data-replace-only]').forEach((el) => {
+ if (mode === 'replace') { el.removeAttribute('hidden'); } else { el.setAttribute('hidden', ''); }
  });
  });
  // Generic drag-reorder shared by the OSC Transmitters + OSC Destinations

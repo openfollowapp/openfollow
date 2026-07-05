@@ -632,7 +632,7 @@ def test_fader_on_change_marker_source_survives_save_reload(
             transmitters=[
                 OscTransmitterConfig(
                     id="r1",
-                    marker_id=4,
+                    markers=["4"],
                     trigger=FaderOnChangeTrigger(marker_id=4, rate_hz=30),
                 ),
             ]
@@ -1037,15 +1037,40 @@ def test_loading_default_config_does_not_emit_deprecation_warnings(
     assert not any("deprecated" in r.message for r in caplog.records)
 
 
-def test_apply_runtime_marker_move_speeds_diff() -> None:
-    """Marker speed changes apply directly; no restart needed."""
+def test_apply_runtime_does_not_reload_marker_move_speeds() -> None:
+    """Per-marker speeds are device-local + runtime-authoritative: a hot-reload
+    must NOT overwrite the live in-memory dict from disk, whatever the reloaded
+    file happens to contain. This is the fix for the reported "saving any Web UI
+    setting resets all marker speeds" bug – the web save writes the file, the
+    watcher reloads it, and that reload must leave the live speeds untouched."""
     app = _DummyApp(AppConfig(marker_move_speeds={2: 2.0}))
+    # A reloaded config carrying DIFFERENT speeds must not clobber the live ones.
     new_config = AppConfig(marker_move_speeds={2: 3.5, 1: 1.5})
 
     apply_runtime_config_changes(app, new_config)
 
-    assert app._config.marker_move_speeds == {2: 3.5, 1: 1.5}
+    assert app._config.marker_move_speeds == {2: 2.0}
     assert app._web_commands.restart_requested is False
+
+
+def test_apply_runtime_does_not_clear_marker_move_speeds_when_disk_empty() -> None:
+    """A reloaded config with EMPTY speeds (e.g. a fresh disk load that never saw
+    the runtime edits) must not wipe the live dict."""
+    app = _DummyApp(AppConfig(marker_move_speeds={2: 2.0, 3: 4.0}))
+    new_config = AppConfig()  # no speeds
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.marker_move_speeds == {2: 2.0, 3: 4.0}
+
+
+def test_startup_load_seeds_marker_move_speeds_from_disk(temp_config_path) -> None:
+    """Part 0 only skips the *reload*; the initial ``load_config`` at startup
+    still seeds the speeds from disk so a restart picks up the persisted values."""
+    config = AppConfig(controlled_marker_ids=[2, 3], marker_move_speeds={2: 1.5, 3: 4.0})
+    save_config(config, str(temp_config_path))
+    reloaded = load_config(str(temp_config_path))
+    assert reloaded.marker_move_speeds == {2: 1.5, 3: 4.0}
 
 
 def test_apply_runtime_ui_unit_system_propagates_to_config() -> None:
@@ -1893,6 +1918,50 @@ def test_camera_config_preserves_optional_float_none() -> None:
     assert cfg.focal_length_mm is None
 
 
+def test_camera_config_lens_distortion_defaults_to_pinhole() -> None:
+    # Existing configs (no lens_k1/lens_k2 in TOML) must render byte-for-byte
+    # as a pinhole overlay – both coefficients default to 0.0.
+    cfg = CameraConfig()
+    assert cfg.lens_k1 == 0.0
+    assert cfg.lens_k2 == 0.0
+
+
+@pytest.mark.parametrize(
+    "bad_k,expected",
+    [
+        (0.1, 0.1),
+        ("0.15", 0.15),
+        (1.5, 0.4),  # above clamp
+        (-1.5, -0.4),  # below clamp
+        (None, 0.0),
+        ("nope", 0.0),
+        (float("inf"), 0.0),  # non-finite -> declared default, not the clamp
+        (float("nan"), 0.0),
+    ],
+)
+def test_camera_config_coerces_and_clamps_lens_k1(bad_k: object, expected: float) -> None:
+    cfg = CameraConfig(lens_k1=bad_k)  # type: ignore[arg-type]
+    assert cfg.lens_k1 == expected
+
+
+@pytest.mark.parametrize(
+    "bad_k,expected",
+    [
+        (0.03, 0.03),
+        ("0.04", 0.04),
+        (1.5, 0.2),
+        (-1.5, -0.2),
+        (None, 0.0),
+        ("nope", 0.0),
+        (float("inf"), 0.0),
+        (float("nan"), 0.0),
+    ],
+)
+def test_camera_config_coerces_and_clamps_lens_k2(bad_k: object, expected: float) -> None:
+    cfg = CameraConfig(lens_k2=bad_k)  # type: ignore[arg-type]
+    assert cfg.lens_k2 == expected
+
+
 def test_camera_config_rejects_inf_fov_to_default() -> None:
     # TOML allows ``inf``/``-inf`` as float literals. ``_coerce_float`` must
     # not raise *and* must not let ``inf`` pass through – an infinite fov
@@ -2168,11 +2237,16 @@ def test_detection_config_rejects_bad_box_color() -> None:
     assert cfg.box_color == "#808080"
 
 
-@pytest.mark.parametrize("bad_model", [123, 4.5, None, ["yolov8n.onnx"], {"name": "x"}])
+def test_detection_config_default_model() -> None:
+    """The shipped default model is the NMS-free YOLO26 nano export."""
+    assert DetectionConfig().model == "yolo26n.onnx"
+
+
+@pytest.mark.parametrize("bad_model", [123, 4.5, None, ["yolo26n.onnx"], {"name": "x"}])
 def test_detection_config_coerces_non_string_model_to_default(bad_model: object) -> None:
     """Non-string model must coerce to default string."""
     cfg = DetectionConfig(model=bad_model)  # type: ignore[arg-type]
-    assert cfg.model == "yolov8n.onnx"
+    assert cfg.model == "yolo26n.onnx"
     assert isinstance(cfg.model, str)
 
 
@@ -2271,14 +2345,55 @@ def test_detection_config_clamps_assist_strength(bad_strength: object, expected:
 
 def test_detection_config_default_values() -> None:
     """The shipped detection defaults favour accuracy on a workstation: a
-    larger inference size, CLAHE preprocessing, a lower confidence floor, a
-    faster cadence, and prediction lookahead. Guards against silent drift."""
+    larger inference size, a lower confidence floor, a faster cadence, and
+    prediction lookahead. Guards against silent drift."""
     cfg = DetectionConfig()
     assert cfg.inference_size == 640
-    assert cfg.preprocess_clahe is True
     assert cfg.confidence == pytest.approx(0.2)
     assert cfg.interval_ms == 67
     assert cfg.prediction == pytest.approx(8.0)
+
+
+def test_detection_config_masks_enabled_defaults_off() -> None:
+    """The masking master switch ships off so drawn masks never restrict
+    detection until the operator turns them on."""
+    assert DetectionConfig().masks_enabled is False
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (True, True),
+        (False, False),
+        ("true", True),
+        ("on", True),
+        ("1", True),
+        ("false", False),
+        ("off", False),
+        ("garbage", False),
+        (None, False),
+        (1, False),
+    ],
+)
+def test_detection_config_coerces_masks_enabled(raw: object, expected: bool) -> None:
+    cfg = DetectionConfig(masks_enabled=raw)  # type: ignore[arg-type]
+    assert cfg.masks_enabled is expected
+
+
+def test_load_config_drops_obsolete_detection_keys(temp_config_path) -> None:
+    """A hand-edited ``[detection]`` carrying the removed ``pin_marker`` /
+    ``preprocess_clahe`` keys loads without raising; the keys are silently
+    dropped so the resulting config exposes no such attributes."""
+    temp_config_path.write_text(
+        "[detection]\nenabled = true\npin_marker = true\npreprocess_clahe = true\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(str(temp_config_path))
+
+    assert config.detection.enabled is True
+    assert not hasattr(config.detection, "pin_marker")
+    assert not hasattr(config.detection, "preprocess_clahe")
 
 
 # --- OtpOutputConfig ------------------------------------------------------
@@ -2519,6 +2634,98 @@ def test_trigger_zones_config_preserves_already_built_instances() -> None:
 
 
 # ---------------------------------------------------------------------------
+# DetectionMaskConfig – region-of-interest polygons (normalised 0-1 coords)
+# ---------------------------------------------------------------------------
+
+
+def test_detection_mask_coerces_numeric_vertices() -> None:
+    from openfollow.configuration import DetectionMaskConfig
+
+    mask = DetectionMaskConfig(
+        vertices=[
+            [0, 1],  # ints → floats
+            [0.25, 0.75],  # already floats
+            ["bad", 0.5],  # non-numeric x → dropped
+            [0.6],  # too short → dropped
+            "not a list",  # wrong type → dropped
+            (0.7, 0.8, 0.9),  # tuple len>=2 → kept (first two)
+        ]
+    )
+    assert mask.vertices == [[0.0, 1.0], [0.25, 0.75], [0.7, 0.8]]
+
+
+@pytest.mark.parametrize("bad", ["nan", "inf", "-inf", float("nan"), float("inf")])
+def test_detection_mask_drops_non_finite_vertices(bad: object) -> None:
+    from openfollow.configuration import DetectionMaskConfig
+
+    mask = DetectionMaskConfig(
+        vertices=[
+            [0.0, 0.0],
+            [bad, 0.5],  # non-finite x → dropped
+            [0.5, bad],  # non-finite y → dropped
+            [1.0, 1.0],
+        ]
+    )
+    assert mask.vertices == [[0.0, 0.0], [1.0, 1.0]]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(True, True), (False, False), ("false", False), ("true", True), ("0", False), ("1", True)],
+)
+def test_detection_mask_coerces_enabled(raw: object, expected: bool) -> None:
+    from openfollow.configuration import DetectionMaskConfig
+
+    assert DetectionMaskConfig(enabled=raw).enabled is expected
+
+
+@pytest.mark.parametrize("bad", [None, 5, [1], "maybe"])
+def test_detection_mask_enabled_unrecognised_falls_back_to_default(bad: object) -> None:
+    # ``_coerce_bool`` only recognises real bools + known string forms; anything
+    # else (incl. bare ints) falls to the declared default (True).
+    from openfollow.configuration import DetectionMaskConfig
+
+    assert DetectionMaskConfig(enabled=bad).enabled is True
+
+
+@pytest.mark.parametrize("bad_name", [None, 123, ["x"], {"a": 1}])
+def test_detection_mask_coerces_non_string_name_to_empty(bad_name: object) -> None:
+    from openfollow.configuration import DetectionMaskConfig
+
+    assert DetectionMaskConfig(name=bad_name).name == ""
+
+
+def test_detection_config_converts_dict_masks_to_dataclasses() -> None:
+    from openfollow.configuration import DetectionConfig, DetectionMaskConfig
+
+    cfg = DetectionConfig(
+        masks=[
+            {"name": "stage", "vertices": [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]], "enabled": True},
+            "junk",  # non-object → dropped
+            123,  # non-object → dropped
+        ]
+    )
+    assert len(cfg.masks) == 1
+    assert isinstance(cfg.masks[0], DetectionMaskConfig)
+    assert cfg.masks[0].name == "stage"
+    assert cfg.masks[0].vertices == [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]]
+
+
+def test_detection_config_preserves_already_built_masks() -> None:
+    from openfollow.configuration import DetectionConfig, DetectionMaskConfig
+
+    mask = DetectionMaskConfig(name="pre-built")
+    cfg = DetectionConfig(masks=[mask])
+    assert cfg.masks[0] is mask
+
+
+def test_detection_config_masks_default_empty() -> None:
+    from openfollow.configuration import DetectionConfig
+
+    assert DetectionConfig().masks == []
+
+
+# ---------------------------------------------------------------------------
 # ControllerConfig – curve and move_xy_stick fallbacks, deadzone logging
 # ---------------------------------------------------------------------------
 
@@ -2588,6 +2795,83 @@ def test_controller_mouse_enabled_default_is_false() -> None:
     # Default matches config.example.toml (false); explicit true is honoured.
     assert ControllerConfig().mouse_enabled is False
     assert ControllerConfig(mouse_enabled=True).mouse_enabled is True
+
+
+def test_controller_mouse_steering_defaults_are_back_compatible() -> None:
+    # Defaults reproduce direct 1:1 control with wheel-Z on, as before:
+    # smoothing 0 = instant (the glide alpha is 1 - smoothing).
+    cfg = ControllerConfig()
+    assert cfg.mouse_hysteresis_px == 0
+    assert cfg.mouse_smoothing == 0.0
+    assert cfg.mouse_max_y == 0.0
+    assert cfg.mouse_wheel_z_enabled is True
+    assert cfg.mouse_wheel_invert is False
+    assert cfg.mouse_wheel_z_step == 0.1
+    assert cfg.mouse_double_click_reset is True
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("false", False), ("no", False), ("true", True), (0, True), ("garbage", True)],
+)
+def test_controller_mouse_double_click_reset_coerced(value: object, expected: bool) -> None:
+    assert ControllerConfig(mouse_double_click_reset=value).mouse_double_click_reset is expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(-5, 0), (500, 200), ("abc", 0), (None, 0), (10, 10), (12.5, 12), ("3.5", 0)],
+)
+def test_controller_mouse_hysteresis_coerced_to_int(value: object, expected: int) -> None:
+    # Pixel deadband is a whole number of pixels: clamped to [0, 200]; a
+    # non-integral float truncates; a non-integer string falls back to default.
+    result = ControllerConfig(mouse_hysteresis_px=value).mouse_hysteresis_px
+    assert result == expected
+    assert isinstance(result, int)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    # 0 = instant is in range now; out-of-range / non-numeric fall back to the
+    # 0.0 default; the upper clamp is 1.0.
+    [(0.0, 0.0), (1.0, 1.0), (5.0, 1.0), (-1.0, 0.0), ("nope", 0.0), (None, 0.0), (0.4, 0.4)],
+)
+def test_controller_mouse_smoothing_coerced(value: object, expected: float) -> None:
+    assert ControllerConfig(mouse_smoothing=value).mouse_smoothing == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(-1.0, 0.0), (99999.0, 10000.0), ("x", 0.0), (None, 0.0), (25.0, 25.0)],
+)
+def test_controller_mouse_max_y_coerced(value: object, expected: float) -> None:
+    assert ControllerConfig(mouse_max_y=value).mouse_max_y == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(-2.0, 0.0), (50.0, 10.0), ("x", 0.1), (None, 0.1), (0.25, 0.25)],
+)
+def test_controller_mouse_wheel_z_step_coerced(value: object, expected: float) -> None:
+    assert ControllerConfig(mouse_wheel_z_step=value).mouse_wheel_z_step == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("false", False), ("no", False), ("true", True), (0, True), ("garbage", True)],
+)
+def test_controller_mouse_wheel_z_enabled_coerced(value: object, expected: bool) -> None:
+    # Non-bool / unrecognised input falls back to the default (True); a TOML
+    # string "false" is correctly read as False (not truthy).
+    assert ControllerConfig(mouse_wheel_z_enabled=value).mouse_wheel_z_enabled is expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("true", True), ("on", True), ("false", False), ("garbage", False)],
+)
+def test_controller_mouse_wheel_invert_coerced(value: object, expected: bool) -> None:
+    assert ControllerConfig(mouse_wheel_invert=value).mouse_wheel_invert is expected
 
 
 def test_controller_z_movement_default_keys() -> None:
@@ -4167,70 +4451,48 @@ class TestOscTransmitterConfig:
         assert not hasattr(row, "framing")
         assert row.destination_id == ""
 
-    def test_marker_id_default_is_none(self) -> None:
-        """marker_id defaults to None (not yet chosen by operator)."""
-        assert OscTransmitterConfig().marker_id is None
+    def test_markers_default_is_empty(self) -> None:
+        """markers defaults to [] (no default marker chosen yet)."""
+        assert OscTransmitterConfig().markers == []
 
-    def test_marker_id_explicit_zero_preserved(self) -> None:
+    def test_markers_explicit_zero_preserved(self) -> None:
         """An operator who deliberately picks marker 0 must see that
-        choice round-trip through the schema – distinct from
-        "unset" (``None``)."""
-        assert OscTransmitterConfig(marker_id=0).marker_id == 0
+        choice round-trip through the schema – distinct from "unset"."""
+        assert OscTransmitterConfig(markers=["0"]).markers == ["0"]
 
-    def test_marker_id_explicit_int_preserved(self) -> None:
-        assert OscTransmitterConfig(marker_id=5).marker_id == 5
+    def test_markers_explicit_int_preserved(self) -> None:
+        assert OscTransmitterConfig(markers=["5"]).markers == ["5"]
 
-    def test_marker_id_negative_collapses_to_none(self) -> None:
-        """Invalid input collapses to None so the runtime surfaces
-        "no default marker configured" instead of using marker 0."""
-        assert OscTransmitterConfig(marker_id=-3).marker_id is None
+    def test_markers_csv_string_parses_sorts_and_dedupes(self) -> None:
+        """A hand-edited comma-separated string canonicalises: numeric ids
+        sort ascending, duplicates drop."""
+        assert OscTransmitterConfig(markers="7, 3, 1, 3").markers == ["1", "3", "7"]  # type: ignore[arg-type]
 
-    def test_marker_id_bogus_string_collapses_to_none(self) -> None:
-        assert (
-            OscTransmitterConfig(
-                marker_id="bogus",  # type: ignore[arg-type]
-            ).marker_id
-            is None
-        )
+    def test_markers_controller_alias_preserved(self) -> None:
+        assert OscTransmitterConfig(markers="c2, 1").markers == ["1", "c2"]  # type: ignore[arg-type]
 
-    def test_marker_id_empty_string_collapses_to_none(self) -> None:
-        """Web form posts an empty string when the operator clears
-        the input; that must mean ``None``, not "marker 0"."""
-        assert (
-            OscTransmitterConfig(
-                marker_id="",  # type: ignore[arg-type]
-            ).marker_id
-            is None
-        )
+    def test_markers_all_keyword_collapses_list(self) -> None:
+        """``all`` subsumes every other entry."""
+        assert OscTransmitterConfig(markers="1, all, c3").markers == ["all"]  # type: ignore[arg-type]
 
-    def test_marker_id_whitespace_string_collapses_to_none(self) -> None:
-        assert (
-            OscTransmitterConfig(
-                marker_id="   ",  # type: ignore[arg-type]
-            ).marker_id
-            is None
-        )
+    def test_markers_invalid_entries_are_dropped(self) -> None:
+        """Negatives, floats, bad aliases (c0 / c01), and junk are ignored
+        rather than collapsing the whole field."""
+        assert OscTransmitterConfig(markers="1, -3, bogus, 1.5, c0, c01, 4").markers == ["1", "4"]  # type: ignore[arg-type]
 
-    def test_marker_id_bool_collapses_to_none(self) -> None:
-        """``True`` is an ``int`` subclass – accepting it would silently
-        promote a hand-edited ``marker_id = true`` to marker 1.
-        Mirrors the bool guard in :func:`_coerce_int`."""
-        assert (
-            OscTransmitterConfig(
-                marker_id=True,  # type: ignore[arg-type]
-            ).marker_id
-            is None
-        )
+    def test_markers_empty_string_is_empty_list(self) -> None:
+        assert OscTransmitterConfig(markers="   ").markers == []  # type: ignore[arg-type]
 
-    def test_marker_id_float_collapses_to_none(self) -> None:
-        """Float marker_id must reject (could silently truncate to wrong marker)."""
-        for bad in (1.5, 0.1, -0.5, 1.0, float("inf"), float("nan")):
-            assert (
-                OscTransmitterConfig(
-                    marker_id=bad,  # type: ignore[arg-type]
-                ).marker_id
-                is None
-            ), f"expected None for marker_id={bad!r}"
+    def test_markers_bool_collapses_to_empty(self) -> None:
+        """``True`` is an ``int`` subclass – a hand-edited ``markers = true``
+        must not become marker 1."""
+        assert OscTransmitterConfig(markers=True).markers == []  # type: ignore[arg-type]
+
+    def test_markers_legacy_int_lift(self) -> None:
+        """A bare int (the legacy single ``marker_id``) lifts to a one-token
+        list; a negative lifts to empty."""
+        assert OscTransmitterConfig(markers=5).markers == ["5"]  # type: ignore[arg-type]
+        assert OscTransmitterConfig(markers=-3).markers == []  # type: ignore[arg-type]
 
     def test_non_string_template_id_collapses_to_empty(self) -> None:
         cfg = OscTransmitterConfig(template_id=99)  # type: ignore[arg-type]
@@ -4976,40 +5238,31 @@ class TestOscTransmittersConfigLegacyLift:
         assert rows[1].id == "row2"
         assert rows[1].destination_id == "d2"
 
-    def test_marker_id_none_round_trips_through_toml(
+    def test_markers_empty_round_trips_through_toml(
         self,
         temp_config_path,  # noqa: ANN001
     ) -> None:
         original = AppConfig(
             osc_transmitters=OscTransmittersConfig(
                 transmitters=[
-                    OscTransmitterConfig(id="r1", marker_id=None),
+                    OscTransmitterConfig(id="r1", markers=[]),
                 ],
             ),
         )
         save_config(original, str(temp_config_path))
-        # Confirm the dump didn't write a ``marker_id`` key for the
-        # row – otherwise a future reader that *does* coerce the
-        # absent-value branch differently could disagree with us.
-        with open(temp_config_path, "rb") as f:
-            raw = tomllib.load(f)
-        row = raw["osc_transmitters"]["transmitters"][0]
-        assert "marker_id" not in row
         reloaded = load_config(str(temp_config_path))
-        assert reloaded.osc_transmitters.transmitters[0].marker_id is None
+        assert reloaded.osc_transmitters.transmitters[0].markers == []
 
-    def test_marker_id_explicit_zero_round_trips_through_toml(
+    def test_markers_multi_round_trips_through_toml(
         self,
         temp_config_path,  # noqa: ANN001
     ) -> None:
-        """An operator who deliberately set marker 0 must see that
-        choice survive a save / reload cycle – distinct from
-        "unset" (``None``). ``0`` is not stripped by
-        :func:`_strip_none` because it isn't ``None``."""
+        """A multi-marker row (ids + alias) survives a save / reload cycle
+        in canonical order."""
         original = AppConfig(
             osc_transmitters=OscTransmittersConfig(
                 transmitters=[
-                    OscTransmitterConfig(id="r1", marker_id=0),
+                    OscTransmitterConfig(id="r1", markers=["7", "0", "c1"]),
                 ],
             ),
         )
@@ -5017,24 +5270,22 @@ class TestOscTransmittersConfigLegacyLift:
         with open(temp_config_path, "rb") as f:
             raw = tomllib.load(f)
         row = raw["osc_transmitters"]["transmitters"][0]
-        assert row["marker_id"] == 0
+        assert row["markers"] == ["0", "7", "c1"]
         reloaded = load_config(str(temp_config_path))
-        assert reloaded.osc_transmitters.transmitters[0].marker_id == 0
+        assert reloaded.osc_transmitters.transmitters[0].markers == ["0", "7", "c1"]
 
-    def test_marker_id_explicit_int_round_trips_through_toml(
+    def test_legacy_marker_id_lifts_into_markers(
         self,
         temp_config_path,  # noqa: ANN001
     ) -> None:
-        original = AppConfig(
-            osc_transmitters=OscTransmittersConfig(
-                transmitters=[
-                    OscTransmitterConfig(id="r1", marker_id=7),
-                ],
-            ),
+        """A hand-edited TOML row carrying the legacy single ``marker_id``
+        key lifts into the one-token ``markers`` list on load."""
+        temp_config_path.write_text(
+            "[[osc_transmitters.transmitters]]\nid = 'r1'\nmarker_id = 4\n",
+            encoding="utf-8",
         )
-        save_config(original, str(temp_config_path))
         reloaded = load_config(str(temp_config_path))
-        assert reloaded.osc_transmitters.transmitters[0].marker_id == 7
+        assert reloaded.osc_transmitters.transmitters[0].markers == ["4"]
 
 
 def test_new_uuid_hex_returns_unique_strings_each_call() -> None:

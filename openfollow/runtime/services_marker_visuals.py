@@ -20,7 +20,7 @@ from openfollow.runtime.overlay_state import (
     OverlayState,
     VirtualFaderDisplayData,
 )
-from openfollow.runtime.services_detection_pin import assist_pinned_marker_id
+from openfollow.runtime.services_detection_pin import is_assist_controlled
 from openfollow.runtime_metrics import OverlayStatePool
 from openfollow.units import UnitSystem
 
@@ -345,7 +345,6 @@ def build_marker_visual_state(
     system_stats: Any,
     person_detector: Any,
     cam_params_buffer: npt.NDArray[Any],
-    pin_state: Any = None,
 ) -> OverlayState:
     """Build a complete OverlayState snapshot for atomic renderer swap."""
     controlled_set = set(app._controlled_ids)
@@ -485,13 +484,12 @@ def build_marker_visual_state(
     # below; ``None`` → no marker-fader value on any card this frame.
     _runtime_services = getattr(app, "_runtime_services", None)
     _fader_bus = getattr(_runtime_services, "_virtual_faders", None) if _runtime_services is not None else None
-    # Assist mode renders the operator-steered manual anchor as the solid carded
-    # marker (what the operator moves) and the AI-corrected PSN output as a dim
-    # ghost below it. ``pinned_id`` is the marker under assist control this frame
-    # (or None when assist isn't engaged); ``ghost_entry`` is the dim AI-output
-    # overlay built while iterating that marker and appended after the loop.
-    pinned_id = assist_pinned_marker_id(app)
-    ghost_entry: MarkerOverlayData | None = None
+    # Assist mode renders each controlled marker's operator-steered manual anchor
+    # as the solid carded marker (what the operator moves) and the AI-corrected
+    # PSN output as a dim ghost below it. Assist refines every controlled marker,
+    # so one ghost is built per assist-controlled marker while iterating and they
+    # are appended after the loop.
+    ghost_entries: list[MarkerOverlayData] = []
     for tid in app._viewer_ids:
         if tid in controlled_set:
             marker = app._server.get_marker(tid)
@@ -534,25 +532,27 @@ def build_marker_visual_state(
         # ``marker.pos`` accesses, which would tear X/Y/Z across two packets.
         px, py, pz = marker.pos
 
-        # The assist-pinned marker's card sits at the operator-steered anchor,
-        # not the broadcast position. Capture the registered (AI-corrected)
-        # position as a dim ghost, then move the carded marker to the anchor.
-        # Until the anchor is seeded the two coincide.
-        if pinned_id is not None and tid == pinned_id:
-            ghost_entry = MarkerOverlayData(
-                marker_id=pinned_id,
-                x=px,
-                y=py,
-                z=pz,
-                color=color,
-                radius=cfg.marker.ball_size,
-                speed=None,
-                online=True,
-                is_controlled=False,
-                name=name,
-                is_assist_ghost=True,
+        # Each assist-controlled marker's card sits at its operator-steered
+        # anchor, not the broadcast position. Capture the registered (AI-
+        # corrected) position as a dim ghost, then move the carded marker to the
+        # anchor. Until the anchor is seeded the two coincide.
+        if is_assist_controlled(app, tid):
+            ghost_entries.append(
+                MarkerOverlayData(
+                    marker_id=tid,
+                    x=px,
+                    y=py,
+                    z=pz,
+                    color=color,
+                    radius=cfg.marker.ball_size,
+                    speed=None,
+                    online=True,
+                    is_controlled=False,
+                    name=name,
+                    is_assist_ghost=True,
+                )
             )
-            anchor = app._assist_manual.get(pinned_id)
+            anchor = app._assist_manual.get(tid)
             if anchor is not None:
                 px, py, pz = anchor.pos
 
@@ -590,11 +590,10 @@ def build_marker_visual_state(
         state.markers.append(td)
         marker_idx += 1
 
-    # The dim AI-output ghost is scene-only (no card, filtered in the HUD loop);
-    # it marks where the AI-corrected output is actually broadcast while the
-    # solid carded marker above sits at the operator-steered anchor.
-    if ghost_entry is not None:
-        state.markers.append(ghost_entry)
+    # The dim AI-output ghosts are scene-only (no card, filtered in the HUD loop);
+    # each marks where one marker's AI-corrected output is actually broadcast while
+    # its solid carded marker above sits at the operator-steered anchor.
+    state.markers.extend(ghost_entries)
 
     cam_cfg = app._camera.to_config()
     cam_params_buffer[0] = cam_cfg.pos_x
@@ -605,6 +604,11 @@ def build_marker_visual_state(
     cam_params_buffer[5] = cam_cfg.roll
     cam_params_buffer[6] = cam_cfg.fov
     state.camera_params = cam_params_buffer.copy()
+    # Lens-distortion coefficients live on the app config (the Camera object is
+    # pinhole and doesn't carry them); read them straight from the live config so
+    # slider edits hot-reload onto the HUD.
+    state.lens_k1 = cfg.camera.lens_k1
+    state.lens_k2 = cfg.camera.lens_k2
 
     state.selected_id = app._selected_id
 
@@ -619,14 +623,14 @@ def build_marker_visual_state(
         state.detection_show_labels = dc.show_labels
         state.detection_box_color = dc.box_color
         state.detection_box_thickness = dc.box_thickness
-        # Highlight the box attached to a marker in that marker's colour so the
-        # operator can see which detection is driving the followspot.
-        if pin_state is not None:
-            attached_tid = pin_state.attached_track_id
-            attached_mid = pin_state.attached_marker_id
-            if attached_tid is not None and attached_mid is not None:
-                state.detection_attached_track_id = attached_tid
-                state.detection_attached_color = _resolve_marker_color(app, attached_mid)
+        # Highlight each box attached to a marker in that marker's colour so the
+        # operator can see which detection is driving each followspot. Assist
+        # drives every controlled marker, so several boxes can be attached.
+        attached_colors: dict[int, str] = {}
+        for st in app._detection_pin_states.values():
+            if st.attached_track_id is not None and st.attached_marker_id is not None:
+                attached_colors[st.attached_track_id] = _resolve_marker_color(app, st.attached_marker_id)
+        state.detection_attached_colors = attached_colors
 
     if app._button_detection is not None:
         state.button_detection = app._button_detection.get_state()
@@ -692,6 +696,7 @@ def build_marker_visual_state(
         and app._input_manager.is_keyboard_connected()
     )
     state.mouse_enabled = cfg.controller.mouse_enabled
+    state.mouse_double_click_reset = cfg.controller.mouse_double_click_reset
     state.show_hud_help = app._show_hud_help
 
     # Virtual fader stack. Read from the running bus and surface only the

@@ -202,6 +202,85 @@ def _coerce_optional_marker_id(value: Any) -> int | None:
     return out
 
 
+# Marker-token grammar for an OSC transmitter row's ``markers`` field. Each
+# token is one of: a non-negative integer marker id, a controller alias
+# ``cN`` (1-based, no leading zero – mirrors the ``:cN`` reference grammar in
+# ``osc/template.py``), or the keyword ``all`` (every id in
+# ``controlled_marker_ids``). ``all`` and the aliases resolve dynamically, so
+# they're stored verbatim and only mapped to concrete ids by the transmitter
+# manager at render time.
+MARKER_TOKEN_ALL = "all"
+_CONTROLLER_ALIAS_RE = re.compile(r"^c[1-9][0-9]*$")
+
+
+def _canonical_marker_token(raw: Any) -> str | None:
+    """Canonicalise one ``markers`` entry, or ``None`` when invalid.
+
+    Accepts an int (non-negative) or a string token (``"all"`` / ``"cN"`` /
+    a decimal id). Invalid entries – floats, ``True``, negatives, ``c0`` /
+    ``c01``, junk – return ``None`` so the caller drops them (the field
+    ignores invalid ids by spec).
+    """
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if not s:
+            return None
+        if s == MARKER_TOKEN_ALL:
+            return MARKER_TOKEN_ALL
+        if _CONTROLLER_ALIAS_RE.match(s):
+            return s
+        # Fall through to the numeric coercer (rejects bool / float / junk).
+        mid = _coerce_optional_marker_id(s)
+        return None if mid is None else str(mid)
+    mid = _coerce_optional_marker_id(raw)
+    return None if mid is None else str(mid)
+
+
+def _marker_token_sort_key(token: str) -> tuple[int, int]:
+    """Display order: numeric ids ascending, then controller aliases by
+    index. ``all`` collapses the list so it never reaches here."""
+    if _CONTROLLER_ALIAS_RE.match(token):
+        return (1, int(token[1:]))
+    return (0, int(token))
+
+
+def _coerce_marker_tokens(value: Any) -> list[str]:
+    """Normalise an OSC transmitter row's ``markers`` field to a sorted,
+    de-duplicated list of canonical tokens.
+
+    Accepts a list (TOML array), a comma-separated string (hand-edited TOML
+    / web form), or a bare int (legacy single ``marker_id`` lift). ``all``
+    subsumes every other entry, so its presence collapses the result to
+    ``["all"]``. Numeric tokens sort ascending ahead of controller aliases.
+    """
+    if value is None or isinstance(value, bool):
+        return []
+    if isinstance(value, str):
+        raw_items: list[Any] = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        raw_items = list(value)
+    else:
+        # Bare int (legacy lift) or anything else the canonicaliser vets.
+        raw_items = [value]
+    canonical: list[str] = []
+    seen: set[str] = set()
+    has_all = False
+    for item in raw_items:
+        token = _canonical_marker_token(item)
+        if token is None:
+            continue
+        if token == MARKER_TOKEN_ALL:
+            has_all = True
+            continue
+        if token not in seen:
+            seen.add(token)
+            canonical.append(token)
+    if has_all:
+        return [MARKER_TOKEN_ALL]
+    canonical.sort(key=_marker_token_sort_key)
+    return canonical
+
+
 def _coerce_choice(value: Any, choices: tuple[str, ...], default: str) -> str:
     """Return ``value`` when it matches one of ``choices``, else ``default``."""
     if isinstance(value, str) and value in choices:
@@ -289,6 +368,12 @@ class CameraConfig:
     # the projection math; ``fov`` remains the source of truth.
     sensor_width_mm: float | None = None
     focal_length_mm: float | None = None
+    # Radial lens-distortion coefficients for the overlay-curvature correction.
+    # Bow the rendered HUD to match a fisheye / wide-angle lens via
+    # f = 1 + k1*r^2 + k2*r^4 (r normalised to the image half-diagonal). The
+    # video frame is never warped. 0/0 = pinhole (no curvature).
+    lens_k1: float = 0.0
+    lens_k2: float = 0.0
 
     def __post_init__(self) -> None:
         # These feed ``project_points`` via a numpy float array. Clamp fov out
@@ -302,6 +387,13 @@ class CameraConfig:
         self.fov = _coerce_float(self.fov, 60.0, lo=1.0, hi=179.0)
         self.sensor_width_mm = _coerce_optional_float(self.sensor_width_mm, None, lo=0.0)
         self.focal_length_mm = _coerce_optional_float(self.focal_length_mm, None, lo=0.0)
+        # Bounds cover strong wide-angle / fisheye lenses. The radial map
+        # f = 1 + k1*r^2 + k2*r^4 stays positive and monotonic across the bulk
+        # of the frame; near the extreme corner a strong barrel setting can
+        # compress past monotonic, but the floored inverse (input path) stays
+        # bounded there, so control never diverges.
+        self.lens_k1 = _coerce_float(self.lens_k1, 0.0, lo=-0.4, hi=0.4)
+        self.lens_k2 = _coerce_float(self.lens_k2, 0.0, lo=-0.2, hi=0.2)
 
 
 _GRID_COLOR_DEFAULT = "#545454"
@@ -418,12 +510,43 @@ _DETECTION_PIN_MODES = ("replace", "assist")
 
 
 @dataclass
+class DetectionMaskConfig:
+    """A single polygonal detection mask in normalised 0-1 frame coordinates.
+
+    Detection is confined to the union of all enabled masks: a person whose
+    ground point falls outside every mask is discarded before tracking. An empty
+    mask list leaves detection unrestricted.
+    """
+
+    name: str = ""
+    vertices: list[list[float]] = field(default_factory=list)  # [[x, y], ...] in 0-1 frame space
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        self.name = _coerce_str(self.name, "")
+        self.enabled = _coerce_bool(self.enabled, True)
+        # Normalize vertices to [float, float] pairs. Drop non-finite coords:
+        # ``float("nan")`` / ``float("inf")`` survive coercion but make every
+        # point-in-polygon comparison False, silently corrupting the mask.
+        cleaned: list[list[float]] = []
+        for v in self.vertices:
+            if isinstance(v, (list, tuple)) and len(v) >= 2:
+                try:
+                    x, y = float(v[0]), float(v[1])
+                except (TypeError, ValueError):
+                    continue
+                if not (math.isfinite(x) and math.isfinite(y)):
+                    continue
+                cleaned.append([x, y])
+        self.vertices = cleaned
+
+
+@dataclass
 class DetectionConfig:
     enabled: bool = False
-    model: str = "yolov8n.onnx"
+    model: str = "yolo26n.onnx"
     storage_path: str = ""
     inference_size: int = 640
-    preprocess_clahe: bool = True
     confidence: float = 0.2
     interval_ms: int = 67
     show_boxes: bool = True
@@ -431,8 +554,7 @@ class DetectionConfig:
     box_color: str = "#808080"
     box_thickness: int = 2
     max_persons: int = 10
-    pin_marker: bool = False
-    # Which marker the detection pin writes to when ``pin_marker`` is enabled.
+    # Which marker the detection pin writes to in Fully Automatic (replace) mode.
     # ``-1`` (sentinel) follows the controller's selected marker
     # (``app._selected_id``). Any non-negative value pins to that exact id; if
     # it isn't in ``controlled_marker_ids`` the runtime skips the pin.
@@ -451,11 +573,18 @@ class DetectionConfig:
     pin_mode: str = "assist"
     assist_radius_m: float = 1.0
     assist_strength: float = 0.5
+    # Master on/off for region-of-interest masking. When False (default) the
+    # masks below are inactive and detection runs over the whole frame even if
+    # masks are drawn; True confines detection to the union of enabled masks.
+    masks_enabled: bool = False
+    # Region-of-interest polygons in normalised 0-1 frame coords. Detection is
+    # confined to the union of enabled masks; empty = unrestricted.
+    masks: list[DetectionMaskConfig] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # ``model`` / ``storage_path`` are rendered into templates and consumed
         # via ``Path(...)`` / ``.strip()``; both assume ``str``.
-        self.model = _coerce_str(self.model, "yolov8n.onnx")
+        self.model = _coerce_str(self.model, "yolo26n.onnx")
         self.storage_path = _coerce_str(self.storage_path, "")
         self.pin_point = _coerce_choice(self.pin_point, _DETECTION_PIN_POINTS, "top")
         # inference_size: letterbox math requires >= 160; YOLO heads prefer
@@ -479,6 +608,15 @@ class DetectionConfig:
         # Gate radius for assist mode. Upper bound mirrors web/validation.py.
         self.assist_radius_m = _coerce_float(self.assist_radius_m, 1.0, lo=0.1, hi=50.0)
         self.assist_strength = _coerce_float(self.assist_strength, 0.5, lo=0.0, hi=1.0)
+        self.masks_enabled = _coerce_bool(self.masks_enabled, False)
+        # Convert dict entries (hand-edited TOML / imported config) to
+        # dataclasses and drop non-object entries, so the detector thread can
+        # dereference ``mask.vertices`` without an AttributeError.
+        self.masks = [
+            DetectionMaskConfig(**_filter_known(DetectionMaskConfig, m)) if isinstance(m, dict) else m
+            for m in self.masks
+            if isinstance(m, (dict, DetectionMaskConfig))
+        ]
 
 
 @dataclass
@@ -1234,11 +1372,14 @@ class OscTransmitterConfig:
     # Reference to an :class:`OscDestinationConfig` (host/port/protocol/framing
     # live there). Empty = no destination selected → the row skips sending.
     destination_id: str = ""
-    # ``None`` = no default marker picked. Rows using only literals or
-    # explicit-marker refs (``[x:markerN]``) still dispatch; rows using a
-    # default-marker placeholder (``[x]`` / ``[fy]`` / ``[markerId]``) skip
-    # with "no default marker configured" until set.
-    marker_id: int | None = None
+    # Default markers driving ``[x]`` / ``[markerid]`` / ``[markerfader]``.
+    # Each token is a marker id, a controller alias ``cN``, or ``all`` (every
+    # controlled marker). Multiple tokens fan the row out into one
+    # independent send per resolved marker. Empty list = no default marker:
+    # rows using only literals or explicit refs (``[x:markerN]``) still
+    # dispatch; rows using a default-marker placeholder skip with "no default
+    # marker configured" until a token is set.
+    markers: list[str] = field(default_factory=list)
     # Optional default virtual fader. Bare placeholders (``[fader]``,
     # ``[float]``, ``[int:min-max]``) resolve through this; explicit refs
     # (``[fader:3]``) ignore it. ``None`` = unset; ``0`` is rejected at
@@ -1267,7 +1408,7 @@ class OscTransmitterConfig:
         if not isinstance(self.destination_id, str):
             self.destination_id = ""
         self.destination_id = self.destination_id.strip()
-        self.marker_id = _coerce_optional_marker_id(self.marker_id)
+        self.markers = _coerce_marker_tokens(self.markers)
         # ``None`` for unset, else 1..VIRTUAL_FADER_COUNT; out-of-range/junk
         # collapses to ``None`` rather than routing to a valid-but-wrong fader.
         self.default_fader = _coerce_optional_int(
@@ -1336,6 +1477,12 @@ class OscTransmittersConfig:
                         "kind": "stream",
                         "rate_hz": row_data["rate_hz"],
                     }
+                # Legacy lift: a single ``marker_id`` becomes the one-token
+                # ``markers`` list (``_coerce_marker_tokens`` handles the
+                # scalar). ``_filter_known`` would otherwise drop the unknown
+                # key and lose the operator's default marker.
+                if "markers" not in row_data and "marker_id" in row_data:
+                    row_data["markers"] = row_data["marker_id"]
                 coerced_transmitters.append(
                     OscTransmitterConfig(
                         **_filter_known(OscTransmitterConfig, row_data),
@@ -1584,6 +1731,22 @@ class ControllerConfig:
     keyboard_enabled: bool = True
     # Default matches config.example.toml; an explicit ``true`` is honoured.
     mouse_enabled: bool = False
+    # Mouse steering refinements (see input/mouse.py).
+    # Cursor deadband in whole screen pixels; 0 = off (apply every move).
+    mouse_hysteresis_px: int = 0
+    # Glide toward the cursor target; 0 = instant (no smoothing), higher = smoother/laggier.
+    mouse_smoothing: float = 0.0
+    # Cap the marker's upstage (Y+) position when steering by mouse; 0 = no
+    # limit. Near the camera horizon the unprojected Y runs away, so a move
+    # beyond this holds the marker rather than placing it far upstage.
+    mouse_max_y: float = 0.0
+    # Scroll wheel adjusts marker Z height.
+    mouse_wheel_z_enabled: bool = True
+    mouse_wheel_invert: bool = False
+    # Height change per wheel tick (m).
+    mouse_wheel_z_step: float = 0.1
+    # Double right-click resets the controlled marker to the default position.
+    mouse_double_click_reset: bool = True
     deadzone: float = 0.15
     invert_y: bool = False
     curve: str = "logarithmic"
@@ -1671,6 +1834,15 @@ class ControllerConfig:
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
+        # Mouse steering refinements – coerce so a hand-edited / imported TOML
+        # can't feed a string or out-of-range value into the input loop.
+        self.mouse_hysteresis_px = _coerce_int(self.mouse_hysteresis_px, 0, lo=0, hi=200)
+        self.mouse_smoothing = _coerce_float(self.mouse_smoothing, 0.0, lo=0.0, hi=1.0)
+        self.mouse_max_y = _coerce_float(self.mouse_max_y, 0.0, lo=0.0, hi=10000.0)
+        self.mouse_wheel_z_step = _coerce_float(self.mouse_wheel_z_step, 0.1, lo=0.0, hi=10.0)
+        self.mouse_wheel_z_enabled = _coerce_bool(self.mouse_wheel_z_enabled, True)
+        self.mouse_wheel_invert = _coerce_bool(self.mouse_wheel_invert, False)
+        self.mouse_double_click_reset = _coerce_bool(self.mouse_double_click_reset, True)
         if not 0.0 <= self.deadzone <= 1.0:
             logger.warning(
                 "Invalid controller deadzone %s, clamping to [0.0, 1.0]",
@@ -2682,10 +2854,11 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     if new_config.marker != app._config.marker:
         app._config.marker = new_config.marker
 
-    if new_config.marker_move_speeds != app._config.marker_move_speeds:
-        # Readers go through ``get_marker_move_speed``, so a direct swap
-        # suffices – no service restart.
-        app._config.marker_move_speeds = new_config.marker_move_speeds
+    # ``marker_move_speeds`` is deliberately NOT reloaded here. It is device-local
+    # and runtime-authoritative – written live by the R/T keys + gamepad bumpers, so
+    # the in-memory dict is the source of truth. A hot-reload from any config write (a
+    # web section save, the debounced self-persist, an import) must never overwrite it.
+    # Startup ``load_config`` seeds the initial value from disk; it is not reloaded after.
 
     # ``unit_system`` is read live every frame by ``sync_ui_config`` and
     # ``show_experimental_features`` gates the web UI off ``app._config``; a

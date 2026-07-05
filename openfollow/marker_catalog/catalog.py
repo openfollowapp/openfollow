@@ -6,8 +6,13 @@ The catalog is the shared source of truth for marker identity. Per-
 station selection (which catalog entries this station controls/views)
 lives in ``config.toml`` and is intentionally NOT covered here.
 
-Conflict model: per-entry last-write-wins on ``updated_at``. Deletes
-are tombstones so a late-arriving peer can't reincarnate them.
+Conflict model: per-entry last-write-wins ordered by a Lamport ``version``
+counter (with ``updated_at`` then ``origin`` as tiebreakers). The version is a
+logical clock: each local edit stamps ``max(version ever seen) + 1``, so a
+fresh edit always out-ranks anything the station has seen even when peer wall
+clocks disagree (the Pis are RTC-less and the show LAN has no NTP, so their
+clocks drift). Deletes are tombstones so a late-arriving peer can't
+reincarnate them.
 """
 
 from __future__ import annotations
@@ -35,17 +40,41 @@ logger = logging.getLogger(__name__)
 
 
 _DEFAULT_COLOR = "#ffffff"
+# Cap the logical version at the TOML 64-bit integer range so a bad/hostile
+# value can't write spec-violating markers.toml or poison the clock unbounded.
+_MAX_VERSION = 2**63 - 1
+# Cap the origin (a station id, normally a ~36-char UUID).
+_ORIGIN_MAX_LEN = 128
+
+
+def _sanitize_origin(value: object) -> str:
+    """Coerce origin to a printable, length-capped station id.
+
+    Single choke point shared by the dataclass, the loader, and the sync
+    receiver so disk and wire enforce the same contract.
+    """
+    if not isinstance(value, str):
+        return ""
+    return "".join(ch for ch in value if ch.isprintable())[:_ORIGIN_MAX_LEN]
 
 
 @dataclass
 class MarkerEntry:
-    """A single catalog entry. ``tombstone=True`` marks a deletion."""
+    """A single catalog entry. ``tombstone=True`` marks a deletion.
+
+    ``version`` is the Lamport logical clock for this entry's last write;
+    ``origin`` is the station that produced it (final, deterministic
+    tiebreaker). Both default to 0 / "" so entries from old ``markers.toml``
+    files or old-format peers parse cleanly and sort below any real edit.
+    """
 
     id: int
     name: str
     color: str
     updated_at: float
     tombstone: bool = False
+    version: int = 0
+    origin: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, int) or isinstance(self.id, bool):
@@ -65,6 +94,24 @@ class MarkerEntry:
         # Defence-in-depth: bool("false") is True; require real bool.
         if not isinstance(self.tombstone, bool):
             self.tombstone = False
+        # version is a logical clock: reject bool/non-int/negative, and cap at
+        # the TOML 64-bit range so a bad/hostile value can't poison the clock.
+        if isinstance(self.version, bool) or not isinstance(self.version, int) or self.version < 0:
+            self.version = 0
+        elif self.version > _MAX_VERSION:
+            self.version = _MAX_VERSION
+        self.origin = _sanitize_origin(self.origin)
+
+
+def _entry_rank(entry: MarkerEntry) -> tuple[int, float, str]:
+    """Total-order key for LWW: logical version, then wall time, then origin.
+
+    ``version`` (a clock-skew-proof logical counter) dominates; ``updated_at``
+    orders same-version writes (and keeps old version-0 entries ordered by their
+    original wall stamp); ``origin`` is the final deterministic tiebreak so two
+    stations converge on the same winner for a truly concurrent edit.
+    """
+    return (entry.version, entry.updated_at, entry.origin)
 
 
 class MarkerCatalog:
@@ -78,6 +125,10 @@ class MarkerCatalog:
         self._lock = threading.Lock()
         # Serialises save_catalog calls to prevent writer interleaving.
         self._save_lock = threading.Lock()
+        # Lamport logical clock: the highest version this station has ever seen
+        # (local edits + merged remotes). A local edit stamps ``_lamport + 1`` so
+        # it out-ranks anything seen, even when peer wall clocks disagree.
+        self._lamport = 0
 
     def get(self, marker_id: int) -> MarkerEntry | None:
         """Return the live (non-tombstoned) entry for ``marker_id``, or None."""
@@ -113,23 +164,28 @@ class MarkerCatalog:
         color: str,
         *,
         updated_at: float | None = None,
+        origin: str = "",
     ) -> MarkerEntry:
-        """Create or update an entry. Stamps ``updated_at`` to wall time.
+        """Create or update an entry, stamping the next logical ``version``.
 
-        Clears any tombstone (re-adding an id resurrects it locally –
-        peers will see this as a newer LWW write and resurrect too).
+        ``origin`` identifies the editing station for the merge tiebreak.
+        Clears any tombstone (re-adding an id resurrects it locally – peers
+        will see this as a higher-version write and resurrect too).
         """
         if marker_id < 1:
             raise ValueError("marker id must be >= 1")
         ts = updated_at if updated_at is not None else time.time()
-        entry = MarkerEntry(
-            id=marker_id,
-            name=name,
-            color=color,
-            updated_at=ts,
-            tombstone=False,
-        )
         with self._lock:
+            self._lamport += 1
+            entry = MarkerEntry(
+                id=marker_id,
+                name=name,
+                color=color,
+                updated_at=ts,
+                tombstone=False,
+                version=self._lamport,
+                origin=origin,
+            )
             self._entries[marker_id] = entry
         return entry
 
@@ -149,7 +205,7 @@ class MarkerCatalog:
             else:
                 self._entries[marker_id] = entry
 
-    def delete(self, marker_id: int) -> MarkerEntry | None:
+    def delete(self, marker_id: int, *, origin: str = "") -> MarkerEntry | None:
         """Tombstone an entry. Returns the new tombstone, or None if unknown."""
         ts = time.time()
         with self._lock:
@@ -161,12 +217,15 @@ class MarkerCatalog:
                 # bound. A peer's later upsert of that id will still
                 # win normally.
                 return None
+            self._lamport += 1
             tomb = MarkerEntry(
                 id=marker_id,
                 name=existing.name,
                 color=existing.color,
                 updated_at=ts,
                 tombstone=True,
+                version=self._lamport,
+                origin=origin,
             )
             self._entries[marker_id] = tomb
         return tomb
@@ -178,6 +237,11 @@ class MarkerCatalog:
         replaced, or tombstoned).
         """
         with self._lock:
+            # Track the highest version seen from any peer so the next local
+            # edit (``_lamport + 1``) out-ranks it – this is what stops a
+            # clock-ahead peer's stale entry from reverting a fresh edit.
+            if remote.version > self._lamport:
+                self._lamport = remote.version
             existing = self._entries.get(remote.id)
             if existing is None:
                 if remote.tombstone:
@@ -192,7 +256,7 @@ class MarkerCatalog:
                     return False
                 self._entries[remote.id] = remote
                 return True
-            if remote.updated_at <= existing.updated_at:
+            if _entry_rank(remote) <= _entry_rank(existing):
                 return False
             self._entries[remote.id] = remote
             return True
@@ -246,7 +310,8 @@ def load_catalog(path: str) -> MarkerCatalog:
         # Require real bool; bool("false") is True in Python.
         tombstone_raw = raw.get("tombstone", False)
         tombstone = tombstone_raw if isinstance(tombstone_raw, bool) else False
-        # Leave name as-is; MarkerEntry.__post_init__ normalises it.
+        # Pass version/origin (and name) raw; MarkerEntry.__post_init__ is the
+        # single normaliser (caps version, sanitises origin) for disk + wire.
         try:
             entry = MarkerEntry(
                 id=mid,
@@ -254,11 +319,16 @@ def load_catalog(path: str) -> MarkerCatalog:
                 color=str(raw.get("color", _DEFAULT_COLOR)),
                 updated_at=float(raw.get("updated_at", 0.0)),
                 tombstone=tombstone,
+                version=raw.get("version", 0),
+                origin=raw.get("origin", ""),
             )
         except ValueError:
             logger.warning("markers.toml: dropping invalid entry %r", raw)
             continue
         catalog._entries[entry.id] = entry
+    # Resume the logical clock above every persisted version so edits after a
+    # restart keep out-ranking what's on disk (and what peers still hold).
+    catalog._lamport = max((e.version for e in catalog._entries.values()), default=0)
     return catalog
 
 

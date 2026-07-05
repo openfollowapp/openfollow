@@ -101,6 +101,23 @@ def test_as_int_list_parses_csv_and_falls_back() -> None:
 # helpers shouldn't break these.
 
 
+def test_apply_section_data_camera_lens_distortion_roundtrips() -> None:
+    config = AppConfig()
+    ok = apply_section_data(config, "camera", {"lens_k1": "-0.15", "lens_k2": "0.03"})
+    assert ok is True
+    assert config.camera.lens_k1 == pytest.approx(-0.15)
+    assert config.camera.lens_k2 == pytest.approx(0.03)
+
+
+def test_apply_section_data_camera_lens_distortion_clamps_out_of_range() -> None:
+    config = AppConfig()
+    ok = apply_section_data(config, "camera", {"lens_k1": "5", "lens_k2": "-5"})
+    assert ok is True
+    # __post_init__ re-runs after the web save, clamping to the configured band.
+    assert config.camera.lens_k1 == 0.4
+    assert config.camera.lens_k2 == -0.2
+
+
 def test_apply_section_data_grid_tolerates_huge_int_width() -> None:
     config = AppConfig()
     ok = apply_section_data(config, "grid", {"width": 10**5000})
@@ -314,6 +331,34 @@ def test_apply_section_data_controller_revalidates_deadzone() -> None:
 
     assert ok is True
     assert config.controller.deadzone == 1.0
+
+
+def test_apply_section_data_mouse_clamps_and_applies() -> None:
+    # A crafted POST to the mouse section must round-trip through the
+    # controller parser map + __post_init__ re-run: in-range values apply,
+    # out-of-range values clamp.
+    config = AppConfig()
+
+    ok = apply_section_data(
+        config,
+        "mouse",
+        {
+            "mouse_hysteresis_px": "4",
+            "mouse_smoothing": "0.3",
+            "mouse_max_y": "999999",  # over the 10000 m cap
+            "mouse_wheel_z_step": "0.5",
+            "mouse_wheel_invert": "true",
+            "mouse_double_click_reset": "false",
+        },
+    )
+
+    assert ok is True
+    assert config.controller.mouse_hysteresis_px == 4
+    assert config.controller.mouse_smoothing == 0.3
+    assert config.controller.mouse_max_y == 10000.0
+    assert config.controller.mouse_wheel_z_step == 0.5
+    assert config.controller.mouse_wheel_invert is True
+    assert config.controller.mouse_double_click_reset is False
 
 
 # --- __post_init__ re-run after web-form saves ---------------------------
@@ -1239,6 +1284,79 @@ def test_detection_export_script_none_when_unreachable(monkeypatch, tmp_path) ->
     monkeypatch.setattr(routes_mod, "Path", lambda *_a, **_kw: _NoPyproject())
     monkeypatch.setattr(routes_mod, "_PACKAGED_EXPORT_SCRIPT", tmp_path / "missing.py")
     assert routes_mod._detection_export_script() is None
+
+
+# ---------------------------------------------------------------------------
+# _build_export_argv – frozen-bundle vs source/appliance invocation
+# ---------------------------------------------------------------------------
+
+
+def test_build_export_argv_source_runs_export_script(monkeypatch, tmp_path) -> None:
+    """Non-frozen: run export_onnx.py with the venv interpreter."""
+    from pathlib import Path
+
+    from openfollow.web import routes as routes_mod
+
+    monkeypatch.delattr(routes_mod.sys, "frozen", raising=False)
+    script = tmp_path / "export_onnx.py"
+    monkeypatch.setattr(routes_mod, "_detection_export_script", lambda: script)
+    monkeypatch.setattr(routes_mod.sys, "executable", "/venv/bin/python")
+
+    argv = routes_mod._build_export_argv("yolov8n.pt", 320, 17, Path("/store/models"))
+
+    assert argv == [
+        "/venv/bin/python",
+        str(script),
+        "yolov8n.pt",
+        "--imgsz",
+        "320",
+        "--opset",
+        "17",
+        "--output-dir",
+        "/store/models",
+    ]
+
+
+def test_build_export_argv_none_when_script_unreachable(monkeypatch, tmp_path) -> None:
+    """Non-frozen with no script on disk: caller surfaces 'not found'."""
+    from pathlib import Path
+
+    from openfollow.web import routes as routes_mod
+
+    monkeypatch.delattr(routes_mod.sys, "frozen", raising=False)
+    monkeypatch.setattr(routes_mod, "_detection_export_script", lambda: None)
+
+    assert routes_mod._build_export_argv("yolov8n.pt", 320, 17, Path("/store/models")) is None
+
+
+def test_build_export_argv_frozen_reexecs_app(monkeypatch, tmp_path) -> None:
+    """Frozen bundle: re-exec the app binary in --export mode, no script on disk."""
+    from pathlib import Path
+
+    from openfollow.web import routes as routes_mod
+
+    monkeypatch.setattr(routes_mod.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(routes_mod.sys, "executable", "/Applications/OpenFollow.app/Contents/MacOS/OpenFollow")
+
+    # Must not consult the on-disk script in frozen mode.
+    def _fail() -> None:
+        raise AssertionError("frozen export must not probe for export_onnx.py on disk")
+
+    monkeypatch.setattr(routes_mod, "_detection_export_script", _fail)
+
+    argv = routes_mod._build_export_argv("yolo11n.pt", 640, 19, Path("/store/models"))
+
+    assert argv == [
+        "/Applications/OpenFollow.app/Contents/MacOS/OpenFollow",
+        "--export",
+        "yolo11n.pt",
+        "--imgsz",
+        "640",
+        "--opset",
+        "19",
+        "--output-dir",
+        "/store/models",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -2511,3 +2629,60 @@ def test_osc_destinations_script_json_escapes_script_breakout() -> None:
     restored = json.loads(out)
     assert restored[0]["name"] == "</script><img src=x onerror=alert(1)>"
     assert restored[0]["host"] == "a&b"
+
+
+# --- mouse partial: macOS hides the scroll-wheel form ----------------------
+
+
+def _render_mouse_partial(platform: str, monkeypatch) -> str:
+    import os.path
+    import sys
+
+    import bottle
+
+    import openfollow.web as web_pkg
+
+    tdir = os.path.join(os.path.dirname(web_pkg.__file__), "templates")
+    if tdir not in bottle.TEMPLATE_PATH:
+        bottle.TEMPLATE_PATH.insert(0, tdir)
+    monkeypatch.setattr(sys, "platform", platform)
+    bottle.TEMPLATES.clear()  # force a fresh render under the patched platform
+    return bottle.template("partials/mouse", config=AppConfig(), saved=False)
+
+
+def test_mouse_partial_replaces_wheel_form_with_message_on_macos(monkeypatch) -> None:
+    out = _render_mouse_partial("darwin", monkeypatch)
+    assert "can not be changed by the Scroll Wheel on macOS" in out
+    assert 'name="mouse_wheel_z_step"' not in out
+    assert 'name="mouse_wheel_z_enabled"' not in out
+    assert 'name="mouse_wheel_invert"' not in out
+
+
+def test_mouse_partial_keeps_wheel_form_off_macos(monkeypatch) -> None:
+    out = _render_mouse_partial("linux", monkeypatch)
+    assert "can not be changed by the Scroll Wheel" not in out
+    assert 'name="mouse_wheel_z_step"' in out
+    assert 'name="mouse_wheel_z_enabled"' in out
+
+
+def test_mouse_bool_fields_excludes_wheel_checkboxes_on_macos(monkeypatch) -> None:
+    # On macOS the scroll-wheel checkboxes aren't rendered, so they're absent
+    # from the POST. They must NOT be in the save's bool_fields, or the missing
+    # values would be coerced to False and clobber the stored config.
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "darwin")
+    fields = routes._mouse_bool_fields()
+    assert "mouse_wheel_z_enabled" not in fields
+    assert "mouse_wheel_invert" not in fields
+    assert "mouse_enabled" in fields
+    assert "mouse_double_click_reset" in fields
+
+
+def test_mouse_bool_fields_includes_wheel_checkboxes_off_macos(monkeypatch) -> None:
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "linux")
+    fields = routes._mouse_bool_fields()
+    assert "mouse_wheel_z_enabled" in fields
+    assert "mouse_wheel_invert" in fields

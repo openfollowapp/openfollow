@@ -3,116 +3,168 @@
 """Structure tests for the Person Detection partial.
 
 Renders ``partials/detection`` directly (no live server) and asserts the
-three-collapsible-box layout (the same ``.section`` + fold component as the
-Output PSN/OTP/RTTrPM boxes), the Pi-5 performance note, the available-only
-model dropdown, the single-button download UI, the Tracking Mode segmented
-toggle, and the mode-conditional Assisted Tracking block.
+three-form layout (Tracking, Detection Model, Sensitivity & Overlay), the
+section ordering, the Tracking 3-state segmented radio, the YOLO26 quality
+tiers, the replace-only "Follow marker" select, the Advanced-motion
+disclosure, and the absence of the fields the refactor dropped (``enabled`` /
+``pin_marker`` / ``preprocess_clahe`` / ``inference_size`` inputs).
 """
 
 from __future__ import annotations
+
+import re
 
 import pytest
 from bottle import template
 
 from openfollow.configuration import AppConfig
 from openfollow.web import server as _server_module  # noqa: F401 - registers tpl path
+from openfollow.web.routes import _DETECTION_TIERS, _detection_tiers
 
 pytestmark = pytest.mark.unit
 
 
 def _render(**ctx: object) -> str:
-    base: dict[str, object] = {"config": AppConfig(), "saved": False}
+    base: dict[str, object] = {
+        "config": AppConfig(),
+        "saved": False,
+        "detection_tiers": _detection_tiers({"detection": True}, storage_path="/tmp/of-no-models"),
+    }
     base.update(ctx)
     return template("partials/detection", **base)
 
 
-def test_layout_uses_three_collapsible_section_boxes() -> None:
-    html = _render()
-    # Three boxes built from the same component as the Output PSN/OTP/RTTrPM
-    # boxes: a ``.section`` with a ``data-fold-key`` (fold toggle is JS-injected)
-    # and a ``data-help`` affordance.
-    for key in ("detection_models", "detection_inference", "detection_tracking"):
-        assert f'data-fold-key="{key}"' in html
-    assert html.count("data-fold-key=") == 3
-    for title in ("Models", "Detection &amp; Display", "Tracking"):
-        assert f">{title}</h2>" in html
-    # Help is reachable from each box (mirrors the Output boxes' per-box "?").
-    assert html.count('data-help="detection"') == 3
-
-
-def test_each_box_is_its_own_form_with_its_own_save() -> None:
-    # Output PSN/OTP/RTTrPM parity: three independent forms, each posting to its
-    # own per-box route, each carrying exactly one Save submit button.
+def test_three_forms_each_post_to_their_own_route() -> None:
     html = _render()
     for route in (
+        "/section/detection/tracking",
         "/section/detection/models",
         "/section/detection/inference",
-        "/section/detection/tracking",
     ):
         assert f'hx-post="{route}"' in html
+    # Three config forms (the mask editor is a div, not a form).
     assert html.count("<form") == 3
-    # The only submit buttons are the three per-box Saves (install / download
-    # buttons are type="button").
+    # The only submit buttons are the three per-form Saves.
     assert html.count('type="submit"') == 3
 
 
-def test_subgroups_are_labelled() -> None:
+def test_section_order_tracking_then_models_then_detection_display() -> None:
     html = _render()
-    for title in ("Model", "Detection", "Display", "Assisted Tracking"):
-        assert f">{title}</h3>" in html
+    pos_tracking = html.index("<h2>Tracking ")
+    pos_models = html.index("<h2>Detection Model ")
+    pos_display = html.index("<h2>Sensitivity &amp; Overlay ")
+    assert pos_tracking < pos_models < pos_display
 
 
-def test_no_dependencies_group_or_storage_field() -> None:
-    # Dependencies install/uninstall view and the Storage Path field were
-    # removed: deps come from install-detection.sh and storage is automatic.
-    html = _render(detection_extras_installed={"detection": True, "export": True})
-    assert ">Dependencies</h3>" not in html
-    assert "Uninstall" not in html
-    assert 'name="storage_path"' not in html
-    assert "/section/detection/install" not in html
-    assert "/section/detection/uninstall" not in html
-
-
-def test_pi5_performance_note_present() -> None:
+def test_tracking_is_a_three_state_segmented_radio() -> None:
     html = _render()
-    assert "workstation is recommended" in html
+    # One radiogroup with three radios, values off / assist / replace.
+    assert html.count('name="tracking_state"') == 3
+    for value in ("off", "assist", "replace"):
+        assert f'name="tracking_state" value="{value}"' in html
+    assert "seg-toggle" in html
+    # No standalone enabled checkbox or pin_marker checkbox survives.
+    assert 'name="enabled"' not in html
+    assert not re.search(r'name="pin_marker"(?!_id)', html)
 
 
-def test_available_models_are_selectable_unavailable_are_not() -> None:
-    cfg = AppConfig()
-    cfg.detection.model = "yolov8n.onnx"
-    html = _render(
-        config=cfg,
-        detection_available_models=[
-            ("yolov8n.onnx", "YOLOv8 Nano ONNX", True),
-            ("yolov8x.onnx", "YOLOv8 XLarge ONNX", False),
-        ],
-    )
-    # The available model is an <option>; the unavailable one is not offered in
-    # the dropdown (it belongs in the Download model UI instead).
-    assert 'value="yolov8n.onnx"' in html
-    assert 'value="yolov8x.onnx"' not in html
+def test_tracking_state_reflects_config_mode() -> None:
+    off_cfg = AppConfig()
+    off_cfg.detection.enabled = False
+    off_html = _render(config=off_cfg)
+    assert 'name="tracking_state" value="off" checked' in off_html
+
+    assist_cfg = AppConfig()
+    assist_cfg.detection.enabled = True
+    assist_cfg.detection.pin_mode = "assist"
+    assist_html = _render(config=assist_cfg)
+    assert 'name="tracking_state" value="assist" checked' in assist_html
+
+    replace_cfg = AppConfig()
+    replace_cfg.detection.enabled = True
+    replace_cfg.detection.pin_mode = "replace"
+    replace_html = _render(config=replace_cfg)
+    assert 'name="tracking_state" value="replace" checked' in replace_html
 
 
-def test_saved_model_not_on_disk_is_preserved() -> None:
-    cfg = AppConfig()
-    cfg.detection.model = "custom.onnx"
-    html = _render(
-        config=cfg,
-        detection_available_models=[("yolov8n.onnx", "YOLOv8 Nano ONNX", False)],
-    )
-    # No models on disk: the saved value is preserved via a hidden input so Save
-    # can't drop it, but it is NOT surfaced as a "(not on disk)" picker entry.
-    assert 'type="hidden"' in html
-    assert 'name="model"' in html
-    assert 'value="custom.onnx"' in html
-    assert "not on disk" not in html
-    assert "No models installed" in html
+def test_no_removed_fields_rendered() -> None:
+    # CLAHE, the visible inference-size select, the standalone enabled checkbox,
+    # and the pin_marker checkbox were all dropped in the refactor.
+    html = _render()
+    assert 'name="preprocess_clahe"' not in html
+    assert 'name="inference_size"' not in html
+    assert 'name="enabled"' not in html
+    assert "CLAHE" not in html
+
+
+def test_quality_tiers_are_five_yolo26_radios() -> None:
+    html = _render()
+    tier_values = re.findall(r'name="model" value="(yolo26[a-z]\.onnx)"', html)
+    assert tier_values == ["yolo26n.onnx", "yolo26s.onnx", "yolo26m.onnx", "yolo26l.onnx", "yolo26x.onnx"]
+    for label in ("Fastest", "Fast", "Balanced", "Accurate", "Most Accurate"):
+        assert f"<strong>{label}</strong>" in html
+
+
+def test_unavailable_tiers_render_disabled() -> None:
+    # No models on disk → every tier is unavailable → every radio is disabled.
+    html = _render(detection_tiers=_detection_tiers({"detection": True}, storage_path="/tmp/of-no-models"))
+    radios = re.findall(r'<input type="radio" name="model"[^>]*>', html)
+    yolo26_radios = [r for r in radios if "yolo26" in r]
+    assert len(yolo26_radios) == 5
+    assert all("disabled" in r for r in yolo26_radios)
+
+
+def test_follow_marker_select_is_replace_only() -> None:
+    html = _render()
+    assert ">Follow marker</label>" in html
+    assert 'name="pin_marker_id"' in html
+    # The Follow marker field lives inside a data-replace-only container.
+    container = html.split("data-replace-only", 1)[1].split("</div>", 1)[0]
+    assert ">Follow marker</label>" in container
+    assert 'name="pin_marker_id"' in container
+
+
+def test_follow_marker_hidden_unless_replace_selected() -> None:
+    assist_cfg = AppConfig()
+    assist_cfg.detection.enabled = True
+    assist_cfg.detection.pin_mode = "assist"
+    assist_html = _render(config=assist_cfg)
+    tag = assist_html.split("data-replace-only", 1)[1].split(">", 1)[0]
+    assert "hidden" in tag
+
+    replace_cfg = AppConfig()
+    replace_cfg.detection.enabled = True
+    replace_cfg.detection.pin_mode = "replace"
+    replace_html = _render(config=replace_cfg)
+    tag = replace_html.split("data-replace-only", 1)[1].split(">", 1)[0]
+    assert "hidden" not in tag
+
+
+def test_assisted_tracking_block_hidden_unless_assist() -> None:
+    assist_cfg = AppConfig()
+    assist_cfg.detection.enabled = True
+    assist_cfg.detection.pin_mode = "assist"
+    assist_html = _render(config=assist_cfg)
+    tag = assist_html.split("data-assist-only", 1)[1].split(">", 1)[0]
+    assert "hidden" not in tag
+
+    replace_cfg = AppConfig()
+    replace_cfg.detection.enabled = True
+    replace_cfg.detection.pin_mode = "replace"
+    replace_html = _render(config=replace_cfg)
+    tag = replace_html.split("data-assist-only", 1)[1].split(">", 1)[0]
+    assert "hidden" in tag
+
+
+def test_advanced_models_details_present() -> None:
+    # The model download / other-installed / installed-list / storage info live
+    # inside an Advanced <details> below the quality tiers.
+    html = _render()
+    assert 'class="inline-advanced"' in html
+    assert "<summary>Advanced models</summary>" in html
 
 
 def test_models_disk_readout_shown() -> None:
-    # The Models group shows free/total space + the resolved path so the
-    # operator can judge how many models fit.
     html = _render(
         detection_storage_info={
             "path": "/mnt/nvme/openfollow/yolo/models",
@@ -142,17 +194,64 @@ def test_no_installed_models_group_when_empty() -> None:
     assert ">Installed models</h3>" not in _render(detection_installed_models=[])
 
 
-def test_max_persons_lives_in_the_detection_group() -> None:
-    # Max Persons is a general-detection setting, not a Display one.
+def test_detection_and_display_groups_labelled() -> None:
     html = _render()
-    after_detection = html.split(">Detection</h3>", 1)[1]
-    detection_block = after_detection.split(">Display</h3>", 1)[0]
-    assert 'name="max_persons"' in detection_block
+    for title in ("Quality", "Sensitivity", "Overlay", "Assisted Tracking"):
+        assert f">{title}</h3>" in html
+
+
+def test_max_persons_and_confidence_use_new_labels() -> None:
+    html = _render()
+    assert "Detection sensitivity" in html
+    assert "Maximum people" in html
+    assert 'name="max_persons"' in html
+    assert 'name="confidence"' in html
+
+
+def test_advanced_motion_disclosure_holds_tuning_fields() -> None:
+    # Smoothing + Prediction + Grace period are tucked behind an "Advanced
+    # motion" expander; Follow marker + Track stay visible above it.
+    html = _render()
+    assert "<summary>Advanced motion</summary>" in html
+    advanced = html.split("<summary>Advanced motion</summary>", 1)[1]
+    for name in ("smoothing", "prediction", "grace_period_ms"):
+        assert f'name="{name}"' in advanced
+    # The always-visible motion controls live before the disclosure.
+    before = html.split("<summary>Advanced motion</summary>", 1)[0]
+    assert 'name="pin_point"' in before
+    assert 'name="pin_marker_id"' in before
+
+
+def test_follow_marker_and_track_share_a_row() -> None:
+    # Follow marker (replace-only) and Track sit in the same row--pair: the
+    # segment between this row--pair boundary and the next contains both.
+    html = _render()
+    segments = html.split("row row--pair")
+    seg = next(s for s in segments if ">Follow marker</label>" in s)
+    assert ">Track</label>" in seg
+
+
+def test_motion_labels_use_plain_language() -> None:
+    # Jargon labels renamed; underlying field names are unchanged.
+    html = _render()
+    assert ">Smoothing (0–1)</label>" in html
+    assert ">Anchor pull (0–1)</label>" in html
+    assert "Clip strength" not in html
+    assert "Smoothing / glide" not in html
+    # "Prediction" stays as the visible label by request.
+    assert ">Prediction</label>" in html
+
+
+def test_display_group_keeps_box_controls() -> None:
+    html = _render()
+    display_block = html.split(">Overlay</h3>", 1)[1]
+    assert 'name="show_boxes"' in display_block
+    assert 'name="show_labels"' in display_block
+    assert 'name="box_color"' in display_block
+    assert 'name="box_thickness"' in display_block
 
 
 def test_missing_deps_banner_points_at_install_script() -> None:
-    # A clear reason + the next step, announced to screen readers. Deps install
-    # only via install-detection.sh now, so the banner always points there.
     html = _render(detection_missing=["onnxruntime"])
     banner = html.split('role="alert"', 1)[1].split("</div>", 1)[0]
     assert "onnxruntime" in banner
@@ -164,118 +263,86 @@ def test_no_missing_deps_banner_when_nothing_missing() -> None:
     assert 'role="alert"' not in html
 
 
-def test_download_ui_is_a_single_dropdown_plus_button() -> None:
-    # One model dropdown + one Download button, not a button per model.
+def test_detection_tiers_helper_maps_labels_and_availability() -> None:
+    # Five tiers in fixed order with the published labels; availability is
+    # gated on both the extra being installed AND the .onnx being on disk.
+    tiers = _detection_tiers({"detection": True}, storage_path="/tmp/of-no-models")
+    assert [t["model"] for t in tiers] == [m for m, _label, _blurb in _DETECTION_TIERS]
+    assert [t["label"] for t in tiers] == ["Fastest", "Fast", "Balanced", "Accurate", "Most Accurate"]
+    # No files on disk → none available.
+    assert all(t["available"] is False for t in tiers)
+    # Extra not installed → none available regardless of disk.
+    no_extra = _detection_tiers({"detection": False}, storage_path="/tmp/of-no-models")
+    assert all(t["available"] is False for t in no_extra)
+
+
+def test_every_collapsible_box_carries_experimental_badge() -> None:
+    # Four collapsible boxes (Tracking, Detection Model, Sensitivity & Overlay,
+    # Detection Masks) each carry their own Experimental badge.
+    html = _render()
+    assert html.count("badge-experimental") == 4
+
+
+def test_mask_editor_canvas_visibility_does_not_use_inline_display() -> None:
+    # An inline ``display`` style on the canvas stage beats the section-collapse
+    # rule and leaves the canvas visible while the box is collapsed. The feed
+    # toggle must use a class, not ``style.display``.
+    html = _render()
+    assert "stage.style.display" not in html
+    assert "dme-hidden" in html
+
+
+def test_mask_editor_collapse_outspecifies_its_own_display_rules() -> None:
+    # The editor's ID-scoped ``display: flex`` rules (toolbar, master toggle,
+    # list) out-specify the base ``.section`` collapse rule, so the box must
+    # restate the collapse at matching specificity or those rows stay visible
+    # while collapsed.
+    html = _render()
+    assert "#detection-mask-editor.is-collapsed > :not(.section-head)" in html
+
+
+def test_draw_only_toolbar_buttons_hidden_via_class_not_attribute() -> None:
+    # The global ``button { display }`` rule (author origin) defeats the UA
+    # ``[hidden]`` rule, so the draw-only buttons must hide via the
+    # ``dme-hidden`` class, not the ``hidden`` attribute - otherwise they stay
+    # visible and clickable when no polygon is being drawn.
+    html = _render()
+    assert 'class="dme-btn dme-hidden" data-dme="finish"' in html
+    assert 'class="dme-btn dme-hidden" data-dme="cancel"' in html
+    assert 'data-dme="finish" hidden' not in html
+    assert 'data-dme="cancel" hidden' not in html
+    assert "btnFinish.classList.toggle('dme-hidden'" in html
+    assert "btnCancel.classList.toggle('dme-hidden'" in html
+
+
+def test_detection_tier_availability_reflects_on_disk(tmp_path) -> None:
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "yolo26n.onnx").write_bytes(b"x")
+    tiers = _detection_tiers({"detection": True}, storage_path=str(tmp_path))
+    by_model = {t["model"]: t["available"] for t in tiers}
+    assert by_model["yolo26n.onnx"] is True
+    assert by_model["yolo26s.onnx"] is False
+
+
+def test_all_select_tags_are_closed() -> None:
+    """Every ``<select>`` is balanced by a ``</select>``.
+
+    The test HTML parser auto-closes tags, so a missing ``</select>`` slips past
+    structural assertions while a real browser mis-parses every element after the
+    unclosed select – breaking the Pin point picker and the rest of the form.
+    Render with controlled markers + replace mode so all three selects emit.
+    """
     cfg = AppConfig()
-    cfg.detection.storage_path = "/tmp/of-store"
-    html = _render(
-        config=cfg,
-        detection_available_models=[
-            ("yolov8n.onnx", "YOLOv8 Nano ONNX", False),
-            ("yolo11x.onnx", "YOLO11 XLarge ONNX", False),
-        ],
-        detection_extras_installed={"detection": True, "export": True},
-    )
-    download_section = html.split(">Download Model</h3>", 1)[1]
-    # A select listing the unavailable models...
-    assert 'name="export_model"' in download_section
-    assert 'value="yolov8n.onnx"' in download_section
-    assert 'value="yolo11x.onnx"' in download_section
-    # ...and exactly one Download button (no per-model buttons).
-    assert download_section.count("/section/detection/export") == 1
-    assert download_section.count("Download model") == 1
-
-
-def test_download_form_shown_when_export_tools_installed() -> None:
-    # Storage is automatic now (always a valid absolute path), so the only gate
-    # on the export form is the export tools being installed.
-    html = _render(
-        detection_available_models=[("yolov8n.onnx", "YOLOv8 Nano ONNX", False)],
-        detection_extras_installed={"detection": True, "export": True},
-    )
-    download_section = html.split(">Download Model</h3>", 1)[1]
-    assert 'name="export_model"' in download_section
-
-
-def test_download_form_gated_when_export_tools_missing() -> None:
-    # Without the export tools the form is hidden and a hint points at the
-    # install script instead.
-    html = _render(
-        detection_available_models=[("yolov8n.onnx", "YOLOv8 Nano ONNX", False)],
-        detection_extras_installed={"detection": True, "export": False},
-    )
-    download_section = html.split(">Download Model</h3>", 1)[1]
-    assert 'name="export_model"' not in download_section
-    assert "install-detection.sh" in download_section
-
-
-def test_tracking_mode_is_a_segmented_toggle_not_a_dropdown() -> None:
-    cfg = AppConfig()
-    cfg.detection.pin_mode = "assist"
+    cfg.controlled_marker_ids = [0, 1]
+    cfg.detection.enabled = True
+    cfg.detection.pin_mode = "replace"
     html = _render(config=cfg)
-    assert "seg-toggle" in html
-    # The toggle is the topmost control in the Tracking box, labelled
-    # Tracking Mode, with both human-facing mode names.
-    assert ">Tracking Mode</label>" in html
-    assert "AI Assisted" in html
-    assert "Fully Automatic" in html
-    # Two radio options for the two modes, with the saved one checked.
-    assert html.count('name="pin_mode"') == 2
-    assert 'value="assist" checked' in html
-    assert '<select name="pin_mode">' not in html
+    assert html.count("<select") == html.count("</select>") >= 3
 
 
-def test_tracking_mode_toggle_precedes_pin_marker() -> None:
-    # "Move pin marker a bit down": Tracking Mode comes first in the box.
+def test_pin_point_select_renders_head_and_feet() -> None:
+    """The Pin point picker (head / feet) is present and well-formed."""
     html = _render()
-    assert html.index(">Tracking Mode</label>") < html.index('name="pin_marker"')
-
-
-def test_assisted_tracking_hidden_unless_assist_selected() -> None:
-    # The Assisted Tracking sub-block is server-rendered ``hidden`` in Fully
-    # Automatic mode and visible in AI Assisted mode; a delegated JS handler
-    # toggles it live (data-assist-only is the hook).
-    replace_cfg = AppConfig()
-    replace_cfg.detection.pin_mode = "replace"
-    replace_html = _render(config=replace_cfg)
-    block = replace_html.split("data-assist-only", 1)[1].split(">", 1)[0]
-    assert "hidden" in block
-
-    assist_cfg = AppConfig()
-    assist_cfg.detection.pin_mode = "assist"
-    assist_html = _render(config=assist_cfg)
-    block = assist_html.split("data-assist-only", 1)[1].split(">", 1)[0]
-    assert "hidden" not in block
-
-
-def test_onnx_opset_field_removed_from_export_ui() -> None:
-    cfg = AppConfig()
-    cfg.detection.storage_path = "/tmp/of-store"
-    html = _render(
-        config=cfg,
-        detection_available_models=[("yolov8n.onnx", "YOLOv8 Nano ONNX", False)],
-        detection_extras_installed={"detection": True, "export": True},
-    )
-    assert "detection-export-opset" not in html
-    assert "ONNX opset" not in html
-
-
-def test_export_image_size_field_present_in_export_ui() -> None:
-    # The export image size stays an operator field so a model can be exported
-    # at a chosen input resolution.
-    cfg = AppConfig()
-    cfg.detection.storage_path = "/tmp/of-store"
-    html = _render(
-        config=cfg,
-        detection_available_models=[("yolov8n.onnx", "YOLOv8 Nano ONNX", False)],
-        detection_extras_installed={"detection": True, "export": True},
-    )
-    assert "detection-export-imgsz" in html
-    assert "Export image size" in html
-    assert 'name="imgsz"' in html
-
-
-def test_detection_and_tracking_use_paired_rows() -> None:
-    # Dense rows are split so at most two inputs sit side by side.
-    html = _render()
-    assert "row--pair" in html
+    assert 'name="pin_point"' in html
+    assert 'value="top"' in html and 'value="bottom"' in html

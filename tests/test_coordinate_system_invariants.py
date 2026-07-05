@@ -42,10 +42,7 @@ from openfollow.input.mouse import MouseHandler
 from openfollow.psn.marker import Marker
 from openfollow.runtime.overlay_draw_scene import project
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
-from openfollow.runtime.services_detection_pin import (
-    DetectionPinState,
-    apply_detection_pin,
-)
+from openfollow.runtime.services_detection_pin import apply_detection_pin
 from openfollow.scene.solver import unproject_to_plane
 from openfollow.services import AppRuntimeServices
 from openfollow.zones.engine import ZoneEngine
@@ -139,7 +136,6 @@ def _make_app(
     camera = camera or _top_down_camera()
     detection_cfg = detection_cfg or DetectionConfig(
         enabled=True,
-        pin_marker=True,
         pin_mode="replace",
         smoothing=1.0,
         prediction=0.0,
@@ -159,6 +155,7 @@ def _make_app(
         _viewer_ids=[],
         _selected_id=None,
         _assist_manual={},
+        _detection_pin_states={},
     )
 
 
@@ -260,14 +257,22 @@ def test_mouse_click_stores_psn_absolute_position(offsets) -> None:
     """
     ox, oy, oz = offsets
     app = _make_app(_grid(ox, oy, oz))
+    app._config.controller.mouse_enabled = True
     app._server.add_marker(1).set_pos(0.0, 0.0, 0.0)
     app._controlled_ids = [1]
     app._selected_id = 1
 
+    cam = _top_down_camera()
+    cam_params = np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov])
+
     handler = MouseHandler(app)
-    # Left-click at a fixed screen point – chosen off-center so the x/y
-    # unprojection results are distinct from one another.
-    handler.on_pointer_down(800.0, 300.0, 1)
+    # Grab the marker by clicking its projected ground-circle centre, then drag
+    # the cursor to an off-centre point (x/y unprojections distinct) and let the
+    # per-frame update apply it.
+    center = project(cam_params, [(0.0, 0.0, oz)], 1280, 720)[0]
+    handler.on_pointer_down(float(center[0]), float(center[1]), 1)
+    handler.on_pointer_move(800.0, 300.0)
+    handler.update()
 
     marker = app._server.get_marker(1)
     x, y, _ = marker.pos
@@ -275,8 +280,6 @@ def test_mouse_click_stores_psn_absolute_position(offsets) -> None:
     # Compute the expected world point independently; the test asserts
     # marker.pos matches this PSN-absolute point without any offset
     # subtraction applied in mouse.py.
-    cam = _top_down_camera()
-    cam_params = np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov])
     expected = unproject_to_plane(
         cam_params,
         np.array([[800.0, 300.0]], dtype=np.float64),
@@ -314,7 +317,6 @@ def test_detection_pin_stores_psn_absolute_position(offsets, monkeypatch) -> Non
         _grid(ox, oy, oz),
         detection_cfg=DetectionConfig(
             enabled=True,
-            pin_marker=True,
             pin_mode="replace",
             smoothing=1.0,
             prediction=0.0,
@@ -333,18 +335,19 @@ def test_detection_pin_stores_psn_absolute_position(offsets, monkeypatch) -> Non
     )
 
     detector = _StubDetector(_StubDetection(0.4, 0.4, 0.6, 0.6))
-    state = DetectionPinState()
     apply_detection_pin(
         app,
         person_detector=detector,
         unproject_cam_buffer=np.zeros(7, dtype=np.float64),
         screen_point_buffer=np.zeros((1, 2), dtype=np.float64),
-        pin_state=state,
     )
 
     marker = app._server.get_marker(1)
     assert marker.pos[0] == pytest.approx(12.5)
     assert marker.pos[1] == pytest.approx(-3.75)
+    # Per-marker pin state is created on ``app._detection_pin_states`` keyed by
+    # the driven marker id – the box is attached to that marker.
+    assert app._detection_pin_states[1].attached_marker_id == 1
 
 
 # --------------------------------------------------------------------------- #

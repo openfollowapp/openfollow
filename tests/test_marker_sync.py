@@ -1173,3 +1173,59 @@ def test_entry_from_dict_non_numeric_updated_at_returns_none() -> None:
     from openfollow.marker_catalog.sync import _entry_from_dict
 
     assert _entry_from_dict({"id": 5, "updated_at": "soon"}) is None
+
+
+# --------------------------------------------------------------------------- #
+# Logical-clock fields on the wire (version / origin)
+# --------------------------------------------------------------------------- #
+
+
+def test_entry_dict_round_trips_version_and_origin() -> None:
+    from openfollow.marker_catalog.sync import _entry_from_dict, _entry_to_dict
+
+    entry = MarkerEntry(id=1, name="A", color="#ffffff", updated_at=2.0, version=7, origin="st-9")
+    raw = _entry_to_dict(entry)
+    assert raw["version"] == 7
+    assert raw["origin"] == "st-9"
+    back = _entry_from_dict(raw)
+    assert back is not None
+    assert back.version == 7
+    assert back.origin == "st-9"
+
+
+def test_entry_from_dict_defaults_missing_version_and_origin() -> None:
+    """An old-format peer omits version/origin -> 0 / "" (sorts below any edit)."""
+    from openfollow.marker_catalog.sync import _entry_from_dict
+
+    back = _entry_from_dict({"id": 1, "name": "A", "color": "#ffffff", "updated_at": 1.0})
+    assert back is not None
+    assert back.version == 0
+    assert back.origin == ""
+
+
+@pytest.mark.parametrize("bad", [True, False, "5", 1.5, None, [1]])
+def test_entry_from_dict_bad_version_coerced_to_zero(bad: object) -> None:
+    from openfollow.marker_catalog.sync import _entry_from_dict
+
+    back = _entry_from_dict({"id": 1, "name": "A", "color": "#ffffff", "version": bad})
+    assert back is not None
+    assert back.version == 0
+
+
+def test_entry_from_dict_sanitizes_origin() -> None:
+    from openfollow.marker_catalog.sync import _entry_from_dict
+
+    back = _entry_from_dict({"id": 1, "name": "A", "color": "#ffffff", "origin": "st\x00\n\x1bX"})
+    assert back is not None
+    # Control chars (NUL, LF, ESC) dropped; printable remainder kept.
+    assert back.origin == "stX"
+
+
+def test_entry_from_dict_caps_huge_version() -> None:
+    """An unbounded version from an untrusted peer is clamped to the 64-bit cap
+    so it can't poison the clock or produce spec-violating markers.toml."""
+    from openfollow.marker_catalog.sync import _entry_from_dict
+
+    back = _entry_from_dict({"id": 1, "name": "A", "color": "#ffffff", "version": 10**30})
+    assert back is not None
+    assert back.version == 2**63 - 1

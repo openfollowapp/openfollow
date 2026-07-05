@@ -39,6 +39,7 @@ from openfollow.web.validation import (
     _validate_int_list,
     _validate_ip_list,
     _validate_keybinding,
+    _validate_markers,
     _validate_model,
     _validate_multicast_ip,
     _validate_service_name,
@@ -165,6 +166,21 @@ def test_validate_range_high() -> None:
     err = validate("camera", "fov", "200")
     assert err is not None
     assert "FOV" in err
+
+
+@pytest.mark.parametrize(
+    "field,raw",
+    [("lens_k1", "0.5"), ("lens_k1", "-0.5"), ("lens_k2", "0.5"), ("lens_k2", "-0.5")],
+)
+def test_validate_lens_distortion_out_of_range(field: str, raw: str) -> None:
+    err = validate("camera", field, raw)
+    assert err is not None
+    assert "between" in err.lower()
+
+
+@pytest.mark.parametrize("field,raw", [("lens_k1", "0.1"), ("lens_k2", "-0.03")])
+def test_validate_lens_distortion_in_range_ok(field: str, raw: str) -> None:
+    assert validate("camera", field, raw) is None
 
 
 @pytest.mark.parametrize("section", ["grid", "marker"])
@@ -410,6 +426,34 @@ def test_validate_strips_leading_trailing_whitespace() -> None:
     assert validate("camera", "fov", "60") is None
 
 
+@pytest.mark.parametrize(
+    ("field", "good", "bad"),
+    [
+        ("mouse_hysteresis_px", "12", "300"),
+        ("mouse_smoothing", "0.4", "5"),
+        ("mouse_max_y", "25", "99999"),
+        ("mouse_wheel_z_step", "0.25", "50"),
+    ],
+)
+def test_validate_mouse_numeric_bounds(field: str, good: str, bad: str) -> None:
+    # The mouse partial validates against the controller rules (aliased).
+    assert validate("mouse", field, good) is None
+    assert validate("mouse", field, bad) is not None
+
+
+def test_validate_mouse_hysteresis_rejects_decimals() -> None:
+    # Hysteresis is a whole number of pixels; a decimal must be rejected.
+    assert validate("mouse", "mouse_hysteresis_px", "3.5") is not None
+    assert validate("mouse", "mouse_hysteresis_px", "5") is None
+
+
+def test_validate_mouse_smoothing_accepts_zero() -> None:
+    # 0 = instant (no smoothing) is a valid value now; only > 1 is out of range.
+    assert validate("mouse", "mouse_smoothing", "0") is None
+    assert validate("mouse", "mouse_smoothing", "1") is None
+    assert validate("mouse", "mouse_smoothing", "1.5") is not None
+
+
 def test_validate_rejects_dangerous_control_chars_but_strips_whitespace() -> None:
     # NUL is rejected (not silently cleaned) so blur matches the unsanitised
     # save path; a leading tab is whitespace → stripped → the hex still passes.
@@ -600,6 +644,19 @@ def test_validate_int_list_all_valid() -> None:
     assert _validate_int_list("0, 1, 2", None) is None
 
 
+def test_validate_markers_empty() -> None:
+    assert _validate_markers("", None) is None
+
+
+def test_validate_markers_all_valid_token_kinds() -> None:
+    assert _validate_markers("1, c2, all", None) is None
+
+
+def test_validate_markers_flags_offending_entry() -> None:
+    err = _validate_markers("1, c0", None)
+    assert err is not None and "c0" in err
+
+
 def test_validate_model_empty() -> None:
     assert _validate_model("", None) is None
 
@@ -723,6 +780,35 @@ def test_otp_source_iface_has_no_field_rule() -> None:
     assert "source_iface" not in FIELD_RULES["otp_output"]
 
 
+def test_removed_detection_fields_have_no_field_rule() -> None:
+    """``pin_marker`` and ``preprocess_clahe`` were dropped from the detection
+    config and its web form; they must not linger in the registry."""
+    from openfollow.web.validation import FIELD_RULES
+
+    assert "pin_marker" not in FIELD_RULES["detection"]
+    assert "preprocess_clahe" not in FIELD_RULES["detection"]
+
+
+def test_kept_detection_fields_still_have_field_rules() -> None:
+    """The refactor keeps these as validated fields even though the UI hides /
+    repackages some of them (``inference_size`` is auto-detected but still a
+    config field; ``pin_mode`` / ``pin_marker_id`` back the tracking box)."""
+    from openfollow.web.validation import FIELD_RULES
+
+    for field in ("inference_size", "pin_mode", "pin_marker_id"):
+        assert field in FIELD_RULES["detection"]
+
+
+def test_tracking_state_is_not_a_field_rule() -> None:
+    """``tracking_state`` is a synthetic radio that the route maps to
+    ``enabled`` + ``pin_mode``; it is never persisted directly, so it must
+    not carry a per-field blur rule (validate() returns None for unknowns)."""
+    from openfollow.web.validation import FIELD_RULES
+
+    assert "tracking_state" not in FIELD_RULES["detection"]
+    assert validate("detection", "tracking_state", "assist") is None
+
+
 @pytest.mark.parametrize(
     "section,field",
     [
@@ -843,13 +929,18 @@ def test_validate_osc_message_rejects_unclosed_quote(raw: str) -> None:
         # Connection is chosen via a destination; empty is allowed (no send).
         ("destination_id", "", False),
         ("destination_id", "dest-1", False),
-        ("marker_id", "0", False),
-        ("marker_id", "-1", True),
-        # marker_id can be empty (no default marker).
-        ("marker_id", "", False),
-        ("marker_id", "   ", False),
-        ("marker_id", "5", False),
-        ("marker_id", "bogus", True),
+        ("markers", "0", False),
+        ("markers", "1, 3, c1", False),
+        ("markers", "all", False),
+        # A valid-but-non-controlled id is ignored at runtime, not flagged.
+        ("markers", "5", False),
+        # markers can be empty (no default marker).
+        ("markers", "", False),
+        ("markers", "   ", False),
+        # Malformed tokens (negative, junk, bad alias) block.
+        ("markers", "-1", True),
+        ("markers", "bogus", True),
+        ("markers", "1, c0", True),
         # Combined ``osc_message`` field – address as first token.
         ("osc_message", "/foo/[markerId] [x] [y]", False),
         ("osc_message", "", False),

@@ -38,11 +38,12 @@ import logging
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from openfollow.configuration import (
+    MARKER_TOKEN_ALL,
     ControllerButtonTrigger,
     FaderOnChangeTrigger,
     HotkeyTrigger,
@@ -226,6 +227,12 @@ MarkerFaderProvider = Callable[[int], float | None]
 # index to the marker id it currently drives for the ``:cN`` reference, or
 # ``None`` when the controller isn't connected / drives no marker.
 ControllerMarkerProvider = Callable[[int], int | None]
+# ``controlled_markers_provider()`` returns the current
+# ``controlled_marker_ids`` snapshot. Drives the ``markers`` field's ``all``
+# token (fan-out to every controlled marker) and the controlled-only validity
+# filter on numeric tokens. Read live each tick so a hot-reload of the
+# controlled set takes effect on the next send without a manager restart.
+ControlledMarkersProvider = Callable[[], Sequence[int]]
 
 
 @dataclass(frozen=True)
@@ -355,6 +362,7 @@ class OscTransmitterManager:
         fader_provider: FaderProvider | None = None,
         marker_fader_provider: MarkerFaderProvider | None = None,
         controller_marker_provider: ControllerMarkerProvider | None = None,
+        controlled_markers_provider: ControlledMarkersProvider | None = None,
     ) -> None:
         self._service = osc_service
         self._marker_provider = marker_provider
@@ -368,6 +376,11 @@ class OscTransmitterManager:
         # ``:cN`` controller-reference provider; optional. A ``[markerid:c1]``
         # row without it raises :class:`RenderError` and skips.
         self._controller_marker_provider = controller_marker_provider
+        # ``controlled_marker_ids`` snapshot provider for the ``markers``
+        # field's ``all`` token + controlled-only validity filter. Optional:
+        # when unwired, numeric tokens pass through unfiltered and ``all``
+        # yields nothing (it can't enumerate the controlled set).
+        self._controlled_markers_provider = controlled_markers_provider
         self._lock = threading.Lock()
         self._rows: dict[str, OscTransmitter] = {}
         # Shared OSC destination profiles, staged under ``_lock``. A row's
@@ -379,12 +392,14 @@ class OscTransmitterManager:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._tick: int = 0
-        # Per-row last-sent default-marker position for ``mode ==
-        # "on_change"``. Keyed by row id so a hot-reload keeps the cache
-        # (no spurious extra send after reload). Cleared on ``restart()``
-        # when the id is dropped or its ``marker_id`` (the gate signal)
-        # changes. The gate watches only the default marker.
-        self._last_sent_pos: dict[str, tuple[float, float, float]] = {}
+        # Last-sent default-marker position for ``mode == "on_change"``.
+        # Keyed by ``(row_id, marker_id)`` so a row fanned out across several
+        # markers tracks each marker's movement independently (one marker
+        # moving doesn't suppress another's send). A hot-reload keeps the
+        # cache (no spurious extra send after reload); ``restart()`` drops
+        # entries whose row id is gone or whose ``markers`` (the gate signal)
+        # changed. The gate watches only the default marker.
+        self._last_sent_pos: dict[tuple[str, int | None], tuple[float, float, float]] = {}
         # Event-driven dispatch queue. Event handlers append plans here
         # under ``_lock``; the scheduler drains it each ``_tick_once``.
         # Keeps network I/O off the input thread.
@@ -492,7 +507,7 @@ class OscTransmitterManager:
             for row_cfg in cfg.transmitters:
                 existing = self._rows.get(row_cfg.id)
                 if existing is not None:
-                    # Editing a surviving row's ``marker_id`` (gate
+                    # Editing a surviving row's ``markers`` (gate
                     # signal) or trigger kind changes the cache entry's
                     # semantic basis – comparing the new marker position
                     # against the old cached value could wrongly skip the
@@ -503,7 +518,7 @@ class OscTransmitterManager:
                     old_cfg = existing.cfg
                     old_kind = type(old_cfg.trigger).__name__
                     new_kind = type(row_cfg.trigger).__name__
-                    if old_cfg.marker_id != row_cfg.marker_id or old_kind != new_kind:
+                    if old_cfg.markers != row_cfg.markers or old_kind != new_kind:
                         invalidate_cache.add(row_cfg.id)
                     existing.update_config(row_cfg)
                     new_rows[row_cfg.id] = existing
@@ -515,7 +530,9 @@ class OscTransmitterManager:
             # spurious next-tick send. Also drop entries flagged above
             # whose semantic basis changed.
             self._last_sent_pos = {
-                rid: pos for rid, pos in self._last_sent_pos.items() if rid in new_rows and rid not in invalidate_cache
+                key: pos
+                for key, pos in self._last_sent_pos.items()
+                if key[0] in new_rows and key[0] not in invalidate_cache
             }
             # Same pattern for the event-driven throttle cache. Rows whose
             # trigger kind or discriminator changed are also dropped
@@ -652,14 +669,19 @@ class OscTransmitterManager:
         }
 
     def _snapshot_plan_for(self, row_id: str) -> _TickPlan | None:
-        """Build a tick plan for ``row_id`` under the manager lock so the
-        diagnostics endpoints see the same atomic config snapshot the
-        scheduler does. ``None`` for an unknown row id."""
+        """Build the primary tick plan for ``row_id`` under the manager
+        lock so the diagnostics endpoints see the same atomic config
+        snapshot the scheduler does. ``None`` for an unknown row id.
+
+        A fanned-out row (multiple ``markers``) previews / test-sends its
+        primary (lowest) marker only; the live tick path still fires every
+        resolved marker."""
         with self._lock:
             row = self._rows.get(row_id)
             if row is None:
                 return None
-            return self._plan_for_row(row)
+            plans = self._plans_for_row(row)
+            return plans[0] if plans else None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -795,7 +817,7 @@ class OscTransmitterManager:
                 ticks_per_send = max(1, _SCHEDULER_HZ // trigger.rate_hz)
                 if tick % ticks_per_send != 0:
                     continue
-                plans.append(self._plan_for_row(row))
+                plans.extend(self._plans_for_row(row))
             # Drain queued event-driven plans onto this tick so they
             # render + send on the scheduler thread, not the emitting
             # input thread. The list swap under the lock is atomic.
@@ -817,19 +839,105 @@ class OscTransmitterManager:
         for plan in plans:
             self._fire_plan(plan)
 
-    def _plan_for_row(
+    def _resolve_marker_ids(self, cfg: OscTransmitterConfig) -> list[int]:
+        """Resolve a row's ``markers`` tokens to concrete marker ids.
+
+        ``all`` expands to the current ``controlled_marker_ids``; ``cN``
+        resolves via the controller-marker provider to the id that pad
+        currently drives; a numeric token is kept only when it's in the
+        controlled set. Unresolvable tokens (controller drives nothing, a
+        numeric id this station doesn't control) are dropped – the spec
+        ignores invalid ids. The result is de-duplicated and sorted
+        ascending so a fanned-out row sends lowest-id first.
+
+        When ``controlled_markers_provider`` is unwired (e.g. a bare-bones
+        test manager), numeric tokens pass through unfiltered so the
+        manager still functions; ``all`` yields nothing (it can't enumerate
+        the controlled set).
+        """
+        controlled: list[int] | None = None
+        if self._controlled_markers_provider is not None:
+            controlled = list(self._controlled_markers_provider())
+        controlled_set = set(controlled) if controlled is not None else None
+        ids: list[int] = []
+        seen: set[int] = set()
+
+        def _add(mid: int) -> None:
+            if mid not in seen:
+                seen.add(mid)
+                ids.append(mid)
+
+        for token in cfg.markers:
+            if token == MARKER_TOKEN_ALL:
+                if controlled is not None:
+                    for mid in controlled:
+                        _add(mid)
+                continue
+            if token.startswith("c"):
+                if self._controller_marker_provider is None:
+                    continue
+                resolved = self._controller_marker_provider(int(token[1:]) - 1)
+                if resolved is not None:
+                    _add(resolved)
+                continue
+            # Numeric token: keep only when controlled (or when the filter
+            # is unavailable).
+            mid = int(token)
+            if controlled_set is None or mid in controlled_set:
+                _add(mid)
+        ids.sort()
+        return ids
+
+    def _plans_for_row(
         self,
         row: OscTransmitter,
         *,
         event_value: int | None = None,
         event_velocity: int | None = None,
         event_note: int | None = None,
+    ) -> list[_TickPlan]:
+        """Fan a row out into one :class:`_TickPlan` per resolved default
+        marker. Caller holds the manager lock.
+
+        A row whose output doesn't depend on the default marker
+        (``needs_default_marker`` is False – no ``[x]`` / ``[markerid]`` /
+        ``[markerfader]``) yields a single plan regardless of how many
+        markers it names, so a constant / hotkey row doesn't emit N
+        identical packets; its plan still carries the primary (lowest)
+        marker so an ``on_change`` gate keyed to a marker keeps working. A
+        marker-dependent row with no resolvable markers yields a single
+        ``marker_id=None`` plan so the renderer surfaces the existing "no
+        default marker configured" skip.
+        """
+        ids = self._resolve_marker_ids(row.cfg)
+        if not row.needs_default_marker:
+            marker_ids: list[int | None] = [ids[0] if ids else None]
+        else:
+            marker_ids = list(ids) if ids else [None]
+        return [
+            self._build_plan(
+                row,
+                marker_id=mid,
+                event_value=event_value,
+                event_velocity=event_velocity,
+                event_note=event_note,
+            )
+            for mid in marker_ids
+        ]
+
+    def _build_plan(
+        self,
+        row: OscTransmitter,
+        *,
+        marker_id: int | None,
+        event_value: int | None = None,
+        event_velocity: int | None = None,
+        event_note: int | None = None,
     ) -> _TickPlan:
-        """Build a :class:`_TickPlan` from a row's current config and
-        compiled templates. Caller holds the manager lock – the plan
-        captures everything the renderer + service.send need so the fire
-        happens outside the lock without tearing on a concurrent
-        ``restart``.
+        """Build a :class:`_TickPlan` for ``row`` against one resolved
+        ``marker_id``. Caller holds the manager lock – the plan captures
+        everything the renderer + service.send need so the fire happens
+        outside the lock without tearing on a concurrent ``restart``.
 
         The MIDI dispatch path populates ``event_value`` /
         ``event_velocity`` / ``event_note``; other plans pass ``None``,
@@ -855,7 +963,7 @@ class OscTransmitterManager:
         # staged index is an O(1) dict lookup, not a per-row linear scan.
         dest = self._dest_index.get(cfg.destination_id)
         return _TickPlan(
-            marker_id=cfg.marker_id,
+            marker_id=marker_id,
             destination=dest,
             compiled_address=row.compiled_address,
             compiled_args=row.compiled_args,
@@ -911,7 +1019,7 @@ class OscTransmitterManager:
                     continue
                 if frozenset(trigger.modifiers) != event.modifiers:
                     continue
-                self._event_plans.append(self._plan_for_row(row))
+                self._event_plans.extend(self._plans_for_row(row))
 
     def _handle_button_event(self, event: ButtonEvent) -> None:
         """Enqueue a plan for every :class:`ControllerButtonTrigger` row
@@ -934,7 +1042,7 @@ class OscTransmitterManager:
                     continue
                 if trigger.edge != event.edge:
                     continue
-                self._event_plans.append(self._plan_for_row(row))
+                self._event_plans.extend(self._plans_for_row(row))
 
     # ------------------------------------------------------------------
     # MIDI / fader event dispatch
@@ -992,8 +1100,8 @@ class OscTransmitterManager:
                 # ``[note]`` = ``event.number``, ``[velocity]`` =
                 # ``event.value``; both ``None`` for non-note events.
                 is_note = event.type in ("note_on", "note_off")
-                self._event_plans.append(
-                    self._plan_for_row(
+                self._event_plans.extend(
+                    self._plans_for_row(
                         row,
                         event_value=event.value,
                         event_velocity=event.value if is_note else None,
@@ -1045,7 +1153,7 @@ class OscTransmitterManager:
                 if now - last < 1.0 / trigger.rate_hz:
                     continue
                 self._last_event_fire_ts[cfg.id] = now
-                self._event_plans.append(self._plan_for_row(row))
+                self._event_plans.extend(self._plans_for_row(row))
 
     def _handle_marker_fader_change(
         self,
@@ -1079,7 +1187,7 @@ class OscTransmitterManager:
                 if now - last < 1.0 / trigger.rate_hz:
                     continue
                 self._last_event_fire_ts[cfg.id] = now
-                self._event_plans.append(self._plan_for_row(row))
+                self._event_plans.extend(self._plans_for_row(row))
 
     def _explicit_marker_resolver(
         self,
@@ -1348,8 +1456,9 @@ class OscTransmitterManager:
             # Cache read under the manager lock serialises against
             # ``restart()``; released before ``service.send()`` keeps
             # network I/O off the critical path.
+            cache_key = (plan.row_id, plan.marker_id)
             with self._lock:
-                last = self._last_sent_pos.get(plan.row_id)
+                last = self._last_sent_pos.get(cache_key)
             if last is not None:
                 cur = result.default_marker_pos
                 dx = abs(cur[0] - last[0])
@@ -1390,5 +1499,5 @@ class OscTransmitterManager:
         if not is_test and result.default_marker_pos is not None:
             with self._lock:
                 if self._rows.get(plan.row_id) is plan.source_row:
-                    self._last_sent_pos[plan.row_id] = result.default_marker_pos
+                    self._last_sent_pos[(plan.row_id, plan.marker_id)] = result.default_marker_pos
         plan.ring_buffer.record_sent(result.address, list(result.args))

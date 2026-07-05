@@ -11,11 +11,12 @@ from openfollow.input.events import InputEventBus
 from openfollow.input.gamepad import GamepadHandler, GamepadUpdate
 from openfollow.input.keyboard import KeyboardHandler
 from openfollow.input.mouse import MouseHandler
+from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.osc.input import OscMarkerAdapter
 from openfollow.osc.operator_message import OperatorMessageOscAdapter
 from openfollow.runtime.services_detection_pin import (
-    assist_pinned_marker_id,
     get_or_create_manual_marker,
+    is_assist_controlled,
 )
 
 if TYPE_CHECKING:
@@ -73,6 +74,9 @@ class InputManager:
             marker_resolver=self._gamepad_marker_id,
         )
         self.mouse_handler = MouseHandler(app)
+        # The mouse glide runs every frame; a persistent failure must not flood
+        # the log at the display tick rate.
+        self._mouse_update_err_log = ThrottledExceptionLogger(logger, "Mouse update failed this tick.")
 
         osc_cfg = app._config.osc
         # Marker-position OSC input flows through the unified OSC
@@ -114,10 +118,10 @@ class InputManager:
 
         In detection **assist** mode the operator drives a manual *ghost*
         anchor instead of the registered marker (which the detection pin owns
-        as the AI-corrected output). For the assist-pinned id we return that
-        ghost so every input path – keyboard, gamepad move/reset, OSC – moves
-        the anchor with no per-call-site changes. Otherwise we return the
-        registered marker as before.
+        as the AI-corrected output). Assist refines every controlled marker, so
+        for any controlled id under assist we return that ghost so every input
+        path – keyboard, gamepad move/reset, OSC – moves the anchor with no
+        per-call-site changes. Otherwise we return the registered marker.
 
         ``app._server`` is ``PsnServer | None``; the strict type checker
         doesn't see the runtime invariant that ``init_psn`` always runs
@@ -125,7 +129,7 @@ class InputManager:
         keeps the call sites readable instead of every gamepad / OSC
         branch carrying its own ``if self.app._server is None`` skip.
         """
-        if marker_id == assist_pinned_marker_id(self.app):
+        if is_assist_controlled(self.app, marker_id):
             return get_or_create_manual_marker(self.app, marker_id)
         server = self.app._server
         # pragma: no cover – ``init_psn`` runs before ``init_input_manager``
@@ -187,6 +191,15 @@ class InputManager:
         # Keep controller hotplug and LED policy alive even when there are no
         # controlled markers. Movement application remains gated below.
         gamepad_result = self.gamepad_handler.update(dt)
+
+        # Mouse marker control glides toward the cursor target every frame so
+        # smoothing is independent of pointer-event rate. The handler no-ops
+        # when not actively grabbing a marker.
+        if self.app._config.controller.mouse_enabled:
+            try:
+                self.mouse_handler.update()
+            except Exception:
+                self._mouse_update_err_log.log()
 
         # MIDI hotplug: keep the patch-missing badge (and listener ports)
         # tracking live hardware between config saves, mirroring the gamepad

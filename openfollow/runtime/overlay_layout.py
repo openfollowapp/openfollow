@@ -142,6 +142,8 @@ def build_help_sections(
     keyboard_connected: bool,
     controller_connected: bool,
     mouse_enabled: bool = False,
+    double_click_reset: bool = True,
+    scroll_z: bool = True,
     button_labels: dict[str, str] | None = None,
     keyboard_labels: dict[str, str] | None = None,
 ) -> HelpSections:
@@ -230,11 +232,16 @@ def build_help_sections(
                 controller.append(f"{_btn('toggle_zones', 'B')}: Toggle zone overlay")
         if mouse_enabled:
             mouse = [
-                "Left click: Activate",
-                "Right click: Deactivate",
+                "Left click: Grab marker",
                 "Move: Set X/Y position",
-                "Scroll wheel: Adjust Z",
+                "Right click: Release",
             ]
+            if double_click_reset:
+                mouse.append("Double right click: Reset")
+            # The scroll wheel can't be polled on macOS, so wheel-Z is
+            # unavailable there – the caller passes scroll_z=False to hide it.
+            if scroll_z:
+                mouse.append("Scroll wheel: Adjust Z")
     elif mode == "source-selection":
         if keyboard_connected:
             keyboard = [

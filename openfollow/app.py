@@ -288,6 +288,8 @@ class OpenFollowApp:
         self._video_disconnect_deadline: float = float("inf")
         self._video_disconnect_banner_shown: bool = False
         self._video_was_connected: bool = False
+        # Settings menu is the one the startup disconnect check auto-opened.
+        self._video_disconnect_menu_open: bool = False
 
         self._psn_source_resolved_ip: str = ""
         self._psn_source_status: str = ""

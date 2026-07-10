@@ -118,6 +118,11 @@ Installed only when the corresponding extra is requested
 
 > The prebuilt `opencv-python` wheels bundle additional libraries (e.g. FFmpeg)
 > under their own licenses, including the LGPL. These are AGPLv3-compatible.
+>
+> The `detection` backend (onnxruntime + opencv) is **bundled** in the macOS app
+> and the Raspberry Pi appliance image, so detection runs offline out of the box;
+> both are permissively licensed. Only the `export` toolchain below stays out of
+> the image.
 
 ### `export`
 
@@ -130,8 +135,8 @@ Installed only when the corresponding extra is requested
 > and the web model-export action). It is **never required at runtime**: OpenFollow
 > invokes it as a separate subprocess on a workstation, never links or imports it
 > into the running program, and it is **not bundled in the appliance image** (the
-> release-time SBOM check keeps the detection extras, ultralytics included, out of
-> the bundled venv by name). Operators install it on demand on a dev machine; the
+> release-time SBOM check keeps ultralytics out of the bundled venv by name).
+> Operators install it on demand on a dev machine; the
 > show Pi never sees it. ultralytics is AGPL-3.0-or-later – the same license as
 > OpenFollow itself – so it raises no additional licensing concern where used.
 
@@ -196,14 +201,15 @@ carries each license's own obligations:
   user can build and install modified GPL/LGPL binaries (via `apt`/`dpkg`, over
   SSH, or by re-flashing) and run them on the device.
 
-**OpenFollow's optional detection feature (the `onnxruntime` / OpenCV Python
-extras) and the NDI components are not bundled in the appliance image** – the
-NDI SDK is proprietary (§6). A release-time SBOM check fails the build if the
-proprietary NDI component appears anywhere in the image, or if a detection extra
-(ultralytics / onnxruntime / OpenCV) is bundled in the venv.
-The base GStreamer stack (`gstreamer1.0-plugins-bad`) does transitively include a
+**OpenFollow's detection backend (`onnxruntime` + OpenCV) is bundled in the
+appliance image so detection runs offline; the AGPL model-export toolchain
+(`ultralytics` / `torch`) and the NDI components are not** – the NDI SDK is
+proprietary (§6). A release-time SBOM check fails the build if the proprietary
+NDI component appears anywhere in the image, or if `ultralytics` is bundled in
+the venv.
+The base GStreamer stack (`gstreamer1.0-plugins-bad`) also transitively includes a
 permissively-licensed `libonnxruntime` system library; it carries no AGPL or
-proprietary obligation and is unrelated to OpenFollow's detection feature.
+proprietary obligation and is separate from OpenFollow's own bundled backend.
 
 OpenFollow is built on Debian GNU/Linux and Raspberry Pi OS components but is
 **not affiliated with or endorsed by** the Debian Project, Raspberry Pi Ltd, or

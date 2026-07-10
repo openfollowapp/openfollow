@@ -108,10 +108,21 @@ log "stamping package version: $pep440_version"
 cp -f "$PYPROJECT" "$PYPROJECT_BAK"
 sed -i -E "0,/^version = \".*\"/s//version = \"$pep440_version\"/" "$PYPROJECT"
 
-log "installing openfollow + dependencies (base, no detection extra) ..."
 # PEP 517 build via poetry-core; pulls runtime deps from pyproject. Compiles
 # PyGObject / python-rtmidi from sdist when no wheel matches this Python.
-"$VENV/bin/pip" install "$REPO_ROOT"
+# The detection backend (onnxruntime + opencv, both permissive) is bundled so an
+# offline Pi runs detection with no pip; the heavy AGPL export toolchain
+# (torch / ultralytics) is not. Set OF_DEB_SKIP_DETECTION=1 for a base-only .deb
+# (mirrors OF_DEB_SKIP_MODELS).
+if [ "${OF_DEB_SKIP_DETECTION:-0}" = "1" ]; then
+  WITH_DETECTION=0
+  log "OF_DEB_SKIP_DETECTION=1 - installing openfollow base only (no detection backend) ..."
+  "$VENV/bin/pip" install "$REPO_ROOT"
+else
+  WITH_DETECTION=1
+  log "installing openfollow + dependencies + detection backend (onnxruntime + opencv; no torch/ultralytics) ..."
+  "$VENV/bin/pip" install "$REPO_ROOT[detection]"
+fi
 
 # PyGObject / pycairo MUST come from the OS (python3-gi, python3-gi-cairo) so
 # they match the distro's gobject-introspection typelibs + libgirepository.
@@ -146,7 +157,7 @@ done
 
 # Sanity: the package and its heavy deps must import from the bundled venv, and
 # GStreamer must load via the OS PyGObject (the exact path that broke before).
-"$VENV/bin/python" - <<'PY'
+OF_SMOKE_WITH_DETECTION="$WITH_DETECTION" "$VENV/bin/python" - <<'PY'
 import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # OS PyGObject via system site-packages
@@ -159,10 +170,29 @@ from packaging.version import Version  # noqa: F401
 # host's system site-packages (which a slim target image won't have). `packaging`
 # regressed exactly this way once: --system-site-packages let pip skip it because
 # the runner had python3-packaging. Assert it loads from inside the venv prefix.
+import importlib.util
 import os, sys
 prefix = os.path.realpath(sys.prefix)
 mod = os.path.realpath(packaging.__file__)
 assert mod.startswith(prefix + os.sep), f"packaging not bundled in venv: {mod}"
+
+# Detection backend must be bundled (import from the venv prefix); the AGPL
+# export toolchain (torch / ultralytics) must not be – the SBOM gate's boundary,
+# verified here at build time.
+if os.environ.get("OF_SMOKE_WITH_DETECTION") == "1":
+    import cv2  # noqa: F401
+    import onnxruntime
+    for probe in (onnxruntime, cv2):
+        path = os.path.realpath(probe.__file__)
+        assert path.startswith(prefix + os.sep), f"detection backend not bundled in venv: {path}"
+    # system-site-packages is on, so a global torch/ultralytics is fine; assert
+    # only that neither is bundled inside the venv (origin under the prefix).
+    for forbidden in ("torch", "ultralytics"):
+        spec = importlib.util.find_spec(forbidden)
+        origin = os.path.realpath(spec.origin) if spec and spec.origin else ""
+        assert not origin.startswith(prefix + os.sep), f"{forbidden} must not be bundled in the venv (size / AGPL): {origin}"
+    print("[build-deb] detection backend smoke OK: onnxruntime + cv2 bundled, no torch/ultralytics in venv")
+
 print("[build-deb] venv import smoke OK:", openfollow.__version__, "| Gst", Gst.version_string())
 PY
 
@@ -205,8 +235,11 @@ install -m 0755 "$DEBIAN_DIR/apply-update.sh"                     "$SHARE/apply-
 # NDI is not bundled (closed-source SDK); this helper builds + installs it
 # post-install. See https://openfollow.app/docs/ndi-install.html.
 install -m 0755 "$REPO_ROOT/scripts/install-ndi.sh"               "$SHARE/install-ndi.sh"
-# Detection deps are not bundled (torch is large + ultralytics is AGPL-3.0); this
-# helper installs them into the app venv on demand. See
+# The detection backend (onnxruntime + opencv) is bundled in the venv above, so
+# detection runs on the Pi out of the box. This helper remains for source/dev
+# installs and to add the model-export toolchain on a workstation
+# (`install-detection.sh --with-export`; torch is large + ultralytics is
+# AGPL-3.0, so neither is bundled). See
 # https://openfollow.app/docs/detection-install.html.
 install -m 0755 "$REPO_ROOT/scripts/install-detection.sh"         "$SHARE/install-detection.sh"
 # Model export script: exported ONNX models land in the detection storage

@@ -16,7 +16,7 @@
             model-export tools and an internet connection.
         </span>
 %     if not export_installed:
-        <p class="section-note">Install the model-export tools (run <code>install-detection.sh</code>) to enable downloads.</p>
+        <p class="section-note">Install the model-export tools (run <code>install-detection.sh --with-export</code>) to enable downloads.</p>
 %     end
 %     if export_installed:
         <div class="row">

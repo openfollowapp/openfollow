@@ -242,6 +242,12 @@ class Mouse3DHandler:
         # GTK-side edge-detection + speed-ramp accumulator (consumer state).
         self._prev_buttons: dict[int, bool] = {}
         self._speed_accum = 0.0
+        # Worker-side press latch: the read thread samples far faster than the
+        # frame rate, so a press+release landing entirely between two frames
+        # would be lost by level detection alone. The worker records rising edges
+        # here (its own prev-state map) and ``update`` drains them each frame.
+        self._worker_prev_buttons: dict[int, bool] = {}
+        self._pending_edges: set[int] = set()  # guarded by ``_lock``
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -385,6 +391,8 @@ class Mouse3DHandler:
         with self._lock:
             snap = self._snapshot
             cfg = self._cfg
+            pending_edges = self._pending_edges
+            self._pending_edges = set()
         if snap is None:
             return Mouse3DUpdate()
 
@@ -411,7 +419,9 @@ class Mouse3DHandler:
             # "none" -> ignore
 
         speed_steps = self._accumulate_speed(speed_signal, dt)
-        edges = self._button_edges(snap.buttons)
+        # Worker-latched presses (may include a tap already released by now) plus
+        # the current-frame level edge for a button still held at sample time.
+        edges = self._button_edges(snap.buttons) | pending_edges
         return Mouse3DUpdate(
             velocity=(vx, vy, vz),
             fader_signal=fader_signal,
@@ -456,6 +466,23 @@ class Mouse3DHandler:
         self._prev_buttons = new_prev
         return edges
 
+    def _observe_button_edges(self, buttons: tuple[int, ...]) -> set[int]:
+        """Rising edges seen on the worker thread; updates its prev-state map.
+
+        Runs at the device read rate so a between-frame tap isn't missed. The
+        prev-state map is worker-thread-only; the returned edges are latched
+        into ``_pending_edges`` under the lock by the caller.
+        """
+        edges: set[int] = set()
+        new_prev: dict[int, bool] = {}
+        for idx, value in enumerate(buttons):
+            cur = bool(value)
+            new_prev[idx] = cur
+            if cur and not self._worker_prev_buttons.get(idx, False):
+                edges.add(idx)
+        self._worker_prev_buttons = new_prev
+        return edges
+
     @staticmethod
     def _fired(button_index: int, edges: set[int]) -> bool:
         """True when a bound (``>= 0``) button index rose this frame."""
@@ -491,8 +518,11 @@ class Mouse3DHandler:
             finally:
                 with self._lock:
                     self._connected = False
-                    # Don't serve the last deflection on the next connect.
+                    # Don't serve the last deflection or a stale press on the
+                    # next connect.
                     self._snapshot = None
+                    self._pending_edges = set()
+                self._worker_prev_buttons = {}
                 _safe_close(device)
             # Reset the backoff only once a connection actually delivered a
             # reading; an open that never reads (immediate read error) backs off
@@ -565,6 +595,9 @@ class Mouse3DHandler:
                 yaw=_finite_axis(getattr(state, "yaw", 0.0)),
                 buttons=tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ())),
             )
+            # Detect button presses at read rate so a tap between two frames is
+            # latched rather than lost (prev-state map is worker-thread-only).
+            edges = self._observe_button_edges(snapshot.buttons)
             # A stop may have arrived during the read. Don't publish a now-stale
             # reading: a non-blocking ``stop()`` clears the snapshot and relies on
             # the stopping worker not writing one back before it exits.
@@ -572,6 +605,7 @@ class Mouse3DHandler:
                 return read_any
             with self._lock:
                 self._snapshot = snapshot
+                self._pending_edges.update(edges)
             if stop.wait(_POLL_S):
                 return read_any
         return read_any
@@ -675,6 +709,12 @@ class Mouse3DManager:
         infos = [deduped[path] for path in sorted(deduped)]
         wanted = set(deduped)
         with self._lock:
+            if self._stop.is_set():
+                # A ``stop()`` is in flight – it sets the event before taking this
+                # lock. Registering and starting handlers now would orphan their
+                # workers: ``stop()`` has already snapshotted the handler set and
+                # would not reap anything added here.
+                return
             to_add = [info for info in infos if info.path not in self._handlers]
             started: list[Mouse3DHandler] = []
             for info in to_add:
@@ -683,8 +723,13 @@ class Mouse3DManager:
                 started.append(handler)
             removed = [self._handlers.pop(path) for path in list(self._handlers) if path not in wanted]
             self._infos = infos
-        for handler in started:
-            handler.start()
+            # Start under the lock so a concurrent ``stop()`` can't interleave
+            # between register and start: it blocks on this lock, then its
+            # snapshot includes and reaps these handlers. ``start()`` only spawns
+            # a daemon thread (device_factory is set, so no dependency probe) and
+            # takes the handler's own lock, not this one – no deadlock.
+            for handler in started:
+                handler.start()
         for handler in removed:
             handler.stop()
 

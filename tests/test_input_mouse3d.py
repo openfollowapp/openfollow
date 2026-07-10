@@ -247,6 +247,36 @@ def test_held_button_does_not_refire_until_released() -> None:
     assert h.update(0.016).reset is True  # re-pressed -> edge again
 
 
+def test_button_tap_between_frames_still_fires() -> None:
+    # The worker samples far faster than the frame rate; a press+release that
+    # lands entirely between two frames must still fire (the worker latches the
+    # rising edge) instead of being lost to level detection.
+    h = _handler(_cfg(btn_next_marker=0))
+
+    class _TapThenStop:
+        def __init__(self, stop: object) -> None:
+            self._stop = stop
+            self.n = 0
+
+        def read(self) -> object | None:
+            self.n += 1
+            if self.n == 1:
+                return _state(buttons=[1])  # press
+            if self.n == 2:
+                return _state(buttons=[0])  # release – still before any frame samples
+            self._stop.set()
+            return None
+
+        def close(self) -> None:
+            pass
+
+    h._pump(_TapThenStop(h._stop), h._stop)
+    # The snapshot now reads released, but the tap was latched during the burst.
+    assert h.update(0.016).next_marker is True
+    # Draining is one-shot: a later frame with no new press doesn't re-fire.
+    assert h.update(0.016).next_marker is False
+
+
 def test_unbound_button_index_never_fires() -> None:
     # An explicitly unbound (-1) action never fires, whatever is pressed.
     h = _handler(_cfg(btn_toggle_zones=-1), snapshot=_state(buttons=[1, 1, 1, 1]))
@@ -1334,6 +1364,18 @@ def test_manager_disabled_does_not_start(monkeypatch) -> None:  # noqa: ANN001
         assert backend.opened == []
     finally:
         mgr.stop(wait=True)
+
+
+def test_reconcile_skips_start_when_stop_in_flight() -> None:
+    # stop() sets _stop before taking the lock; a reconcile racing behind it must
+    # not register or start handlers, or their workers would be orphaned (stop
+    # already snapshotted the handler set and would never reap them).
+    info = Mouse3DDeviceInfo(path="/dev/hidraw2", product_name="SpaceNavigator")
+    backend = _FakeBackend([info], {"/dev/hidraw2": lambda: FakeDevice([_state(x=0.5)])})
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    mgr._stop.set()  # a stop() is in flight
+    mgr._reconcile(backend, [info])
+    assert mgr._handlers == {}  # nothing registered, so nothing to orphan
 
 
 def test_two_pucks_route_to_fixed_slots(wired) -> None:  # noqa: ANN001

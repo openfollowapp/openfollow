@@ -1668,7 +1668,7 @@ def test_mouse3d_config_defaults() -> None:
     assert cfg.btn_next_marker == 0
     assert cfg.btn_prev_marker == 1
     assert cfg.btn_reset == -1
-    assert cfg.btn_settings == -1
+    assert cfg.btn_toggle_help == -1
 
 
 def test_mouse3d_form_labels_cover_every_axis_and_button() -> None:
@@ -1769,7 +1769,7 @@ def test_mouse3d_config_survives_save_reload(temp_config_path) -> None:
             map_pitch="speed",
             sens_pitch=2.5,
             invert_pan_y=True,
-            btn_settings=4,
+            btn_toggle_zones=4,
         )
     )
     save_config(config, str(temp_config_path))
@@ -1780,7 +1780,7 @@ def test_mouse3d_config_survives_save_reload(temp_config_path) -> None:
     assert reloaded.map_pitch == "speed"
     assert reloaded.sens_pitch == 2.5
     assert reloaded.invert_pan_y is True
-    assert reloaded.btn_settings == 4
+    assert reloaded.btn_toggle_zones == 4
 
 
 # RttrpmOutputConfig.__post_init__ – fps clamp

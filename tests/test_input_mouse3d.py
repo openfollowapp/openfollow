@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 import openfollow.input.input_manager as input_manager_module
+import openfollow.input.mouse3d as mouse3d_module
 from openfollow.configuration import MOUSE3D_AXES, AppConfig, MarkerConfig, Mouse3DConfig
 from openfollow.input.gamepad import GamepadUpdate
 from openfollow.input.input_manager import InputManager
@@ -217,7 +218,6 @@ def test_fader_axis_accumulates_into_signal() -> None:
         ({"btn_prev_marker": 2}, 2, "prev_marker"),
         ({"btn_toggle_help": 3}, 3, "toggle_help"),
         ({"btn_toggle_zones": 4}, 4, "toggle_zones"),
-        ({"btn_settings": 5}, 5, "settings"),
     ],
 )
 def test_button_edge_fires_bound_action(cfg_kwargs, index, attr) -> None:  # noqa: ANN001
@@ -538,6 +538,36 @@ def test_pump_reports_read_after_delivering_state() -> None:
     assert h._pump(_OneThenStop(h._stop), h._stop) is True
 
 
+def test_pump_recenters_latched_deflection_when_device_goes_silent(monkeypatch) -> None:  # noqa: ANN001
+    # A 3D mouse reports only while deflected; if the return-to-center report is
+    # dropped and the device falls silent, the worker must re-zero the latched
+    # deflection so the marker can't glide with hands off the puck. Buttons are
+    # kept (they're edge-triggered on the consumer side).
+    monkeypatch.setattr(mouse3d_module, "_RECENTER_AFTER_IDLE_S", mouse3d_module._IDLE_POLL_S)
+    h = _handler()
+
+    class _DeflectThenSilent:
+        def __init__(self, stop: object) -> None:
+            self._stop = stop
+            self.n = 0
+
+        def read(self) -> object | None:
+            self.n += 1
+            if self.n == 1:
+                return _state(x=0.9, buttons=[1])  # full +X deflection, button held
+            if self.n >= 4:
+                self._stop.set()  # end the loop after a few silent reads
+            return None  # device silent: no return-to-center report arrived
+
+        def close(self) -> None:
+            pass
+
+    h._pump(_DeflectThenSilent(h._stop), h._stop)
+    assert h._snapshot is not None
+    assert h._snapshot.is_centered()  # latched deflection re-zeroed
+    assert h._snapshot.buttons == (1,)  # button state preserved
+
+
 def test_concurrent_detect_is_serialized() -> None:
     # While one detect holds the lock, a second concurrent detect no-ops instead
     # of opening the singleton HID device a second time.
@@ -739,11 +769,31 @@ def test_enabled_mouse3d_reset_and_speed(wired) -> None:  # noqa: ANN001
 def test_mouse3d_buttons_fold_into_gamepad_result(wired) -> None:  # noqa: ANN001
     manager, app = wired
     app._config.mouse3d.enabled = True
-    manager.mouse3d_manager.next_update = Mouse3DUpdate(next_marker=True, settings=True, toggle_help=True)
+    manager.mouse3d_manager.next_update = Mouse3DUpdate(next_marker=True, toggle_zones=True, toggle_help=True)
     result = manager.update(0.016)
     assert result.next_marker_pressed is True
-    assert result.settings_open_pressed is True
+    assert result.toggle_zones_pressed is True
     assert result.toggle_help_pressed is True
+
+
+def test_get_controller_info_defaults_missing_gamepad_fields(wired) -> None:  # noqa: ANN001
+    # ``slots`` and the gamepad info list are separate snapshots; a pad added to
+    # ``joysticks`` between them appears in ``slots`` with no matching info dict.
+    # The fallback must still carry every field the stats consumer reads
+    # unconditionally, or the 4Hz stats tick KeyErrors.
+    manager, _ = wired
+    manager.gamepad_handler.joysticks = {0: object()}  # pad present in slots
+    manager.gamepad_handler.get_controller_info = lambda: []  # ...but info missing
+    info = manager.get_controller_info()
+    assert len(info) == 1
+    item = info[0]
+    assert item["name"] == ""
+    assert item["connected"] is False
+    assert item["effective_speed"] == 0.0
+    assert item["backend"] == ""
+    # Consumable exactly as publish_runtime_stats does it (must not raise).
+    float(item["effective_speed"])
+    str(item["backend"])
 
 
 def test_restart_mouse3d_enabled_reloads_and_starts(wired) -> None:  # noqa: ANN001
@@ -816,10 +866,10 @@ def test_mouse_cycling_suppressed_with_second_controller(wired) -> None:  # noqa
     manager, app = wired
     app._config.mouse3d.enabled = True
     manager.gamepad_handler.joysticks = {0: object()}  # 2 controllers
-    manager.mouse3d_manager.next_update = Mouse3DUpdate(next_marker=True, settings=True)
+    manager.mouse3d_manager.next_update = Mouse3DUpdate(next_marker=True, toggle_help=True)
     result = manager.update(0.016)
     assert result.next_marker_pressed is False  # cycling is a single-controller affordance
-    assert result.settings_open_pressed is True  # global toggles still fold
+    assert result.toggle_help_pressed is True  # global toggles still fold
 
 
 def test_disconnected_mouse_is_not_a_controller(wired) -> None:  # noqa: ANN001
@@ -1322,10 +1372,10 @@ def test_two_pucks_suppress_cycling(wired) -> None:  # noqa: ANN001
         Mouse3DDeviceInfo(path="/dev/hidraw2"),
         Mouse3DDeviceInfo(path="/dev/hidraw3"),
     ]
-    manager.mouse3d_manager.next_update = Mouse3DUpdate(next_marker=True, settings=True)
+    manager.mouse3d_manager.next_update = Mouse3DUpdate(next_marker=True, toggle_help=True)
     result = manager.update(0.016)
     assert result.next_marker_pressed is False  # 2 controllers -> cycling suppressed
-    assert result.settings_open_pressed is True  # global toggles still fold
+    assert result.toggle_help_pressed is True  # global toggles still fold
 
 
 def test_two_pucks_plus_gamepad_unified_order(wired) -> None:  # noqa: ANN001

@@ -404,8 +404,6 @@ class InputManager:
             gamepad_result.toggle_help_pressed = True
         if m3d.toggle_zones:
             gamepad_result.toggle_zones_pressed = True
-        if m3d.settings:
-            gamepad_result.settings_open_pressed = True
 
         marker_id = self._controller_marker_id(self._mouse3d_unified_idx(local_idx, slots), slots)
         if marker_id is None:
@@ -464,11 +462,17 @@ class InputManager:
                     }
                 )
             else:
+                # ``gamepad_info`` and ``slots`` are separate snapshots; a pad
+                # added to ``joysticks`` between the two appears in ``slots`` with
+                # no matching info dict. Default every field the stats consumer
+                # reads unconditionally so the empty-dict race can't KeyError it.
                 item = dict(gamepad_info.get(local_idx, {}))
                 item["controller_index"] = unified_idx
                 item["marker_id"] = marker_id
                 item.setdefault("name", "")
                 item.setdefault("connected", False)
+                item.setdefault("effective_speed", 0.0)
+                item.setdefault("backend", "")
                 out.append(item)
         return out
 

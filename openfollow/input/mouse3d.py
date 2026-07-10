@@ -47,6 +47,10 @@ _RECONNECT_MIN_S = 0.5
 _RECONNECT_MAX_S = 5.0
 _IDLE_POLL_S = 0.005
 _POLL_S = 0.004
+# A 3D mouse reports only while deflected. This long a run of silent (no-report)
+# reads means it's centered, so a latched non-zero reading is a dropped
+# return-to-center report; re-zero it before the marker glides untouched.
+_RECENTER_AFTER_IDLE_S = 0.2
 # Move-speed steps per second at full deflection for a ``speed``-mapped axis.
 _SPEED_AXIS_RATE = 6.0
 # Web "Detect" flow: how long to watch for a button press after the click, and
@@ -167,6 +171,10 @@ class _Snapshot:
     yaw: float = 0.0
     buttons: tuple[int, ...] = ()
 
+    def is_centered(self) -> bool:
+        """True when every axis is at rest (buttons ignored)."""
+        return self.x == self.y == self.z == self.roll == self.pitch == self.yaw == 0.0
+
 
 @dataclass
 class Mouse3DUpdate:
@@ -189,7 +197,6 @@ class Mouse3DUpdate:
     prev_marker: bool = False
     toggle_help: bool = False
     toggle_zones: bool = False
-    settings: bool = False
 
 
 def _finite_axis(value: Any) -> float:
@@ -416,7 +423,6 @@ class Mouse3DHandler:
             prev_marker=self._fired(cfg.btn_prev_marker, edges),
             toggle_help=self._fired(cfg.btn_toggle_help, edges),
             toggle_zones=self._fired(cfg.btn_toggle_zones, edges),
-            settings=self._fired(cfg.btn_settings, edges),
         )
 
     def _shape(self, value: float, deadzone: float, curve: str) -> float:
@@ -527,6 +533,7 @@ class Mouse3DHandler:
         failed to read (back off instead of tight-looping).
         """
         read_any = False
+        idle_s = 0.0
         while not stop.is_set():
             try:
                 state = device.read()
@@ -534,9 +541,20 @@ class Mouse3DHandler:
                 logger.info("3D Mouse read failed (disconnect?): %s", exc)
                 return read_any
             if state is None:
+                # Sustained silence means the puck is centered. Re-zero a latched
+                # non-zero reading (a dropped return-to-center report) so the
+                # marker can't glide with hands off the device; buttons are kept
+                # (they're edge-triggered on the consumer side).
+                idle_s += _IDLE_POLL_S
+                if idle_s >= _RECENTER_AFTER_IDLE_S:
+                    with self._lock:
+                        latched = self._snapshot
+                        if latched is not None and not latched.is_centered():
+                            self._snapshot = _Snapshot(buttons=latched.buttons)
                 if stop.wait(_IDLE_POLL_S):
                     return read_any
                 continue
+            idle_s = 0.0
             read_any = True
             snapshot = _Snapshot(
                 x=_finite_axis(getattr(state, "x", 0.0)),

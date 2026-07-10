@@ -54,6 +54,6 @@ Every action binds to a device button by its **index** (a whole number). Leave a
 
 **Detect** – click a binding's **Detect** button, then press the button on the device; the field fills in automatically. It works whether or not the feature is enabled, as long as the device is connected.
 
-Bindable actions: **Reset marker** (return the marker to its default position), **Next / Previous marker** (cycle the selected marker, when this is the only controller – see above), **Speed up / Speed down** (step the move-speed), **Toggle help**, **Toggle zones**, and **Settings menu**.
+Bindable actions: **Reset marker** (return the marker to its default position), **Next / Previous marker** (cycle the selected marker, when this is the only controller – see above), **Speed up / Speed down** (step the move-speed), **Toggle help**, and **Toggle zones**. The Settings menu has no 3D-mouse binding: it needs a keyboard (or gamepad) to open and navigate.
 
 **Save** – store the settings. Changes apply immediately, with no restart, but are lost on restart unless you save.

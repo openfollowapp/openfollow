@@ -130,7 +130,7 @@ def test_apply_section_data_mouse3d_roundtrips() -> None:
             "map_pan_x": "z",
             "sens_pan_x": "2.5",
             "invert_lift": True,
-            "btn_settings": "4",
+            "btn_toggle_zones": "4",
         },
     )
     assert ok is True
@@ -140,7 +140,7 @@ def test_apply_section_data_mouse3d_roundtrips() -> None:
     assert config.mouse3d.map_pan_x == "z"
     assert config.mouse3d.sens_pan_x == pytest.approx(2.5)
     assert config.mouse3d.invert_lift is True
-    assert config.mouse3d.btn_settings == 4
+    assert config.mouse3d.btn_toggle_zones == 4
 
 
 def test_as_button_index_none_is_unbound() -> None:
@@ -173,10 +173,10 @@ def test_apply_section_data_mouse3d_json_bool_button_does_not_bind_index_1() -> 
 def test_apply_section_data_mouse3d_blank_button_unbinds() -> None:
     config = AppConfig()
     config.mouse3d.btn_reset = 5  # currently bound
-    ok = apply_section_data(config, "mouse3d", {"btn_reset": "", "btn_settings": "2"})
+    ok = apply_section_data(config, "mouse3d", {"btn_reset": "", "btn_toggle_zones": "2"})
     assert ok is True
     assert config.mouse3d.btn_reset == -1  # blank clears the bind (unbound)
-    assert config.mouse3d.btn_settings == 2
+    assert config.mouse3d.btn_toggle_zones == 2
 
 
 def test_apply_section_data_mouse3d_clamps_and_falls_back() -> None:

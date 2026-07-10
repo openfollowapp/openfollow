@@ -57,7 +57,6 @@ _MOUSE3D_BTN_LABELS: tuple[tuple[str, str], ...] = (
     ("speed_down", "Speed -"),
     ("toggle_help", "Toggle help"),
     ("toggle_zones", "Toggle zones"),
-    ("settings", "Settings menu"),
 )
 
 

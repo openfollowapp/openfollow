@@ -168,7 +168,6 @@ btn_speed_up = -1
 btn_speed_down = -1
 btn_toggle_help = -1
 btn_toggle_zones = -1
-btn_settings = -1
 
 [osc]
 enabled = true

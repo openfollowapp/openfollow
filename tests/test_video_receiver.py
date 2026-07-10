@@ -316,6 +316,7 @@ class FakeInput:
         super().__init__()
         self.cleanup_calls = 0
         self.async_done_calls = 0
+        self.segment_done_calls = 0
         self.discover_results: list[list[str]] | None = None
         self.discover_calls: list[float] = []
 
@@ -333,6 +334,10 @@ class FakeInput:
 
     def on_bus_async_done(self, pipeline: Any) -> None:
         self.async_done_calls += 1
+
+    def on_bus_segment_done(self, pipeline: Any) -> bool:
+        self.segment_done_calls += 1
+        return True
 
     def cleanup(self) -> None:
         self.cleanup_calls += 1
@@ -1301,6 +1306,26 @@ class TestSaveSourceToConfig:
 # --------------------------------------------------------------------------- #
 
 
+class TestSegmentDoneLoop:
+    """``_handle_bus_segment_done`` drives the Media Gallery clip's gapless loop.
+
+    GstPipeline aggregates each sink's segment-done into one message posted by
+    the pipeline, so the receiver forwards it without per-sink filtering.
+    """
+
+    def test_segment_done_drives_the_loop(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline = FakePipeline()
+        r._handle_bus_segment_done(object())  # aggregated message; src not inspected
+        assert r._input.segment_done_calls == 1  # type: ignore[attr-defined]
+
+    def test_segment_done_without_pipeline_is_noop(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline = None
+        r._handle_bus_segment_done(object())
+        assert r._input.segment_done_calls == 0  # type: ignore[attr-defined]
+
+
 class TestReconnect:
     def test_schedule_reconnect_uses_glib_timeout_and_updates_status(self, fake_gst, fake_glib, fake_input_cls) -> None:
         r = _make_receiver(input_config={"fake_source": "cam-1"})
@@ -1535,6 +1560,27 @@ class TestBusHandling:
     ) -> None:
         r = _make_receiver(input_config={"fake_source": "cam-1"})
         r._state.connected = True
+        r._handle_bus_eos()
+        assert r._state.connected is False
+        assert fake_glib.timers
+
+    def test_handle_bus_eos_skips_reconnect_when_input_loops(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        # A looping clip handles EOS by seeking back to start; the receiver must
+        # NOT treat end-of-stream as a disconnect.
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._state.connected = True
+        r._pipeline = FakePipeline()
+        r._input.on_bus_eos = lambda _pipeline: True  # type: ignore[attr-defined]
+        fake_glib.timers.clear()
+        r._handle_bus_eos()
+        assert r._state.connected is True  # stayed connected
+        assert not fake_glib.timers  # no reconnect scheduled
+
+    def test_handle_bus_eos_reconnects_when_input_does_not_handle(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._state.connected = True
+        r._pipeline = FakePipeline()
+        r._input.on_bus_eos = lambda _pipeline: False  # type: ignore[attr-defined]
         r._handle_bus_eos()
         assert r._state.connected is False
         assert fake_glib.timers
@@ -3045,6 +3091,32 @@ class TestSwapInput:
         assert r._input is not old_input
         assert old_input.cleanup_calls == 1  # type: ignore[attr-defined]
         assert FakeState.NULL in old_pipeline.state_changes
+
+    def test_swap_clears_snapshot_and_preview_caches(
+        self,
+        fake_gst,
+        fake_glib,
+        fake_input_pair,
+        monkeypatch,
+    ) -> None:
+        # A swap must drop any cached frame from the old source so a snapshot
+        # during the new source's connect window isn't the stale old frame.
+        from openfollow.video.preview import PreviewProvider, SnapshotProvider
+
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        snap = SnapshotProvider()
+        prev = PreviewProvider()
+        snap._jpeg_bytes = b"old-stage-frame"
+        prev._jpeg_bytes = b"old-stage-frame"
+        r._snapshot_provider = snap
+        r._preview_provider = prev
+        FakeInput.create_pipeline_result = FakePipeline()
+        monkeypatch.setattr(threading, "Thread", _SyncSwapThread)
+
+        r.swap_input("fake", {"fake_source": "cam-2"})
+
+        assert snap._jpeg_bytes is None
+        assert prev._jpeg_bytes is None
 
     def test_swap_tolerates_old_pipeline_with_no_bus(
         self,

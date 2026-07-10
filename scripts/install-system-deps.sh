@@ -32,6 +32,10 @@ APT_PACKAGES=(
   gstreamer1.0-tools
   gstreamer1.0-plugins-base
   gstreamer1.0-plugins-good
+  # Required for two independent features: srtsrc (SRT input) AND webpdec /
+  # webpenc (Media Gallery WebP, via libgstwebp). Keep it even if the input
+  # pipeline ever drops SRT - the gallery still needs WebP. Pinned by
+  # tests/test_system_dependencies.py.
   gstreamer1.0-plugins-bad
   gstreamer1.0-libav
   gstreamer1.0-libcamera

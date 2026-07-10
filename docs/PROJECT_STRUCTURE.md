@@ -23,8 +23,9 @@ openfollow/              # Single unified package
 │   ├── overlay.py       # Cairo HUD renderer
 │   ├── detection.py     # Optional person detection
 │   ├── tracking.py      # ByteTrack tracker (Kalman + two-stage association)
+│   ├── media_store.py   # Media Gallery library (images/clips, storage, validation)
 │   ├── connection_status.py
-│   └── inputs/          # Pluggable input protocols (ndi/srt/rtsp/rtp/picam)
+│   └── inputs/          # Pluggable input protocols (ndi/srt/rtsp/rtp/picam/testpattern)
 ├── input/               # Keyboard/gamepad/OSC input handling
 │   ├── keyboard.py
 │   ├── gamepad.py

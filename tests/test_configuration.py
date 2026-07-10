@@ -289,31 +289,54 @@ def test_time_sync_server_coercion(value: object, expected: str) -> None:
 
 def test_default_video_source_is_testpattern() -> None:
     """A fresh install (no config, no example to bootstrap from) defaults to
-    the always-available test pattern rather than a network source. The
-    test-pattern plugin renders at 1080p by default."""
+    the always-available Media Gallery source (input_id ``testpattern``) rather
+    than a network source."""
     assert AppConfig().video_source_type == "testpattern"
 
 
-def test_default_testpattern_pattern_is_stage() -> None:
-    """A fresh install must render the stage scene, not the 50% grey debug
-    pattern. The dataclass default flips ``video_source_type`` to testpattern;
-    if the pattern default stays "grey" the device boots to a flat grey screen
-    instead of the intended stage picture."""
-    assert AppConfig().testpattern_pattern == "stage"
+def test_default_selected_media_is_stage() -> None:
+    """A fresh install must render the Stage scene, not a blank/grey screen.
+    The dataclass default selects the read-only Stage gallery item. Pinned to
+    ``media_store.DEFAULT_SELECTED_MEDIA`` so the literal in ``configuration.py``
+    can't drift from the store's canonical default."""
+    from openfollow.video import media_store
+
+    assert AppConfig().testpattern_selected_media == media_store.DEFAULT_SELECTED_MEDIA
+    assert AppConfig().testpattern_selected_media == "default:stage"
 
 
-def test_testpattern_dataclass_defaults_match_plugin_config_fields() -> None:
-    """Plugin-backed dataclass defaults must match the plugin's own
-    ``ConfigField`` defaults. If the shipped example is missing (or not
-    bootstrapped for any reason), the dataclass defaults are what actually
-    render – any drift ships a wrong out-of-box value (e.g. the grey-screen bug).
-    """
-    from openfollow.video.inputs.testpattern import TestPatternInput
+def test_selected_media_dataclass_default_matches_plugin_config_field() -> None:
+    """The plugin-backed dataclass default must match the plugin's own
+    ``ConfigField`` default. If the shipped example is missing (or not
+    bootstrapped for any reason), the dataclass default is what actually
+    renders – any drift ships a wrong out-of-box value."""
+    from openfollow.video.inputs.testpattern import MediaGalleryInput
 
-    plugin_defaults = {f.name: f.default for f in TestPatternInput.config_fields()}
-    cfg = AppConfig()
-    assert cfg.testpattern_pattern == plugin_defaults["testpattern_pattern"]
-    assert cfg.testpattern_resolution == plugin_defaults["testpattern_resolution"]
+    plugin_defaults = {f.name: f.default for f in MediaGalleryInput.config_fields()}
+    assert AppConfig().testpattern_selected_media == plugin_defaults["testpattern_selected_media"]
+
+
+@pytest.mark.parametrize("bad", [5, True, None, ["x"], {"a": 1}, 3.5])
+def test_selected_media_coerces_non_string_to_default(bad: object) -> None:
+    """A hand-edited config.toml can put a non-string here (``= 5``, ``= true``).
+    Dataclasses don't coerce, so without normalisation the value flows into
+    ``media_store.resolve`` -> ``re.match`` and raises ``TypeError`` on pipeline
+    build / ``get_source_label``. ``__post_init__`` must fall back to Stage."""
+    cfg = AppConfig(testpattern_selected_media=bad)  # type: ignore[arg-type]
+    assert cfg.testpattern_selected_media == "default:stage"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("  default:grey  ", "default:grey"),  # surrounding whitespace stripped
+        ("", "default:stage"),  # blank falls back to the Stage default
+        ("   ", "default:stage"),
+    ],
+)
+def test_selected_media_strips_and_defaults_blank(raw: str, expected: str) -> None:
+    cfg = AppConfig(testpattern_selected_media=raw)
+    assert cfg.testpattern_selected_media == expected
 
 
 # --------------------------------------------------------------------------- #

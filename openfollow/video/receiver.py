@@ -159,6 +159,7 @@ class GstNativeSinkReceiver:
             on_async_done=self._handle_bus_async_done,
             on_error=self._handle_bus_error,
             on_eos=self._handle_bus_eos,
+            on_segment_done=self._handle_bus_segment_done,
             is_placeholder_pipeline=lambda: self._state.is_placeholder_pipeline,
             get_input_display_name=lambda: self._input.display_name,
         )
@@ -446,6 +447,15 @@ class GstNativeSinkReceiver:
         self._apply_policy_overrides()
         self._source_type = source_type
         self._input_config = dict(input_config)
+
+        # Drop any cached preview/snapshot frame from the old source so a
+        # request during the new source's connect window returns "no feed"
+        # instead of the previous source's stale frame (e.g. the Setup Wizard
+        # preview after switching the video source).
+        if self._snapshot_provider is not None:
+            self._snapshot_provider.clear_cache()
+        if self._preview_provider is not None:
+            self._preview_provider.clear_cache()
 
         # Reset per-plugin state that doesn't carry over across a
         # plugin swap (sources discovered for the old type are
@@ -838,8 +848,21 @@ class GstNativeSinkReceiver:
         self._schedule_reconnect(error_message)
 
     def _handle_bus_eos(self) -> None:
+        # A looping input (Media Gallery clip) seeks back to start on EOS and
+        # reports it handled, so end-of-stream is not a disconnect for it.
+        if self._pipeline is not None and self._input.on_bus_eos(self._pipeline):
+            return
         self._state.mark_disconnected()
         self._schedule_reconnect("End of stream")
+
+    def _handle_bus_segment_done(self, message: Any) -> None:
+        # Drives a looping input's gapless loop. GstPipeline aggregates the
+        # segment-done from every sink (the video sink plus any detection /
+        # snapshot appsink) into ONE message posted by the pipeline, so this
+        # fires exactly once per loop pass regardless of sink count - no
+        # per-sink filtering is needed or wanted.
+        if self._pipeline is not None:
+            self._input.on_bus_segment_done(self._pipeline)
 
     def _on_pad_event(self, pad: Any, info: Any) -> int:
         event = info.get_event()

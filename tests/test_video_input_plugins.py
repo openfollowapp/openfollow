@@ -139,10 +139,15 @@ class TestWebUI:
         assert html.strip(), f"{plugin.__name__} produced empty HTML"
 
     def test_references_every_config_field(self, plugin: type[VideoInputBase]) -> None:
-        """Each plugin's form must expose every field it persists."""
+        """Each plugin's form must expose every field it persists, except
+        ``device_editable=False`` fields. Those are managed out-of-band (the
+        Media Gallery selection is set via its grid ``/select`` route, not a
+        form input, so it is deliberately absent from the standard form)."""
         values = {f.name: f.default for f in plugin.config_fields()}
         html = plugin.web_ui_html(values)
         for field in plugin.config_fields():
+            if not field.device_editable:
+                continue
             assert field.name in html, f"{plugin.__name__}.web_ui_html omits field {field.name!r}"
 
     def test_escapes_malicious_string_values(self, plugin: type[VideoInputBase]) -> None:

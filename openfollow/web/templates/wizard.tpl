@@ -507,8 +507,8 @@
     <div class="wizard-nav">
       <button type="button" class="secondary" onclick="wizardGo(1)">Back</button>
       <span class="spacer"></span>
-      <button type="button" class="secondary" onclick="saveWizardVideoSource()">Save</button>
-      <button type="button" class="save-btn" onclick="wizardGo(3)">Next</button>
+      <button type="button" class="secondary" onclick="saveWizardVideoSource().catch(wizardVideoSaveFailed)">Save</button>
+      <button type="button" class="save-btn" onclick="saveWizardVideoSource().then(function(){ wizardGo(3); }).catch(wizardVideoSaveFailed)">Save &amp; Next</button>
     </div>
   </div>
 </div>
@@ -2113,8 +2113,9 @@
     }
   }
 
-  window.loadSnapshot = function() {
-    fetch('/api/video/snapshot/full').then(function(r) {
+  window.loadSnapshot = function(attempt) {
+    attempt = attempt || 0;
+    fetch('/api/video/snapshot/full?t=' + Date.now()).then(function(r) {
       if (!r.ok) throw new Error('No feed');
       return r.blob();
     }).then(function(blob) {
@@ -2135,7 +2136,13 @@
       };
       img.src = nextUrl;
     }).catch(function() {
-      showNoFeed();
+      // A just-changed source may still be connecting – retry briefly so the
+      // new feed appears on its own, without a manual Refresh Image.
+      if (attempt < 6) {
+        setTimeout(function() { loadSnapshot(attempt + 1); }, 700);
+      } else {
+        showNoFeed();
+      }
     });
   };
 
@@ -3552,15 +3559,21 @@
       });
     }
 
-    fetch('/section/video_source', { method: 'POST', body: formData })
+    // Returns the fetch promise so callers can chain navigation AFTER the save
+    // resolves (Save & Next must not advance while the old source is still
+    // active). Rejects on a failed save so the caller's .catch can surface it
+    // without advancing.
+    return fetch('/section/video_source', { method: 'POST', body: formData })
     .then(function(r) {
       if (!r.ok) throw new Error('Save failed');
       var msgEl = document.getElementById('wizard-video-saved');
       msgEl.textContent = 'Video source saved.';
       msgEl.style.display = 'block';
-    }).catch(function() {
-      alert('Failed to save video source. Please try again.');
     });
+  };
+
+  window.wizardVideoSaveFailed = function() {
+    alert('Failed to save video source. Please try again.');
   };
 
   // ---------------------------------------------------------------

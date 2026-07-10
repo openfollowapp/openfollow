@@ -75,6 +75,15 @@ class TestPreviewProviderSnapshot:
         pp._timestamp = time.monotonic()
         assert pp.get_snapshot() == b"\xff\xd8test"
 
+    def test_clear_cache_drops_frame(self) -> None:
+        pp = PreviewProvider()
+        pp._jpeg_bytes = b"\xff\xd8old"
+        pp._timestamp = time.monotonic()
+        pp.clear_cache()
+        assert pp._jpeg_bytes is None
+        assert pp._timestamp == 0.0
+        assert pp.get_snapshot() is None
+
     def test_get_snapshot_returns_none_when_stale(self) -> None:
         pp = PreviewProvider()
         pp._jpeg_bytes = b"\xff\xd8test"
@@ -207,6 +216,12 @@ class TestSnapshotProviderConcurrency:
     def test_get_snapshot_without_appsink_returns_none(self) -> None:
         sp = SnapshotProvider()
         assert sp.get_snapshot() is None
+
+    def test_clear_cache_drops_frame(self) -> None:
+        sp = SnapshotProvider()
+        sp._jpeg_bytes = b"\xff\xd8old"
+        sp.clear_cache()
+        assert sp._jpeg_bytes is None
 
 
 class _FakeValve:

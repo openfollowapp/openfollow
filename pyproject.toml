@@ -41,7 +41,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-detection = ["onnxruntime>=1.17", "opencv-python>=4.8"]
+detection = ["onnxruntime>=1.17", "opencv-python>=5.0.0.93"]
 # Model export tooling: converts YOLO ``.pt`` weights to the ONNX models the
 # detector runs. Pulls torch, so it's a workstation-only extra, never required
 # at show time. Used by ``scripts/export_onnx.py`` and the web model-export

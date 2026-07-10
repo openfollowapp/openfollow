@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="openfollow/web/static/openfollow.svg" alt="OpenFollow" width="300" />
+  <img src="docs/openfollow-banner.svg" alt="OpenFollow" width="440" />
 </p>
 
 <p align="center">
@@ -125,26 +125,34 @@ into the app. Download the artifact for your board from the
 
 Open the Web UI at `http://<pi-ip>:80` to configure it.
 
-### Option 2: install the `.deb` package (other Pi models)
+### Option 2: install the `.deb` package (other Pi models, or an x86_64 PC)
 
-Needs internet so `apt` can pull the package's system dependencies.
+Needs internet so `apt` can pull the package's system dependencies. Works on a Pi
+(`arm64`) and on a commodity x86_64 box – mini-PC, NUC, or laptop – (`amd64`). Two
+requirements: the package bundles a **Python 3.13** venv, so the host must be
+**Debian 13 (Trixie)** or a derivative on the same Python (Raspberry Pi OS is
+Trixie-based) – Ubuntu 24.04 / Debian 12 ship an older Python and will refuse to
+install; and it runs a **fullscreen display kiosk**, so the machine needs a GPU +
+monitor (a headless server or VM has no display for it to drive).
 
-1. Flash **Raspberry Pi OS Lite (64-bit)** with **Raspberry Pi Imager** (enable SSH
-   and create a user), boot the Pi, and SSH in.
-2. Download the `openfollow_<version>_arm64.deb` package from the latest [release](https://github.com/openfollowapp/openfollow/releases) onto the Pi (e.g.
-   `wget <asset-url>`).
+1. Prepare the host: flash the latest **Raspberry Pi OS Lite (64-bit)** with
+   **Raspberry Pi Imager** (enable SSH and create a user), boot the Pi, and SSH in
+   – or, on an x86_64 machine, install **Debian 13 (Trixie)** 64-bit.
+2. Download the `openfollow_<version>_<arch>.deb` package for your host (`arm64`
+   for a Pi, `amd64` for an x86_64 PC) from the latest [release](https://github.com/openfollowapp/openfollow/releases)
+   (e.g. `wget <asset-url>`).
 
-   (Each release also ships a signed `openfollow_<version>_arm64.ofupdate` bundle –
+   (Each release also ships a signed `openfollow_<version>_<arch>.ofupdate` bundle –
    that one is for the in-app updater; for a manual install grab the `.deb`.)
 3. Install it:
 
    ```bash
    sudo apt update
    sudo apt upgrade -y
-   sudo apt install -y ./openfollow_*_arm64.deb
+   sudo apt install -y ./openfollow_*.deb
    ```
 
-Open the Web UI at `http://<pi-ip>:80` to configure it.
+Open the Web UI at `http://<host-ip>:80` to configure it.
 
 ### Updating OpenFollow
 
@@ -223,6 +231,10 @@ poetry install
 poetry run openfollow
 ```
 
+> On macOS the on-device **Settings → Open Web UI** action opens the running web
+> UI in your default browser (the embedded overlay used on Linux/Pi isn't
+> available on macOS). The UI is also reachable from any browser on the LAN.
+
 #### Troubleshooting
 
 - **`poetry install` fails with `EnvCommandError` (macOS / pyenv).** If the
@@ -283,6 +295,28 @@ gst-inspect-1.0 ndisrc          # should print the element
 ```
 
 Then pick **NDI** as the video source in the Web UI (or press `N` on-device).
+
+</details>
+
+<details>
+<summary><b>Optional: build a macOS .dmg</b></summary>
+
+Package the dev tree into a self-contained `.app` / `.dmg` (bundles Python, the
+GTK/GStreamer stack, and the detection + export toolchains, so it runs on a clean
+Mac). Requires the dev setup above plus `brew install librsvg create-dmg`:
+
+```bash
+make dmg    # -> dist/OpenFollow-<version>-<arch>.dmg
+```
+
+The output is single-arch and large (~2-2.5 GB, torch is bundled). The app is
+ad-hoc signed, not notarized, so clear Gatekeeper's quarantine flag on first run:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/OpenFollow.app"   # or right-click -> Open
+```
+
+See [docs/PACKAGING.md](docs/PACKAGING.md#macos-dmg-developer-build) for details.
 
 </details>
 
@@ -394,13 +428,13 @@ brew install ansible
 sudo apt install -y ansible
 ```
 
-Then, from your workstation (Linux/macOS), run the installer directly against the Pi (no inventory file required):
+Then, from your workstation (Linux/macOS), run the installer directly against the Pi (no inventory file required). Run the command from the repository root, and use an existing SSH account on the Pi (usually `pi` on Raspberry Pi OS):
 
 ```bash
 ansible-playbook -i '<pi-ip>,' -u pi scripts/ansible/install-raspberry-pi.yml
 ```
 
-Replace `<pi-ip>` with your Raspberry Pi’s IP address.
+Replace `<pi-ip>` with your Raspberry Pi’s IP address. If you paste the command from a rich-text source, make sure the quotes are plain ASCII `'` characters, not curly quotes.
 
 If you need password-based SSH/sudo on first boot, add:
 
@@ -500,8 +534,11 @@ Use this only if you can’t (or don’t want to) use Ansible.
      gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
      gstreamer1.0-libav gstreamer1.0-libcamera gstreamer1.0-gtk3 \
      cage seatd kanshi \
-     libcairo2-dev libgirepository-2.0-dev
+     libcairo2-dev libgirepository-2.0-dev \
+     libhidapi-hidraw0
    ```
+
+   > ``libhidapi-hidraw0`` is the HID backend for the optional **3D Mouse** (3Dconnexion 6DOF) input. The device is off by default; to use it, the OpenFollow service user must be in the ``plugdev`` group and the udev rule ``packaging/udev/99-openfollow-3dmouse.rules`` must be installed to ``/lib/udev/rules.d/`` (then ``sudo udevadm control --reload && sudo udevadm trigger``) so the ``/dev/hidraw*`` node is group-accessible. The ``.deb`` / image install does this automatically; for a source install, copy the rule yourself. On macOS for development, ``brew install hidapi``.
 
    > ``gir1.2-webkit2-4.1`` powers the on-device "Open Web UI" Settings menu item (issue #184 PR 4). On older Debian / Raspberry Pi OS releases the package is named ``gir1.2-webkit2-4.0`` instead – either works, the runtime tries 4.1 first and falls back to 4.0. If neither is installed the menu item disables itself and the rest of the app continues normally.
 

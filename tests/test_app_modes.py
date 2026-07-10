@@ -71,6 +71,8 @@ class TestAdjustMoveSpeed:
                 self._speed_key_last_t: dict[int, float] = {}
                 self._speed_key_streak: dict[int, int] = {}
                 self._speed_key_last_dir: dict[int, int] = {}
+                self._marker_speeds_dirty = False
+                self._marker_speeds_dirty_since = 0.0
                 # Seed the per-marker entry to the test's starting speed so
                 # the first ``adjust_move_speed`` call has a defined base.
                 if selected_id is not None:
@@ -168,6 +170,22 @@ class TestAdjustMoveSpeed:
         adjust_move_speed(app, +1)
         assert app._config.marker_move_speeds == {}
         assert app._speed_key_streak == {}
+
+    def test_marks_dirty_with_edit_timestamp(self, monkeypatch) -> None:
+        """A speed edit marks the config dirty and stamps the edit time so the
+        housekeeping loop can flush it after the settle window."""
+        app = self._make_app(move_speed=1.0)
+        monkeypatch.setattr(time, "monotonic", lambda: 123.0)
+        adjust_move_speed(app, +1)
+        assert app._marker_speeds_dirty is True
+        assert app._marker_speeds_dirty_since == 123.0
+
+    def test_no_selection_does_not_mark_dirty(self) -> None:
+        """A no-op call (no marker resolved) must not mark the config dirty –
+        there is nothing to persist."""
+        app = self._make_app(move_speed=1.0, selected_id=None)
+        adjust_move_speed(app, +1)
+        assert app._marker_speeds_dirty is False
 
     def test_explicit_marker_id_overrides_selection(self) -> None:
         """``marker_id`` passed by the gamepad bumper resolver overrides
@@ -337,6 +355,15 @@ class TestSettingsMenu:
         exit_settings_menu(app)
         assert app._settings_menu_banner == ""
 
+    def test_exit_clears_video_disconnect_menu_flag(self) -> None:
+        """Exiting resets the auto-opened bookkeeping so the disconnect
+        check doesn't keep managing a menu the operator has closed."""
+        app = self._make_app()
+        app._video_disconnect_menu_open = True
+        enter_settings_menu(app, banner="X")
+        exit_settings_menu(app)
+        assert app._video_disconnect_menu_open is False
+
     def test_key_navigation_and_confirm_network(self) -> None:
         """Default selection is the Network entry. Enter opens the
         Network screen directly."""
@@ -352,9 +379,14 @@ class TestSettingsMenu:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        import sys as _sys
+
         from openfollow.runtime import webkit_browser
 
+        # Linux-only gating: Open Web UI (3) disables without the WebKit2 typelib.
+        # macOS opens the default browser, so its row is always enabled there.
         monkeypatch.setattr(webkit_browser, "AVAILABLE", False)
+        monkeypatch.setattr(_sys, "platform", "linux")
         app = self._make_app(has_controller=False, has_source_selection=False)
         enter_settings_menu(app)
         # Menu order: 0 Network, 1 Change Video Source, 2 Button Detection
@@ -419,15 +451,46 @@ class TestSettingsMenu:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """Off macOS, confirming Open Web UI mounts the embedded overlay."""
+        import sys as _sys
+
         from openfollow.runtime import webkit_browser
 
         monkeypatch.setattr(webkit_browser, "AVAILABLE", True)
+        monkeypatch.setattr(_sys, "platform", "linux")
         app = self._make_app()
         enter_settings_menu(app)
         app._settings_menu_index = 3  # Open Web UI
         handle_key_press(app, "Enter")
         assert app._browser_entered is True
         assert app._settings_menu_active is False
+
+    def test_confirm_open_web_ui_opens_default_browser_on_mac(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """On macOS, confirming Open Web UI launches the system default browser
+        via ``open`` instead of the (unavailable) embedded overlay."""
+        import sys as _sys
+
+        from openfollow.runtime import app_modes
+
+        monkeypatch.setattr(_sys, "platform", "darwin")
+        captured: dict[str, list[str]] = {}
+        monkeypatch.setattr(
+            app_modes.subprocess,
+            "run",
+            lambda argv, **_kw: captured.__setitem__("argv", argv) or SimpleNamespace(returncode=0),
+        )
+        app = self._make_app()
+        app._web_server = None
+        enter_settings_menu(app)
+        app._settings_menu_index = 3  # Open Web UI
+        handle_key_press(app, "Enter")
+        assert app._browser_entered is False
+        assert app._settings_menu_active is False
+        assert captured["argv"][0] == "open"
+        assert captured["argv"][1].startswith("http://127.0.0.1")
 
     def test_confirm_network_opens_screen_directly(self) -> None:
         """Network entry opens the Network screen; legacy iface picker merged into it."""

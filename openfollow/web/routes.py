@@ -50,8 +50,11 @@ if TYPE_CHECKING:
 from openfollow.configuration import (
     DEFAULT_UPDATE_SERVICE_NAME,
     MARKER_TOKEN_ALL,
+    MOUSE3D_AXES,
+    MOUSE3D_BUTTON_FIELDS,
     VALID_BUTTON_NAMES,
     AppConfig,
+    DetectionMaskConfig,
     OscDestinationConfig,
     OscTransmitterConfig,
     TriggerZoneConfig,
@@ -166,6 +169,7 @@ VALID_SECTIONS = {
     "gamepad",
     "keyboard",
     "mouse",
+    "mouse3d",
     "osc",
     "operator_messages",
     "detection",
@@ -269,6 +273,7 @@ _SECTION_CONFIG_ATTRS = {
     "gamepad": "controller",
     "keyboard": "controller",
     "mouse": "controller",
+    "mouse3d": "mouse3d",
     "osc": "osc",
     "operator_messages": "operator_messages",
     "detection": "detection",
@@ -448,6 +453,38 @@ _DETECTION_MODEL_CATALOGUE: tuple[tuple[str, str], ...] = (
     ("yolo26l.onnx", "YOLO26 Large ONNX"),
     ("yolo26x.onnx", "YOLO26 XLarge ONNX"),
 )
+
+# The quality tiers shown as the primary model picker. Each is a YOLO26 size,
+# pre-shipped with the app, abstracted to a plain speed↔accuracy label so a
+# non-technical operator picks a quality level rather than a model filename.
+# Ordered fastest→most-accurate.
+_DETECTION_TIERS: tuple[tuple[str, str, str], ...] = (
+    ("yolo26n.onnx", "Fastest", "Lowest compute, best for a Pi"),
+    ("yolo26s.onnx", "Fast", "Light, quick on modest hardware"),
+    ("yolo26m.onnx", "Balanced", "Good accuracy and speed"),
+    ("yolo26l.onnx", "Accurate", "Sharper, needs a workstation"),
+    ("yolo26x.onnx", "Most Accurate", "Best accuracy, heaviest compute"),
+)
+
+
+def _detection_tiers(extras: dict[str, bool], *, storage_path: str = "") -> list[dict[str, Any]]:
+    """Return the quality tiers for the picker: name, model, blurb, availability.
+
+    A tier is ``available`` only when the ``detection`` (onnxruntime) extra is
+    installed AND its ``.onnx`` is on disk – tiers not pre-shipped on this
+    platform (Large / XLarge on a Pi) render disabled with a download hint.
+    """
+    onnx_installed = extras.get("detection", False)
+    on_disk = _discover_storage_models(storage_path)
+    return [
+        {
+            "model": model,
+            "label": label,
+            "blurb": blurb,
+            "available": onnx_installed and model in on_disk,
+        }
+        for model, label, blurb in _DETECTION_TIERS
+    ]
 
 
 def _resolved_models_dir(storage_path: str) -> Path:
@@ -633,6 +670,25 @@ def _detection_export_script() -> Path | None:
     return None
 
 
+def _build_export_argv(pt_model: str, imgsz: int, opset: int, models_dir: Path) -> list[str] | None:
+    """Build the model-export subprocess argv, or ``None`` if export can't run.
+
+    In a frozen bundle ``sys.executable`` is the app itself (not a Python
+    interpreter) and ``export_onnx.py`` isn't on disk, so re-exec the app in
+    export mode: the bundle launcher routes a leading ``--export`` to
+    ``export_onnx``. From a source checkout / appliance, run the script with the
+    venv interpreter. Returns ``None`` only in the non-frozen case where the
+    script can't be located.
+    """
+    export_args = [pt_model, "--imgsz", str(imgsz), "--opset", str(opset), "--output-dir", str(models_dir)]
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--export", *export_args]
+    export_script = _detection_export_script()
+    if export_script is None:
+        return None
+    return [sys.executable, str(export_script), *export_args]
+
+
 def _coerce_export_imgsz(raw: str, default: int) -> int:
     """Coerce + snap the export image size to a multiple of 32 in [160, 1280].
 
@@ -740,6 +796,33 @@ def _build_input_template_data(cfg: AppConfig) -> dict[str, Any]:
     }
 
 
+def _deb_update_supported() -> bool:
+    """Whether the in-app signed-.deb updater can run on this host.
+
+    The updater installs via dpkg/systemd, which only exist on the Linux (Pi)
+    target, so the Software Update section, banner, and footer flag are hidden
+    everywhere else. Single source of truth for the index and section-reload
+    render paths so their platform gate can't drift.
+    """
+    return sys.platform.startswith("linux")
+
+
+def _footer_update_context(server: ConfigWebServer) -> dict[str, Any]:
+    """base.tpl footer "Update available" flag context.
+
+    Spread into every authenticated full-page render so the indicator isn't
+    limited to the config landing page – an update is most often discovered by
+    the online-sync worker while the operator is still in the Setup Wizard.
+    Pre-auth pages (login / about) deliberately omit it: they expose no state.
+    """
+    latest = server.get_update_available()
+    return {
+        "update_supported": _deb_update_supported(),
+        "update_available": bool(latest),
+        "latest_version": latest,
+    }
+
+
 def _build_general_template_data(
     server: ConfigWebServer,
     cfg: AppConfig,
@@ -762,9 +845,13 @@ def _build_general_template_data(
         "update_status": server.get_update_status(),
         "network_state": server.get_network_state(),
         "current_version": openfollow.__version__,
+        "update_supported": _deb_update_supported(),
     }
     if update_feedback:
         data["update_feedback"] = update_feedback
+    latest = server.get_update_available()
+    data["update_available"] = bool(latest)
+    data["latest_version"] = latest
     return data
 
 
@@ -958,6 +1045,8 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
     # protect crafted POSTs. See "Validation contract" in CLAUDE.md.
     if section in ("controller", "gamepad", "keyboard", "mouse"):
         cfg.controller.__post_init__()
+    elif section == "mouse3d":
+        cfg.mouse3d.__post_init__()
     elif section == "grid":
         cfg.grid.__post_init__()
     elif section == "camera":
@@ -1170,6 +1259,29 @@ def _as_positive_int(value: Any, default: int) -> int:
     """Like ``_as_int`` but clamps to ``>= 1``. For fields that divide by the value."""
     result = _as_int(value, default)
     return result if result >= 1 else 1
+
+
+def _as_button_index(value: Any, default: int) -> int:
+    """Parse a device button index where blank means "unbound" (-1).
+
+    A cleared field (``None`` / empty / whitespace) maps to the ``-1`` unbound
+    sentinel regardless of the prior value, so clearing a binding actually
+    unbinds it. Non-numeric junk falls back to ``default`` (the validate path
+    passes a sentinel here to surface a type error). For 3D Mouse button binds.
+    """
+    # Guard ``bool`` before ``int`` (``bool`` is an ``int`` subclass, so a JSON
+    # ``true`` would otherwise become index 1). Mirrors ``_coerce_int`` so the
+    # JSON/peer path and a hand-edited TOML agree on rejecting it.
+    if isinstance(value, bool):
+        return default
+    if value is None:
+        return -1
+    if isinstance(value, str) and not value.strip():
+        return -1
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
 
 
 def _as_optional_int(value: Any, default: int | None) -> int | None:
@@ -1437,6 +1549,21 @@ _SECTION_FIELD_PARSERS["gamepad"] = _SECTION_FIELD_PARSERS["controller"]
 _SECTION_FIELD_PARSERS["keyboard"] = _SECTION_FIELD_PARSERS["controller"]
 _SECTION_FIELD_PARSERS["mouse"] = _SECTION_FIELD_PARSERS["controller"]
 
+# 3D Mouse: built from the shared axis / button constants so the parser map
+# can't drift from the dataclass fields. Mirrored by FIELD_RULES["mouse3d"].
+_mouse3d_parsers: dict[str, _FieldParser] = {
+    "enabled": _as_bool,
+    "curve": _as_str,
+}
+for _axis in MOUSE3D_AXES:
+    _mouse3d_parsers[f"map_{_axis}"] = _as_str
+    _mouse3d_parsers[f"sens_{_axis}"] = _as_float
+    _mouse3d_parsers[f"deadzone_{_axis}"] = _as_float
+    _mouse3d_parsers[f"invert_{_axis}"] = _as_bool
+for _btn in MOUSE3D_BUTTON_FIELDS:
+    _mouse3d_parsers[_btn] = _as_button_index
+_SECTION_FIELD_PARSERS["mouse3d"] = _mouse3d_parsers
+
 
 _TRIGGER_ZONES_FIELD_PARSERS: dict[str, _FieldParser] = {
     "enabled": _as_bool,
@@ -1512,6 +1639,22 @@ def _apply_zone_fields(zone: TriggerZoneConfig, data: Mapping[str, Any]) -> None
     if "triggered_by" in data:
         zone.triggered_by = _parse_triggered_by(data["triggered_by"], zone.triggered_by)
     zone.__post_init__()
+
+
+def _apply_mask_fields(mask: DetectionMaskConfig, data: Mapping[str, Any]) -> None:
+    """Apply a subset of fields from ``data`` to a detection mask.
+
+    Mirrors :func:`_apply_zone_fields`: absent keys are left untouched so a
+    partial PUT can toggle ``enabled`` without wiping the polygon. ``vertices``
+    reuses the shared parser (normalised 0-1 frame coords).
+    """
+    if "name" in data:
+        mask.name = _as_str(data["name"], mask.name)
+    if "enabled" in data:
+        mask.enabled = _as_bool(data["enabled"], mask.enabled)
+    if "vertices" in data:
+        mask.vertices = _parse_vertices(data["vertices"], mask.vertices)
+    mask.__post_init__()
 
 
 # Per-row OSC binding form parsers, top-level fields only. The trigger
@@ -2029,7 +2172,6 @@ _DETECTION_FIELD_PARSERS: dict[str, _FieldParser] = {
     "enabled": _as_bool,
     "model": _as_str,
     "storage_path": lambda value, default: _as_str(value, default).strip(),
-    "preprocess_clahe": _as_bool,
     "confidence": _as_float,
     "interval_ms": _as_int,
     "show_boxes": _as_bool,
@@ -2037,7 +2179,6 @@ _DETECTION_FIELD_PARSERS: dict[str, _FieldParser] = {
     "box_color": _as_str,
     "box_thickness": _as_int,
     "max_persons": _as_int,
-    "pin_marker": _as_bool,
     "pin_marker_id": _as_int,
     "smoothing": _as_float,
     "prediction": _as_float,
@@ -2087,11 +2228,15 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     ``web_pin`` is the login credential – stripped so it never travels in
     cleartext. ``detection.storage_path`` is an absolute path that only makes
     sense on this host (a path from another machine would be unwritable here),
-    so it is stripped too. On import an absent value keeps the current one
-    (``_apply_import_data`` restores both), so the round-trip can't clear them.
+    so it is stripped too. ``marker_move_speeds`` is device-local and
+    runtime-authoritative, so it is dropped as well. On import an absent value
+    keeps the current one (``_apply_import_data`` restores them), so the
+    round-trip can't clear them.
     """
     d = asdict(cfg)
     d.pop("web_pin", None)
+    # Device-local, runtime-authoritative per-marker speeds never leave this box.
+    d.pop("marker_move_speeds", None)
     # ``detection`` is always present (asdict of a dataclass field); drop the
     # host-local storage path so it never travels to another machine.
     d["detection"].pop("storage_path", None)
@@ -3748,12 +3893,33 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         data.update(_build_input_template_data(cfg))
         return template("partials/video_source", **data)
 
-    def _save_section_from_form(section: str, *, bool_fields: tuple[str, ...] = ()) -> AppConfig:
+    def _load_config_for_edit() -> AppConfig:
+        """Fresh disk load with the live per-marker move speeds overlaid.
+
+        The disk copy doesn't know the runtime R/T + gamepad-bumper speeds, so an
+        operator-local section save would otherwise write stale speeds. Overlaying
+        the live values makes the write faithful and the subsequent hot-reload a
+        no-op for that (device-local, runtime-authoritative) field.
+        """
+        cfg = load_config(server.config_path)
+        speeds = server.get_marker_move_speeds()
+        if speeds:
+            cfg.marker_move_speeds = dict(speeds)
+        return cfg
+
+    def _save_section_from_form(
+        section: str,
+        *,
+        bool_fields: tuple[str, ...] = (),
+        extra_fields: dict[str, Any] | None = None,
+    ) -> AppConfig:
         form_data = dict(request.forms)
         for field_name in bool_fields:
             form_data[field_name] = field_name in request.forms
+        if extra_fields:
+            form_data.update(extra_fields)
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _load_config_for_edit()
             # In imperial mode, length/speed fields arrive as imperial
             # strings ("5 ft 6 in"). Rewrite to canonical metric before the
             # metric-only section parsers run, so storage stays metric.
@@ -3901,10 +4067,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # index.tpl includes the General partial directly, so the initial
             # render must supply the Software Update section's version label.
             current_version=openfollow.__version__,
+            # Update-available banner (General section) + footer flag (base.tpl);
+            # read once so the flag and version label can't disagree mid-render.
+            **_footer_update_context(server),
             button_names=sorted(VALID_BUTTON_NAMES),
             detection_missing=_get_detection_missing_deps(config),
             detection_extras_installed=extras,
             detection_install=server.get_detection_install_status(),
+            detection_tiers=_detection_tiers(extras, storage_path=config.detection.storage_path),
             detection_available_models=_available_models(
                 extras,
                 config.detection.model,
@@ -4440,7 +4610,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update video source settings."""
         form_data = dict(request.forms)
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _load_config_for_edit()
             apply_section_data(cfg, "video_source", form_data)
             save_config(cfg, server.config_path)
 
@@ -4459,7 +4629,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update general settings."""
         form_data = dict(request.forms)
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _load_config_for_edit()
             apply_section_data(cfg, "general", form_data)
             save_config(cfg, server.config_path)
 
@@ -4546,7 +4716,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         cfg = load_config(server.config_path)
         response.content_type = "application/json"
         try:
-            info = check_for_update(cfg.update_github_repo, openfollow.__version__)
+            info = check_for_update(
+                cfg.update_github_repo,
+                openfollow.__version__,
+                include_prereleases=cfg.update_include_prereleases,
+            )
             return json.dumps({"ok": True, **info})
         except Exception as exc:  # surface any network/API error as feedback
             return json.dumps({"ok": False, "error": str(exc)})
@@ -4620,7 +4794,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update PSN output settings."""
         form_data = dict(request.forms)
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _load_config_for_edit()
             apply_section_data(cfg, "psn", form_data)
             save_config(cfg, server.config_path)
 
@@ -4697,6 +4871,26 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update mouse settings."""
         cfg = _save_section_from_form("mouse", bool_fields=_mouse_bool_fields())
         return template("partials/mouse", config=cfg, saved=True)
+
+    @app.post("/section/mouse3d")
+    def update_mouse3d() -> Any:
+        """Update 3D Mouse settings."""
+        bool_fields = ("enabled", *(f"invert_{axis}" for axis in MOUSE3D_AXES))
+        cfg = _save_section_from_form("mouse3d", bool_fields=bool_fields)
+        return template("partials/mouse3d", config=cfg, saved=True)
+
+    @app.get("/section/mouse3d/detect")
+    def detect_mouse3d_button() -> Any:
+        """Watch for a 3D Mouse button press, for the inline Detect bind widget.
+
+        The operator clicks a field's Detect button, then presses the device
+        button to bind; the handler polls briefly (working whether or not the
+        feature is enabled). Returns JSON ``{"button": <int|null>}`` which the
+        ``detect-input.js`` widget writes into the field.
+        """
+        response.content_type = "application/json"
+        response.set_header("Cache-Control", "no-store")
+        return json.dumps({"button": server.latest_mouse3d_button()})
 
     @app.post("/section/gamepad/detect-buttons")
     def start_button_detection() -> Any:
@@ -5086,14 +5280,26 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Save the Detection & Display box (inference + overlay settings)."""
         cfg = _save_section_from_form(
             "detection",
-            bool_fields=("enabled", "preprocess_clahe", "show_boxes", "show_labels"),
+            bool_fields=("show_boxes", "show_labels"),
         )
         return _render_detection(cfg, saved_section="inference")
 
     @app.post("/section/detection/tracking")
     def update_detection_tracking() -> Any:
-        """Save the Tracking box (mode, pin target, smoothing, assist)."""
-        cfg = _save_section_from_form("detection", bool_fields=("pin_marker",))
+        """Save the Tracking box: the mode radio is detection's only on/off.
+
+        ``tracking_state`` (off / assist / replace) maps to ``enabled`` +
+        ``pin_mode``: choosing a tracking mode auto-enables detection. ``off``
+        leaves ``pin_mode`` untouched so re-enabling restores the last mode.
+        """
+        state = request.forms.get("tracking_state", "off")
+        if state == "assist":
+            extra: dict[str, Any] = {"enabled": True, "pin_mode": "assist"}
+        elif state == "replace":
+            extra = {"enabled": True, "pin_mode": "replace"}
+        else:
+            extra = {"enabled": False}
+        cfg = _save_section_from_form("detection", extra_fields=extra)
         return _render_detection(cfg, saved_section="tracking")
 
     @app.get("/section/detection")
@@ -5144,6 +5350,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             detection_missing=_get_detection_missing_deps(cfg),
             detection_extras_installed=extras,
             detection_install=install_status,
+            detection_tiers=_detection_tiers(extras, storage_path=cfg.detection.storage_path),
             detection_available_models=_available_models(
                 extras, cfg.detection.model, storage_path=cfg.detection.storage_path
             ),
@@ -5238,20 +5445,21 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if not _export_tools_available():
             return _render_detection(
                 cfg,
-                install_feedback="Install the model export tools first: run install-detection.sh.",
-                install_error=True,
-            )
-        export_script = _detection_export_script()
-        if export_script is None:
-            return _render_detection(
-                cfg,
-                install_feedback="Export script not found. Reinstall the package or run from a source checkout.",
+                install_feedback="Install the model export tools first: run install-detection.sh --with-export.",
                 install_error=True,
             )
         models_dir = _resolved_models_dir(cfg.detection.storage_path)
         imgsz = _coerce_export_imgsz(request.forms.get("imgsz", ""), cfg.detection.inference_size)
         opset = _coerce_export_opset(request.forms.get("opset", ""))
         pt_model = model[: -len(".onnx")] + ".pt" if model.endswith(".onnx") else model + ".pt"
+
+        argv = _build_export_argv(pt_model, imgsz, opset, models_dir)
+        if argv is None:
+            return _render_detection(
+                cfg,
+                install_feedback="Export script not found. Reinstall the package or run from a source checkout.",
+                install_error=True,
+            )
 
         if not server.try_claim_detection_install(
             action="export",
@@ -5260,17 +5468,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ):
             return _render_detection(cfg, install_feedback="An export is already in progress.", install_error=True)
 
-        argv = [
-            sys.executable,
-            str(export_script),
-            pt_model,
-            "--imgsz",
-            str(imgsz),
-            "--opset",
-            str(opset),
-            "--output-dir",
-            str(models_dir),
-        ]
         worker = threading.Thread(
             target=_run_detection_export_job,
             kwargs={"model": model, "argv": argv, "timeout": _EXPORT_JOB_TIMEOUT_S},
@@ -6805,6 +7002,15 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         with _config_write_lock:
             current = load_config(server.config_path)
+            # Per-marker move speeds are device-local + runtime-authoritative:
+            # preserve THIS station's live speeds and ignore any that rode along in
+            # the imported payload. Overlay them onto ``current`` so the deepcopy
+            # inside ``_apply_import_data`` carries them through (nothing in the
+            # section applies touches ``marker_move_speeds``, so the imported value
+            # is dropped either way – this keeps the live value, not the stale disk one).
+            speeds = server.get_marker_move_speeds()
+            if speeds:
+                current.marker_move_speeds = dict(speeds)
             full_cfg = _apply_import_data(current, data)
             save_config(full_cfg, server.config_path)
             return json.dumps({"success": True, "needs_restart": False})
@@ -6869,6 +7075,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return json.dumps({"error": "Invalid JSON"})
 
         with _config_write_lock:
+            # A peer-broadcast / external-API receive: no live-speed overlay. Section
+            # applies never touch top-level ``marker_move_speeds`` (device-local,
+            # runtime-authoritative), and Part 0 keeps the ensuing reload from
+            # clobbering the live dict, so a plain disk load is correct here.
             cfg = load_config(server.config_path)
             scrubbed = strip_device_local_fields(section, data)
             if not apply_section_data(cfg, section, scrubbed):
@@ -6901,7 +7111,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return json.dumps({"error": "Invalid JSON"})
 
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            # Local apply is an operator saving their own form, so overlay the
+            # live per-marker speeds like the other section-save flows.
+            cfg = _load_config_for_edit()
             if not apply_section_data(cfg, section, data):
                 response.status = 404
                 return json.dumps({"error": "Unknown section"})
@@ -7128,6 +7340,91 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             save_config(cfg, server.config_path)
         return json.dumps({"success": True})
 
+    # -- Detection mask CRUD API --------------------------------------
+    # Registered before the wildcard ``/api/config/<section>`` routes so the
+    # specific paths win. Masks live on ``detection.masks``; saving triggers
+    # the hot-reload watcher, which stages the new DetectionConfig to the
+    # detector worker (no restart – masks are a live on→on detection change).
+
+    @app.get("/api/detection/masks")
+    def api_list_detection_masks() -> Any:
+        """Return the detection masks for the editor (normalised 0-1 coords)."""
+        response.content_type = "application/json"
+        cfg = _request_scoped_config()
+        masks_out = [
+            {"index": idx, "name": m.name, "vertices": m.vertices, "enabled": m.enabled}
+            for idx, m in enumerate(cfg.detection.masks)
+        ]
+        return json.dumps({"masks": masks_out, "masks_enabled": cfg.detection.masks_enabled})
+
+    @app.post("/api/detection/masks/enabled")
+    def api_set_detection_masks_enabled() -> Any:
+        """Set the master switch that gates whether masks confine detection."""
+        response.content_type = "application/json"
+        data = _load_json_body()
+        if data is None:
+            return json.dumps({"error": "Invalid JSON"})
+        if not isinstance(data, dict):
+            response.status = 400
+            return json.dumps({"error": "Expected a JSON object"})
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            cfg.detection.masks_enabled = _as_bool(data.get("enabled"), cfg.detection.masks_enabled)
+            save_config(cfg, server.config_path)
+        return json.dumps({"success": True, "masks_enabled": cfg.detection.masks_enabled})
+
+    @app.post("/api/detection/masks")
+    def api_create_detection_mask() -> Any:
+        """Append a new detection mask from JSON body."""
+        response.content_type = "application/json"
+        data = _load_json_body()
+        if data is None:
+            return json.dumps({"error": "Invalid JSON"})
+        if not isinstance(data, dict):
+            response.status = 400
+            return json.dumps({"error": "Expected a JSON object"})
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            mask = DetectionMaskConfig()
+            _apply_mask_fields(mask, data)
+            cfg.detection.masks.append(mask)
+            save_config(cfg, server.config_path)
+        return json.dumps({"success": True, "index": len(cfg.detection.masks) - 1})
+
+    @app.put("/api/detection/masks/<index:int>")
+    def api_update_detection_mask(index: int) -> Any:
+        """Replace fields on the mask at ``index`` from JSON body."""
+        response.content_type = "application/json"
+        data = _load_json_body()
+        if data is None:
+            return json.dumps({"error": "Invalid JSON"})
+        if not isinstance(data, dict):
+            response.status = 400
+            return json.dumps({"error": "Expected a JSON object"})
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            masks = cfg.detection.masks
+            if index < 0 or index >= len(masks):
+                response.status = 404
+                return json.dumps({"error": "Mask index out of range"})
+            _apply_mask_fields(masks[index], data)
+            save_config(cfg, server.config_path)
+        return json.dumps({"success": True})
+
+    @app.delete("/api/detection/masks/<index:int>")
+    def api_delete_detection_mask(index: int) -> Any:
+        """Remove the mask at ``index``."""
+        response.content_type = "application/json"
+        with _config_write_lock:
+            cfg = load_config(server.config_path)
+            masks = cfg.detection.masks
+            if index < 0 or index >= len(masks):
+                response.status = 404
+                return json.dumps({"error": "Mask index out of range"})
+            del masks[index]
+            save_config(cfg, server.config_path)
+        return json.dumps({"success": True})
+
     # -- Wizard routes -------------------------------------------------
 
     @app.get("/wizard")
@@ -7135,7 +7432,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Setup wizard page."""
         config = _request_scoped_config()
         input_data = _build_input_template_data(config)
-        return template("wizard", config=config, **input_data)
+        # Footer "Update available" flag: an update is most often discovered
+        # while the operator is still in the Setup Wizard.
+        return template("wizard", config=config, **input_data, **_footer_update_context(server))
 
     @app.get("/api/video/snapshot/full")
     def api_video_snapshot_full() -> Any:

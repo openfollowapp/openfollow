@@ -158,14 +158,32 @@
 %# ------------------------------------------------------------------
 %# 3. Software Update – GitHub Releases signed-bundle (.ofupdate) installer.
 %#
-%# Default-collapsed: most operators rarely update manually.
+%# Default-collapsed: most operators rarely update manually. Hidden on
+%# hosts where the .deb installer can't run (macOS) – ``update_supported``.
 %# ------------------------------------------------------------------
+% if defined('update_supported') and update_supported:
 <div id="general-software-update-section" class="section"
-     data-fold-key="general-software-update" data-help="general-software-update" data-fold-default="collapsed">
+     data-fold-key="general-software-update" data-help="general-software-update"
+     data-fold-default="{{'expanded' if (defined('update_available') and update_available) else 'collapsed'}}">
     <div class="section-head">
         <h2>Software Update</h2>
         <span class="section-note">Install the latest release from GitHub</span>
     </div>
+
+    %# Update-available banner – shown when the background online-sync check has
+    %# found a newer release on GitHub. Reuses the informational ``.notice``
+    %# style; the button hands off to the existing check+install confirm flow.
+    % if defined('update_available') and update_available:
+    <div class="notice" role="status" aria-live="polite"
+         style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+        <span><strong>Update available:</strong> version {{latest_version}} is ready to install (installed v{{current_version}}).</span>
+        <button type="button" class="update-btn" style="margin:0"
+                onclick="openfollowCheckUpdate(this)"
+                {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}>
+            Install now
+        </button>
+    </div>
+    % end
 
     <p class="field-note">Installed: v{{current_version}}</p>
 
@@ -431,3 +449,4 @@ window.openfollowUploadUpdate = async function (btn) {
   openfollowPollUpdate(info.version);
 };
 </script>
+% end

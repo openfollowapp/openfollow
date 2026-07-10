@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 66" width="58" height="53" role="img" aria-label="SpaceMouse cap pushed forward and back">
+  <title>SpaceMouse cap pushed forward and back</title>
+  <g fill="none" stroke="#cfccbd" stroke-width="2" stroke-linejoin="round">
+    <ellipse cx="36" cy="50" rx="21" ry="6" fill="#ffffff" fill-opacity="0.05"/>
+    <path d="M19 49 L24 33 Q36 28 48 33 L53 49" fill="#ffffff" fill-opacity="0.05"/>
+    <ellipse cx="36" cy="33" rx="12" ry="3.1"/>
+  </g>
+  <line x1="19.0" y1="49.0" x2="53.0" y2="19.0" stroke="#ffbc00" stroke-width="2.6" stroke-linecap="round"/><polygon points="14.0,53.0 16.2,45.6 21.7,51.9" fill="#ffbc00"/><polygon points="58.0,15.0 55.8,22.4 50.3,16.1" fill="#ffbc00"/>
+</svg>

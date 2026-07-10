@@ -120,6 +120,15 @@ def _coerce_hex_color(value: Any, default: str) -> str:
     return default
 
 
+def _field_default(instance: Any, name: str) -> Any:
+    """Declared default of a dataclass field, for use as a coercion fallback.
+
+    Lets ``__post_init__`` read the per-field defaults straight off the field
+    declarations instead of a parallel table that could drift.
+    """
+    return instance.__dataclass_fields__[name].default
+
+
 def _coerce_multicast_ipv4(value: Any, default: str = "") -> str:
     """Return a validated IPv4 multicast address, or ``default``.
 
@@ -510,12 +519,43 @@ _DETECTION_PIN_MODES = ("replace", "assist")
 
 
 @dataclass
+class DetectionMaskConfig:
+    """A single polygonal detection mask in normalised 0-1 frame coordinates.
+
+    Detection is confined to the union of all enabled masks: a person whose
+    ground point falls outside every mask is discarded before tracking. An empty
+    mask list leaves detection unrestricted.
+    """
+
+    name: str = ""
+    vertices: list[list[float]] = field(default_factory=list)  # [[x, y], ...] in 0-1 frame space
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        self.name = _coerce_str(self.name, "")
+        self.enabled = _coerce_bool(self.enabled, True)
+        # Normalize vertices to [float, float] pairs. Drop non-finite coords:
+        # ``float("nan")`` / ``float("inf")`` survive coercion but make every
+        # point-in-polygon comparison False, silently corrupting the mask.
+        cleaned: list[list[float]] = []
+        for v in self.vertices:
+            if isinstance(v, (list, tuple)) and len(v) >= 2:
+                try:
+                    x, y = float(v[0]), float(v[1])
+                except (TypeError, ValueError):
+                    continue
+                if not (math.isfinite(x) and math.isfinite(y)):
+                    continue
+                cleaned.append([x, y])
+        self.vertices = cleaned
+
+
+@dataclass
 class DetectionConfig:
     enabled: bool = False
-    model: str = "yolov8n.onnx"
+    model: str = "yolo26n.onnx"
     storage_path: str = ""
     inference_size: int = 640
-    preprocess_clahe: bool = True
     confidence: float = 0.2
     interval_ms: int = 67
     show_boxes: bool = True
@@ -523,8 +563,7 @@ class DetectionConfig:
     box_color: str = "#808080"
     box_thickness: int = 2
     max_persons: int = 10
-    pin_marker: bool = False
-    # Which marker the detection pin writes to when ``pin_marker`` is enabled.
+    # Which marker the detection pin writes to in Fully Automatic (replace) mode.
     # ``-1`` (sentinel) follows the controller's selected marker
     # (``app._selected_id``). Any non-negative value pins to that exact id; if
     # it isn't in ``controlled_marker_ids`` the runtime skips the pin.
@@ -543,11 +582,18 @@ class DetectionConfig:
     pin_mode: str = "assist"
     assist_radius_m: float = 1.0
     assist_strength: float = 0.5
+    # Master on/off for region-of-interest masking. When False (default) the
+    # masks below are inactive and detection runs over the whole frame even if
+    # masks are drawn; True confines detection to the union of enabled masks.
+    masks_enabled: bool = False
+    # Region-of-interest polygons in normalised 0-1 frame coords. Detection is
+    # confined to the union of enabled masks; empty = unrestricted.
+    masks: list[DetectionMaskConfig] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # ``model`` / ``storage_path`` are rendered into templates and consumed
         # via ``Path(...)`` / ``.strip()``; both assume ``str``.
-        self.model = _coerce_str(self.model, "yolov8n.onnx")
+        self.model = _coerce_str(self.model, "yolo26n.onnx")
         self.storage_path = _coerce_str(self.storage_path, "")
         self.pin_point = _coerce_choice(self.pin_point, _DETECTION_PIN_POINTS, "top")
         # inference_size: letterbox math requires >= 160; YOLO heads prefer
@@ -571,6 +617,15 @@ class DetectionConfig:
         # Gate radius for assist mode. Upper bound mirrors web/validation.py.
         self.assist_radius_m = _coerce_float(self.assist_radius_m, 1.0, lo=0.1, hi=50.0)
         self.assist_strength = _coerce_float(self.assist_strength, 0.5, lo=0.0, hi=1.0)
+        self.masks_enabled = _coerce_bool(self.masks_enabled, False)
+        # Convert dict entries (hand-edited TOML / imported config) to
+        # dataclasses and drop non-object entries, so the detector thread can
+        # dereference ``mask.vertices`` without an AttributeError.
+        self.masks = [
+            DetectionMaskConfig(**_filter_known(DetectionMaskConfig, m)) if isinstance(m, dict) else m
+            for m in self.masks
+            if isinstance(m, (dict, DetectionMaskConfig))
+        ]
 
 
 @dataclass
@@ -1888,6 +1943,130 @@ class ControllerConfig:
         self.button_raw_indices = coerced_indices
 
 
+# 3D Mouse (6DOF) input. The six source axes are the device deflections; each
+# resolves to a marker target with its own sensitivity and invert. Buttons bind
+# to actions by device button index. These constants are the single source of
+# truth shared by the config, the handler, the web parsers, and the validation
+# rules.
+MOUSE3D_AXES = ("pan_x", "pan_y", "lift", "pitch", "yaw", "roll")
+MOUSE3D_AXIS_TARGETS = ("none", "x", "y", "z", "speed", "fader")
+MOUSE3D_BUTTON_FIELDS = (
+    "btn_reset",
+    "btn_next_marker",
+    "btn_prev_marker",
+    "btn_speed_up",
+    "btn_speed_down",
+    "btn_toggle_help",
+    "btn_toggle_zones",
+)
+# Web-form row labels (gesture-first, config key in parens) in display order.
+# Single source for the form's axis/button loops; the consistency test asserts
+# they cover exactly MOUSE3D_AXES / MOUSE3D_BUTTON_FIELDS so neither can drift.
+MOUSE3D_AXIS_FORM_LABELS = (
+    ("pan_x", "Push left / right (pan_x)"),
+    ("pan_y", "Push forward / back (pan_y)"),
+    ("lift", "Pull up / push down (lift)"),
+    ("pitch", "Tilt forward / back (pitch)"),
+    ("yaw", "Twist / spin (yaw)"),
+    ("roll", "Tilt left / right (roll)"),
+)
+MOUSE3D_BUTTON_FORM_LABELS = (
+    ("btn_reset", "Reset marker"),
+    ("btn_next_marker", "Next marker"),
+    ("btn_prev_marker", "Previous marker"),
+    ("btn_speed_up", "Speed up"),
+    ("btn_speed_down", "Speed down"),
+    ("btn_toggle_help", "Toggle help"),
+    ("btn_toggle_zones", "Toggle zones"),
+)
+
+
+@dataclass
+class Mouse3DConfig:
+    """Optional ``[mouse3d]`` section – 3D Mouse (3Dconnexion 6DOF) input.
+
+    Disabled by default. Each of the six source axes resolves to a marker
+    target (``none``/``x``/``y``/``z``/``speed``/``fader``) with its own
+    sensitivity, deadzone and invert; the shared ``curve`` reuses the gamepad
+    shaping.
+    Buttons bind to actions by device button index (``-1`` = unbound).
+    """
+
+    enabled: bool = False
+    curve: str = "logarithmic"
+
+    map_pan_x: str = "x"
+    sens_pan_x: float = 1.0
+    deadzone_pan_x: float = 0.05
+    invert_pan_x: bool = False
+    map_pan_y: str = "y"
+    sens_pan_y: float = 1.0
+    deadzone_pan_y: float = 0.05
+    invert_pan_y: bool = False
+    map_lift: str = "z"
+    sens_lift: float = 0.3
+    deadzone_lift: float = 0.3
+    invert_lift: bool = False
+    map_pitch: str = "none"
+    sens_pitch: float = 1.0
+    deadzone_pitch: float = 0.1
+    invert_pitch: bool = False
+    map_yaw: str = "speed"
+    sens_yaw: float = 1.0
+    deadzone_yaw: float = 0.3
+    invert_yaw: bool = False
+    map_roll: str = "none"
+    sens_roll: float = 1.0
+    deadzone_roll: float = 0.1
+    invert_roll: bool = False
+
+    btn_reset: int = -1
+    btn_next_marker: int = 0
+    btn_prev_marker: int = 1
+    btn_speed_up: int = -1
+    btn_speed_down: int = -1
+    btn_toggle_help: int = -1
+    btn_toggle_zones: int = -1
+
+    def __post_init__(self) -> None:
+        self.enabled = _coerce_bool(self.enabled, False)
+        self.curve = _coerce_choice(self.curve, VALID_CURVES, "logarithmic")
+        # The field declarations are the single source of per-axis defaults; the
+        # coercion fallback reads them back so an absent-key default and an
+        # invalid-value fallback can't drift apart.
+        for axis in MOUSE3D_AXES:
+            setattr(
+                self,
+                f"map_{axis}",
+                _coerce_choice(
+                    getattr(self, f"map_{axis}"),
+                    MOUSE3D_AXIS_TARGETS,
+                    _field_default(self, f"map_{axis}"),
+                ),
+            )
+            setattr(
+                self,
+                f"sens_{axis}",
+                _coerce_float(getattr(self, f"sens_{axis}"), _field_default(self, f"sens_{axis}"), lo=0.0, hi=10.0),
+            )
+            setattr(
+                self,
+                f"deadzone_{axis}",
+                _coerce_float(
+                    getattr(self, f"deadzone_{axis}"), _field_default(self, f"deadzone_{axis}"), lo=0.0, hi=1.0
+                ),
+            )
+            setattr(
+                self,
+                f"invert_{axis}",
+                _coerce_bool(getattr(self, f"invert_{axis}"), _field_default(self, f"invert_{axis}")),
+            )
+        # Invalid / out-of-range button index falls back to unbound (-1) rather
+        # than rebinding to a default index the operator didn't choose.
+        for btn in MOUSE3D_BUTTON_FIELDS:
+            setattr(self, btn, _coerce_int(getattr(self, btn), -1, lo=-1))
+
+
 # The systemd unit restarted after a successful update. Also the recovery
 # fallback when a box's persisted ``update_service_name`` is invalid.
 DEFAULT_UPDATE_SERVICE_NAME = "openfollow"
@@ -2005,6 +2184,17 @@ class AppConfig:
     # Web-triggered update settings (signed-.deb GitHub-release installer)
     update_github_repo: str = "openfollowapp/openfollow"
     update_service_name: str = DEFAULT_UPDATE_SERVICE_NAME
+    # Offer pre-release builds, not just stable releases. Hidden (config-only),
+    # off by default – set ``update_include_prereleases = true`` in config.toml.
+    update_include_prereleases: bool = False
+
+    # On startup and whenever the device IP changes, if the LAN has internet:
+    # auto-check GitHub for a newer release (drives the update banner) and
+    # sync the system clock from a trusted NTP server (Pis have no RTC and
+    # drift). Both are gated, fail silently offline, and default on.
+    auto_update_check: bool = True
+    auto_time_sync: bool = True
+    time_sync_server: str = "ptbtime1.ptb.de"
 
     # Markers – id 0 is reserved as "ignored" on the PSN wire, so
     # the default selection is empty (operator picks via the catalog UI).
@@ -2030,6 +2220,7 @@ class AppConfig:
     grid: GridConfig = field(default_factory=GridConfig)
     marker: MarkerConfig = field(default_factory=MarkerConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
+    mouse3d: Mouse3DConfig = field(default_factory=Mouse3DConfig)
     osc: OscConfig = field(default_factory=OscConfig)
     operator_messages: OperatorMessagesConfig = field(default_factory=OperatorMessagesConfig)
     otp_output: OtpOutputConfig = field(default_factory=OtpOutputConfig)
@@ -2085,6 +2276,12 @@ class AppConfig:
         if not isinstance(self.testpattern_selected_media, str):
             self.testpattern_selected_media = _DEFAULT_SELECTED_MEDIA
         self.testpattern_selected_media = self.testpattern_selected_media.strip() or _DEFAULT_SELECTED_MEDIA
+        # Auto online-sync knobs: normalise so a hand-edited TOML can't feed a
+        # non-bool / non-string into the worker.
+        self.update_include_prereleases = _coerce_bool(self.update_include_prereleases, False)
+        self.auto_update_check = _coerce_bool(self.auto_update_check, True)
+        self.auto_time_sync = _coerce_bool(self.auto_time_sync, True)
+        self.time_sync_server = _coerce_str(self.time_sync_server, "ptbtime1.ptb.de").strip() or "ptbtime1.ptb.de"
         # TOML produces ``dict[str, Any]``; the runtime contract is
         # ``dict[int, float]`` keyed by marker_id. Drop pairs with a non-int
         # key or non-finite/negative value.
@@ -2137,6 +2334,7 @@ _SUB_CONFIG_MAP: dict[str, type] = {
     "grid": GridConfig,
     "marker": MarkerConfig,
     "controller": ControllerConfig,
+    "mouse3d": Mouse3DConfig,
     "osc": OscConfig,
     "operator_messages": OperatorMessagesConfig,
     "otp_output": OtpOutputConfig,
@@ -2804,10 +3002,11 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     if new_config.marker != app._config.marker:
         app._config.marker = new_config.marker
 
-    if new_config.marker_move_speeds != app._config.marker_move_speeds:
-        # Readers go through ``get_marker_move_speed``, so a direct swap
-        # suffices – no service restart.
-        app._config.marker_move_speeds = new_config.marker_move_speeds
+    # ``marker_move_speeds`` is deliberately NOT reloaded here. It is device-local
+    # and runtime-authoritative – written live by the R/T keys + gamepad bumpers, so
+    # the in-memory dict is the source of truth. A hot-reload from any config write (a
+    # web section save, the debounced self-persist, an import) must never overwrite it.
+    # Startup ``load_config`` seeds the initial value from disk; it is not reloaded after.
 
     # ``unit_system`` is read live every frame by ``sync_ui_config`` and
     # ``show_experimental_features`` gates the web UI off ``app._config``; a
@@ -2942,6 +3141,15 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         canvas = getattr(app, "_canvas", None)
         if canvas is not None and hasattr(canvas, "set_pointer_base_visible"):
             canvas.set_pointer_base_visible(new_config.controller.mouse_enabled)
+
+    if new_config.mouse3d != app._config.mouse3d:
+        app._config.mouse3d = new_config.mouse3d
+        # Live-apply: the read thread runs for the handler's lifetime, so this
+        # only swaps the mapping config (the ``enabled`` gate is read live in
+        # ``InputManager.update``). pragma: no branch – same reasoning as the
+        # controller block; the input subsystem is always up during live reload.
+        if app._input_manager is not None:  # pragma: no branch
+            app._input_manager.restart_mouse3d(new_config.mouse3d)
 
     if new_config.osc != app._config.osc:
         app._config.osc = new_config.osc

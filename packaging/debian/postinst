@@ -26,6 +26,15 @@ case "$1" in
       fi
     done
 
+    # Apply the 3D Mouse hidraw udev rule (shipped under /lib/udev/rules.d) so a
+    # device already plugged in at install/upgrade time gets plugdev access
+    # without a replug. udevadm may be unavailable in a minimal chroot (image
+    # build) - don't fail the install if so.
+    if command -v udevadm >/dev/null 2>&1; then
+      udevadm control --reload >/dev/null 2>&1 || true
+      udevadm trigger --subsystem-match=hidraw >/dev/null 2>&1 || true
+    fi
+
     install -d -o "$OF_USER" -g "$OF_USER" -m 0755 "$OF_HOME"
     chown -R "$OF_USER":"$OF_USER" "$OF_HOME"
 

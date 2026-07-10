@@ -15,6 +15,9 @@ from typing import Any
 from openfollow.configuration import (
     _DEFAULT_PSN_MCAST_IP,
     _DEFAULT_PSN_SYSTEM_NAME,
+    MOUSE3D_AXES,
+    MOUSE3D_AXIS_TARGETS,
+    MOUSE3D_BUTTON_FIELDS,
     RESERVED_MOVEMENT_KEYS,
     VALID_BUTTON_NAMES,
     VALID_CURVES,
@@ -34,6 +37,7 @@ from openfollow.configuration import (
 )
 from openfollow.web.routes import (
     _as_bool,
+    _as_button_index,
     _as_float,
     _as_float_or_zero,
     _as_int,
@@ -75,6 +79,7 @@ def _default_sanitiser(s: str) -> str:
 # the registry/parser drift before this fallback would matter at runtime.
 _TYPE_ERRORS: dict[_FieldParser, str] = {
     _as_int: "Must be a whole number.",
+    _as_button_index: "Must be a button number (0 or higher), or blank for none.",
     _as_optional_int: "Must be a whole number (or empty).",
     _as_positive_int: "Must be a whole number (1 or greater).",
     _as_float: "Must be a number.",
@@ -569,7 +574,6 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             _as_int, lo=160, hi=1280, human_error="Inference size must be between 160 and 1280."
         ),
         "pin_point": FieldRule(_as_str, choices=("top", "bottom"), human_error="Pin point must be 'top' or 'bottom'."),
-        "preprocess_clahe": FieldRule(_as_bool),
         "confidence": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Confidence must be between 0 and 1."),
         "interval_ms": FieldRule(_as_int, lo=1, hi=10000, human_error="Interval must be between 1 and 10000 ms."),
         "show_boxes": FieldRule(_as_bool),
@@ -577,7 +581,6 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "box_color": _hex_color_rule(),
         "box_thickness": FieldRule(_as_int, lo=1, hi=10, human_error="Box thickness must be between 1 and 10 px."),
         "max_persons": FieldRule(_as_int, lo=1, hi=50, human_error="Max persons must be between 1 and 50."),
-        "pin_marker": FieldRule(_as_bool),
         "pin_marker_id": FieldRule(_as_int, lo=-1, human_error="Marker ID must be -1 (selected) or ≥ 0."),
         "smoothing": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Smoothing must be between 0 and 1."),
         "prediction": FieldRule(_as_float, lo=0.0, hi=20.0, human_error="Prediction must be between 0 and 20."),
@@ -751,6 +754,34 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
 FIELD_RULES["gamepad"] = FIELD_RULES["controller"]
 FIELD_RULES["keyboard"] = FIELD_RULES["controller"]
 FIELD_RULES["mouse"] = FIELD_RULES["controller"]
+
+# 3D Mouse: built from the same axis / button constants as
+# routes._SECTION_FIELD_PARSERS, with the identical imported parser callables,
+# so the parser-identity and template-consistency tests both hold.
+_mouse3d_rules: dict[str, FieldRule] = {
+    "enabled": FieldRule(_as_bool),
+    "curve": FieldRule(_as_str, choices=VALID_CURVES, human_error=f"Curve must be one of: {', '.join(VALID_CURVES)}."),
+}
+for _axis in MOUSE3D_AXES:
+    _mouse3d_rules[f"map_{_axis}"] = FieldRule(
+        _as_str,
+        choices=MOUSE3D_AXIS_TARGETS,
+        human_error=f"Axis target must be one of: {', '.join(MOUSE3D_AXIS_TARGETS)}.",
+    )
+    _mouse3d_rules[f"sens_{_axis}"] = FieldRule(
+        _as_float, lo=0.0, hi=10.0, human_error="Sensitivity must be between 0 and 10."
+    )
+    _mouse3d_rules[f"deadzone_{_axis}"] = FieldRule(
+        _as_float, lo=0.0, hi=1.0, human_error="Deadzone must be between 0 and 1."
+    )
+    _mouse3d_rules[f"invert_{_axis}"] = FieldRule(_as_bool)
+for _btn in MOUSE3D_BUTTON_FIELDS:
+    # lo=-1 matches __post_init__ (the unbound sentinel); the form submits blank
+    # for unbound and a 0+ index when bound, so the operator never types -1.
+    _mouse3d_rules[_btn] = FieldRule(
+        _as_button_index, lo=-1, human_error="Button number (0 or higher), or blank for none."
+    )
+FIELD_RULES["mouse3d"] = _mouse3d_rules
 
 
 # --- Public API -------------------------------------------------------------

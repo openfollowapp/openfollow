@@ -122,6 +122,90 @@ def test_apply_section_data_camera_lens_distortion_clamps_out_of_range() -> None
     assert config.camera.lens_k2 == -0.2
 
 
+def test_apply_section_data_mouse3d_roundtrips() -> None:
+    config = AppConfig()
+    ok = apply_section_data(
+        config,
+        "mouse3d",
+        {
+            "enabled": True,
+            "deadzone_pan_x": "0.2",
+            "curve": "quadratic",
+            "map_pan_x": "z",
+            "sens_pan_x": "2.5",
+            "invert_lift": True,
+            "btn_toggle_zones": "4",
+        },
+    )
+    assert ok is True
+    assert config.mouse3d.enabled is True
+    assert config.mouse3d.deadzone_pan_x == pytest.approx(0.2)
+    assert config.mouse3d.curve == "quadratic"
+    assert config.mouse3d.map_pan_x == "z"
+    assert config.mouse3d.sens_pan_x == pytest.approx(2.5)
+    assert config.mouse3d.invert_lift is True
+    assert config.mouse3d.btn_toggle_zones == 4
+
+
+def test_as_button_index_none_is_unbound() -> None:
+    from openfollow.web.routes import _as_button_index
+
+    # A ``None`` value (cleared field) maps to the -1 unbound sentinel.
+    assert _as_button_index(None, 5) == -1
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_as_button_index_rejects_bool(value: bool) -> None:
+    from openfollow.web.routes import _as_button_index
+
+    # ``bool`` is an ``int`` subclass, so without a guard a JSON ``true`` would
+    # become button index 1. It must fall back to ``default`` so the JSON/peer
+    # path agrees with a hand-edited TOML (``_coerce_int`` also rejects bool).
+    assert _as_button_index(value, 5) == 5
+
+
+def test_apply_section_data_mouse3d_json_bool_button_does_not_bind_index_1() -> None:
+    config = AppConfig()
+    config.mouse3d.btn_reset = 3  # currently bound
+    # A JSON/peer body carrying a bool for a button field must not silently
+    # bind index 1; it falls back to the current value, then __post_init__ keeps it.
+    ok = apply_section_data(config, "mouse3d", {"btn_reset": True})
+    assert ok is True
+    assert config.mouse3d.btn_reset == 3
+
+
+def test_apply_section_data_mouse3d_blank_button_unbinds() -> None:
+    config = AppConfig()
+    config.mouse3d.btn_reset = 5  # currently bound
+    ok = apply_section_data(config, "mouse3d", {"btn_reset": "", "btn_toggle_zones": "2"})
+    assert ok is True
+    assert config.mouse3d.btn_reset == -1  # blank clears the bind (unbound)
+    assert config.mouse3d.btn_toggle_zones == 2
+
+
+def test_apply_section_data_mouse3d_clamps_and_falls_back() -> None:
+    config = AppConfig()
+    # __post_init__ re-runs after the web save, so a crafted POST is clamped /
+    # falls back the same as a hand-edited config.toml would be.
+    ok = apply_section_data(
+        config,
+        "mouse3d",
+        {
+            "sens_pan_x": "99",  # > 10 -> clamp 10
+            "deadzone_pan_x": "5",  # > 1 -> clamp 1
+            "map_pitch": "sideways",  # invalid -> default "none"
+            "btn_reset": "-7",  # < -1 -> clamp -1 (unbound)
+            "curve": "wobble",  # invalid -> default "logarithmic"
+        },
+    )
+    assert ok is True
+    assert config.mouse3d.sens_pan_x == 10.0
+    assert config.mouse3d.deadzone_pan_x == 1.0
+    assert config.mouse3d.map_pitch == "none"
+    assert config.mouse3d.btn_reset == -1
+    assert config.mouse3d.curve == "logarithmic"
+
+
 def test_apply_section_data_grid_tolerates_huge_int_width() -> None:
     config = AppConfig()
     ok = apply_section_data(config, "grid", {"width": 10**5000})
@@ -1304,6 +1388,79 @@ def test_detection_export_script_none_when_unreachable(monkeypatch, tmp_path) ->
     monkeypatch.setattr(routes_mod, "Path", lambda *_a, **_kw: _NoPyproject())
     monkeypatch.setattr(routes_mod, "_PACKAGED_EXPORT_SCRIPT", tmp_path / "missing.py")
     assert routes_mod._detection_export_script() is None
+
+
+# ---------------------------------------------------------------------------
+# _build_export_argv – frozen-bundle vs source/appliance invocation
+# ---------------------------------------------------------------------------
+
+
+def test_build_export_argv_source_runs_export_script(monkeypatch, tmp_path) -> None:
+    """Non-frozen: run export_onnx.py with the venv interpreter."""
+    from pathlib import Path
+
+    from openfollow.web import routes as routes_mod
+
+    monkeypatch.delattr(routes_mod.sys, "frozen", raising=False)
+    script = tmp_path / "export_onnx.py"
+    monkeypatch.setattr(routes_mod, "_detection_export_script", lambda: script)
+    monkeypatch.setattr(routes_mod.sys, "executable", "/venv/bin/python")
+
+    argv = routes_mod._build_export_argv("yolov8n.pt", 320, 17, Path("/store/models"))
+
+    assert argv == [
+        "/venv/bin/python",
+        str(script),
+        "yolov8n.pt",
+        "--imgsz",
+        "320",
+        "--opset",
+        "17",
+        "--output-dir",
+        "/store/models",
+    ]
+
+
+def test_build_export_argv_none_when_script_unreachable(monkeypatch, tmp_path) -> None:
+    """Non-frozen with no script on disk: caller surfaces 'not found'."""
+    from pathlib import Path
+
+    from openfollow.web import routes as routes_mod
+
+    monkeypatch.delattr(routes_mod.sys, "frozen", raising=False)
+    monkeypatch.setattr(routes_mod, "_detection_export_script", lambda: None)
+
+    assert routes_mod._build_export_argv("yolov8n.pt", 320, 17, Path("/store/models")) is None
+
+
+def test_build_export_argv_frozen_reexecs_app(monkeypatch, tmp_path) -> None:
+    """Frozen bundle: re-exec the app binary in --export mode, no script on disk."""
+    from pathlib import Path
+
+    from openfollow.web import routes as routes_mod
+
+    monkeypatch.setattr(routes_mod.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(routes_mod.sys, "executable", "/Applications/OpenFollow.app/Contents/MacOS/OpenFollow")
+
+    # Must not consult the on-disk script in frozen mode.
+    def _fail() -> None:
+        raise AssertionError("frozen export must not probe for export_onnx.py on disk")
+
+    monkeypatch.setattr(routes_mod, "_detection_export_script", _fail)
+
+    argv = routes_mod._build_export_argv("yolo11n.pt", 640, 19, Path("/store/models"))
+
+    assert argv == [
+        "/Applications/OpenFollow.app/Contents/MacOS/OpenFollow",
+        "--export",
+        "yolo11n.pt",
+        "--imgsz",
+        "640",
+        "--opset",
+        "19",
+        "--output-dir",
+        "/store/models",
+    ]
 
 
 # ---------------------------------------------------------------------------

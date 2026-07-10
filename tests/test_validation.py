@@ -780,6 +780,35 @@ def test_otp_source_iface_has_no_field_rule() -> None:
     assert "source_iface" not in FIELD_RULES["otp_output"]
 
 
+def test_removed_detection_fields_have_no_field_rule() -> None:
+    """``pin_marker`` and ``preprocess_clahe`` were dropped from the detection
+    config and its web form; they must not linger in the registry."""
+    from openfollow.web.validation import FIELD_RULES
+
+    assert "pin_marker" not in FIELD_RULES["detection"]
+    assert "preprocess_clahe" not in FIELD_RULES["detection"]
+
+
+def test_kept_detection_fields_still_have_field_rules() -> None:
+    """The refactor keeps these as validated fields even though the UI hides /
+    repackages some of them (``inference_size`` is auto-detected but still a
+    config field; ``pin_mode`` / ``pin_marker_id`` back the tracking box)."""
+    from openfollow.web.validation import FIELD_RULES
+
+    for field in ("inference_size", "pin_mode", "pin_marker_id"):
+        assert field in FIELD_RULES["detection"]
+
+
+def test_tracking_state_is_not_a_field_rule() -> None:
+    """``tracking_state`` is a synthetic radio that the route maps to
+    ``enabled`` + ``pin_mode``; it is never persisted directly, so it must
+    not carry a per-field blur rule (validate() returns None for unknowns)."""
+    from openfollow.web.validation import FIELD_RULES
+
+    assert "tracking_state" not in FIELD_RULES["detection"]
+    assert validate("detection", "tracking_state", "assist") is None
+
+
 @pytest.mark.parametrize(
     "section,field",
     [
@@ -1040,6 +1069,16 @@ class TestZoneOscAddressRules:
         err = validate("zone", field, "/" + "a" * 2048)
         assert err is not None
         assert "2048" in err
+
+
+@pytest.mark.parametrize(
+    "raw,expect_error",
+    [("", False), ("0", False), ("3", False), ("abc", True)],
+)
+def test_mouse3d_button_validation(raw: str, expect_error: bool) -> None:
+    # Blank = unbound (no error); a 0+ index is valid; junk is a type error.
+    err = validate("mouse3d", "btn_reset", raw)
+    assert (err is not None) is expect_error
 
 
 def test_needs_cfg_false_for_every_rule() -> None:

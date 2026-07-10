@@ -16,6 +16,7 @@ import pytest
 
 from openfollow.configuration import (
     DEFAULT_UPDATE_SERVICE_NAME,
+    MOUSE3D_AXES,
     RESERVED_MOVEMENT_KEYS,
     AppConfig,
     CameraConfig,
@@ -23,6 +24,7 @@ from openfollow.configuration import (
     DetectionConfig,
     GridConfig,
     MarkerConfig,
+    Mouse3DConfig,
     OscConfig,
     OtpOutputConfig,
     RttrpmOutputConfig,
@@ -175,6 +177,10 @@ class _DummyInputManager:
         self.osc_restarts: list[tuple[bool, int]] = []
         self.osc_multicast_groups: list[str] = []
         self.operator_message_restarts = 0
+        self.mouse3d_restarts: list[Mouse3DConfig] = []
+
+    def restart_mouse3d(self, config: Mouse3DConfig) -> None:
+        self.mouse3d_restarts.append(config)
 
     def restart_osc(
         self,
@@ -231,6 +237,54 @@ def test_load_config_missing_file_uses_defaults(temp_config_path) -> None:
     config = load_config(str(temp_config_path))
 
     assert config == AppConfig()
+
+
+def test_online_sync_defaults() -> None:
+    cfg = AppConfig()
+    assert cfg.auto_update_check is True
+    assert cfg.auto_time_sync is True
+    assert cfg.update_include_prereleases is False
+    assert cfg.time_sync_server == "ptbtime1.ptb.de"
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(True, True), (False, False), ("true", True), ("off", False), ("nonsense", True), (None, True), (1, True)],
+)
+def test_auto_update_check_coercion(value: object, expected: bool) -> None:
+    assert AppConfig(auto_update_check=value).auto_update_check is expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(True, True), (False, False), ("yes", True), ("no", False), ("garbage", True), (None, True)],
+)
+def test_auto_time_sync_coercion(value: object, expected: bool) -> None:
+    assert AppConfig(auto_time_sync=value).auto_time_sync is expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(True, True), (False, False), ("on", True), ("0", False), ("garbage", False), (None, False), (1, False)],
+)
+def test_update_include_prereleases_coercion(value: object, expected: bool) -> None:
+    # Defaults OFF: unrecognised / wrong-type input must NOT silently opt into pre-releases.
+    assert AppConfig(update_include_prereleases=value).update_include_prereleases is expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("time.cloudflare.com", "time.cloudflare.com"),
+        ("  ptbtime1.ptb.de  ", "ptbtime1.ptb.de"),
+        ("", "ptbtime1.ptb.de"),  # empty falls back to the default
+        ("   ", "ptbtime1.ptb.de"),  # whitespace-only too
+        (123, "ptbtime1.ptb.de"),  # wrong type -> default
+        (None, "ptbtime1.ptb.de"),
+    ],
+)
+def test_time_sync_server_coercion(value: object, expected: str) -> None:
+    assert AppConfig(time_sync_server=value).time_sync_server == expected  # type: ignore[arg-type]
 
 
 def test_default_video_source_is_testpattern() -> None:
@@ -1012,15 +1066,40 @@ def test_loading_default_config_does_not_emit_deprecation_warnings(
     assert not any("deprecated" in r.message for r in caplog.records)
 
 
-def test_apply_runtime_marker_move_speeds_diff() -> None:
-    """Marker speed changes apply directly; no restart needed."""
+def test_apply_runtime_does_not_reload_marker_move_speeds() -> None:
+    """Per-marker speeds are device-local + runtime-authoritative: a hot-reload
+    must NOT overwrite the live in-memory dict from disk, whatever the reloaded
+    file happens to contain. This is the fix for the reported "saving any Web UI
+    setting resets all marker speeds" bug – the web save writes the file, the
+    watcher reloads it, and that reload must leave the live speeds untouched."""
     app = _DummyApp(AppConfig(marker_move_speeds={2: 2.0}))
+    # A reloaded config carrying DIFFERENT speeds must not clobber the live ones.
     new_config = AppConfig(marker_move_speeds={2: 3.5, 1: 1.5})
 
     apply_runtime_config_changes(app, new_config)
 
-    assert app._config.marker_move_speeds == {2: 3.5, 1: 1.5}
+    assert app._config.marker_move_speeds == {2: 2.0}
     assert app._web_commands.restart_requested is False
+
+
+def test_apply_runtime_does_not_clear_marker_move_speeds_when_disk_empty() -> None:
+    """A reloaded config with EMPTY speeds (e.g. a fresh disk load that never saw
+    the runtime edits) must not wipe the live dict."""
+    app = _DummyApp(AppConfig(marker_move_speeds={2: 2.0, 3: 4.0}))
+    new_config = AppConfig()  # no speeds
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.marker_move_speeds == {2: 2.0, 3: 4.0}
+
+
+def test_startup_load_seeds_marker_move_speeds_from_disk(temp_config_path) -> None:
+    """Part 0 only skips the *reload*; the initial ``load_config`` at startup
+    still seeds the speeds from disk so a restart picks up the persisted values."""
+    config = AppConfig(controlled_marker_ids=[2, 3], marker_move_speeds={2: 1.5, 3: 4.0})
+    save_config(config, str(temp_config_path))
+    reloaded = load_config(str(temp_config_path))
+    assert reloaded.marker_move_speeds == {2: 1.5, 3: 4.0}
 
 
 def test_apply_runtime_ui_unit_system_propagates_to_config() -> None:
@@ -1076,6 +1155,46 @@ def test_apply_runtime_osc_multicast_group_threads_into_restart() -> None:
 
     assert app._config.osc.multicast_group == "239.1.2.3"
     assert app._input_manager.osc_multicast_groups == ["239.1.2.3"]
+
+
+def test_apply_runtime_mouse3d_enabled_toggle_reaches_input_manager() -> None:
+    """Enabling 3D Mouse applies live: stored config updates and the handler is
+    reloaded, with no process restart."""
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig()
+    new_config.mouse3d.enabled = True  # differs from default-off
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.mouse3d.enabled is True
+    assert len(app._input_manager.mouse3d_restarts) == 1
+    assert app._input_manager.mouse3d_restarts[0] is new_config.mouse3d
+    assert app._web_commands.restart_requested is False
+
+
+def test_apply_runtime_mouse3d_field_change_reaches_input_manager() -> None:
+    """A mapping/sensitivity edit (enabled unchanged) still live-applies."""
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig()
+    new_config.mouse3d.map_pitch = "speed"
+    new_config.mouse3d.sens_pan_x = 3.0
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.mouse3d.map_pitch == "speed"
+    assert app._config.mouse3d.sens_pan_x == 3.0
+    assert len(app._input_manager.mouse3d_restarts) == 1
+
+
+def test_apply_runtime_mouse3d_unchanged_does_not_restart() -> None:
+    """An unrelated config save must not churn the 3D Mouse handler."""
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig()
+    new_config.psn_system_name = "Renamed"  # unrelated change
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._input_manager.mouse3d_restarts == []
 
 
 def test_apply_runtime_operator_messages_restarts_handler() -> None:
@@ -1595,6 +1714,144 @@ def test_osc_config_clamps_port_to_blur_bounds() -> None:
     assert OscConfig(port=0).port == 1
     assert OscConfig(port=70000).port == 65535
     assert OscConfig(port="not-a-port").port == 8765  # type: ignore[arg-type]
+
+
+# Mouse3DConfig.__post_init__ – 3D Mouse (6DOF) coercion
+
+
+def test_mouse3d_config_defaults() -> None:
+    cfg = Mouse3DConfig()
+    assert cfg.enabled is False
+    assert cfg.curve == "logarithmic"
+    # Translations drive x/y/z, yaw ramps speed, pitch/roll are off.
+    assert (cfg.map_pan_x, cfg.map_pan_y, cfg.map_lift) == ("x", "y", "z")
+    assert cfg.map_yaw == "speed"
+    assert (cfg.map_pitch, cfg.map_roll) == ("none", "none")
+    # Lift is geared down (gentler height control).
+    assert cfg.sens_lift == 0.3
+    assert cfg.invert_pan_x is False
+    # Per-axis deadzone: tight on the translations, wider on geared/speed axes.
+    assert cfg.deadzone_pan_x == 0.05
+    assert cfg.deadzone_lift == 0.3
+    assert cfg.deadzone_yaw == 0.3
+    assert cfg.deadzone_roll == 0.1
+    # Default button binds (2-button device): left = next, right = prev.
+    assert cfg.btn_next_marker == 0
+    assert cfg.btn_prev_marker == 1
+    assert cfg.btn_reset == -1
+    assert cfg.btn_toggle_help == -1
+
+
+def test_mouse3d_form_labels_cover_every_axis_and_button() -> None:
+    # The web form loops over these label lists; if one omits (or misnames) an
+    # axis / button, that control silently drops out of the form. Pin them to
+    # the canonical field tuples so they can't drift.
+    from openfollow.configuration import (
+        MOUSE3D_AXIS_FORM_LABELS,
+        MOUSE3D_BUTTON_FIELDS,
+        MOUSE3D_BUTTON_FORM_LABELS,
+    )
+
+    assert tuple(axis for axis, _label in MOUSE3D_AXIS_FORM_LABELS) == MOUSE3D_AXES
+    assert {field for field, _label in MOUSE3D_BUTTON_FORM_LABELS} == set(MOUSE3D_BUTTON_FIELDS)
+
+
+def test_mouse3d_invalid_value_falls_back_to_declared_field_default() -> None:
+    # __post_init__ derives its per-axis fallback from the field declarations
+    # (single source), so an invalid value lands on the SAME default as an
+    # omitted field – for every axis, not just the few spot-checked elsewhere.
+    defaults = Mouse3DConfig()
+    junk = Mouse3DConfig(
+        **{f"sens_{a}": "x" for a in MOUSE3D_AXES},  # type: ignore[arg-type]
+        **{f"deadzone_{a}": "x" for a in MOUSE3D_AXES},
+        **{f"map_{a}": "bogus" for a in MOUSE3D_AXES},
+    )
+    for axis in MOUSE3D_AXES:
+        assert getattr(junk, f"sens_{axis}") == getattr(defaults, f"sens_{axis}")
+        assert getattr(junk, f"deadzone_{axis}") == getattr(defaults, f"deadzone_{axis}")
+        assert getattr(junk, f"map_{axis}") == getattr(defaults, f"map_{axis}")
+
+
+@pytest.mark.parametrize(
+    "bad,expected",
+    # ``True`` coerces via float()==1.0 then clamps (same as ControllerConfig);
+    # wrong-type / unparseable falls back to the axis default (pan_x = 0.05).
+    [(-1.0, 0.0), (2.0, 1.0), ("abc", 0.05), (None, 0.05), (True, 1.0)],
+)
+def test_mouse3d_config_clamps_deadzone(bad: object, expected: float) -> None:
+    assert Mouse3DConfig(deadzone_pan_x=bad).deadzone_pan_x == expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "bad,expected",
+    [(-1.0, 0.0), (99.0, 10.0), ("nope", 1.0), (None, 1.0)],
+)
+def test_mouse3d_config_clamps_sensitivity(bad: object, expected: float) -> None:
+    # Out-of-range / wrong-type sensitivity clamps or falls back per axis.
+    cfg = Mouse3DConfig(sens_pan_x=bad, sens_roll=bad)  # type: ignore[arg-type]
+    assert cfg.sens_pan_x == expected
+    assert cfg.sens_roll == expected
+
+
+@pytest.mark.parametrize("bad", ["wobble", 5, None, True, ""])
+def test_mouse3d_config_falls_back_on_unknown_curve(bad: object) -> None:
+    assert Mouse3DConfig(curve=bad).curve == "logarithmic"  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("bad", ["sideways", "X", 1, None, True])
+def test_mouse3d_config_falls_back_on_unknown_axis_target(bad: object) -> None:
+    # An unknown map target falls back to that axis's default (pan_x → "x").
+    assert Mouse3DConfig(map_pan_x=bad).map_pan_x == "x"  # type: ignore[arg-type]
+    # And a default-"none" axis falls back to "none".
+    assert Mouse3DConfig(map_pitch=bad).map_pitch == "none"  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("target", ["none", "x", "y", "z", "speed", "fader"])
+def test_mouse3d_config_accepts_all_axis_targets(target: str) -> None:
+    assert Mouse3DConfig(map_pan_x=target).map_pan_x == target
+
+
+@pytest.mark.parametrize(
+    "bad,expected",
+    [(-5, -1), (-1, -1), (3, 3), ("x", -1), (None, -1), (True, -1)],
+)
+def test_mouse3d_config_button_coercion(bad: object, expected: int) -> None:
+    # Invalid / out-of-range button index collapses to unbound (-1).
+    assert Mouse3DConfig(btn_reset=bad).btn_reset == expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    # _coerce_bool accepts real bools + recognised strings only; a bare int is
+    # not a bool form, so it falls to the default (False).
+    [("true", True), ("false", False), (True, True), ("junk", False), (1, False)],
+)
+def test_mouse3d_config_enabled_and_invert_coercion(raw: object, expected: bool) -> None:
+    assert Mouse3DConfig(enabled=raw).enabled is expected  # type: ignore[arg-type]
+    assert Mouse3DConfig(invert_lift=raw).invert_lift is expected  # type: ignore[arg-type]
+
+
+def test_mouse3d_config_survives_save_reload(temp_config_path) -> None:
+    config = AppConfig(
+        mouse3d=Mouse3DConfig(
+            enabled=True,
+            deadzone_pitch=0.25,
+            curve="s-law",
+            map_pitch="speed",
+            sens_pitch=2.5,
+            invert_pan_y=True,
+            btn_toggle_zones=4,
+        )
+    )
+    save_config(config, str(temp_config_path))
+    reloaded = load_config(str(temp_config_path)).mouse3d
+    assert reloaded.enabled is True
+    assert reloaded.deadzone_pitch == 0.25
+    assert reloaded.curve == "s-law"
+    assert reloaded.map_pitch == "speed"
+    assert reloaded.sens_pitch == 2.5
+    assert reloaded.invert_pan_y is True
+    assert reloaded.btn_toggle_zones == 4
 
 
 # RttrpmOutputConfig.__post_init__ – fps clamp
@@ -2187,11 +2444,16 @@ def test_detection_config_rejects_bad_box_color() -> None:
     assert cfg.box_color == "#808080"
 
 
-@pytest.mark.parametrize("bad_model", [123, 4.5, None, ["yolov8n.onnx"], {"name": "x"}])
+def test_detection_config_default_model() -> None:
+    """The shipped default model is the NMS-free YOLO26 nano export."""
+    assert DetectionConfig().model == "yolo26n.onnx"
+
+
+@pytest.mark.parametrize("bad_model", [123, 4.5, None, ["yolo26n.onnx"], {"name": "x"}])
 def test_detection_config_coerces_non_string_model_to_default(bad_model: object) -> None:
     """Non-string model must coerce to default string."""
     cfg = DetectionConfig(model=bad_model)  # type: ignore[arg-type]
-    assert cfg.model == "yolov8n.onnx"
+    assert cfg.model == "yolo26n.onnx"
     assert isinstance(cfg.model, str)
 
 
@@ -2290,14 +2552,55 @@ def test_detection_config_clamps_assist_strength(bad_strength: object, expected:
 
 def test_detection_config_default_values() -> None:
     """The shipped detection defaults favour accuracy on a workstation: a
-    larger inference size, CLAHE preprocessing, a lower confidence floor, a
-    faster cadence, and prediction lookahead. Guards against silent drift."""
+    larger inference size, a lower confidence floor, a faster cadence, and
+    prediction lookahead. Guards against silent drift."""
     cfg = DetectionConfig()
     assert cfg.inference_size == 640
-    assert cfg.preprocess_clahe is True
     assert cfg.confidence == pytest.approx(0.2)
     assert cfg.interval_ms == 67
     assert cfg.prediction == pytest.approx(8.0)
+
+
+def test_detection_config_masks_enabled_defaults_off() -> None:
+    """The masking master switch ships off so drawn masks never restrict
+    detection until the operator turns them on."""
+    assert DetectionConfig().masks_enabled is False
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (True, True),
+        (False, False),
+        ("true", True),
+        ("on", True),
+        ("1", True),
+        ("false", False),
+        ("off", False),
+        ("garbage", False),
+        (None, False),
+        (1, False),
+    ],
+)
+def test_detection_config_coerces_masks_enabled(raw: object, expected: bool) -> None:
+    cfg = DetectionConfig(masks_enabled=raw)  # type: ignore[arg-type]
+    assert cfg.masks_enabled is expected
+
+
+def test_load_config_drops_obsolete_detection_keys(temp_config_path) -> None:
+    """A hand-edited ``[detection]`` carrying the removed ``pin_marker`` /
+    ``preprocess_clahe`` keys loads without raising; the keys are silently
+    dropped so the resulting config exposes no such attributes."""
+    temp_config_path.write_text(
+        "[detection]\nenabled = true\npin_marker = true\npreprocess_clahe = true\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(str(temp_config_path))
+
+    assert config.detection.enabled is True
+    assert not hasattr(config.detection, "pin_marker")
+    assert not hasattr(config.detection, "preprocess_clahe")
 
 
 # --- OtpOutputConfig ------------------------------------------------------
@@ -2535,6 +2838,98 @@ def test_trigger_zones_config_preserves_already_built_instances() -> None:
     zone = TriggerZoneConfig(name="pre-built")
     zones = TriggerZonesConfig(zones=[zone])
     assert zones.zones[0] is zone
+
+
+# ---------------------------------------------------------------------------
+# DetectionMaskConfig – region-of-interest polygons (normalised 0-1 coords)
+# ---------------------------------------------------------------------------
+
+
+def test_detection_mask_coerces_numeric_vertices() -> None:
+    from openfollow.configuration import DetectionMaskConfig
+
+    mask = DetectionMaskConfig(
+        vertices=[
+            [0, 1],  # ints → floats
+            [0.25, 0.75],  # already floats
+            ["bad", 0.5],  # non-numeric x → dropped
+            [0.6],  # too short → dropped
+            "not a list",  # wrong type → dropped
+            (0.7, 0.8, 0.9),  # tuple len>=2 → kept (first two)
+        ]
+    )
+    assert mask.vertices == [[0.0, 1.0], [0.25, 0.75], [0.7, 0.8]]
+
+
+@pytest.mark.parametrize("bad", ["nan", "inf", "-inf", float("nan"), float("inf")])
+def test_detection_mask_drops_non_finite_vertices(bad: object) -> None:
+    from openfollow.configuration import DetectionMaskConfig
+
+    mask = DetectionMaskConfig(
+        vertices=[
+            [0.0, 0.0],
+            [bad, 0.5],  # non-finite x → dropped
+            [0.5, bad],  # non-finite y → dropped
+            [1.0, 1.0],
+        ]
+    )
+    assert mask.vertices == [[0.0, 0.0], [1.0, 1.0]]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(True, True), (False, False), ("false", False), ("true", True), ("0", False), ("1", True)],
+)
+def test_detection_mask_coerces_enabled(raw: object, expected: bool) -> None:
+    from openfollow.configuration import DetectionMaskConfig
+
+    assert DetectionMaskConfig(enabled=raw).enabled is expected
+
+
+@pytest.mark.parametrize("bad", [None, 5, [1], "maybe"])
+def test_detection_mask_enabled_unrecognised_falls_back_to_default(bad: object) -> None:
+    # ``_coerce_bool`` only recognises real bools + known string forms; anything
+    # else (incl. bare ints) falls to the declared default (True).
+    from openfollow.configuration import DetectionMaskConfig
+
+    assert DetectionMaskConfig(enabled=bad).enabled is True
+
+
+@pytest.mark.parametrize("bad_name", [None, 123, ["x"], {"a": 1}])
+def test_detection_mask_coerces_non_string_name_to_empty(bad_name: object) -> None:
+    from openfollow.configuration import DetectionMaskConfig
+
+    assert DetectionMaskConfig(name=bad_name).name == ""
+
+
+def test_detection_config_converts_dict_masks_to_dataclasses() -> None:
+    from openfollow.configuration import DetectionConfig, DetectionMaskConfig
+
+    cfg = DetectionConfig(
+        masks=[
+            {"name": "stage", "vertices": [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]], "enabled": True},
+            "junk",  # non-object → dropped
+            123,  # non-object → dropped
+        ]
+    )
+    assert len(cfg.masks) == 1
+    assert isinstance(cfg.masks[0], DetectionMaskConfig)
+    assert cfg.masks[0].name == "stage"
+    assert cfg.masks[0].vertices == [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]]
+
+
+def test_detection_config_preserves_already_built_masks() -> None:
+    from openfollow.configuration import DetectionConfig, DetectionMaskConfig
+
+    mask = DetectionMaskConfig(name="pre-built")
+    cfg = DetectionConfig(masks=[mask])
+    assert cfg.masks[0] is mask
+
+
+def test_detection_config_masks_default_empty() -> None:
+    from openfollow.configuration import DetectionConfig
+
+    assert DetectionConfig().masks == []
 
 
 # ---------------------------------------------------------------------------

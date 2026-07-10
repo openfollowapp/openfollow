@@ -48,6 +48,9 @@ def _render_general(**overrides):
         "update_status": {"state": "idle", "message": "", "error": ""},
         "network_state": None,
         "current_version": "0.2.3",
+        # The real route sets this from ``sys.platform``; default to the
+        # Pi/Linux case (section shown) so the existing structure tests hold.
+        "update_supported": True,
     }
     ctx.update(overrides)
     return template("partials/general", **ctx)
@@ -111,6 +114,25 @@ class TestGeneralStructure:
         assert 'name="update_repo_branch"' not in body
         assert "/section/general/update-from-public" not in body
 
+    def test_software_update_hidden_when_unsupported(self) -> None:
+        """On hosts without the .deb installer (macOS) the whole Software
+        Update section and its inline JS are absent."""
+        body = _render_general(update_supported=False)
+        assert "general-software-update" not in body
+        assert "/section/general/deb-update" not in body
+        assert "/section/general/deb-upload" not in body
+        assert "openfollowCheckUpdate" not in body
+        assert "openfollowUploadUpdate" not in body
+        # The rest of the tab is unaffected.
+        assert 'data-fold-key="general-station"' in body
+        assert 'data-fold-key="general-network-interface"' in body
+
+    def test_software_update_shown_when_supported(self) -> None:
+        """On the Pi/Linux case the section and its handlers render."""
+        body = _render_general(update_supported=True)
+        assert 'data-fold-key="general-software-update"' in body
+        assert "openfollowCheckUpdate" in body
+
     def test_marker_assignment_is_gone(self) -> None:
         body = _render_general()
         assert 'name="controlled_marker_ids"' not in body
@@ -138,3 +160,38 @@ class TestGeneralNetworkInterfaceRegion:
         body = _render_general()
         assert 'id="general-network-state"' not in body
         assert "/section/general/network_state" not in body
+
+
+class TestUpdateSupportedFlag:
+    """``_build_general_template_data`` derives ``update_supported`` from the
+    host platform: the .deb installer is Pi/Linux-only."""
+
+    @staticmethod
+    def _build(monkeypatch: pytest.MonkeyPatch, platform: str) -> dict:
+        from types import SimpleNamespace
+
+        from openfollow.web import routes
+
+        monkeypatch.setattr(routes.sys, "platform", platform)
+        monkeypatch.setattr(routes, "_get_local_ips", lambda: ["127.0.0.1"])
+        server = SimpleNamespace(
+            get_update_status=lambda: {"state": "idle", "message": "", "error": ""},
+            get_network_state=lambda: None,
+            get_update_available=lambda: "",
+        )
+        return routes._build_general_template_data(server, AppConfig())
+
+    @pytest.mark.parametrize(
+        ("platform", "expected"),
+        [
+            ("linux", True),
+            ("linux2", True),  # older sys.platform spelling
+            ("darwin", False),
+            ("win32", False),  # only the Linux .deb installer is supported
+        ],
+    )
+    def test_update_supported_follows_platform(
+        self, monkeypatch: pytest.MonkeyPatch, platform: str, expected: bool
+    ) -> None:
+        data = self._build(monkeypatch, platform)
+        assert data["update_supported"] is expected

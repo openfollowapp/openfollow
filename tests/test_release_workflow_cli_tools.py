@@ -76,6 +76,20 @@ def test_build_deb_pep440_version_transform(raw: str, expected: str) -> None:
     assert _pep440_from_build_script(raw) == expected
 
 
+def test_build_deb_model_export_pins_cpu_torch() -> None:
+    """The amd64 build must not pull the multi-GB CUDA torch wheel: the model
+    export venv installs CPU-only torch from the PyTorch CPU index *before*
+    ultralytics, so ultralytics' torch dep is already satisfied (the arm64
+    default is CPU-only anyway). A bare `pip install ultralytics` would silently
+    reintroduce the CUDA download on x86_64."""
+    text = _build_deb_path().read_text()
+    cpu_idx = text.find("https://download.pytorch.org/whl/cpu")
+    assert cpu_idx >= 0, "model export must install CPU-only torch from the PyTorch CPU index"
+    ultra = text.find('"ultralytics>=8.4.72"')
+    assert ultra >= 0, "model export ultralytics install not found"
+    assert cpu_idx < ultra, "CPU-only torch must be installed before ultralytics so its torch dep is pre-satisfied"
+
+
 def _visudo_resolution_snippet() -> str:
     lines = _build_deb_path().read_text().splitlines()
     start = next((idx for idx, line in enumerate(lines) if "command -v visudo" in line), -1)

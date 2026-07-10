@@ -108,10 +108,21 @@ log "stamping package version: $pep440_version"
 cp -f "$PYPROJECT" "$PYPROJECT_BAK"
 sed -i -E "0,/^version = \".*\"/s//version = \"$pep440_version\"/" "$PYPROJECT"
 
-log "installing openfollow + dependencies (base, no detection extra) ..."
 # PEP 517 build via poetry-core; pulls runtime deps from pyproject. Compiles
 # PyGObject / python-rtmidi from sdist when no wheel matches this Python.
-"$VENV/bin/pip" install "$REPO_ROOT"
+# The detection backend (onnxruntime + opencv, both permissive) is bundled so an
+# offline Pi runs detection with no pip; the heavy AGPL export toolchain
+# (torch / ultralytics) is not. Set OF_DEB_SKIP_DETECTION=1 for a base-only .deb
+# (mirrors OF_DEB_SKIP_MODELS).
+if [ "${OF_DEB_SKIP_DETECTION:-0}" = "1" ]; then
+  WITH_DETECTION=0
+  log "OF_DEB_SKIP_DETECTION=1 - installing openfollow base only (no detection backend) ..."
+  "$VENV/bin/pip" install "$REPO_ROOT"
+else
+  WITH_DETECTION=1
+  log "installing openfollow + dependencies + detection backend (onnxruntime + opencv; no torch/ultralytics) ..."
+  "$VENV/bin/pip" install "$REPO_ROOT[detection]"
+fi
 
 # PyGObject / pycairo MUST come from the OS (python3-gi, python3-gi-cairo) so
 # they match the distro's gobject-introspection typelibs + libgirepository.
@@ -146,7 +157,7 @@ done
 
 # Sanity: the package and its heavy deps must import from the bundled venv, and
 # GStreamer must load via the OS PyGObject (the exact path that broke before).
-"$VENV/bin/python" - <<'PY'
+OF_SMOKE_WITH_DETECTION="$WITH_DETECTION" "$VENV/bin/python" - <<'PY'
 import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # OS PyGObject via system site-packages
@@ -159,10 +170,39 @@ from packaging.version import Version  # noqa: F401
 # host's system site-packages (which a slim target image won't have). `packaging`
 # regressed exactly this way once: --system-site-packages let pip skip it because
 # the runner had python3-packaging. Assert it loads from inside the venv prefix.
+import importlib.util
 import os, sys
 prefix = os.path.realpath(sys.prefix)
 mod = os.path.realpath(packaging.__file__)
 assert mod.startswith(prefix + os.sep), f"packaging not bundled in venv: {mod}"
+
+# The 3D Mouse stack is a base runtime dep and MUST ship in the venv so the
+# feature works on an offline Pi (libhidapi-hidraw0 is a target Depends). Probe
+# via find_spec rather than importing: importing pyspacemouse triggers easyhid's
+# libhidapi dlopen, which the build host need not have.
+spec = importlib.util.find_spec("pyspacemouse")
+origin = spec.origin if spec else None
+assert origin and os.path.realpath(origin).startswith(prefix + os.sep), (
+    f"pyspacemouse not bundled in venv: {origin}"
+)
+
+# Detection backend must be bundled (import from the venv prefix); the AGPL
+# export toolchain (torch / ultralytics) must not be – the SBOM gate's boundary,
+# verified here at build time.
+if os.environ.get("OF_SMOKE_WITH_DETECTION") == "1":
+    import cv2  # noqa: F401
+    import onnxruntime
+    for probe in (onnxruntime, cv2):
+        path = os.path.realpath(probe.__file__)
+        assert path.startswith(prefix + os.sep), f"detection backend not bundled in venv: {path}"
+    # system-site-packages is on, so a global torch/ultralytics is fine; assert
+    # only that neither is bundled inside the venv (origin under the prefix).
+    for forbidden in ("torch", "ultralytics"):
+        spec = importlib.util.find_spec(forbidden)
+        origin = os.path.realpath(spec.origin) if spec and spec.origin else ""
+        assert not origin.startswith(prefix + os.sep), f"{forbidden} must not be bundled in the venv (size / AGPL): {origin}"
+    print("[build-deb] detection backend smoke OK: onnxruntime + cv2 bundled, no torch/ultralytics in venv")
+
 print("[build-deb] venv import smoke OK:", openfollow.__version__, "| Gst", Gst.version_string())
 PY
 
@@ -199,20 +239,53 @@ fi
 
 # --- static payload -----------------------------------------------------------
 install -m 0644 "$REPO_ROOT/openfollow/web/static/openfollow.svg" "$SHARE/openfollow.svg"
+# udev rule granting the service user (plugdev) access to a 3D Mouse hidraw
+# node. The postinst reloads + triggers udev so it applies without a replug.
+install -d -m 0755 "$STAGE/lib/udev/rules.d"
+install -m 0644 "$REPO_ROOT/packaging/udev/99-openfollow-3dmouse.rules" \
+  "$STAGE/lib/udev/rules.d/99-openfollow-3dmouse.rules"
 install -m 0755 "$DEBIAN_DIR/splash.sh"                           "$SHARE/splash.sh"
 install -m 0755 "$DEBIAN_DIR/session.sh"                          "$SHARE/session.sh"
 install -m 0755 "$DEBIAN_DIR/apply-update.sh"                     "$SHARE/apply-update.sh"
 # NDI is not bundled (closed-source SDK); this helper builds + installs it
 # post-install. See https://openfollow.app/docs/ndi-install.html.
 install -m 0755 "$REPO_ROOT/scripts/install-ndi.sh"               "$SHARE/install-ndi.sh"
-# Detection deps are not bundled (torch is large + ultralytics is AGPL-3.0); this
-# helper installs them into the app venv on demand. See
+# The detection backend (onnxruntime + opencv) is bundled in the venv above, so
+# detection runs on the Pi out of the box. This helper remains for source/dev
+# installs and to add the model-export toolchain on a workstation
+# (`install-detection.sh --with-export`; torch is large + ultralytics is
+# AGPL-3.0, so neither is bundled). See
 # https://openfollow.app/docs/detection-install.html.
 install -m 0755 "$REPO_ROOT/scripts/install-detection.sh"         "$SHARE/install-detection.sh"
 # Model export script: exported ONNX models land in the detection storage
 # directory (live on built images after detection install, or from source).
 install -d -m 0755 "$SHARE/scripts"
 install -m 0755 "$REPO_ROOT/scripts/export_onnx.py"               "$SHARE/scripts/export_onnx.py"
+# Pre-shipped quality-tier models (nano/small/medium). The app seeds these into
+# the detection storage models/ folder on first start (openfollow/model_seed.py)
+# so detection works offline out of the box; Large/XLarge stay download-only on
+# the Pi. Exported in a throwaway venv so torch/ultralytics never enter the .deb.
+# Build-time only (needs an uplink); set OF_DEB_SKIP_MODELS=1 on an offline host.
+install -d -m 0755 "$SHARE/models"
+if [ "${OF_DEB_SKIP_MODELS:-0}" = "1" ]; then
+  log "OF_DEB_SKIP_MODELS=1 - skipping pre-shipped model export"
+else
+  log "exporting quality-tier models (yolo26 n/s/m @ 320) - needs an uplink"
+  EXPORT_VENV="$(mktemp -d)"
+  python3 -m venv "$EXPORT_VENV"
+  "$EXPORT_VENV/bin/pip" install --quiet --upgrade pip
+  # CPU-only torch first so it satisfies ultralytics before the default CUDA wheel
+  # is pulled (amd64 skips ~GBs of unused CUDA libs); fall back if no CPU build.
+  "$EXPORT_VENV/bin/pip" install --quiet --index-url https://download.pytorch.org/whl/cpu torch torchvision \
+    || "$EXPORT_VENV/bin/pip" install --quiet torch torchvision
+  "$EXPORT_VENV/bin/pip" install --quiet "ultralytics>=8.4.72" onnx onnxslim
+  for tier in n s m; do
+    ( cd "$EXPORT_VENV" && "$EXPORT_VENV/bin/python" "$REPO_ROOT/scripts/export_onnx.py" \
+        "yolo26${tier}.pt" --imgsz 320 --output-dir "$SHARE/models" )
+  done
+  rm -rf "$EXPORT_VENV"
+  chmod 0644 "$SHARE/models"/*.onnx
+fi
 install -m 0644 "$DEBIAN_DIR/kanshi.config"                       "$SHARE/kanshi.config"
 install -m 0644 "$REPO_ROOT/config.example.toml"                 "$SHARE/config.example.toml"
 # First-boot seed: bootstrap_config_if_missing() looks for the example next to

@@ -292,3 +292,32 @@ class TestWizardUnitInjection:
         # "Stored:" string itself lives in the always-present JS helper, so
         # assert on the server-rendered element id instead.)
         assert 'id="grid_width-echo"' not in body
+
+
+class TestDetectInputWidget:
+    """The reusable detect-input widget (detect-input.js) is bundled and
+    referenced, and the 3D Mouse section wires its button binds to it."""
+
+    def test_index_references_detect_input_js(self, live_server) -> None:
+        server, base = live_server
+        status, body = _get(base, "/")
+        assert status == 200
+        assert "/assets/js/detect-input.js" in body
+
+    def test_detect_input_js_is_served(self, live_server) -> None:
+        server, base = live_server
+        status, body = _get(base, "/assets/js/detect-input.js")
+        assert status == 200
+        assert "data-detect-input" in body
+        assert "data-detect-url" in body
+        # The detect poll must bypass the browser cache so a stale {button: null}
+        # (or a previous button) can't satisfy the live fetch.
+        assert "cache: 'no-store'" in body
+
+    def test_mouse3d_section_wires_detect_widget(self, live_server) -> None:
+        server, base = live_server
+        status, body = _get(base, "/section/mouse3d")
+        assert status == 200
+        assert 'class="detect-input"' in body
+        assert 'data-detect-input="m3d-btn_reset"' in body
+        assert 'data-detect-url="/section/mouse3d/detect"' in body

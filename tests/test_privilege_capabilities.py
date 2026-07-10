@@ -10,6 +10,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from openfollow.privilege.capabilities import (
+    _EPOCH_ARG_RE,
     _PROBE_PLACEHOLDER,
     _USERNAME_ARG_RE,
     ALL_CAPABILITIES,
@@ -30,6 +31,7 @@ from openfollow.privilege.capabilities import (
     SERVICE_RESTART,
     SUDOERS_DROP_IN_FILENAME,
     SUDOERS_TMP_PREFIX,
+    SYSTEM_SET_CLOCK,
     SYSTEMD_UNIT_TMP_PREFIX,
     Capability,
     capability_by_name,
@@ -76,6 +78,77 @@ def test_capability_by_name_finds_registered() -> None:
 
 def test_capability_by_name_returns_none_for_unknown() -> None:
     assert capability_by_name("does.not.exist") is None
+
+
+# ---------------------------------------------------------------------------
+# system.set_clock (auto time-sync)
+# ---------------------------------------------------------------------------
+
+
+def test_set_clock_registered() -> None:
+    assert capability_by_name("system.set_clock") is SYSTEM_SET_CLOCK
+    assert SYSTEM_SET_CLOCK in ALL_CAPABILITIES
+
+
+def test_set_clock_allows_epoch_arg() -> None:
+    # A bare ``@<digits>`` token is the only accepted tail.
+    SYSTEM_SET_CLOCK.assert_argv_allowed(["/usr/bin/date", "-s", "@1735700000"])
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "now",  # human time string – not epoch
+        "@",  # no digits
+        "@12 34",  # embedded space
+        "1735700000",  # missing the ``@`` absolute-epoch marker
+        "@12;reboot",  # command injection attempt
+        "-r/etc/shadow",  # option injection (read ref file)
+    ],
+)
+def test_set_clock_rejects_non_epoch_tail(tail: str) -> None:
+    with pytest.raises(ValueError):
+        SYSTEM_SET_CLOCK.assert_argv_allowed(["/usr/bin/date", "-s", tail])
+
+
+def test_set_clock_rejects_extra_args() -> None:
+    with pytest.raises(ValueError):
+        SYSTEM_SET_CLOCK.assert_argv_allowed(["/usr/bin/date", "-s", "@1735700000", "@1"])
+
+
+def test_set_clock_sudoers_pattern_is_anchored_not_glob() -> None:
+    # Must NOT be a bare trailing ``*`` (that would allow arbitrary date args).
+    assert SYSTEM_SET_CLOCK.sudoers_pattern == "/usr/bin/date -s ^@[0-9]+$"
+
+
+def test_set_clock_probe_command_uses_epoch_token() -> None:
+    # The bare ``_`` placeholder can't satisfy ``^@[0-9]+$``, so the probe must
+    # fill the slot with a concrete ``@<digits>`` token; otherwise ``sudo -n
+    # -ll`` finds no covering rule and the capability reads NEEDS_PASSWORD even
+    # with the grant installed.
+    cmd = SYSTEM_SET_CLOCK.probe_command()
+    assert cmd == ("/usr/bin/date", "-s", "@0")
+    assert re.fullmatch(_EPOCH_ARG_RE, cmd[-1]) is not None
+
+
+def test_probe_command_defaults_to_probe_argv() -> None:
+    # No probe_arg -> the raw argv (bare ``_`` slot) is probed verbatim.
+    assert SERVICE_RESTART.probe_command() == SERVICE_RESTART.probe_argv
+    assert _PROBE_PLACEHOLDER in SERVICE_RESTART.probe_command()
+
+
+def test_arg_pattern_probe_slot_satisfies_pattern() -> None:
+    # Registry-wide invariant generalising test_username_regex_matches_probe_placeholder:
+    # any capability whose sudoers rule bounds the free slot with an arg_pattern
+    # MUST probe with a token satisfying it, else the broker can never report
+    # PASSWORDLESS even with the grant installed (a silently-dead capability).
+    for cap in ALL_CAPABILITIES:
+        if cap.arg_pattern is None:
+            continue
+        slot = cap.probe_arg if cap.probe_arg is not None else _PROBE_PLACEHOLDER
+        assert re.fullmatch(cap.arg_pattern, slot) is not None, (
+            f"{cap.name}: probe slot {slot!r} does not satisfy arg_pattern {cap.arg_pattern!r}"
+        )
 
 
 def test_network_dhcpcd_conf_write_is_atomic_and_exact_path() -> None:

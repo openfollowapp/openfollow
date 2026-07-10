@@ -71,7 +71,7 @@ def test_check_detection_dependencies_empty_when_all_present(monkeypatch) -> Non
     assert detection_module.check_detection_dependencies(DetectionConfig(model="x.onnx")) == []
 
 
-def test_tracked_detection_obeys_grace_period_then_falls_back(monkeypatch) -> None:
+def test_tracked_detection_obeys_grace_period_then_reacquires(monkeypatch) -> None:
     detection_module = _load_detection_module()
     cfg = DetectionConfig(enabled=False, grace_period_ms=500)
     detector = detection_module.PersonDetector(cfg)
@@ -81,15 +81,18 @@ def test_tracked_detection_obeys_grace_period_then_falls_back(monkeypatch) -> No
     detector._pinned_id = 7
     monkeypatch.setattr(detection_module.time, "monotonic", lambda: 10.2)
 
+    # Within grace: sticky return of the pinned person's box.
     assert detector.tracked_detection is pinned_box
 
-    fallback_box = detection_module.DetectionBox(0.1, 0.1, 0.9, 0.9, 0.7, track_id=42)
-    detector._results = [fallback_box]
+    # Grace expired: the pin releases and re-acquires the visible detection at the
+    # same place (same centre as the pinned box), now under a new track_id.
+    reacquired_box = detection_module.DetectionBox(0.25, 0.2, 0.45, 0.8, 0.7, track_id=42)
+    detector._results = [reacquired_box]
     detector._tracked = [detection_module._TrackedPerson(track_id=7, box=pinned_box, last_seen=9.0)]
     monkeypatch.setattr(detection_module.time, "monotonic", lambda: 10.0)
 
     chosen = detector.tracked_detection
-    assert chosen is fallback_box
+    assert chosen is reacquired_box
     assert detector._pinned_id == 42
 
 
@@ -347,6 +350,67 @@ def test_track_carries_lost_track_within_grace_period(monkeypatch) -> None:
     assert all(t.track_id != first_id for t in detector._tracked)
 
 
+def test_pin_survives_confidence_dip_without_renumber(monkeypatch) -> None:
+    """End-to-end (re-acquisition + low-band recovery): a performer who goes
+    briefly undetected and then reappears dim (low band only) keeps their
+    track_id and stays pinned – the follow never re-numbers or jumps away."""
+    detection_module = _load_detection_module()
+    cfg = DetectionConfig(enabled=False, confidence=0.5, grace_period_ms=500)
+    detector = detection_module.PersonDetector(cfg)
+
+    # Frame 1: a high detection -> track created, auto-pin locks on.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.0)
+    detector._results = detector._track([detection_module.DetectionBox(0.30, 0.30, 0.50, 0.80, 0.9)])
+    pinned = detector.tracked_detection
+    assert pinned is not None
+    pinned_id = detector._pinned_id
+    assert pinned_id == pinned.track_id
+
+    # Frame 2: no detection at all -> the track goes lost (still within grace).
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.1)
+    detector._results = detector._track([])
+
+    # Frame 3: the performer reappears DIM (low band only) at the same place.
+    # The lost track is recovered from the low band and keeps its id.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.2)
+    detector._results = detector._track([detection_module.DetectionBox(0.31, 0.31, 0.49, 0.79, 0.3)])
+
+    assert pinned_id in {b.track_id for b in detector._results}  # recovered, same id
+    still = detector.tracked_detection
+    assert still is not None
+    assert detector._pinned_id == pinned_id  # never re-numbered, follow held
+
+
+def test_track_passes_elapsed_dt_to_tracker(monkeypatch) -> None:
+    """``_track`` converts real elapsed time into a nominal-interval-relative dt
+    for the Kalman: 1.0 on the first call, the true ratio after, clamped on a
+    back-to-back call so a zero gap can't stall the extrapolation."""
+    detection_module = _load_detection_module()
+    cfg = DetectionConfig(enabled=False, interval_ms=100)  # nominal step = 0.1s
+    detector = detection_module.PersonDetector(cfg)
+
+    captured: list[float] = []
+    real_update = detector._tracker.update
+
+    def spy(high, low, now, max_lost_time, dt=1.0):
+        captured.append(dt)
+        return real_update(high, low, now, max_lost_time, dt=dt)
+
+    monkeypatch.setattr(detector._tracker, "update", spy)
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: clock["t"])
+
+    detector._track([])  # first step: no prior timestamp -> dt 1.0
+    clock["t"] = 1000.2  # 200ms later, nominal 100ms -> dt 2.0
+    detector._track([])
+    detector._track([])  # same timestamp -> clamps to the floor
+
+    assert captured[0] == 1.0
+    assert captured[1] == pytest.approx(2.0)
+    assert captured[2] == pytest.approx(detection_module._MIN_DT_REL)
+
+
 # ---------------------------------------------------------------------------
 # Live config-apply
 # ---------------------------------------------------------------------------
@@ -415,20 +479,17 @@ def test_drain_does_not_live_swap_inference_size() -> None:
     assert detector._inference_size == 320
 
 
-def test_drain_recomputes_clahe_when_toggled() -> None:
+def test_clahe_always_present_and_survives_drain() -> None:
     detection_module = _load_detection_module()
-    detector = detection_module.PersonDetector(
-        DetectionConfig(enabled=False, preprocess_clahe=False),
-    )
-    assert detector._clahe is None
-
-    detector._pending_config = DetectionConfig(enabled=False, preprocess_clahe=True)
-    detector._drain_pending_config()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False))
+    # CLAHE is unconditional – the equaliser exists straight after construction.
     assert detector._clahe is not None
+    clahe_before = detector._clahe
 
-    detector._pending_config = DetectionConfig(enabled=False, preprocess_clahe=False)
+    # A live reload doesn't touch CLAHE – there is no toggle to drain.
+    detector._pending_config = DetectionConfig(enabled=False, confidence=0.42)
     detector._drain_pending_config()
-    assert detector._clahe is None
+    assert detector._clahe is clahe_before
 
 
 def test_drain_rebuilds_backend_when_model_changes() -> None:
@@ -720,3 +781,64 @@ def test_drain_restores_env_baseline_on_storage_path_cleared(
     # Env restored to the operator's pre-app baseline (unset).
     assert "XDG_CACHE_HOME" not in _os.environ
     assert detector._config.storage_path == ""
+
+
+def test_pick_available_model_prefers_fastest_tier(tmp_path: Path) -> None:
+    detection_module = _load_detection_module()
+    models = tmp_path / "models"
+    models.mkdir()
+    # A higher tier and a non-tier model present, but the Fastest tier wins.
+    for name in ("yolo26m.onnx", "yolo11l.onnx", "yolo26n.onnx"):
+        (models / name).write_bytes(b"x")
+
+    picked = detection_module.PersonDetector._pick_available_model(models)
+
+    assert picked is not None
+    assert picked.name == "yolo26n.onnx"
+
+
+def test_pick_available_model_falls_back_to_any_onnx(tmp_path: Path) -> None:
+    detection_module = _load_detection_module()
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "custom_model.onnx").write_bytes(b"x")
+
+    picked = detection_module.PersonDetector._pick_available_model(models)
+
+    assert picked is not None
+    assert picked.name == "custom_model.onnx"
+
+
+def test_pick_available_model_none_when_empty(tmp_path: Path) -> None:
+    detection_module = _load_detection_module()
+    models = tmp_path / "models"
+    models.mkdir()
+
+    assert detection_module.PersonDetector._pick_available_model(models) is None
+
+
+def test_prepare_model_path_falls_back_when_configured_model_missing(tmp_path: Path) -> None:
+    detection_module = _load_detection_module()
+    models = tmp_path / "models"
+    models.mkdir(parents=True)
+    (models / "yolo26n.onnx").write_bytes(b"x")
+
+    # Configured model isn't on disk; resolution should fall back to the tier
+    # that is, so enabling detection still starts.
+    cfg = DetectionConfig(enabled=True, model="yolov8n.onnx", storage_path=str(tmp_path))
+    resolved = detection_module.PersonDetector._prepare_model_path(cfg)
+
+    assert Path(resolved) == models / "yolo26n.onnx"
+
+
+def test_prepare_model_path_keeps_configured_model_when_present(tmp_path: Path) -> None:
+    detection_module = _load_detection_module()
+    models = tmp_path / "models"
+    models.mkdir(parents=True)
+    (models / "yolo26n.onnx").write_bytes(b"x")
+    (models / "yolo26m.onnx").write_bytes(b"x")
+
+    cfg = DetectionConfig(enabled=True, model="yolo26m.onnx", storage_path=str(tmp_path))
+    resolved = detection_module.PersonDetector._prepare_model_path(cfg)
+
+    assert Path(resolved) == models / "yolo26m.onnx"

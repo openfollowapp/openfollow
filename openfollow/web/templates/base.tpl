@@ -26,6 +26,7 @@
  % end
  <script src="/assets/js/color-picker.js?v={{_asset_v}}"></script>
  <script src="/assets/js/units.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/detect-input.js?v={{_asset_v}}"></script>
  <style>
  :root {
  color-scheme: dark;
@@ -357,6 +358,7 @@
  .detection-cards .group--assist { margin-top: 0.9rem; padding-top: 0.95rem; border-top: 1px solid rgba(255, 255, 255, 0.06); }
  /* Segmented two-option toggle (Tracking Mode): equal-width cells. */
  .seg-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 30rem; padding: 4px; border: 1px solid var(--border-soft); border-radius: 0.7rem; background: rgba(0, 0, 0, 0.22); }
+ .seg-toggle--3 { grid-template-columns: repeat(3, 1fr); max-width: 36rem; }
  .seg-toggle .seg-option { margin: 0; display: flex; cursor: pointer; }
  .seg-toggle .seg-option input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
  .seg-toggle .seg-option > span { flex: 1; display: flex; flex-direction: column; gap: 1px; padding: 0.4rem 0.95rem; border-radius: 0.5rem; color: var(--muted); text-align: center; transition: background 0.12s, color 0.12s; }
@@ -364,6 +366,16 @@
  .seg-toggle .seg-option > span small { font-size: 0.72rem; font-weight: 400; opacity: 0.8; }
  .seg-toggle .seg-option input:checked + span { background: var(--accent); color: #1a1205; }
  .seg-toggle .seg-option input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+ .tier-list { display: flex; flex-direction: column; gap: 6px; max-width: 32rem; }
+ .tier-option { margin: 0; display: flex; cursor: pointer; }
+ .tier-option input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+ .tier-option > span { flex: 1; display: flex; flex-direction: column; gap: 1px; padding: 0.5rem 0.85rem; border: 1px solid var(--border-soft); border-radius: 0.55rem; background: rgba(0, 0, 0, 0.18); color: var(--muted); transition: background 0.12s, color 0.12s, border-color 0.12s; }
+ .tier-option > span strong { font-size: 0.9rem; font-weight: 700; }
+ .tier-option > span small { font-size: 0.74rem; font-weight: 400; opacity: 0.82; }
+ .tier-option input:checked + span { background: var(--accent); color: #1a1205; border-color: var(--accent); }
+ .tier-option input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+ .tier-option input:disabled + span { opacity: 0.5; cursor: not-allowed; }
+ .tier-tag { flex: 0 0 auto; padding: 1px 7px; border-radius: 999px; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.02em; color: #1a1205; background: var(--accent); white-space: nowrap; }
  .stats-columns {
  display: grid;
  gap: 0.78rem;
@@ -631,6 +643,11 @@
  [data-input-type] > .row:last-child { margin-bottom: 0.72rem; }
  .field { display: flex; flex-direction: column; flex: 1; min-width: 130px; }
  .field.wide { flex: 2; min-width: 230px; }
+ /* Inline "press to capture" widget: an input with a Detect button beside it
+    (detect-input.js). The button keeps its .secondary.small styling. */
+ .detect-input { display: flex; gap: 0.4rem; align-items: stretch; }
+ .detect-input > input { flex: 1 1 auto; min-width: 0; }
+ .detect-input > .detect-btn { flex: 0 0 auto; white-space: nowrap; align-self: center; }
  .fields-grid {
  display: grid;
  grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1138,6 +1155,7 @@
  }
  .license-footer a:hover { text-decoration: underline; }
  .license-footer .sep { opacity: 0.5; margin: 0 0.4rem; }
+ .license-footer .update-flag { color: #ffd166; font-weight: 600; margin-left: 0.4rem; }
  /* Full verbatim license text on the /about page. Scrollable so the
  ~660-line AGPLv3 doesn't dominate the page, monospace + preserved
  wrapping so the FSF formatting stays intact. */
@@ -2054,6 +2072,9 @@
  % from openfollow import __commit__, __version__
  <footer class="license-footer" role="contentinfo">
  OpenFollow v{{__version__}}{{ ' (' + __commit__ + ')' if __commit__ else '' }}
+ % if defined('update_supported') and update_supported and defined('update_available') and update_available:
+ <span class="update-flag">(Update available: v{{latest_version}})</span>
+ % end
  <span class="sep">·</span>
  © 2026 The OpenFollow Project
  <span class="sep">·</span>
@@ -4152,20 +4173,23 @@
  const display = (sel.value === 'midi') ? '' : 'none';
  rows.forEach((row) => { row.style.display = display; });
  });
- // Detection: reveal the "Assisted tracking" sub-block only when the
- // Tracking Mode toggle is set to AI Assisted. The server renders the block
- // with ``hidden`` when the saved mode is Fully Automatic, so the first paint
- // is correct without JS; this handles subsequent operator toggles. Scoped to
- // the closest form so a future second toggle can't collateral-toggle it.
+ // Detection: the Tracking mode radio (off / assist / replace) reveals the
+ // mode-specific sub-blocks. ``data-assist-only`` shows for AI Assisted,
+ // ``data-replace-only`` for Fully Automatic. The server renders the correct
+ // ``hidden`` state on first paint; this handles subsequent operator toggles.
+ // Scoped to the closest form so a future toggle can't collateral-toggle it.
  document.addEventListener('change', (event) => {
- const radio = event.target.closest('input[name="pin_mode"]');
+ const radio = event.target.closest('input[name="tracking_state"]');
  if (!radio) return;
  const form = radio.closest('form');
  if (!form) return;
- const checked = form.querySelector('input[name="pin_mode"]:checked');
- const show = checked !== null && checked.value === 'assist';
+ const checked = form.querySelector('input[name="tracking_state"]:checked');
+ const mode = checked !== null ? checked.value : 'off';
  form.querySelectorAll('[data-assist-only]').forEach((el) => {
- if (show) { el.removeAttribute('hidden'); } else { el.setAttribute('hidden', ''); }
+ if (mode === 'assist') { el.removeAttribute('hidden'); } else { el.setAttribute('hidden', ''); }
+ });
+ form.querySelectorAll('[data-replace-only]').forEach((el) => {
+ if (mode === 'replace') { el.removeAttribute('hidden'); } else { el.setAttribute('hidden', ''); }
  });
  });
  // Generic drag-reorder shared by the OSC Transmitters + OSC Destinations

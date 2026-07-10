@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy.typing as npt
 
-from openfollow.configuration import GridConfig
+from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, GridConfig
 from openfollow.net_utils import list_iface_ipv4
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
 from openfollow.runtime.overlay_state import (
@@ -20,7 +20,7 @@ from openfollow.runtime.overlay_state import (
     OverlayState,
     VirtualFaderDisplayData,
 )
-from openfollow.runtime.services_detection_pin import assist_pinned_marker_id
+from openfollow.runtime.services_detection_pin import is_assist_controlled
 from openfollow.runtime_metrics import OverlayStatePool
 from openfollow.units import UnitSystem
 
@@ -345,7 +345,6 @@ def build_marker_visual_state(
     system_stats: Any,
     person_detector: Any,
     cam_params_buffer: npt.NDArray[Any],
-    pin_state: Any = None,
 ) -> OverlayState:
     """Build a complete OverlayState snapshot for atomic renderer swap."""
     controlled_set = set(app._controlled_ids)
@@ -485,13 +484,12 @@ def build_marker_visual_state(
     # below; ``None`` → no marker-fader value on any card this frame.
     _runtime_services = getattr(app, "_runtime_services", None)
     _fader_bus = getattr(_runtime_services, "_virtual_faders", None) if _runtime_services is not None else None
-    # Assist mode renders the operator-steered manual anchor as the solid carded
-    # marker (what the operator moves) and the AI-corrected PSN output as a dim
-    # ghost below it. ``pinned_id`` is the marker under assist control this frame
-    # (or None when assist isn't engaged); ``ghost_entry`` is the dim AI-output
-    # overlay built while iterating that marker and appended after the loop.
-    pinned_id = assist_pinned_marker_id(app)
-    ghost_entry: MarkerOverlayData | None = None
+    # Assist mode renders each controlled marker's operator-steered manual anchor
+    # as the solid carded marker (what the operator moves) and the AI-corrected
+    # PSN output as a dim ghost below it. Assist refines every controlled marker,
+    # so one ghost is built per assist-controlled marker while iterating and they
+    # are appended after the loop.
+    ghost_entries: list[MarkerOverlayData] = []
     for tid in app._viewer_ids:
         if tid in controlled_set:
             marker = app._server.get_marker(tid)
@@ -534,25 +532,27 @@ def build_marker_visual_state(
         # ``marker.pos`` accesses, which would tear X/Y/Z across two packets.
         px, py, pz = marker.pos
 
-        # The assist-pinned marker's card sits at the operator-steered anchor,
-        # not the broadcast position. Capture the registered (AI-corrected)
-        # position as a dim ghost, then move the carded marker to the anchor.
-        # Until the anchor is seeded the two coincide.
-        if pinned_id is not None and tid == pinned_id:
-            ghost_entry = MarkerOverlayData(
-                marker_id=pinned_id,
-                x=px,
-                y=py,
-                z=pz,
-                color=color,
-                radius=cfg.marker.ball_size,
-                speed=None,
-                online=True,
-                is_controlled=False,
-                name=name,
-                is_assist_ghost=True,
+        # Each assist-controlled marker's card sits at its operator-steered
+        # anchor, not the broadcast position. Capture the registered (AI-
+        # corrected) position as a dim ghost, then move the carded marker to the
+        # anchor. Until the anchor is seeded the two coincide.
+        if is_assist_controlled(app, tid):
+            ghost_entries.append(
+                MarkerOverlayData(
+                    marker_id=tid,
+                    x=px,
+                    y=py,
+                    z=pz,
+                    color=color,
+                    radius=cfg.marker.ball_size,
+                    speed=None,
+                    online=True,
+                    is_controlled=False,
+                    name=name,
+                    is_assist_ghost=True,
+                )
             )
-            anchor = app._assist_manual.get(pinned_id)
+            anchor = app._assist_manual.get(tid)
             if anchor is not None:
                 px, py, pz = anchor.pos
 
@@ -590,11 +590,10 @@ def build_marker_visual_state(
         state.markers.append(td)
         marker_idx += 1
 
-    # The dim AI-output ghost is scene-only (no card, filtered in the HUD loop);
-    # it marks where the AI-corrected output is actually broadcast while the
-    # solid carded marker above sits at the operator-steered anchor.
-    if ghost_entry is not None:
-        state.markers.append(ghost_entry)
+    # The dim AI-output ghosts are scene-only (no card, filtered in the HUD loop);
+    # each marks where one marker's AI-corrected output is actually broadcast while
+    # its solid carded marker above sits at the operator-steered anchor.
+    state.markers.extend(ghost_entries)
 
     cam_cfg = app._camera.to_config()
     cam_params_buffer[0] = cam_cfg.pos_x
@@ -624,14 +623,14 @@ def build_marker_visual_state(
         state.detection_show_labels = dc.show_labels
         state.detection_box_color = dc.box_color
         state.detection_box_thickness = dc.box_thickness
-        # Highlight the box attached to a marker in that marker's colour so the
-        # operator can see which detection is driving the followspot.
-        if pin_state is not None:
-            attached_tid = pin_state.attached_track_id
-            attached_mid = pin_state.attached_marker_id
-            if attached_tid is not None and attached_mid is not None:
-                state.detection_attached_track_id = attached_tid
-                state.detection_attached_color = _resolve_marker_color(app, attached_mid)
+        # Highlight each box attached to a marker in that marker's colour so the
+        # operator can see which detection is driving each followspot. Assist
+        # drives every controlled marker, so several boxes can be attached.
+        attached_colors: dict[int, str] = {}
+        for st in app._detection_pin_states.values():
+            if st.attached_track_id is not None and st.attached_marker_id is not None:
+                attached_colors[st.attached_track_id] = _resolve_marker_color(app, st.attached_marker_id)
+        state.detection_attached_colors = attached_colors
 
     if app._button_detection is not None:
         state.button_detection = app._button_detection.get_state()
@@ -639,12 +638,13 @@ def build_marker_visual_state(
         state.button_detection = None
 
     cc = cfg.controller
-    # With ≥2 controllers connected, DPAD next/prev would rotate the
-    # shared ``_selected_id`` across operators. The bindings are
-    # suppressed at the gamepad layer (``GamepadHandler.update``) AND
-    # hidden from the help overlay so the operator isn't promised a
-    # no-op control. Single-gamepad keeps the full label set.
-    joystick_count = len(app._input_manager.gamepad_handler.joysticks) if app._input_manager is not None else 0
+    # Marker next/prev cycling rotates the shared ``_selected_id``. With ≥2
+    # controllers connected (gamepads + 3D mice, the unified slot space), the
+    # InputManager suppresses the cycling action so operators don't fight over
+    # the selection; mirror that by hiding the next/prev rows from the gamepad
+    # and 3D mouse help so neither promises a no-op control. Read the same
+    # predicate the action gate uses so the help and the action can't drift.
+    state.marker_cycle_enabled = app._input_manager is None or app._input_manager.marker_cycle_active()
     state.button_labels = {
         "reset": cc.btn_reset,
         "toggle_help": cc.btn_toggle_help,
@@ -653,14 +653,8 @@ def build_marker_visual_state(
         "speed_up": cc.btn_speed_up,
         "move_z_down": cc.btn_move_z_down,
         "move_z_up": cc.btn_move_z_up,
-        **(
-            {
-                "next_marker": cc.btn_next_marker,
-                "prev_marker": cc.btn_prev_marker,
-            }
-            if joystick_count <= 1
-            else {}
-        ),
+        "next_marker": cc.btn_next_marker,
+        "prev_marker": cc.btn_prev_marker,
         "settings": cc.btn_settings,
         "menu_confirm": cc.btn_menu_confirm,
         "menu_cancel": cc.btn_menu_cancel,
@@ -682,7 +676,12 @@ def build_marker_visual_state(
 
     _populate_zone_overlay(state, cfg, app)
 
-    state.controller_connected = cfg.controller.enabled and any(bool(info["connected"]) for info in controller_info)
+    # Only a gamepad lights the gamepad help section / status: a 3D mouse is a
+    # unified controller (it gets a card badge) but has its own help section, so
+    # its presence must not advertise gamepad-only controls.
+    state.controller_connected = cfg.controller.enabled and any(
+        bool(info["connected"]) for info in controller_info if info.get("backend") != "mouse3d"
+    )
     # Connected pads that map to no marker (more pads than
     # ``controlled_marker_ids``) are surfaced in the Settings menu's info
     # card; there is no bottom-center status panel.
@@ -698,6 +697,20 @@ def build_marker_visual_state(
     )
     state.mouse_enabled = cfg.controller.mouse_enabled
     state.mouse_double_click_reset = cfg.controller.mouse_double_click_reset
+    # 3D Mouse help: show its axis / button bindings when the feature is enabled
+    # and a device is actually connected (mirrors the gamepad-connected gate).
+    # The maps are only read by the help overlay (gated on mouse3d_connected), so
+    # skip building them every frame on the common feature-off path.
+    m3d_cfg = cfg.mouse3d
+    state.mouse3d_connected = bool(
+        m3d_cfg.enabled and app._input_manager is not None and app._input_manager.mouse3d_manager.connected
+    )
+    if state.mouse3d_connected:
+        state.mouse3d_axis_map = {axis: getattr(m3d_cfg, f"map_{axis}") for axis in MOUSE3D_AXES}
+        state.mouse3d_buttons = {name[4:]: getattr(m3d_cfg, name) for name in MOUSE3D_BUTTON_FIELDS}
+    else:
+        state.mouse3d_axis_map = {}
+        state.mouse3d_buttons = {}
     state.show_hud_help = app._show_hud_help
 
     # Virtual fader stack. Read from the running bus and surface only the

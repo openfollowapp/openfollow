@@ -32,6 +32,11 @@ dependencies = [
     # headers). openfollow/input/midi.py fail-softs if import absent at runtime.
     "mido>=1.3",
     "python-rtmidi>=1.5",
+    # 3D Mouse (3Dconnexion 6DOF) input. Pure-Python chain over prebuilt cffi
+    # wheels (easyhid-ng -> cffi), loading the system ``libhidapi`` at runtime;
+    # no on-device compile. openfollow/input/mouse3d.py imports it lazily and
+    # fail-softs when the lib is absent, so this stays import-safe everywhere.
+    "pyspacemouse>=2.0.0",
     "packaging>=26.2",
     # Render the bundled help ``.md`` docs to HTML for the web UI help drawer.
     # Pure-Python, no native deps (safe on the Pi). ``escape=True`` (see
@@ -41,12 +46,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-detection = ["onnxruntime>=1.17", "opencv-python>=4.8"]
+detection = ["onnxruntime>=1.17", "opencv-python>=5.0.0.93"]
 # Model export tooling: converts YOLO ``.pt`` weights to the ONNX models the
 # detector runs. Pulls torch, so it's a workstation-only extra, never required
 # at show time. Used by ``scripts/export_onnx.py`` and the web model-export
 # action; installed on demand from the detection UI.
-export = ["ultralytics>=8.4.80"]
+export = ["ultralytics>=8.4.87"]
 
 [project.scripts]
 openfollow = "openfollow.main:main"
@@ -82,7 +87,7 @@ include = [
 ruff = "0.15.20"
 pytest = "^9.1.1"
 pytest-cov = "^7.1"
-coverage = { extras = ["toml"], version = "^7.14" }
+coverage = { extras = ["toml"], version = "^7.15" }
 pre-commit = "^4.6.0"
 mutmut = "^3.6"
 mypy = "^2.1"
@@ -94,6 +99,18 @@ pytest-xdist = "^3.6"
 hypothesis = "^6"
 bandit = {extras = ["toml"], version = "^1.9.4"}
 pip-audit = "^2.10.1"
+
+# Build-only tooling for the macOS .app / .dmg (packaging/macos/). Optional and
+# off by default; ``make dmg`` pulls it in with ``--with package-macos``. Kept
+# out of the runtime deps so the offline Pi / .deb build never carries
+# PyInstaller. Date-versioned hooks-contrib uses a floor (not a caret) so a
+# newer year still resolves.
+[tool.poetry.group.package-macos]
+optional = true
+
+[tool.poetry.group.package-macos.dependencies]
+pyinstaller = ">=6.10"
+pyinstaller-hooks-contrib = ">=2024.9"
 
 # Linting: ruff check/format (faster pyflakes/pycodestyle/isort/pyupgrade bundle).
 # line-length=120 matches old flake8 setting. target-version=py310 matches requires-python.
@@ -136,6 +153,8 @@ module = [
     "cv2",
     "onnxruntime",
     "mido",
+    "pyspacemouse",
+    "easyhid",
 ]
 ignore_missing_imports = true
 

@@ -130,6 +130,44 @@ key_speed_up = "t"
 # Shipping captured raw indices here would mis-map any other controller.
 [controller.button_raw_indices]
 
+# 3D Mouse (3Dconnexion 6DOF) input. Off by default. Each source axis maps to a
+# target (none/x/y/z/speed/fader) with its own sensitivity, deadzone and invert;
+# buttons bind to a device button index (-1 = unbound). Edit in the web UI.
+[mouse3d]
+enabled = false
+curve = "logarithmic"
+map_pan_x = "x"
+sens_pan_x = 1.0
+deadzone_pan_x = 0.05
+invert_pan_x = false
+map_pan_y = "y"
+sens_pan_y = 1.0
+deadzone_pan_y = 0.05
+invert_pan_y = false
+map_lift = "z"
+sens_lift = 0.3
+deadzone_lift = 0.3
+invert_lift = false
+map_pitch = "none"
+sens_pitch = 1.0
+deadzone_pitch = 0.1
+invert_pitch = false
+map_yaw = "speed"
+sens_yaw = 1.0
+deadzone_yaw = 0.3
+invert_yaw = false
+map_roll = "none"
+sens_roll = 1.0
+deadzone_roll = 0.1
+invert_roll = false
+btn_reset = -1
+btn_next_marker = 0
+btn_prev_marker = 1
+btn_speed_up = -1
+btn_speed_down = -1
+btn_toggle_help = -1
+btn_toggle_zones = -1
+
 [osc]
 enabled = true
 port = 8765
@@ -168,10 +206,9 @@ context = 0
 
 [detection]
 enabled = false
-model = "yolov8n.onnx"
+model = "yolo26n.onnx"
 storage_path = ""
 inference_size = 640
-preprocess_clahe = true
 confidence = 0.2
 interval_ms = 67
 show_boxes = true
@@ -179,7 +216,7 @@ show_labels = true
 box_color = "#00ff00"
 box_thickness = 2
 max_persons = 10
-pin_marker = false
+pin_marker_id = -1
 pin_point = "top"
 smoothing = 0.15
 prediction = 8.0

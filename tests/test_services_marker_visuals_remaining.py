@@ -74,32 +74,28 @@ class _FakePsnReceiver:
         return bool(self._online.get(tid, True))
 
 
-class _FakeGamepadHandlerShim:
-    """Carries ``joysticks`` for the multi-pad help-label gate."""
-
-    def __init__(self, joystick_count: int = 0) -> None:
-        self.joysticks = {idx: object() for idx in range(joystick_count)}
-
-
 class _FakeInputManager:
     def __init__(
         self,
         marker_speeds: dict[int, float] | None = None,
         controller_info: list[dict] | None = None,
         keyboard_connected: bool = False,
-        joystick_count: int = 0,
+        mouse3d_connected: bool = False,
     ) -> None:
         self._marker_speeds = marker_speeds or {}
         self._controller_info = controller_info or []
         self._kbd_connected = keyboard_connected
-        # Joystick count gates next/prev help labels in multi-pad mode.
-        self.gamepad_handler = _FakeGamepadHandlerShim(joystick_count)
+        self.mouse3d_manager = SimpleNamespace(connected=mouse3d_connected)
 
     def get_marker_gamepad_speeds(self) -> dict[int, float]:
         return dict(self._marker_speeds)
 
     def get_controller_info(self) -> list[dict]:
         return list(self._controller_info)
+
+    def marker_cycle_active(self) -> bool:
+        # Mirrors InputManager: one entry per unified controller slot.
+        return len(self._controller_info) <= 1
 
     def is_keyboard_connected(self) -> bool:
         return self._kbd_connected
@@ -200,6 +196,7 @@ def _build_app(
         _show_hud_help=show_hud_help,
         _runtime_services=SimpleNamespace(_zone_engine=None),
         _assist_manual={},
+        _detection_pin_states={},
     )
     # FakeApp mirrors get_marker_move_speed for per-marker speed reads.
     app.get_marker_move_speed = lambda mid: (
@@ -216,7 +213,6 @@ def _build(
     *,
     system_stats: Any = None,
     person_detector: Any = None,
-    pin_state: Any = None,
 ) -> OverlayState:
     # Controller badge is stamped from InputManager.get_controller_info.
     return build_marker_visual_state(
@@ -225,7 +221,6 @@ def _build(
         system_stats=system_stats,
         person_detector=person_detector,
         cam_params_buffer=np.zeros(7, dtype=np.float64),
-        pin_state=pin_state,
     )
 
 
@@ -754,6 +749,90 @@ class TestInputFlags:
         state = _build(app, pool)
         assert state.controller_connected is False
 
+    def test_3d_mouse_alone_does_not_report_controller_connected(self, pool: OverlayStatePool) -> None:
+        # A connected 3D mouse is a unified controller (it gets a card badge) but
+        # has its own help section; it must NOT light the gamepad help/status,
+        # which advertises L-Stick / DPAD / bumper controls a puck doesn't have.
+        mgr = _FakeInputManager(
+            controller_info=[
+                {
+                    "connected": True,
+                    "marker_id": None,
+                    "name": "3D Mouse",
+                    "controller_index": 0,
+                    "effective_speed": 0.0,
+                    "backend": "mouse3d",
+                },
+            ]
+        )
+        app = _build_app(input_manager=mgr)
+        app._config.controller.enabled = True
+        state = _build(app, pool)
+        assert state.controller_connected is False
+
+    def test_gamepad_alongside_3d_mouse_still_reports_connected(self, pool: OverlayStatePool) -> None:
+        mgr = _FakeInputManager(
+            controller_info=[
+                {
+                    "connected": True,
+                    "marker_id": None,
+                    "name": "3D Mouse",
+                    "controller_index": 0,
+                    "effective_speed": 0.0,
+                    "backend": "mouse3d",
+                },
+                {
+                    "connected": True,
+                    "marker_id": 1,
+                    "name": "Pad",
+                    "controller_index": 1,
+                    "effective_speed": 1.0,
+                    "backend": "pygame",
+                },
+            ]
+        )
+        app = _build_app(input_manager=mgr)
+        app._config.controller.enabled = True
+        state = _build(app, pool)
+        assert state.controller_connected is True
+
+
+class TestMouse3dHelpBindings:
+    """The HUD help overlay surfaces the 3D mouse axis / button map."""
+
+    def test_populated_when_enabled_and_connected(self, pool: OverlayStatePool) -> None:
+        mgr = _FakeInputManager(mouse3d_connected=True)
+        app = _build_app(input_manager=mgr)
+        app._config.mouse3d.enabled = True
+        state = _build(app, pool)
+        assert state.mouse3d_connected is True
+        # Axis map mirrors the per-axis targets from config (tuned defaults).
+        assert state.mouse3d_axis_map["pan_x"] == "x"
+        assert state.mouse3d_axis_map["yaw"] == "speed"
+        # Button map drops the ``btn_`` prefix and carries the raw index.
+        assert state.mouse3d_buttons["next_marker"] == 0
+        assert state.mouse3d_buttons["prev_marker"] == 1
+
+    def test_off_when_feature_disabled(self, pool: OverlayStatePool) -> None:
+        mgr = _FakeInputManager(mouse3d_connected=True)
+        app = _build_app(input_manager=mgr)
+        app._config.mouse3d.enabled = False
+        state = _build(app, pool)
+        assert state.mouse3d_connected is False
+
+    def test_off_when_device_disconnected(self, pool: OverlayStatePool) -> None:
+        mgr = _FakeInputManager(mouse3d_connected=False)
+        app = _build_app(input_manager=mgr)
+        app._config.mouse3d.enabled = True
+        state = _build(app, pool)
+        assert state.mouse3d_connected is False
+
+    def test_off_without_input_manager(self, pool: OverlayStatePool) -> None:
+        app = _build_app(input_manager=None)
+        app._config.mouse3d.enabled = True
+        state = _build(app, pool)
+        assert state.mouse3d_connected is False
+
 
 # --------------------------------------------------------------------------- #
 # Controller binding stamped on marker cards + unbound list + HUD help flag
@@ -1131,32 +1210,59 @@ class TestStatusFlagsSnapshot:
         assert state.status_flags == []
 
 
-class TestMultiPadHelpLabels:
-    """DPAD next/prev is hidden in multi-pad mode."""
+def _controller_entry(unified_idx: int, *, name: str = "Pad", connected: bool = True) -> dict:
+    """A unified controller-info entry as ``get_controller_info`` returns."""
+    return {
+        "controller_index": unified_idx,
+        "name": name,
+        "connected": connected,
+        "marker_id": None,
+        "effective_speed": 1.0,
+        "backend": "pygame",
+    }
 
-    def test_single_gamepad_button_labels_include_next_prev(self, pool: OverlayStatePool) -> None:
-        app = _build_app(
-            input_manager=_FakeInputManager(joystick_count=1),
-        )
+
+class TestMultiControllerMarkerCycle:
+    """Marker next/prev cycling is hidden when ≥2 controllers (gamepads +
+    3D mice, the unified slot space) are connected."""
+
+    def test_single_controller_enables_cycle(self, pool: OverlayStatePool) -> None:
+        app = _build_app(input_manager=_FakeInputManager(controller_info=[_controller_entry(0)]))
         state = _build(app, pool)
+        assert state.marker_cycle_enabled is True
+        # The bindings stay in the label dicts; only the help row is gated.
         assert "next_marker" in state.button_labels
         assert "prev_marker" in state.button_labels
 
-    def test_multi_gamepad_button_labels_omit_next_prev(self, pool: OverlayStatePool) -> None:
+    def test_two_gamepads_disable_cycle(self, pool: OverlayStatePool) -> None:
         app = _build_app(
-            input_manager=_FakeInputManager(joystick_count=2),
+            input_manager=_FakeInputManager(
+                controller_info=[_controller_entry(0), _controller_entry(1)],
+            )
         )
         state = _build(app, pool)
-        assert "next_marker" not in state.button_labels
-        assert "prev_marker" not in state.button_labels
+        assert state.marker_cycle_enabled is False
 
-    def test_no_input_manager_includes_next_prev(self, pool: OverlayStatePool) -> None:
-        """No input manager (early startup) keeps the legacy labels –
-        gate logic uses ``<= 1`` so 0 joysticks behaves like single-pad."""
+    def test_gamepad_plus_3d_mouse_disables_cycle(self, pool: OverlayStatePool) -> None:
+        """A 3D mouse paired with a gamepad is two unified controllers, so
+        cycling is suppressed for both – the cross-type case."""
+        app = _build_app(
+            input_manager=_FakeInputManager(
+                controller_info=[
+                    _controller_entry(0, name="3D Mouse"),
+                    _controller_entry(1),
+                ],
+            )
+        )
+        state = _build(app, pool)
+        assert state.marker_cycle_enabled is False
+
+    def test_no_input_manager_enables_cycle(self, pool: OverlayStatePool) -> None:
+        """No input manager (early startup) keeps cycling enabled – zero
+        controllers behaves like a single controller (``<= 1``)."""
         app = _build_app(input_manager=None)
         state = _build(app, pool)
-        assert "next_marker" in state.button_labels
-        assert "prev_marker" in state.button_labels
+        assert state.marker_cycle_enabled is True
 
 
 # --------------------------------------------------------------------------- #
@@ -1297,7 +1403,6 @@ class TestAssistGhostOverlay:
             server_markers={1: _FakeMarker(1, pos=(2.0, 3.0, 0.0))},
         )
         app._config.detection.enabled = True
-        app._config.detection.pin_marker = True
         app._config.detection.pin_mode = "assist"
         anchor = get_or_create_manual_marker(app, 1)
         anchor.set_pos(*anchor_pos)
@@ -1325,7 +1430,7 @@ class TestAssistGhostOverlay:
             controlled=[1],
             viewer=[1],
             server_markers={1: _FakeMarker(1, pos=(2.0, 3.0, 0.0))},
-        )  # default detection: pin_marker False / replace
+        )  # default AppConfig detection is disabled → assist inactive
         state = _build(app, pool)
         assert all(not m.is_assist_ghost for m in state.markers)
 
@@ -1340,9 +1445,8 @@ class TestAssistGhostOverlay:
             server_markers={1: _FakeMarker(1, pos=(2.0, 3.0, 0.0))},
         )
         app._config.detection.enabled = True
-        app._config.detection.pin_marker = True
         app._config.detection.pin_mode = "assist"
-        app._assist_manual.clear()  # pinned id resolves, but no anchor seeded
+        app._assist_manual.clear()  # assist active, but no anchor seeded yet
         state = _build(app, pool)
 
         ghosts = [m for m in state.markers if m.is_assist_ghost]
@@ -1353,35 +1457,81 @@ class TestAssistGhostOverlay:
         assert len(normals) == 1
         assert (normals[0].x, normals[0].y) == (2.0, 3.0)
 
+    def test_every_controlled_marker_gets_its_own_ghost_and_anchor(self, pool: OverlayStatePool) -> None:
+        # Assist refines *every* controlled marker: each one yields a dim ghost
+        # at its broadcast position and moves its solid card to its own anchor.
+        app = _build_app(
+            controlled=[1, 2],
+            viewer=[1, 2],
+            server_markers={
+                1: _FakeMarker(1, pos=(2.0, 3.0, 0.0)),
+                2: _FakeMarker(2, pos=(4.0, 5.0, 0.0)),
+            },
+        )
+        app._config.detection.enabled = True
+        app._config.detection.pin_mode = "assist"
+        get_or_create_manual_marker(app, 1).set_pos(10.0, 11.0, 0.0)
+        get_or_create_manual_marker(app, 2).set_pos(20.0, 21.0, 0.0)
+
+        state = _build(app, pool)
+
+        ghosts = {m.marker_id: m for m in state.markers if m.is_assist_ghost}
+        normals = {m.marker_id: m for m in state.markers if not m.is_assist_ghost}
+        # One ghost per controlled marker, each at its broadcast position…
+        assert set(ghosts) == {1, 2}
+        assert (ghosts[1].x, ghosts[1].y) == (2.0, 3.0)
+        assert (ghosts[2].x, ghosts[2].y) == (4.0, 5.0)
+        assert all(not g.is_controlled for g in ghosts.values())
+        # …and each solid card sits at its own operator-steered anchor.
+        assert set(normals) == {1, 2}
+        assert (normals[1].x, normals[1].y) == (10.0, 11.0)
+        assert (normals[2].x, normals[2].y) == (20.0, 21.0)
+
 
 class TestAttachedDetectionBox:
-    def _app(self) -> SimpleNamespace:
-        return _build_app(
-            controlled=[1],
-            viewer=[1],
-            server_markers={1: _FakeMarker(1, pos=(2.0, 3.0, 0.0))},
+    def _app(self, catalog: Any = None) -> SimpleNamespace:
+        app = _build_app(
+            controlled=[1, 2],
+            viewer=[1, 2],
+            server_markers={
+                1: _FakeMarker(1, pos=(2.0, 3.0, 0.0)),
+                2: _FakeMarker(2, pos=(4.0, 5.0, 0.0)),
+            },
         )
+        if catalog is not None:
+            app._marker_catalog = catalog
+        return app
 
-    def test_attached_track_and_colour_propagate_from_pin_state(self, pool: OverlayStatePool) -> None:
-        app = self._app()
+    def test_attached_track_maps_to_marker_colour(self, pool: OverlayStatePool) -> None:
+        # The pin state for marker 1 says track 4 is attached → the dict maps
+        # track 4 to marker 1's catalog colour.
+        app = self._app(_FakeCatalog({1: ("Spot 1", "#0652dd")}))
+        app._detection_pin_states[1] = SimpleNamespace(attached_track_id=4, attached_marker_id=1)
         detector = SimpleNamespace(detections=[])
-        pin_state = SimpleNamespace(attached_track_id=4, attached_marker_id=1)
-        state = _build(app, pool, person_detector=detector, pin_state=pin_state)
-        assert state.detection_attached_track_id == 4
-        # Marker 1's colour (a non-empty hex) drives the attached-box highlight.
-        assert state.detection_attached_color.startswith("#")
+        state = _build(app, pool, person_detector=detector)
+        assert state.detection_attached_colors == {4: "#0652dd"}
 
-    def test_attached_fields_default_without_pin_state(self, pool: OverlayStatePool) -> None:
-        app = self._app()
+    def test_two_attached_tracks_map_to_two_marker_colours(self, pool: OverlayStatePool) -> None:
+        # Assist drives every controlled marker, so several boxes can be
+        # attached at once – each painted in its own marker's colour.
+        app = self._app(_FakeCatalog({1: ("Spot 1", "#0652dd"), 2: ("Spot 2", "#ff0000")}))
+        app._detection_pin_states[1] = SimpleNamespace(attached_track_id=4, attached_marker_id=1)
+        app._detection_pin_states[2] = SimpleNamespace(attached_track_id=7, attached_marker_id=2)
         detector = SimpleNamespace(detections=[])
-        state = _build(app, pool, person_detector=detector, pin_state=None)
-        assert state.detection_attached_track_id is None
-        assert state.detection_attached_color == ""
+        state = _build(app, pool, person_detector=detector)
+        assert state.detection_attached_colors == {4: "#0652dd", 7: "#ff0000"}
 
-    def test_attached_fields_default_when_pin_state_has_no_attachment(self, pool: OverlayStatePool) -> None:
-        app = self._app()
+    def test_no_attachment_leaves_empty_map(self, pool: OverlayStatePool) -> None:
+        app = self._app()  # no pin states recorded
         detector = SimpleNamespace(detections=[])
-        pin_state = SimpleNamespace(attached_track_id=None, attached_marker_id=None)
-        state = _build(app, pool, person_detector=detector, pin_state=pin_state)
-        assert state.detection_attached_track_id is None
-        assert state.detection_attached_color == ""
+        state = _build(app, pool, person_detector=detector)
+        assert state.detection_attached_colors == {}
+
+    def test_pin_state_without_attachment_is_skipped(self, pool: OverlayStatePool) -> None:
+        app = self._app()
+        # A pin state with no live attachment (gliding home / replace miss)
+        # contributes no entry.
+        app._detection_pin_states[1] = SimpleNamespace(attached_track_id=None, attached_marker_id=None)
+        detector = SimpleNamespace(detections=[])
+        state = _build(app, pool, person_detector=detector)
+        assert state.detection_attached_colors == {}

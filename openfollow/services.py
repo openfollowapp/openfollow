@@ -32,9 +32,7 @@ from openfollow.psn import PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
 from openfollow.runtime.overlay_state import OverlayState
-from openfollow.runtime.services_detection_pin import (
-    DetectionPinState,
-)
+from openfollow.runtime.services_detection_pin import _NOMINAL_FRAME_DT
 from openfollow.runtime.services_detection_pin import (
     apply_detection_pin as apply_detection_pin_helper,
 )
@@ -85,6 +83,11 @@ logger = logging.getLogger(__name__)
 # diagnostics bundle shows; bounds output rather than dumping every row's
 # full per-row ring.
 _RECENT_OSC_SENDS_LIMIT = 100
+
+# Per-request budget for the web 3D-Mouse button-detect poll. Kept short so a
+# Detect click never pins its request thread for seconds; the browser widget
+# (detect-input.js) re-polls until the operator presses a button or gives up.
+_MOUSE3D_WEB_DETECT_BUDGET_S = 0.35
 
 
 def _format_lease_remaining(seconds: int | None) -> str | None:
@@ -190,6 +193,13 @@ class WebCommandQueue:
             "message": "",
             "tail": "",
         }
+        # Latest newer release the background online-sync worker has found
+        # (version tag without the ``v`` prefix), or "" when none / up to date.
+        # Drives the update banner + footer flag; independent of the install
+        # state machine above so a published release shows even while no
+        # install is running.
+        self._update_available_lock = threading.Lock()
+        self._update_available = ""
 
     def request_restart(self) -> None:
         self._restart_requested.set()
@@ -297,6 +307,16 @@ class WebCommandQueue:
             if detached is not None:
                 return detached
         return status
+
+    def set_update_available(self, latest: str | None) -> None:
+        """Record the newest available release tag ("" / None clears the banner)."""
+        with self._update_available_lock:
+            self._update_available = (latest or "").strip()
+
+    def get_update_available(self) -> str:
+        """Return the newest available release tag, or "" when up to date."""
+        with self._update_available_lock:
+            return self._update_available
 
     # ----- generic privilege password prompt -----------
 
@@ -499,9 +519,6 @@ class AppRuntimeServices:
         self._cam_params_buffer = np.zeros(7, dtype=np.float64)
         self._unproject_cam_buffer = np.zeros(7, dtype=np.float64)
         self._screen_point_buffer = np.zeros((1, 2), dtype=np.float64)
-
-        # Detection pin state across frames (EMA + velocity prediction)
-        self._detection_pin_state = DetectionPinState()
 
         # Unified OSC service: one shared client cache and listener for
         # zone OSC output, marker OSC input, and the transmitter system.
@@ -710,6 +727,21 @@ class AppRuntimeServices:
     def init_camera(self) -> None:
         self._app._camera = Camera.from_config(self._app._config.camera)
 
+    def _seed_bundled_detection_models(self, cfg: AppConfig) -> None:
+        """Copy bundled tier models into the resolved storage ``models/`` folder.
+
+        No-op when nothing is bundled (a source checkout) or on any I/O error –
+        seeding is best-effort and must never block startup.
+        """
+        from openfollow.model_seed import bundled_models_dir, seed_bundled_models
+        from openfollow.video.detection import resolve_detection_storage_path
+
+        source = bundled_models_dir()
+        if source is None:
+            return
+        storage_root = Path(resolve_detection_storage_path(cfg.detection.storage_path))
+        seed_bundled_models(source, storage_root / "models")
+
     def init_video(self) -> None:
         overlay = CairoOverlayRenderer()
         self._overlay_renderer = overlay
@@ -731,6 +763,11 @@ class AppRuntimeServices:
         # at runtime; the assert is a strict-mode narrowing aid.
         assert canvas is not None, "init_canvas must run before init_video"
         cfg = self._app._config
+
+        # Seed the pre-shipped quality-tier models into the storage folder so
+        # detection (and the web tier picker) works offline out of the box.
+        # No-op on a source checkout. Runs before the web server starts.
+        self._seed_bundled_detection_models(cfg)
 
         # Optional person detection (lazy import, zero cost when disabled)
         detector = None
@@ -832,6 +869,26 @@ class AppRuntimeServices:
             self._app._config.psn_source_iface,
         )
         return resolved
+
+    def init_online_sync(self) -> None:
+        """Start the background online-sync worker.
+
+        On startup / IP change, when the LAN has internet, it syncs the system
+        clock (NTP) and checks GitHub for a newer release. Fails silently
+        offline; never prompts for a password.
+        """
+        import openfollow
+        from openfollow.runtime.online_sync import OnlineSyncWorker
+
+        app = self._app
+        self._online_sync = OnlineSyncWorker(
+            config_provider=lambda: app._config,
+            ip_provider=self._resolved_source_ip,
+            broker=self._privilege_broker,
+            web_commands=app._web_commands,
+            version=openfollow.__version__,
+        )
+        self._online_sync.start()
 
     def _resolve_web_bind(self) -> str:
         """Resolve the web UI listen address.
@@ -1807,8 +1864,10 @@ class AppRuntimeServices:
             port=self._app._config.web_port,
             system_name=self._app._config.psn_system_name,
             command_queue=self._app._web_commands,
-            # Resolved PSN bind IP for the web UI header; the provider
-            # re-resolves it live so an IP change updates the self-row.
+            # Resolved PSN bind IP for the web UI header so iface-pinned
+            # boxes don't display empty/stale. The provider re-resolves it
+            # live so a runtime IP change (static → DHCP) updates the
+            # self-row + beacon interface without a restart.
             local_ip=self._resolved_source_ip(),
             local_ip_provider=self._resolved_source_ip,
             runtime_stats_provider=self.get_runtime_stats_snapshot,
@@ -1817,7 +1876,11 @@ class AppRuntimeServices:
             zone_diagnostics_provider=self._get_zone_diagnostics_snapshot,
             zone_test_send=self._zone_test_send,
             marker_positions_provider=self._get_marker_positions_snapshot,
+            # Live per-marker move speeds; the ``dict(...)`` copy is the
+            # mutation-isolation boundary so the web thread never holds the live dict.
+            marker_move_speeds_provider=lambda: dict(self._app._config.marker_move_speeds),
             full_snapshot_provider=self._snapshot_provider.get_snapshot,
+            mouse3d_button_provider=self._mouse3d_latest_button,
             # Diagnostics + conflict-probe hooks. ``init_web_server`` runs
             # before ``init_osc_transmitters``, so the manager is ``None``
             # at construction time. These providers dereference
@@ -2222,7 +2285,6 @@ class AppRuntimeServices:
             system_stats=self._system_stats,
             person_detector=self._person_detector,
             cam_params_buffer=self._cam_params_buffer,
-            pin_state=self._detection_pin_state,
         )
 
         # Atomic swap: release old state back to pool
@@ -2239,14 +2301,18 @@ class AppRuntimeServices:
         if self._overlay_renderer is not None:  # pragma: no branch
             self._overlay_renderer.state = state
 
-    def apply_detection_pin(self) -> None:
-        """Pin the selected controlled marker to the tracked detection with EMA smoothing."""
+    def apply_detection_pin(self, dt: float = _NOMINAL_FRAME_DT) -> None:
+        """Drive controlled marker(s) from detection with EMA smoothing.
+
+        ``dt`` (seconds since the previous animate frame) keeps the smoothing /
+        prediction frame-rate-independent.
+        """
         apply_detection_pin_helper(
             self._app,
             person_detector=self._person_detector,
             unproject_cam_buffer=self._unproject_cam_buffer,
             screen_point_buffer=self._screen_point_buffer,
-            pin_state=self._detection_pin_state,
+            dt=dt,
         )
 
     def init_zone_engine(self) -> None:
@@ -2451,6 +2517,19 @@ class AppRuntimeServices:
         except Exception:  # noqa: BLE001
             return []
         return [(tid, x, y) for (_kind, tid), x, y in positions]
+
+    def _mouse3d_latest_button(self) -> int | None:
+        """Watch briefly for a 3D Mouse button press, for the web bind helper.
+
+        Polls on a short per-request budget so the web request thread returns
+        promptly; the browser widget re-polls until the operator presses a
+        button (or gives up), so a press landing after the click is still
+        caught without any single request blocking for seconds.
+        """
+        im = self._app._input_manager
+        if im is None:
+            return None
+        return im.mouse3d_manager.detect_pressed_button(timeout=_MOUSE3D_WEB_DETECT_BUDGET_S)
 
     def update_window_title(self, title: str) -> None:
         self._apply_window_title(title)
@@ -2718,6 +2797,9 @@ class AppRuntimeServices:
         # Each step is isolated (see ``_safe_stop``) so one failing
         # teardown can't strand the rest – the OSC-service drain and MIDI
         # close at the end must always run.
+        online_sync = getattr(self, "_online_sync", None)
+        if online_sync is not None:
+            self._safe_stop("online sync", online_sync.stop)
         if self._person_detector is not None:
             self._safe_stop("person detector", self._person_detector.stop)
         if app._input_manager is not None:

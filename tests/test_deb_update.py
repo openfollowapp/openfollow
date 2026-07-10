@@ -26,6 +26,7 @@ from openfollow.runtime.deb_update import (
     _fetch_latest_release,
     _find_bundle_asset,
     _is_newer,
+    _is_prerelease_version,
     _remove_staged,
     _verify_bundle_checksum,
     _verify_signature,
@@ -254,7 +255,9 @@ def _make_response(body: bytes, status: int = 200) -> Any:
 
 
 class TestFetchLatestRelease:
-    def test_returns_newest_release_from_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_skips_prereleases_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Newest entry is a pre-release; stable-only default returns the
+        # newest *stable* release below it.
         payload = [
             {"tag_name": "v0.2.4", "assets": [], "draft": False, "prerelease": True},
             {"tag_name": "v0.2.3", "assets": [], "draft": False, "prerelease": False},
@@ -262,7 +265,33 @@ class TestFetchLatestRelease:
         resp = _make_response(json.dumps(payload).encode())
         monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: resp)
         result = _fetch_latest_release("owner/repo")
+        assert result["tag_name"] == "v0.2.3"
+
+    def test_includes_prereleases_when_opted_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        payload = [
+            {"tag_name": "v0.2.4", "assets": [], "draft": False, "prerelease": True},
+            {"tag_name": "v0.2.3", "assets": [], "draft": False, "prerelease": False},
+        ]
+        resp = _make_response(json.dumps(payload).encode())
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: resp)
+        result = _fetch_latest_release("owner/repo", include_prereleases=True)
         assert result["tag_name"] == "v0.2.4"
+
+    def test_returns_newest_stable_when_all_stable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        payload = [
+            {"tag_name": "v0.2.4", "assets": [], "draft": False, "prerelease": False},
+            {"tag_name": "v0.2.3", "assets": [], "draft": False, "prerelease": False},
+        ]
+        resp = _make_response(json.dumps(payload).encode())
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: resp)
+        assert _fetch_latest_release("owner/repo")["tag_name"] == "v0.2.4"
+
+    def test_raises_when_only_prereleases_and_stable_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        payload = [{"tag_name": "v0.3.0rc1", "assets": [], "draft": False, "prerelease": True}]
+        resp = _make_response(json.dumps(payload).encode())
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: resp)
+        with pytest.raises(RuntimeError, match="No published releases"):
+            _fetch_latest_release("owner/repo")
 
     def test_skips_drafts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         payload = [
@@ -313,7 +342,7 @@ class TestCheckForUpdate:
     def test_reports_available_when_newer(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "openfollow.runtime.deb_update._fetch_latest_release",
-            lambda repo: {"tag_name": "v0.2.4", "assets": []},
+            lambda repo, **kw: {"tag_name": "v0.2.4", "assets": []},
         )
         info = check_for_update("owner/repo", "0.2.3")
         assert info == {"latest": "0.2.4", "current": "0.2.3", "available": True}
@@ -321,7 +350,7 @@ class TestCheckForUpdate:
     def test_reports_not_available_when_same(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "openfollow.runtime.deb_update._fetch_latest_release",
-            lambda repo: {"tag_name": "v0.2.3", "assets": []},
+            lambda repo, **kw: {"tag_name": "v0.2.3", "assets": []},
         )
         info = check_for_update("owner/repo", "0.2.3")
         assert info["available"] is False
@@ -329,17 +358,86 @@ class TestCheckForUpdate:
     def test_strips_leading_v_from_tag(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "openfollow.runtime.deb_update._fetch_latest_release",
-            lambda repo: {"tag_name": "v1.0.0", "assets": []},
+            lambda repo, **kw: {"tag_name": "v1.0.0", "assets": []},
         )
         assert check_for_update("owner/repo", "0.9.0")["latest"] == "1.0.0"
 
+    def test_forwards_include_prereleases_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, Any] = {}
+
+        def _fake(repo: str, **kw: Any) -> dict[str, Any]:
+            captured.update(kw)
+            return {"tag_name": "v1.0.0", "assets": []}
+
+        monkeypatch.setattr("openfollow.runtime.deb_update._fetch_latest_release", _fake)
+        check_for_update("owner/repo", "0.9.0", include_prereleases=True)
+        assert captured == {"include_prereleases": True}
+
     def test_propagates_fetch_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def _raise(repo: str) -> None:
+        def _raise(repo: str, **kw: Any) -> None:
             raise RuntimeError("boom")
 
         monkeypatch.setattr("openfollow.runtime.deb_update._fetch_latest_release", _raise)
         with pytest.raises(RuntimeError, match="boom"):
             check_for_update("owner/repo", "0.1.0")
+
+    def test_prerelease_current_auto_includes_prereleases(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A device on an ``rcN`` build tracks pre-releases even with the flag
+        # OFF, so it isn't stranded when the project ships updates as rcs.
+        captured: dict[str, Any] = {}
+
+        def _fake(repo: str, **kw: Any) -> dict[str, Any]:
+            captured.update(kw)
+            return {"tag_name": "v0.3.1rc3", "assets": []}
+
+        monkeypatch.setattr("openfollow.runtime.deb_update._fetch_latest_release", _fake)
+        info = check_for_update("owner/repo", "0.3.1rc2", include_prereleases=False)
+        assert captured == {"include_prereleases": True}
+        assert info["available"] is True  # rc3 > rc2
+
+    def test_stable_current_stays_stable_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, Any] = {}
+
+        def _fake(repo: str, **kw: Any) -> dict[str, Any]:
+            captured.update(kw)
+            return {"tag_name": "v0.3.0", "assets": []}
+
+        monkeypatch.setattr("openfollow.runtime.deb_update._fetch_latest_release", _fake)
+        check_for_update("owner/repo", "0.3.1", include_prereleases=False)
+        assert captured == {"include_prereleases": False}
+
+
+class TestIsPrereleaseVersion:
+    @pytest.mark.parametrize(
+        "version,expected",
+        [
+            ("0.3.1rc2", True),
+            ("0.3.1-rc2", True),  # normalised by packaging
+            ("0.4.0a1", True),
+            ("0.4.0b2", True),
+            ("0.4.0.dev1", True),
+            ("0.3.1", False),  # final – the bug case: an rc image stamped bare
+            ("0.3.0", False),
+            ("not-a-version", False),
+            ("0.0.0+unknown", False),  # the dev fallback
+        ],
+    )
+    def test_is_prerelease_version(self, version: str, expected: bool) -> None:
+        assert _is_prerelease_version(version) is expected
+
+    @pytest.mark.parametrize(
+        "opt_in,version,expected",
+        [
+            (True, "0.3.0", True),  # operator opt-in
+            (False, "0.3.1rc3", True),  # running a pre-release -> auto-track
+            (True, "0.3.1rc3", True),  # both
+            (False, "0.3.0", False),  # stable + no opt-in -> stable only
+        ],
+    )
+    def test_effective_include_prereleases(self, opt_in: bool, version: str, expected: bool) -> None:
+        from openfollow.runtime.deb_update import _effective_include_prereleases
+
+        assert _effective_include_prereleases(opt_in, version) is expected
 
 
 # ---------------------------------------------------------------------------
@@ -629,6 +727,7 @@ def _make_app(
     config = SimpleNamespace(
         update_github_repo=github_repo,
         update_service_name="openfollow",
+        update_include_prereleases=False,
     )
     broker = MagicMock()
     broker.run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -655,7 +754,7 @@ def _patch_online_io(monkeypatch: pytest.MonkeyPatch, *, inner_deb: str) -> None
     monkeypatch.setattr("openfollow.__version__", "0.2.3")
     monkeypatch.setattr(
         "openfollow.runtime.deb_update._fetch_latest_release",
-        lambda repo: {"tag_name": "v0.2.4", "assets": _BUNDLE_ASSETS},
+        lambda repo, **kw: {"tag_name": "v0.2.4", "assets": _BUNDLE_ASSETS},
     )
     monkeypatch.setattr("platform.machine", lambda: "aarch64")
     monkeypatch.setattr("openfollow.runtime.deb_update._download_bundle", lambda url, path, set_status: None)
@@ -667,7 +766,7 @@ class TestRunDebUpdate:
     def test_already_up_to_date_sets_idle(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "openfollow.runtime.deb_update._fetch_latest_release",
-            lambda repo: {"tag_name": "v0.2.3", "assets": []},
+            lambda repo, **kw: {"tag_name": "v0.2.3", "assets": []},
         )
         monkeypatch.setattr("openfollow.runtime.deb_update._cleanup_temp_debs", lambda: None)
         import openfollow.runtime.deb_update as mod
@@ -706,7 +805,7 @@ class TestRunDebUpdate:
     def test_api_error_sets_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "openfollow.runtime.deb_update._fetch_latest_release",
-            lambda repo: (_ for _ in ()).throw(RuntimeError("HTTP 404")),
+            lambda repo, **kw: (_ for _ in ()).throw(RuntimeError("HTTP 404")),
         )
         monkeypatch.setattr("openfollow.runtime.deb_update._cleanup_temp_debs", lambda: None)
 

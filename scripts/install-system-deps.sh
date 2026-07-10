@@ -49,6 +49,10 @@ APT_PACKAGES=(
   # Cursor theme – without it Cage has no pixmap to render when the embedded
   # WebKit overlay asks for a cursor via ``wl_pointer.set_cursor``.
   adwaita-icon-theme
+  # HID backend for the 3D Mouse (3Dconnexion 6DOF) input. pyspacemouse loads
+  # this at runtime via easyhid-ng; the udev rule (99-openfollow-3dmouse.rules)
+  # grants the service user access to the device's /dev/hidraw node.
+  libhidapi-hidraw0
 )
 
 echo "[install-system-deps] Refreshing apt index..."

@@ -5256,7 +5256,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if not _export_tools_available():
             return _render_detection(
                 cfg,
-                install_feedback="Install the model export tools first: run install-detection.sh.",
+                install_feedback="Install the model export tools first: run install-detection.sh --with-export.",
                 install_error=True,
             )
         models_dir = _resolved_models_dir(cfg.detection.storage_path)

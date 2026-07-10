@@ -8,15 +8,13 @@ Experimental YOLO-based person detection that finds people in the camera frame a
 
 ## Dependencies
 
-On the macOS app everything needed is bundled. On a Raspberry Pi the inference backend (onnxruntime + opencv) is an optional install:
+Nothing to install: the inference backend (onnxruntime + opencv) is bundled in the macOS app and the Raspberry Pi image, so detection runs offline out of the box.
 
-```
-bash /usr/share/openfollow/install-detection.sh
-```
+If the backend isn't present (a source checkout, or a base-only build), install it into the app venv: `bash scripts/install-detection.sh` from a checkout, or `bash /usr/share/openfollow/install-detection.sh` on a packaged install.
 
-It checks for free space first, uses the NVMe when one is present, installs everything into the app venv, and restarts the service. Re-run it any time; it's idempotent. See https://openfollow.app/docs/detection-install.html.
+It checks free space, uses the NVMe when present, and restarts the service. Idempotent. Add `--with-export` on a workstation for the model-export tools (torch + ultralytics) the **Download Model** action uses; those are large, AGPL, and not needed on a show Pi. See https://openfollow.app/docs/detection-install.html.
 
-If the section shows a red "Detection needs extra components" banner, the backend isn't installed yet – run that command, then reload.
+If the red "Detection needs extra components" banner shows, the backend isn't installed; run that command, then reload.
 
 ## Tracking
 

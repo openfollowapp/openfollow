@@ -754,12 +754,15 @@ class TestVideoDisconnectBanner:
         deadline_passed: bool = True,
         already_shown: bool = False,
         any_modal: bool = False,
+        menu_auto_opened: bool = False,
+        source_type: str = "rtsp",
+        banner: str = "",
         status_marker: object | None = None,
     ) -> SimpleNamespace:
         from openfollow.configuration import AppConfig
 
         cfg = AppConfig()
-        cfg.video_source_type = "rtsp"
+        cfg.video_source_type = source_type
 
         if status_marker is None:
             status_marker = SimpleNamespace(
@@ -773,13 +776,16 @@ class TestVideoDisconnectBanner:
         )
 
         opened: list[dict] = []
+        exited: list[bool] = []
         app = SimpleNamespace(
             _config=cfg,
             _video_receiver=receiver,
             _video_disconnect_deadline=(0.0 if deadline_passed else float("inf")),
             _video_disconnect_banner_shown=already_shown,
+            _video_disconnect_menu_open=menu_auto_opened,
             _video_was_connected=was_connected,
             _settings_menu_active=any_modal,
+            _settings_menu_banner=banner,
             _iface_selection_active=False,
             _source_type_selection_active=False,
             _url_editor_active=False,
@@ -788,9 +794,18 @@ class TestVideoDisconnectBanner:
             _button_detection=None,
         )
         app._opened = opened
+        app._exited = exited
         app._enter_settings_menu = lambda *, banner="": opened.append(
             {"banner": banner},
         )
+
+        def _exit() -> None:
+            exited.append(True)
+            app._settings_menu_active = False
+            app._settings_menu_banner = ""
+            app._video_disconnect_menu_open = False
+
+        app._exit_settings_menu = _exit
         return app
 
     def test_no_op_when_receiver_missing(self) -> None:
@@ -925,6 +940,7 @@ class TestVideoDisconnectBanner:
         assert "Connection refused" in banner
         assert "Reconnect attempt 3" in banner
         assert app._video_disconnect_banner_shown is True
+        assert app._video_disconnect_menu_open is True
 
     def test_banner_omits_optional_fields_when_empty(self) -> None:
         """The banner gracefully drops empty source label, error, and
@@ -999,6 +1015,65 @@ class TestVideoDisconnectBanner:
         clock[0] = 9000.0
         app_modes.check_video_disconnect_banner(app)
         assert len(app._opened) == 1  # never re-fired
+
+    def test_auto_opened_menu_closes_on_recovery(self) -> None:
+        """The auto-opened menu closes itself once video returns (e.g. the
+        operator switched to a working source in the web UI)."""
+        from openfollow.runtime import app_modes
+
+        app = self._make_app(
+            connected=True,
+            menu_auto_opened=True,
+            any_modal=True,
+            already_shown=True,
+            banner="Video source (ndi) is not available. ...",
+        )
+        app_modes.check_video_disconnect_banner(app)
+        assert app._exited == [True]
+        assert app._settings_menu_active is False
+        assert app._video_disconnect_menu_open is False
+        assert app._video_was_connected is True
+
+    def test_auto_opened_menu_refreshes_banner_while_still_down(self) -> None:
+        """Still disconnected after a second (also-failed) switch: the
+        banner is rewritten to name the CURRENT source, not stale text."""
+        from openfollow.runtime import app_modes
+
+        app = self._make_app(
+            connected=False,
+            menu_auto_opened=True,
+            any_modal=True,
+            already_shown=True,
+            source_type="rtsp",
+            banner="Video source (ndi) is not available. ...",
+            status_marker=SimpleNamespace(
+                source_name="rtsp://10.0.0.5/stream",
+                error_message="Connection refused",
+                reconnect_attempt=0,
+            ),
+        )
+        app_modes.check_video_disconnect_banner(app)
+        assert app._exited == []  # menu stays open
+        assert "(rtsp)" in app._settings_menu_banner
+        assert "Connection refused" in app._settings_menu_banner
+        assert "(ndi)" not in app._settings_menu_banner
+
+    def test_no_close_when_menu_not_auto_opened(self) -> None:
+        """A menu the operator opened (flag False) is never touched on
+        connect – no close, banner left intact."""
+        from openfollow.runtime import app_modes
+
+        app = self._make_app(
+            connected=True,
+            menu_auto_opened=False,
+            any_modal=True,
+            was_connected=True,
+            banner="Operator opened this menu.",
+        )
+        app_modes.check_video_disconnect_banner(app)
+        assert app._exited == []
+        assert app._settings_menu_active is True
+        assert app._settings_menu_banner == "Operator opened this menu."
 
 
 class TestProcessInputAndKeyDispatchShortCircuit:

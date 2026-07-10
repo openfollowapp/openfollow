@@ -1,11 +1,14 @@
 # Debian packaging (offline `.deb`)
 
-OpenFollow ships as a self-contained Debian package for Raspberry Pi OS. The
+OpenFollow ships as a self-contained Debian package. The primary target is
+Raspberry Pi OS (`arm64`), and the same package is built for `amd64` so it also
+installs on a commodity x86_64 Debian/Ubuntu host (mini-PC, NUC, laptop). The
 `.deb` bundles the runtime **and all Python dependencies** in a private
 virtualenv at `/opt/openfollow/venv`, so it installs and runs **with no
 internet**. It installs the systemd service, the boot splash, and autostart, and
-is the input artifact for the `rpi-image-gen` appliance image build
-(see [Appliance image](#appliance-image-rpi-image-gen)).
+the `arm64` build is the input artifact for the `rpi-image-gen` appliance image
+build (see [Appliance image](#appliance-image-rpi-image-gen); the appliance image
+is Pi-only).
 
 > Build time is online; install time is offline. The build resolves PyPI wheels
 > and the `pypsn` git dependency and compiles any sdists, then bakes everything
@@ -33,18 +36,18 @@ is the input artifact for the `rpi-image-gen` appliance image build
 
 | Path | Purpose |
 | --- | --- |
-| `packaging/build-deb.sh` | Builds the `.deb` (run natively on the target Pi). |
+| `packaging/build-deb.sh` | Builds the `.deb` (run natively on the target arch; `arch` comes from `dpkg --print-architecture`). |
 | `packaging/debian/control.in` | Package metadata; `@VERSION@/@ARCH@/@PYTHON_DEP@/@ALSA_DEP@` are filled in by the build from the build host. |
 | `packaging/debian/openfollow.service` | Main systemd unit (Cage Wayland kiosk, runs the bundled venv). |
 | `packaging/debian/openfollow-splash.service` + `splash.sh` | Boot splash unit + KMS launcher. |
 | `packaging/debian/render-splash.sh` | Pre-renders the splash PNG at build time. |
 | `packaging/debian/{postinst,prerm,postrm}` | Create the `openfollow` user + linger, enable/disable the units. |
-| `.github/workflows/release-deb.yml` | Release CI: builds the `.deb`, signs it into an `.ofupdate` bundle, and attaches both to the release – on a GitHub-hosted ARM64 runner (inside a `debian:trixie` container). |
+| `.github/workflows/release-deb.yml` | Release CI: builds the `.deb`, signs it into an `.ofupdate` bundle, and attaches both to the release – natively per arch on GitHub-hosted `ubuntu-24.04-arm` (arm64) and `ubuntu-24.04` (amd64) runners (each inside a `debian:trixie` container). |
 
 ## Install layout
 
 ```
-/opt/openfollow/venv/                      all Python deps + the openfollow package
+/opt/openfollow/venv/                      all Python deps + the openfollow package (incl. the detection backend: onnxruntime + opencv)
 /usr/lib/systemd/system/openfollow.service
 /usr/lib/systemd/system/openfollow-splash.service
 /usr/share/openfollow/{openfollow.svg,splash.png,splash.sh,config.example.toml,install-ndi.sh,install-detection.sh}
@@ -73,11 +76,12 @@ Wayland session. The unit binds web port 80 via `AmbientCapabilities=CAP_NET_BIN
 
 ## Build it
 
-Run **on the target architecture/OS** – the venv embeds the build host's Python
-ABI, so the package only runs on a matching Pi OS release. CI does this on a
-GitHub-hosted ARM64 runner (`ubuntu-24.04-arm`, native arm64 – no cross-compile)
-inside a `debian:trixie` container, so the venv's Python (3.13) matches the
-Trixie image; the `ubuntu-24.04-arm` host itself ships Python 3.12.
+Run **on the target architecture** – the venv embeds the build host's Python ABI,
+so an `arm64` package only runs on `arm64` and an `amd64` one only on `amd64`
+(no cross-compile). CI builds both natively as a two-leg matrix: `ubuntu-24.04-arm`
+(arm64) and `ubuntu-24.04` (amd64), each inside a `debian:trixie` container so the
+venv's Python (3.13) matches the Trixie image; the `ubuntu-24.04` hosts themselves
+ship Python 3.12.
 
 ```bash
 # Build prerequisites (CI installs these automatically):
@@ -94,15 +98,22 @@ pre-release sorts before the final release). Override with `OF_DEB_VERSION=…`.
 
 ## Install it (offline)
 
-On a Pi whose base image already provides the `Depends` (GStreamer, GTK, Cage,
-seatd, kanshi, the `gir1.2-*` typelibs, …):
+On a host whose base OS already provides the `Depends` (GStreamer, GTK, Cage,
+seatd, kanshi, the `gir1.2-*` typelibs, …) – a Pi, or an x86_64 machine on the
+same OS release:
 
 ```bash
 sudo apt-get install -y ./openfollow_*.deb   # or: sudo dpkg -i ./openfollow_*.deb
 ```
 
+The target must run **Debian 13 (Trixie) / Python 3.13** (Raspberry Pi OS is
+Trixie-based): the bundled venv is stamped `python3 (>= 3.13), (<< 3.14)`, so an
+older-Python host (Ubuntu 24.04, Debian 12) refuses the install. The service is a
+Cage/DRM kiosk, so the machine also needs a GPU + display – it will not come up on
+a headless server / VM.
+
 `postinst` creates the user, enables linger, and starts the service. Open the
-web UI at `http://<pi-ip>/`.
+web UI at `http://<host-ip>/`.
 
 > In a chroot/image-build context (no running systemd), the maintainer scripts
 > enable the units but skip the live start – exactly what `rpi-image-gen` needs.
@@ -110,9 +121,11 @@ web UI at `http://<pi-ip>/`.
 ## Release flow
 
 `.github/workflows/release-deb.yml` triggers on a published GitHub Release (or
-`workflow_dispatch`), builds on a GitHub-hosted `ubuntu-24.04-arm` runner (in a
-`debian:trixie` container), then wraps the `.deb` in a **signed update bundle**
-and attaches both the bundle and the raw `.deb` to the release.
+`workflow_dispatch`) and builds one leg per architecture on GitHub-hosted
+`ubuntu-24.04-arm` (arm64) and `ubuntu-24.04` (amd64) runners (each in a
+`debian:trixie` container). Each leg wraps its `.deb` in a **signed update bundle**
+and attaches both the bundle and the raw `.deb` to the release, so a release
+carries `arm64` and `amd64` variants side by side.
 
 The bundle `openfollow_<version>_<arch>.ofupdate` is a plain tar of three members:
 the `.deb`, a `SHA256SUMS` line for it, and `SHA256SUMS.sig` – an openssl RSA
@@ -133,8 +146,11 @@ tar xf openfollow_<version>_<arch>.ofupdate openfollow_<version>_<arch>.deb
 
 ## Appliance image (rpi-image-gen)
 
-For a turnkey deploy, the `.deb` is baked into a flashable **Raspberry Pi OS Lite
-(Trixie, arm64) image**, built with
+The appliance image is **Pi-only** (arm64): x86_64 hosts are supported through the
+`amd64` `.deb` / `.ofupdate` alone, not a flashable image.
+
+For a turnkey deploy, the `arm64` `.deb` is baked into a flashable **Raspberry Pi
+OS Lite (Trixie, arm64) image**, built with
 [`rpi-image-gen`](https://github.com/raspberrypi/rpi-image-gen). The image boots
 headless straight into the Cage Wayland kiosk. Two board targets are built from the
 **same `.deb`, the same custom layer, and a shared base config** – each per-board
@@ -252,8 +268,9 @@ field: storage is fully automatic (an absolute `detection.storage_path` in
 `.github/workflows/release-deb.yml` builds the images in an `image` job that
 `needs: build` and fans out over a `target: [cm5, pi5]` matrix. Each leg runs on
 its own GitHub-hosted `ubuntu-24.04-arm` runner – so the two boards build in
-parallel with an isolated `$RUNNER_TEMP` – downloads the `openfollow-deb` artifact
-from the same run, clones `rpi-image-gen` at the pinned `v2.6.0`, builds
+parallel with an isolated `$RUNNER_TEMP` – downloads the `openfollow-deb-arm64`
+artifact from the same run (the arm64 build leg; the image is Pi-only), clones
+`rpi-image-gen` at the pinned `v2.6.0`, builds
 `openfollow-<target>.yaml`, compresses to `.img.xz`, uploads it as the
 `openfollow-image-<target>` workflow artifact, and (on a published release)
 attaches it to the GitHub Release next to the `.ofupdate` bundle.
@@ -270,9 +287,10 @@ attaches **`openfollow-<target>_<version>.spdx.json`** (SPDX 2.3 JSON) to the
 GitHub Release alongside the `.img.xz`, and uploads it as the
 `openfollow-sbom-<target>` workflow artifact on every run. It is the
 machine-readable companion to the curated
-[`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md); the optional
-`detection` extra is not installed in the image, so it is documented there
-rather than in the SBOM.
+[`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md). The detection **backend**
+(`onnxruntime` + `opencv`) is bundled in the venv, so it appears in the SBOM; the
+AGPL model-**export** toolchain (`ultralytics` / `torch`) is not installed in the
+image and is documented in the notices instead.
 
 ### Compliance gate
 
@@ -282,18 +300,19 @@ scans it and **fails the build before either release-attach** if it finds:
 
 - **NDI** anywhere, by package name – the proprietary NDI SDK/plugin, whose
   license metadata is unreliable.
-- **Detection extras** (`onnxruntime` / `opencv` / `ultralytics`) bundled in the
-  **venv** – OpenFollow's own optional feature. These are permissively licensed,
-  so a transitive copy in the OS media stack (Debian's `gstreamer1.0-plugins-bad`
-  pulls `libonnxruntime`) is fine; the gate only asserts the extras stay out of
-  the bundled venv. The name gate also keeps Ultralytics (AGPL-3.0) out of the
-  venv regardless of its license.
+- **The model-export toolchain** (`ultralytics`) bundled in the **venv** – it is
+  AGPL-3.0 and only needed to *export* models on a workstation, never at show
+  time. The inference **backend** (`onnxruntime` + `opencv`) is bundled on purpose
+  – both are permissively licensed – so detection runs on an offline Pi with no
+  pip; the gate scopes to venv (pypi) packages, so a transitive copy in the OS
+  media stack (Debian's `gstreamer1.0-plugins-bad` pulls `libonnxruntime`) never
+  trips it.
 
 There is **no blanket AGPL-license gate**: OpenFollow itself is
 AGPL-3.0-or-later, so AGPL is the image's own license, not a forbidden one. The
 Debian operating system it sits beside is an independent work combined on the
-same medium (mere aggregation, predominantly GPL-2.0). This proves "OpenFollow's
-detection feature and NDI are not shipped" is enforced, not just intended, and
+same medium (mere aggregation, predominantly GPL-2.0). This proves "the AGPL
+export toolchain and NDI are not shipped" is enforced, not just intended, and
 keeps the proprietary NDI code out of the image. The accepted, redistributable
 Raspberry Pi GPU firmware blob is proprietary but is **not** flagged.
 

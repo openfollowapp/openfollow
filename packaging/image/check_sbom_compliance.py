@@ -6,11 +6,12 @@ final rootfs (dpkg + venv) and enforces:
 
 * NDI (whole image) – the proprietary NDI SDK/plugin, matched by name (its
   license metadata is unreliable).
-* Detection extras (venv only) – `onnxruntime`/`opencv`/`ultralytics` must not be
-  bundled as OpenFollow's own Python feature. They are permissively licensed, so
-  a transitive copy in the OS media stack (e.g. gstreamer pulls libonnxruntime)
-  is fine; we only assert our extras stay out of the bundled venv. The name gate
-  also keeps Ultralytics (AGPL-3.0) out of the venv regardless of license.
+* Export toolchain (venv only) – `ultralytics` must not be bundled in the venv:
+  it is AGPL-3.0 and is only needed to *export* models on a workstation, never at
+  show time. The inference backend (`onnxruntime` + `opencv`) IS bundled in the
+  venv on purpose – both are permissively licensed – so detection runs on an
+  offline Pi with no pip. The venv scope (pypi purl only) means a transitive copy
+  in the OS media stack (e.g. gstreamer pulls libonnxruntime) never trips it.
 
 OpenFollow itself is AGPL-3.0-or-later, so there is no blanket AGPL-license gate:
 AGPL is the image's own license, and the Debian OS it sits beside is an
@@ -33,11 +34,12 @@ _GLOBAL_DENYLISTED_NAMES = [
     ("ndi", re.compile(r"(?:^|-)ndi(?:$|-)|libndi")),
 ]
 
-# Names forbidden only in the bundled venv – OpenFollow's optional detection extras.
+# Names forbidden in the bundled venv – the AGPL model-export toolchain. The
+# inference backend (onnxruntime + opencv, both permissive) is bundled on purpose
+# so detection runs offline; only ultralytics (AGPL-3.0, export-only, workstation)
+# must stay out.
 _VENV_DENYLISTED_NAMES = [
     ("ultralytics", re.compile(r"ultralytics")),
-    ("onnxruntime", re.compile(r"onnxruntime")),
-    ("opencv", re.compile(r"opencv")),
 ]
 
 
@@ -116,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {line}", file=sys.stderr)
         return 1
 
-    print("[check-sbom] OK: no NDI / bundled detection extras in the image.")
+    print("[check-sbom] OK: no NDI / bundled export toolchain in the image.")
     return 0
 
 

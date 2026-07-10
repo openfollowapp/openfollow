@@ -398,6 +398,7 @@ def enter_settings_menu(app: OpenFollowApp, *, banner: str = "") -> None:
 def exit_settings_menu(app: OpenFollowApp) -> None:
     app._settings_menu_active = False
     app._settings_menu_banner = ""
+    app._video_disconnect_menu_open = False
 
 
 def enter_about(app: OpenFollowApp) -> None:
@@ -1615,6 +1616,15 @@ def check_video_disconnect_banner(app: OpenFollowApp) -> None:
         # (self-healing), not an auto-opened menu.
         app._video_was_connected = True
         app._video_disconnect_deadline = float("inf")
+        # Close the menu we auto-opened for the dead source, now video is back.
+        if app._video_disconnect_menu_open and app._settings_menu_active:
+            app._exit_settings_menu()
+        return
+
+    # Our auto-opened menu is up but the source is still down: refresh its
+    # banner from current state so a stale source name can't linger.
+    if app._video_disconnect_menu_open and app._settings_menu_active:
+        app._settings_menu_banner = _video_disconnect_banner_text(app)
         return
 
     # Disconnected. Only the startup case (never connected) auto-opens;
@@ -1638,6 +1648,7 @@ def check_video_disconnect_banner(app: OpenFollowApp) -> None:
         return
 
     app._video_disconnect_banner_shown = True
+    app._video_disconnect_menu_open = True
     logger.warning(
         "Video source %r never connected after startup – opening Settings.",
         app._config.video_source_type,

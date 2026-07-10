@@ -355,6 +355,15 @@ class TestSettingsMenu:
         exit_settings_menu(app)
         assert app._settings_menu_banner == ""
 
+    def test_exit_clears_video_disconnect_menu_flag(self) -> None:
+        """Exiting resets the auto-opened bookkeeping so the disconnect
+        check doesn't keep managing a menu the operator has closed."""
+        app = self._make_app()
+        app._video_disconnect_menu_open = True
+        enter_settings_menu(app, banner="X")
+        exit_settings_menu(app)
+        assert app._video_disconnect_menu_open is False
+
     def test_key_navigation_and_confirm_network(self) -> None:
         """Default selection is the Network entry. Enter opens the
         Network screen directly."""

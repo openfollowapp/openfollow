@@ -43,8 +43,10 @@ def _write_sbom(tmp_path: pathlib.Path, packages: list[dict], *, spdx_version: s
 
 
 # A realistic-ish clean image: AGPLv3-compatible OS libs, a clean venv, plus the
-# two real-world packages that must NOT trip the gate – a transitive
-# permissively-licensed libonnxruntime (deb) and the accepted Pi firmware blob.
+# real-world packages that must NOT trip the gate – a transitive
+# permissively-licensed libonnxruntime (deb), the accepted Pi firmware blob, and
+# the bundled detection backend (onnxruntime + opencv as venv/pypi packages),
+# which ships on purpose so detection runs on an offline Pi.
 _CLEAN_PACKAGES = [
     _pkg("python3-gi", declared="LGPL-2.1-or-later"),
     _pkg("gstreamer1.0-plugins-bad", declared="LGPL-2.1-or-later"),
@@ -54,6 +56,8 @@ _CLEAN_PACKAGES = [
     _pkg("libindicator7", declared="GPL-3.0-or-later"),
     _pkg("numpy", kind="pypi", declared="BSD-3-Clause"),
     _pkg("bottle", kind="pypi", declared="MIT"),
+    _pkg("onnxruntime", kind="pypi", declared="MIT"),
+    _pkg("opencv-python", kind="pypi", declared="Apache-2.0 AND BSD-3-Clause"),
     _pkg("openfollow", kind="pypi", declared="AGPL-3.0-or-later"),
 ]
 
@@ -89,13 +93,22 @@ def test_ndi_name_fails_anywhere(tmp_path: pathlib.Path, kind: str, name: str) -
     assert mod.main([path]) == 1
 
 
-@pytest.mark.parametrize("name", ["ultralytics", "onnxruntime", "opencv-python", "opencv-python-headless"])
-def test_detection_extra_in_venv_fails(tmp_path: pathlib.Path, name: str) -> None:
-    # Permissive license – proves the *name* policy fires on venv packages alone.
-    path = _write_sbom(tmp_path, [*_CLEAN_PACKAGES, _pkg(name, kind="pypi", declared="MIT")])
+def test_export_toolchain_in_venv_fails(tmp_path: pathlib.Path) -> None:
+    # ultralytics (AGPL, export-only) is the one detection extra kept out of the
+    # venv – proves the *name* policy fires on the venv package alone.
+    path = _write_sbom(tmp_path, [*_CLEAN_PACKAGES, _pkg("ultralytics", kind="pypi", declared="AGPL-3.0-or-later")])
     violations = mod.find_violations(mod.load_sbom(path))
-    assert any(line.startswith("venv:") and name in line for line in violations), violations
+    assert any(line.startswith("venv:") and "ultralytics" in line for line in violations), violations
     assert mod.main([path]) == 1
+
+
+@pytest.mark.parametrize("name", ["onnxruntime", "opencv-python", "opencv-python-headless"])
+def test_backend_extra_in_venv_passes(tmp_path: pathlib.Path, name: str) -> None:
+    # The inference backend ships in the venv on purpose (permissive license) so
+    # detection runs on an offline Pi with no pip; it must NOT trip the gate.
+    path = _write_sbom(tmp_path, [*_CLEAN_PACKAGES, _pkg(name, kind="pypi", declared="Apache-2.0")])
+    assert mod.find_violations(mod.load_sbom(path)) == []
+    assert mod.main([path]) == 0
 
 
 @pytest.mark.parametrize("name", ["onnxruntime", "libopencv-core4.5", "python3-opencv", "onnxruntime-gpu"])

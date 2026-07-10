@@ -98,9 +98,9 @@ class Mouse3DDeviceInfo:
 class Mouse3DBackend(Protocol):
     """Enumerates and opens 3D mice. Injected as a fake in tests."""
 
-    def enumerate(self) -> list[Mouse3DDeviceInfo]: ...
+    def enumerate(self) -> list[Mouse3DDeviceInfo]: ...  # pragma: no cover - Protocol method body, never executed
 
-    def open(self, path: str) -> Any: ...
+    def open(self, path: str) -> Any: ...  # pragma: no cover - Protocol method body, never executed
 
 
 class _PySpaceMouseBackend:

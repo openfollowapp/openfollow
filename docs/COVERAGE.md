@@ -52,12 +52,15 @@ pragma without an entry here is treated as a review blocker.
 | [`openfollow/video/detection.py`][detection]            | `except ImportError as _cv2_err: # pragma: no cover - depends on runtime opencv-python presence` | Fires only when `opencv-python` isn't installed. The fallback path sets `cv2 = None` + captures the error string for `check_detection_dependencies` – both are read-only state consumed by tests that monkeypatch them directly (`tests/test_detection.py::test_check_detection_dependencies_reports_cv2_when_import_failed`). |
 | [`openfollow/video/detection.py`][detection]            | `...  # pragma: no cover - Protocol method body, never executed` on `_InferenceBackend.predict` | `typing.Protocol` method bodies are type-stub ellipses – at runtime the Protocol registers the signature for `isinstance`/structural checks but never executes the body. Coverage.py reports it as a missing statement regardless. |
 | [`openfollow/video/detection.py`][detection]            | `if not keep_indices: # pragma: no cover - unreachable: _nms always keeps >=1 on non-empty input` in `_OnnxBackend.predict` | Defensive guard: `_nms` is only called after `np.any(keep_mask)` has already returned empty for the empty case, so the input boxes are guaranteed non-empty. On non-empty input `_nms` always keeps at least one index (the top-scored box – it's appended unconditionally before any IoU filtering). The guard can't fire without a future bug in `_nms`. |
+| [`openfollow/input/mouse3d.py`][mouse3d]                | `...  # pragma: no cover - Protocol method body, never executed` on `Mouse3DBackend.enumerate` | `typing.Protocol` method body is a type-stub ellipsis – the Protocol registers the signature for structural checks but never executes the body. The concrete implementation (`_PySpaceMouseBackend.enumerate`) is exercised by `tests/test_input_mouse3d.py`. |
+| [`openfollow/input/mouse3d.py`][mouse3d]                | `...  # pragma: no cover - Protocol method body, never executed` on `Mouse3DBackend.open` | Same as above for the `open` stub; `_PySpaceMouseBackend.open` is exercised via a mocked `pyspacemouse.open_by_path` in `tests/test_input_mouse3d.py`. |
 
 [receiver]: ../openfollow/video/receiver.py
 [gamepad]: ../openfollow/input/gamepad.py
 [osc]: ../openfollow/input/osc.py
 [keyboard]: ../openfollow/input/keyboard.py
 [detection]: ../openfollow/video/detection.py
+[mouse3d]: ../openfollow/input/mouse3d.py
 
 ## Mutation testing
 

@@ -8,7 +8,10 @@ snapshots – so the suite never imports real ``pyspacemouse`` or touches HID.
 
 from __future__ import annotations
 
+import sys
+import threading
 import time
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +26,8 @@ from openfollow.input.mouse3d import (
     Mouse3DHandler,
     Mouse3DManager,
     Mouse3DUpdate,
+    _is_supported_puck,
+    _PySpaceMouseBackend,
     check_mouse3d_dependencies,
 )
 from openfollow.operator_messages import OperatorMessageStore
@@ -1435,3 +1440,350 @@ def test_two_pucks_plus_gamepad_unified_order(wired) -> None:  # noqa: ANN001
     assert manager.controller_marker_id(1) == 11
     assert manager.controller_marker_id(2) == 12
     assert [c["backend"] for c in manager.get_controller_info()] == ["mouse3d", "mouse3d", "joystick"]
+
+
+# --------------------------------------------------------------------------- #
+# Mouse3DManager synchronous coverage (status / detect / reconcile / supervise
+# / backend). The threaded start()-driven tests above exercise behaviour but
+# coverage.py can't record lines run in background threads, so these drive the
+# same methods synchronously.
+# --------------------------------------------------------------------------- #
+
+
+def _connected_handler(*, buttons=(), path="/dev/hidraw2") -> Mouse3DHandler:  # noqa: ANN001
+    """A handler seeded as connected with a scripted snapshot (no worker thread)."""
+    h = _handler(snapshot=_state(buttons=list(buttons)))
+    h._connected = True
+    return h
+
+
+def _seed_manager(mgr: Mouse3DManager, handlers_by_path: dict) -> None:  # noqa: ANN001
+    """Populate a manager's device list + handlers without running the supervisor."""
+    mgr._infos = [Mouse3DDeviceInfo(path=p) for p in sorted(handlers_by_path)]
+    mgr._handlers = dict(handlers_by_path)
+
+
+@pytest.mark.parametrize(
+    "vid,pid,ok",
+    [
+        (0x256F, 0xC635, True),  # 3Dconnexion vendor
+        (0x046D, 0xC626, True),  # Logitech legacy, PID in the SpaceMouse range
+        (0x046D, 0xC700, False),  # Logitech legacy, PID out of range
+        (0x1234, 0xC626, False),  # unknown vendor
+    ],
+)
+def test_is_supported_puck(vid: int, pid: int, ok: bool) -> None:
+    assert _is_supported_puck(vid, pid) is ok
+
+
+def test_manager_status_accessors_report_connected_puck() -> None:
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
+    _seed_manager(mgr, {"/dev/hidraw2": _connected_handler(path="/dev/hidraw2")})
+    assert mgr.available is True
+    assert mgr.connected is True
+    assert mgr.connected_indices() == [0]
+    assert [d.path for d in mgr.connected_devices()] == ["/dev/hidraw2"]
+
+
+def test_manager_status_accessors_when_handler_not_open() -> None:
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
+    _seed_manager(mgr, {"/dev/hidraw2": _handler()})  # handler present but not connected
+    assert mgr.connected is False
+    assert mgr.connected_indices() == []
+    assert mgr.connected_devices() == []
+
+
+def test_manager_latest_button_scans_pucks_in_order() -> None:
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
+    _seed_manager(
+        mgr,
+        {
+            "/dev/hidraw2": _connected_handler(buttons=[0, 0], path="/dev/hidraw2"),
+            "/dev/hidraw3": _connected_handler(buttons=[0, 1], path="/dev/hidraw3"),
+        },
+    )
+    assert mgr.latest_button() == 1  # first press found scanning sorted-path order
+
+    quiet = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
+    _seed_manager(quiet, {"/dev/hidraw2": _connected_handler(buttons=[0, 0])})
+    assert quiet.latest_button() is None
+
+
+def test_manager_detect_polls_connected_handler_snapshot() -> None:
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
+    _seed_manager(mgr, {"/dev/hidraw2": _connected_handler(buttons=[0, 0, 1])})
+    assert mgr.detect_pressed_button(timeout=0.5) == 2
+
+
+def test_manager_detect_snapshot_times_out_to_none() -> None:
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
+    _seed_manager(mgr, {"/dev/hidraw2": _connected_handler(buttons=[0, 0])})
+    assert mgr.detect_pressed_button(timeout=0.02) is None
+
+
+def test_manager_detect_returns_none_when_already_detecting() -> None:
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
+    mgr._detect_lock.acquire()
+    try:
+        assert mgr.detect_pressed_button(timeout=0.5) is None  # lock held -> bail
+    finally:
+        mgr._detect_lock.release()
+
+
+def test_manager_detect_polls_devices_when_no_open_handler() -> None:
+    info = Mouse3DDeviceInfo(path="/dev/hidraw2")
+    backend = _FakeBackend([info], {"/dev/hidraw2": lambda: FakeDevice([_state(buttons=[0, 1])])})
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)  # no handlers seeded
+    assert mgr.detect_pressed_button(timeout=0.5) == 1
+
+
+def test_manager_detect_devices_reads_until_a_press() -> None:
+    info = Mouse3DDeviceInfo(path="/dev/hidraw2")
+    dev = FakeDevice([_state(buttons=[0, 0]), _state(buttons=[1])])  # no-press then press
+    backend = _FakeBackend([info], {"/dev/hidraw2": lambda: dev})
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    assert mgr.detect_pressed_button(timeout=0.5) == 0
+
+
+def test_manager_detect_devices_none_when_open_fails() -> None:
+    def _denied():  # noqa: ANN202
+        raise OSError("permission denied")
+
+    backend = _FakeBackend([Mouse3DDeviceInfo(path="/dev/hidraw2")], {"/dev/hidraw2": _denied})
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    assert mgr.detect_pressed_button(timeout=0.05) is None
+
+
+def test_manager_detect_devices_none_when_enumerate_raises() -> None:
+    class _BadBackend:
+        def enumerate(self):  # noqa: ANN202
+            raise RuntimeError("boom")
+
+        def open(self, path):  # noqa: ANN001, ANN202
+            raise AssertionError("unreached")
+
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_BadBackend())
+    assert mgr.detect_pressed_button(timeout=0.05) is None
+
+
+def test_reconcile_adds_then_removes_handlers_sync() -> None:
+    info2 = Mouse3DDeviceInfo(path="/dev/hidraw2")
+    info3 = Mouse3DDeviceInfo(path="/dev/hidraw3")
+    backend = _FakeBackend(
+        [],
+        {
+            "/dev/hidraw2": lambda: FakeDevice([_state(x=0.5)]),
+            "/dev/hidraw3": lambda: FakeDevice([_state(y=0.5)]),
+        },
+    )
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    try:
+        mgr._reconcile(backend, [info2, info3])
+        assert sorted(mgr._handlers) == ["/dev/hidraw2", "/dev/hidraw3"]
+        mgr._reconcile(backend, [info2])  # hidraw3 departs -> popped + stopped
+        assert list(mgr._handlers) == ["/dev/hidraw2"]
+    finally:
+        mgr.stop(wait=True)
+
+
+def test_supervise_runs_one_iteration_then_exits() -> None:
+    info = Mouse3DDeviceInfo(path="/dev/hidraw2")
+    stop = threading.Event()
+    calls = {"n": 0}
+
+    class _OneShotBackend:
+        def enumerate(self):  # noqa: ANN202
+            calls["n"] += 1
+            stop.set()  # end the supervisor loop after this iteration
+            return [info]
+
+        def open(self, path):  # noqa: ANN001, ANN202
+            return FakeDevice([_state(x=0.5)])
+
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_OneShotBackend())
+    try:
+        mgr._supervise(stop)  # synchronous: one enumerate + reconcile, then break
+        assert calls["n"] == 1
+        assert "/dev/hidraw2" in mgr._handlers
+    finally:
+        mgr.stop(wait=True)
+
+
+def test_resolve_backend_uses_injected_or_defaults_to_pyspacemouse() -> None:
+    backend = _FakeBackend([], {})
+    assert Mouse3DManager(_cfg(enabled=True), backend=backend)._resolve_backend() is backend
+    assert isinstance(Mouse3DManager(_cfg(enabled=True))._resolve_backend(), _PySpaceMouseBackend)
+
+
+def _fake_hid_device(vid, pid, path, name="Nav", serial="S"):  # noqa: ANN001, ANN202
+    return SimpleNamespace(vendor_id=vid, product_id=pid, path=path, product_string=name, serial_number=serial)
+
+
+def test_pyspacemouse_backend_enumerate_filters_dedups_and_sorts(monkeypatch) -> None:  # noqa: ANN001
+    class _Enum:
+        def find(self):  # noqa: ANN202
+            return [
+                _fake_hid_device(0x256F, 0xC635, b"/dev/hidraw3", name="Explorer"),
+                _fake_hid_device(0x256F, 0xC635, b"/dev/hidraw3"),  # dup path -> collapsed
+                _fake_hid_device(0x046D, 0xC626, "/dev/hidraw2", name="Nav"),  # legacy supported
+                _fake_hid_device(0x1234, 0x0001, "/dev/hidraw9"),  # unsupported vendor -> dropped
+                _fake_hid_device(0x256F, 0xC635, None),  # no path -> skipped
+            ]
+
+    fake_easyhid = types.ModuleType("easyhid")
+    fake_easyhid.Enumeration = _Enum
+    monkeypatch.setitem(sys.modules, "easyhid", fake_easyhid)
+    infos = _PySpaceMouseBackend().enumerate()
+    assert [i.path for i in infos] == ["/dev/hidraw2", "/dev/hidraw3"]  # sorted + deduped + filtered
+    assert infos[0].product_name == "Nav"
+
+
+def test_pyspacemouse_backend_enumerate_survives_missing_lib(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setitem(sys.modules, "easyhid", None)  # `from easyhid import ...` -> ImportError
+    assert _PySpaceMouseBackend().enumerate() == []
+
+
+def test_pyspacemouse_backend_enumerate_survives_find_oserror(monkeypatch) -> None:  # noqa: ANN001
+    class _Enum:
+        def find(self):  # noqa: ANN202
+            raise OSError("libhidapi missing")
+
+    fake_easyhid = types.ModuleType("easyhid")
+    fake_easyhid.Enumeration = _Enum
+    monkeypatch.setitem(sys.modules, "easyhid", fake_easyhid)
+    assert _PySpaceMouseBackend().enumerate() == []
+
+
+def test_pyspacemouse_backend_open_delegates_to_open_by_path(monkeypatch) -> None:  # noqa: ANN001
+    opened = {}
+
+    def _open_by_path(path):  # noqa: ANN001, ANN202
+        opened["path"] = path
+        print("noisy success line")  # backend must swallow this on stdout
+        return "DEVICE"
+
+    fake_ps = types.ModuleType("pyspacemouse")
+    fake_ps.open_by_path = _open_by_path
+    monkeypatch.setitem(sys.modules, "pyspacemouse", fake_ps)
+    assert _PySpaceMouseBackend().open("/dev/hidraw2") == "DEVICE"
+    assert opened["path"] == "/dev/hidraw2"
+
+
+def test_mouse3d_unified_idx_returns_none_when_slot_absent(wired) -> None:  # noqa: ANN001
+    manager, _app = wired
+    # A local index with no matching mouse3d slot resolves to None (no marker).
+    assert manager._mouse3d_unified_idx(0, [("gamepad", 0)]) is None
+
+
+def test_mouse3d_update_noops_when_slot_resolves_no_marker(wired) -> None:  # noqa: ANN001
+    manager, app = wired
+    app._config.mouse3d.enabled = True
+    app._controlled_ids = []  # the puck's slot resolves to no marker
+    app._selected_id = None
+    manager.mouse3d_manager.next_update = Mouse3DUpdate(velocity=(1.0, 0.0, 0.0), reset=True)
+    manager.update(1.0)  # _apply_mouse3d bails at the marker_id-None guard, no crash
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_manager_start_is_noop_when_supervisor_already_alive() -> None:
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
+
+    class _Alive:
+        def is_alive(self) -> bool:
+            return True
+
+    sentinel = _Alive()
+    mgr._thread = sentinel  # type: ignore[assignment]
+    mgr.start()  # idempotent: an already-running supervisor is left untouched
+    assert mgr._thread is sentinel
+
+
+def test_manager_start_marks_unavailable_when_deps_missing(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(mouse3d_module, "check_mouse3d_dependencies", lambda: ["pyspacemouse"])
+    mgr = Mouse3DManager(_cfg(enabled=True))  # no injected backend -> real-deps path
+    mgr.start()
+    assert mgr.available is False  # deps missing -> flagged, no supervisor spawned
+    assert mgr._thread is None
+
+
+def test_manager_reload_config_swaps_into_live_handlers() -> None:
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
+    handler = _connected_handler()
+    _seed_manager(mgr, {"/dev/hidraw2": handler})
+    new_cfg = _cfg(enabled=True, sens_pan_x=3.0)
+    mgr.reload_config(new_cfg)
+    assert mgr._cfg is new_cfg
+    assert handler._cfg is new_cfg  # propagated to each live handler
+
+
+def test_supervise_exits_immediately_when_already_stopped() -> None:
+    stop = threading.Event()
+    stop.set()
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
+    mgr._supervise(stop)  # while-condition false at entry -> no enumerate, no handlers
+    assert mgr._handlers == {}
+
+
+def test_supervise_survives_enumerate_error() -> None:
+    stop = threading.Event()
+
+    class _RaiseBackend:
+        def enumerate(self):  # noqa: ANN202
+            stop.set()  # break after this iteration
+            raise RuntimeError("boom")
+
+        def open(self, path):  # noqa: ANN001, ANN202
+            raise AssertionError("unreached")
+
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_RaiseBackend())
+    mgr._supervise(stop)  # except -> infos=[]; reconcile([]) adds nothing
+    assert mgr._handlers == {}
+
+
+def test_manager_detect_devices_skips_falsy_open() -> None:
+    backend = _FakeBackend([Mouse3DDeviceInfo(path="/dev/hidraw2")], {"/dev/hidraw2": lambda: None})
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    assert mgr.detect_pressed_button(timeout=0.05) is None  # falsy device skipped -> no devices
+
+
+def test_manager_detect_devices_survive_read_oserror_then_time_out() -> None:
+    class _RaisingDevice:
+        def read(self):  # noqa: ANN202
+            raise OSError("disconnected")
+
+        def close(self) -> None:
+            pass
+
+    backend = _FakeBackend([Mouse3DDeviceInfo(path="/dev/hidraw2")], {"/dev/hidraw2": lambda: _RaisingDevice()})
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    assert mgr.detect_pressed_button(timeout=0.03) is None  # read OSError swallowed, then timeout
+
+
+def test_manager_detect_devices_time_out_when_no_press() -> None:
+    # ``read`` keeps returning a no-press state until the deadline.
+    backend = _FakeBackend(
+        [Mouse3DDeviceInfo(path="/dev/hidraw2")],
+        {"/dev/hidraw2": lambda: _AlwaysReads(_state(buttons=[0, 0]))},
+    )
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    assert mgr.detect_pressed_button(timeout=0.03) is None
+
+
+class _AlwaysReads:
+    """Device whose ``read`` always returns the same scripted state."""
+
+    def __init__(self, state: object) -> None:
+        self._state = state
+
+    def read(self) -> object:
+        return self._state
+
+    def close(self) -> None:
+        pass
+
+
+def test_manager_detect_devices_ignore_none_reads_until_timeout() -> None:
+    # ``read`` returning ``None`` (no fresh report) is skipped, not treated as a press.
+    backend = _FakeBackend([Mouse3DDeviceInfo(path="/dev/hidraw2")], {"/dev/hidraw2": lambda: FakeDevice([])})
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    assert mgr.detect_pressed_button(timeout=0.03) is None

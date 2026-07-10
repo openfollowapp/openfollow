@@ -128,7 +128,8 @@ class BeaconSender:
         self._packet = BeaconPacket(name=name, web_port=web_port, version=version)
         self._iface_ip = iface_ip
         self._stop_event = threading.Event()
-        # Signals the send loop to rebuild its socket on the new interface.
+        # Set by ``update_iface_ip`` to make the send loop drop and rebuild its
+        # socket so beacons egress from the new source interface.
         self._reopen = threading.Event()
         self._thread: threading.Thread | None = None
         # Health metrics for diagnostics bundle.
@@ -327,7 +328,8 @@ class BeaconReceiver:
         self._thread: threading.Thread | None = None
         self._on_peer_discovered = on_peer_discovered
         self._iface_ip = iface_ip
-        # Signals the receive loop to rebuild its socket on the new interface.
+        # Set by ``update_iface_ip`` to make the receive loop rebuild its
+        # socket so multicast membership rejoins on the new interface.
         self._reopen = threading.Event()
         self._local_port: int | None = None  # To filter out self
         self._local_ips: set[str] = set()

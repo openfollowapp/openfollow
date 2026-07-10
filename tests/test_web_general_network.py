@@ -177,12 +177,18 @@ class TestUpdateSupportedFlag:
         server = SimpleNamespace(
             get_update_status=lambda: {"state": "idle", "message": "", "error": ""},
             get_network_state=lambda: None,
+            get_update_available=lambda: "",
         )
         return routes._build_general_template_data(server, AppConfig())
 
     @pytest.mark.parametrize(
         ("platform", "expected"),
-        [("linux", True), ("darwin", False)],
+        [
+            ("linux", True),
+            ("linux2", True),  # older sys.platform spelling
+            ("darwin", False),
+            ("win32", False),  # only the Linux .deb installer is supported
+        ],
     )
     def test_update_supported_follows_platform(
         self, monkeypatch: pytest.MonkeyPatch, platform: str, expected: bool

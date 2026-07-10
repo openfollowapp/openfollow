@@ -188,6 +188,13 @@ class WebCommandQueue:
             "message": "",
             "tail": "",
         }
+        # Latest newer release the background online-sync worker has found
+        # (version tag without the ``v`` prefix), or "" when none / up to date.
+        # Drives the update banner + footer flag; independent of the install
+        # state machine above so a published release shows even while no
+        # install is running.
+        self._update_available_lock = threading.Lock()
+        self._update_available = ""
 
     def request_restart(self) -> None:
         self._restart_requested.set()
@@ -295,6 +302,16 @@ class WebCommandQueue:
             if detached is not None:
                 return detached
         return status
+
+    def set_update_available(self, latest: str | None) -> None:
+        """Record the newest available release tag ("" / None clears the banner)."""
+        with self._update_available_lock:
+            self._update_available = (latest or "").strip()
+
+    def get_update_available(self) -> str:
+        """Return the newest available release tag, or "" when up to date."""
+        with self._update_available_lock:
+            return self._update_available
 
     # ----- generic privilege password prompt -----------
 
@@ -847,6 +864,26 @@ class AppRuntimeServices:
             self._app._config.psn_source_iface,
         )
         return resolved
+
+    def init_online_sync(self) -> None:
+        """Start the background online-sync worker.
+
+        On startup / IP change, when the LAN has internet, it syncs the system
+        clock (NTP) and checks GitHub for a newer release. Fails silently
+        offline; never prompts for a password.
+        """
+        import openfollow
+        from openfollow.runtime.online_sync import OnlineSyncWorker
+
+        app = self._app
+        self._online_sync = OnlineSyncWorker(
+            config_provider=lambda: app._config,
+            ip_provider=self._resolved_source_ip,
+            broker=self._privilege_broker,
+            web_commands=app._web_commands,
+            version=openfollow.__version__,
+        )
+        self._online_sync.start()
 
     def _resolve_web_bind(self) -> str:
         """Resolve the web UI listen address.
@@ -1822,8 +1859,10 @@ class AppRuntimeServices:
             port=self._app._config.web_port,
             system_name=self._app._config.psn_system_name,
             command_queue=self._app._web_commands,
-            # Resolved PSN bind IP for the web UI header; the provider
-            # re-resolves it live so an IP change updates the self-row.
+            # Resolved PSN bind IP for the web UI header so iface-pinned
+            # boxes don't display empty/stale. The provider re-resolves it
+            # live so a runtime IP change (static → DHCP) updates the
+            # self-row + beacon interface without a restart.
             local_ip=self._resolved_source_ip(),
             local_ip_provider=self._resolved_source_ip,
             runtime_stats_provider=self.get_runtime_stats_snapshot,
@@ -2739,6 +2778,9 @@ class AppRuntimeServices:
         # Each step is isolated (see ``_safe_stop``) so one failing
         # teardown can't strand the rest – the OSC-service drain and MIDI
         # close at the end must always run.
+        online_sync = getattr(self, "_online_sync", None)
+        if online_sync is not None:
+            self._safe_stop("online sync", online_sync.stop)
         if self._person_detector is not None:
             self._safe_stop("person detector", self._person_detector.stop)
         if app._input_manager is not None:

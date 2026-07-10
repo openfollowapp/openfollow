@@ -233,6 +233,54 @@ def test_load_config_missing_file_uses_defaults(temp_config_path) -> None:
     assert config == AppConfig()
 
 
+def test_online_sync_defaults() -> None:
+    cfg = AppConfig()
+    assert cfg.auto_update_check is True
+    assert cfg.auto_time_sync is True
+    assert cfg.update_include_prereleases is False
+    assert cfg.time_sync_server == "ptbtime1.ptb.de"
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(True, True), (False, False), ("true", True), ("off", False), ("nonsense", True), (None, True), (1, True)],
+)
+def test_auto_update_check_coercion(value: object, expected: bool) -> None:
+    assert AppConfig(auto_update_check=value).auto_update_check is expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(True, True), (False, False), ("yes", True), ("no", False), ("garbage", True), (None, True)],
+)
+def test_auto_time_sync_coercion(value: object, expected: bool) -> None:
+    assert AppConfig(auto_time_sync=value).auto_time_sync is expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(True, True), (False, False), ("on", True), ("0", False), ("garbage", False), (None, False), (1, False)],
+)
+def test_update_include_prereleases_coercion(value: object, expected: bool) -> None:
+    # Defaults OFF: unrecognised / wrong-type input must NOT silently opt into pre-releases.
+    assert AppConfig(update_include_prereleases=value).update_include_prereleases is expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("time.cloudflare.com", "time.cloudflare.com"),
+        ("  ptbtime1.ptb.de  ", "ptbtime1.ptb.de"),
+        ("", "ptbtime1.ptb.de"),  # empty falls back to the default
+        ("   ", "ptbtime1.ptb.de"),  # whitespace-only too
+        (123, "ptbtime1.ptb.de"),  # wrong type -> default
+        (None, "ptbtime1.ptb.de"),
+    ],
+)
+def test_time_sync_server_coercion(value: object, expected: str) -> None:
+    assert AppConfig(time_sync_server=value).time_sync_server == expected  # type: ignore[arg-type]
+
+
 def test_default_video_source_is_testpattern() -> None:
     """A fresh install (no config, no example to bootstrap from) defaults to
     the always-available test pattern rather than a network source. The

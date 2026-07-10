@@ -1080,6 +1080,7 @@
  }
  .license-footer a:hover { text-decoration: underline; }
  .license-footer .sep { opacity: 0.5; margin: 0 0.4rem; }
+ .license-footer .update-flag { color: #ffd166; font-weight: 600; margin-left: 0.4rem; }
  /* Full verbatim license text on the /about page. Scrollable so the
  ~660-line AGPLv3 doesn't dominate the page, monospace + preserved
  wrapping so the FSF formatting stays intact. */
@@ -1996,6 +1997,9 @@
  % from openfollow import __commit__, __version__
  <footer class="license-footer" role="contentinfo">
  OpenFollow v{{__version__}}{{ ' (' + __commit__ + ')' if __commit__ else '' }}
+ % if defined('update_supported') and update_supported and defined('update_available') and update_available:
+ <span class="update-flag">(Update available: v{{latest_version}})</span>
+ % end
  <span class="sep">·</span>
  © 2026 The OpenFollow Project
  <span class="sep">·</span>

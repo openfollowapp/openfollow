@@ -197,8 +197,10 @@ class ConfigWebServer:
             if local_ip:
                 logger.warning("Configured source IP %s is not a local interface, using auto-detected IP.", local_ip)
             self._local_ip = get_primary_local_ipv4(default="127.0.0.1")
-        # Re-resolves the local IP live so an IP change is picked up without a
-        # restart; the lock guards the cached IP + beacon repoint.
+        # Live re-resolver so a runtime IP change (static → DHCP, new lease)
+        # is picked up without a restart. The lock guards the cached
+        # ``_local_ip`` + beacon-interface repoint against concurrent overview
+        # requests; the throttle timestamp keeps request-path refreshes cheap.
         self._local_ip_provider = local_ip_provider
         self._local_ip_lock = threading.Lock()
         self._local_ip_refresh_ts = 0.0  # monotonic; throttles _refresh_local_ip
@@ -482,6 +484,10 @@ class ConfigWebServer:
     def get_update_status(self) -> dict[str, str]:
         """Get current web-visible status of the update workflow."""
         return self._command_queue.get_update_status()
+
+    def get_update_available(self) -> str:
+        """Newest release the background online-sync found ("" if up to date)."""
+        return self._command_queue.get_update_available()
 
     def pending_privilege_password_request(self) -> dict[str, str] | None:
         """Return the active privilege-password prompt or None."""

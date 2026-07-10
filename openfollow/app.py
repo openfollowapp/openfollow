@@ -396,6 +396,7 @@ class OpenFollowApp:
             (svc.init_virtual_faders, "virtual fader bus"),
             (self._init_marker_catalog_sync, "marker catalog sync"),
             (self._sync_system_hostname, "hostname sync"),
+            (svc.init_online_sync, "online sync"),
         ):
             if name in server_dependent and self._server is None:
                 logger.error("Skipping %s – PSN output unavailable.", name)

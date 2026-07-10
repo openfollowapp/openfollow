@@ -1157,6 +1157,42 @@ def test_beacon_sender_update_iface_ip_noop_when_unchanged() -> None:
     assert not sender._reopen.is_set()
 
 
+def test_beacon_sender_rebuilds_socket_on_iface_change(monkeypatch) -> None:
+    """A live iface change drops the open socket and reopens bound to the new IP."""
+    from openfollow.web.discovery import BeaconSender
+
+    monkeypatch.setattr(discovery_module, "BEACON_INTERVAL", 0.02)
+
+    sender = BeaconSender(name="N", web_port=80, iface_ip="10.0.0.1")
+    opened_with: list[str] = []
+    sockets: list[_FakeSocket] = []
+
+    def _open() -> _FakeSocket:
+        opened_with.append(sender._iface_ip)
+        sock = _FakeSocket()
+        sockets.append(sock)
+        return sock
+
+    sender._open_socket = _open  # type: ignore[assignment]
+
+    sender.start()
+    try:
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not (sockets and sockets[0].send_count >= 1):
+            time.sleep(0.01)
+        assert sockets and sockets[0].send_count >= 1, "first socket never sent"
+
+        sender.update_iface_ip("10.0.0.2")
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not (len(opened_with) >= 2 and opened_with[-1] == "10.0.0.2"):
+            time.sleep(0.01)
+        assert opened_with[-1] == "10.0.0.2", "socket not reopened on the new interface"
+        assert sockets[0].closed, "old socket must close before the rebuild"
+    finally:
+        sender.stop()
+
+
 def test_beacon_sender_drain_reopen_keeps_socket_when_no_request() -> None:
     from openfollow.web.discovery import BeaconSender
 
@@ -1212,6 +1248,58 @@ def test_beacon_receiver_update_iface_ip_noop_when_unchanged() -> None:
 
     assert receiver._iface_ip == "10.0.0.1"
     assert not receiver._reopen.is_set()
+
+
+class _IdleRecvSocket:
+    """Receive-socket double: ``recvfrom`` always times out so the loop idles."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def recvfrom(self, _n: int) -> tuple[bytes, tuple[str, int]]:
+        time.sleep(0.005)
+        raise TimeoutError
+
+    def settimeout(self, _t: float) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_beacon_receiver_rebuilds_socket_on_iface_change(monkeypatch) -> None:
+    """A live iface change breaks the recv loop so it rejoins on the new IP."""
+    monkeypatch.setattr(discovery_module, "BEACON_INTERVAL", 0.02)
+
+    receiver = BeaconReceiver(iface_ip="10.0.0.1")
+    opened_with: list[str] = []
+    sockets: list[_IdleRecvSocket] = []
+
+    def _setup() -> _IdleRecvSocket:
+        opened_with.append(receiver._iface_ip)
+        sock = _IdleRecvSocket()
+        sockets.append(sock)
+        return sock
+
+    receiver._setup_socket = _setup  # type: ignore[assignment]
+
+    receiver.start()
+    try:
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not opened_with:
+            time.sleep(0.01)
+        assert opened_with, "receiver never opened its socket"
+        first = sockets[0]
+
+        receiver.update_iface_ip("10.0.0.2")
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not (len(opened_with) >= 2 and opened_with[-1] == "10.0.0.2"):
+            time.sleep(0.01)
+        assert opened_with[-1] == "10.0.0.2", "socket not rejoined on the new interface"
+        assert first.closed, "old socket must close before the rebuild"
+    finally:
+        receiver.stop()
 
 
 def test_beacon_receiver_update_iface_ip_resets_self_filter_cache() -> None:

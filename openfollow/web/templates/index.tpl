@@ -51,7 +51,7 @@
 
 <!-- General -->
 <div class="tab-content" id="tab-general">
-    % include('partials/general.tpl', config=config, saved=False, local_ips=local_ips, update_status=update_status, network_state=network_state)
+    % include('partials/general.tpl', config=config, saved=False, local_ips=local_ips, update_status=update_status, network_state=network_state, update_available=update_available, latest_version=latest_version, update_supported=update_supported)
     %# "Send config to other stations" (send_config.tpl) is hidden –
     %# peer-broadcast is being replaced with peer-pull; partial and route
     %# left for backwards compatibility. Re-add to restore.

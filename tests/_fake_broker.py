@@ -36,6 +36,7 @@ class RecordedCall:
     timeout: float
     reason: str
     stdin: str | None
+    allow_prompt: bool = True
 
 
 @dataclass
@@ -60,6 +61,7 @@ class FakeBroker:
         timeout: float = 30.0,
         reason: str = "",
         stdin: str | None = None,
+        allow_prompt: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         idx = len(self.calls)
         self.calls.append(
@@ -70,6 +72,7 @@ class FakeBroker:
                 timeout=timeout,
                 reason=reason,
                 stdin=stdin,
+                allow_prompt=allow_prompt,
             )
         )
         if idx < len(self.exceptions) and self.exceptions[idx] is not None:

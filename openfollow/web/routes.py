@@ -792,6 +792,33 @@ def _build_input_template_data(cfg: AppConfig) -> dict[str, Any]:
     }
 
 
+def _deb_update_supported() -> bool:
+    """Whether the in-app signed-.deb updater can run on this host.
+
+    The updater installs via dpkg/systemd, which only exist on the Linux (Pi)
+    target, so the Software Update section, banner, and footer flag are hidden
+    everywhere else. Single source of truth for the index and section-reload
+    render paths so their platform gate can't drift.
+    """
+    return sys.platform.startswith("linux")
+
+
+def _footer_update_context(server: ConfigWebServer) -> dict[str, Any]:
+    """base.tpl footer "Update available" flag context.
+
+    Spread into every authenticated full-page render so the indicator isn't
+    limited to the config landing page – an update is most often discovered by
+    the online-sync worker while the operator is still in the Setup Wizard.
+    Pre-auth pages (login / about) deliberately omit it: they expose no state.
+    """
+    latest = server.get_update_available()
+    return {
+        "update_supported": _deb_update_supported(),
+        "update_available": bool(latest),
+        "latest_version": latest,
+    }
+
+
 def _build_general_template_data(
     server: ConfigWebServer,
     cfg: AppConfig,
@@ -814,12 +841,13 @@ def _build_general_template_data(
         "update_status": server.get_update_status(),
         "network_state": server.get_network_state(),
         "current_version": openfollow.__version__,
-        # The in-app updater installs a signed .deb via dpkg/systemd, which
-        # only exists on the Pi. Hide the Software Update section on macOS.
-        "update_supported": sys.platform != "darwin",
+        "update_supported": _deb_update_supported(),
     }
     if update_feedback:
         data["update_feedback"] = update_feedback
+    latest = server.get_update_available()
+    data["update_available"] = bool(latest)
+    data["latest_version"] = latest
     return data
 
 
@@ -3841,6 +3869,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # index.tpl includes the General partial directly, so the initial
             # render must supply the Software Update section's version label.
             current_version=openfollow.__version__,
+            # Update-available banner (General section) + footer flag (base.tpl);
+            # read once so the flag and version label can't disagree mid-render.
+            **_footer_update_context(server),
             button_names=sorted(VALID_BUTTON_NAMES),
             detection_missing=_get_detection_missing_deps(config),
             detection_extras_installed=extras,
@@ -4487,7 +4518,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         cfg = load_config(server.config_path)
         response.content_type = "application/json"
         try:
-            info = check_for_update(cfg.update_github_repo, openfollow.__version__)
+            info = check_for_update(
+                cfg.update_github_repo,
+                openfollow.__version__,
+                include_prereleases=cfg.update_include_prereleases,
+            )
             return json.dumps({"ok": True, **info})
         except Exception as exc:  # surface any network/API error as feedback
             return json.dumps({"ok": False, "error": str(exc)})
@@ -7179,7 +7214,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Setup wizard page."""
         config = _request_scoped_config()
         input_data = _build_input_template_data(config)
-        return template("wizard", config=config, **input_data)
+        # Footer "Update available" flag: an update is most often discovered
+        # while the operator is still in the Setup Wizard.
+        return template("wizard", config=config, **input_data, **_footer_update_context(server))
 
     @app.get("/api/video/snapshot/full")
     def api_video_snapshot_full() -> Any:

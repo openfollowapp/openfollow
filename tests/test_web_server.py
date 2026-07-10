@@ -199,6 +199,76 @@ def test_index_page_uses_locally_bundled_htmx(live_server) -> None:
         assert cdn not in body, f"CDN reference reintroduced: {cdn!r}"
 
 
+def test_update_banner_and_footer_flag_shown_when_available(live_server, monkeypatch) -> None:
+    # The background online-sync worker publishes a discovered version via the
+    # command queue; the index page renders the banner (General section) and the
+    # footer flag, and the section-reload route renders the banner too. Force a
+    # Linux platform: the .deb installer (and so the whole Software Update
+    # surface) is Pi-only, hidden on the macOS host that may run the suite.
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "linux")
+
+    server, base = live_server
+    server._command_queue.set_update_available("0.4.0")
+
+    status, body = _get(base, "/")
+    assert status == 200
+    assert "is ready to install" in body  # General-section banner
+    assert "Update available: v0.4.0" in body  # footer flag
+
+    status_section, section = _get(base, "/section/general")
+    assert status_section == 200
+    assert "is ready to install" in section
+
+
+def test_wizard_page_shows_update_footer_flag(live_server, monkeypatch) -> None:
+    # The footer "Update available" flag is global chrome, not limited to the
+    # config landing page: an update is most often discovered during setup.
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "linux")
+
+    server, base = live_server
+    server._command_queue.set_update_available("0.4.0")
+
+    status, body = _get(base, "/wizard")
+    assert status == 200
+    assert "Update available: v0.4.0" in body  # footer flag
+
+
+def test_update_banner_and_footer_hidden_on_unsupported_platform(live_server, monkeypatch) -> None:
+    # macOS can't run the .deb installer, so neither the Software Update banner
+    # nor the footer flag surfaces even when a newer release was discovered.
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "darwin")
+
+    server, base = live_server
+    server._command_queue.set_update_available("0.4.0")
+
+    status, body = _get(base, "/")
+    assert status == 200
+    assert "is ready to install" not in body
+    assert "(Update available: v" not in body
+
+    status_section, section = _get(base, "/section/general")
+    assert status_section == 200
+    assert "is ready to install" not in section
+
+
+def test_update_banner_hidden_when_up_to_date(live_server) -> None:
+    server, base = live_server
+    server._command_queue.set_update_available("")  # default / up to date
+
+    status, body = _get(base, "/")
+    assert status == 200
+    # Banner copy + the rendered footer flag are both absent (the ``.update-flag``
+    # CSS class is always defined in base.tpl, so assert on the visible text).
+    assert "is ready to install" not in body
+    assert "(Update available: v" not in body
+
+
 def test_select_options_have_explicit_dark_background(live_server) -> None:
     # Regression guard: the native <select> dropdown popup does not inherit
     # the select's dark background. Firefox renders the option list on the
@@ -3332,7 +3402,7 @@ def test_deb_update_check_returns_json_available(live_server, monkeypatch) -> No
     monkeypatch.setattr(
         deb_update_mod,
         "_fetch_latest_release",
-        lambda repo: {"tag_name": "v99.0.0", "assets": []},
+        lambda repo, **kw: {"tag_name": "v99.0.0", "assets": []},
     )
     status, body = _get_json(base, "/section/general/deb-update/check")
     assert status == 200
@@ -3348,7 +3418,7 @@ def test_deb_update_check_surfaces_error_as_json(live_server, monkeypatch) -> No
 
     _, base = live_server
 
-    def _raise(repo):
+    def _raise(repo, **kw):
         raise RuntimeError("GitHub unreachable")
 
     monkeypatch.setattr(deb_update_mod, "_fetch_latest_release", _raise)

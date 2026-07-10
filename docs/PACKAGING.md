@@ -44,7 +44,7 @@ is the input artifact for the `rpi-image-gen` appliance image build
 ## Install layout
 
 ```
-/opt/openfollow/venv/                      all Python deps + the openfollow package
+/opt/openfollow/venv/                      all Python deps + the openfollow package (incl. the detection backend: onnxruntime + opencv)
 /usr/lib/systemd/system/openfollow.service
 /usr/lib/systemd/system/openfollow-splash.service
 /usr/share/openfollow/{openfollow.svg,splash.png,splash.sh,config.example.toml,install-ndi.sh,install-detection.sh}
@@ -270,9 +270,10 @@ attaches **`openfollow-<target>_<version>.spdx.json`** (SPDX 2.3 JSON) to the
 GitHub Release alongside the `.img.xz`, and uploads it as the
 `openfollow-sbom-<target>` workflow artifact on every run. It is the
 machine-readable companion to the curated
-[`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md); the optional
-`detection` extra is not installed in the image, so it is documented there
-rather than in the SBOM.
+[`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md). The detection **backend**
+(`onnxruntime` + `opencv`) is bundled in the venv, so it appears in the SBOM; the
+AGPL model-**export** toolchain (`ultralytics` / `torch`) is not installed in the
+image and is documented in the notices instead.
 
 ### Compliance gate
 
@@ -282,18 +283,19 @@ scans it and **fails the build before either release-attach** if it finds:
 
 - **NDI** anywhere, by package name – the proprietary NDI SDK/plugin, whose
   license metadata is unreliable.
-- **Detection extras** (`onnxruntime` / `opencv` / `ultralytics`) bundled in the
-  **venv** – OpenFollow's own optional feature. These are permissively licensed,
-  so a transitive copy in the OS media stack (Debian's `gstreamer1.0-plugins-bad`
-  pulls `libonnxruntime`) is fine; the gate only asserts the extras stay out of
-  the bundled venv. The name gate also keeps Ultralytics (AGPL-3.0) out of the
-  venv regardless of its license.
+- **The model-export toolchain** (`ultralytics`) bundled in the **venv** – it is
+  AGPL-3.0 and only needed to *export* models on a workstation, never at show
+  time. The inference **backend** (`onnxruntime` + `opencv`) is bundled on purpose
+  – both are permissively licensed – so detection runs on an offline Pi with no
+  pip; the gate scopes to venv (pypi) packages, so a transitive copy in the OS
+  media stack (Debian's `gstreamer1.0-plugins-bad` pulls `libonnxruntime`) never
+  trips it.
 
 There is **no blanket AGPL-license gate**: OpenFollow itself is
 AGPL-3.0-or-later, so AGPL is the image's own license, not a forbidden one. The
 Debian operating system it sits beside is an independent work combined on the
-same medium (mere aggregation, predominantly GPL-2.0). This proves "OpenFollow's
-detection feature and NDI are not shipped" is enforced, not just intended, and
+same medium (mere aggregation, predominantly GPL-2.0). This proves "the AGPL
+export toolchain and NDI are not shipped" is enforced, not just intended, and
 keeps the proprietary NDI code out of the image. The accepted, redistributable
 Raspberry Pi GPU firmware blob is proprietary but is **not** flagged.
 

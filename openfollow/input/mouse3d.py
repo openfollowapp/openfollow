@@ -23,14 +23,13 @@ import contextlib
 import importlib.util
 import io
 import logging
-import math
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
-from openfollow.configuration import MOUSE3D_AXES
+from openfollow.configuration import MOUSE3D_AXES, _coerce_float
 from openfollow.input.shaping import shape_axis
 
 if TYPE_CHECKING:
@@ -201,13 +200,7 @@ class Mouse3DUpdate:
 
 def _finite_axis(value: Any) -> float:
     """Coerce a device axis to a finite float clamped to [-1, 1]."""
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if not math.isfinite(out):
-        return 0.0
-    return max(-1.0, min(1.0, out))
+    return _coerce_float(value, 0.0, lo=-1.0, hi=1.0)
 
 
 class Mouse3DHandler:

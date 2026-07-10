@@ -69,10 +69,14 @@ class InputManager:
         # the marker actually routed to that controller.
         # ``_gamepad_marker_id`` is the same hub the movement / reset
         # paths already use, so the four routing surfaces stay in sync.
+        # The virtual-fader bus is shared: the gamepad handler integrates its
+        # stick into it, and the 3D-mouse fader path (``_apply_mouse3d``) writes
+        # to the same reference – captured once here, not re-dereferenced per tick.
+        self._virtual_faders = app._runtime_services._virtual_faders
         self.gamepad_handler = GamepadHandler(
             app,
             event_bus=self.event_bus,
-            virtual_faders=app._runtime_services._virtual_faders,
+            virtual_faders=self._virtual_faders,
             marker_resolver=self._gamepad_marker_id,
         )
         self.mouse_handler = MouseHandler(app)
@@ -426,7 +430,7 @@ class InputManager:
             # ``fader``-mapped axes integrate into the marker's fader, mirroring
             # the gamepad marker-fader stick: delta = signal × dt / max_speed_s.
             # A marker with no provisioned fader is a clean no-op in the bus.
-            bus = getattr(self.app._runtime_services, "_virtual_faders", None)
+            bus = self._virtual_faders
             if bus is not None:
                 max_speed_s = self.app._config.controller.marker_fader_max_speed_s
                 bus.set_marker_fader_from_velocity_delta(marker_id, m3d.fader_signal * dt / max_speed_s)

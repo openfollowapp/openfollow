@@ -26,6 +26,11 @@
     'use strict';
 
     var LISTENING = 'Listening…';
+    // Each request returns on a short server budget so it never pins a request
+    // thread; the widget keeps re-polling until the operator presses a button
+    // or this overall window elapses.
+    var OVERALL_MS = 8000;
+    var GAP_MS = 120;
 
     function targetInput(btn) {
         var id = btn.getAttribute('data-detect-input');
@@ -57,20 +62,37 @@
         btn.disabled = true;
         btn.textContent = LISTENING;
 
-        fetch(url, { headers: { Accept: 'application/json' }, cache: 'no-store' })
-            .then(function (resp) { return resp.ok ? resp.json() : null; })
-            .then(function (data) {
-                if (data && typeof data === 'object') {
-                    var value = 'value' in data ? data.value : data.button;
+        var deadline = Date.now() + OVERALL_MS;
+
+        function stop() {
+            btn.disabled = false;
+            btn.textContent = original;
+        }
+
+        function poll() {
+            // Bail if the control was removed (e.g. an HTMX section swap) so we
+            // don't keep polling an orphaned button.
+            if (!document.contains(btn)) {
+                return;
+            }
+            fetch(url, { headers: { Accept: 'application/json' }, cache: 'no-store' })
+                .then(function (resp) { return resp.ok ? resp.json() : null; })
+                .then(function (data) {
+                    var value = null;
+                    if (data && typeof data === 'object') {
+                        value = 'value' in data ? data.value : data.button;
+                    }
                     if (value !== undefined && value !== null) {
                         writeValue(input, value);
+                        stop();
+                    } else if (Date.now() >= deadline) {
+                        stop(); // gave up waiting for a press
+                    } else {
+                        setTimeout(poll, GAP_MS);
                     }
-                }
-            })
-            .catch(function () { /* leave the field unchanged on error */ })
-            .finally(function () {
-                btn.disabled = false;
-                btn.textContent = original;
-            });
+                })
+                .catch(function () { stop(); }); // leave the field unchanged on error
+        }
+        poll();
     });
 })();

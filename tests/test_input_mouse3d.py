@@ -881,7 +881,9 @@ def test_mouse3d_fader_signal_drives_marker_fader(wired) -> None:  # noqa: ANN00
     app._config.mouse3d.enabled = True  # sole controller -> selected marker (10)
     app._config.controller.marker_fader_max_speed_s = 2.0
     calls: list[tuple[int, float]] = []
-    app._runtime_services._virtual_faders = SimpleNamespace(
+    # The manager captures the fader bus once at construction (shared with the
+    # gamepad handler); inject the spy on that reference.
+    manager._virtual_faders = SimpleNamespace(
         set_marker_fader_from_velocity_delta=lambda mid, delta: calls.append((mid, delta)),
     )
     manager.mouse3d_manager.next_update = Mouse3DUpdate(fader_signal=1.0)
@@ -1018,7 +1020,16 @@ def test_check_mouse3d_dependencies_missing(monkeypatch) -> None:  # noqa: ANN00
 
 @pytest.mark.parametrize(
     "raw,expected",
-    [(0.5, 0.5), (2.0, 1.0), (-2.0, -1.0), ("abc", 0.0), (float("inf"), 0.0), (float("nan"), 0.0), (None, 0.0)],
+    [
+        (0.5, 0.5),
+        (2.0, 1.0),
+        (-2.0, -1.0),
+        ("abc", 0.0),
+        (float("inf"), 0.0),
+        (float("nan"), 0.0),
+        (None, 0.0),
+        (10**400, 0.0),  # float() of a huge int raises OverflowError -> fallback
+    ],
 )
 def test_finite_axis(raw, expected) -> None:  # noqa: ANN001
     from openfollow.input.mouse3d import _finite_axis

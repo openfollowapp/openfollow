@@ -359,6 +359,23 @@ class TestInitOverlayState:
         assert renderer.state is sentinel
 
 
+class TestSeedBundledDetectionModels:
+    def test_seeds_models_into_resolved_storage(
+        self, services: AppRuntimeServices, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:  # noqa: ANN001
+        # When models are bundled, they are copied into ``<storage>/models``.
+        source = tmp_path / "bundled"
+        source.mkdir()
+        (source / "yolo26n.onnx").write_bytes(b"nano")
+        monkeypatch.setattr("openfollow.model_seed.bundled_models_dir", lambda: source)
+        cfg = AppConfig()
+        cfg.detection.storage_path = str(tmp_path / "store")
+
+        services._seed_bundled_detection_models(cfg)
+
+        assert (tmp_path / "store" / "models" / "yolo26n.onnx").read_bytes() == b"nano"
+
+
 # --------------------------------------------------------------------------- #
 # init_camera
 # --------------------------------------------------------------------------- #
@@ -893,6 +910,28 @@ class TestInitWebServer:
         # isn't stable across attribute lookups, so compare by __func__.
         assert srv.kwargs["runtime_stats_provider"].__func__ is AppRuntimeServices.get_runtime_stats_snapshot
 
+    def test_wires_marker_move_speeds_provider_returning_a_copy(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The section-save path reads the live per-marker speeds through this
+        provider. It must return the current live values as a fresh copy so the
+        web thread can never mutate the app's live dict."""
+        from openfollow import web
+
+        monkeypatch.setattr(web, "ConfigWebServer", _FakeWebServer)
+        services._preview_provider = SimpleNamespace(get_snapshot=lambda: None)
+        services._snapshot_provider = SimpleNamespace(get_snapshot=lambda: None)
+        services._app._config.marker_move_speeds = {5: 2.7}
+
+        services.init_web_server()
+        provider = services._app._web_server.kwargs["marker_move_speeds_provider"]
+
+        snapshot = provider()
+        assert snapshot == {5: 2.7}
+        # Mutation isolation: the returned dict is a copy, not the live one.
+        snapshot[9] = 4.0
+        assert services._app._config.marker_move_speeds == {5: 2.7}
+
     def test_wires_osc_binding_diagnostics_providers(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1043,9 +1082,17 @@ class TestUpdateDelegators:
             "apply_detection_pin_helper",
             lambda app, **kw: calls.append((app, kw)),
         )
-        services.apply_detection_pin()
+        services.apply_detection_pin(dt=0.5)
         assert calls[0][0] is services._app
-        assert calls[0][1]["pin_state"] is services._detection_pin_state
+        kwargs = calls[0][1]
+        # Per-marker state lives on the app now – the wrapper must NOT pass a
+        # ``pin_state`` (the kwarg was removed when state moved to
+        # ``app._detection_pin_states``).
+        assert "pin_state" not in kwargs
+        assert kwargs["person_detector"] is services._person_detector
+        assert kwargs["unproject_cam_buffer"] is services._unproject_cam_buffer
+        assert kwargs["screen_point_buffer"] is services._screen_point_buffer
+        assert kwargs["dt"] == 0.5
 
     # Note: ``update_controller_status`` and ``services_controller_status``
     # were removed when the binding moved to the marker cards.

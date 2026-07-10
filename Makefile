@@ -3,7 +3,7 @@
 # Local CI gate and developer task runner: mirrors the CI workflow's
 # lint / typecheck / security / test / build steps plus coverage and mutation.
 
-.PHONY: ci ci-remote lint format typecheck security audit test test-unit test-integration test-smoke-e2e build coverage coverage-html coverage-xml install-hooks \
+.PHONY: ci ci-remote lint format typecheck security audit test test-unit test-integration test-smoke-e2e build dmg coverage coverage-html coverage-xml install-hooks \
         mutation mutation-results mutation-show mutation-clean
 
 # Combined line + branch coverage floor – ratchet up with every PR.
@@ -11,19 +11,36 @@
 # value never drifts between local `make test` and CI.
 COVERAGE_MIN ?= 100
 
-# Parallelize the suite with pytest-xdist.
+# Parallelize the suite with pytest-xdist, and cap each worker's native thread
+# pools so the two don't multiply.
 #
-# ``-n logical`` (not ``auto``): ``auto`` counts physical cores, so on a 2-vCPU
-# single-core-with-hyperthreads CI runner it resolves to one worker and runs
-# sequentially. ``logical`` uses both hyperthreads, which the I/O-bound
-# integration/smoke step keeps busy.
+# Worker count is headroom-aware (not ``-n logical``/``-n auto``): small
+# CI/Pi runners (≤4 logical CPUs) use every core, but a fat interactive dev
+# workstation reserves ~1/3 of its cores so the OS/UI stays responsive – a
+# 10-core Mac runs 6 workers and keeps 4 cores free. ``getconf`` is portable
+# across macOS/Linux; the ``|| echo 2`` keeps the 2-vCPU CI default if it's
+# absent.
+#
+# Worker count alone is not enough: OpenCV and numpy-BLAS each grow a pool sized
+# to the full core count inside every worker, so N workers fan out to N x cores
+# threads and freeze an interactive workstation regardless of ``-n``.
+# ``PYTEST_THREAD_CAPS`` pins the BLAS/OpenMP pools per worker (Linux/Pi target);
+# the OpenCV pool ignores those env vars on macOS and is capped in conftest.py.
 #
 # ``--dist load`` distributes individual tests across workers; ``loadscope``
 # would pin each large module to one worker and bottleneck on the slowest. Safe
 # because the suite has no cross-test shared state (function-scoped fixtures,
 # ephemeral ports, ``tmp_path`` I/O). pytest-cov combines per-worker coverage, so
-# the gate is unaffected. Override with ``PYTEST_PARALLEL=`` for a sequential run.
-PYTEST_PARALLEL ?= -n logical --dist load
+# the gate is unaffected. Override with ``PYTEST_PARALLEL=`` for a sequential run,
+# or ``PYTEST_WORKERS=N`` to pin the worker count.
+PYTEST_WORKERS ?= $(shell n=$$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2); \
+                          if [ "$$n" -gt 4 ]; then echo $$((2 * n / 3)); else echo "$$n"; fi)
+PYTEST_PARALLEL ?= -n $(PYTEST_WORKERS) --dist load
+
+# One thread per worker for the BLAS/OpenMP pools (see the note above). Prefixed
+# onto every pytest invocation so the xdist workers inherit it from the shell.
+PYTEST_THREAD_CAPS ?= OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+                      NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 
 ci: lint typecheck security test build
 
@@ -73,29 +90,39 @@ typecheck:
 test: test-unit test-integration
 
 test-unit:
-	poetry run pytest -m unit -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=term-missing
+	$(PYTEST_THREAD_CAPS) poetry run pytest -m unit -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=term-missing
 
 test-integration:
-	poetry run pytest -m "integration or smoke" -q $(PYTEST_PARALLEL) --cov=openfollow --cov-append --cov-report=term-missing --cov-fail-under=$(COVERAGE_MIN)
+	$(PYTEST_THREAD_CAPS) poetry run pytest -m "integration or smoke" -q $(PYTEST_PARALLEL) --cov=openfollow --cov-append --cov-report=term-missing --cov-fail-under=$(COVERAGE_MIN)
 
 # End-to-end smoke test. Spins a real GStreamer pipeline and PSN packet
 # through OTP/RTTrPM output sockets. Opt-in, OUT of `make ci` (needs
 # GStreamer runtime). Per-main-push signal, not a PR gate. Skips if
 # GStreamer isn't installed.
 test-smoke-e2e:
-	poetry run pytest -m smoke_e2e -q
+	$(PYTEST_THREAD_CAPS) poetry run pytest -m smoke_e2e -q
 
 coverage:
-	poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=term-missing
+	$(PYTEST_THREAD_CAPS) poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=term-missing
 
 coverage-html:
-	poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=html:htmlcov --cov-report=term
+	$(PYTEST_THREAD_CAPS) poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=html:htmlcov --cov-report=term
 
 coverage-xml:
-	poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=xml:coverage.xml --cov-report=term
+	$(PYTEST_THREAD_CAPS) poetry run pytest -q $(PYTEST_PARALLEL) --cov=openfollow --cov-report=xml:coverage.xml --cov-report=term
 
 build:
 	poetry build --no-interaction
+
+# Build the self-contained macOS .app and wrap it in a .dmg
+# (dist/OpenFollow-<version>-<arch>.dmg). macOS-only, NOT part of `make ci`
+# (heavy: bundles the detection + export toolchains incl. torch, ~2 GB output).
+# One-time host setup: `brew install librsvg create-dmg`. The pipeline and the
+# Gatekeeper caveat live in packaging/macos/build-dmg.sh + docs/PACKAGING.md.
+dmg:
+	@[ "$$(uname -s)" = "Darwin" ] || { echo "make dmg must run on macOS"; exit 1; }
+	poetry install --no-interaction --with package-macos -E detection -E export
+	bash packaging/macos/build-dmg.sh
 
 install-hooks:
 	poetry run pre-commit install

@@ -105,12 +105,38 @@ def test_nan_rows_pass_through() -> None:
 # Mirror the CameraConfig clamps.
 _K1 = st.floats(min_value=-0.4, max_value=0.4)
 _K2 = st.floats(min_value=-0.2, max_value=0.2)
-# A central disk where the forward map is a clean bijection for every coeff in
-# range (a strong barrel shrinks the reachable radius, so the extreme corner has
-# no preimage – exercised separately by the bounded-output test below). Even at
-# k1=-0.4, k2=-0.2 the map stays monotonic well past r=0.6, so the disk is safe.
-_R = 0.6 * _HALF_DIAG
+# Undistorted-input disk: where the forward map is a clean bijection for every
+# coeff in range, so apply -> invert recovers the original. Even at k1=-0.4,
+# k2=-0.2 the map stays monotonic well past r=0.6, so a pinhole point this far
+# out has a valid distorted image to invert back.
+_R_EDGE = 0.6  # normalised working-disk radius (1.0 == frame corner)
+_R = _R_EDGE * _HALF_DIAG
 _OFFSET = st.floats(min_value=-_R / math.sqrt(2), max_value=_R / math.sqrt(2))
+
+
+@st.composite
+def _reachable_distorted(draw: st.DrawFn) -> tuple[float, float, float, float]:
+    """An ``(ox, oy, k1, k2)`` whose distorted point is reachable for that pair.
+
+    The invert -> apply round-trip is identity only for *reachable* distorted
+    points: a strong barrel folds the forward map at r_u~0.75, and beyond the
+    fold there is no preimage (invert floors the point – bounded, not identity;
+    covered by the out-of-domain test below). The forward image of the working
+    disk, ``apply(_R_EDGE)``, is the reachable cap for each coefficient pair –
+    it shrinks under barrel (~0.50) and grows under pincushion (~0.70), and stays
+    below the fold (its preimage r_u <= _R_EDGE), so the inverse is well
+    conditioned. Drawing the distorted radius *freely* within that per-coeff cap
+    (not as the forward image of a fixed pinhole point) exercises
+    ``apply o invert == id`` over the whole reachable range for every coefficient,
+    independently of the inverse-then-forward direction.
+    """
+    k1 = draw(_K1)
+    k2 = draw(_K2)
+    r_d_max = _R_EDGE * (1.0 + k1 * _R_EDGE**2 + k2 * _R_EDGE**4)
+    frac = draw(st.floats(min_value=0.0, max_value=1.0))
+    theta = draw(st.floats(min_value=0.0, max_value=2.0 * math.pi))
+    r = frac * r_d_max * _HALF_DIAG
+    return r * math.cos(theta), r * math.sin(theta), k1, k2
 
 
 @given(ox=_OFFSET, oy=_OFFSET, k1=_K1, k2=_K2)
@@ -121,8 +147,9 @@ def test_inverse_round_trips_forward(ox: float, oy: float, k1: float, k2: float)
     np.testing.assert_allclose(back, pt, atol=0.5)
 
 
-@given(ox=_OFFSET, oy=_OFFSET, k1=_K1, k2=_K2)
-def test_forward_round_trips_inverse(ox: float, oy: float, k1: float, k2: float) -> None:
+@given(params=_reachable_distorted())
+def test_forward_round_trips_inverse(params: tuple[float, float, float, float]) -> None:
+    ox, oy, k1, k2 = params
     pt = np.array([[_CX + ox, _CY + oy]])
     fwd = apply_overlay_distortion(invert_overlay_distortion(pt, _W, _H, k1, k2), _W, _H, k1, k2)
     np.testing.assert_allclose(fwd, pt, atol=0.5)

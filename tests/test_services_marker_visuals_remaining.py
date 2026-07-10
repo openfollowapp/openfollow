@@ -196,6 +196,7 @@ def _build_app(
         _show_hud_help=show_hud_help,
         _runtime_services=SimpleNamespace(_zone_engine=None),
         _assist_manual={},
+        _detection_pin_states={},
     )
     # FakeApp mirrors get_marker_move_speed for per-marker speed reads.
     app.get_marker_move_speed = lambda mid: (
@@ -212,7 +213,6 @@ def _build(
     *,
     system_stats: Any = None,
     person_detector: Any = None,
-    pin_state: Any = None,
 ) -> OverlayState:
     # Controller badge is stamped from InputManager.get_controller_info.
     return build_marker_visual_state(
@@ -221,7 +221,6 @@ def _build(
         system_stats=system_stats,
         person_detector=person_detector,
         cam_params_buffer=np.zeros(7, dtype=np.float64),
-        pin_state=pin_state,
     )
 
 
@@ -1404,7 +1403,6 @@ class TestAssistGhostOverlay:
             server_markers={1: _FakeMarker(1, pos=(2.0, 3.0, 0.0))},
         )
         app._config.detection.enabled = True
-        app._config.detection.pin_marker = True
         app._config.detection.pin_mode = "assist"
         anchor = get_or_create_manual_marker(app, 1)
         anchor.set_pos(*anchor_pos)
@@ -1432,7 +1430,7 @@ class TestAssistGhostOverlay:
             controlled=[1],
             viewer=[1],
             server_markers={1: _FakeMarker(1, pos=(2.0, 3.0, 0.0))},
-        )  # default detection: pin_marker False / replace
+        )  # default AppConfig detection is disabled → assist inactive
         state = _build(app, pool)
         assert all(not m.is_assist_ghost for m in state.markers)
 
@@ -1447,9 +1445,8 @@ class TestAssistGhostOverlay:
             server_markers={1: _FakeMarker(1, pos=(2.0, 3.0, 0.0))},
         )
         app._config.detection.enabled = True
-        app._config.detection.pin_marker = True
         app._config.detection.pin_mode = "assist"
-        app._assist_manual.clear()  # pinned id resolves, but no anchor seeded
+        app._assist_manual.clear()  # assist active, but no anchor seeded yet
         state = _build(app, pool)
 
         ghosts = [m for m in state.markers if m.is_assist_ghost]
@@ -1460,35 +1457,81 @@ class TestAssistGhostOverlay:
         assert len(normals) == 1
         assert (normals[0].x, normals[0].y) == (2.0, 3.0)
 
+    def test_every_controlled_marker_gets_its_own_ghost_and_anchor(self, pool: OverlayStatePool) -> None:
+        # Assist refines *every* controlled marker: each one yields a dim ghost
+        # at its broadcast position and moves its solid card to its own anchor.
+        app = _build_app(
+            controlled=[1, 2],
+            viewer=[1, 2],
+            server_markers={
+                1: _FakeMarker(1, pos=(2.0, 3.0, 0.0)),
+                2: _FakeMarker(2, pos=(4.0, 5.0, 0.0)),
+            },
+        )
+        app._config.detection.enabled = True
+        app._config.detection.pin_mode = "assist"
+        get_or_create_manual_marker(app, 1).set_pos(10.0, 11.0, 0.0)
+        get_or_create_manual_marker(app, 2).set_pos(20.0, 21.0, 0.0)
+
+        state = _build(app, pool)
+
+        ghosts = {m.marker_id: m for m in state.markers if m.is_assist_ghost}
+        normals = {m.marker_id: m for m in state.markers if not m.is_assist_ghost}
+        # One ghost per controlled marker, each at its broadcast position…
+        assert set(ghosts) == {1, 2}
+        assert (ghosts[1].x, ghosts[1].y) == (2.0, 3.0)
+        assert (ghosts[2].x, ghosts[2].y) == (4.0, 5.0)
+        assert all(not g.is_controlled for g in ghosts.values())
+        # …and each solid card sits at its own operator-steered anchor.
+        assert set(normals) == {1, 2}
+        assert (normals[1].x, normals[1].y) == (10.0, 11.0)
+        assert (normals[2].x, normals[2].y) == (20.0, 21.0)
+
 
 class TestAttachedDetectionBox:
-    def _app(self) -> SimpleNamespace:
-        return _build_app(
-            controlled=[1],
-            viewer=[1],
-            server_markers={1: _FakeMarker(1, pos=(2.0, 3.0, 0.0))},
+    def _app(self, catalog: Any = None) -> SimpleNamespace:
+        app = _build_app(
+            controlled=[1, 2],
+            viewer=[1, 2],
+            server_markers={
+                1: _FakeMarker(1, pos=(2.0, 3.0, 0.0)),
+                2: _FakeMarker(2, pos=(4.0, 5.0, 0.0)),
+            },
         )
+        if catalog is not None:
+            app._marker_catalog = catalog
+        return app
 
-    def test_attached_track_and_colour_propagate_from_pin_state(self, pool: OverlayStatePool) -> None:
-        app = self._app()
+    def test_attached_track_maps_to_marker_colour(self, pool: OverlayStatePool) -> None:
+        # The pin state for marker 1 says track 4 is attached → the dict maps
+        # track 4 to marker 1's catalog colour.
+        app = self._app(_FakeCatalog({1: ("Spot 1", "#0652dd")}))
+        app._detection_pin_states[1] = SimpleNamespace(attached_track_id=4, attached_marker_id=1)
         detector = SimpleNamespace(detections=[])
-        pin_state = SimpleNamespace(attached_track_id=4, attached_marker_id=1)
-        state = _build(app, pool, person_detector=detector, pin_state=pin_state)
-        assert state.detection_attached_track_id == 4
-        # Marker 1's colour (a non-empty hex) drives the attached-box highlight.
-        assert state.detection_attached_color.startswith("#")
+        state = _build(app, pool, person_detector=detector)
+        assert state.detection_attached_colors == {4: "#0652dd"}
 
-    def test_attached_fields_default_without_pin_state(self, pool: OverlayStatePool) -> None:
-        app = self._app()
+    def test_two_attached_tracks_map_to_two_marker_colours(self, pool: OverlayStatePool) -> None:
+        # Assist drives every controlled marker, so several boxes can be
+        # attached at once – each painted in its own marker's colour.
+        app = self._app(_FakeCatalog({1: ("Spot 1", "#0652dd"), 2: ("Spot 2", "#ff0000")}))
+        app._detection_pin_states[1] = SimpleNamespace(attached_track_id=4, attached_marker_id=1)
+        app._detection_pin_states[2] = SimpleNamespace(attached_track_id=7, attached_marker_id=2)
         detector = SimpleNamespace(detections=[])
-        state = _build(app, pool, person_detector=detector, pin_state=None)
-        assert state.detection_attached_track_id is None
-        assert state.detection_attached_color == ""
+        state = _build(app, pool, person_detector=detector)
+        assert state.detection_attached_colors == {4: "#0652dd", 7: "#ff0000"}
 
-    def test_attached_fields_default_when_pin_state_has_no_attachment(self, pool: OverlayStatePool) -> None:
-        app = self._app()
+    def test_no_attachment_leaves_empty_map(self, pool: OverlayStatePool) -> None:
+        app = self._app()  # no pin states recorded
         detector = SimpleNamespace(detections=[])
-        pin_state = SimpleNamespace(attached_track_id=None, attached_marker_id=None)
-        state = _build(app, pool, person_detector=detector, pin_state=pin_state)
-        assert state.detection_attached_track_id is None
-        assert state.detection_attached_color == ""
+        state = _build(app, pool, person_detector=detector)
+        assert state.detection_attached_colors == {}
+
+    def test_pin_state_without_attachment_is_skipped(self, pool: OverlayStatePool) -> None:
+        app = self._app()
+        # A pin state with no live attachment (gliding home / replace miss)
+        # contributes no entry.
+        app._detection_pin_states[1] = SimpleNamespace(attached_track_id=None, attached_marker_id=None)
+        detector = SimpleNamespace(detections=[])
+        state = _build(app, pool, person_detector=detector)
+        assert state.detection_attached_colors == {}

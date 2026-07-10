@@ -1371,6 +1371,79 @@ def test_detection_export_script_none_when_unreachable(monkeypatch, tmp_path) ->
 
 
 # ---------------------------------------------------------------------------
+# _build_export_argv – frozen-bundle vs source/appliance invocation
+# ---------------------------------------------------------------------------
+
+
+def test_build_export_argv_source_runs_export_script(monkeypatch, tmp_path) -> None:
+    """Non-frozen: run export_onnx.py with the venv interpreter."""
+    from pathlib import Path
+
+    from openfollow.web import routes as routes_mod
+
+    monkeypatch.delattr(routes_mod.sys, "frozen", raising=False)
+    script = tmp_path / "export_onnx.py"
+    monkeypatch.setattr(routes_mod, "_detection_export_script", lambda: script)
+    monkeypatch.setattr(routes_mod.sys, "executable", "/venv/bin/python")
+
+    argv = routes_mod._build_export_argv("yolov8n.pt", 320, 17, Path("/store/models"))
+
+    assert argv == [
+        "/venv/bin/python",
+        str(script),
+        "yolov8n.pt",
+        "--imgsz",
+        "320",
+        "--opset",
+        "17",
+        "--output-dir",
+        "/store/models",
+    ]
+
+
+def test_build_export_argv_none_when_script_unreachable(monkeypatch, tmp_path) -> None:
+    """Non-frozen with no script on disk: caller surfaces 'not found'."""
+    from pathlib import Path
+
+    from openfollow.web import routes as routes_mod
+
+    monkeypatch.delattr(routes_mod.sys, "frozen", raising=False)
+    monkeypatch.setattr(routes_mod, "_detection_export_script", lambda: None)
+
+    assert routes_mod._build_export_argv("yolov8n.pt", 320, 17, Path("/store/models")) is None
+
+
+def test_build_export_argv_frozen_reexecs_app(monkeypatch, tmp_path) -> None:
+    """Frozen bundle: re-exec the app binary in --export mode, no script on disk."""
+    from pathlib import Path
+
+    from openfollow.web import routes as routes_mod
+
+    monkeypatch.setattr(routes_mod.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(routes_mod.sys, "executable", "/Applications/OpenFollow.app/Contents/MacOS/OpenFollow")
+
+    # Must not consult the on-disk script in frozen mode.
+    def _fail() -> None:
+        raise AssertionError("frozen export must not probe for export_onnx.py on disk")
+
+    monkeypatch.setattr(routes_mod, "_detection_export_script", _fail)
+
+    argv = routes_mod._build_export_argv("yolo11n.pt", 640, 19, Path("/store/models"))
+
+    assert argv == [
+        "/Applications/OpenFollow.app/Contents/MacOS/OpenFollow",
+        "--export",
+        "yolo11n.pt",
+        "--imgsz",
+        "640",
+        "--opset",
+        "19",
+        "--output-dir",
+        "/store/models",
+    ]
+
+
+# ---------------------------------------------------------------------------
 # _get_detection_missing_deps – graceful fallbacks
 # ---------------------------------------------------------------------------
 

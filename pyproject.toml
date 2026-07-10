@@ -51,7 +51,7 @@ detection = ["onnxruntime>=1.17", "opencv-python>=4.8"]
 # detector runs. Pulls torch, so it's a workstation-only extra, never required
 # at show time. Used by ``scripts/export_onnx.py`` and the web model-export
 # action; installed on demand from the detection UI.
-export = ["ultralytics>=8.4.80"]
+export = ["ultralytics>=8.4.87"]
 
 [project.scripts]
 openfollow = "openfollow.main:main"
@@ -87,7 +87,7 @@ include = [
 ruff = "0.15.20"
 pytest = "^9.1.1"
 pytest-cov = "^7.1"
-coverage = { extras = ["toml"], version = "^7.14" }
+coverage = { extras = ["toml"], version = "^7.15" }
 pre-commit = "^4.6.0"
 mutmut = "^3.6"
 mypy = "^2.1"
@@ -99,6 +99,18 @@ pytest-xdist = "^3.6"
 hypothesis = "^6"
 bandit = {extras = ["toml"], version = "^1.9.4"}
 pip-audit = "^2.10.1"
+
+# Build-only tooling for the macOS .app / .dmg (packaging/macos/). Optional and
+# off by default; ``make dmg`` pulls it in with ``--with package-macos``. Kept
+# out of the runtime deps so the offline Pi / .deb build never carries
+# PyInstaller. Date-versioned hooks-contrib uses a floor (not a caret) so a
+# newer year still resolves.
+[tool.poetry.group.package-macos]
+optional = true
+
+[tool.poetry.group.package-macos.dependencies]
+pyinstaller = ">=6.10"
+pyinstaller-hooks-contrib = ">=2024.9"
 
 # Linting: ruff check/format (faster pyflakes/pycodestyle/isort/pyupgrade bundle).
 # line-length=120 matches old flake8 setting. target-version=py310 matches requires-python.

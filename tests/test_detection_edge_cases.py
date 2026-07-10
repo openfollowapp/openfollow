@@ -382,14 +382,22 @@ def test_prepare_model_path_keeps_absolute_model_path(tmp_path: Path, monkeypatc
 # ---------------------------------------------------------------------------
 
 
-def test_preprocess_returns_frame_unchanged_when_clahe_disabled() -> None:
+def test_preprocess_always_applies_clahe() -> None:
     detection_module = _load_detection_module()
-    detector = detection_module.PersonDetector(
-        DetectionConfig(enabled=False, preprocess_clahe=False),
-    )
-    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False))
+    # CLAHE is unconditional now – the equaliser is always constructed.
+    assert detector._clahe is not None
+
+    # A low-contrast gradient ramps the luminance; CLAHE redistributes it, so
+    # the output is a fresh array that differs from the input (not pass-through).
+    frame = np.tile(np.linspace(40, 90, 16, dtype=np.uint8), (16, 1))
+    frame = np.repeat(frame[:, :, None], 3, axis=2)
     out = detector._preprocess(frame)
-    assert out is frame  # exact same object – no copy, no conversion
+
+    assert out is not frame  # never returns the input unchanged
+    assert out.shape == frame.shape
+    assert out.dtype == frame.dtype
+    assert not np.array_equal(out, frame)  # contrast was actually equalised
 
 
 class _FakeStructure:

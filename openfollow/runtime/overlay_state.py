@@ -240,10 +240,10 @@ class OverlayState:
     detection_show_labels: bool = False
     detection_box_color: str = "#808080"
     detection_box_thickness: int = 2
-    # The detection track currently attached to a marker, painted in that
-    # marker's colour. ``None`` track id (or empty colour) = no highlight.
-    detection_attached_track_id: int | None = None
-    detection_attached_color: str = ""
+    # Detection tracks currently attached to a marker, each painted in that
+    # marker's colour: ``{track_id: hex_colour}``. Empty = no highlight. Assist
+    # drives every controlled marker, so several boxes can be attached at once.
+    detection_attached_colors: dict[int, str] = field(default_factory=dict)
     # Button detection wizard
     button_detection: ButtonDetectionState | None = None
     # Configurable button labels for help overlay (action -> button name)
@@ -356,8 +356,7 @@ class OverlayState:
         self.detection_show_labels = False
         self.detection_box_color = "#808080"
         self.detection_box_thickness = 2
-        self.detection_attached_track_id = None
-        self.detection_attached_color = ""
+        self.detection_attached_colors = {}
         self.button_detection = None
         self.button_labels = {}
         self.keyboard_labels = {}

@@ -10,6 +10,8 @@ flags; ``process_input`` gates direct marker control behind the active modal."""
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
@@ -306,23 +308,19 @@ def _first_video_choice_field(
 
 
 def _web_ui_disabled_reason() -> str:
-    """Explain why "Open Web UI" is disabled – operators see this
-    in place of the generic "(unavailable)" suffix.
+    """Explain why the embedded "Open Web UI" overlay is disabled – operators
+    see this in place of the generic "(unavailable)" suffix.
 
-    macOS support for WebKit2GTK via Homebrew is brittle (Linux-first
-    library, sometimes broken on Apple Silicon), so we call it out
-    explicitly rather than leaving operators guessing about a missing
-    typelib. On Linux without the typelib installed, name BOTH apt
-    package candidates: ``gir1.2-webkit2-4.1`` is current on Debian
-    Bookworm / Raspberry Pi OS, ``gir1.2-webkit2-4.0`` is the older
-    name still shipped on Bullseye and some derivatives. The runtime
-    import tries 4.1 first and falls back to 4.0, so either package
-    name unblocks the menu item.
+    Only reached on Linux: macOS has no usable embedded WebKitGTK (the Homebrew
+    port renders through X11/Wayland, incompatible with the native Quartz GTK
+    window), so its row opens the system default browser instead and is always
+    enabled (see :func:`build_settings_menu_items`). On Linux without the
+    typelib installed, name BOTH apt package candidates: ``gir1.2-webkit2-4.1``
+    is current on Debian Bookworm / Raspberry Pi OS, ``gir1.2-webkit2-4.0`` is
+    the older name still shipped on Bullseye and some derivatives. The runtime
+    import tries 4.1 first and falls back to 4.0, so either package name
+    unblocks the menu item.
     """
-    import sys
-
-    if sys.platform == "darwin":
-        return "Linux only"
     return "install gir1.2-webkit2-4.1 (or -4.0 on Bullseye)"
 
 
@@ -358,9 +356,15 @@ def build_settings_menu_items(
             # specific capabilities here.
             is_enabled = has_video
         elif action == "web_ui":
-            is_enabled = has_browser
-            if not is_enabled:
-                reason = _web_ui_disabled_reason()
+            # macOS has no usable embedded WebKitGTK overlay, so the row opens
+            # the system default browser instead – always available there. On
+            # Linux the embedded overlay needs the WebKit2 typelib.
+            if sys.platform == "darwin":
+                is_enabled = True
+            else:
+                is_enabled = has_browser
+                if not is_enabled:
+                    reason = _web_ui_disabled_reason()
         else:
             is_enabled = True
         enabled.append(is_enabled)
@@ -445,6 +449,23 @@ def _settings_menu_move(app: OpenFollowApp, step: int) -> None:
             return
 
 
+def open_web_ui_external(app: OpenFollowApp) -> None:
+    """Open the local web UI in the system default browser (macOS).
+
+    macOS has no usable embedded WebKitGTK overlay, so the "Open Web UI" action
+    hands the loopback URL to the default browser via ``open``. The web server
+    is already listening; this only launches a viewer. Best-effort: a failure is
+    logged, never raised, so a missing browser can't crash the input loop.
+    """
+    from openfollow.runtime import webkit_browser
+
+    url = webkit_browser.build_url(app._config, web_server=getattr(app, "_web_server", None))
+    try:
+        subprocess.run(["open", url], check=True)
+    except (OSError, subprocess.SubprocessError):
+        logger.exception("Failed to open the web UI in the default browser: %s", url)
+
+
 def _settings_menu_confirm(app: OpenFollowApp) -> None:
     _, enabled, _reasons = build_settings_menu_items(app)
     idx = app._settings_menu_index
@@ -461,7 +482,12 @@ def _settings_menu_confirm(app: OpenFollowApp) -> None:
     elif action == "button_detection":
         app._enter_button_detection()
     elif action == "web_ui":
-        app._enter_browser()
+        # macOS opens the system default browser; Linux mounts the embedded
+        # WebKitGTK overlay.
+        if sys.platform == "darwin":
+            open_web_ui_external(app)
+        else:
+            app._enter_browser()
     elif action == "restart":
         app._restart_app()
     # pragma: no branch – exhaustive elif chain over the static action set
@@ -573,6 +599,10 @@ def adjust_move_speed(
     else:
         new_speed = min(app._config.marker.max_speed, round(current + step, 1))
     app._config.marker_move_speeds[marker_id] = new_speed
+    # Mark dirty; the housekeeping loop flushes to disk after a quiet window so a
+    # tap-streak / held bumper coalesces into one write (see check_marker_speeds_persist).
+    app._marker_speeds_dirty = True
+    app._marker_speeds_dirty_since = now
 
 
 def handle_key_press(app: OpenFollowApp, key: str) -> None:

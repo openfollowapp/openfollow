@@ -574,7 +574,6 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             _as_int, lo=160, hi=1280, human_error="Inference size must be between 160 and 1280."
         ),
         "pin_point": FieldRule(_as_str, choices=("top", "bottom"), human_error="Pin point must be 'top' or 'bottom'."),
-        "preprocess_clahe": FieldRule(_as_bool),
         "confidence": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Confidence must be between 0 and 1."),
         "interval_ms": FieldRule(_as_int, lo=1, hi=10000, human_error="Interval must be between 1 and 10000 ms."),
         "show_boxes": FieldRule(_as_bool),
@@ -582,7 +581,6 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "box_color": _hex_color_rule(),
         "box_thickness": FieldRule(_as_int, lo=1, hi=10, human_error="Box thickness must be between 1 and 10 px."),
         "max_persons": FieldRule(_as_int, lo=1, hi=50, human_error="Max persons must be between 1 and 50."),
-        "pin_marker": FieldRule(_as_bool),
         "pin_marker_id": FieldRule(_as_int, lo=-1, human_error="Marker ID must be -1 (selected) or ≥ 0."),
         "smoothing": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Smoothing must be between 0 and 1."),
         "prediction": FieldRule(_as_float, lo=0.0, hi=20.0, human_error="Prediction must be between 0 and 20."),

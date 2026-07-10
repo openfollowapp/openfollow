@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -18,6 +19,30 @@ def _install_ndi_path() -> Path:
     source = inspect.getsourcefile(_install_ndi_path)
     assert source, "Could not resolve current test source path"
     return Path(source).resolve().parents[1] / "scripts" / "install-ndi.sh"
+
+
+def _diagnostics_block() -> str:
+    """The clock / index diagnostic helper defs, between their marker comments.
+
+    install-ndi.sh runs procedurally on source (no main guard), so the pure
+    helpers are tested by sourcing just this delimited block.
+    """
+    text = _install_ndi_path().read_text()
+    start = text.index("# === clock / index diagnostics")
+    end = text.index("# === end diagnostics")
+    block = text[start:end]
+    assert "clock_skew_in()" in block and "broken_index_in()" in block
+    return block
+
+
+def _run_diag(snippet: str) -> subprocess.CompletedProcess[str]:
+    code = f"{_diagnostics_block()}\n{snippet}\n"
+    return subprocess.run(
+        ["bash", "-c", code],
+        text=True,
+        capture_output=True,
+        env={"PATH": os.environ.get("PATH", "")},
+    )
 
 
 def _libndi_selection_snippet() -> str:
@@ -99,3 +124,76 @@ def test_install_ndi_already_present_links_newest_version(tmp_path: Path) -> Non
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(tmp_path / "libndi.so.6.3.2")
+
+
+# --- clock-skew / stale-index diagnostics -----------------------------------
+
+
+@pytest.mark.parametrize(
+    "sample",
+    [
+        # The exact sqv wording from a Pi whose clock is behind real time.
+        "Sub-process /usr/bin/sqv returned an error code (1) … Not live until 2026-06-25T01:42:42Z",
+        "Verifying signature: not yet valid",
+    ],
+)
+def test_clock_skew_in_detects_future_signature(sample: str) -> None:
+    r = _run_diag(f"printf '%s' {shlex.quote(sample)} | clock_skew_in && echo SKEW || echo CLEAN")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "SKEW"
+
+
+@pytest.mark.parametrize(
+    "sample",
+    [
+        "Reading package lists... Done",
+        # An unreachable mirror is NOT a clock problem – it must fall through to
+        # the cached-index path, not die.
+        "Failed to fetch http://deb.debian.org/debian … Could not connect",
+    ],
+)
+def test_clock_skew_in_ignores_unrelated_update_failures(sample: str) -> None:
+    r = _run_diag(f"printf '%s' {shlex.quote(sample)} | clock_skew_in && echo SKEW || echo CLEAN")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "CLEAN"
+
+
+@pytest.mark.parametrize(
+    "sample",
+    [
+        "E: Unable to correct problems, you have held broken packages.",
+        "The following packages have unmet dependencies:",
+    ],
+)
+def test_broken_index_in_detects_dependency_conflicts(sample: str) -> None:
+    r = _run_diag(f"printf '%s' {shlex.quote(sample)} | broken_index_in && echo BROKEN || echo CLEAN")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "BROKEN"
+
+
+def test_diagnostic_messages_are_actionable() -> None:
+    skew = _run_diag("clock_skew_message")
+    assert "clock" in skew.stdout.lower()
+    # ``date -u -s`` (not bare ``date -s``): the manual instruction tells the
+    # operator to enter UTC, and ``-u`` makes ``date`` interpret it as UTC
+    # regardless of the host's timezone.
+    assert "timedatectl" in skew.stdout and "date -u -s" in skew.stdout
+    assert "date -s '" not in skew.stdout  # the timezone-ambiguous form is gone
+    broken = _run_diag("broken_index_message")
+    assert "full-upgrade" in broken.stdout
+
+
+def test_apt_failures_are_wired_to_the_diagnostics() -> None:
+    text = _install_ndi_path().read_text()
+    # Both the update and install failure paths must consult the diagnostics so a
+    # wrong clock / stale index surfaces as a clear message, not raw apt output.
+    assert text.count('die "$(clock_skew_message)"') >= 2
+    assert 'die "$(broken_index_message)"' in text
+    assert "clock_skew_in <" in text and "broken_index_in <" in text
+
+
+def test_apt_log_fallback_path_is_unique_per_run() -> None:
+    # When mktemp fails, the fallback log path must be PID-suffixed so concurrent
+    # runs can't collide on (or clobber a pre-existing) fixed /tmp file.
+    text = _install_ndi_path().read_text()
+    assert 'echo "/tmp/openfollow-install-ndi-apt.$$.log"' in text

@@ -890,7 +890,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
         ),
         trigger_zones=SimpleNamespace(enabled=False, show_overlay=False, zones=[]),
         operator_messages=SimpleNamespace(enabled=False),
-        detection=SimpleNamespace(enabled=False, pin_marker=False, pin_mode="replace", pin_marker_id=-1),
+        detection=SimpleNamespace(enabled=False, pin_mode="replace", pin_marker_id=-1),
         mouse3d=Mouse3DConfig(),
     )
     video_receiver = SimpleNamespace(
@@ -935,6 +935,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
         _show_hud_help=False,
         _runtime_services=None,
         _assist_manual={},
+        _detection_pin_states={},
     )
 
 

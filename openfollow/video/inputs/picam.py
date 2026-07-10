@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -92,6 +93,26 @@ class PiCamInput(VideoInputBase):
             connection_timeout=5.0,
             fallback_to_selection=True,
         )
+
+    @classmethod
+    def is_available(cls) -> tuple[bool, str]:
+        # libcamerasrc and Pi CSI/MIPI cameras are Linux/Raspberry Pi-only;
+        # on macOS the user has no such hardware (use the AVFoundation USB
+        # Camera) and on Windows there is no equivalent backend.
+        if not sys.platform.startswith("linux"):
+            return False, "Pi Camera is Linux/Raspberry Pi-only"
+        try:
+            from gi.repository import Gst
+
+            Gst.init(None)
+            if Gst.ElementFactory.find("libcamerasrc") is None:
+                return (
+                    False,
+                    "libcamerasrc GStreamer element not found – install gstreamer1.0-libcamera",
+                )
+        except Exception:
+            return False, "GStreamer not available"
+        return True, ""
 
     # -- Pipeline -------------------------------------------------------------
 

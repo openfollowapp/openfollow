@@ -152,14 +152,30 @@ def test_lost_track_revived_by_high_detection_keeps_id() -> None:
     assert revived[0].state == "tracked"
 
 
-def test_already_lost_track_is_not_revived_by_low_box() -> None:
-    """Second-stage association only chases tracks active last frame; a noisy
-    low box must not resurrect a track that was already lost."""
+def test_lost_track_revived_by_overlapping_low_box_keeps_id() -> None:
+    """A performer who dims below the high threshold while their track is already
+    lost is recovered by the low-band pass and keeps their id, instead of being
+    dropped and re-numbered when they brighten again."""
+    bt = ByteTracker()
+    first = bt.update([_box(0.10, 0.10, 0.40, 0.60, 0.9)], [], now=0.0, max_lost_time=1.0)
+    tid = first[0].track_id
+    bt.update([], [], now=0.1, max_lost_time=1.0)  # -> lost
+
+    revived = bt.update([], [_box(0.11, 0.11, 0.41, 0.61, 0.3)], now=0.2, max_lost_time=1.0)
+    assert len(revived) == 1
+    assert revived[0].track_id == tid
+    assert revived[0].state == "tracked"
+
+
+def test_already_lost_track_is_not_revived_by_distant_low_box() -> None:
+    """Low-band recovery reaches already-lost tracks, but the strict
+    _LOW_IOU_GATE still rejects a low box that doesn't overlap the track's
+    predicted position – a noisy ghost elsewhere must not resurrect it."""
     bt = ByteTracker()
     bt.update([_box(0.1, 0.1, 0.4, 0.6, 0.9)], [], now=0.0, max_lost_time=1.0)
     bt.update([], [], now=0.1, max_lost_time=1.0)  # track now lost
 
-    tracks = bt.update([], [_box(0.11, 0.11, 0.41, 0.61, 0.3)], now=0.2, max_lost_time=1.0)
+    tracks = bt.update([], [_box(0.70, 0.70, 0.95, 0.95, 0.3)], now=0.2, max_lost_time=1.0)
     assert _tracked_ids(tracks, state="tracked") == set()
 
 
@@ -239,3 +255,100 @@ def test_low_detection_threshold_is_below_typical_confidence() -> None:
     # Sanity guard for the split contract: the recovery floor must sit below a
     # normal operating confidence so a real low band exists.
     assert 0.0 < LOW_DETECTION_THRESHOLD < 0.2
+
+
+# --------------------------------------------------------------------------- #
+# Time-aware motion model (dt scales the extrapolation)
+# --------------------------------------------------------------------------- #
+
+
+def test_kalman_predict_scales_extrapolation_with_dt() -> None:
+    """A larger dt extrapolates the centre proportionally further: position
+    advances by velocity x dt, so a dropped frame (dt=2) moves twice as far."""
+    kf = _KalmanFilter()
+    mean, cov = kf.initiate(_tlbr_to_xyah(_box(0.10, 0.10, 0.40, 0.60, 0.9)))
+    # Build a positive cx velocity from two rightward updates.
+    for cx in (0.20, 0.30):
+        mean, cov = kf.predict(mean, cov)
+        mean, cov = kf.update(mean, cov, _tlbr_to_xyah(_box(cx - 0.15, 0.10, cx + 0.15, 0.60, 0.9)))
+
+    cx0 = float(mean[0])
+    mean1, _c1 = kf.predict(mean, cov, dt=1.0)
+    mean2, _c2 = kf.predict(mean, cov, dt=2.0)  # same start state, predict does not mutate inputs
+    step1 = float(mean1[0]) - cx0
+    step2 = float(mean2[0]) - cx0
+    assert step1 > 0.0
+    assert step2 == pytest.approx(2.0 * step1, rel=1e-9)
+
+
+def test_default_dt_reproduces_fixed_step_behaviour() -> None:
+    # The dt=1.0 default must match a fixed-step predict, so direct ByteTracker
+    # use (tests, and any caller not passing dt) is unchanged.
+    kf = _KalmanFilter()
+    mean, cov = kf.initiate(_tlbr_to_xyah(_box(0.10, 0.10, 0.40, 0.60, 0.9)))
+    explicit, _ = kf.predict(mean, cov, dt=1.0)
+    default, _ = kf.predict(mean, cov)
+    assert np.allclose(explicit, default)
+
+
+# --------------------------------------------------------------------------- #
+# Distance rescue (first association only)
+# --------------------------------------------------------------------------- #
+
+
+def test_fast_mover_keeps_id_via_distance_rescue() -> None:
+    """A high detection that no longer overlaps the track's predicted box (a fast
+    mover) but is within the distance-rescue range keeps the existing id instead
+    of spawning a new one."""
+    bt = ByteTracker()
+    first = bt.update([_box(0.10, 0.10, 0.20, 0.40, 0.9)], [], now=0.0, max_lost_time=1.0)
+    tid = first[0].track_id
+
+    # Jumped right by ~one box width: no overlap with the prediction (IoU 0) but
+    # the centre (dist ~0.12) is within 1.5 box-widths (reach 0.15).
+    second = bt.update([_box(0.22, 0.10, 0.32, 0.40, 0.9)], [], now=0.03, max_lost_time=1.0)
+    assert len(second) == 1
+    assert second[0].track_id == tid
+    assert second[0].state == "tracked"
+
+
+def test_distance_rescue_prefers_nearest_candidate() -> None:
+    """When IoU fails for two candidates within rescue range, the nearer one wins
+    (anti-glitch: a missed frame can't snap the track to an arbitrary farther
+    person). Detection order must not matter – ranking is by distance."""
+    bt = ByteTracker()
+    first = bt.update([_box(0.45, 0.30, 0.55, 0.70, 0.9)], [], now=0.0, max_lost_time=1.0)
+    tid = first[0].track_id  # predicted centre ~ (0.50, 0.50), width 0.10, reach 0.15
+
+    near = _box(0.56, 0.30, 0.66, 0.70, 0.9)  # centre 0.61, dist ~0.11, IoU 0
+    far = _box(0.59, 0.30, 0.69, 0.70, 0.9)  # centre 0.64, dist ~0.14, IoU 0
+    tracks = bt.update([far, near], [], now=0.03, max_lost_time=1.0)  # far listed first
+
+    matched = next(t for t in tracks if t.track_id == tid)
+    cx = (matched.tlbr[0] + matched.tlbr[2]) / 2.0
+    assert cx == pytest.approx(0.61, abs=0.01)  # bound to the nearer detection, not list order
+
+
+def test_distance_rescue_ignores_far_detection() -> None:
+    """A high detection beyond the rescue range does not steal the track; it
+    spawns a fresh one and the original is left to go lost."""
+    bt = ByteTracker()
+    first = bt.update([_box(0.10, 0.10, 0.20, 0.40, 0.9)], [], now=0.0, max_lost_time=1.0)
+    tid = first[0].track_id
+
+    tracks = bt.update([_box(0.80, 0.60, 0.90, 0.90, 0.9)], [], now=0.03, max_lost_time=1.0)
+    assert tid not in _tracked_ids(tracks, state="tracked")
+    assert tid in _tracked_ids(tracks, state="lost")
+    assert len(_tracked_ids(tracks, state="tracked")) == 1  # a new track for the far det
+
+
+def test_low_stage_has_no_distance_rescue() -> None:
+    """The recovery (low) stage stays IoU-strict: a near but non-overlapping low
+    box must not pull a track onto it, so the track goes lost instead."""
+    bt = ByteTracker()
+    first = bt.update([_box(0.10, 0.10, 0.20, 0.40, 0.9)], [], now=0.0, max_lost_time=1.0)
+    tid = first[0].track_id
+
+    tracks = bt.update([], [_box(0.22, 0.10, 0.32, 0.40, 0.3)], now=0.03, max_lost_time=1.0)
+    assert tid in _tracked_ids(tracks, state="lost")
+    assert _tracked_ids(tracks, state="tracked") == set()

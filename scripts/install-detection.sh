@@ -104,6 +104,29 @@ config_path() {
   fi
 }
 
+# True when pip output shows a certificate that is not valid yet, i.e. the
+# system clock is behind real time (no RTC + NTP not synced is the usual Pi
+# cause) so TLS verification of PyPI / the torch index fails. Reads the
+# captured output on stdin.
+clock_skew_in() {
+  grep -qiE 'not yet valid|is not valid yet|not live until' 2>/dev/null
+}
+
+clock_skew_message() {
+  cat <<'MSG'
+the system clock is wrong, so TLS certificates fail to verify
+("certificate is not yet valid") and pip cannot download the detection
+packages over HTTPS.
+
+Fix the clock, then re-run this script:
+  sudo timedatectl set-ntp true
+  sudo systemctl restart systemd-timesyncd
+  timedatectl status         # wait for: System clock synchronized: yes
+If NTP cannot reach a server (UDP port 123 is often blocked), set it by hand:
+  sudo date -u -s 'YYYY-MM-DD HH:MM:SS'    # real current UTC time (-u = interpret as UTC)
+MSG
+}
+
 # --- main ------------------------------------------------------------------
 
 main() {
@@ -181,12 +204,23 @@ main() {
   #     drops the ~400 MiB of unused CUDA libs the default wheel bundles; on
   #     aarch64 the default wheel is already CPU-only, so it's a no-op win there.
   #     Fall back to the default wheel when no CPU build exists for this platform.
+  # Capture each pip run's output (while still streaming it live via tee) so a
+  # failure can be classified: a wrong clock surfaces a clear fix instead of a
+  # raw SSL traceback.
+  local pip_log
+  pip_log="$(mktemp 2>/dev/null || echo "/tmp/openfollow-install-detection-pip.$$.log")"
+  trap 'rm -f "$pip_log"' EXIT
+
   log "Installing CPU-only torch + torchvision (PyTorch CPU index)…"
   # shellcheck disable=SC2086
-  if ! $sudo_pip env $pip_env "$venv_py" -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision; then
+  if ! $sudo_pip env $pip_env "$venv_py" -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision 2>&1 | tee "$pip_log"; then
+    if clock_skew_in <"$pip_log"; then die "$(clock_skew_message)"; fi
     warn "CPU-only torch install failed; falling back to the default wheel (on x86_64 this also pulls unused CUDA libs)."
     # shellcheck disable=SC2086
-    $sudo_pip env $pip_env "$venv_py" -m pip install torch torchvision
+    if ! $sudo_pip env $pip_env "$venv_py" -m pip install torch torchvision 2>&1 | tee "$pip_log"; then
+      if clock_skew_in <"$pip_log"; then die "$(clock_skew_message)"; fi
+      die "pip could not install torch/torchvision – see the output above. Check the network connection and re-run."
+    fi
   fi
   # onnx + onnxslim land in the venv here so the export never falls back to a
   # per-user pip install (the packaged venv is root-owned and a venv doesn't
@@ -194,7 +228,10 @@ main() {
   # 'onnx'" until now.
   log "Installing onnxruntime + opencv-python + the export tools (ultralytics + onnx + onnxslim)…"
   # shellcheck disable=SC2086
-  $sudo_pip env $pip_env "$venv_py" -m pip install "onnxruntime>=1.17" "opencv-python>=4.8" ultralytics onnx onnxslim
+  if ! $sudo_pip env $pip_env "$venv_py" -m pip install "onnxruntime>=1.17" "opencv-python>=4.8" ultralytics onnx onnxslim 2>&1 | tee "$pip_log"; then
+    if clock_skew_in <"$pip_log"; then die "$(clock_skew_message)"; fi
+    die "pip could not install the detection backend – see the output above. Check the network connection and re-run."
+  fi
 
   # --- Verify --------------------------------------------------------------
   # The detection backend is onnxruntime + opencv (the hard gate); the export

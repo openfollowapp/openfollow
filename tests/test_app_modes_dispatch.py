@@ -1456,10 +1456,11 @@ def test_build_settings_menu_items_disables_change_video_source_without_receiver
     assert enabled[idx] is False
 
 
-def test_build_settings_menu_items_web_ui_says_linux_only_on_mac(
+def test_build_settings_menu_items_web_ui_enabled_on_mac(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """On macOS when WebKit2GTK typelib is absent, menu shows "Linux only" hint."""
+    """On macOS the row opens the system default browser, so it is enabled even
+    without the (Linux-only) embedded WebKit2GTK overlay."""
     import sys as _sys
 
     from openfollow.runtime import webkit_browser
@@ -1469,8 +1470,8 @@ def test_build_settings_menu_items_web_ui_says_linux_only_on_mac(
     app = _make_settings_menu_app(has_controller=True, has_source=True)
     labels, enabled, reasons = app_modes.build_settings_menu_items(app)
     idx = labels.index("Open Web UI")
-    assert enabled[idx] is False
-    assert reasons[idx] == "Linux only"
+    assert enabled[idx] is True
+    assert reasons[idx] == ""
 
 
 def test_build_settings_menu_items_web_ui_says_install_hint_on_linux(
@@ -1525,11 +1526,15 @@ def test_settings_menu_move_skips_disabled_items(
 ) -> None:
     # has_source=None disables Change Video Source (1);
     # has_controller=False disables Button Detection (2);
-    # WebKit unavailable disables Open Web UI (3).
+    # WebKit unavailable disables Open Web UI (3) – Linux-only gating (macOS
+    # opens the default browser, so its row is always enabled there).
     # ArrowDown from Network (0) lands on Restart (4).
+    import sys as _sys
+
     from openfollow.runtime import webkit_browser
 
     monkeypatch.setattr(webkit_browser, "AVAILABLE", False)
+    monkeypatch.setattr(_sys, "platform", "linux")
     app = _make_settings_menu_app(has_controller=False, has_source=None, menu_index=0)
     app_modes._settings_menu_move(app, +1)
     assert app._settings_menu_index == 4
@@ -1575,10 +1580,17 @@ def test_settings_menu_confirm_dispatches_to_correct_app_callback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Each enabled menu row dispatches to a specific app method and exits
-    the menu. Video rows collapsed into 'Change Video Source' entry."""
+    the menu. Video rows collapsed into 'Change Video Source' entry.
+
+    Pinned to Linux: the Open Web UI row (index 3) mounts the embedded overlay
+    (``_enter_browser``) only off macOS; the macOS default-browser path is
+    covered separately."""
+    import sys as _sys
+
     from openfollow.runtime import webkit_browser
 
     monkeypatch.setattr(webkit_browser, "AVAILABLE", True)
+    monkeypatch.setattr(_sys, "platform", "linux")
     calls: list[str] = []
     app = _make_settings_menu_app(has_controller=True, has_source=True, menu_index=menu_index)
     app._settings_menu_active = True
@@ -1596,6 +1608,56 @@ def test_settings_menu_confirm_dispatches_to_correct_app_callback(
     app_modes._settings_menu_confirm(app)
     assert calls == [expected_callback]
     assert app._settings_menu_active is False
+
+
+def test_settings_menu_confirm_web_ui_opens_default_browser_on_mac(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On macOS confirming 'Open Web UI' launches the system default browser via
+    ``open`` and never mounts the embedded overlay."""
+    import sys as _sys
+
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    captured: dict[str, list[str]] = {}
+    monkeypatch.setattr(
+        app_modes.subprocess,
+        "run",
+        lambda argv, **_kw: captured.__setitem__("argv", argv) or SimpleNamespace(returncode=0),
+    )
+    app = _make_settings_menu_app(has_controller=True, has_source=True, menu_index=3)
+    app._settings_menu_active = True
+    app._web_server = None
+    app._enter_browser = lambda: pytest.fail("must not mount embedded overlay on macOS")
+    app_modes._settings_menu_confirm(app)
+    assert app._settings_menu_active is False
+    assert captured["argv"][0] == "open"
+    assert captured["argv"][1].startswith("http://127.0.0.1")
+
+
+def test_open_web_ui_external_uses_loopback_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The helper hands the loopback web-UI URL to ``open``."""
+    captured: dict[str, list[str]] = {}
+    monkeypatch.setattr(
+        app_modes.subprocess,
+        "run",
+        lambda argv, **_kw: captured.__setitem__("argv", argv) or SimpleNamespace(returncode=0),
+    )
+    app = _make_settings_menu_app()
+    app._web_server = None
+    app_modes.open_web_ui_external(app)
+    assert captured["argv"] == ["open", "http://127.0.0.1/"]
+
+
+def test_open_web_ui_external_swallows_launch_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed browser launch is logged, never raised – it can't crash input."""
+
+    def _boom(*_a: object, **_kw: object) -> None:
+        raise OSError("no open binary")
+
+    monkeypatch.setattr(app_modes.subprocess, "run", _boom)
+    app = _make_settings_menu_app()
+    app._web_server = None
+    app_modes.open_web_ui_external(app)  # must not raise
 
 
 def _make_minimal_app_for_dispatch() -> SimpleNamespace:

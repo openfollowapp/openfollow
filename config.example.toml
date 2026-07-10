@@ -208,10 +208,9 @@ context = 0
 
 [detection]
 enabled = false
-model = "yolov8n.onnx"
+model = "yolo26n.onnx"
 storage_path = ""
 inference_size = 640
-preprocess_clahe = true
 confidence = 0.2
 interval_ms = 67
 show_boxes = true
@@ -219,7 +218,7 @@ show_labels = true
 box_color = "#00ff00"
 box_thickness = 2
 max_persons = 10
-pin_marker = false
+pin_marker_id = -1
 pin_point = "top"
 smoothing = 0.15
 prediction = 8.0

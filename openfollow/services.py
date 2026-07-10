@@ -32,9 +32,7 @@ from openfollow.psn import PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
 from openfollow.runtime.overlay_state import OverlayState
-from openfollow.runtime.services_detection_pin import (
-    DetectionPinState,
-)
+from openfollow.runtime.services_detection_pin import _NOMINAL_FRAME_DT
 from openfollow.runtime.services_detection_pin import (
     apply_detection_pin as apply_detection_pin_helper,
 )
@@ -500,9 +498,6 @@ class AppRuntimeServices:
         self._unproject_cam_buffer = np.zeros(7, dtype=np.float64)
         self._screen_point_buffer = np.zeros((1, 2), dtype=np.float64)
 
-        # Detection pin state across frames (EMA + velocity prediction)
-        self._detection_pin_state = DetectionPinState()
-
         # Unified OSC service: one shared client cache and listener for
         # zone OSC output, marker OSC input, and the transmitter system.
         # Created eagerly because the constructor opens no sockets – all
@@ -710,6 +705,21 @@ class AppRuntimeServices:
     def init_camera(self) -> None:
         self._app._camera = Camera.from_config(self._app._config.camera)
 
+    def _seed_bundled_detection_models(self, cfg: AppConfig) -> None:
+        """Copy bundled tier models into the resolved storage ``models/`` folder.
+
+        No-op when nothing is bundled (a source checkout) or on any I/O error –
+        seeding is best-effort and must never block startup.
+        """
+        from openfollow.model_seed import bundled_models_dir, seed_bundled_models
+        from openfollow.video.detection import resolve_detection_storage_path
+
+        source = bundled_models_dir()
+        if source is None:
+            return
+        storage_root = Path(resolve_detection_storage_path(cfg.detection.storage_path))
+        seed_bundled_models(source, storage_root / "models")
+
     def init_video(self) -> None:
         overlay = CairoOverlayRenderer()
         self._overlay_renderer = overlay
@@ -731,6 +741,11 @@ class AppRuntimeServices:
         # at runtime; the assert is a strict-mode narrowing aid.
         assert canvas is not None, "init_canvas must run before init_video"
         cfg = self._app._config
+
+        # Seed the pre-shipped quality-tier models into the storage folder so
+        # detection (and the web tier picker) works offline out of the box.
+        # No-op on a source checkout. Runs before the web server starts.
+        self._seed_bundled_detection_models(cfg)
 
         # Optional person detection (lazy import, zero cost when disabled)
         detector = None
@@ -1817,6 +1832,9 @@ class AppRuntimeServices:
             zone_diagnostics_provider=self._get_zone_diagnostics_snapshot,
             zone_test_send=self._zone_test_send,
             marker_positions_provider=self._get_marker_positions_snapshot,
+            # Live per-marker move speeds; the ``dict(...)`` copy is the
+            # mutation-isolation boundary so the web thread never holds the live dict.
+            marker_move_speeds_provider=lambda: dict(self._app._config.marker_move_speeds),
             full_snapshot_provider=self._snapshot_provider.get_snapshot,
             mouse3d_button_provider=self._mouse3d_latest_button,
             # Diagnostics + conflict-probe hooks. ``init_web_server`` runs
@@ -2223,7 +2241,6 @@ class AppRuntimeServices:
             system_stats=self._system_stats,
             person_detector=self._person_detector,
             cam_params_buffer=self._cam_params_buffer,
-            pin_state=self._detection_pin_state,
         )
 
         # Atomic swap: release old state back to pool
@@ -2240,14 +2257,18 @@ class AppRuntimeServices:
         if self._overlay_renderer is not None:  # pragma: no branch
             self._overlay_renderer.state = state
 
-    def apply_detection_pin(self) -> None:
-        """Pin the selected controlled marker to the tracked detection with EMA smoothing."""
+    def apply_detection_pin(self, dt: float = _NOMINAL_FRAME_DT) -> None:
+        """Drive controlled marker(s) from detection with EMA smoothing.
+
+        ``dt`` (seconds since the previous animate frame) keeps the smoothing /
+        prediction frame-rate-independent.
+        """
         apply_detection_pin_helper(
             self._app,
             person_detector=self._person_detector,
             unproject_cam_buffer=self._unproject_cam_buffer,
             screen_point_buffer=self._screen_point_buffer,
-            pin_state=self._detection_pin_state,
+            dt=dt,
         )
 
     def init_zone_engine(self) -> None:

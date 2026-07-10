@@ -174,6 +174,9 @@ from openfollow.runtime.app_orchestration import (
     check_config_reload as runtime_check_config_reload,
 )
 from openfollow.runtime.app_orchestration import (
+    check_marker_speeds_persist as runtime_check_marker_speeds_persist,
+)
+from openfollow.runtime.app_orchestration import (
     get_config_mtime as runtime_get_config_mtime,
 )
 from openfollow.runtime.app_orchestration import (
@@ -197,6 +200,7 @@ if TYPE_CHECKING:
     from openfollow.otp import OtpServer
     from openfollow.psn import Marker, PsnReceiver, PsnServer
     from openfollow.rttrpm import RttrpmServer
+    from openfollow.runtime.services_detection_pin import DetectionPinState
     from openfollow.scene.camera import Camera
     from openfollow.video.receiver import GstNativeSinkReceiver
     from openfollow.web import ConfigWebServer
@@ -241,6 +245,11 @@ class OpenFollowApp:
         # ``_server`` (so never broadcast) – the detection pin reads them as the
         # clip anchor and writes the corrected position to the registered marker.
         self._assist_manual: dict[int, Marker] = {}
+        # Per-marker detection-pin smoothing state, keyed by marker id. Assist
+        # mode drives every controlled marker (one entry each); replace mode
+        # drives the single resolved marker (one entry). Created lazily and
+        # pruned when a marker leaves the driven set.
+        self._detection_pin_states: dict[int, DetectionPinState] = {}
         self._psn_receiver: PsnReceiver | None = None
         self._web_server: ConfigWebServer | None = None
         self._input_manager: InputManager | None = None
@@ -333,6 +342,10 @@ class OpenFollowApp:
         self._speed_key_streak: dict[int, int] = {}
         self._speed_key_last_t: dict[int, float] = {}
         self._speed_key_last_dir: dict[int, int] = {}
+
+        # Debounced persistence of the runtime-authoritative per-marker move speeds.
+        self._marker_speeds_dirty: bool = False
+        self._marker_speeds_dirty_since: float = 0.0
 
         self._button_detection: ButtonDetectionWizard | None = None
 
@@ -458,6 +471,9 @@ class OpenFollowApp:
 
     def _check_restart_request(self) -> None:
         runtime_check_restart_request(self)
+
+    def _check_marker_speeds_persist(self) -> None:
+        runtime_check_marker_speeds_persist(self)
 
     def _check_pi_network_worker(self) -> None:
         from openfollow.runtime.app_modes_network import drain_pi_network_worker

@@ -481,6 +481,26 @@ class TestUpdateWindowTitle:
 # --------------------------------------------------------------------------- #
 
 
+class TestMouse3dLatestButton:
+    def test_none_without_input_manager(self, services: AppRuntimeServices) -> None:
+        services._app._input_manager = None
+        assert services._mouse3d_latest_button() is None
+
+    def test_delegates_to_handler_with_short_budget(self, services: AppRuntimeServices) -> None:
+        captured: dict[str, float] = {}
+
+        def _detect(*, timeout: float) -> int:
+            captured["timeout"] = timeout
+            return 3
+
+        services._app._input_manager = SimpleNamespace(
+            mouse3d_manager=SimpleNamespace(detect_pressed_button=_detect),
+        )
+        assert services._mouse3d_latest_button() == 3
+        # Bounded so the web request thread returns promptly (client re-polls).
+        assert captured["timeout"] <= 0.5
+
+
 class TestGamepadRuntimeSnapshot:
     def test_empty_when_no_input_manager(self, services: AppRuntimeServices) -> None:
         services._app._input_manager = None

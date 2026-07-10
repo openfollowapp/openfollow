@@ -191,3 +191,54 @@ def test_hx_include_closest_form_for_cross_field_context() -> None:
         if "closest form" not in attrs.get("hx-include", ""):
             bad.append(f'{path.name}: input name={attrs.get("name")!r} missing hx-include="closest form"')
     assert not bad, "missing hx-include:\n  " + "\n  ".join(bad)
+
+
+def test_mouse3d_looped_inputs_have_validation_markup() -> None:
+    """mouse3d.tpl renders its axis / button binds from a ``% for`` loop, so the
+    raw-source audits above can't see the (templated) ``name``s. Audit the
+    RENDERED HTML instead, so the loop can neither drop a field nor strip its
+    validation / accessibility markup.
+    """
+    from bottle import template
+
+    from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, AppConfig
+    from openfollow.web import server as _server_module  # noqa: F401 - registers tpl path
+
+    html = template("partials/mouse3d", config=AppConfig())
+    collector = _InputCollector()
+    collector.feed(html)
+    by_name = {attrs.get("name", ""): attrs for attrs in collector.inputs}
+
+    # Every number input the form must render with on-blur validation markup.
+    expected = (
+        [f"sens_{axis}" for axis in MOUSE3D_AXES]
+        + [f"deadzone_{axis}" for axis in MOUSE3D_AXES]
+        + list(MOUSE3D_BUTTON_FIELDS)
+    )
+    problems: list[str] = []
+    for name in expected:
+        attrs = by_name.get(name)
+        if attrs is None:
+            problems.append(f"{name}: loop rendered no input (dropped field?)")
+            continue
+        target = attrs.get("hx-target", "")
+        target_id = target.lstrip("#")
+        if attrs.get("hx-get") != f"/api/validate/mouse3d/{name}":
+            problems.append(f"{name}: hx-get={attrs.get('hx-get')!r}")
+        if "blur" not in attrs.get("hx-trigger", ""):
+            problems.append(f"{name}: hx-trigger missing 'blur'")
+        if not (target.startswith("#") and target.endswith("-error")):
+            problems.append(f"{name}: bad hx-target {target!r}")
+        if attrs.get("aria-describedby", "") != target_id:
+            problems.append(f"{name}: aria-describedby != hx-target id")
+        if attrs.get("aria-invalid", "") != "false":
+            problems.append(f"{name}: aria-invalid != 'false'")
+        if "closest form" not in attrs.get("hx-include", ""):
+            problems.append(f"{name}: hx-include missing 'closest form'")
+        span_re = re.compile(
+            r'<span\b[^>]*\bid="' + re.escape(target_id) + r'"[^>]*\bclass="[^"]*\bfield-error\b',
+            re.IGNORECASE,
+        )
+        if not span_re.search(html):
+            problems.append(f"{name}: no sibling <span id={target_id!r} class='field-error'>")
+    assert not problems, "mouse3d rendered markup drift:\n  " + "\n  ".join(problems)

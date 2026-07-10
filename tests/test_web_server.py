@@ -3743,6 +3743,47 @@ def test_get_psn_source_advisory_empty_without_provider(tmp_path) -> None:
     }
 
 
+def test_latest_mouse3d_button_uses_provider(tmp_path) -> None:
+    """The 3D Mouse Detect bridge returns the live handler's held button."""
+    server = ConfigWebServer(
+        config_path=str(tmp_path / "config.toml"),
+        mouse3d_button_provider=lambda: 2,
+    )
+    assert server.latest_mouse3d_button() == 2
+
+
+def test_latest_mouse3d_button_none_without_provider(tmp_path) -> None:
+    server = ConfigWebServer(config_path=str(tmp_path / "config.toml"))
+    assert server.latest_mouse3d_button() is None
+
+
+def test_section_mouse3d_detect_route_returns_json(live_server) -> None:
+    _server, base = live_server
+    with urllib.request.urlopen(f"{base}/section/mouse3d/detect", timeout=5) as r:
+        status, body = r.status, r.read().decode()
+        # Live per-click data must not be served from a browser/proxy cache.
+        cache_control = r.headers.get("Cache-Control")
+    assert status == 200
+    assert cache_control == "no-store"
+    # No provider wired in the live server -> button is null.
+    assert json.loads(body) == {"button": None}
+
+
+def test_section_mouse3d_post_saves(live_server) -> None:
+    _server, base = live_server
+    data = urllib.parse.urlencode({"enabled": "on", "curve": "linear", "sens_pan_x": "2.0"}).encode()
+    req = urllib.request.Request(
+        f"{base}/section/mouse3d",
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    with urllib.request.urlopen(req, timeout=5) as r:
+        status, body = r.status, r.read().decode()
+    assert status == 200
+    assert "3D Mouse Input" in body  # the re-rendered partial
+
+
 def test_get_psn_source_advisory_swallows_provider_error(tmp_path) -> None:
 
     def boom() -> dict:

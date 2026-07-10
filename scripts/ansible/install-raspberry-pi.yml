@@ -108,6 +108,12 @@
       ansible.builtin.systemd:
         daemon_reload: true
 
+    - name: reload udev
+      # Apply the 3D Mouse hidraw rule and re-trigger so an already-connected
+      # device gets plugdev access without a replug.
+      ansible.builtin.shell: udevadm control --reload && udevadm trigger --subsystem-match=hidraw
+      changed_when: true
+
     - name: reload ssh
       ansible.builtin.systemd:
         name: ssh
@@ -150,6 +156,19 @@
         append: true
         password: "{{ openfollow_user_password | password_hash('sha512', openfollow_user_password_salt) }}"
         update_password: always
+
+    # 3D Mouse hidraw access. plugdev membership is granted above via
+    # openfollow_user_groups; this rule sets the device node to plugdev/0660
+    # (Debian hidraw nodes are root-only without it).
+    - name: Install 3D Mouse udev rule
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../packaging/udev/99-openfollow-3dmouse.rules"
+        dest: /lib/udev/rules.d/99-openfollow-3dmouse.rules
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - reload udev
 
     - name: Ensure SSH service is enabled and running
       ansible.builtin.systemd:

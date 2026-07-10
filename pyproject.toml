@@ -32,6 +32,11 @@ dependencies = [
     # headers). openfollow/input/midi.py fail-softs if import absent at runtime.
     "mido>=1.3",
     "python-rtmidi>=1.5",
+    # 3D Mouse (3Dconnexion 6DOF) input. Pure-Python chain over prebuilt cffi
+    # wheels (easyhid-ng -> cffi), loading the system ``libhidapi`` at runtime;
+    # no on-device compile. openfollow/input/mouse3d.py imports it lazily and
+    # fail-softs when the lib is absent, so this stays import-safe everywhere.
+    "pyspacemouse>=2.0.0",
     "packaging>=26.2",
     # Render the bundled help ``.md`` docs to HTML for the web UI help drawer.
     # Pure-Python, no native deps (safe on the Pi). ``escape=True`` (see
@@ -148,6 +153,8 @@ module = [
     "cv2",
     "onnxruntime",
     "mido",
+    "pyspacemouse",
+    "easyhid",
 ]
 ignore_missing_imports = true
 

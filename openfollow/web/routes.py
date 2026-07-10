@@ -50,6 +50,8 @@ if TYPE_CHECKING:
 from openfollow.configuration import (
     DEFAULT_UPDATE_SERVICE_NAME,
     MARKER_TOKEN_ALL,
+    MOUSE3D_AXES,
+    MOUSE3D_BUTTON_FIELDS,
     VALID_BUTTON_NAMES,
     AppConfig,
     DetectionMaskConfig,
@@ -167,6 +169,7 @@ VALID_SECTIONS = {
     "gamepad",
     "keyboard",
     "mouse",
+    "mouse3d",
     "osc",
     "operator_messages",
     "detection",
@@ -270,6 +273,7 @@ _SECTION_CONFIG_ATTRS = {
     "gamepad": "controller",
     "keyboard": "controller",
     "mouse": "controller",
+    "mouse3d": "mouse3d",
     "osc": "osc",
     "operator_messages": "operator_messages",
     "detection": "detection",
@@ -1035,6 +1039,8 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
     # protect crafted POSTs. See "Validation contract" in CLAUDE.md.
     if section in ("controller", "gamepad", "keyboard", "mouse"):
         cfg.controller.__post_init__()
+    elif section == "mouse3d":
+        cfg.mouse3d.__post_init__()
     elif section == "grid":
         cfg.grid.__post_init__()
     elif section == "camera":
@@ -1247,6 +1253,29 @@ def _as_positive_int(value: Any, default: int) -> int:
     """Like ``_as_int`` but clamps to ``>= 1``. For fields that divide by the value."""
     result = _as_int(value, default)
     return result if result >= 1 else 1
+
+
+def _as_button_index(value: Any, default: int) -> int:
+    """Parse a device button index where blank means "unbound" (-1).
+
+    A cleared field (``None`` / empty / whitespace) maps to the ``-1`` unbound
+    sentinel regardless of the prior value, so clearing a binding actually
+    unbinds it. Non-numeric junk falls back to ``default`` (the validate path
+    passes a sentinel here to surface a type error). For 3D Mouse button binds.
+    """
+    # Guard ``bool`` before ``int`` (``bool`` is an ``int`` subclass, so a JSON
+    # ``true`` would otherwise become index 1). Mirrors ``_coerce_int`` so the
+    # JSON/peer path and a hand-edited TOML agree on rejecting it.
+    if isinstance(value, bool):
+        return default
+    if value is None:
+        return -1
+    if isinstance(value, str) and not value.strip():
+        return -1
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
 
 
 def _as_optional_int(value: Any, default: int | None) -> int | None:
@@ -1513,6 +1542,21 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
 _SECTION_FIELD_PARSERS["gamepad"] = _SECTION_FIELD_PARSERS["controller"]
 _SECTION_FIELD_PARSERS["keyboard"] = _SECTION_FIELD_PARSERS["controller"]
 _SECTION_FIELD_PARSERS["mouse"] = _SECTION_FIELD_PARSERS["controller"]
+
+# 3D Mouse: built from the shared axis / button constants so the parser map
+# can't drift from the dataclass fields. Mirrored by FIELD_RULES["mouse3d"].
+_mouse3d_parsers: dict[str, _FieldParser] = {
+    "enabled": _as_bool,
+    "curve": _as_str,
+}
+for _axis in MOUSE3D_AXES:
+    _mouse3d_parsers[f"map_{_axis}"] = _as_str
+    _mouse3d_parsers[f"sens_{_axis}"] = _as_float
+    _mouse3d_parsers[f"deadzone_{_axis}"] = _as_float
+    _mouse3d_parsers[f"invert_{_axis}"] = _as_bool
+for _btn in MOUSE3D_BUTTON_FIELDS:
+    _mouse3d_parsers[_btn] = _as_button_index
+_SECTION_FIELD_PARSERS["mouse3d"] = _mouse3d_parsers
 
 
 _TRIGGER_ZONES_FIELD_PARSERS: dict[str, _FieldParser] = {
@@ -4673,6 +4717,26 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update mouse settings."""
         cfg = _save_section_from_form("mouse", bool_fields=_mouse_bool_fields())
         return template("partials/mouse", config=cfg, saved=True)
+
+    @app.post("/section/mouse3d")
+    def update_mouse3d() -> Any:
+        """Update 3D Mouse settings."""
+        bool_fields = ("enabled", *(f"invert_{axis}" for axis in MOUSE3D_AXES))
+        cfg = _save_section_from_form("mouse3d", bool_fields=bool_fields)
+        return template("partials/mouse3d", config=cfg, saved=True)
+
+    @app.get("/section/mouse3d/detect")
+    def detect_mouse3d_button() -> Any:
+        """Watch for a 3D Mouse button press, for the inline Detect bind widget.
+
+        The operator clicks a field's Detect button, then presses the device
+        button to bind; the handler polls briefly (working whether or not the
+        feature is enabled). Returns JSON ``{"button": <int|null>}`` which the
+        ``detect-input.js`` widget writes into the field.
+        """
+        response.content_type = "application/json"
+        response.set_header("Cache-Control", "no-store")
+        return json.dumps({"button": server.latest_mouse3d_button()})
 
     @app.post("/section/gamepad/detect-buttons")
     def start_button_detection() -> Any:

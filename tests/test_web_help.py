@@ -128,6 +128,29 @@ class TestHelpDocNoHtmlEntities:
         )
 
 
+class TestHelpDocImageAssets:
+    """Every image a help doc references is a bundled local asset, served by
+    the ``/assets/<path>`` route. Guards the offline contract – no CDN image,
+    no broken icon on a show LAN – and catches a renamed/missing SVG.
+    """
+
+    pytestmark = pytest.mark.unit
+
+    _IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+
+    def test_help_images_are_bundled_local_assets(self) -> None:
+        from openfollow.web.routes import _WEB_STATIC_DIR
+
+        offenders: dict[str, list[str]] = {}
+        for doc in sorted(_WEB_HELP_DIR.glob("*.md")):
+            for src in self._IMG_RE.findall(doc.read_text(encoding="utf-8")):
+                if not src.startswith("/assets/"):
+                    offenders.setdefault(doc.name, []).append(f"non-local: {src}")
+                elif not (_WEB_STATIC_DIR / src[len("/assets/") :]).is_file():
+                    offenders.setdefault(doc.name, []).append(f"missing: {src}")
+        assert not offenders, f"help image refs must be bundled under web/static: {offenders}"
+
+
 # ---------------------------------------------------------------------------
 # Route (integration – live server)
 # ---------------------------------------------------------------------------

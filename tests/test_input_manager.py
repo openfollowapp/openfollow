@@ -283,6 +283,9 @@ def test_input_manager_propagates_gamepad_button_signals(monkeypatch) -> None:
     monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
     monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
 
+    # Single controller: next/prev cycling is allowed (suppressed only when more
+    # than one controller is present).
+    _FakeGamepadHandler.joystick_indices = (0,)
     _FakeKeyboardHandler.next_velocity = None
     _FakeGamepadHandler.next_update = GamepadUpdate(
         next_marker_pressed=True,
@@ -428,8 +431,18 @@ def test_single_gamepad_controller_info_reports_selected_marker(monkeypatch) -> 
     manager = InputManager(app)
 
     info = manager.get_controller_info()
+    # ``effective_speed`` / ``backend`` are always present (defaulted when the
+    # gamepad info dict is missing them) so the stats consumer can read them
+    # unconditionally.
     assert info == [
-        {"controller_index": 0, "name": "Solo", "connected": True, "marker_id": 11},
+        {
+            "controller_index": 0,
+            "name": "Solo",
+            "connected": True,
+            "marker_id": 11,
+            "effective_speed": 0.0,
+            "backend": "",
+        },
     ]
 
 

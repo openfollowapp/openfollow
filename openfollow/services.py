@@ -84,6 +84,11 @@ logger = logging.getLogger(__name__)
 # full per-row ring.
 _RECENT_OSC_SENDS_LIMIT = 100
 
+# Per-request budget for the web 3D-Mouse button-detect poll. Kept short so a
+# Detect click never pins its request thread for seconds; the browser widget
+# (detect-input.js) re-polls until the operator presses a button or gives up.
+_MOUSE3D_WEB_DETECT_BUDGET_S = 0.35
+
 
 def _format_lease_remaining(seconds: int | None) -> str | None:
     """Render a DHCP lease's seconds-remaining as a compact human label.
@@ -1875,6 +1880,7 @@ class AppRuntimeServices:
             # mutation-isolation boundary so the web thread never holds the live dict.
             marker_move_speeds_provider=lambda: dict(self._app._config.marker_move_speeds),
             full_snapshot_provider=self._snapshot_provider.get_snapshot,
+            mouse3d_button_provider=self._mouse3d_latest_button,
             # Diagnostics + conflict-probe hooks. ``init_web_server`` runs
             # before ``init_osc_transmitters``, so the manager is ``None``
             # at construction time. These providers dereference
@@ -2511,6 +2517,19 @@ class AppRuntimeServices:
         except Exception:  # noqa: BLE001
             return []
         return [(tid, x, y) for (_kind, tid), x, y in positions]
+
+    def _mouse3d_latest_button(self) -> int | None:
+        """Watch briefly for a 3D Mouse button press, for the web bind helper.
+
+        Polls on a short per-request budget so the web request thread returns
+        promptly; the browser widget re-polls until the operator presses a
+        button (or gives up), so a press landing after the click is still
+        caught without any single request blocking for seconds.
+        """
+        im = self._app._input_manager
+        if im is None:
+            return None
+        return im.mouse3d_manager.detect_pressed_button(timeout=_MOUSE3D_WEB_DETECT_BUDGET_S)
 
     def update_window_title(self, title: str) -> None:
         self._apply_window_title(title)

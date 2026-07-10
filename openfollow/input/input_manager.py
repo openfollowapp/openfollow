@@ -11,6 +11,7 @@ from openfollow.input.events import InputEventBus
 from openfollow.input.gamepad import GamepadHandler, GamepadUpdate
 from openfollow.input.keyboard import KeyboardHandler
 from openfollow.input.mouse import MouseHandler
+from openfollow.input.mouse3d import MOUSE3D_NAME, Mouse3DManager, Mouse3DUpdate
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.osc.input import OscMarkerAdapter
 from openfollow.osc.operator_message import OperatorMessageOscAdapter
@@ -21,6 +22,7 @@ from openfollow.runtime.services_detection_pin import (
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
+    from openfollow.configuration import Mouse3DConfig
     from openfollow.psn.marker import Marker
 
 logger = logging.getLogger(__name__)
@@ -67,16 +69,26 @@ class InputManager:
         # the marker actually routed to that controller.
         # ``_gamepad_marker_id`` is the same hub the movement / reset
         # paths already use, so the four routing surfaces stay in sync.
+        # The virtual-fader bus is shared: the gamepad handler integrates its
+        # stick into it, and the 3D-mouse fader path (``_apply_mouse3d``) writes
+        # to the same reference – captured once here, not re-dereferenced per tick.
+        self._virtual_faders = app._runtime_services._virtual_faders
         self.gamepad_handler = GamepadHandler(
             app,
             event_bus=self.event_bus,
-            virtual_faders=app._runtime_services._virtual_faders,
+            virtual_faders=self._virtual_faders,
             marker_resolver=self._gamepad_marker_id,
         )
         self.mouse_handler = MouseHandler(app)
         # The mouse glide runs every frame; a persistent failure must not flood
         # the log at the display tick rate.
         self._mouse_update_err_log = ThrottledExceptionLogger(logger, "Mouse update failed this tick.")
+        # 3D Mouse (6DOF). One handler per connected puck, enumerated like
+        # gamepads; movement application is gated on ``mouse3d.enabled`` in
+        # ``update``.
+        self.mouse3d_manager = Mouse3DManager(app._config.mouse3d)
+        self.mouse3d_manager.start()
+        self._mouse3d_update_err_log = ThrottledExceptionLogger(logger, "3D Mouse update failed this tick.")
 
         osc_cfg = app._config.osc
         # Marker-position OSC input flows through the unified OSC
@@ -141,42 +153,99 @@ class InputManager:
             return None
         return server.get_marker(marker_id)
 
-    def _gamepad_marker_id(self, controller_idx: int) -> int | None:
-        """Resolve the marker a gamepad's movement/reset should target.
+    def _controller_slots(self) -> list[tuple[str, int]]:
+        """Ordered controllers in the shared id space: 3D mice first, then
+        gamepads. The position in this list is the unified controller index
+        (0-based internally; surfaced 1-based as the OSC ``cN`` / the ``C1``
+        marker-card badge). A 3D mouse counts only while enabled and connected,
+        so merely enabling the feature doesn't shift the gamepad numbering.
 
-        Single-gamepad mode (exactly one controller connected AND a marker
-        is selected): route to ``self.app._selected_id`` so DPAD next/prev
-        actually switches what the operator is moving – same contract as the
-        keyboard. Multi-gamepad mode: fixed slot mapping
-        ``self.app._controlled_ids[controller_idx]`` so per-operator
-        assignments stay stable across the shared selection.
-
-        Returns ``None`` when ``controller_idx`` is not a connected controller,
-        so a ``:cN`` reference to an absent controller drives no marker.
+        Thread-safe snapshot – called from the OSC scheduler thread as well as
+        the main loop. ``gamepad_handler.joysticks`` is rebuilt on the main loop
+        (``_detect_controllers`` reassigns then repopulates), so iterating it can
+        race; fall back to no gamepads for that one call rather than raise.
         """
-        # Snapshot both rebindable containers once: gamepad_handler.joysticks is
-        # rebuilt by _detect_controllers and app._controlled_ids is rebound on
-        # marker hot-reload, both on the main loop, while the :cN OSC provider
-        # reads them on the scheduler thread; each check/index must hit one object.
-        joysticks = self.gamepad_handler.joysticks
-        # :cN names a specific controller; if controller N isn't connected it
-        # drives no marker, so skip rather than emit a stale slot.
-        if controller_idx not in joysticks:
+        slots: list[tuple[str, int]] = []
+        if self.app._config.mouse3d.enabled:
+            for local_idx in self.mouse3d_manager.connected_indices():
+                slots.append(("mouse3d", local_idx))
+        try:
+            gamepad_keys = sorted(self.gamepad_handler.joysticks)
+        except RuntimeError:  # dict changed size mid-iteration on the main loop
+            gamepad_keys = []
+        for idx in gamepad_keys:
+            slots.append(("gamepad", idx))
+        return slots
+
+    def _controller_marker_id(self, unified_idx: int | None, slots: list[tuple[str, int]] | None = None) -> int | None:
+        """Resolve the marker a unified controller index drives.
+
+        Exactly one controller total (a lone gamepad or a lone 3D mouse) and a
+        marker selected: route to ``app._selected_id`` so next/prev cycling
+        switches what the operator moves. Otherwise the fixed slot
+        ``app._controlled_ids[unified_idx]`` so per-operator assignments stay
+        stable. ``None`` when the index isn't a live controller or has no slot.
+
+        Pass ``slots`` to reuse a single per-frame snapshot instead of
+        recomputing the controller list on every lookup.
+        """
+        if unified_idx is None:
             return None
-        if len(joysticks) == 1 and self.app._selected_id is not None:
+        if slots is None:
+            slots = self._controller_slots()
+        if not 0 <= unified_idx < len(slots):
+            return None
+        if len(slots) == 1 and self.app._selected_id is not None:
             return self.app._selected_id
         controlled = self.app._controlled_ids
-        if controller_idx < len(controlled):
-            return controlled[controller_idx]
+        if unified_idx < len(controlled):
+            return controlled[unified_idx]
         return None
 
-    def controller_marker_id(self, controller_idx: int) -> int | None:
-        """Public seam over :meth:`_gamepad_marker_id` for the OSC ``:cN``
-        controller reference. Returns the marker the 0-based controller
-        currently drives (selected marker in single-gamepad mode, the fixed
-        slot otherwise), or ``None`` when it drives none.
+    def _gamepad_unified_idx(self, controller_idx: int, slots: list[tuple[str, int]] | None = None) -> int | None:
+        """Unified index for a gamepad's pygame index, or ``None`` if absent."""
+        if slots is None:
+            slots = self._controller_slots()
+        for i, (kind, local_idx) in enumerate(slots):
+            if kind == "gamepad" and local_idx == controller_idx:
+                return i
+        return None
+
+    def _mouse3d_unified_idx(self, local_idx: int, slots: list[tuple[str, int]] | None = None) -> int | None:
+        """Unified index of the given 3D mouse's local index, or ``None``."""
+        if slots is None:
+            slots = self._controller_slots()
+        for i, (kind, idx) in enumerate(slots):
+            if kind == "mouse3d" and idx == local_idx:
+                return i
+        return None
+
+    def _gamepad_marker_id(self, controller_idx: int, slots: list[tuple[str, int]] | None = None) -> int | None:
+        """Marker a gamepad's movement/reset targets, routed through the shared
+        controller-id space (the gamepad's pygame index -> its unified slot)."""
+        if slots is None:
+            slots = self._controller_slots()
+        return self._controller_marker_id(self._gamepad_unified_idx(controller_idx, slots), slots)
+
+    def marker_cycle_active(self, slots: list[tuple[str, int]] | None = None) -> bool:
+        """Whether next/prev marker cycling should be honoured this frame.
+
+        Cycling rotates the shared ``_selected_id``, so it is a single-controller
+        affordance: active only when at most one unified controller (a lone
+        gamepad or a lone 3D mouse) is present. The action suppression
+        (``update`` / ``_apply_mouse3d``) and the help-overlay gate both read
+        this one predicate so they can't drift. Pass ``slots`` to reuse a
+        per-frame snapshot.
         """
-        return self._gamepad_marker_id(controller_idx)
+        if slots is None:
+            slots = self._controller_slots()
+        return len(slots) <= 1
+
+    def controller_marker_id(self, controller_idx: int) -> int | None:
+        """Public seam for the OSC ``:cN`` reference. ``controller_idx`` is the
+        0-based unified index (``:c1`` -> 0), spanning 3D mice + gamepads.
+        """
+        return self._controller_marker_id(controller_idx)
 
     def update(self, dt: float) -> GamepadUpdate:
         """
@@ -191,6 +260,27 @@ class InputManager:
         # Keep controller hotplug and LED policy alive even when there are no
         # controlled markers. Movement application remains gated below.
         gamepad_result = self.gamepad_handler.update(dt)
+
+        # One unified-controller snapshot drives all routing this frame (also
+        # avoids rebuilding the slot list per lookup). Next/prev marker cycling
+        # is a single-controller affordance: the gamepad handler only
+        # self-suppresses for >1 gamepad, so suppress here whenever the unified
+        # count (3D mice + gamepads) exceeds one – e.g. a gamepad paired with a
+        # 3D mouse.
+        slots = self._controller_slots()
+        if not self.marker_cycle_active(slots):
+            gamepad_result.next_marker_pressed = False
+            gamepad_result.prev_marker_pressed = False
+
+        # 3D Mouse (6DOF): consume the latest device snapshot. Button edges fold
+        # into the shared action flags; movement/reset/speed route to the marker
+        # the mouse's unified controller slot drives. Gated on the live enabled flag.
+        if self.app._config.mouse3d.enabled:
+            try:
+                for local_idx, m3d in self.mouse3d_manager.update(dt).items():
+                    self._apply_mouse3d(m3d, local_idx, dt, gamepad_result, slots)
+            except Exception:
+                self._mouse3d_update_err_log.log()
 
         # Mouse marker control glides toward the cursor target every frame so
         # smoothing is independent of pointer-event rate. The handler no-ops
@@ -236,7 +326,7 @@ class InputManager:
 
         # Apply gamepad resets (X button -> configurable default position)
         for controller_idx in gamepad_result.resets:
-            marker_id = self._gamepad_marker_id(controller_idx)
+            marker_id = self._gamepad_marker_id(controller_idx, slots)
             if marker_id is None:
                 continue
             marker = self._get_marker(marker_id)
@@ -254,7 +344,7 @@ class InputManager:
 
         # Apply gamepad movements to corresponding markers
         for controller_idx, (vx, vy, vz) in gamepad_result.movements.items():
-            marker_id = self._gamepad_marker_id(controller_idx)
+            marker_id = self._gamepad_marker_id(controller_idx, slots)
             if marker_id is None:
                 continue
             marker = self._get_marker(marker_id)
@@ -290,24 +380,105 @@ class InputManager:
 
         return gamepad_result
 
+    def _apply_mouse3d(
+        self,
+        m3d: Mouse3DUpdate,
+        local_idx: int,
+        dt: float,
+        gamepad_result: GamepadUpdate,
+        slots: list[tuple[str, int]],
+    ) -> None:
+        """Apply one connected 3D Mouse's frame (``local_idx`` = its device index).
+
+        Discrete button edges fold into the shared :class:`GamepadUpdate` flags
+        so the app's existing dispatch handles them with no second dispatch site.
+        Next/prev cycling is a single-controller affordance, so it only folds
+        when this is the sole controller. Movement, reset and speed target the
+        marker this puck's unified slot drives (the selected marker when it's the
+        only controller, its fixed slot otherwise); the velocity is a unit rate
+        scaled here by the marker's move-speed. ``slots`` is the frame's
+        unified-controller snapshot.
+        """
+        if self.marker_cycle_active(slots):
+            if m3d.next_marker:
+                gamepad_result.next_marker_pressed = True
+            if m3d.prev_marker:
+                gamepad_result.prev_marker_pressed = True
+        if m3d.toggle_help:
+            gamepad_result.toggle_help_pressed = True
+        if m3d.toggle_zones:
+            gamepad_result.toggle_zones_pressed = True
+
+        marker_id = self._controller_marker_id(self._mouse3d_unified_idx(local_idx, slots), slots)
+        if marker_id is None:
+            return
+        marker = self._get_marker(marker_id)
+        if marker is None:
+            return
+        if m3d.reset:
+            marker.set_pos(*self.app._get_default_marker_position())
+        if m3d.speed_steps:
+            direction = 1 if m3d.speed_steps > 0 else -1
+            for _ in range(abs(m3d.speed_steps)):
+                self.app.adjust_move_speed(direction, marker_id=marker_id)
+        vx, vy, vz = m3d.velocity
+        if vx or vy or vz:
+            speed = self.app.get_marker_move_speed(marker_id)
+            x, y, z = marker.pos
+            marker.set_pos(x + vx * speed * dt, y + vy * speed * dt, z + vz * speed * dt)
+        if m3d.fader_signal:
+            # ``fader``-mapped axes integrate into the marker's fader, mirroring
+            # the gamepad marker-fader stick: delta = signal × dt / max_speed_s.
+            # A marker with no provisioned fader is a clean no-op in the bus.
+            bus = self._virtual_faders
+            if bus is not None:
+                max_speed_s = self.app._config.controller.marker_fader_max_speed_s
+                bus.set_marker_fader_from_velocity_delta(marker_id, m3d.fader_signal * dt / max_speed_s)
+
     def get_controller_info(self) -> list[dict[str, Any]]:
+        """Unified controller list (3D mice first, then gamepads) for the HUD
+        marker-card badge, OSC ``:cN``, and web status.
+
+        ``controller_index`` is the shared 0-based unified index (rendered
+        1-based). ``marker_id`` is the marker the controller currently drives,
+        mirroring the routing so the HUD label matches what movement targets.
         """
-        Get controller connection and mapping info for HUD display.
-
-        Returns list of dicts with:
-        - controller_index: int
-        - name: str
-        - connected: bool
-        - marker_id: int or None
-        """
-        info = self.gamepad_handler.get_controller_info()
-
-        # Fill in marker_id mapping – mirrors _gamepad_marker_id so the HUD
-        # label matches the marker that movement/reset actually targets.
-        for item in info:
-            item["marker_id"] = self._gamepad_marker_id(item["controller_index"])
-
-        return info
+        gamepad_info = {int(item["controller_index"]): item for item in self.gamepad_handler.get_controller_info()}
+        out: list[dict[str, Any]] = []
+        slots = self._controller_slots()
+        mouse_devices = self.mouse3d_manager.connected_devices()
+        for unified_idx, (kind, local_idx) in enumerate(slots):
+            marker_id = self._controller_marker_id(unified_idx, slots)
+            if kind == "mouse3d":
+                info = mouse_devices[local_idx] if 0 <= local_idx < len(mouse_devices) else None
+                out.append(
+                    {
+                        "controller_index": unified_idx,
+                        "name": MOUSE3D_NAME,
+                        "connected": True,
+                        "marker_id": marker_id,
+                        "effective_speed": (
+                            self.app.get_marker_move_speed(marker_id) if marker_id is not None else 0.0
+                        ),
+                        "backend": "mouse3d",
+                        "product_name": info.product_name if info is not None else "",
+                        "serial": info.serial if info is not None else "",
+                    }
+                )
+            else:
+                # ``gamepad_info`` and ``slots`` are separate snapshots; a pad
+                # added to ``joysticks`` between the two appears in ``slots`` with
+                # no matching info dict. Default every field the stats consumer
+                # reads unconditionally so the empty-dict race can't KeyError it.
+                item = dict(gamepad_info.get(local_idx, {}))
+                item["controller_index"] = unified_idx
+                item["marker_id"] = marker_id
+                item.setdefault("name", "")
+                item.setdefault("connected", False)
+                item.setdefault("effective_speed", 0.0)
+                item.setdefault("backend", "")
+                out.append(item)
+        return out
 
     def get_marker_gamepad_speeds(self) -> dict[int, float]:
         """
@@ -368,6 +539,20 @@ class InputManager:
                 self.osc_handler = None
         self._rebuild_operator_message_handler()
 
+    def restart_mouse3d(self, config: Mouse3DConfig) -> None:
+        """Live-apply a 3D Mouse config change.
+
+        Swaps the mapping config, then starts or stops the read thread to match
+        ``enabled`` (the device is only read while the feature is on). Movement
+        application is additionally gated on the live ``enabled`` read in
+        :meth:`update`.
+        """
+        self.mouse3d_manager.reload_config(config)
+        if config.enabled:
+            self.mouse3d_manager.start()
+        else:
+            self.mouse3d_manager.stop()
+
     def restart_operator_messages(self) -> None:
         """Re-evaluate the operator-message adapter against current config.
 
@@ -404,6 +589,9 @@ class InputManager:
     def stop(self) -> None:
         """Stop input subsystems and release resources."""
         self.gamepad_handler.stop()
+        # Shutdown: join the worker so the device is released before teardown.
+        # The live-disable path (restart_mouse3d) uses the non-blocking default.
+        self.mouse3d_manager.stop(wait=True)
         self._stop_operator_message_handler()
         if self.osc_handler is not None:
             self.osc_handler.stop()

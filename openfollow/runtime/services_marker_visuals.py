@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy.typing as npt
 
-from openfollow.configuration import GridConfig
+from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, GridConfig
 from openfollow.net_utils import list_iface_ipv4
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
 from openfollow.runtime.overlay_state import (
@@ -638,12 +638,13 @@ def build_marker_visual_state(
         state.button_detection = None
 
     cc = cfg.controller
-    # With ≥2 controllers connected, DPAD next/prev would rotate the
-    # shared ``_selected_id`` across operators. The bindings are
-    # suppressed at the gamepad layer (``GamepadHandler.update``) AND
-    # hidden from the help overlay so the operator isn't promised a
-    # no-op control. Single-gamepad keeps the full label set.
-    joystick_count = len(app._input_manager.gamepad_handler.joysticks) if app._input_manager is not None else 0
+    # Marker next/prev cycling rotates the shared ``_selected_id``. With ≥2
+    # controllers connected (gamepads + 3D mice, the unified slot space), the
+    # InputManager suppresses the cycling action so operators don't fight over
+    # the selection; mirror that by hiding the next/prev rows from the gamepad
+    # and 3D mouse help so neither promises a no-op control. Read the same
+    # predicate the action gate uses so the help and the action can't drift.
+    state.marker_cycle_enabled = app._input_manager is None or app._input_manager.marker_cycle_active()
     state.button_labels = {
         "reset": cc.btn_reset,
         "toggle_help": cc.btn_toggle_help,
@@ -652,14 +653,8 @@ def build_marker_visual_state(
         "speed_up": cc.btn_speed_up,
         "move_z_down": cc.btn_move_z_down,
         "move_z_up": cc.btn_move_z_up,
-        **(
-            {
-                "next_marker": cc.btn_next_marker,
-                "prev_marker": cc.btn_prev_marker,
-            }
-            if joystick_count <= 1
-            else {}
-        ),
+        "next_marker": cc.btn_next_marker,
+        "prev_marker": cc.btn_prev_marker,
         "settings": cc.btn_settings,
         "menu_confirm": cc.btn_menu_confirm,
         "menu_cancel": cc.btn_menu_cancel,
@@ -681,7 +676,12 @@ def build_marker_visual_state(
 
     _populate_zone_overlay(state, cfg, app)
 
-    state.controller_connected = cfg.controller.enabled and any(bool(info["connected"]) for info in controller_info)
+    # Only a gamepad lights the gamepad help section / status: a 3D mouse is a
+    # unified controller (it gets a card badge) but has its own help section, so
+    # its presence must not advertise gamepad-only controls.
+    state.controller_connected = cfg.controller.enabled and any(
+        bool(info["connected"]) for info in controller_info if info.get("backend") != "mouse3d"
+    )
     # Connected pads that map to no marker (more pads than
     # ``controlled_marker_ids``) are surfaced in the Settings menu's info
     # card; there is no bottom-center status panel.
@@ -697,6 +697,20 @@ def build_marker_visual_state(
     )
     state.mouse_enabled = cfg.controller.mouse_enabled
     state.mouse_double_click_reset = cfg.controller.mouse_double_click_reset
+    # 3D Mouse help: show its axis / button bindings when the feature is enabled
+    # and a device is actually connected (mirrors the gamepad-connected gate).
+    # The maps are only read by the help overlay (gated on mouse3d_connected), so
+    # skip building them every frame on the common feature-off path.
+    m3d_cfg = cfg.mouse3d
+    state.mouse3d_connected = bool(
+        m3d_cfg.enabled and app._input_manager is not None and app._input_manager.mouse3d_manager.connected
+    )
+    if state.mouse3d_connected:
+        state.mouse3d_axis_map = {axis: getattr(m3d_cfg, f"map_{axis}") for axis in MOUSE3D_AXES}
+        state.mouse3d_buttons = {name[4:]: getattr(m3d_cfg, name) for name in MOUSE3D_BUTTON_FIELDS}
+    else:
+        state.mouse3d_axis_map = {}
+        state.mouse3d_buttons = {}
     state.show_hud_help = app._show_hud_help
 
     # Virtual fader stack. Read from the running bus and surface only the

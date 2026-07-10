@@ -83,6 +83,7 @@
     % include('partials/gamepad.tpl', config=config, saved=False, button_names=button_names)
     % include('partials/keyboard.tpl', config=config, saved=False)
     % include('partials/mouse.tpl', config=config, saved=False)
+    % include('partials/mouse3d.tpl', config=config, saved=False)
     % include('partials/osc.tpl', config=config, saved=False)
     % include('partials/operator_messages.tpl', config=config, saved=False)
     % # MIDI page: Devices and Virtual Faders sections. Config constants

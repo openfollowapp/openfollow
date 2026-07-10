@@ -74,32 +74,28 @@ class _FakePsnReceiver:
         return bool(self._online.get(tid, True))
 
 
-class _FakeGamepadHandlerShim:
-    """Carries ``joysticks`` for the multi-pad help-label gate."""
-
-    def __init__(self, joystick_count: int = 0) -> None:
-        self.joysticks = {idx: object() for idx in range(joystick_count)}
-
-
 class _FakeInputManager:
     def __init__(
         self,
         marker_speeds: dict[int, float] | None = None,
         controller_info: list[dict] | None = None,
         keyboard_connected: bool = False,
-        joystick_count: int = 0,
+        mouse3d_connected: bool = False,
     ) -> None:
         self._marker_speeds = marker_speeds or {}
         self._controller_info = controller_info or []
         self._kbd_connected = keyboard_connected
-        # Joystick count gates next/prev help labels in multi-pad mode.
-        self.gamepad_handler = _FakeGamepadHandlerShim(joystick_count)
+        self.mouse3d_manager = SimpleNamespace(connected=mouse3d_connected)
 
     def get_marker_gamepad_speeds(self) -> dict[int, float]:
         return dict(self._marker_speeds)
 
     def get_controller_info(self) -> list[dict]:
         return list(self._controller_info)
+
+    def marker_cycle_active(self) -> bool:
+        # Mirrors InputManager: one entry per unified controller slot.
+        return len(self._controller_info) <= 1
 
     def is_keyboard_connected(self) -> bool:
         return self._kbd_connected
@@ -753,6 +749,90 @@ class TestInputFlags:
         state = _build(app, pool)
         assert state.controller_connected is False
 
+    def test_3d_mouse_alone_does_not_report_controller_connected(self, pool: OverlayStatePool) -> None:
+        # A connected 3D mouse is a unified controller (it gets a card badge) but
+        # has its own help section; it must NOT light the gamepad help/status,
+        # which advertises L-Stick / DPAD / bumper controls a puck doesn't have.
+        mgr = _FakeInputManager(
+            controller_info=[
+                {
+                    "connected": True,
+                    "marker_id": None,
+                    "name": "3D Mouse",
+                    "controller_index": 0,
+                    "effective_speed": 0.0,
+                    "backend": "mouse3d",
+                },
+            ]
+        )
+        app = _build_app(input_manager=mgr)
+        app._config.controller.enabled = True
+        state = _build(app, pool)
+        assert state.controller_connected is False
+
+    def test_gamepad_alongside_3d_mouse_still_reports_connected(self, pool: OverlayStatePool) -> None:
+        mgr = _FakeInputManager(
+            controller_info=[
+                {
+                    "connected": True,
+                    "marker_id": None,
+                    "name": "3D Mouse",
+                    "controller_index": 0,
+                    "effective_speed": 0.0,
+                    "backend": "mouse3d",
+                },
+                {
+                    "connected": True,
+                    "marker_id": 1,
+                    "name": "Pad",
+                    "controller_index": 1,
+                    "effective_speed": 1.0,
+                    "backend": "pygame",
+                },
+            ]
+        )
+        app = _build_app(input_manager=mgr)
+        app._config.controller.enabled = True
+        state = _build(app, pool)
+        assert state.controller_connected is True
+
+
+class TestMouse3dHelpBindings:
+    """The HUD help overlay surfaces the 3D mouse axis / button map."""
+
+    def test_populated_when_enabled_and_connected(self, pool: OverlayStatePool) -> None:
+        mgr = _FakeInputManager(mouse3d_connected=True)
+        app = _build_app(input_manager=mgr)
+        app._config.mouse3d.enabled = True
+        state = _build(app, pool)
+        assert state.mouse3d_connected is True
+        # Axis map mirrors the per-axis targets from config (tuned defaults).
+        assert state.mouse3d_axis_map["pan_x"] == "x"
+        assert state.mouse3d_axis_map["yaw"] == "speed"
+        # Button map drops the ``btn_`` prefix and carries the raw index.
+        assert state.mouse3d_buttons["next_marker"] == 0
+        assert state.mouse3d_buttons["prev_marker"] == 1
+
+    def test_off_when_feature_disabled(self, pool: OverlayStatePool) -> None:
+        mgr = _FakeInputManager(mouse3d_connected=True)
+        app = _build_app(input_manager=mgr)
+        app._config.mouse3d.enabled = False
+        state = _build(app, pool)
+        assert state.mouse3d_connected is False
+
+    def test_off_when_device_disconnected(self, pool: OverlayStatePool) -> None:
+        mgr = _FakeInputManager(mouse3d_connected=False)
+        app = _build_app(input_manager=mgr)
+        app._config.mouse3d.enabled = True
+        state = _build(app, pool)
+        assert state.mouse3d_connected is False
+
+    def test_off_without_input_manager(self, pool: OverlayStatePool) -> None:
+        app = _build_app(input_manager=None)
+        app._config.mouse3d.enabled = True
+        state = _build(app, pool)
+        assert state.mouse3d_connected is False
+
 
 # --------------------------------------------------------------------------- #
 # Controller binding stamped on marker cards + unbound list + HUD help flag
@@ -1130,32 +1210,59 @@ class TestStatusFlagsSnapshot:
         assert state.status_flags == []
 
 
-class TestMultiPadHelpLabels:
-    """DPAD next/prev is hidden in multi-pad mode."""
+def _controller_entry(unified_idx: int, *, name: str = "Pad", connected: bool = True) -> dict:
+    """A unified controller-info entry as ``get_controller_info`` returns."""
+    return {
+        "controller_index": unified_idx,
+        "name": name,
+        "connected": connected,
+        "marker_id": None,
+        "effective_speed": 1.0,
+        "backend": "pygame",
+    }
 
-    def test_single_gamepad_button_labels_include_next_prev(self, pool: OverlayStatePool) -> None:
-        app = _build_app(
-            input_manager=_FakeInputManager(joystick_count=1),
-        )
+
+class TestMultiControllerMarkerCycle:
+    """Marker next/prev cycling is hidden when ≥2 controllers (gamepads +
+    3D mice, the unified slot space) are connected."""
+
+    def test_single_controller_enables_cycle(self, pool: OverlayStatePool) -> None:
+        app = _build_app(input_manager=_FakeInputManager(controller_info=[_controller_entry(0)]))
         state = _build(app, pool)
+        assert state.marker_cycle_enabled is True
+        # The bindings stay in the label dicts; only the help row is gated.
         assert "next_marker" in state.button_labels
         assert "prev_marker" in state.button_labels
 
-    def test_multi_gamepad_button_labels_omit_next_prev(self, pool: OverlayStatePool) -> None:
+    def test_two_gamepads_disable_cycle(self, pool: OverlayStatePool) -> None:
         app = _build_app(
-            input_manager=_FakeInputManager(joystick_count=2),
+            input_manager=_FakeInputManager(
+                controller_info=[_controller_entry(0), _controller_entry(1)],
+            )
         )
         state = _build(app, pool)
-        assert "next_marker" not in state.button_labels
-        assert "prev_marker" not in state.button_labels
+        assert state.marker_cycle_enabled is False
 
-    def test_no_input_manager_includes_next_prev(self, pool: OverlayStatePool) -> None:
-        """No input manager (early startup) keeps the legacy labels –
-        gate logic uses ``<= 1`` so 0 joysticks behaves like single-pad."""
+    def test_gamepad_plus_3d_mouse_disables_cycle(self, pool: OverlayStatePool) -> None:
+        """A 3D mouse paired with a gamepad is two unified controllers, so
+        cycling is suppressed for both – the cross-type case."""
+        app = _build_app(
+            input_manager=_FakeInputManager(
+                controller_info=[
+                    _controller_entry(0, name="3D Mouse"),
+                    _controller_entry(1),
+                ],
+            )
+        )
+        state = _build(app, pool)
+        assert state.marker_cycle_enabled is False
+
+    def test_no_input_manager_enables_cycle(self, pool: OverlayStatePool) -> None:
+        """No input manager (early startup) keeps cycling enabled – zero
+        controllers behaves like a single controller (``<= 1``)."""
         app = _build_app(input_manager=None)
         state = _build(app, pool)
-        assert "next_marker" in state.button_labels
-        assert "prev_marker" in state.button_labels
+        assert state.marker_cycle_enabled is True
 
 
 # --------------------------------------------------------------------------- #

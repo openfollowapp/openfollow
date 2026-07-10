@@ -124,6 +124,113 @@ def test_build_help_sections_mouse_omits_scroll_z_when_unavailable() -> None:
     assert any("Move: Set X/Y position" in line for line in mouse)  # other lines remain
 
 
+def test_build_help_sections_mouse3d_shows_axis_and_button_bindings() -> None:
+    sections = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=False,
+            controller_connected=False,
+            mouse3d_connected=True,
+            mouse3d_axis_map={
+                "pan_x": "x",
+                "pan_y": "y",
+                "lift": "z",
+                "pitch": "none",
+                "yaw": "speed",
+                "roll": "fader",
+            },
+            mouse3d_buttons={"next_marker": 0, "prev_marker": 1, "reset": -1},
+        )
+    )
+    assert "3D Mouse" in sections
+    lines = sections["3D Mouse"]
+    # Axis labels use the gesture vocabulary (matches the 3Dconnexion manual).
+    assert "Push L/R: Move X" in lines
+    assert "Pull up/down: Move Z" in lines
+    assert "Twist: Speed" in lines
+    assert "Tilt L/R: Fader" in lines
+    assert "Btn 0: Marker next" in lines
+    assert "Btn 1: Marker prev" in lines
+    # "none"-mapped axis (pitch) and an unbound (-1) button are omitted.
+    assert not any("Tilt fwd/back" in line for line in lines)
+    assert not any("Reset" in line for line in lines)
+
+
+def test_build_help_sections_mouse3d_omitted_when_disconnected() -> None:
+    sections = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=False,
+            controller_connected=False,
+            mouse3d_connected=False,
+            mouse3d_axis_map={"pan_x": "x"},
+            mouse3d_buttons={"reset": 0},
+        )
+    )
+    assert "3D Mouse" not in sections
+
+
+def test_build_help_sections_mouse3d_hides_marker_cycle_in_multi_controller() -> None:
+    """With ≥2 controllers the cycling action is suppressed, so the 3D mouse
+    next/prev rows are hidden while its other button rows stay."""
+    sections = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=False,
+            controller_connected=False,
+            mouse3d_connected=True,
+            mouse3d_axis_map={"pan_x": "x"},
+            mouse3d_buttons={"next_marker": 0, "prev_marker": 1, "reset": 2},
+            marker_cycle_enabled=False,
+        )
+    )
+    lines = sections["3D Mouse"]
+    assert "Push L/R: Move X" in lines
+    assert "Btn 2: Reset marker" in lines
+    assert not any("Marker next" in line or "Marker prev" in line for line in lines)
+
+
+def test_build_help_sections_controller_hides_marker_cycle_in_multi_controller() -> None:
+    """The gamepad next/prev row is hidden when cycling is suppressed, while
+    the rest of the controller help is unchanged."""
+    sections = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=False,
+            controller_connected=True,
+            button_labels={
+                "move_xy_stick": "left",
+                "next_marker": "DPAD_RIGHT",
+                "prev_marker": "DPAD_LEFT",
+                "reset": "X",
+            },
+            marker_cycle_enabled=False,
+        )
+    )
+    controller = sections["Controller"]
+    assert any("Move X/Y" in line for line in controller)
+    assert any("Reset marker" in line for line in controller)
+    assert not any("Marker next" in line or "Marker prev" in line for line in controller)
+
+
+def test_build_help_sections_controller_shows_marker_cycle_when_single_controller() -> None:
+    """A lone controller keeps the next/prev cycle row (default flag)."""
+    sections = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=False,
+            controller_connected=True,
+            button_labels={
+                "move_xy_stick": "left",
+                "next_marker": "DPAD_RIGHT",
+                "prev_marker": "DPAD_LEFT",
+            },
+        )
+    )
+    controller = sections["Controller"]
+    assert any("Marker next/prev" in line for line in controller)
+
+
 def test_build_help_sections_reflects_keyboard_labels() -> None:
     sections = build_help_sections(
         mode="normal",

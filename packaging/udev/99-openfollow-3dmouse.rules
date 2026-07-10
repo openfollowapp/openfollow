@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+#
+# Grant the OpenFollow service user (member of the plugdev group) access to a
+# 3D Mouse (3Dconnexion 6DOF) HID device. On Debian, hidraw nodes are
+# root-only (0600) by default and the device is tagged "seat" but not
+# "uaccess", so logind's seat ACL does not grant the active user access -- a
+# rule is required.
+#
+# 3Dconnexion units appear under the legacy Logitech vendor 046d (product range
+# c6xx; narrowed so generic Logitech mice/keyboards sharing 046d are not
+# matched) and under the current 3Dconnexion vendor 256f. This VID set is
+# co-extensive with what pyspacemouse supports.
+KERNEL=="hidraw*", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c6[0-9a-f][0-9a-f]", GROUP="plugdev", MODE="0660"
+KERNEL=="hidraw*", ATTRS{idVendor}=="256f", GROUP="plugdev", MODE="0660"

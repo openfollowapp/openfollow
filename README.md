@@ -534,8 +534,11 @@ Use this only if you can’t (or don’t want to) use Ansible.
      gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
      gstreamer1.0-libav gstreamer1.0-libcamera gstreamer1.0-gtk3 \
      cage seatd kanshi \
-     libcairo2-dev libgirepository-2.0-dev
+     libcairo2-dev libgirepository-2.0-dev \
+     libhidapi-hidraw0
    ```
+
+   > ``libhidapi-hidraw0`` is the HID backend for the optional **3D Mouse** (3Dconnexion 6DOF) input. The device is off by default; to use it, the OpenFollow service user must be in the ``plugdev`` group and the udev rule ``packaging/udev/99-openfollow-3dmouse.rules`` must be installed to ``/lib/udev/rules.d/`` (then ``sudo udevadm control --reload && sudo udevadm trigger``) so the ``/dev/hidraw*`` node is group-accessible. The ``.deb`` / image install does this automatically; for a source install, copy the rule yourself. On macOS for development, ``brew install hidapi``.
 
    > ``gir1.2-webkit2-4.1`` powers the on-device "Open Web UI" Settings menu item (issue #184 PR 4). On older Debian / Raspberry Pi OS releases the package is named ``gir1.2-webkit2-4.0`` instead – either works, the runtime tries 4.1 first and falls back to 4.0. If neither is installed the menu item disables itself and the rest of the app continues normally.
 

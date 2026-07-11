@@ -743,6 +743,19 @@ class TestLoader:
         assert loaded[0].template is None
         assert "nesting too deep" in loaded[0].error
 
+    def test_utf8_bom_file_loads(self, tmp_path: Path) -> None:
+        # A file authored by a BOM-adding editor (leading EF BB BF) is a
+        # valid template and must load, not surface as an encoding error.
+        user = tmp_path / "user"
+        user.mkdir()
+        body = json.dumps(_envelope(name="Bommed")).encode("utf-8")
+        (user / f"osc_output.bom{TEMPLATE_FILE_SUFFIX}").write_bytes(b"\xef\xbb\xbf" + body)
+        loaded = list_templates(tmp_path)
+        assert len(loaded) == 1
+        assert loaded[0].error == ""
+        assert loaded[0].template is not None
+        assert loaded[0].template.name == "Bommed"
+
     def test_non_utf8_file_surfaces_as_error(self, tmp_path: Path) -> None:
         # A file saved in a non-UTF-8 encoding raises UnicodeDecodeError,
         # which is not an OSError. It must surface as a per-entry error

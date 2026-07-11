@@ -1320,6 +1320,15 @@ class TestImport:
         assert status == 400
         assert "nesting too deep" in json.loads(body)["error"].lower()
 
+    def test_import_utf8_bom_accepted(self, live_server) -> None:
+        # A BOM-prefixed (EF BB BF) but otherwise valid template imports
+        # cleanly instead of being rejected over the invisible prefix.
+        _, base, _ = live_server
+        body = b"\xef\xbb\xbf" + _osc_envelope_bytes(name="Bommed")
+        status, resp = _post_raw(base, "/api/templates/import?filename=x.oftemplate", body)
+        assert status == 200, resp
+        assert json.loads(resp)["ok"] is True
+
     def test_import_bad_payload_400(self, live_server) -> None:
         _, base, _ = live_server
         bad = json.dumps({"version": 1, "type": "osc_output", "name": "Bad", "payload": {"args": []}}).encode()

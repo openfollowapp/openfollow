@@ -6422,7 +6422,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return json.dumps({"error": f"File too large (max {_MAX_TEMPLATE_UPLOAD_BYTES // 1024} KB)."})
         raw = request.environ["wsgi.input"].read(total)
         try:
-            data = json.loads(raw.decode("utf-8"))
+            # ``utf-8-sig`` strips a leading BOM (editors on Windows add one)
+            # so a byte-for-byte valid template isn't rejected over an invisible
+            # prefix; a BOM-less file decodes identically.
+            data = json.loads(raw.decode("utf-8-sig"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             response.status = 400
             return json.dumps({"error": f"Not a valid template file: {exc}"})

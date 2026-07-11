@@ -39,7 +39,9 @@ class LoadedTemplate:
 def _load_one(path: Path, *, is_system: bool) -> LoadedTemplate:
     """Read one .oftemplate file. Never raises – errors are returned in LoadedTemplate."""
     try:
-        raw = path.read_text(encoding="utf-8")
+        # ``utf-8-sig`` transparently strips a leading BOM so a file authored
+        # by a BOM-adding editor still loads; a BOM-less file is unaffected.
+        raw = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as exc:
         msg = f"not valid UTF-8: {exc.reason}"
         logger.warning("template %s: %s", path, msg)

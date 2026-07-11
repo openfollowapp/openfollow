@@ -1311,6 +1311,15 @@ class TestImport:
         assert status == 400
         assert "JSON object" in json.loads(body)["error"]
 
+    def test_import_deeply_nested_json_400_not_500(self, live_server) -> None:
+        # Deeply-nested JSON (well under the size cap) exhausts the decoder's
+        # recursion; it must be rejected as bad input (400), not crash to 500.
+        _, base, _ = live_server
+        bomb = ("[" * 100_000 + "]" * 100_000).encode()
+        status, body = _post_raw(base, "/api/templates/import?filename=x.oftemplate", bomb)
+        assert status == 400
+        assert "nesting too deep" in json.loads(body)["error"].lower()
+
     def test_import_bad_payload_400(self, live_server) -> None:
         _, base, _ = live_server
         bad = json.dumps({"version": 1, "type": "osc_output", "name": "Bad", "payload": {"args": []}}).encode()

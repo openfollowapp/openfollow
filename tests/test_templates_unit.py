@@ -729,6 +729,20 @@ class TestLoader:
         assert loaded[0].template is None
         assert "invalid JSON" in loaded[0].error
 
+    def test_deeply_nested_json_surfaces_as_error(self, tmp_path: Path) -> None:
+        # Deeply-nested JSON exhausts the decoder's recursion (raising
+        # RecursionError, not JSONDecodeError). It must surface as a
+        # per-entry error, not propagate out of ``list_templates`` and
+        # break the whole chooser.
+        user = tmp_path / "user"
+        user.mkdir()
+        bomb = "[" * 100_000 + "]" * 100_000
+        (user / f"osc_output.bomb{TEMPLATE_FILE_SUFFIX}").write_text(bomb)
+        loaded = list_templates(tmp_path)
+        assert len(loaded) == 1
+        assert loaded[0].template is None
+        assert "nesting too deep" in loaded[0].error
+
     def test_non_utf8_file_surfaces_as_error(self, tmp_path: Path) -> None:
         # A file saved in a non-UTF-8 encoding raises UnicodeDecodeError,
         # which is not an OSError. It must surface as a per-entry error

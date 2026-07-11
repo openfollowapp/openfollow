@@ -73,6 +73,19 @@ def _load_one(path: Path, *, is_system: bool) -> LoadedTemplate:
             template=None,
             error=msg,
         )
+    # Deeply-nested JSON exhausts the C decoder's recursion before it can
+    # raise JSONDecodeError; keep the "never raises" contract so one crafted
+    # file can't take down the whole listing.
+    except RecursionError:
+        msg = "invalid JSON: nesting too deep"
+        logger.warning("template %s: %s", path, msg)
+        return LoadedTemplate(
+            path=path,
+            filename=path.name,
+            is_system=is_system,
+            template=None,
+            error=msg,
+        )
     if not isinstance(data, dict):
         msg = f"top-level JSON value must be object, got {type(data).__name__}"
         logger.warning("template %s: %s", path, msg)

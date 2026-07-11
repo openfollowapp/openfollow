@@ -6426,6 +6426,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             response.status = 400
             return json.dumps({"error": f"Not a valid template file: {exc}"})
+        # Deeply-nested JSON exhausts the decoder's recursion instead of
+        # raising JSONDecodeError; treat it as bad input (400), not a 500.
+        except RecursionError:
+            response.status = 400
+            return json.dumps({"error": "Not a valid template file: nesting too deep."})
         if not isinstance(data, dict):
             response.status = 400
             return json.dumps({"error": "Template file must contain a JSON object."})

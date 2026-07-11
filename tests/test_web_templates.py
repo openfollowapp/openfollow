@@ -1285,9 +1285,12 @@ class TestExport:
         with urllib.request.urlopen(f"{base}/", timeout=5) as r:
             html = r.read().decode()
         assert "function onExportClick" in html
-        handler = html[html.index("function onExportClick") :][:1000]
+        handler = html[html.index("function onExportClick") :][:1200]
         assert "fetch(" in handler
         assert "res.ok" in handler
+        # Download name comes from the server's (sanitised) Content-Disposition,
+        # not the raw on-disk basename.
+        assert "Content-Disposition" in handler
 
 
 # ---------------------------------------------------------------------------

@@ -2647,12 +2647,17 @@
  showToast(msg);
  return;
  }
- // Offer a legacy-suffixed file under the canonical extension, matching
- // the server's Content-Disposition remap.
+ // Prefer the server's Content-Disposition filename: it is already
+ // sanitised (an unsafe on-disk basename can't slip into the saved name)
+ // and remapped to the canonical suffix. Fall back to a client-side
+ // legacy-suffix rewrite only if the header is missing.
  let dl = tpl.filename;
  if (dl.endsWith('.openfollowtemplate')) {
  dl = dl.slice(0, -'.openfollowtemplate'.length) + '.oftemplate';
  }
+ const cd = res.headers.get('Content-Disposition') || '';
+ const m = cd.match(/filename="([^"]+)"/);
+ if (m) dl = m[1];
  const url = URL.createObjectURL(await res.blob());
  const a = document.createElement('a');
  a.href = url;

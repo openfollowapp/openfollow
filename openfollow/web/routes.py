@@ -6459,6 +6459,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if not isinstance(data, dict):
             response.status = 400
             return json.dumps({"error": "Template file must contain a JSON object."})
+        # Imports always land in ``user/``, so the folder (not the file) is the
+        # provenance authority - mirror the disk loader and coerce before
+        # validating, so a stray non-bool ``is_system`` doesn't reject a file
+        # that would load cleanly off disk.
+        data["is_system"] = False
         try:
             tpl = parse_envelope(data)
         except TemplateValidationError as exc:

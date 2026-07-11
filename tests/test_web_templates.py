@@ -1387,6 +1387,16 @@ class TestImport:
         assert "trigger.kind" in err
         assert "update OpenFollow" not in err
 
+    def test_import_non_bool_is_system_coerced(self, live_server) -> None:
+        # A hand-authored file with a non-bool is_system loads fine off disk
+        # (the folder is the provenance authority); import must coerce it the
+        # same way, not reject it - matching the "same validation" contract.
+        _, base, _ = live_server
+        body = _osc_envelope_bytes(name="Handmade", is_system=1)
+        status, resp = _post_raw(base, "/api/templates/import?filename=x.oftemplate", body)
+        assert status == 200, resp
+        assert json.loads(resp)["ok"] is True
+
     def test_import_error_unparseable_app_version_no_skew(self, live_server) -> None:
         # A non-PEP440 app_version can't be compared, so no skew note is
         # appended – the raw validation error stands on its own.

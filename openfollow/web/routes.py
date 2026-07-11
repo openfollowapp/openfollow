@@ -6479,7 +6479,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             )
         # parse_envelope already validated the payload, so a write failure
         # here is an OS-level fault (read-only mount / perms), not bad input.
-        except (TemplateValidationError, TemplateWriteError) as exc:  # pragma: no cover
+        except (TemplateValidationError, TemplateWriteError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
         # ``written_path.name`` is the disambiguated on-disk filename; type and

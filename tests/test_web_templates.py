@@ -26,7 +26,7 @@ from openfollow.configuration import (
 )
 from openfollow.templates import TEMPLATE_VERSION
 from openfollow.templates.loader import list_templates_by_type
-from openfollow.templates.writer import write_user_template
+from openfollow.templates.writer import TemplateWriteError, write_user_template
 from openfollow.web.server import ConfigWebServer
 
 pytestmark = pytest.mark.integration
@@ -1396,6 +1396,19 @@ class TestImport:
         status, resp = _post_raw(base, "/api/templates/import?filename=x.oftemplate", body)
         assert status == 200, resp
         assert json.loads(resp)["ok"] is True
+
+    def test_import_write_failure_returns_400(self, live_server, monkeypatch) -> None:
+        # A valid envelope that then fails to write (read-only mount / perms)
+        # surfaces as a 400 with the writer's message, not a 500.
+        _, base, _ = live_server
+
+        def _boom(*args: Any, **kwargs: Any) -> Any:
+            raise TemplateWriteError("read-only file system")
+
+        monkeypatch.setattr("openfollow.web.routes.write_user_template", _boom)
+        status, body = _post_raw(base, "/api/templates/import?filename=x.oftemplate", _osc_envelope_bytes())
+        assert status == 400
+        assert "read-only file system" in json.loads(body)["error"]
 
     def test_import_error_unparseable_app_version_no_skew(self, live_server) -> None:
         # A non-PEP440 app_version can't be compared, so no skew note is

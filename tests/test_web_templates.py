@@ -1275,6 +1275,20 @@ class TestExport:
         assert "osc_output.old.oftemplate" in headers.get("Content-Disposition", "")
         assert json.loads(raw.decode())["name"] == "Old One"
 
+    def test_export_handler_checks_status_before_download(self, live_server) -> None:
+        # Regression: the client-side export handler must fetch and gate on
+        # ``res.ok`` before downloading, so a 404/400 (template deleted or
+        # undecodable since the list rendered) toasts instead of saving the
+        # error body as a bogus ``.oftemplate``. A bare ``<a download>``
+        # navigation can't tell success from failure.
+        _, base, _ = live_server
+        with urllib.request.urlopen(f"{base}/", timeout=5) as r:
+            html = r.read().decode()
+        assert "function onExportClick" in html
+        handler = html[html.index("function onExportClick") :][:1000]
+        assert "fetch(" in handler
+        assert "res.ok" in handler
+
 
 # ---------------------------------------------------------------------------
 # POST /api/templates/import

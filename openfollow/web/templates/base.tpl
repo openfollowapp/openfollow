@@ -2633,17 +2633,37 @@
  showToast('Delete failed: ' + (err.message || 'unknown error'));
  }
  }
- function onExportClick(tpl) {
- // The export route sets a ``Content-Disposition: attachment``
- // header, so navigating to it downloads the file without leaving
- // the page. A transient ``<a download>`` keeps the user-gesture
- // so a pop-up blocker doesn't swallow it.
+ async function onExportClick(tpl) {
+ // Fetch first and check the status: if the template was deleted or
+ // became undecodable since the list rendered, the route returns
+ // 404/400 with a JSON error. A bare ``<a download>`` navigation would
+ // save that error body as a bogus ``.oftemplate`` with no feedback, so
+ // download only a 2xx body (from a Blob) and toast otherwise.
+ try {
+ const res = await fetch('/api/templates/' + encodeURIComponent(tpl.filename) + '/export');
+ if (!res.ok) {
+ let msg = 'Export failed (HTTP ' + res.status + ')';
+ try { const d = await res.json(); if (d && d.error) msg = d.error; } catch (_) {}
+ showToast(msg);
+ return;
+ }
+ // Offer a legacy-suffixed file under the canonical extension, matching
+ // the server's Content-Disposition remap.
+ let dl = tpl.filename;
+ if (dl.endsWith('.openfollowtemplate')) {
+ dl = dl.slice(0, -'.openfollowtemplate'.length) + '.oftemplate';
+ }
+ const url = URL.createObjectURL(await res.blob());
  const a = document.createElement('a');
- a.href = '/api/templates/' + encodeURIComponent(tpl.filename) + '/export';
- a.download = '';
+ a.href = url;
+ a.download = dl;
  document.body.appendChild(a);
  a.click();
  a.remove();
+ URL.revokeObjectURL(url);
+ } catch (err) {
+ showToast('Export failed: ' + (err.message || 'unknown error'));
+ }
  }
  async function onImportClick() {
  // Pick a single ``.oftemplate`` and POST its raw bytes. The

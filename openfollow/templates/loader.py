@@ -224,7 +224,13 @@ def find_template(
     system copy specifically.
     """
     for subdir, is_system in (("user", False), ("system", True)):
+        folder = (templates_root / subdir).resolve()
         path = templates_root / subdir / filename
+        # Reject a name that resolves outside its folder – a ``..`` traversal
+        # or a symlink pointing elsewhere – so export/apply can't be tricked
+        # into reading an arbitrary file. Mirrors delete_user_template's guard.
+        if path.resolve().parent != folder:
+            continue
         if path.is_file():
             return _load_one(path, is_system=is_system)
     return None

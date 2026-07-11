@@ -872,6 +872,18 @@ class TestLoader:
     def test_find_returns_none_for_missing(self, tmp_path: Path) -> None:
         assert find_template(tmp_path, "nope.oftemplate") is None
 
+    def test_find_rejects_symlink_escaping_folder(self, tmp_path: Path) -> None:
+        # A symlink in the templates folder pointing outside must not be
+        # followed - export/apply read through find_template, so this would
+        # otherwise stream an arbitrary file. Mirrors delete's containment guard.
+        user = tmp_path / "user"
+        user.mkdir()
+        outside = tmp_path / "secret.json"
+        outside.write_text(json.dumps(_envelope(name="Secret")))
+        link = user / f"osc_output.evil{TEMPLATE_FILE_SUFFIX}"
+        link.symlink_to(outside)
+        assert find_template(tmp_path, f"osc_output.evil{TEMPLATE_FILE_SUFFIX}") is None
+
     def test_find_prefers_user_over_system_on_basename_collision(
         self,
         tmp_path: Path,

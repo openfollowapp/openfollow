@@ -12,6 +12,9 @@ from typing import Any
 TEMPLATE_VERSION: int = 1  # bumped only for breaking format changes
 TEMPLATE_FILE_SUFFIX: str = ".oftemplate"  # canonical filename suffix
 TEMPLATE_LEGACY_SUFFIX: str = ".openfollowtemplate"  # still read on disk; never written
+# Every suffix read off disk / accepted on import. Single source of truth so a
+# site that reads templates can't drift from the set the loader globs.
+TEMPLATE_READ_SUFFIXES: tuple[str, ...] = (TEMPLATE_FILE_SUFFIX, TEMPLATE_LEGACY_SUFFIX)
 VALID_TYPES: tuple[str, ...] = (
     "osc_output",
     "camera_grid",

@@ -8,7 +8,7 @@ import importlib.resources as resources
 import logging
 from pathlib import Path
 
-from openfollow.templates.schema import TEMPLATE_FILE_SUFFIX, TEMPLATE_LEGACY_SUFFIX
+from openfollow.templates.schema import TEMPLATE_FILE_SUFFIX, TEMPLATE_READ_SUFFIXES
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +58,7 @@ def seed_system_templates(templates_root: Path) -> int:
     # old-suffix copy behind; foreign files an operator placed in
     # ``system/`` are left alone.
     pruned = 0
-    stale_paths = {
-        p for suffix in (TEMPLATE_FILE_SUFFIX, TEMPLATE_LEGACY_SUFFIX) for p in target_dir.glob(f"*{suffix}")
-    }
+    stale_paths = {p for suffix in TEMPLATE_READ_SUFFIXES for p in target_dir.glob(f"*{suffix}")}
     for path in sorted(stale_paths):
         if path.name in bundled_names:
             continue

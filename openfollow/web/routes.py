@@ -70,6 +70,7 @@ from openfollow.network.validate import parse_prefix, validate_apply
 from openfollow.templates import (
     TEMPLATE_FILE_SUFFIX,
     TEMPLATE_LEGACY_SUFFIX,
+    TEMPLATE_READ_SUFFIXES,
     TemplateValidationError,
 )
 from openfollow.templates import (
@@ -144,11 +145,22 @@ def _is_safe_template_filename(filename: str) -> bool:
         return False
     if filename in (".", "..") or filename.startswith("."):
         return False
-    if not filename.endswith((TEMPLATE_FILE_SUFFIX, TEMPLATE_LEGACY_SUFFIX)):
+    if not filename.endswith(TEMPLATE_READ_SUFFIXES):
         return False
     # Reject ``..`` substring; the legal single-dot separators
     # (``osc_output.my-cue.oftemplate``) still pass.
     return ".." not in filename
+
+
+def _safe_content_disposition_name(name: str, *, allow_dot: bool = False) -> str:
+    """Sanitise a name for the quoted ``Content-Disposition`` filename value.
+
+    Maps anything outside ``[A-Za-z0-9_-]`` (plus ``.`` when ``allow_dot`` so a
+    file extension survives) to ``-``, so a stray quote / CR-LF can't break out
+    of the header. Shared by the template and config export routes.
+    """
+    pattern = r"[^A-Za-z0-9._-]" if allow_dot else r"[^A-Za-z0-9_-]"
+    return re.sub(pattern, "-", name)
 
 
 # Serializes read-modify-write transactions against the on-disk config.
@@ -6033,6 +6045,23 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return False
         return True
 
+    def _resolve_or_respond(filename: str) -> LoadedTemplate | str:
+        """Shared preamble for the by-filename template routes.
+
+        Sets ``content_type`` and validates the basename + existence. Returns
+        the :class:`LoadedTemplate` when the file resolves, or the JSON error
+        body to return (with ``response.status`` already set) otherwise. The
+        caller distinguishes the two with ``isinstance(result, str)``.
+        """
+        response.content_type = "application/json"
+        if not _filename_or_400(filename):
+            return json.dumps({"error": "invalid filename"})
+        entry = find_template(_templates_root(server), filename)
+        if entry is None:
+            response.status = 404
+            return json.dumps({"error": "template not found"})
+        return entry
+
     def _entry_to_dict(entry: LoadedTemplate) -> dict[str, Any]:
         """Serialise a :class:`LoadedTemplate` for the JSON list endpoint.
 
@@ -6203,13 +6232,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         confirm dialog before adding the parameter; the server gate
         is defence-in-depth so a forged request can't side-effect
         without intent."""
-        response.content_type = "application/json"
-        if not _filename_or_400(filename):
-            return json.dumps({"error": "invalid filename"})
-        entry = find_template(_templates_root(server), filename)
-        if entry is None:
-            response.status = 404
-            return json.dumps({"error": "template not found"})
+        entry = _resolve_or_respond(filename)
+        if isinstance(entry, str):
+            return entry
         if entry.template is None:
             # Loader couldn't decode the file (malformed JSON,
             # envelope failure, payload failure). Surface the
@@ -6292,13 +6317,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         as defence-in-depth, so a future direct caller (e.g. an
         import script) can't bypass the check by sending a crafted
         ``../system/foo`` filename."""
-        response.content_type = "application/json"
-        if not _filename_or_400(filename):
-            return json.dumps({"error": "invalid filename"})
-        entry = find_template(_templates_root(server), filename)
-        if entry is None:
-            response.status = 404
-            return json.dumps({"error": "template not found"})
+        entry = _resolve_or_respond(filename)
+        if isinstance(entry, str):
+            return entry
         if entry.is_system:
             response.status = 403
             return json.dumps(
@@ -6335,7 +6356,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """
         if filename.endswith(TEMPLATE_LEGACY_SUFFIX):
             filename = filename[: -len(TEMPLATE_LEGACY_SUFFIX)] + TEMPLATE_FILE_SUFFIX
-        return re.sub(r"[^A-Za-z0-9._-]", "-", filename)
+        return _safe_content_disposition_name(filename, allow_dot=True)
 
     @app.get("/api/templates/<filename>/export")
     def api_export_template(filename: str) -> Any:
@@ -6347,13 +6368,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         (content-type stays ``application/json``), mirroring the config
         export. Kind-agnostic: the route never inspects ``type``, so every
         template kind exports through it."""
-        response.content_type = "application/json"
-        if not _filename_or_400(filename):
-            return json.dumps({"error": "invalid filename"})
-        entry = find_template(_templates_root(server), filename)
-        if entry is None:
-            response.status = 404
-            return json.dumps({"error": "template not found"})
+        entry = _resolve_or_respond(filename)
+        if isinstance(entry, str):
+            return entry
         if entry.template is None:
             # Refuse to export a file the loader can't decode – the
             # downloaded copy would just fail to import elsewhere.
@@ -6410,7 +6427,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         provenance survives the round-trip."""
         response.content_type = "application/json"
         filename = (request.query.get("filename") or "").strip()
-        if filename and not filename.lower().endswith((TEMPLATE_FILE_SUFFIX, TEMPLATE_LEGACY_SUFFIX)):
+        if filename and not filename.lower().endswith(TEMPLATE_READ_SUFFIXES):
             response.status = 400
             return json.dumps({"error": "Unsupported file type. Upload a .oftemplate or .openfollowtemplate file."})
         total = request.content_length or 0
@@ -6455,15 +6472,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         except (TemplateValidationError, TemplateWriteError) as exc:  # pragma: no cover
             response.status = 400
             return json.dumps({"error": str(exc)})
-        entry = find_template(_templates_root(server), written_path.name)
-        if entry is None or entry.template is None:  # pragma: no cover – race
-            return json.dumps({"ok": True, "filename": written_path.name})
+        # ``written_path.name`` is the disambiguated on-disk filename; type and
+        # name come straight from the validated envelope. No re-read needed.
         return json.dumps(
             {
                 "ok": True,
-                "filename": entry.filename,
-                "type": entry.template.type,
-                "name": entry.template.name,
+                "filename": written_path.name,
+                "type": tpl.type,
+                "name": tpl.name,
             }
         )
 
@@ -6778,7 +6794,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ``safe_name`` is never empty (no bare ``.openfollowsettings``).
         """
         cfg = _request_scoped_config()
-        safe_name = re.sub(r"[^A-Za-z0-9_-]", "-", cfg.psn_system_name)
+        safe_name = _safe_content_disposition_name(cfg.psn_system_name)
         response.content_type = "application/json"
         response.set_header(
             "Content-Disposition",

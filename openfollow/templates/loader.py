@@ -11,16 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from openfollow.templates.schema import (
-    TEMPLATE_FILE_SUFFIX,
-    TEMPLATE_LEGACY_SUFFIX,
+    TEMPLATE_READ_SUFFIXES,
     OpenFollowTemplate,
     TemplateValidationError,
 )
-
-# Both the canonical suffix and the legacy one are read off disk so templates
-# saved by an earlier build keep loading; the writer only ever emits the
-# canonical suffix.
-_READ_SUFFIXES: tuple[str, ...] = (TEMPLATE_FILE_SUFFIX, TEMPLATE_LEGACY_SUFFIX)
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +181,7 @@ def list_templates(templates_root: Path) -> list[LoadedTemplate]:
         folder = templates_root / subdir
         if not folder.is_dir():
             continue
-        paths = {p for suffix in _READ_SUFFIXES for p in folder.glob(f"*{suffix}")}
+        paths = {p for suffix in TEMPLATE_READ_SUFFIXES for p in folder.glob(f"*{suffix}")}
         for path in sorted(paths):
             out.append(_load_one(path, is_system=is_system))
     return out

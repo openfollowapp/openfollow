@@ -2676,10 +2676,9 @@
  const file = input.files && input.files[0];
  if (!file) return;
  try {
- const buf = await file.arrayBuffer();
  const res = await fetch(
  '/api/templates/import?filename=' + encodeURIComponent(file.name),
- { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: buf },
+ { method: 'POST', body: file },
  );
  const text = await res.text();
  let data = {};

@@ -2665,7 +2665,9 @@
  document.body.appendChild(a);
  a.click();
  a.remove();
- URL.revokeObjectURL(url);
+ // Revoke on a later tick: revoking synchronously after click() can cancel
+ // the download on some browsers, especially on slower machines.
+ setTimeout(function() { URL.revokeObjectURL(url); }, 10000);
  } catch (err) {
  showToast('Export failed: ' + (err.message || 'unknown error'));
  }

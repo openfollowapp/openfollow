@@ -6431,8 +6431,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         The originating build's ``app_version`` is preserved on disk so
         provenance survives the round-trip."""
         response.content_type = "application/json"
+        # Require a named upload with a recognised suffix (the browser always
+        # sends ``?filename=``; the ``.deb`` upload sibling requires it too), so
+        # the extension gate can't be skipped by omitting the query param.
         filename = (request.query.get("filename") or "").strip()
-        if filename and not filename.lower().endswith(TEMPLATE_READ_SUFFIXES):
+        if not filename.lower().endswith(TEMPLATE_READ_SUFFIXES):
             response.status = 400
             return json.dumps({"error": "Unsupported file type. Upload a .oftemplate or .openfollowtemplate file."})
         total = request.content_length or 0

@@ -163,7 +163,7 @@ def _post_raw(
 def _osc_envelope_bytes(name: str = "Imported", **env: Any) -> bytes:
     """A valid ``osc_output`` template serialised for upload."""
     base: dict[str, Any] = {
-        "version": 1,
+        "version": TEMPLATE_VERSION,
         "type": "osc_output",
         "name": name,
         "payload": {"address": "/cue/[markerid]", "args": ["[x]", "[y]"]},
@@ -1455,6 +1455,14 @@ class TestImport:
             "/api/templates/import?filename=evil.txt",
             _osc_envelope_bytes(),
         )
+        assert status == 400
+        assert "Unsupported file type" in json.loads(body)["error"]
+
+    def test_import_missing_filename_400(self, live_server) -> None:
+        # Omitting ?filename= must not skip the extension gate - a named upload
+        # with a recognised suffix is required.
+        _, base, _ = live_server
+        status, body = _post_raw(base, "/api/templates/import", _osc_envelope_bytes())
         assert status == 400
         assert "Unsupported file type" in json.loads(body)["error"]
 

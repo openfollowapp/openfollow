@@ -6397,10 +6397,15 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         from packaging.version import InvalidVersion, Version
 
         try:
-            newer = Version(authored.strip()) > Version(openfollow.__version__)
+            running = Version(openfollow.__version__)
+            newer = Version(authored.strip()) > running
         except InvalidVersion:
             return message
-        if not newer:
+        # A ``0.0.0`` running version means we don't actually know our own
+        # build (the metadata-less fallback), so "newer than us" is
+        # meaningless and would fire on nearly every file. Only annotate a
+        # genuine forward skew.
+        if running.release == (0, 0, 0) or not newer:
             return message
         return (
             f"{message} (this template was created by OpenFollow {authored.strip()}; "

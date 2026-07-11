@@ -1373,6 +1373,20 @@ class TestImport:
         assert "999.0.0" in err
         assert "update OpenFollow" in err
 
+    def test_import_skew_suppressed_when_running_version_unknown(self, live_server, monkeypatch) -> None:
+        # When our own build is the metadata-less 0.0.0+unknown fallback, the
+        # "newer than us" comparison is meaningless and would fire on nearly
+        # every file, so no skew hint is added - the raw error stands alone.
+        _, base, _ = live_server
+        monkeypatch.setattr("openfollow.__version__", "0.0.0+unknown")
+        payload = {"address": "/a", "args": [], "trigger": {"kind": "warp_drive"}}
+        body_bytes = _osc_envelope_bytes(name="Future", app_version="999.0.0", payload=payload)
+        status, body = _post_raw(base, "/api/templates/import?filename=x.oftemplate", body_bytes)
+        assert status == 400
+        err = json.loads(body)["error"]
+        assert "trigger.kind" in err
+        assert "update OpenFollow" not in err
+
     def test_import_error_unparseable_app_version_no_skew(self, live_server) -> None:
         # A non-PEP440 app_version can't be compared, so no skew note is
         # appended – the raw validation error stands on its own.

@@ -125,12 +125,16 @@ def _templates_root(server: ConfigWebServer) -> Path:
 
 
 def _is_safe_template_filename(filename: str) -> bool:
-    """Reject filenames that aren't ``<type>.<slug>.oftemplate`` shape.
+    """Reject unsafe basenames; require a recognised template suffix.
 
-    The legacy ``.openfollowtemplate`` suffix is still accepted so a file
-    written by an earlier build stays applyable / deletable / exportable.
-    Defends against path traversal in route-facing inputs independent of
-    Bottle's single-segment routing.
+    A basename safety guard, not a shape validator: it rejects path
+    separators, control chars, dotfiles, and ``..`` traversal, and
+    requires the canonical ``.oftemplate`` suffix. The legacy
+    ``.openfollowtemplate`` suffix is still accepted so a file written by
+    an earlier build stays applyable / deletable / exportable. It does
+    **not** enforce the ``<type>.<slug>`` convention – a caller relying on
+    that shape must check it itself. Defends against path traversal in
+    route-facing inputs independent of Bottle's single-segment routing.
     """
     if not filename or "/" in filename or "\\" in filename:
         return False
@@ -6408,7 +6412,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         filename = (request.query.get("filename") or "").strip()
         if filename and not filename.lower().endswith((TEMPLATE_FILE_SUFFIX, TEMPLATE_LEGACY_SUFFIX)):
             response.status = 400
-            return json.dumps({"error": "Unsupported file type. Upload a .oftemplate file."})
+            return json.dumps({"error": "Unsupported file type. Upload a .oftemplate or .openfollowtemplate file."})
         total = request.content_length or 0
         if total <= 0:
             response.status = 400

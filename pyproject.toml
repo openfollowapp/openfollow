@@ -42,7 +42,7 @@ dependencies = [
     # Pure-Python, no native deps (safe on the Pi). ``escape=True`` (see
     # ``openfollow/web/_md.py``) keeps the rendered fragment inert, so no HTML
     # sanitiser dependency is needed.
-    "mistune>=3.3.2",
+    "mistune>=3.3.3",
 ]
 
 [project.optional-dependencies]
@@ -51,7 +51,7 @@ detection = ["onnxruntime>=1.17", "opencv-python>=5.0.0.93"]
 # detector runs. Pulls torch, so it's a workstation-only extra, never required
 # at show time. Used by ``scripts/export_onnx.py`` and the web model-export
 # action; installed on demand from the detection UI.
-export = ["ultralytics>=8.4.87"]
+export = ["ultralytics>=8.4.92"]
 
 [project.scripts]
 openfollow = "openfollow.main:main"
@@ -84,13 +84,13 @@ include = [
 # producing a spurious reformat diff) on changes unrelated to the work at hand.
 # The ``ruff-pre-commit`` hook ``rev`` in ``.pre-commit-config.yaml`` is pinned
 # to the SAME version so the local hooks and CI never disagree. Bump together.
-ruff = "0.15.20"
+ruff = "0.15.21"
 pytest = "^9.1.1"
 pytest-cov = "^7.1"
 coverage = { extras = ["toml"], version = "^7.15" }
 pre-commit = "^4.6.0"
 mutmut = "^3.6"
-mypy = "^2.1"
+mypy = "^2.2"
 
 # Static type checking: mypy --strict for all openfollow.* modules.
 # Third-party stubs without type info use ignore_missing_imports.

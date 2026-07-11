@@ -1508,7 +1508,7 @@ def test_add_with_builtin_template_populates_address_and_args(live_server) -> No
     _post_form(
         base,
         "/section/osc_bindings/add",
-        {"template_id": "file:osc_output.etc-eos.openfollowtemplate"},
+        {"template_id": "file:osc_output.etc-eos.oftemplate"},
     )
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[0]
@@ -1520,13 +1520,13 @@ def test_add_with_builtin_template_populates_address_and_args(live_server) -> No
 @pytest.mark.parametrize(
     "template_filename,template_name",
     [
-        ("osc_output.etc-eos.openfollowtemplate", "ETC Eos"),
+        ("osc_output.etc-eos.oftemplate", "ETC Eos"),
         # Filename stays ``adm-osc`` while the display name carries the
         # 2D/3D suffix, so existing rows whose template_id references this
         # file keep resolving.
-        ("osc_output.adm-osc.openfollowtemplate", "ADM-OSC 2D"),
-        ("osc_output.adm-osc-3d.openfollowtemplate", "ADM-OSC 3D"),
-        ("osc_output.dnb-absolute.openfollowtemplate", "d&b absolute"),
+        ("osc_output.adm-osc.oftemplate", "ADM-OSC 2D"),
+        ("osc_output.adm-osc-3d.oftemplate", "ADM-OSC 3D"),
+        ("osc_output.dnb-absolute.oftemplate", "d&b absolute"),
     ],
 )
 def test_add_with_builtin_template_pre_fills_stream_30hz_trigger(
@@ -1537,7 +1537,7 @@ def test_add_with_builtin_template_pre_fills_stream_30hz_trigger(
     """Applying a bundled-system position-output template lands the
     row's ``trigger`` as ``Stream @ 30 Hz``, typed by
     ``OscTransmitterConfig.__post_init__`` from the template's payload.
-    System templates are bundled as ``.openfollowtemplate`` files, so the
+    System templates are bundled as ``.oftemplate`` files, so the
     trigger is read from the JSON payload; the files spell it out
     explicitly so the apply doesn't depend on the row config's default
     trigger matching what the templates want.
@@ -1683,7 +1683,7 @@ def test_add_with_custom_template_populates_from_saved_template(
     """Two saved templates; the second is the match. Exercises both the
     no-match and match branches of the lookup iteration.
 
-    User templates live as ``.openfollowtemplate`` files under
+    User templates live as ``.oftemplate`` files under
     ``<config-dir>/templates/user/``; the writer seeds the test files so
     the disk shape matches what ``add_osc_binding`` reads."""
     from pathlib import Path
@@ -1755,7 +1755,7 @@ def test_add_with_unsafe_file_template_id_yields_blank_row(live_server) -> None:
     _post_form(
         base,
         "/section/osc_bindings/add",
-        {"template_id": "file:../etc/passwd.openfollowtemplate"},
+        {"template_id": "file:../etc/passwd.oftemplate"},
     )
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[0]
@@ -1990,7 +1990,7 @@ def test_preview_returns_provider_payload(tmp_path, monkeypatch) -> None:
 
 def test_save_template_persists(live_server) -> None:
     """The HTMX ``POST /section/osc_templates`` route writes a
-    ``.openfollowtemplate`` file under ``<config-dir>/templates/user/``.
+    ``.oftemplate`` file under ``<config-dir>/templates/user/``.
     The save response (HTMX partial) shape matches what the modal
     expects."""
     from pathlib import Path
@@ -2066,7 +2066,7 @@ def test_save_template_preserves_quoted_arg(live_server) -> None:
     (``/cmd \"Go Cue 1\" 1.5``) mangles the arg into separate tokens
     and round-trips wrong when the template is applied.
 
-    The template lands as a ``.openfollowtemplate`` file under
+    The template lands as a ``.oftemplate`` file under
     ``<config-dir>/templates/user/``."""
     from pathlib import Path
 
@@ -3293,7 +3293,7 @@ def test_osc_dropdowns_scan_templates_once_per_render(
     """The user + system OSC dropdowns are built from a single template
     scan per render – one ``list_templates_by_type`` call, not one per
     list (which would re-glob ``system/`` + ``user/`` and re-parse every
-    ``.openfollowtemplate`` file twice)."""
+    ``.oftemplate`` file twice)."""
     import openfollow.web.routes as routes_mod
 
     scans: list[str] = []

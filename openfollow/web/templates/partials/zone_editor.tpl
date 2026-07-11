@@ -17,9 +17,10 @@
             <button type="button" id="zone-delete-btn" class="danger" disabled>Delete Selected</button>
             <!-- Save / Load template buttons. Save captures entire
                  trigger_zones section (defaults + zones[]) as
-                 .openfollowtemplate under templates/user/. Load lists
+                 .oftemplate under templates/user/. Load lists
                  all zones templates (system + user), confirms, then
-                 replaces section (API requires ?confirm=1). -->
+                 replaces section (API requires ?confirm=1). The chooser
+                 also exposes per-row Export + an Import action. -->
             <button type="button" id="zone-template-save-btn" class="secondary"
                     data-template-save
                     data-template-deps="#zone-editor-section, #trigger-zones-section">Save as template…</button>

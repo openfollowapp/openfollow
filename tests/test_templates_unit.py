@@ -11,6 +11,7 @@ import pytest
 
 from openfollow.templates import (
     TEMPLATE_FILE_SUFFIX,
+    TEMPLATE_LEGACY_SUFFIX,
     TEMPLATE_VERSION,
     OpenFollowTemplate,
     TemplateValidationError,
@@ -22,6 +23,7 @@ from openfollow.templates.loader import (
     find_template,
     list_templates,
     list_templates_by_type,
+    parse_envelope,
 )
 from openfollow.templates.writer import (
     TemplateWriteError,
@@ -727,6 +729,33 @@ class TestLoader:
         assert loaded[0].template is None
         assert "invalid JSON" in loaded[0].error
 
+    def test_deeply_nested_json_surfaces_as_error(self, tmp_path: Path) -> None:
+        # Deeply-nested JSON exhausts the decoder's recursion (raising
+        # RecursionError, not JSONDecodeError). It must surface as a
+        # per-entry error, not propagate out of ``list_templates`` and
+        # break the whole chooser.
+        user = tmp_path / "user"
+        user.mkdir()
+        bomb = "[" * 100_000 + "]" * 100_000
+        (user / f"osc_output.bomb{TEMPLATE_FILE_SUFFIX}").write_text(bomb)
+        loaded = list_templates(tmp_path)
+        assert len(loaded) == 1
+        assert loaded[0].template is None
+        assert "nesting too deep" in loaded[0].error
+
+    def test_utf8_bom_file_loads(self, tmp_path: Path) -> None:
+        # A file authored by a BOM-adding editor (leading EF BB BF) is a
+        # valid template and must load, not surface as an encoding error.
+        user = tmp_path / "user"
+        user.mkdir()
+        body = json.dumps(_envelope(name="Bommed")).encode("utf-8")
+        (user / f"osc_output.bom{TEMPLATE_FILE_SUFFIX}").write_bytes(b"\xef\xbb\xbf" + body)
+        loaded = list_templates(tmp_path)
+        assert len(loaded) == 1
+        assert loaded[0].error == ""
+        assert loaded[0].template is not None
+        assert loaded[0].template.name == "Bommed"
+
     def test_non_utf8_file_surfaces_as_error(self, tmp_path: Path) -> None:
         # A file saved in a non-UTF-8 encoding raises UnicodeDecodeError,
         # which is not an OSError. It must surface as a per-entry error
@@ -841,7 +870,19 @@ class TestLoader:
         assert found is not None and found.is_system is True
 
     def test_find_returns_none_for_missing(self, tmp_path: Path) -> None:
-        assert find_template(tmp_path, "nope.openfollowtemplate") is None
+        assert find_template(tmp_path, "nope.oftemplate") is None
+
+    def test_find_rejects_symlink_escaping_folder(self, tmp_path: Path) -> None:
+        # A symlink in the templates folder pointing outside must not be
+        # followed - export/apply read through find_template, so this would
+        # otherwise stream an arbitrary file. Mirrors delete's containment guard.
+        user = tmp_path / "user"
+        user.mkdir()
+        outside = tmp_path / "secret.json"
+        outside.write_text(json.dumps(_envelope(name="Secret")))
+        link = user / f"osc_output.evil{TEMPLATE_FILE_SUFFIX}"
+        link.symlink_to(outside)
+        assert find_template(tmp_path, f"osc_output.evil{TEMPLATE_FILE_SUFFIX}") is None
 
     def test_find_prefers_user_over_system_on_basename_collision(
         self,
@@ -1040,7 +1081,7 @@ class TestDeleteUserTemplate:
 
     def test_returns_false_for_missing(self, tmp_path: Path) -> None:
         (tmp_path / "user").mkdir()
-        assert delete_user_template(tmp_path, "nope.openfollowtemplate") is False
+        assert delete_user_template(tmp_path, "nope.oftemplate") is False
 
     def test_path_traversal_rejected(self, tmp_path: Path) -> None:
         # A ``filename`` resolving outside the user folder is refused
@@ -1070,10 +1111,10 @@ class TestBootstrap:
         sysdir = tmp_path / "system"
         files = sorted(p.name for p in sysdir.glob(f"*{TEMPLATE_FILE_SUFFIX}"))
         assert files == [
-            "osc_output.adm-osc-3d.openfollowtemplate",
-            "osc_output.adm-osc.openfollowtemplate",
-            "osc_output.dnb-absolute.openfollowtemplate",
-            "osc_output.etc-eos.openfollowtemplate",
+            "osc_output.adm-osc-3d.oftemplate",
+            "osc_output.adm-osc.oftemplate",
+            "osc_output.dnb-absolute.oftemplate",
+            "osc_output.etc-eos.oftemplate",
         ]
 
     def test_seeded_files_load_cleanly(self, tmp_path: Path) -> None:
@@ -1089,7 +1130,7 @@ class TestBootstrap:
     def test_idempotent_overwrite(self, tmp_path: Path) -> None:
         # A re-seed restores a mutated file.
         seed_system_templates(tmp_path)
-        target = tmp_path / "system" / "osc_output.adm-osc.openfollowtemplate"
+        target = tmp_path / "system" / "osc_output.adm-osc.oftemplate"
         target.write_text(json.dumps(_envelope(name="Hacked", is_system=True)))
         seed_system_templates(tmp_path)
         on_disk = json.loads(target.read_text())
@@ -1101,13 +1142,13 @@ class TestBootstrap:
         # templates would linger across upgrades).
         sysdir = tmp_path / "system"
         sysdir.mkdir(parents=True, exist_ok=True)
-        stale = sysdir / "osc_output.removed-in-v2.openfollowtemplate"
+        stale = sysdir / "osc_output.removed-in-v2.oftemplate"
         stale.write_text(
             json.dumps(_envelope(name="Removed in v2", is_system=True)),
         )
         seed_system_templates(tmp_path)
         assert not stale.exists()
-        assert (sysdir / "osc_output.adm-osc.openfollowtemplate").is_file()
+        assert (sysdir / "osc_output.adm-osc.oftemplate").is_file()
 
     def test_prune_leaves_foreign_files_alone(self, tmp_path: Path) -> None:
         # Prune only touches template-suffix files; foreign files are
@@ -1154,3 +1195,162 @@ class TestZonesPayloadValidatorObjectGuard:
         # dataclass); no exception is the assertion.
         validate_payload("zones", {"zones": [{"name": "Z1", "vertices": []}]})
         validate_payload("zones", {"zones": []})
+
+
+# ---------------------------------------------------------------------------
+# Legacy suffix (read-only transition)
+# ---------------------------------------------------------------------------
+
+
+class TestLegacySuffix:
+    def test_loader_reads_legacy_suffix_file(self, tmp_path: Path) -> None:
+        user = tmp_path / "user"
+        user.mkdir()
+        legacy = user / f"osc_output.old{TEMPLATE_LEGACY_SUFFIX}"
+        legacy.write_text(json.dumps(_envelope(name="From an older build")))
+        entries = list_templates(tmp_path)
+        assert len(entries) == 1
+        assert entries[0].template is not None
+        assert entries[0].template.name == "From an older build"
+        assert entries[0].filename.endswith(TEMPLATE_LEGACY_SUFFIX)
+
+    def test_find_template_resolves_legacy_suffix(self, tmp_path: Path) -> None:
+        user = tmp_path / "user"
+        user.mkdir()
+        name = f"osc_output.old{TEMPLATE_LEGACY_SUFFIX}"
+        (user / name).write_text(json.dumps(_envelope(name="Old")))
+        found = find_template(tmp_path, name)
+        assert found is not None and found.template is not None
+        assert found.template.name == "Old"
+
+    def test_bootstrap_prunes_stale_legacy_system_file(self, tmp_path: Path) -> None:
+        # A system default carried over from before the suffix rename isn't
+        # in the bundled .oftemplate set, so seeding prunes it – the folder
+        # never ends up with two copies of the same default.
+        sysdir = tmp_path / "system"
+        sysdir.mkdir(parents=True, exist_ok=True)
+        stale = sysdir / f"osc_output.adm-osc{TEMPLATE_LEGACY_SUFFIX}"
+        stale.write_text(json.dumps(_envelope(name="ADM-OSC 2D", is_system=True)))
+        seed_system_templates(tmp_path)
+        assert not stale.exists()
+        assert (sysdir / "osc_output.adm-osc.oftemplate").is_file()
+
+    def test_writer_only_emits_canonical_suffix(self, tmp_path: Path) -> None:
+        path = write_user_template(tmp_path, "osc_output", "New", _osc_payload())
+        assert path.name.endswith(TEMPLATE_FILE_SUFFIX)
+        assert not path.name.endswith(TEMPLATE_LEGACY_SUFFIX)
+
+    def test_save_disambiguates_against_legacy_suffix_collision(self, tmp_path: Path) -> None:
+        # An upgraded install with a legacy file of the same slug must not get a
+        # second, identically-named .oftemplate beside it: the conflict loop
+        # bumps to -1 so the operator sees "Foo (1)", not two "Foo" rows.
+        user = tmp_path / "user"
+        user.mkdir()
+        (user / f"osc_output.foo{TEMPLATE_LEGACY_SUFFIX}").write_text(json.dumps(_envelope(name="Foo")))
+        path = write_user_template(tmp_path, "osc_output", "Foo", _osc_payload())
+        assert path.name == f"osc_output.foo-1{TEMPLATE_FILE_SUFFIX}"
+        assert json.loads(path.read_text())["name"] == "Foo (1)"
+
+    def test_save_disambiguates_against_legacy_system_collision(self, tmp_path: Path) -> None:
+        # Same, but the colliding legacy file is a bundled system template.
+        system = tmp_path / "system"
+        system.mkdir()
+        (system / f"osc_output.foo{TEMPLATE_LEGACY_SUFFIX}").write_text(
+            json.dumps(_envelope(name="Foo", is_system=True))
+        )
+        path = write_user_template(tmp_path, "osc_output", "Foo", _osc_payload())
+        assert path.name == f"osc_output.foo-1{TEMPLATE_FILE_SUFFIX}"
+
+
+# ---------------------------------------------------------------------------
+# app_version provenance (diagnostics-only)
+# ---------------------------------------------------------------------------
+
+
+class TestAppVersion:
+    def test_save_stamps_current_build(self, tmp_path: Path) -> None:
+        import openfollow
+
+        path = write_user_template(tmp_path, "osc_output", "X", _osc_payload())
+        assert json.loads(path.read_text())["app_version"] == openfollow.__version__
+
+    def test_explicit_app_version_preserved(self, tmp_path: Path) -> None:
+        # The import path passes the originating build's version through so
+        # provenance survives the round-trip instead of being overwritten
+        # with this build's version.
+        path = write_user_template(tmp_path, "osc_output", "X", _osc_payload(), app_version="9.9.9")
+        assert json.loads(path.read_text())["app_version"] == "9.9.9"
+
+    def test_app_version_never_gates_load(self, tmp_path: Path) -> None:
+        # A wildly-newer app_version is informational only – the file still
+        # loads as long as the format version and payload are valid.
+        tpl = parse_envelope(_envelope(app_version="999.0.0"))
+        assert tpl.app_version == "999.0.0"
+
+    def test_missing_app_version_defaults_empty(self) -> None:
+        tpl = parse_envelope(_envelope())  # _envelope() carries no app_version
+        assert tpl.app_version == ""
+
+    def test_to_dict_includes_app_version(self) -> None:
+        tpl = OpenFollowTemplate(**_envelope(app_version="1.2.3"))
+        assert tpl.to_dict()["app_version"] == "1.2.3"
+
+    @pytest.mark.parametrize("bad", [123, None, True, ["1.0"]])
+    def test_non_str_app_version_coerced_empty(self, bad: object) -> None:
+        # A hand-edited / malformed app_version must never raise – it's
+        # diagnostics-only, so a non-string is coerced to "" rather than
+        # rejecting an otherwise-valid template.
+        tpl = OpenFollowTemplate(**_envelope(app_version=bad))
+        assert tpl.app_version == ""
+
+
+# ---------------------------------------------------------------------------
+# parse_envelope + cross-version handling
+# ---------------------------------------------------------------------------
+
+
+class TestParseEnvelope:
+    def test_round_trips_valid_dict(self) -> None:
+        tpl = parse_envelope(_envelope(name="RoundTrip"))
+        assert tpl.name == "RoundTrip"
+        assert tpl.type == "osc_output"
+
+    def test_newer_format_version_rejected_with_message(self) -> None:
+        with pytest.raises(TemplateValidationError, match="unsupported version"):
+            parse_envelope(_envelope(version=TEMPLATE_VERSION + 1))
+
+    def test_unknown_envelope_key_dropped_not_crashed(self) -> None:
+        # A future envelope field is filtered out so construction doesn't
+        # raise TypeError; the template still loads under the same version.
+        tpl = parse_envelope(_envelope(future_field="whatever"))
+        assert tpl.type == "osc_output"
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatibility contract (old payload → newer build)
+# ---------------------------------------------------------------------------
+
+
+class TestBackwardCompat:
+    def test_old_payload_missing_field_fills_default(self) -> None:
+        # A camera_grid template authored before a CameraConfig field
+        # existed must still load – the dataclass fills the default rather
+        # than rejecting. Model "older" by dropping ``fov`` from the camera
+        # dict and assert the reconstructed config uses the default.
+        from dataclasses import asdict
+
+        from openfollow.configuration import CameraConfig, GridConfig
+
+        camera = asdict(CameraConfig())
+        camera.pop("fov")
+        payload = {"camera": camera, "grid": asdict(GridConfig())}
+        tpl = parse_envelope(
+            {
+                "version": TEMPLATE_VERSION,
+                "type": "camera_grid",
+                "name": "Old rig",
+                "payload": payload,
+            }
+        )
+        cam = CameraConfig(**tpl.payload["camera"])
+        assert cam.fov == CameraConfig().fov

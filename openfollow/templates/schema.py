@@ -10,7 +10,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 TEMPLATE_VERSION: int = 1  # bumped only for breaking format changes
-TEMPLATE_FILE_SUFFIX: str = ".openfollowtemplate"  # filename suffix for loader glob
+TEMPLATE_FILE_SUFFIX: str = ".oftemplate"  # canonical filename suffix
+TEMPLATE_LEGACY_SUFFIX: str = ".openfollowtemplate"  # still read on disk; never written
+# Every suffix read off disk / accepted on import. Single source of truth so a
+# site that reads templates can't drift from the set the loader globs.
+TEMPLATE_READ_SUFFIXES: tuple[str, ...] = (TEMPLATE_FILE_SUFFIX, TEMPLATE_LEGACY_SUFFIX)
 VALID_TYPES: tuple[str, ...] = (
     "osc_output",
     "camera_grid",
@@ -33,6 +37,11 @@ class OpenFollowTemplate:
 
     Payload is validated on construction. Folder determines is_system
     (folder is source of truth, not JSON tag).
+
+    ``version`` is the format version – the only compatibility gate.
+    ``app_version`` records which OpenFollow build authored the content;
+    it is purely diagnostic (surfaces a version-skew hint when a payload
+    fails validation) and is NEVER used to accept or reject a template.
     """
 
     version: int = TEMPLATE_VERSION
@@ -40,6 +49,7 @@ class OpenFollowTemplate:
     id: str = ""
     name: str = ""
     is_system: bool = False
+    app_version: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -72,6 +82,11 @@ class OpenFollowTemplate:
             raise TemplateValidationError(
                 f"is_system must be bool, got {type(self.is_system).__name__}",
             )
+        # Diagnostics-only provenance string; tolerate a missing / hand-edited
+        # value by coercing rather than rejecting (it never gates a load).
+        if not isinstance(self.app_version, str):
+            self.app_version = ""
+        self.app_version = self.app_version.strip()
         if not isinstance(self.payload, dict):
             raise TemplateValidationError(
                 f"payload must be object, got {type(self.payload).__name__}",
@@ -87,6 +102,7 @@ class OpenFollowTemplate:
             "id": self.id,
             "name": self.name,
             "is_system": self.is_system,
+            "app_version": self.app_version,
             "payload": dict(self.payload),
         }
 

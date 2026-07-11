@@ -14,7 +14,7 @@ cleanup tracked in the cleanup manifest.
 **Out of scope** (never touched by this convention):
 - UI: `*.tpl`, `*.js`, `*.css`, `*.svg`
 - Docs/help: all `*.md` (including `openfollow/web/help/*.md`)
-- Data / generated / binary: `*.openfollowtemplate` (JSON, no comment syntax),
+- Data / generated / binary: `*.oftemplate` (JSON, no comment syntax),
   `poetry.lock`, `*.pem`, `*.jpg`, `LICENSE`, `packaging/debian/copyright`
 
 ## The header

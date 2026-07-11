@@ -24,8 +24,9 @@ from openfollow.configuration import (
     load_config,
     save_config,
 )
+from openfollow.templates import TEMPLATE_VERSION
 from openfollow.templates.loader import list_templates_by_type
-from openfollow.templates.writer import write_user_template
+from openfollow.templates.writer import TemplateWriteError, write_user_template
 from openfollow.web.server import ConfigWebServer
 
 pytestmark = pytest.mark.integration
@@ -130,6 +131,47 @@ def _delete(base: str, path: str) -> tuple[int, str]:
         return e.code, e.read().decode()
 
 
+def _get_raw(base: str, path: str) -> tuple[int, bytes, dict[str, str]]:
+    """GET returning (status, raw bytes, headers) – for the export download."""
+    try:
+        with urllib.request.urlopen(f"{base}{path}", timeout=5) as r:
+            return r.status, r.read(), dict(r.headers)
+    except urllib.error.HTTPError as e:
+        return e.code, e.read(), dict(e.headers)
+
+
+def _post_raw(
+    base: str,
+    path: str,
+    body: bytes,
+    content_type: str = "application/json",
+) -> tuple[int, str]:
+    """POST a raw byte body (the import route reads ``wsgi.input`` directly)."""
+    req = urllib.request.Request(
+        f"{base}{path}",
+        data=body,
+        headers={"Content-Type": content_type},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, r.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()
+
+
+def _osc_envelope_bytes(name: str = "Imported", **env: Any) -> bytes:
+    """A valid ``osc_output`` template serialised for upload."""
+    base: dict[str, Any] = {
+        "version": TEMPLATE_VERSION,
+        "type": "osc_output",
+        "name": name,
+        "payload": {"address": "/cue/[markerid]", "args": ["[x]", "[y]"]},
+    }
+    base.update(env)
+    return json.dumps(base).encode()
+
+
 def _templates_root(cfg_path: str) -> Path:
     return Path(cfg_path).parent / "templates"
 
@@ -146,10 +188,10 @@ class TestBootstrap:
         assert sysdir.is_dir()
         files = sorted(p.name for p in sysdir.iterdir() if p.is_file())
         assert files == [
-            "osc_output.adm-osc-3d.openfollowtemplate",
-            "osc_output.adm-osc.openfollowtemplate",
-            "osc_output.dnb-absolute.openfollowtemplate",
-            "osc_output.etc-eos.openfollowtemplate",
+            "osc_output.adm-osc-3d.oftemplate",
+            "osc_output.adm-osc.oftemplate",
+            "osc_output.dnb-absolute.oftemplate",
+            "osc_output.etc-eos.oftemplate",
         ]
 
 
@@ -220,11 +262,11 @@ class TestList:
         _, base, cfg_path = live_server
         userdir = _templates_root(cfg_path) / "user"
         userdir.mkdir(parents=True, exist_ok=True)
-        (userdir / "osc_output.broken.openfollowtemplate").write_text("{not json")
+        (userdir / "osc_output.broken.oftemplate").write_text("{not json")
         status, body = _get(base, "/api/templates?type=osc_output")
         assert status == 200
         items = json.loads(body)["templates"]
-        broken = [t for t in items if t["filename"].endswith("broken.openfollowtemplate")]
+        broken = [t for t in items if t["filename"].endswith("broken.oftemplate")]
         assert len(broken) == 1
         assert broken[0]["error"]
         # Failed-load entries report empty type / id / name.
@@ -236,30 +278,30 @@ class TestList:
         _, base, cfg_path = live_server
         userdir = _templates_root(cfg_path) / "user"
         userdir.mkdir(parents=True, exist_ok=True)
-        (userdir / "osc_output.broken.openfollowtemplate").write_text("{not json")
+        (userdir / "osc_output.broken.oftemplate").write_text("{not json")
         status, body = _get(base, "/api/templates?type=osc_output")
         assert status == 200
         names = [t["filename"] for t in json.loads(body)["templates"]]
-        assert "osc_output.broken.openfollowtemplate" in names
+        assert "osc_output.broken.oftemplate" in names
         # Scoped to the filename's ``<type>`` prefix; absent from others.
         for other in ("zones", "camera_grid"):
             status, body = _get(base, f"/api/templates?type={other}")
             assert status == 200
             names = [t["filename"] for t in json.loads(body)["templates"]]
-            assert "osc_output.broken.openfollowtemplate" not in names
+            assert "osc_output.broken.oftemplate" not in names
 
     def test_unreadable_file_without_type_prefix_dropped(self, live_server) -> None:
-        # A file not matching ``<type>.<slug>.openfollowtemplate`` can't
+        # A file not matching ``<type>.<slug>.oftemplate`` can't
         # be classified by the loader and is dropped from every chooser.
         _, base, cfg_path = live_server
         userdir = _templates_root(cfg_path) / "user"
         userdir.mkdir(parents=True, exist_ok=True)
-        (userdir / "stray.openfollowtemplate").write_text("{not json")
+        (userdir / "stray.oftemplate").write_text("{not json")
         for tt in ("osc_output", "zones", "camera_grid"):
             status, body = _get(base, f"/api/templates?type={tt}")
             assert status == 200
             names = [t["filename"] for t in json.loads(body)["templates"]]
-            assert "stray.openfollowtemplate" not in names
+            assert "stray.oftemplate" not in names
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +323,7 @@ class TestSaveOscOutput:
         assert status == 200
         payload = json.loads(body)
         assert payload["ok"] is True
-        assert payload["filename"] == "osc_output.my-cue.openfollowtemplate"
+        assert payload["filename"] == "osc_output.my-cue.oftemplate"
         assert payload["name"] == "My Cue"
         assert payload["id"] and len(payload["id"]) == 32
         path = _templates_root(cfg_path) / "user" / payload["filename"]
@@ -307,7 +349,7 @@ class TestSaveOscOutput:
         )
         assert status == 200
         payload = json.loads(body)
-        assert payload["filename"] == "osc_output.cue-1.openfollowtemplate"
+        assert payload["filename"] == "osc_output.cue-1.oftemplate"
         assert payload["name"] == "Cue (1)"
 
     def test_missing_name_rejected(self, live_server) -> None:
@@ -460,7 +502,7 @@ class TestApplyOscOutput:
         _, base, cfg_path = live_server
         status, body = _post_empty(
             base,
-            "/api/templates/osc_output.adm-osc.openfollowtemplate/apply",
+            "/api/templates/osc_output.adm-osc.oftemplate/apply",
         )
         assert status == 200
         payload = json.loads(body)
@@ -494,7 +536,7 @@ class TestApplyOscOutput:
         )
         status, body = _post_empty(
             base,
-            "/api/templates/osc_output.etc-stage.openfollowtemplate/apply",
+            "/api/templates/osc_output.etc-stage.oftemplate/apply",
         )
         assert status == 200
         cfg = load_config(cfg_path)
@@ -528,7 +570,7 @@ class TestApplyOscOutput:
         )
         status, _ = _post_empty(
             base,
-            "/api/templates/osc_output.hot.openfollowtemplate/apply",
+            "/api/templates/osc_output.hot.oftemplate/apply",
         )
         assert status == 200
         cfg = load_config(cfg_path)
@@ -583,7 +625,7 @@ class TestSaveOscBindingAsTemplate:
 
         entry = find_template(
             _templates_root(cfg_path),
-            "osc_output.stage-cue.openfollowtemplate",
+            "osc_output.stage-cue.oftemplate",
         )
         assert entry is not None and entry.template is not None
         p = entry.template.payload
@@ -651,7 +693,7 @@ class TestSaveOscBindingAsTemplate:
 
         entry = find_template(
             _templates_root(cfg_path),
-            "osc_output.onchangestage.openfollowtemplate",
+            "osc_output.onchangestage.oftemplate",
         )
         assert entry is not None and entry.template is not None
         trigger = entry.template.payload["trigger"]
@@ -659,7 +701,7 @@ class TestSaveOscBindingAsTemplate:
         assert trigger["min_change_m"] == 0.1
         _post_empty(
             base,
-            "/api/templates/osc_output.onchangestage.openfollowtemplate/apply",
+            "/api/templates/osc_output.onchangestage.oftemplate/apply",
         )
         cfg = load_config(cfg_path)
         from openfollow.configuration import StreamTrigger
@@ -695,7 +737,7 @@ class TestSaveOscBindingAsTemplate:
 
         entry = find_template(
             _templates_root(cfg_path),
-            "osc_output.hotkey.openfollowtemplate",
+            "osc_output.hotkey.oftemplate",
         )
         assert entry is not None and entry.template is not None
         trigger = entry.template.payload["trigger"]
@@ -722,7 +764,7 @@ class TestSaveOscBindingAsTemplate:
         )
         status, _ = _post_empty(
             base,
-            "/api/templates/osc_output.roundtrip.openfollowtemplate/apply",
+            "/api/templates/osc_output.roundtrip.oftemplate/apply",
         )
         assert status == 200
         cfg = load_config(cfg_path)
@@ -747,7 +789,7 @@ class TestApplyCameraGrid:
         )
         status, body = _post_empty(
             base,
-            "/api/templates/camera_grid.indoor.openfollowtemplate/apply?confirm=1",
+            "/api/templates/camera_grid.indoor.oftemplate/apply?confirm=1",
         )
         assert status == 200
         assert json.loads(body)["ok"] is True
@@ -795,7 +837,7 @@ class TestApplyCameraGrid:
         )
         status, body = _post_empty(
             base,
-            "/api/templates/camera_grid.indoor.openfollowtemplate/apply",
+            "/api/templates/camera_grid.indoor.oftemplate/apply",
         )
         assert status == 400
         assert "?confirm=1" in json.loads(body)["error"]
@@ -820,7 +862,7 @@ class TestApplyZones:
         )
         status, body = _post_empty(
             base,
-            "/api/templates/zones.studio.openfollowtemplate/apply?confirm=1",
+            "/api/templates/zones.studio.oftemplate/apply?confirm=1",
         )
         assert status == 200
         assert json.loads(body)["ok"] is True
@@ -839,7 +881,7 @@ class TestApplyZones:
         )
         status, _ = _post_empty(
             base,
-            "/api/templates/zones.x.openfollowtemplate/apply",
+            "/api/templates/zones.x.oftemplate/apply",
         )
         assert status == 400
 
@@ -849,7 +891,7 @@ class TestApplyEdgeCases:
         _, base, _ = live_server
         status, _ = _post_empty(
             base,
-            "/api/templates/osc_output.nope.openfollowtemplate/apply",
+            "/api/templates/osc_output.nope.oftemplate/apply",
         )
         assert status == 404
 
@@ -858,7 +900,7 @@ class TestApplyEdgeCases:
         # Dotfile names are rejected by the safety check.
         status, _ = _post_empty(
             base,
-            "/api/templates/.openfollowtemplate/apply",
+            "/api/templates/.oftemplate/apply",
         )
         assert status == 400
 
@@ -868,7 +910,7 @@ class TestApplyEdgeCases:
         _, base, _ = live_server
         status, _ = _post_empty(
             base,
-            "/api/templates/osc..output.openfollowtemplate/apply",
+            "/api/templates/osc..output.oftemplate/apply",
         )
         assert status == 400
 
@@ -878,7 +920,7 @@ class TestApplyEdgeCases:
         _, base, _ = live_server
         status, _ = _post_empty(
             base,
-            "/api/templates/osc%5Coutput.openfollowtemplate/apply",
+            "/api/templates/osc%5Coutput.oftemplate/apply",
         )
         assert status == 400
 
@@ -888,10 +930,10 @@ class TestApplyEdgeCases:
         # loader's error path.
         bad = _templates_root(cfg_path) / "user"
         bad.mkdir(parents=True, exist_ok=True)
-        (bad / "osc_output.broken.openfollowtemplate").write_text("{not json")
+        (bad / "osc_output.broken.oftemplate").write_text("{not json")
         status, body = _post_empty(
             base,
-            "/api/templates/osc_output.broken.openfollowtemplate/apply",
+            "/api/templates/osc_output.broken.oftemplate/apply",
         )
         assert status == 400
         assert "invalid JSON" in json.loads(body)["error"]
@@ -919,7 +961,7 @@ class TestDelete:
     def test_system_template_returns_403(self, live_server) -> None:
         _, base, cfg_path = live_server
         sysdir = _templates_root(cfg_path) / "system"
-        target = next(sysdir.glob("*.openfollowtemplate"))
+        target = next(sysdir.glob("*.oftemplate"))
         status, body = _delete(base, f"/api/templates/{target.name}")
         assert status == 403
         assert "system" in json.loads(body)["error"].lower()
@@ -930,13 +972,13 @@ class TestDelete:
         _, base, _ = live_server
         status, _ = _delete(
             base,
-            "/api/templates/osc_output.nope.openfollowtemplate",
+            "/api/templates/osc_output.nope.oftemplate",
         )
         assert status == 404
 
     def test_unsafe_filename_returns_400(self, live_server) -> None:
         _, base, _ = live_server
-        # Names without the ``.openfollowtemplate`` suffix fail the gate.
+        # Names without the ``.oftemplate`` suffix fail the gate.
         status, _ = _delete(base, "/api/templates/foo.json")
         assert status == 400
 
@@ -1139,3 +1181,344 @@ class TestSaveAsTemplateDirtyGate:
         assert 'data-template-deps="#zone-editor-section, #trigger-zones-section"' in body
         assert 'id="trigger-zones-section"' in body
         assert body.count('data-template-form="1"') >= 5
+
+
+# ---------------------------------------------------------------------------
+# GET /api/templates/<filename>/export
+# ---------------------------------------------------------------------------
+
+
+class TestExport:
+    def test_export_user_template_round_trips(self, live_server) -> None:
+        _, base, _ = live_server
+        status, body = _post_json(
+            base,
+            "/api/templates/osc_output/save",
+            {"name": "Export Me", "payload": {"address": "/a/[markerid]", "args": ["[x]"]}},
+        )
+        assert status == 200, body
+        filename = json.loads(body)["filename"]
+
+        status, raw, headers = _get_raw(base, f"/api/templates/{filename}/export")
+        assert status == 200
+        # Download, not inline; canonical extension on the offered name.
+        disp = headers.get("Content-Disposition", "")
+        assert "attachment" in disp
+        assert filename in disp
+        assert disp.rstrip('"').endswith(".oftemplate")
+        # The body is a complete, re-importable envelope.
+        env = json.loads(raw.decode())
+        assert env["type"] == "osc_output"
+        assert env["name"] == "Export Me"
+        assert env["payload"]["address"] == "/a/[markerid]"
+
+    def test_export_system_template(self, live_server) -> None:
+        _, base, _ = live_server
+        status, raw, headers = _get_raw(base, "/api/templates/osc_output.adm-osc.oftemplate/export")
+        assert status == 200
+        assert "attachment" in headers.get("Content-Disposition", "")
+        assert json.loads(raw.decode())["type"] == "osc_output"
+
+    def test_export_unknown_filename_404(self, live_server) -> None:
+        _, base, _ = live_server
+        status, _, _ = _get_raw(base, "/api/templates/osc_output.nope.oftemplate/export")
+        assert status == 404
+
+    def test_export_unreadable_file_400(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        userdir = _templates_root(cfg_path) / "user"
+        userdir.mkdir(parents=True, exist_ok=True)
+        (userdir / "osc_output.broken.oftemplate").write_text("{not json")
+        status, raw, _ = _get_raw(base, "/api/templates/osc_output.broken.oftemplate/export")
+        assert status == 400
+        assert "error" in json.loads(raw.decode())
+
+    def test_export_invalid_filename_400(self, live_server) -> None:
+        _, base, _ = live_server
+        # No template suffix → rejected before any disk lookup.
+        status, _, _ = _get_raw(base, "/api/templates/stray.txt/export")
+        assert status == 400
+
+    def test_export_sanitizes_unsafe_filename_in_header(self, live_server) -> None:
+        # The filename gate admits a double quote, so a hand-placed file could
+        # otherwise break the quoted Content-Disposition value. The offered
+        # name is sanitised to [A-Za-z0-9._-] (the quote becomes '-').
+        _, base, cfg_path = live_server
+        userdir = _templates_root(cfg_path) / "user"
+        userdir.mkdir(parents=True, exist_ok=True)
+        (userdir / 'osc_output.a"b.oftemplate').write_text(
+            json.dumps({"version": 1, "type": "osc_output", "name": "Quoted", "payload": {"address": "/q", "args": []}})
+        )
+        status, raw, headers = _get_raw(base, "/api/templates/osc_output.a%22b.oftemplate/export")
+        assert status == 200
+        assert headers.get("Content-Disposition") == 'attachment; filename="osc_output.a-b.oftemplate"'
+        assert json.loads(raw.decode())["name"] == "Quoted"
+
+    def test_export_legacy_file_offered_as_canonical(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        userdir = _templates_root(cfg_path) / "user"
+        userdir.mkdir(parents=True, exist_ok=True)
+        # A file saved by an older build still exports – under the new name.
+        legacy = userdir / "osc_output.old.openfollowtemplate"
+        legacy.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "type": "osc_output",
+                    "name": "Old One",
+                    "payload": {"address": "/o", "args": []},
+                }
+            )
+        )
+        status, raw, headers = _get_raw(base, "/api/templates/osc_output.old.openfollowtemplate/export")
+        assert status == 200
+        assert "osc_output.old.oftemplate" in headers.get("Content-Disposition", "")
+        assert json.loads(raw.decode())["name"] == "Old One"
+
+    def test_export_handler_checks_status_before_download(self, live_server) -> None:
+        # Regression: the client-side export handler must fetch and gate on
+        # ``res.ok`` before downloading, so a 404/400 (template deleted or
+        # undecodable since the list rendered) toasts instead of saving the
+        # error body as a bogus ``.oftemplate``. A bare ``<a download>``
+        # navigation can't tell success from failure.
+        _, base, _ = live_server
+        with urllib.request.urlopen(f"{base}/", timeout=5) as r:
+            html = r.read().decode()
+        assert "function onExportClick" in html
+        handler = html[html.index("function onExportClick") :][:1200]
+        assert "fetch(" in handler
+        assert "res.ok" in handler
+        # Download name comes from the server's (sanitised) Content-Disposition,
+        # not the raw on-disk basename.
+        assert "Content-Disposition" in handler
+
+
+# ---------------------------------------------------------------------------
+# POST /api/templates/import
+# ---------------------------------------------------------------------------
+
+
+class TestImport:
+    def test_import_happy_lands_and_lists(self, live_server) -> None:
+        _, base, _ = live_server
+        status, body = _post_raw(
+            base,
+            "/api/templates/import?filename=share.oftemplate",
+            _osc_envelope_bytes(name="Shared Cue"),
+        )
+        assert status == 200, body
+        data = json.loads(body)
+        assert data["ok"] is True
+        assert data["type"] == "osc_output"
+        assert data["filename"].endswith(".oftemplate")
+        # Shows up in the type-scoped list as a user template.
+        status, body = _get(base, "/api/templates?type=osc_output")
+        names = [t["name"] for t in json.loads(body)["templates"]]
+        assert "Shared Cue" in names
+
+    def test_import_bad_json_400(self, live_server) -> None:
+        _, base, _ = live_server
+        status, body = _post_raw(base, "/api/templates/import?filename=x.oftemplate", b"{not json")
+        assert status == 400
+        assert "valid template file" in json.loads(body)["error"].lower()
+
+    def test_import_non_object_400(self, live_server) -> None:
+        _, base, _ = live_server
+        status, body = _post_raw(base, "/api/templates/import?filename=x.oftemplate", b"[1, 2, 3]")
+        assert status == 400
+        assert "JSON object" in json.loads(body)["error"]
+
+    def test_import_deeply_nested_json_400_not_500(self, live_server) -> None:
+        # Deeply-nested JSON (well under the size cap) exhausts the decoder's
+        # recursion; it must be rejected as bad input (400), not crash to 500.
+        _, base, _ = live_server
+        bomb = ("[" * 100_000 + "]" * 100_000).encode()
+        status, body = _post_raw(base, "/api/templates/import?filename=x.oftemplate", bomb)
+        assert status == 400
+        assert "nesting too deep" in json.loads(body)["error"].lower()
+
+    def test_import_utf8_bom_accepted(self, live_server) -> None:
+        # A BOM-prefixed (EF BB BF) but otherwise valid template imports
+        # cleanly instead of being rejected over the invisible prefix.
+        _, base, _ = live_server
+        body = b"\xef\xbb\xbf" + _osc_envelope_bytes(name="Bommed")
+        status, resp = _post_raw(base, "/api/templates/import?filename=x.oftemplate", body)
+        assert status == 200, resp
+        assert json.loads(resp)["ok"] is True
+
+    def test_import_bad_payload_400(self, live_server) -> None:
+        _, base, _ = live_server
+        bad = json.dumps({"version": 1, "type": "osc_output", "name": "Bad", "payload": {"args": []}}).encode()
+        status, body = _post_raw(base, "/api/templates/import?filename=x.oftemplate", bad)
+        assert status == 400
+        assert "address" in json.loads(body)["error"]
+
+    def test_import_newer_format_version_400(self, live_server) -> None:
+        _, base, _ = live_server
+        status, body = _post_raw(
+            base,
+            "/api/templates/import?filename=x.oftemplate",
+            _osc_envelope_bytes(version=TEMPLATE_VERSION + 1),
+        )
+        assert status == 400
+        assert "unsupported version" in json.loads(body)["error"]
+
+    def test_import_payload_error_includes_version_skew(self, live_server) -> None:
+        _, base, _ = live_server
+        # Valid format version, but a trigger kind this build doesn't know,
+        # authored by a far-newer OpenFollow → the rejection names the skew.
+        payload = {"address": "/a", "args": [], "trigger": {"kind": "warp_drive"}}
+        body_bytes = _osc_envelope_bytes(name="Future", app_version="999.0.0", payload=payload)
+        status, body = _post_raw(base, "/api/templates/import?filename=x.oftemplate", body_bytes)
+        assert status == 400
+        err = json.loads(body)["error"]
+        assert "trigger.kind" in err
+        assert "999.0.0" in err
+        assert "update OpenFollow" in err
+
+    def test_import_skew_suppressed_when_running_version_unknown(self, live_server, monkeypatch) -> None:
+        # When our own build is the metadata-less 0.0.0+unknown fallback, the
+        # "newer than us" comparison is meaningless and would fire on nearly
+        # every file, so no skew hint is added - the raw error stands alone.
+        _, base, _ = live_server
+        monkeypatch.setattr("openfollow.__version__", "0.0.0+unknown")
+        payload = {"address": "/a", "args": [], "trigger": {"kind": "warp_drive"}}
+        body_bytes = _osc_envelope_bytes(name="Future", app_version="999.0.0", payload=payload)
+        status, body = _post_raw(base, "/api/templates/import?filename=x.oftemplate", body_bytes)
+        assert status == 400
+        err = json.loads(body)["error"]
+        assert "trigger.kind" in err
+        assert "update OpenFollow" not in err
+
+    def test_import_non_bool_is_system_coerced(self, live_server) -> None:
+        # A hand-authored file with a non-bool is_system loads fine off disk
+        # (the folder is the provenance authority); import must coerce it the
+        # same way, not reject it - matching the "same validation" contract.
+        _, base, _ = live_server
+        body = _osc_envelope_bytes(name="Handmade", is_system=1)
+        status, resp = _post_raw(base, "/api/templates/import?filename=x.oftemplate", body)
+        assert status == 200, resp
+        assert json.loads(resp)["ok"] is True
+
+    def test_import_write_failure_returns_400(self, live_server, monkeypatch) -> None:
+        # A valid envelope that then fails to write (read-only mount / perms)
+        # surfaces as a 400 with the writer's message, not a 500.
+        _, base, _ = live_server
+
+        def _boom(*args: Any, **kwargs: Any) -> Any:
+            raise TemplateWriteError("read-only file system")
+
+        monkeypatch.setattr("openfollow.web.routes.write_user_template", _boom)
+        status, body = _post_raw(base, "/api/templates/import?filename=x.oftemplate", _osc_envelope_bytes())
+        assert status == 400
+        assert "read-only file system" in json.loads(body)["error"]
+
+    def test_import_error_unparseable_app_version_no_skew(self, live_server) -> None:
+        # A non-PEP440 app_version can't be compared, so no skew note is
+        # appended – the raw validation error stands on its own.
+        _, base, _ = live_server
+        body_bytes = _osc_envelope_bytes(name="Junk", app_version="not-a-version", payload={"args": []})
+        status, body = _post_raw(base, "/api/templates/import?filename=x.oftemplate", body_bytes)
+        assert status == 400
+        err = json.loads(body)["error"]
+        assert "address" in err
+        assert "created by OpenFollow" not in err
+
+    def test_import_error_older_app_version_no_skew(self, live_server) -> None:
+        # An older (valid) app_version is not a forward-incompatibility, so the
+        # rejection is left unannotated.
+        _, base, _ = live_server
+        body_bytes = _osc_envelope_bytes(name="Old", app_version="0.0.1", payload={"args": []})
+        status, body = _post_raw(base, "/api/templates/import?filename=x.oftemplate", body_bytes)
+        assert status == 400
+        err = json.loads(body)["error"]
+        assert "address" in err
+        assert "created by OpenFollow" not in err
+
+    def test_import_oversize_413(self, live_server, monkeypatch) -> None:
+        import openfollow.web.routes as routes_mod
+
+        # Shrink the cap so a tiny over-limit body triggers the refusal. The
+        # route rejects on Content-Length before reading, so a *large* body
+        # would break the client's in-flight send (the server never drains
+        # it); a few dozen bytes fit the socket buffer and send cleanly.
+        monkeypatch.setattr(routes_mod, "_MAX_TEMPLATE_UPLOAD_BYTES", 16)
+        _, base, _ = live_server
+        status, body = _post_raw(base, "/api/templates/import?filename=x.oftemplate", b"x" * 64)
+        assert status == 413
+        assert "too large" in json.loads(body)["error"].lower()
+
+    def test_import_bad_extension_400(self, live_server) -> None:
+        _, base, _ = live_server
+        status, body = _post_raw(
+            base,
+            "/api/templates/import?filename=evil.txt",
+            _osc_envelope_bytes(),
+        )
+        assert status == 400
+        assert "Unsupported file type" in json.loads(body)["error"]
+
+    def test_import_missing_filename_400(self, live_server) -> None:
+        # Omitting ?filename= must not skip the extension gate - a named upload
+        # with a recognised suffix is required.
+        _, base, _ = live_server
+        status, body = _post_raw(base, "/api/templates/import", _osc_envelope_bytes())
+        assert status == 400
+        assert "Unsupported file type" in json.loads(body)["error"]
+
+    def test_import_empty_400(self, live_server) -> None:
+        _, base, _ = live_server
+        status, body = _post_raw(base, "/api/templates/import?filename=x.oftemplate", b"")
+        assert status == 400
+        assert "Empty" in json.loads(body)["error"]
+
+    def test_import_legacy_extension_accepted(self, live_server) -> None:
+        _, base, _ = live_server
+        # An export from an older build (legacy name) imports and is rewritten
+        # under the canonical suffix.
+        status, body = _post_raw(
+            base,
+            "/api/templates/import?filename=legacy.openfollowtemplate",
+            _osc_envelope_bytes(name="From Legacy"),
+        )
+        assert status == 200, body
+        assert json.loads(body)["filename"].endswith(".oftemplate")
+
+    def test_import_preserves_app_version(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        status, body = _post_raw(
+            base,
+            "/api/templates/import?filename=x.oftemplate",
+            _osc_envelope_bytes(name="Provenance", app_version="0.0.7"),
+        )
+        assert status == 200, body
+        filename = json.loads(body)["filename"]
+        on_disk = json.loads((_templates_root(cfg_path) / "user" / filename).read_text())
+        assert on_disk["app_version"] == "0.0.7"
+
+    def test_round_trip_export_delete_reimport(self, live_server) -> None:
+        """The acceptance criterion: export → delete → import → listed again."""
+        _, base, _ = live_server
+        status, body = _post_json(
+            base,
+            "/api/templates/osc_output/save",
+            {"name": "Round Trip", "payload": {"address": "/rt/[markerid]", "args": ["[x]"]}},
+        )
+        assert status == 200, body
+        filename = json.loads(body)["filename"]
+
+        # Export the bytes.
+        status, raw, _ = _get_raw(base, f"/api/templates/{filename}/export")
+        assert status == 200
+
+        # Delete it from disk.
+        status, _ = _delete(base, f"/api/templates/{filename}")
+        assert status == 200
+        status, body = _get(base, "/api/templates?type=osc_output")
+        assert "Round Trip" not in [t["name"] for t in json.loads(body)["templates"]]
+
+        # Re-import the exact exported bytes.
+        status, body = _post_raw(base, "/api/templates/import?filename=rt.oftemplate", raw)
+        assert status == 200, body
+        status, body = _get(base, "/api/templates?type=osc_output")
+        assert "Round Trip" in [t["name"] for t in json.loads(body)["templates"]]

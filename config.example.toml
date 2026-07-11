@@ -247,7 +247,7 @@ hysteresis = 0.05
 [ui]
 # "metric" | "imperial". Drives length / speed rendering in the web UI
 # and the on-device Operator Screen / scene / zones overlay. Internal
-# storage, OSC, PSN/RTTrPM/OTP and .openfollowtemplate files are always
+# storage, OSC, PSN/RTTrPM/OTP and .oftemplate files are always
 # metric – only display formatting and form-input parsing change.
 unit_system = "metric"
 

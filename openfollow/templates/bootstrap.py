@@ -8,7 +8,7 @@ import importlib.resources as resources
 import logging
 from pathlib import Path
 
-from openfollow.templates.schema import TEMPLATE_FILE_SUFFIX
+from openfollow.templates.schema import TEMPLATE_FILE_SUFFIX, TEMPLATE_READ_SUFFIXES
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +53,13 @@ def seed_system_templates(templates_root: Path) -> int:
             continue
         written += 1
     # Prune stale templates: on-disk system files no longer in the
-    # bundled set. Only ``.openfollowtemplate`` files are touched;
-    # foreign files an operator placed in ``system/`` are left alone.
+    # bundled set. Both the canonical and legacy suffixes are swept so a
+    # system template renamed across the suffix change doesn't leave its
+    # old-suffix copy behind; foreign files an operator placed in
+    # ``system/`` are left alone.
     pruned = 0
-    for path in target_dir.glob(f"*{TEMPLATE_FILE_SUFFIX}"):
+    stale_paths = {p for suffix in TEMPLATE_READ_SUFFIXES for p in target_dir.glob(f"*{suffix}")}
+    for path in sorted(stale_paths):
         if path.name in bundled_names:
             continue
         try:

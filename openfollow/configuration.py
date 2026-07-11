@@ -1468,7 +1468,7 @@ class OscTransmitterConfig:
 class OscTransmittersConfig:
     """Container for the OSC-transmitters section (the ``transmitters`` rows).
 
-    Operator-saved templates live as ``.openfollowtemplate`` JSON files under
+    Operator-saved templates live as ``.oftemplate`` JSON files under
     ``<config-dir>/templates/user/``, not in this config.
     """
 

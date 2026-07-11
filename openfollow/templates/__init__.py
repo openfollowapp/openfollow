@@ -4,6 +4,8 @@
 
 from openfollow.templates.schema import (
     TEMPLATE_FILE_SUFFIX,
+    TEMPLATE_LEGACY_SUFFIX,
+    TEMPLATE_READ_SUFFIXES,
     TEMPLATE_VERSION,
     VALID_TYPES,
     OpenFollowTemplate,
@@ -14,6 +16,8 @@ from openfollow.templates.schema import (
 __all__ = (
     "OpenFollowTemplate",
     "TEMPLATE_FILE_SUFFIX",
+    "TEMPLATE_LEGACY_SUFFIX",
+    "TEMPLATE_READ_SUFFIXES",
     "TEMPLATE_VERSION",
     "TemplateValidationError",
     "VALID_TYPES",

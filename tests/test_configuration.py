@@ -5418,7 +5418,7 @@ class TestOscTransmittersConfigLegacyLift:
         assert row.trigger.button == "A"
 
     def test_round_trip_through_toml(self, temp_config_path) -> None:  # noqa: ANN001
-        # Templates now live as .openfollowtemplate files; test covers transmitters list.
+        # Templates now live as .oftemplate files; test covers transmitters list.
         original = AppConfig(
             osc_transmitters=OscTransmittersConfig(
                 transmitters=[

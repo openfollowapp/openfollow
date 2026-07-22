@@ -13,7 +13,7 @@ repos:
   # ruff lint + format; check-only (run `make format` to fix). rev must match
   # pyproject.toml dev deps version.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.20
+    rev: v0.15.22
     hooks:
       - id: ruff-check
         args: ["--no-fix"]

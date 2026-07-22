@@ -17,33 +17,33 @@
 
 <div style="max-width:760px;margin:0 auto;">
 
-<a class="about-back-link" href="/">&larr; Back to overview</a>
+<a class="about-back-link" href="/">{{_('&larr; Back to overview')}}</a>
 
 <div class="tab-bar">
-    <button type="button" class="tab-btn active" data-tab="about-info">About</button>
-    <button type="button" class="tab-btn" data-tab="about-license">License</button>
-    <button type="button" class="tab-btn" data-tab="about-third-party">Third-party notices</button>
-    <button type="button" class="tab-btn" data-tab="about-written-offer">Written offer</button>
+    <button type="button" class="tab-btn active" data-tab="about-info">{{_('About')}}</button>
+    <button type="button" class="tab-btn" data-tab="about-license">{{_('License')}}</button>
+    <button type="button" class="tab-btn" data-tab="about-third-party">{{_('Third-party notices')}}</button>
+    <button type="button" class="tab-btn" data-tab="about-written-offer">{{_('Written offer')}}</button>
 </div>
 
 <div class="tab-content active" id="tab-about-info">
     <div class="section">
         <div class="section-head">
-            <h2>About OpenFollow</h2>
-            <span class="section-note">Version &amp; license information</span>
+            <h2>{{_('About OpenFollow')}}</h2>
+            <span class="section-note">{{_('Version &amp; license information')}}</span>
         </div>
 
         <div class="group">
             <div class="metric-row">
-                <span class="metric-label">Version</span>
+                <span class="metric-label">{{_('Version')}}</span>
                 <span class="metric-value">v{{__version__}}{{ ' (' + __commit__ + ')' if __commit__ else '' }}</span>
             </div>
             <div class="metric-row">
-                <span class="metric-label">License</span>
+                <span class="metric-label">{{_('License')}}</span>
                 <span class="metric-value">AGPL-3.0-or-later</span>
             </div>
             <div class="metric-row">
-                <span class="metric-label">Source code</span>
+                <span class="metric-label">{{_('Source code')}}</span>
                 <span class="metric-value"><a href="https://github.com/openfollowapp/openfollow" target="_blank" rel="noopener noreferrer">github.com/openfollowapp/openfollow</a></span>
             </div>
         </div>
@@ -59,14 +59,14 @@
             </p>
             <p style="margin:0;color:var(--muted);line-height:1.55;">
                 This program is distributed in the hope that it will be useful, but
-                <strong>WITHOUT ANY WARRANTY</strong>; without even the implied warranty of
+                <strong>{{_('WITHOUT ANY WARRANTY')}}</strong>; without even the implied warranty of
                 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public
                 License for more details.
             </p>
         </div>
 
         <div class="group">
-            <div class="group-title">License texts</div>
+            <div class="group-title">{{_('License texts')}}</div>
             <p style="margin:0;color:var(--muted);line-height:1.55;">
                 OpenFollow's own license is the GNU AGPL v3 – read it under the License tab. The
                 third-party and operating-system components are catalogued under Third-party notices.
@@ -77,7 +77,7 @@
         </div>
 
         <div class="group">
-            <div class="group-title">License &amp; source (mere aggregation)</div>
+            <div class="group-title">{{_('License &amp; source (mere aggregation)')}}</div>
             <p style="margin:0 0 0.6rem;color:var(--muted);line-height:1.55;">
                 OpenFollow (control software and the integrated YOLO models) is licensed
                 AGPL-3.0-or-later; its complete corresponding source is at
@@ -91,7 +91,7 @@
         </div>
 
         <div class="group" style="border-bottom:0;padding-bottom:0;margin-bottom:0;">
-            <div class="group-title">Name &amp; logo</div>
+            <div class="group-title">{{_('Name &amp; logo')}}</div>
             <p style="margin:0;color:var(--muted);line-height:1.55;">
                 The AGPL applies to the OpenFollow code only. The OpenFollow name, logo, and all
                 OpenFollow branding are &copy; Michel Honold, Paul Hermann, Vinzenz Schultz &ndash;
@@ -104,12 +104,12 @@
 <div class="tab-content" id="tab-about-license">
     <div class="section">
         <div class="section-head">
-            <h2>GNU Affero General Public License v3</h2>
+            <h2>{{_('GNU Affero General Public License v3')}}</h2>
         </div>
         % if license_text:
         <div class="help-drawer-body"><pre class="license-text">{{license_text}}</pre></div>
         <div class="group" style="border-bottom:0;padding:0.6rem 0 0;margin:0;">
-            <a href="/about/license.txt" target="_blank" rel="noopener noreferrer">Open as plain text &#8599;</a>
+            <a href="/about/license.txt" target="_blank" rel="noopener noreferrer">{{_('Open as plain text &#8599;')}}</a>
         </div>
         % else:
         <div class="group">
@@ -125,7 +125,7 @@
 <div class="tab-content" id="tab-about-third-party">
     <div class="section">
         <div class="section-head">
-            <h2>Third-party notices</h2>
+            <h2>{{_('Third-party notices')}}</h2>
         </div>
         <div class="group">
             <p style="margin:0;color:var(--muted);line-height:1.55;">
@@ -148,7 +148,7 @@
 <div class="tab-content" id="tab-about-written-offer">
     <div class="section">
         <div class="section-head">
-            <h2>Written offer for source code</h2>
+            <h2>{{_('Written offer for source code')}}</h2>
         </div>
         % if written_offer_html:
         <div class="help-drawer-body">{{! written_offer_html }}</div>

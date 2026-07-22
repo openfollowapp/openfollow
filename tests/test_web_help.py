@@ -16,6 +16,7 @@ import urllib.request
 import pytest
 from bottle import template
 
+import openfollow.i18n as i18n
 import openfollow.web.discovery as discovery_module
 from openfollow.configuration import AppConfig
 from openfollow.web import server as _server_module  # noqa: F401 – registers tpl path
@@ -231,3 +232,62 @@ class TestHelpRoute:
         # Dotted id (path-traversal payload) is rejected by the slug regex.
         status, _, _ = _get(live_server, "/help/a.b.html")
         assert status == 404
+
+    def test_malformed_lang_cookie_falls_back_to_en(self, live_server) -> None:
+        # An over-long lang cookie is scrubbed to "en" before building the doc
+        # path; the bundled English doc still renders (defence-in-depth branch,
+        # not the primary traversal guard).  A control-char value can't be sent
+        # through a real HTTP client (the header is rejected on the wire), so
+        # the over-length branch stands in for the same ``lang = "en"`` scrub.
+        req = urllib.request.Request(
+            f"{live_server}/help/camera.html",
+            headers={"Cookie": f"lang={'x' * 33}"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            assert r.status == 200
+            assert "<h1>Camera</h1>" in r.read().decode()
+
+    def test_language_specific_doc_preferred(self, tmp_path, monkeypatch) -> None:
+        # When a ``<lang>/<id>.md`` doc exists it is served in preference to the
+        # flat English one.  No localized docs ship yet, so build one in a tmp
+        # help dir and drive the real route in-process via WSGI with a matching
+        # ``lang`` cookie.
+        import io
+
+        from openfollow.web import routes as routes_mod
+
+        help_dir = tmp_path / "help"
+        (help_dir / "zh_CN").mkdir(parents=True)
+        (help_dir / "camera.md").write_text("# Camera EN\n", encoding="utf-8")
+        (help_dir / "zh_CN" / "camera.md").write_text("# 摄像头 ZH\n", encoding="utf-8")
+        monkeypatch.setattr(routes_mod, "_WEB_HELP_DIR", help_dir)
+
+        i18n._AVAILABLE_LANGUAGES = ()
+        monkeypatch.setattr(i18n, "_discover_languages", lambda root, domain: ("en", "zh_CN"))
+        server = ConfigWebServer(config_path=str(tmp_path / "config.toml"))
+
+        environ = {
+            "REQUEST_METHOD": "GET",
+            "PATH_INFO": "/help/camera.html",
+            "SCRIPT_NAME": "",
+            "SERVER_NAME": "localhost",
+            "SERVER_PORT": "8080",
+            "SERVER_PROTOCOL": "HTTP/1.1",
+            "HTTP_HOST": "test",
+            "HTTP_COOKIE": "lang=zh_CN",
+            "wsgi.version": (1, 0),
+            "wsgi.url_scheme": "http",
+            "wsgi.input": io.BytesIO(),
+            "wsgi.errors": io.StringIO(),
+            "wsgi.multithread": False,
+            "wsgi.multiprocess": False,
+            "wsgi.run_once": False,
+        }
+        captured: dict = {}
+
+        def start_response(status, headers, exc_info=None):
+            captured["status"] = status
+
+        body = b"".join(server._app.wsgi(environ, start_response)).decode()
+        assert "200" in captured["status"]
+        assert "ZH" in body  # served the zh_CN doc, not the flat English one

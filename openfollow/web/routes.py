@@ -3883,6 +3883,45 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         resp.delete_cookie(_AUTH_COOKIE, path="/")
         raise resp
 
+    # -- Language switcher -------------------------------------------------
+
+    @app.get("/set-lang/<lang>")
+    def set_lang(lang: str) -> Any:
+        """Persist the operator's UI language choice in a cookie and redirect.
+
+        The :class:`~openfollow.i18n.I18NPlugin` reads this ``lang`` cookie on
+        every request to pick the gettext catalog. Unknown languages are
+        rejected here (404) so downstream code can trust the cookie value.
+        The redirect target is the ``Referer`` header (so the operator stays on
+        the tab they were on), falling back to ``/``.
+
+        To add a language, drop a compiled gettext catalog at
+        ``locale/<code>/LC_MESSAGES/openfollow.mo`` and restart: the framework
+        auto-discovers ``.mo`` files at startup (see ``_discover_languages``)
+        and ``base.tpl`` renders the switcher from ``available_languages``
+        automatically — no code or template edit needed.
+        """
+        from openfollow.i18n import _COOKIE_OPTS, validate_language_code
+
+        if not validate_language_code(lang):
+            abort(404)
+        target = "/"
+        referer = request.headers.get("Referer")
+        if referer:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(referer)
+            request_host = request.headers.get("Host", "")
+            if parsed.netloc == request_host:
+                target = parsed.path
+                if parsed.query:
+                    target += "?" + parsed.query
+        resp = HTTPResponse(status=303, headers={"Location": target})
+        cookie_opts = dict(_COOKIE_OPTS)
+        cookie_opts["secure"] = request.urlparts.scheme == "https"
+        resp.set_cookie("lang", lang, **cookie_opts)
+        raise resp
+
     # -- Helpers --------------------------------------------------------------
 
     def _render_general(
@@ -3987,7 +4026,18 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """
         if not _HELP_ID_RE.fullmatch(doc_id):
             abort(404)
-        md_path = (_WEB_HELP_DIR / f"{doc_id}.md").resolve()
+        # Try language-specific help first.
+        # The lang cookie is validated at write time (/set-lang); the real
+        # path-traversal protection is the resolved-path containment check
+        # below.  Filtering control chars / over-long values here is just
+        # lightweight defence-in-depth (consistent with
+        # _is_safe_template_filename), not the primary guard.
+        lang = request.get_cookie("lang", default="en")
+        if any(ord(c) < 0x20 for c in lang) or len(lang) > 32:
+            lang = "en"
+        md_path = (_WEB_HELP_DIR / lang / f"{doc_id}.md").resolve()
+        if not md_path.is_file():
+            md_path = (_WEB_HELP_DIR / f"{doc_id}.md").resolve()
         if _WEB_HELP_DIR.resolve() not in md_path.parents or not md_path.is_file():
             abort(404)
         response.content_type = "text/html; charset=utf-8"
@@ -4591,12 +4641,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 f"<td>{cell}</td></tr>"
             )
         if not results:
-            rows.append(
-                "<tr><td colspan='3'>"
-                "<span class='field-note'>No peers known yet – "
-                "wait for discovery or check beacon health above.</span>"
-                "</td></tr>"
-            )
+            from openfollow.i18n import _
+
+            no_peers = _("No peers known yet – wait for discovery or check beacon health above.")
+            rows.append(f"<tr><td colspan='3'><span class='field-note'>{no_peers}</span></td></tr>")
         rows.append("</tbody></table>")
         return "".join(rows)
 

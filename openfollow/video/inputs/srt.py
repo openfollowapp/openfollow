@@ -8,6 +8,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from openfollow.i18n import _, _l  # noqa: E402
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -33,7 +34,7 @@ class SrtInput(VideoInputBase):
     """SRT video input – caller mode; fast reconnect then background self-heal."""
 
     input_id = "srt"
-    display_name = "SRT"
+    display_name = _l("SRT")
 
     # -- Declarations ---------------------------------------------------------
 
@@ -213,7 +214,7 @@ class SrtInput(VideoInputBase):
         return (
             '<div class="row">'
             '    <div class="field wide">'
-            "        <label>SRT URL</label>"
+            f"        <label>{_('SRT URL')}</label>"
             f'        <input type="text" name="srt_host" value="{srt_host}"'
             '               placeholder="srt://192.168.0.182:1600?streamid=r=0">'
             "    </div>"

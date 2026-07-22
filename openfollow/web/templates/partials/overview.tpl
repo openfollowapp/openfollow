@@ -1,7 +1,7 @@
 <div class="section" id="overview-section" data-fold-key="overview" data-help="overview">
     <div class="section-head">
-        <h2>Server Network</h2>
-        <span class="section-note">Detected OpenFollow web peers</span>
+        <h2>{{_('Server Network')}}</h2>
+        <span class="section-note">{{_('Detected OpenFollow web peers')}}</span>
     </div>
     %# Only the peer rows poll/swap (innerHTML) – the section shell stays put so
     %# the fold state + Refresh action don't flicker every 5s. The trigger gate
@@ -14,7 +14,7 @@
         % include('partials/overview_peers.tpl', local=local, peers=peers)
     </div>
     <div class="actions" style="margin-top: 12px;">
-        <button type="button" onclick="htmx.ajax('GET','/section/overview',{target:'#overview-peers',swap:'innerHTML'})" class="secondary">Refresh</button>
+        <button type="button" onclick="htmx.ajax('GET','/section/overview',{target:'#overview-peers',swap:'innerHTML'})" class="secondary">{{_('Refresh')}}</button>
     </div>
 
     %# Overview is strictly read-only peer discovery.

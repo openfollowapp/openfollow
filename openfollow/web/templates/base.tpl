@@ -794,6 +794,41 @@
  /* Full-width within its container (e.g. the login Unlock button). */
  .btn-block { width: 100%; }
  /* Network form: compact label:value grid matching the read-only status table. */
+ /* Interface Assignment: function -> interface rows. Built from the existing
+ tokens so it inherits the surrounding look with no new palette. */
+ .ia-table {
+ width: 100%;
+ border-collapse: collapse;
+ font-size: 0.86rem;
+ }
+ .ia-table th, .ia-table td {
+ text-align: left;
+ padding: 0.42rem 0.6rem;
+ border-bottom: 1px solid var(--border-soft);
+ vertical-align: middle;
+ }
+ .ia-table thead th {
+ font-size: 0.72rem;
+ text-transform: uppercase;
+ letter-spacing: 0.06em;
+ color: var(--muted);
+ font-weight: 700;
+ border-bottom: 1px solid var(--border);
+ }
+ .ia-table tbody tr:last-child th,
+ .ia-table tbody tr:last-child td { border-bottom: 0; }
+ .ia-table tbody th[scope="row"] { font-weight: 600; white-space: nowrap; }
+ .ia-assign td:nth-child(2) { width: 46%; min-width: 220px; }
+ .ia-assign select { width: 100%; max-width: 22rem; margin: 0; }
+ .ia-addr { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
+ .ia-readonly th[scope="row"] { font-weight: 500; }
+ @media (max-width: 720px) {
+ .ia-table thead { display: none; }
+ .ia-table, .ia-table tbody, .ia-table tr, .ia-table th, .ia-table td { display: block; width: 100%; }
+ .ia-table tbody tr { border-bottom: 1px solid var(--border-soft); padding: 0.45rem 0; }
+ .ia-table th, .ia-table td { border-bottom: 0; padding: 0.2rem 0; }
+ .ia-assign td:nth-child(2) { width: 100%; }
+ }
  .network-grid {
  display: grid;
  grid-template-columns: minmax(7rem, 9rem) 1fr;

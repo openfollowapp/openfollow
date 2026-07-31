@@ -624,6 +624,107 @@ def test_network_interfaces_by_name_empty_current_does_not_fall_back_to_psn(
     assert "selected" not in body
 
 
+def test_interface_assignment_renders_rows_with_resolved_addresses(
+    live_server,
+    monkeypatch,
+) -> None:
+    """The panel shows where each plane will actually bind, including rows
+    left on "follow station" – an empty cell would hide the indirection."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.178.59")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_source_iface = "eth0"
+    cfg.otp_output.source_iface = "eth1"
+    save_config(cfg, server.config_path)
+
+    status, body = _get(base, "/section/interface_assignment")
+    assert status == 200
+    assert "Station default" in body
+    assert "OTP output" in body
+    # PSN follows the station pin and has no picker of its own.
+    assert "PSN in / out" in body
+    assert 'name="psn_source_iface"' in body
+    assert 'name="otp_output.source_iface"' in body
+    # Both resolved addresses are on screen: the station's and the OTP pin's.
+    assert "192.168.178.59" in body
+    assert "10.0.0.9" in body
+
+
+def test_interface_assignment_save_round_trips_to_disk(
+    live_server,
+    monkeypatch,
+) -> None:
+    """One POST writes pins that live on different owning dataclasses."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.178.59")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+    server, base = live_server
+
+    status, body = _post_form(
+        base,
+        "/section/interface_assignment",
+        {"psn_source_iface": "eth0", "otp_output.source_iface": "eth1"},
+    )
+    assert status == 200
+    assert "saved" in body
+
+    saved = load_config(server.config_path)
+    assert saved.psn_source_iface == "eth0"
+    assert saved.otp_output.source_iface == "eth1"
+
+
+def test_interface_assignment_save_can_clear_a_pin(
+    live_server,
+    monkeypatch,
+) -> None:
+    """Selecting "follow station interface" must undo a pin – otherwise a
+    plane can be moved onto its own NIC but never moved back."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {"eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.178.59")]},
+    )
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.otp_output.source_iface = "eth1"
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(
+        base,
+        "/section/interface_assignment",
+        {"psn_source_iface": "eth0", "otp_output.source_iface": ""},
+    )
+    assert status == 200
+    assert load_config(server.config_path).otp_output.source_iface == ""
+
+
 def test_network_interfaces_by_name_blank_station_relabels_empty_option(
     live_server,
     monkeypatch,

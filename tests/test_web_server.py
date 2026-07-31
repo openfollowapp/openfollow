@@ -624,6 +624,46 @@ def test_network_interfaces_by_name_empty_current_does_not_fall_back_to_psn(
     assert "selected" not in body
 
 
+def test_psn_save_preserves_pin_now_that_the_picker_moved(live_server) -> None:
+    """The PSN section no longer posts ``psn_source_iface`` – its picker moved
+    to Interface Assignment. Saving PSN must leave the pin alone rather than
+    clearing it, which is the silent-data-loss trap of dropping a form field."""
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_source_iface = "eth0"
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(
+        base,
+        "/section/psn",
+        {"psn_system_name": "Stage Left", "psn_mcast_ip": "236.10.10.10"},
+    )
+    assert status == 200
+
+    saved = load_config(server.config_path)
+    assert saved.psn_system_name == "Stage Left"
+    assert saved.psn_source_iface == "eth0"
+
+
+def test_otp_save_preserves_pin_now_that_the_picker_moved(live_server) -> None:
+    """Same guard for OTP: its Save posts no ``source_iface`` any more."""
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.otp_output.source_iface = "eth1"
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(
+        base,
+        "/section/otp_output",
+        {"port": "5568", "system_number": "3", "priority": "100"},
+    )
+    assert status == 200
+
+    saved = load_config(server.config_path)
+    assert saved.otp_output.system_number == 3
+    assert saved.otp_output.source_iface == "eth1"
+
+
 def test_interface_assignment_renders_rows_with_resolved_addresses(
     live_server,
     monkeypatch,

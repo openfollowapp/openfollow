@@ -822,6 +822,25 @@
  .ia-assign select { width: 100%; max-width: 22rem; margin: 0; }
  .ia-addr { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
  .ia-readonly th[scope="row"] { font-weight: 500; }
+ /* Read-only pointer shown by each protocol section now that the pin itself
+ is edited centrally in Interface Assignment. Dashed border marks it as a
+ report rather than a control. */
+ .ia-pointer {
+ display: flex;
+ flex-direction: column;
+ gap: 0.2rem;
+ padding: 0.5rem 0.7rem;
+ border: 1px dashed var(--border);
+ border-radius: 10px;
+ background: var(--surface);
+ }
+ .ia-pointer-value { font-size: 0.86rem; }
+ .ia-link {
+ color: var(--accent);
+ text-decoration: none;
+ font-size: 0.8rem;
+ }
+ .ia-link:hover { text-decoration: underline; }
  @media (max-width: 720px) {
  .ia-table thead { display: none; }
  .ia-table, .ia-table tbody, .ia-table tr, .ia-table th, .ia-table td { display: block; width: 100%; }

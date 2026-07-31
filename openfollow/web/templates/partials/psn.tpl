@@ -29,21 +29,20 @@
                 <span id="psn-psn-mcast-ip-error" class="field-error"></span>
             </div>
             <div class="field">
-                <label>PSN Network Interface</label>
+                <label>Network Interface</label>
+                %# Read-only pointer: the pin is edited in one place for every
+                %# protocol (General > Interface Assignment), so this section
+                %# reports where PSN is bound rather than offering a second
+                %# control for the same field.
                 %# Startup advisory: pinned iface wasn't live at boot, so
                 %# auto-detected working IP. Rendered only when pin missed.
                 % _adv = psn_source_advisory if defined('psn_source_advisory') and psn_source_advisory else {}
                 % if _adv.get('banner'):
                 <div class="notice warning" role="status">{{_adv['banner']}}</div>
                 % end
-                <div class="input-with-button">
-                    %# Pin stable interface name (eth0/wlan0, not IP).
-                    %# Iface stable across DHCP/venue changes.
-                    <select name="psn_source_iface" hx-get="/network/interfaces/by_name" hx-trigger="load, click from:#refresh-iface-psn"
-                            hx-target="this" hx-swap="innerHTML">
-                        <option value="{{config.psn_source_iface}}">{{config.psn_source_iface or '-- Loading... --'}}</option>
-                    </select>
-                    <button type="button" id="refresh-iface-psn" class="secondary">Scan</button>
+                <div class="ia-pointer">
+                    <span class="ia-pointer-value">{{config.psn_source_iface or 'Auto-detect'}}</span>
+                    <a class="ia-link" href="#interface-assignment-section">Change in General &rsaquo; Interface Assignment</a>
                 </div>
             </div>
         </div>

@@ -198,6 +198,7 @@ VALID_SECTIONS = {
     "trigger_zones",
     "osc_bindings",
     "osc_destinations",
+    "interface_assignment",
 }
 _WEB_STATIC_DIR = Path(__file__).with_name("static")
 
@@ -966,8 +967,108 @@ def strip_device_local_fields(
     return {k: v for k, v in data.items() if k not in drop}
 
 
+# Editable rows of the Interface Assignment panel, in render order. Each maps
+# the form field name to the config attribute that owns it: ``None`` for a
+# top-level ``AppConfig`` field, otherwise the sub-config attribute. Storage
+# stays per-section (so the existing save / hot-reload / device-local
+# machinery applies unchanged); only the editing surface is central.
+_INTERFACE_ASSIGNMENT_TARGETS: dict[str, tuple[str | None, str]] = {
+    "psn_source_iface": (None, "psn_source_iface"),
+    "otp_output.source_iface": ("otp_output", "source_iface"),
+}
+
+
+def _apply_interface_assignment(cfg: AppConfig, data: Mapping[str, Any]) -> None:
+    """Write the Interface Assignment panel's pins onto their owning configs.
+
+    Each pin is stripped to mirror its ``__post_init__``, then every touched
+    dataclass has ``__post_init__`` re-run so a crafted POST can't bypass
+    validation a hand-edited TOML would trip.
+    """
+    touched: set[str | None] = set()
+    for form_key, (attr, field_name) in _INTERFACE_ASSIGNMENT_TARGETS.items():
+        if form_key not in data:
+            continue
+        target = cfg if attr is None else getattr(cfg, attr)
+        setattr(
+            target,
+            field_name,
+            _as_str(data[form_key], getattr(target, field_name)).strip(),
+        )
+        touched.add(attr)
+    for attr in touched:
+        # ``AppConfig.__post_init__`` is expensive and re-normalises unrelated
+        # fields, but it is also the only thing that validates a top-level pin
+        # – run it only when a top-level row actually changed.
+        (cfg if attr is None else getattr(cfg, attr)).__post_init__()
+
+
+def build_interface_assignment_rows(cfg: AppConfig) -> list[dict[str, Any]]:
+    """Rows for the Interface Assignment panel, in render order.
+
+    Every row carries the address the plane will actually bind, resolved
+    through the same ``pin → station → auto`` chain the runtime uses – so a
+    row left on "Follow station interface" visibly shows where it points
+    rather than an empty cell.
+
+    Planes with no pin of their own (PSN, discovery, marker sync) render
+    read-only: they follow ``psn_source_iface``, which the Station default row
+    owns, so giving them their own dropdown would imply an independence they
+    don't have.
+    """
+    from openfollow.net_utils import resolve_plane_source_ip
+
+    station = cfg.psn_source_iface
+    station_ip, _status = resolve_plane_source_ip("", station)
+
+    def _addr(pin: str) -> str:
+        resolved, _ = resolve_plane_source_ip(pin, station)
+        return resolved
+
+    return [
+        {
+            "key": "psn_source_iface",
+            "label": "Station default",
+            "value": station,
+            "address": station_ip,
+            "editable": True,
+            "blank": "auto",
+        },
+        {
+            "key": "",
+            "label": "PSN in / out",
+            "value": "",
+            "address": station_ip,
+            "editable": False,
+            "blank": "",
+            "note": "Follows station interface",
+        },
+        {
+            "key": "otp_output.source_iface",
+            "label": "OTP output",
+            "value": cfg.otp_output.source_iface,
+            "address": _addr(cfg.otp_output.source_iface),
+            "editable": True,
+            "blank": "station",
+        },
+        {
+            "key": "",
+            "label": "Discovery / marker sync",
+            "value": "",
+            "address": station_ip,
+            "editable": False,
+            "blank": "",
+            "note": "Follows station interface",
+        },
+    ]
+
+
 def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> bool:
     """Apply section updates in-place. Returns False for unknown sections."""
+    if section == "interface_assignment":
+        _apply_interface_assignment(cfg, data)
+        return True
+
     if section == "video_source":
         if "video_source_type" in data:
             from openfollow.video.inputs import get_available_input_ids
@@ -4644,6 +4745,31 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # this code path.
         template_name = "partials/gamepad" if name == "controller" else f"partials/{name}"
         return template(template_name, config=config, **extra)
+
+    def _render_interface_assignment(cfg: AppConfig, *, saved: bool = False) -> Any:
+        return template(
+            "partials/interface_assignment",
+            config=cfg,
+            saved=saved,
+            assignment_rows=build_interface_assignment_rows(cfg),
+        )
+
+    @app.get("/section/interface_assignment")
+    def get_interface_assignment() -> Any:
+        """Render the panel. Also the ``Scan`` path – the addresses are
+        re-resolved on every render, so a plain re-fetch refreshes them."""
+        return _render_interface_assignment(_request_scoped_config())
+
+    @app.post("/section/interface_assignment")
+    def update_interface_assignment() -> Any:
+        """Save every pin, then let the config file-watcher live-apply them.
+
+        Each row's field lives on the sub-config that owns its protocol, so
+        the existing per-section hot-reload orchestrators pick the changes up
+        with no dispatch of this panel's own – nothing here needs a restart.
+        """
+        cfg = _save_section_from_form("interface_assignment")
+        return _render_interface_assignment(cfg, saved=True)
 
     @app.post("/section/video_source")
     def update_video_source() -> Any:

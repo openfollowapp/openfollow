@@ -615,6 +615,17 @@ def test_active_interface_is_expanded_and_others_offer_configure(net_server) -> 
     assert "/section/network/status/eth0" not in body
 
 
+def test_view_mode_can_expand_an_interface_read_only(net_server) -> None:
+    """DNS and lease live in the detail, so View mode has to be able to open a
+    row - otherwise reading a value would mean entering Edit mode."""
+    _fake, base = net_server
+    status, body = _get(base, "/section/network/status/wlan0")
+    assert status == 200
+    assert "Configure <code>wlan0</code>" in body
+    assert "disabled" in body
+    assert ">Apply<" not in body
+
+
 def test_configure_expands_the_named_interface(net_server) -> None:
     """The interface is named in the path, so which adapter is being edited
     can't be ambiguous."""

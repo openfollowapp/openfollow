@@ -24,8 +24,8 @@ from openfollow.scene.camera import psn_to_pygfx_array
 _FOV_MIN_DEG = 1.0
 _FOV_MAX_DEG = 179.0
 
-# Below this |cos(pitch)| the camera is within ~0.06° of straight down. There
-# bearing and roll turn the image the same way, and the atan2 pair that
+# Below this |cos(pitch)| the camera is within ~0.06° of straight down, where
+# bearing and roll turn the image the same way and the atan2 pair that
 # separates them runs on a row of the rotation that has gone to zero, so noise
 # decides the split. Wide enough that the degenerate case is a neighbourhood
 # rather than one exact float.

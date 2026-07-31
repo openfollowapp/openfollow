@@ -600,7 +600,7 @@
     </div>
     <div class="group">
       <div class="group-title">Orientation</div>
-      <p class="wizard-help">Enter the camera's angle: Pitch tilts down, Yaw is the direction it faces (0&deg; from the house, 180&deg; from upstage).</p>
+      <p class="wizard-help">Enter the camera's angle: Pitch tilts down, Yaw is the direction it faces (0&deg; looks upstage, 180&deg; looks back at the house).</p>
       <div class="row">
         <div class="field">
           <label for="cam_pitch">Pitch <span style="font-weight:400;text-transform:none;letter-spacing:0;">(down &minus;)</span></label>

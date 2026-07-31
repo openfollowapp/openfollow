@@ -121,10 +121,13 @@ jobs:
       # Attach both the signed bundle (in-app updater path) and the raw .deb
       # (manual apt/dpkg install) to the release. Globs are non-overlapping.
       - name: Attach .deb + bundle to GitHub Release
-        if: github.event_name == 'release'
+        # Also runs on a manual dispatch that passes `version`, so a maintainer can
+        # re-attach assets to an existing release after a transient job failure.
+        if: github.event_name == 'release' || github.event.inputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/openfollow_*_${{ matrix.arch }}.ofupdate dist/openfollow_*_${{ matrix.arch }}.deb --clobber --repo "$GITHUB_REPOSITORY"
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.version }}
+        run: gh release upload "$TAG" dist/openfollow_*_${{ matrix.arch }}.ofupdate dist/openfollow_*_${{ matrix.arch }}.deb --clobber --repo "$GITHUB_REPOSITORY"
 
   # Build the flashable Raspberry Pi OS Lite (Trixie, arm64) appliance images, with
   # the arm64 .deb from the build job pre-installed, using rpi-image-gen (cloned at a
@@ -213,9 +216,13 @@ jobs:
           OF_DEB_VERSION: ${{ github.event.inputs.version || github.event.release.tag_name }}
         run: |
           set -eu
-          SBOM="$(find "$RUNNER_TEMP/rig-build" -name '*.sbom' -type f -print -quit)"
+          # rpi-image-gen leaves the rootless chroot under rig-build with a few
+          # dirs the runner user can't read; find exits non-zero on those. Swallow
+          # the walk error so set -e can't abort before the match is even tested –
+          # the emptiness checks below still fail loudly if no SBOM was produced.
+          SBOM="$(find "$RUNNER_TEMP/rig-build" -name '*.sbom' -type f -print -quit 2>/dev/null || true)"
           if [ -z "$SBOM" ]; then
-            SBOM_ZST="$(find "$RUNNER_TEMP/rig-build" -name '*.sbom.zst' -type f -print -quit)"
+            SBOM_ZST="$(find "$RUNNER_TEMP/rig-build" -name '*.sbom.zst' -type f -print -quit 2>/dev/null || true)"
             [ -n "$SBOM_ZST" ] || { echo "no SBOM produced by rpi-image-gen under $RUNNER_TEMP/rig-build" >&2; exit 1; }
             SBOM="$RUNNER_TEMP/openfollow.sbom"
             zstd -d -f -o "$SBOM" "$SBOM_ZST"
@@ -241,13 +248,15 @@ jobs:
         run: python3 "$GITHUB_WORKSPACE/packaging/image/check_sbom_compliance.py" "${{ steps.sbom.outputs.path }}"
 
       - name: Attach image to GitHub Release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || github.event.inputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.img.outputs.path }}" --clobber
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.version }}
+        run: gh release upload "$TAG" "${{ steps.img.outputs.path }}" --clobber
 
       - name: Attach SBOM to GitHub Release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || github.event.inputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.sbom.outputs.path }}" --clobber
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.version }}
+        run: gh release upload "$TAG" "${{ steps.sbom.outputs.path }}" --clobber

@@ -315,6 +315,14 @@ def test_api_diagnostics_bundle_returns_text_attachment(
     disposition = headers.get("Content-Disposition", "")
     assert "attachment" in disposition
     assert "openfollow-diagnostics-TestSystem-" in disposition
+    # Release version + architecture make the download self-identifying.
+    import openfollow
+
+    assert disposition.endswith(
+        f'-{diagnostics._sanitise_name(openfollow.__version__)}-{diagnostics._platform_arch()}.txt"'
+    )
+    assert f"version: {openfollow.__version__}" in body
+    assert f"platform: {diagnostics._platform_label()}" in body
     # Body has every section header from the bundle.
     for header in ("=== A. Service / port ===", "=== E1. Runtime / versions ==="):
         assert header in body

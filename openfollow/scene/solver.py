@@ -64,25 +64,29 @@ def vfov_to_hfov(vfov_deg: float, aspect: float) -> float:
 
 
 def _rotation_matrix(pitch_rad: float, yaw_rad: float, roll_rad: float) -> npt.NDArray[np.float64]:
-    """Build rotation matrix matching pygfx intrinsic XYZ euler convention.
+    """Build the camera→world rotation for a pan-tilt head.
 
-    pygfx euler: (pitch, -yaw, roll) – we receive raw PSN angles and
-    negate yaw internally, same as Camera._apply().
+    The head pans about world up first, then tilts about the camera's **own**
+    right axis, then rolls about its optical axis – so ``pitch`` is the
+    depression below the horizon and ``yaw`` the ground bearing, each
+    independent of the other. Angles arrive in the PSN convention; yaw is
+    negated for the Y-up intermediate frame the projection works in.
+
+    Intrinsic Y-X-Z: ``R = Ry(-yaw) @ Rx(pitch) @ Rz(roll)``.
     """
     a = pitch_rad
-    b = -yaw_rad  # negated, matching Camera._apply()
+    b = -yaw_rad  # PSN yaw turns the opposite way about the Y-up axis
     c = roll_rad
 
     ca, sa = math.cos(a), math.sin(a)
     cb, sb = math.cos(b), math.sin(b)
     cc, sc = math.cos(c), math.sin(c)
 
-    # Intrinsic XYZ: R = Rx(a) @ Ry(b) @ Rz(c)
     return np.array(
         [
-            [cb * cc, -cb * sc, sb],
-            [sa * sb * cc + ca * sc, -sa * sb * sc + ca * cc, -sa * cb],
-            [-ca * sb * cc + sa * sc, ca * sb * sc + sa * cc, ca * cb],
+            [cb * cc + sb * sa * sc, -cb * sc + sb * sa * cc, sb * ca],
+            [ca * sc, ca * cc, -sa],
+            [-sb * cc + cb * sa * sc, sb * sc + cb * sa * cc, cb * ca],
         ],
         dtype=np.float64,
     )
@@ -560,22 +564,20 @@ def decompose_homography(
     pos_y = float(-cam_pygfx[2])
     pos_z = float(cam_pygfx[1])
 
-    # Extract Euler angles from R = Rx(pitch) @ Ry(-yaw) @ Rz(roll).
-    # R[0,2] = sin(-yaw)
-    sb = float(np.clip(R[0, 2], -1.0, 1.0))
-    neg_yaw = math.asin(sb)
-    cb = math.cos(neg_yaw)
+    # Extract Euler angles from R = Ry(-yaw) @ Rx(pitch) @ Rz(roll).
+    # R[1,2] = -sin(pitch)
+    sa = float(np.clip(-R[1, 2], -1.0, 1.0))
+    pitch_rad = math.asin(sa)
+    ca = math.cos(pitch_rad)
 
-    if abs(cb) > 1e-6:
-        pitch_rad = math.atan2(-R[1, 2], R[2, 2])
-        roll_rad = math.atan2(-R[0, 1], R[0, 0])
+    if abs(ca) > 1e-6:
+        neg_yaw = math.atan2(R[0, 2], R[2, 2])
+        roll_rad = math.atan2(R[1, 0], R[1, 1])
     else:
-        # Gimbal lock (yaw ≈ ±90°): set roll = 0.
-        # pragma: no cover – physically requires a side-on camera
-        # (yaw ≈ 90°), incompatible with the calibration overlay's
-        # forward-facing assumption. Kept as a safety net.
-        roll_rad = 0.0  # pragma: no cover
-        pitch_rad = math.atan2(R[1, 0], R[1, 1])  # pragma: no cover
+        # Gimbal lock: a camera pointing straight down has no distinct bearing
+        # and roll, so pin the pan and fold the remaining freedom into roll.
+        neg_yaw = 0.0
+        roll_rad = math.atan2(-R[0, 1], R[0, 0])
 
     yaw_deg = -math.degrees(neg_yaw)
     pitch_deg = math.degrees(pitch_rad)

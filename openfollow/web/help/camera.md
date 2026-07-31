@@ -14,9 +14,13 @@ Positions are in **metres**, relative to the **Reference Point** – the single 
 
 ## Orientation (Pitch, Yaw, Roll)
 
-- **Pitch** – tilt up or down. Negative looks down at the stage; a front-of-house camera is typically around −20°.
-- **Yaw** – pan left or right. `0` looks straight upstage.
+Think of the camera on a pan-and-tilt head: yaw swings it round to face the stage, then pitch tilts it down into the stage, then roll levels the picture.
+
+- **Pitch** – tilt up or down, measured from the horizon. Negative looks down; a front-of-house camera is typically around −20°. Pitch means the same thing whichever way the camera faces, so a rig behind or beside the stage still tilts down with a negative pitch.
+- **Yaw** – which way the camera faces, as a compass bearing on the stage floor. `0` looks straight upstage, `180` is a camera hung upstage looking back towards the audience, and `−90` / `90` are box-boom positions looking across the stage.
 - **Roll** – rotation around the lens axis. Leave at `0` unless the camera is physically canted.
+
+If your camera has a yaw other than `0` and was calibrated on an older version, re-run the **Setup Wizard** once: yaw and pitch used to interfere with each other, so the stored angles may not describe where the camera actually points. A camera with yaw `0` is unaffected.
 
 ## Lens
 

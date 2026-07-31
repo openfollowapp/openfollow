@@ -600,7 +600,7 @@
     </div>
     <div class="group">
       <div class="group-title">Orientation</div>
-      <p class="wizard-help">Enter the camera's angle. If the camera points straight at the stage, start with Pitch &asymp; &minus;30&deg; (looking down), Yaw = 0&deg;, Roll = 0&deg;.</p>
+      <p class="wizard-help">Enter the camera's angle. Start with Pitch &asymp; &minus;30&deg; (looking down) and Roll = 0&deg;. Yaw is the direction the camera faces: 0&deg; from the house, 180&deg; from upstage, &plusmn;90&deg; from a box boom.</p>
       <div class="row">
         <div class="field">
           <label for="cam_pitch">Pitch <span style="font-weight:400;text-transform:none;letter-spacing:0;">(down &minus;)</span></label>

@@ -4459,7 +4459,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.get("/api/diagnostics/bundle")
     def api_diagnostics_bundle() -> Any:
         """Build the full bundle, write a copy to disk, return as text
-        download. Filename: ``openfollow-diagnostics-<system>-<ts>.txt``."""
+        download. Filename:
+        ``openfollow-diagnostics-<system>-<ts>-<version>-<arch>.txt``."""
         cfg = _request_scoped_config()
         # Size the operator's configured detection model store alongside
         # the SD card so the storage breakdown shows where models live

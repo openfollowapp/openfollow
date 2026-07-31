@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+import openfollow
 from openfollow.logging_setup import RingBufferLogHandler
 from openfollow.web import diagnostics as diag
 
@@ -1122,10 +1123,30 @@ def test_collect_recent_io_lists_provider_entries() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("machine", "expected_arch", "expected_label"),
+    [
+        ("aarch64", "arm64", "arm64 (aarch64)"),
+        ("x86_64", "amd64", "amd64 (x86_64)"),
+        ("armv7l", "armhf", "armhf (armv7l)"),
+        # macOS already reports the Debian label – no redundant parenthetical.
+        ("arm64", "arm64", "arm64"),
+        # Unmapped machine passes through verbatim, not "riscv64 (riscv64)".
+        ("riscv64", "riscv64", "riscv64"),
+    ],
+)
+def test_platform_label_maps_machine(monkeypatch, machine, expected_arch, expected_label) -> None:
+    monkeypatch.setattr(platform, "machine", lambda: machine)
+    assert diag._platform_arch() == expected_arch
+    assert diag._platform_label() == expected_label
+
+
 def test_collect_bundle_runs_with_no_providers() -> None:
     bundle = diag.collect_bundle()
     assert bundle.generated_at  # ISO timestamp
     assert bundle.host_label
+    assert bundle.app_version == openfollow.__version__
+    assert bundle.platform_label
     # All section lists are populated (each section's collector ran
     # to completion even without any provider wired).
     for _label, attr in diag._BUNDLE_SECTIONS:
@@ -1139,6 +1160,19 @@ def test_format_bundle_emits_section_headers() -> None:
         assert f"=== {label} ===" in text
     # UTF-8 round-trips cleanly.
     text.encode("utf-8")
+
+
+def test_format_bundle_header_identifies_version_and_platform(monkeypatch) -> None:
+    """A bundle must name the release it came from and the architecture it
+    ran on, from the package metadata – not from a git checkout, which a
+    ``.deb`` / image install doesn't have."""
+    monkeypatch.setattr(openfollow, "__version__", "9.9.9")
+    monkeypatch.setattr(platform, "machine", lambda: "aarch64")
+    text = diag.format_bundle(diag.collect_bundle())
+    header = text.splitlines()[:3]
+    assert header[0] == "openfollow diagnostics bundle"
+    assert header[1] == "version: 9.9.9"
+    assert header[2] == "platform: arm64 (aarch64)"
 
 
 # ---------------------------------------------------------------------------
@@ -1156,9 +1190,9 @@ def test_write_bundle_to_disk_round_trip(tmp_path) -> None:
     assert path is not None
     assert path.exists()
     assert path.read_text() == "hello"
-    # Filename: openfollow-diagnostics-<sanitised>-<ts>.txt
+    # Filename: openfollow-diagnostics-<sanitised>-<ts>-<version>-<arch>.txt
     assert path.name.startswith("openfollow-diagnostics-Rig_One-")
-    assert path.name.endswith(".txt")
+    assert path.name.endswith(f"-{diag._sanitise_name(openfollow.__version__)}-{diag._platform_arch()}.txt")
 
 
 def test_write_bundle_to_disk_retention_prunes(tmp_path) -> None:
@@ -1224,10 +1258,36 @@ def test_default_disk_root_falls_back_to_home(monkeypatch, tmp_path) -> None:
     assert root == Path(str(tmp_path)) / ".openfollow" / "diagnostics"
 
 
-def test_bundle_filename_shape() -> None:
+def test_bundle_filename_shape(monkeypatch) -> None:
+    monkeypatch.setattr(openfollow, "__version__", "0.4.0")
+    monkeypatch.setattr(diag, "_platform_arch", lambda: "arm64")
     ts = datetime(2026, 5, 7, 12, 34, 56, tzinfo=timezone.utc)
     name = diag.bundle_filename("Rig One", ts)
-    assert name == "openfollow-diagnostics-Rig_One-20260507T123456Z.txt"
+    assert name == "openfollow-diagnostics-Rig_One-20260507T123456Z-0.4.0-arm64.txt"
+
+
+def test_bundle_filename_sanitises_local_version(monkeypatch) -> None:
+    """A PEP 440 local version (``0.0.0+unknown``, what a non-checkout
+    install without metadata reports) carries a ``+`` – illegal in the
+    ``Content-Disposition`` filename token and awkward on disk."""
+    monkeypatch.setattr(openfollow, "__version__", "0.0.0+unknown")
+    monkeypatch.setattr(diag, "_platform_arch", lambda: "amd64")
+    ts = datetime(2026, 5, 7, 12, 34, 56, tzinfo=timezone.utc)
+    assert diag.bundle_filename("rig", ts) == "openfollow-diagnostics-rig-20260507T123456Z-0.0.0_unknown-amd64.txt"
+
+
+def test_bundle_filename_sorts_chronologically_across_a_version_bump(monkeypatch) -> None:
+    """Retention prunes by filename sort, so the timestamp must dominate
+    the version. ``0.10.0`` sorts *before* ``0.4.0`` lexicographically – a
+    version ahead of the timestamp would make retention evict the newer
+    bundle first."""
+    monkeypatch.setattr(diag, "_platform_arch", lambda: "arm64")
+    ts = datetime(2026, 5, 7, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(openfollow, "__version__", "0.4.0")
+    older = diag.bundle_filename("rig", ts)
+    monkeypatch.setattr(openfollow, "__version__", "0.10.0")
+    newer = diag.bundle_filename("rig", ts.replace(hour=13))
+    assert older < newer
 
 
 # ---------------------------------------------------------------------------

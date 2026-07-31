@@ -33,6 +33,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
 
+import openfollow
 from openfollow.logging_setup import RingBufferLogHandler
 
 logger = logging.getLogger(__name__)
@@ -1658,6 +1659,32 @@ def collect_device_permissions(p: DiagnosticsProviders) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Bundle identity – release version + platform
+# ---------------------------------------------------------------------------
+
+
+def _platform_arch() -> str:
+    """Debian-style architecture label for this host (``arm64`` / ``amd64`` /
+    ``armhf`` / ``i386``), falling back to the raw ``platform.machine()``.
+
+    Shares the updater's mapping so a bundle's platform matches the release
+    artifact (``openfollow_<version>_<arch>.ofupdate``) the host installs.
+    Imported lazily to keep this module's top-level import surface cheap."""
+    from openfollow.runtime.deb_update import _deb_arch  # noqa: PLC0415
+
+    return _deb_arch()
+
+
+def _platform_label() -> str:
+    """Architecture label for the bundle header, carrying the raw
+    ``platform.machine()`` alongside it when the two differ – so the mapping
+    stays lossless and an unmapped machine reads as itself, not twice."""
+    arch = _platform_arch()
+    machine = platform.machine()
+    return f"{arch} ({machine})" if arch != machine else arch
+
+
+# ---------------------------------------------------------------------------
 # Bundle assembly
 # ---------------------------------------------------------------------------
 
@@ -1672,6 +1699,8 @@ class DiagnosticsBundle:
     """
 
     generated_at: str = ""
+    app_version: str = ""
+    platform_label: str = ""
     host_label: str = ""
     service_status: str = ""
     redactions_applied: str = ""
@@ -1726,6 +1755,8 @@ def collect_bundle(
 
     return DiagnosticsBundle(
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        app_version=openfollow.__version__,
+        platform_label=_platform_label(),
         host_label=f"{platform.node()} ({platform.platform()})",
         service_status=("running" if p.web_port_configured is not None else "NOT RUNNING (sample)"),
         redactions_applied="web_pin=***, X-Auth-Signature stripped",
@@ -1781,6 +1812,12 @@ def format_bundle(bundle: DiagnosticsBundle) -> str:
     is a Python ``str``)."""
     out: list[str] = [
         "openfollow diagnostics bundle",
+        # Version + platform lead the header so a bundle is self-identifying
+        # in its first lines. Both come from the running package, not the
+        # checkout, so a .deb / image install reports them just as a source
+        # tree does (E1's git rev needs a ``.git`` and is blank there).
+        f"version: {bundle.app_version}",
+        f"platform: {bundle.platform_label}",
         f"generated: {bundle.generated_at}",
         f"host: {bundle.host_label}",
         f"service status: {bundle.service_status}",
@@ -1799,8 +1836,8 @@ def format_bundle(bundle: DiagnosticsBundle) -> str:
 
 
 # Filename shape: ``openfollow-diagnostics-<sanitised-name>-
-# <utc-timestamp>.txt``. Underscores in the system name go through
-# verbatim; everything outside [A-Za-z0-9._-] is replaced with ``_``
+# <utc-timestamp>-<version>-<arch>.txt``. Underscores in the system name go
+# through verbatim; everything outside [A-Za-z0-9._-] is replaced with ``_``
 # so a name with spaces / slashes lands cleanly.
 _NAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
 
@@ -1813,11 +1850,20 @@ def _sanitise_name(name: str) -> str:
 def bundle_filename(system_name: str, ts: datetime) -> str:
     """Return the canonical filename for a diagnostics bundle.
 
-    ``system_name`` is sanitised to ``[A-Za-z0-9._-]`` to prevent
-    breaking header quoting or the on-disk filename.
+    ``system_name``, the release version, and the architecture label are each
+    sanitised to ``[A-Za-z0-9._-]`` to prevent breaking header quoting or the
+    on-disk filename (a local version like ``0.0.0+unknown`` carries a ``+``).
+
+    Version and architecture trail the timestamp rather than preceding it:
+    :func:`_prune_old_bundles` sorts candidates by filename and relies on that
+    sort being chronological, which a leading version string would break
+    (``0.10.0`` sorts before ``0.4.0``, so retention would evict the newer
+    bundle first).
     """
     name = _sanitise_name(system_name)
-    return f"openfollow-diagnostics-{name}-{ts.strftime('%Y%m%dT%H%M%SZ')}.txt"
+    version = _sanitise_name(openfollow.__version__)
+    arch = _sanitise_name(_platform_arch())
+    return f"openfollow-diagnostics-{name}-{ts.strftime('%Y%m%dT%H%M%SZ')}-{version}-{arch}.txt"
 
 
 def default_disk_root() -> Path:

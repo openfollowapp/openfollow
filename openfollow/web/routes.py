@@ -284,6 +284,15 @@ _WEB_HELP_DIR = Path(__file__).with_name("help")
 _HELP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]+$")
 _GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+# Wording for the empty option in an interface picker, keyed by ``?blank=``.
+# Allow-listed rather than interpolated: the label is rendered into HTML.
+# "auto" = nothing to fall back to (the station picker itself); "station" =
+# an empty pin follows ``psn_source_iface`` (every per-plane picker).
+_BLANK_IFACE_LABELS = {
+    "auto": "-- Auto-detect --",
+    "station": "-- Follow station interface --",
+}
+
 _SECTION_CONFIG_ATTRS = {
     "camera": "camera",
     "grid": "grid",
@@ -6995,6 +7004,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         selects that iface in the rendered list; without it the route
         defaults to ``psn_source_iface`` so the PSN picker keeps working
         with a plain ``hx-get``.
+
+        ``?blank=station`` labels the empty option "Follow station interface"
+        instead of "Auto-detect". Per-plane pickers use it because an empty
+        pin follows ``psn_source_iface``, while the station picker itself has
+        nothing to follow and keeps the auto-detect wording. Unknown values
+        fall back to auto-detect – the label is allow-listed, never
+        interpolated from the query.
         """
         from openfollow.net_utils import list_iface_ipv4
 
@@ -7002,8 +7018,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # ``?current=`` present (even empty) overrides; absent → PSN default. An
         # empty OTP pin must stay empty (auto-detect), not fall back to PSN's.
         current = request.query.current if "current" in request.query else cfg.psn_source_iface
+        blank_label = _BLANK_IFACE_LABELS.get(request.query.blank, _BLANK_IFACE_LABELS["auto"])
         ifaces = list_iface_ipv4()
-        options = ['<option value="">-- Auto-detect --</option>']
+        options = [f'<option value="">{blank_label}</option>']
         names = {name for name, _ in ifaces}
         for name, ip in ifaces:
             selected = "selected" if name == current else ""

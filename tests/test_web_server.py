@@ -624,6 +624,56 @@ def test_network_interfaces_by_name_empty_current_does_not_fall_back_to_psn(
     assert "selected" not in body
 
 
+def test_network_interfaces_by_name_blank_station_relabels_empty_option(
+    live_server,
+    monkeypatch,
+) -> None:
+    """Per-plane pickers ask for ``?blank=station``: an empty pin there means
+    "follow the station interface", not "let the OS choose", and the label has
+    to say so or the indirection is invisible."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {"eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.178.59")]},
+    )
+    _server, base = live_server
+
+    status, body = _get(base, "/network/interfaces/by_name?blank=station&current=")
+    assert status == 200
+    assert "Follow station interface" in body
+    assert "Auto-detect" not in body
+
+
+def test_network_interfaces_by_name_unknown_blank_falls_back_to_auto_detect(
+    live_server,
+    monkeypatch,
+) -> None:
+    """The blank label is allow-listed, never interpolated – an unknown (or
+    crafted) ``?blank=`` renders the default wording rather than reaching the
+    HTML."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {"eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.178.59")]},
+    )
+    _server, base = live_server
+
+    status, body = _get(base, "/network/interfaces/by_name?blank=%3Cscript%3E&current=")
+    assert status == 200
+    assert "Auto-detect" in body
+    assert "<script>" not in body
+
+
 # ---------------------------------------------------------------------------
 # JSON API – shape and content
 # ---------------------------------------------------------------------------

@@ -1190,3 +1190,52 @@ class TestApplyInterfaceAssignment:
         cfg.otp_output.port = 999999
         apply_section_data(cfg, "interface_assignment", {"psn_source_iface": "eth0"})
         assert cfg.otp_output.port == 999999
+
+
+class TestRequestLocalIface:
+    """``request_local_iface`` answers "which adapter did this operator reach
+    us on", which guards them from editing that adapter and dropping their own
+    session. It reads the connection's local address, not the Host header:
+    with the default wildcard bind the operator usually arrives via
+    ``<slug>.local``, so the header holds a name."""
+
+    KEY = "openfollow.local_addr"
+
+    def test_resolves_a_local_address_to_its_interface(self, monkeypatch) -> None:
+        import socket
+        from types import SimpleNamespace
+
+        import openfollow.net_utils as net_utils_module
+
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: {
+                "eth0": [SimpleNamespace(family=socket.AF_INET, address="192.168.1.5")],
+                "eth1": [SimpleNamespace(family=socket.AF_INET, address="10.0.0.9")],
+            },
+        )
+        assert routes_module.request_local_iface({self.KEY: "10.0.0.9"}) == "eth1"
+
+    def test_missing_key_yields_no_marker(self) -> None:
+        """Any WSGI server that doesn't supply the address (a test harness, a
+        future front-end) must degrade to no marker, not raise."""
+        assert routes_module.request_local_iface({}) == ""
+
+    @pytest.mark.parametrize("addr", ["", "   ", None])
+    def test_blank_address_yields_no_marker(self, addr: object) -> None:
+        assert routes_module.request_local_iface({self.KEY: addr}) == ""
+
+    def test_loopback_yields_no_marker(self) -> None:
+        """A loopback connection is the on-screen embedded browser, which no
+        interface change can disconnect – marking one would be misleading."""
+        assert routes_module.request_local_iface({self.KEY: "127.0.0.1"}) == ""
+
+    def test_unknown_address_yields_no_marker(self, monkeypatch) -> None:
+        """Rather than guess when the address matches no local interface: a
+        missing marker is a missed warning, a wrong one points at the wrong
+        adapter."""
+        import openfollow.net_utils as net_utils_module
+
+        monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", dict)
+        assert routes_module.request_local_iface({self.KEY: "203.0.113.7"}) == ""

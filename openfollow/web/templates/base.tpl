@@ -835,6 +835,50 @@
  background: var(--surface);
  }
  .ia-pointer-value { font-size: 0.86rem; }
+ /* Interface list in Network Settings: status dot, session badge, and the
+ per-interface editor that expands under its own row. */
+ .ia-nics td:first-child, .ia-nics th:first-child { width: 1.4rem; padding-right: 0; }
+ .ia-actions { text-align: right; white-space: nowrap; }
+ .ia-dot {
+ display: inline-block;
+ width: 8px; height: 8px;
+ border-radius: 50%;
+ background: var(--ok);
+ box-shadow: 0 0 0 3px rgba(125, 229, 159, 0.14);
+ }
+ .ia-dot.down { background: rgba(247, 245, 233, 0.3); box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.05); }
+ .ia-badge {
+ display: inline-block;
+ margin-left: 0.3rem;
+ padding: 0.06rem 0.45rem;
+ border-radius: 999px;
+ font-size: 0.66rem;
+ font-weight: 800;
+ letter-spacing: 0.05em;
+ text-transform: uppercase;
+ white-space: nowrap;
+ }
+ .ia-badge.session {
+ color: var(--ok);
+ background: rgba(125, 229, 159, 0.12);
+ border: 1px solid rgba(125, 229, 159, 0.35);
+ }
+ .ia-legend {
+ display: flex;
+ align-items: center;
+ gap: 1rem;
+ margin-top: 0.6rem;
+ font-size: 0.75rem;
+ color: var(--muted);
+ }
+ .ia-legend .ia-dot { margin-right: 0.3rem; }
+ .ia-legend-actions { margin-left: auto; display: inline-flex; gap: 0.4rem; }
+ .ia-nics tr.is-configuring > td { background: var(--accent-soft); }
+ .ia-editor-row > td { padding: 0 !important; background: var(--bg-soft); }
+ .ia-editor { padding: 0.9rem 1rem 1rem; border-left: 3px solid var(--accent); }
+ .ia-editor-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.7rem; }
+ .ia-editor-head .group-title { margin: 0; }
+ .ia-editor .group:last-of-type { border-bottom: 0; }
  .ia-link {
  color: var(--accent);
  text-decoration: none;

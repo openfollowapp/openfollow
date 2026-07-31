@@ -586,3 +586,124 @@ def test_renew_network_swallows_handler_error(tmp_path) -> None:
     srv = _make_server(tmp_path, network_renew_handler=_boom)
     result = srv.renew_network("eth0")
     assert result.ok is False and "nope" in result.message
+
+
+# --------------------------------------------------------------------------- #
+# Interface list (replaced the single Interface picker)
+# --------------------------------------------------------------------------- #
+
+
+def test_status_lists_every_interface(net_server) -> None:
+    """The old picker showed one adapter at a time, so a multi-NIC station's
+    layout was invisible. Every interface is now on screen at once."""
+    _fake, base = net_server
+    status, body = _get(base, "/section/network/status")
+    assert status == 200
+    assert "Interfaces on this station" in body
+    assert "<code>eth0</code>" in body
+    assert "<code>wlan0</code>" in body
+
+
+def test_active_interface_is_expanded_and_others_offer_configure(net_server) -> None:
+    """One interface is always the current one, so its detail is open; the
+    others carry the button that moves the expansion to them."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/status")
+    # eth0 is FakeNetwork's active interface: expanded, so no button of its own.
+    assert "Configure <code>eth0</code>" in body
+    assert "/section/network/status/wlan0" in body
+    assert "/section/network/status/eth0" not in body
+
+
+def test_configure_expands_the_named_interface(net_server) -> None:
+    """The interface is named in the path, so which adapter is being edited
+    can't be ambiguous."""
+    _fake, base = net_server
+    status, body = _get(base, "/section/network/edit/wlan0")
+    assert status == 200
+    assert "Configure <code>wlan0</code>" in body
+    # ... and the form still carries it to /apply exactly as before.
+    assert 'name="iface" value="wlan0"' in body
+
+
+def test_unknown_interface_falls_back_to_active(net_server) -> None:
+    """A stale or forged interface name must not reach the privileged write
+    path – it sanitises to the active interface, as the picker did."""
+    _fake, base = net_server
+    status, body = _get(base, "/section/network/edit/../../etc/passwd")
+    assert status in (200, 404)
+    if status == 200:
+        assert 'name="iface" value="eth0"' in body
+
+
+def test_no_interfaces_renders_empty_list_not_a_crash(tmp_path, monkeypatch) -> None:
+    """A host with no adapters must render the card, not raise."""
+    for attr in ("BeaconSender", "BeaconReceiver"):
+        monkeypatch.setattr(getattr(discovery_module, attr), "start", lambda self: None)
+        monkeypatch.setattr(getattr(discovery_module, attr), "stop", lambda self: None)
+    fake = FakeNetwork(interfaces=())
+    port = _find_free_tcp_port()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+    server = ConfigWebServer(
+        config_path=str(config_path),
+        host="127.0.0.1",
+        port=port,
+        system_name="TestSystem",
+        network_config_provider=fake.config_provider,
+    )
+    server.start()
+    try:
+        assert _wait_for_port(port)
+        status, body = _get(f"http://127.0.0.1:{port}", "/section/network/status")
+        assert status == 200
+        assert "unavailable" in body
+    finally:
+        server.stop()
+
+
+def test_interface_list_uses_the_richer_provider_when_wired(tmp_path, monkeypatch) -> None:
+    """With the multi-interface provider wired, every row carries its own
+    address and method – not just the active one."""
+    for attr in ("BeaconSender", "BeaconReceiver"):
+        monkeypatch.setattr(getattr(discovery_module, attr), "start", lambda self: None)
+        monkeypatch.setattr(getattr(discovery_module, attr), "stop", lambda self: None)
+    fake = FakeNetwork()
+    calls: list[int] = []
+
+    def _interfaces() -> list[dict]:
+        calls.append(1)
+        return [
+            {"name": "eth0", "address": "10.0.0.5", "prefix": 24, "method": "dhcp", "is_up": True},
+            {"name": "wlan0", "address": "172.16.4.20", "prefix": 24, "method": "static", "is_up": True},
+        ]
+
+    port = _find_free_tcp_port()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+    server = ConfigWebServer(
+        config_path=str(config_path),
+        host="127.0.0.1",
+        port=port,
+        system_name="TestSystem",
+        network_config_provider=fake.config_provider,
+        network_interfaces_provider=_interfaces,
+    )
+    server.start()
+    try:
+        assert _wait_for_port(port)
+        base = f"http://127.0.0.1:{port}"
+        _status, body = _get(base, "/section/network/status")
+        # wlan0 is not the active interface, yet its own address is shown.
+        assert "172.16.4.20" in body
+        assert "Static" in body
+        # A second render inside the TTL window reuses the snapshot rather
+        # than shelling out to the backend again.
+        before = len(calls)
+        _get(base, "/section/network/status")
+        assert len(calls) == before
+        # Scan bypasses the cache so a freshly plugged NIC appears at once.
+        _get(base, "/section/network/status?scan=1")
+        assert len(calls) == before + 1
+    finally:
+        server.stop()

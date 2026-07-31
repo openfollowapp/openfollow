@@ -7,6 +7,7 @@ behind-camera NaN clipping, and degenerate-fov/canvas rejection."""
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -456,6 +457,34 @@ class TestWizardIllustrationAgreement:
     projection sends the operator chasing an overlay that never lines up.
     """
 
+    # The formulas ``_tpl_footprint`` below mirrors. Pinning the template
+    # source is what makes the mirror trustworthy: without it, editing the JS
+    # leaves this suite green and the preview drifts off the projection again.
+    _TPL_CAMERA_MODEL = (
+        "var lookX = Math.cos(pitchR) * Math.sin(yawR);",
+        "var lookY = Math.cos(pitchR) * Math.cos(yawR);",
+        "var lookZ = Math.sin(pitchR);",
+        "var Rv = [Math.cos(yawR), -Math.sin(yawR), 0];",
+        "var Uv = [-Math.sin(yawR) * Math.sin(pitchR), -Math.cos(yawR) * Math.sin(pitchR), Math.cos(pitchR)];",
+        "var vfov = (2 * Math.atan(Math.tan((fov / 2) * rad) * 9 / 16)) / rad;",
+    )
+
+    @staticmethod
+    def _wizard_tpl() -> str:
+        path = Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "wizard.tpl"
+        return path.read_text(encoding="utf-8")
+
+    def test_template_still_uses_the_mirrored_camera_model(self) -> None:
+        """The preview's own camera model is what the rest of this class mirrors.
+
+        Change one of these lines in ``wizard.tpl`` and the numeric agreement
+        test below silently stops describing the template, so pin them here and
+        update both together.
+        """
+        src = self._wizard_tpl()
+        for line in self._TPL_CAMERA_MODEL:
+            assert line in src, f"wizard.tpl no longer contains {line!r} – update _tpl_footprint to match"
+
     @staticmethod
     def _tpl_footprint(
         pos: tuple[float, float, float],
@@ -548,18 +577,20 @@ class TestSolveAtNonZeroYaw:
         # Yaw is an angle: ±180 name the same heading.
         assert math.cos(math.radians(solved.yaw - yaw)) == pytest.approx(1.0, abs=1e-5)
 
+    @pytest.mark.parametrize("pitch", [-90.0, -89.96])
     @pytest.mark.parametrize("roll", [0.0, 30.0, -45.0])
-    def test_overhead_camera_keeps_its_roll(self, roll: float) -> None:
+    def test_overhead_camera_keeps_its_roll(self, pitch: float, roll: float) -> None:
         """Straight down, bearing and roll stop being separable.
 
         Aimed at the floor there is no heading left to measure – panning the
         head and rolling the lens do the same thing – so the pan is pinned and
         the operator's lens rotation is what survives. Without that the two
         freedoms split arbitrarily and a plumb overhead camera comes back
-        canted.
+        canted. Both a bit-exact −90 and a camera merely near the pole must
+        land here, so the behaviour is a neighbourhood and not one float.
         """
         canvas_w, canvas_h = 1920.0, 1080.0
-        params = np.array([0.0, 0.0, 12.0, -90.0, 0.0, roll, 60.0], dtype=np.float64)
+        params = np.array([0.0, 0.0, 12.0, pitch, 0.0, roll, 60.0], dtype=np.float64)
         world = np.array(self._GRID, dtype=np.float64)
         screen = project_points(params, world, canvas_w, canvas_h)
 
@@ -571,6 +602,24 @@ class TestSolveAtNonZeroYaw:
         )
 
         assert solved is not None
-        assert solved.pitch == pytest.approx(-89.0)  # the straight-down clamp
-        assert solved.yaw == pytest.approx(0.0, abs=1e-9)
+        assert solved.pitch < -88.9  # aimed at the floor
         assert solved.roll == pytest.approx(roll, abs=0.05)
+        assert solved.yaw == pytest.approx(0.0, abs=1e-9)
+        # Signed zero reaches config.toml and the form field verbatim.
+        assert math.copysign(1.0, solved.yaw) > 0.0, "yaw came back as negative zero"
+
+    @pytest.mark.parametrize("pitch", [-90.0, -89.6])
+    def test_plumb_overhead_rig_is_refused_rather_than_approximated(self, pitch: float) -> None:
+        """A camera hung dead overhead is rejected, not silently tilted.
+
+        The solved pitch is clamped one degree off vertical, which shifts the
+        corners further than the reprojection gate allows, so the wizard
+        answers "Invalid perspective" instead of accepting a pose that does not
+        reproduce what the operator pinned. Rigs from −89.5° up solve normally.
+        """
+        canvas_w, canvas_h = 1920.0, 1080.0
+        params = np.array([0.0, 0.0, 12.0, pitch, 0.0, 0.0, 60.0], dtype=np.float64)
+        world = np.array(self._GRID, dtype=np.float64)
+        screen = project_points(params, world, canvas_w, canvas_h)
+
+        assert solve_camera_dlt(self._GRID, [tuple(pt) for pt in screen], canvas_w, canvas_h) is None

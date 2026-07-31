@@ -20,7 +20,7 @@ Think of the camera on a pan-and-tilt head: yaw swings it round to face the stag
 - **Yaw** – which way the camera faces, as a compass bearing on the stage floor. `0` looks straight upstage, `180` is a camera hung upstage looking back towards the audience, and `−90` / `90` are box-boom positions looking across the stage.
 - **Roll** – rotation around the lens axis. Leave at `0` unless the camera is physically canted.
 
-If your camera has a yaw other than `0` and was calibrated on an older version, re-run the **Setup Wizard** once: yaw and pitch used to interfere with each other, so the stored angles may not describe where the camera actually points. A camera with yaw `0` is unaffected.
+If the overlay doesn't sit on the video on a camera whose yaw isn't `0`, re-run the **Setup Wizard** – it resolves the orientation from the grid corners rather than from the stored angles.
 
 ## Lens
 

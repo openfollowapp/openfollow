@@ -24,6 +24,13 @@ from openfollow.scene.camera import psn_to_pygfx_array
 _FOV_MIN_DEG = 1.0
 _FOV_MAX_DEG = 179.0
 
+# Below this |cos(pitch)| the camera is within ~0.06° of straight down. There
+# bearing and roll turn the image the same way, and the atan2 pair that
+# separates them runs on a row of the rotation that has gone to zero, so noise
+# decides the split. Wide enough that the degenerate case is a neighbourhood
+# rather than one exact float.
+_GIMBAL_COS_PITCH_EPS = 1e-3
+
 
 def _require_view_inputs(fov: float, canvas_w: float, canvas_h: float) -> None:
     """Reject degenerate projection inputs before any division.
@@ -570,16 +577,17 @@ def decompose_homography(
     pitch_rad = math.asin(sa)
     ca = math.cos(pitch_rad)
 
-    if abs(ca) > 1e-6:
+    if abs(ca) > _GIMBAL_COS_PITCH_EPS:
         neg_yaw = math.atan2(R[0, 2], R[2, 2])
         roll_rad = math.atan2(R[1, 0], R[1, 1])
     else:
-        # Gimbal lock: a camera pointing straight down has no distinct bearing
-        # and roll, so pin the pan and fold the remaining freedom into roll.
+        # Straight down: pin the pan and let roll carry the whole rotation.
         neg_yaw = 0.0
         roll_rad = math.atan2(-R[0, 1], R[0, 0])
 
-    yaw_deg = -math.degrees(neg_yaw)
+    # ``-degrees(0.0)`` is -0.0, which survives round() and would reach the
+    # config file, the JSON response and the form field as "-0.0".
+    yaw_deg = -math.degrees(neg_yaw) + 0.0
     pitch_deg = math.degrees(pitch_rad)
     roll_deg = math.degrees(roll_rad)
 

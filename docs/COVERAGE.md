@@ -223,6 +223,12 @@ on the origin with roll ≈ 1°, which hid mul-vs-div swaps on
 pts + centroid`. The kill tests drive `pitch/yaw/roll ∈ {15°, 25°,
 30°, 35°, 45°}` and off-origin corners to expose both.
 
+> **Counts predate the current rotation composition.** `_rotation_matrix`
+> and the Euler extraction in `decompose_homography` have been rewritten
+> since this run, so the per-term mutants below no longer name live code
+> and the survivor totals are indicative rather than measured. Re-run
+> `mutmut` against this file before relying on the numbers.
+
 Remaining survivors grouped by pattern:
 
 | Pattern                                                                | Count | Justification                                                                                                                                                                                                                                                                                 |

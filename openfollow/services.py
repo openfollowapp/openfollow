@@ -963,23 +963,29 @@ class AppRuntimeServices:
             marker.set_pos(*default_pos)
         self._app._selected_id = self._app._controlled_ids[0] if self._app._controlled_ids else None
 
-    @staticmethod
-    def _resolved_otp_source_ip(cfg: OtpOutputConfig) -> str:
-        """Resolve the OTP output's pinned interface to a concrete bind IP.
+    def _resolved_plane_source_ip(self, pin: str, *, label: str) -> str:
+        """Resolve one plane's interface pin to a concrete bind IP.
 
-        Mirrors PSN (``_resolved_source_ip``): a pinned interface that's down –
-        or unset – falls back to the primary interface so a stale pin never
-        silently stalls multicast output. Empty result lets the OS pick.
+        A blank *pin* follows ``psn_source_iface`` (the station-wide default),
+        which in turn falls back to auto-detect – so a station that pins
+        nothing behaves exactly as it did before per-plane pins existed. A pin
+        that's down falls through rather than failing closed, so a stale pin
+        never silently stalls the plane; *label* names the config field in the
+        warning that surfaces when the pin isn't honoured.
         """
-        from openfollow.net_utils import resolve_source_ip
+        from openfollow.net_utils import resolve_plane_source_ip
 
-        resolved, status = resolve_source_ip(cfg.source_iface, fallback=True)
-        if cfg.source_iface and status != "iface":
+        resolved, status = resolve_plane_source_ip(
+            pin,
+            self._app._config.psn_source_iface,
+        )
+        if pin and status != "iface":
             logger.warning(
-                "Configured otp_output.source_iface '%s' is unavailable; "
-                "falling back to %s. OTP multicast may use the wrong interface.",
-                cfg.source_iface,
+                "Configured %s '%s' is unavailable; falling back to %s. %s may use the wrong interface.",
+                label,
+                pin,
                 resolved or "OS default",
+                label,
             )
         return resolved
 
@@ -991,7 +997,7 @@ class AppRuntimeServices:
             system_name=self._app._config.psn_system_name,
             system_number=cfg.system_number,
             port=cfg.port,
-            source_ip=self._resolved_otp_source_ip(cfg),
+            source_ip=self._resolved_plane_source_ip(cfg.source_iface, label="otp_output.source_iface"),
             priority=cfg.priority,
         )
         server = self._app._server
@@ -1334,7 +1340,7 @@ class AppRuntimeServices:
                     system_name=self._app._config.psn_system_name,
                     system_number=new_cfg.system_number,
                     port=new_cfg.port,
-                    source_ip=self._resolved_otp_source_ip(new_cfg),
+                    source_ip=self._resolved_plane_source_ip(new_cfg.source_iface, label="otp_output.source_iface"),
                     priority=new_cfg.priority,
                 )
             except Exception:

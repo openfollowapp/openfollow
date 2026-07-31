@@ -15,8 +15,9 @@ from typing import Literal
 
 import psutil
 
-# Status from resolve_source_ip: "iface" (pinned), "primary" (auto), "none" (offline).
-ResolveStatus = Literal["iface", "primary", "none"]
+# Status from resolve_source_ip / resolve_plane_source_ip: "iface" (pinned),
+# "station" (fell through to the station-wide pin), "primary" (auto), "none" (offline).
+ResolveStatus = Literal["iface", "station", "primary", "none"]
 
 
 def get_primary_local_ipv4(default: str = "N/A") -> str:
@@ -100,6 +101,43 @@ def resolve_source_ip(
             return ip_for_iface, "iface"
         # Pinned iface is down / missing – fall through to fallback
         # rather than failing closed.
+
+    if not fallback:
+        return "", "none"
+
+    primary = get_primary_local_ipv4(default="")
+    if primary and not primary.startswith("127."):
+        return primary, "primary"
+    return "", "none"
+
+
+def resolve_plane_source_ip(
+    pin: str,
+    station_iface: str = "",
+    *,
+    fallback: bool = True,
+) -> tuple[str, ResolveStatus]:
+    """Resolve one network plane's interface pin to a concrete bind IP.
+
+    Tries *pin* first, then *station_iface* (the station-wide default), then
+    auto-detect. A blank *pin* therefore means "follow the station interface",
+    and a blank station interface in turn means "let the OS choose" – so a
+    station that pins nothing behaves exactly as it did before per-plane pins
+    existed.
+
+    A pin that is down falls through rather than failing closed, so a stale pin
+    never silently stalls a plane; the returned status says which step actually
+    produced the address, which is what the caller warns on.
+    """
+    if pin:
+        ip_for_pin = get_iface_ipv4(pin)
+        if ip_for_pin:
+            return ip_for_pin, "iface"
+
+    if station_iface:
+        ip_for_station = get_iface_ipv4(station_iface)
+        if ip_for_station:
+            return ip_for_station, "station"
 
     if not fallback:
         return "", "none"

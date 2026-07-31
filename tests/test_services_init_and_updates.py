@@ -17,6 +17,7 @@ between ``OpenFollowApp.run()`` and the per-subsystem classes:
 
 from __future__ import annotations
 
+import socket
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -31,6 +32,7 @@ from openfollow.configuration import (
     OtpOutputConfig,
     RttrpmOutputConfig,
 )
+from openfollow.net_utils import resolve_plane_source_ip as _REAL_RESOLVE_PLANE_SOURCE_IP
 from openfollow.psn.server import _UNCHANGED as _UNCHANGED_SENTINEL
 from openfollow.runtime.services_marker_visuals import _resolve_marker_color
 from openfollow.services import AppRuntimeServices
@@ -609,9 +611,52 @@ class TestInitOtp:
 
         monkeypatch.setattr(
             net_utils,
-            "resolve_source_ip",
-            lambda iface, *, fallback=True: ("", "none"),
+            "resolve_plane_source_ip",
+            lambda pin, station="", *, fallback=True: ("", "none"),
         )
+
+    def test_blank_source_iface_follows_station_interface(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        """A blank ``otp_output.source_iface`` means "follow the station
+        interface", so a station pinned to eth0 sends OTP out eth0 instead of
+        whatever the OS routing table picks. Exercises the real resolver
+        against faked interfaces rather than a stubbed seam, because the
+        pin → station → auto chain is the behaviour under test."""
+        import openfollow.net_utils as net_utils_module
+
+        # Undo the class-level stub: this test is about the real
+        # pin → station → auto chain, driven by faked interfaces.
+        monkeypatch.setattr(
+            net_utils_module,
+            "resolve_plane_source_ip",
+            _REAL_RESOLVE_PLANE_SOURCE_IP,
+        )
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: {
+                "eth0": [SimpleNamespace(family=socket.AF_INET, address="192.168.1.5")],
+                "eth1": [SimpleNamespace(family=socket.AF_INET, address="10.0.0.9")],
+            },
+        )
+        cfg = replace(
+            services._app._config,
+            psn_source_iface="eth0",
+            otp_output=OtpOutputConfig(enabled=True, source_iface=""),
+        )
+        services._app._config = cfg
+        services._app._server = _FakePsnServer()
+        services._app._controlled_ids = []
+        monkeypatch.setattr(services_module, "OtpServer", _FakeOtpServer)
+
+        with caplog.at_level("WARNING"):
+            services.init_otp()
+
+        assert services._app._otp_server._source_ip == "192.168.1.5"
+        # Following the station is the documented default, not a degraded
+        # state – it must not warn.
+        assert not [r for r in caplog.records if "source_iface" in r.message]
 
     def test_disabled_is_no_op(self, services: AppRuntimeServices) -> None:
         # Default config has otp_output.enabled=False.
@@ -664,7 +709,11 @@ class TestInitOtp:
         from openfollow import net_utils
 
         # Pinned iface is live → resolves to its own IP, status "iface".
-        monkeypatch.setattr(net_utils, "resolve_source_ip", lambda iface, *, fallback=True: ("192.168.1.5", "iface"))
+        monkeypatch.setattr(
+            net_utils,
+            "resolve_plane_source_ip",
+            lambda pin, station="", *, fallback=True: ("192.168.1.5", "iface"),
+        )
         monkeypatch.setattr(services_module, "OtpServer", _FakeOtpServer)
 
         with caplog.at_level("WARNING"):
@@ -717,7 +766,11 @@ class TestInitOtp:
         from openfollow import net_utils
 
         # Pinned iface is down → falls back to the primary, status "primary".
-        monkeypatch.setattr(net_utils, "resolve_source_ip", lambda iface, *, fallback=True: ("192.168.1.9", "primary"))
+        monkeypatch.setattr(
+            net_utils,
+            "resolve_plane_source_ip",
+            lambda pin, station="", *, fallback=True: ("192.168.1.9", "primary"),
+        )
         monkeypatch.setattr(services_module, "OtpServer", _FakeOtpServer)
 
         with caplog.at_level("WARNING"):

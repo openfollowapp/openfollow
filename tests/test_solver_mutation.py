@@ -43,7 +43,13 @@ from openfollow.scene.solver import (
 pytestmark = pytest.mark.unit
 
 # --------------------------------------------------------------------------- #
-# _rotation_matrix – kill cb*cc → cb/cc, -sa*sb*sc → +sa*sb*sc, etc.
+# _rotation_matrix – kill mul-vs-div and sign mutants on the matrix terms.
+#
+# Orthogonality, determinant and column norms hold for any product of proper
+# rotations, so they cannot see a reordered or mis-signed composition. The
+# absolute look-direction assertion below is what pins the composition itself;
+# TestCameraOrientationConvention in test_solver.py covers it through the
+# public projection boundary.
 # --------------------------------------------------------------------------- #
 
 
@@ -103,6 +109,29 @@ class TestRotationMatrixSubstantialAngles:
             assert math.isclose(norm, 1.0, abs_tol=1e-10), (
                 f"column {col} norm = {norm} at pitch={pitch}° yaw={yaw}° roll={roll}°"
             )
+
+    @pytest.mark.parametrize(
+        "pitch, yaw, roll",
+        [(-35.0, 20.0, 30.0), (-45.0, 150.0, 25.0), (-20.0, -95.0, -15.0)],
+    )
+    def test_rotation_matrix_points_the_camera_where_the_angles_say(
+        self, pitch: float, yaw: float, roll: float
+    ) -> None:
+        """Kill reordered / mis-signed compositions, which the norm checks miss.
+
+        The camera looks along -Z, so the third column negated is the forward
+        ray. In PSN it has to be the pan-then-tilt direction for the requested
+        angles, and roll must not move it at all.
+        """
+        R = _rotation_matrix(math.radians(pitch), math.radians(yaw), math.radians(roll))
+        gfx_forward = -R[:, 2]
+        forward_psn = np.array([gfx_forward[0], -gfx_forward[2], gfx_forward[1]])
+
+        p, y = math.radians(pitch), math.radians(yaw)
+        expected = np.array([math.cos(p) * math.sin(y), math.cos(p) * math.cos(y), math.sin(p)])
+        assert np.allclose(forward_psn, expected, atol=1e-12), (
+            f"forward {forward_psn} != {expected} at pitch={pitch}° yaw={yaw}° roll={roll}°"
+        )
 
 
 # --------------------------------------------------------------------------- #

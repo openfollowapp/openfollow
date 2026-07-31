@@ -58,6 +58,27 @@ def _camera_params(draw: st.DrawFn) -> np.ndarray:
     return np.array([pos_x, pos_y, pos_z, pitch, yaw, roll, fov], dtype=np.float64)
 
 
+# The regime above keeps the camera downstage looking upstage. Real rigs also
+# hang upstage, on box booms, and anywhere else around the stage, so this one
+# walks the camera around a ring and aims it back at the grid centre: full
+# 360° of yaw with the grid reliably framed.
+@st.composite
+def _ring_camera_params(draw: st.DrawFn) -> np.ndarray:
+    bearing = draw(_floats(-180.0, 180.0))  # centre → camera, in ground plane
+    distance = draw(_floats(8.0, 30.0))
+    height = draw(_floats(4.0, 20.0))
+    roll = draw(_floats(-15.0, 15.0))
+    fov = draw(_floats(40.0, 100.0))
+
+    theta = math.radians(bearing)
+    pos_x = math.sin(theta) * distance
+    pos_y = math.cos(theta) * distance
+    # Face back down the bearing, tilted to put the grid centre mid-frame.
+    yaw = bearing - 180.0 if bearing > 0.0 else bearing + 180.0
+    pitch = -math.degrees(math.atan2(height, distance))
+    return np.array([pos_x, pos_y, height, pitch, yaw, roll, fov], dtype=np.float64)
+
+
 # A well-spread, non-degenerate coplanar quad at z=0 (the calibration grid
 # plane), the input shape ``solve_camera_dlt`` is designed for.
 @st.composite
@@ -292,6 +313,78 @@ def test_solve_dlt_handles_arbitrary_screen_without_crash_or_nan(
     solved = solve_camera_dlt([tuple(p) for p in corners], screen, w, h)
     if solved is not None:
         assert np.all(np.isfinite(_solved_params(solved)))
+
+
+# --- orientation holds all the way around the stage --------------------------
+
+
+@given(params=_ring_camera_params(), canvas=_CANVASES)
+def test_camera_aims_where_its_angles_say_from_any_heading(
+    params: np.ndarray,
+    canvas: tuple[float, float],
+) -> None:
+    """Pitch and yaw keep their meaning at every heading.
+
+    Each drawn camera stands somewhere on a ring around the grid centre and is
+    given the pitch and yaw that aim it back at that centre. Whatever the
+    heading, the middle of frame has to land on the centre – if panning the
+    camera bent its tilt, the aim point would slide off.
+    """
+    w, h = canvas
+    centre = np.array([[w / 2.0, h / 2.0]], dtype=np.float64)
+
+    hit = unproject_to_plane(params, centre, w, h, plane_z_psn=0.0)[0]
+
+    assert np.all(np.isfinite(hit))
+    assert hit == pytest.approx(np.zeros(3), abs=1e-6)
+
+
+@given(
+    params=_ring_camera_params(),
+    canvas=_CANVASES,
+    plane_z=_floats(0.0, 5.0),
+    xy=st.lists(_XY, min_size=1, max_size=6),
+)
+def test_ring_project_then_unproject_is_identity_on_plane(
+    params: np.ndarray,
+    canvas: tuple[float, float],
+    plane_z: float,
+    xy: list[tuple[float, float]],
+) -> None:
+    w, h = canvas
+    world = np.array([(x, y, plane_z) for x, y in xy], dtype=np.float64)
+    screen = project_points(params, world, w, h)
+    assume(np.all(np.isfinite(screen)))
+    back = unproject_to_plane(params, screen, w, h, plane_z_psn=plane_z)
+    assume(np.all(np.isfinite(back)))
+    assert np.allclose(back, world, atol=1e-4)
+
+
+@given(params=_ring_camera_params(), canvas=_CANVASES, corners=_quad())
+def test_ring_solve_dlt_recovers_the_camera_pose(
+    params: np.ndarray,
+    canvas: tuple[float, float],
+    corners: np.ndarray,
+) -> None:
+    """Calibration reconstructs the pose from any heading, not just head-on.
+
+    The decomposition inverts the rotation composition by hand, so it is the
+    half of the kernel a projection round-trip cannot check.
+    """
+    w, h = canvas
+    screen = project_points(params, corners, w, h)
+    assume(np.all(np.isfinite(screen)))
+    solved = solve_camera_dlt(
+        [tuple(p) for p in corners],
+        [tuple(p) for p in screen],
+        w,
+        h,
+    )
+    assume(solved is not None)
+    assert np.allclose(_solved_params(solved)[:4], params[:4], atol=0.05)
+    assert math.isclose(solved.fov, float(params[6]), abs_tol=0.05)
+    # Yaw wraps: ±180 name the same heading.
+    assert math.isclose(math.cos(math.radians(solved.yaw - float(params[4]))), 1.0, abs_tol=1e-4)
 
 
 # --- unproject robustness ----------------------------------------------------

@@ -600,7 +600,7 @@
     </div>
     <div class="group">
       <div class="group-title">Orientation</div>
-      <p class="wizard-help">Enter the camera's angle. If the camera points straight at the stage, start with Pitch &asymp; &minus;30&deg; (looking down), Yaw = 0&deg;, Roll = 0&deg;.</p>
+      <p class="wizard-help">Enter the camera's angle: Pitch tilts down, Yaw is the direction it faces (0&deg; looks upstage, 180&deg; looks back at the house).</p>
       <div class="row">
         <div class="field">
           <label for="cam_pitch">Pitch <span style="font-weight:400;text-transform:none;letter-spacing:0;">(down &minus;)</span></label>
@@ -1805,6 +1805,9 @@
     // Compute camera viewing direction from pitch/yaw (in degrees)
     // Pitch: 0 = horizontal, -45 = 45° down, -90 = straight down
     // Yaw: 0 = looking along +Y (upstage), negative = left
+    // This camera model must stay in step with scene/solver.py, or the preview
+    // stops describing the overlay. Pinned by TestWizardIllustrationAgreement
+    // in tests/test_solver.py - edit both together.
     var rad = Math.PI / 180;
     var pitchR = pitch * rad;
     var yawR = yaw * rad;

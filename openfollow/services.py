@@ -1918,6 +1918,7 @@ class AppRuntimeServices:
             # Web write path: raw editable config snapshot for the form +
             # apply / renew handlers (broker-elevated, serialised).
             network_config_provider=self._network_config_provider,
+            network_interfaces_provider=self._network_interfaces_provider,
             network_apply_handler=self._handle_network_apply,
             network_renew_handler=self._handle_network_renew,
             # Privilege capability snapshot for the diagnostics bundle.
@@ -2164,6 +2165,53 @@ class AppRuntimeServices:
             lease_display=_format_lease_remaining(lease_seconds),
         )
         return base
+
+    def _network_interfaces_provider(self) -> list[dict[str, Any]]:
+        """Every non-loopback interface with its address, method and up-state.
+
+        The single-interface form only ever showed one adapter at a time, so
+        there was nowhere to see a multi-NIC (or tagged-VLAN) station's layout.
+        This backs the interface list that replaced its picker.
+
+        One ``get_state`` per interface means one backend call each – on the
+        NetworkManager adapter that is an ``nmcli`` subprocess – so the caller
+        is expected to cache it rather than resolve on every render.
+        """
+        from openfollow.network.adapter import is_loopback
+        from openfollow.network.validate import prefix_to_mask
+
+        adapter = getattr(self, "_network_adapter", None)
+        if adapter is None:
+            return []
+        rows: list[dict[str, Any]] = []
+        for iface in adapter.list_interfaces():
+            if is_loopback(iface):
+                continue
+            row: dict[str, Any] = {
+                "name": iface.name,
+                "is_up": iface.is_up,
+                "address": "",
+                "prefix": None,
+                "subnet_mask": "",
+                "method": "dhcp",
+            }
+            # A per-interface read can fail (interface disappearing mid-scan,
+            # backend hiccup) without invalidating the rest of the list, so
+            # degrade that row instead of dropping the whole panel.
+            try:
+                state = adapter.get_state(iface.name)
+            except Exception:  # noqa: BLE001
+                logger.exception("Network state read failed for %s", iface.name)
+                state = None
+            if state is not None:
+                row.update(
+                    address=state.ipv4.address or "",
+                    prefix=state.ipv4.prefix,
+                    subnet_mask=prefix_to_mask(state.ipv4.prefix) or "",
+                    method=state.ipv4.method.value,
+                )
+            rows.append(row)
+        return rows
 
     def _handle_network_apply(
         self,

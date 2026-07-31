@@ -1003,6 +1003,32 @@ def _apply_interface_assignment(cfg: AppConfig, data: Mapping[str, Any]) -> None
         (cfg if attr is None else getattr(cfg, attr)).__post_init__()
 
 
+def request_local_iface(environ: Mapping[str, Any]) -> str:
+    """Interface a request arrived on, or "" when it can't be told.
+
+    Drives the "this session" marker in the Network Settings interface list,
+    so an operator can see which adapter they are connected through before
+    editing its address and cutting their own session.
+
+    Reads the accepted connection's local address (put in the environ by the
+    WSGI handler) rather than the Host header: with the default wildcard bind
+    the operator usually arrives via ``<slug>.local``, so the header holds a
+    name, not the address avahi resolved it to.
+
+    Returns "" rather than guessing when the address is loopback, absent, or
+    not one of this host's addresses. A missing marker is a missed warning; a
+    wrong one would point at the wrong adapter, which is worse.
+    """
+    from openfollow.web.server import LOCAL_ADDR_ENVIRON_KEY
+
+    local_addr = str(environ.get(LOCAL_ADDR_ENVIRON_KEY) or "").strip()
+    if not local_addr or local_addr.startswith("127."):
+        return ""
+    from openfollow.net_utils import get_iface_for_ip
+
+    return get_iface_for_ip(local_addr)
+
+
 def build_interface_assignment_rows(cfg: AppConfig) -> list[dict[str, Any]]:
     """Rows for the Interface Assignment panel, in render order.
 
@@ -4294,6 +4320,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     # ----------------------------------------------------------------------
 
     _NETWORK_METHODS = ("dhcp", "dhcp_manual", "static")
+    _NETWORK_METHOD_LABELS = {
+        "dhcp": "DHCP",
+        "dhcp_manual": "DHCP + manual",
+        "static": "Static",
+    }
 
     def _network_method_value(raw: str) -> str:
         return raw if raw in _NETWORK_METHODS else "dhcp"
@@ -4334,6 +4365,33 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "lease_display": cfg.get("lease_display"),
             "banner": banner,
         }
+        # The interface list replaced the old single picker, so the card can
+        # show a multi-NIC (or tagged-VLAN) station's whole layout. ``Scan``
+        # forces a re-read; ordinary renders come off the TTL cache.
+        rows = server.get_network_interfaces(force=bool(request.query.get("scan")))
+        if not rows:
+            # No richer provider wired (or it failed): synthesise the list from
+            # the single-interface snapshot so the card still renders every
+            # adapter. Only the open interface has address / method detail,
+            # which is exactly what the card showed before the list existed.
+            rows = [
+                {
+                    "name": name,
+                    "address": net["address"] if name == net["active_interface"] else "",
+                    "prefix": net["prefix"] if name == net["active_interface"] else None,
+                    "method": net["method"] if name == net["active_interface"] else "",
+                }
+                for name in net["interfaces"]
+            ]
+        net["iface_rows"] = [
+            {**row, "method_label": _NETWORK_METHOD_LABELS.get(row.get("method", ""), row.get("method", ""))}
+            for row in rows
+        ]
+        net["session_iface"] = request_local_iface(request.environ)
+        # One interface is always the current one – the same interface the card
+        # showed before the list existed – so its detail is expanded by default
+        # and picking another row moves the expansion.
+        net["editing_iface"] = net["active_interface"]
         if method is not None:
             net["method"] = _network_method_value(method)
         if overrides:
@@ -4397,6 +4455,33 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         return template(
             "partials/network",
             net=_build_network_form_context(editable=True),
+        )
+
+    @app.get("/section/network/status/<iface>")
+    def get_network_status_iface(iface: str) -> Any:
+        """Expand one interface's details read-only.
+
+        The list shows address and method; DNS and lease live in the detail,
+        so View mode can open a row too rather than forcing the operator into
+        Edit mode just to read a value.
+        """
+        return template(
+            "partials/network",
+            net=_build_network_form_context(iface=iface, editable=False),
+        )
+
+    @app.get("/section/network/edit/<iface>")
+    def get_network_edit_iface(iface: str) -> Any:
+        """Open one interface's editor, expanded under its row in the list.
+
+        The interface is named in the path rather than carried in a picker, so
+        which adapter is being edited is never ambiguous.
+        ``_build_network_form_context`` sanitises it against the adapter's live
+        list, falling back to the active interface if it's unknown.
+        """
+        return template(
+            "partials/network",
+            net=_build_network_form_context(iface=iface, editable=True),
         )
 
     @app.post("/section/network")

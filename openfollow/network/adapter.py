@@ -7,6 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Literal
 
 
 class Ipv4Method(str, Enum):
@@ -51,11 +52,35 @@ class LeaseInfo:
     lease_seconds_remaining: int | None
 
 
+AddressSource = Literal["dhcp", "static", "link-local", "none"]
+
+
 @dataclass(frozen=True)
 class NetworkState:
     interface: NetworkInterface
     ipv4: Ipv4Config
     lease: LeaseInfo | None
+
+    @property
+    def address_source(self) -> AddressSource:
+        """Where this interface's address came from, for operator display.
+
+        Derived rather than stored so the three backends can't disagree about
+        it. ``link-local`` outranks the configured method: NM's DHCP fallback
+        hands out a 169.254 address while the profile still reads ``auto``, and
+        that address is the thing an operator needs told about.
+        """
+        from openfollow.network.validate import is_link_local
+
+        if not self.ipv4.address:
+            return "none"
+        if is_link_local(self.ipv4.address):
+            return "link-local"
+        # DHCP-with-manual-address counts as static: the address the operator
+        # sees is the one they typed, not one a server handed out.
+        if self.ipv4.method in (Ipv4Method.STATIC, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS):
+            return "static"
+        return "dhcp"
 
 
 @dataclass(frozen=True)
@@ -85,6 +110,15 @@ class NetworkAdapter(ABC):
     @abstractmethod
     def renew_lease(self, iface: str) -> ApplyResult:
         """Release + re-acquire the DHCP lease for ``iface``."""
+
+    def ensure_dhcp_fallback(self, iface: str) -> ApplyResult:
+        """Arm ``iface`` to self-assign a link-local address when DHCP fails.
+
+        Backends that can't express the fallback report it here rather than
+        silently doing nothing, so the startup recovery path can say why the
+        station is still without an address.
+        """
+        return ApplyResult(ok=False, message=f"{self.backend_name} cannot arm a DHCP fallback.")
 
     def is_writable(self) -> bool:
         """Return True if this adapter can mutate host state."""

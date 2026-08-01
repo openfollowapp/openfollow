@@ -804,3 +804,29 @@ def test_card_synthesises_rows_when_no_interface_provider_is_wired(net_server) -
     assert "eth0" in body and "wlan0" in body
     # Only the open interface carries detail on this path.
     assert "10.0.0.5" in body
+
+
+def test_pre_staging_a_static_address_does_not_redirect_to_a_dead_address(net_server) -> None:
+    """Saving a static address while the cable is out is a supported workflow.
+    It reports success, so the clean-apply branch would send the browser to an
+    address with no carrier behind it - the operator loses the UI and never
+    sees the note explaining the settings are pending."""
+    fake, base = net_server
+    fake.apply_result = ApplyResult(
+        ok=True,
+        message="Saved to profile 'Wired'. eth0 has no link, so the settings take effect when the cable is connected.",
+        partial_failures=("eth0 has no link, so the settings take effect when the cable is connected.",),
+    )
+    status, body, headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {
+            "iface": "eth0",
+            "method": "static",
+            "address": "192.168.9.9",
+            "subnet_mask": "255.255.255.0",
+        },
+    )
+    assert status == 200
+    assert "hx-redirect" not in headers
+    assert "no link" in body

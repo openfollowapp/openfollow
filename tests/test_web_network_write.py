@@ -74,6 +74,7 @@ class FakeNetwork:
         self.renewed: list[str] = []
         self.apply_result = ApplyResult(ok=True)
         self.renew_result = ApplyResult(ok=True)
+        self.provide_rows = True
 
     def config_provider(self, iface: str | None = None) -> dict | None:
         if not self.interfaces:
@@ -98,8 +99,11 @@ class FakeNetwork:
 
         Wired into the fixture so the list tests exercise the real row shape
         instead of the synthesised fallback ``_build_network_form_context``
-        falls back to when no provider is present.
+        falls back to when no provider is present. Set ``provide_rows=False``
+        to exercise that fallback.
         """
+        if not self.provide_rows:
+            return []
         return [
             {
                 "name": name,
@@ -785,4 +789,18 @@ def test_interface_rows_come_from_the_provider(net_server) -> None:
     _fake, base = net_server
     _status, body = _get(base, "/section/network/status")
     assert "eth0" in body and "wlan0" in body
+    assert "10.0.0.5" in body
+
+
+def test_card_synthesises_rows_when_no_interface_provider_is_wired(net_server) -> None:
+    """A build without the richer provider (or one whose backend read failed)
+    still has to render every adapter - the card degrades to the single-
+    interface snapshot rather than showing an empty list."""
+    fake, base = net_server
+    fake.provide_rows = False
+    # ?scan=1 bypasses the TTL cache the earlier requests populated.
+    status, body = _get(base, "/section/network/status?scan=1")
+    assert status == 200
+    assert "eth0" in body and "wlan0" in body
+    # Only the open interface carries detail on this path.
     assert "10.0.0.5" in body

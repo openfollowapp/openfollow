@@ -404,6 +404,30 @@
       notify:
         - reload systemd
 
+    - name: Ensure NetworkManager conf.d directory exists
+      ansible.builtin.file:
+        path: /etc/NetworkManager/conf.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    # Without this NetworkManager leaves a NIC with no IPv4 address at all when
+    # the show LAN has no DHCP server - web server up, avahi answering, nothing
+    # reachable. link-local=4 is "fallback": the 169.254 address appears only
+    # once DHCP has given up and goes away again when a lease arrives.
+    - name: Fall back to a link-local address when DHCP never answers
+      ansible.builtin.copy:
+        dest: /etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [connection]
+          ipv4.may-fail=true
+          ipv4.dhcp-timeout=20
+          ipv4.link-local=4
+
     - name: Mask getty on tty1
       ansible.builtin.systemd:
         name: getty@tty1.service

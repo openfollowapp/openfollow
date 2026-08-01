@@ -963,20 +963,116 @@ def test_suspending_otp_stops_the_server(monkeypatch) -> None:
     otp.suspend()  # no server to stop
 
 
-def test_observe_builds_the_observer_once_and_follows_the_station(monkeypatch) -> None:
+def test_observe_builds_the_observer_once(monkeypatch) -> None:
     """Housekeeping calls this ~10x/s; rebuilding the plane list each time
     would re-enumerate interfaces on every tick."""
     services = _build_services_with_psutil_backend(monkeypatch)
     _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
     services._app._config.psn_source_iface = "eth0"
     services.apply_psn_source_ip_change = lambda _ip: None  # type: ignore[method-assign]
-    services.apply_otp_output_change = lambda _cfg: None  # type: ignore[method-assign]
-
-    followed: list[int] = []
-    services._follow_station_ip = lambda: followed.append(1)  # type: ignore[method-assign]
+    services._follow_station_ip = lambda: None  # type: ignore[method-assign]
 
     services.observe_network_planes()
     first = services._network_observer
     services.observe_network_planes()
     assert services._network_observer is first
-    assert len(followed) == 2
+
+
+def test_station_followers_share_the_observer_throttle(monkeypatch) -> None:
+    """Resolving the station address enumerates every adapter, and
+    housekeeping runs at 100ms - paying that ten times a second on the render
+    thread is exactly what the observer's own throttle exists to avoid."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "eth0"
+    services.apply_psn_source_ip_change = lambda _ip: None  # type: ignore[method-assign]
+
+    followed: list[int] = []
+    services._follow_station_ip = lambda: followed.append(1)  # type: ignore[method-assign]
+
+    services.observe_network_planes()
+    services.observe_network_planes()  # same instant - throttled
+    assert len(followed) == 1
+
+
+def test_station_followers_do_not_move_to_another_interface(monkeypatch) -> None:
+    """The station interface being down must not put this station's identity -
+    its name, marker names and colours - on whatever else happens to be up, at
+    the exact moment the observer is stopping PSN for that same reason."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    services._app._config.psn_source_iface = "eth0_gone"
+
+    class _Sync:
+        def __init__(self) -> None:
+            self.ips: list[str] = []
+
+        def update_iface_ip(self, ip: str) -> None:
+            self.ips.append(ip)
+
+    class _Server:
+        def __init__(self) -> None:
+            self.refreshes = 0
+
+        def refresh_local_ip(self) -> None:
+            self.refreshes += 1
+
+    sync, server = _Sync(), _Server()
+    services._app._marker_catalog_sync = sync
+    services._app._web_server = server
+    services._follow_station_ip()
+    assert sync.ips == []
+    assert server.refreshes == 0
+
+
+def test_suspending_psn_stops_the_receiver_even_if_the_server_raises(monkeypatch) -> None:
+    """Aborting on the first failure left the receiver joined on the dead
+    address - the exact outcome the suspend exists to prevent - and swallowed
+    the HUD alert with it."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _Boom:
+        def stop(self) -> None:
+            raise OSError("stop failed")
+
+    class _Stoppable:
+        def __init__(self) -> None:
+            self.stopped = 0
+
+        def stop(self) -> None:
+            self.stopped += 1
+
+    receiver = _Stoppable()
+    services._app._server = _Boom()
+    services._app._psn_receiver = receiver
+    psn = next(p for p in services._build_network_planes() if p.label == "PSN")
+    with pytest.raises(OSError, match="stop failed"):
+        psn.suspend()
+    assert receiver.stopped == 1
+
+
+def test_a_disabled_otp_output_is_not_a_plane_to_alert_on(monkeypatch) -> None:
+    """The shipped default has OTP off; a false 'is down' row would put a
+    second fault on the HUD for a protocol nobody enabled."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    otp = next(p for p in services._build_network_planes() if p.label == "OTP output")
+    services._app._config.otp_output.enabled = False
+    assert otp.enabled() is False
+    services._app._config.otp_output.enabled = True
+    assert otp.enabled() is True
+
+
+def test_plane_current_reports_the_live_binding(monkeypatch) -> None:
+    """Drives the 'already bound correctly, leave it alone' decision, which is
+    what keeps the first poll from tearing down a healthy startup binding."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _Server:
+        def bound_source_ip(self) -> str | None:
+            return "192.168.1.5"
+
+    services._app._server = _Server()
+    services._app._otp_server = None
+    planes = {p.label: p for p in services._build_network_planes()}
+    assert planes["PSN"].current() == "192.168.1.5"
+    assert planes["OTP output"].current() is None

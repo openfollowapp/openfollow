@@ -834,17 +834,60 @@ class TestRecvLoopOneIteration:
             selection_provider=lambda: ([], []),
         )
 
-    def test_bind_failure_retries_then_gives_up(self, monkeypatch) -> None:
-        """An interface switch makes the address briefly unavailable, so one
-        failure must not disable sync input for the session - but a
-        permanently taken port must not spin for the life of the process."""
-        monkeypatch.setattr(marker_sync, "_RX_OPEN_RETRY_S", 0.0)
+    def test_bind_failure_retries_across_a_dhcp_release(self, monkeypatch) -> None:
+        """The retry budget has to outlast a DHCP re-lease (5-15s), because
+        that is the window it exists to cover. Giving up sooner fails in
+        exactly the case it was added for."""
+        assert marker_sync._RX_OPEN_MAX_RETRIES * marker_sync._RX_OPEN_RETRY_S >= 15.0
+
+    def test_bind_failure_parks_instead_of_killing_the_thread(self, monkeypatch) -> None:
+        """The receive thread is never restarted - ``start()`` short-circuits
+        while it exists - so returning at the cap would disable sync input for
+        the process with no way back.
+
+        Driven on a daemon thread with an external terminator: the park calls
+        nothing, so a terminator that depends on the loop's own internals can
+        never fire.
+        """
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_RETRY_S", 0.001)
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_MAX_RETRIES", 2)
         sync = self._sync()
         bad_sock = MagicMock()
         bad_sock.bind.side_effect = OSError("port busy")
+
         with patch.object(_socket, "socket", return_value=bad_sock):
-            sync._recv_loop()
-        assert bad_sock.close.call_count == marker_sync._RX_OPEN_MAX_RETRIES
+            worker = threading.Thread(target=sync._recv_loop, daemon=True)
+            worker.start()
+            time.sleep(0.2)
+            assert worker.is_alive(), "gave up and exited instead of parking"
+            sync._stop_event.set()
+            worker.join(timeout=5.0)
+        assert not worker.is_alive(), "park did not honour the stop event"
+
+    def test_a_repoint_revives_a_parked_receive_loop(self, monkeypatch) -> None:
+        """Parking is only safe if something can wake it - otherwise it is the
+        same dead end as returning, just quieter."""
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_RETRY_S", 0.001)
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_MAX_RETRIES", 2)
+        sync = self._sync()
+        opens = [0]
+        bad_sock = MagicMock()
+        bad_sock.bind.side_effect = OSError("port busy")
+
+        def _factory(*_a, **_kw):
+            opens[0] += 1
+            return bad_sock
+
+        with patch.object(_socket, "socket", _factory):
+            worker = threading.Thread(target=sync._recv_loop, daemon=True)
+            worker.start()
+            time.sleep(0.2)
+            parked_at = opens[0]
+            sync.reopen()
+            time.sleep(0.2)
+            assert opens[0] > parked_at, "repoint did not wake the parked loop"
+            sync._stop_event.set()
+            worker.join(timeout=5.0)
 
     def test_reuseport_attribute_error_swallowed(self) -> None:
         """SO_REUSEPORT is absent on some platforms; its absence must not stop
@@ -1251,17 +1294,68 @@ class TestUpdateIfaceIp:
             iface_ip=iface_ip,
         )
 
-    def test_new_address_arms_a_rebuild(self) -> None:
+    def test_new_address_arms_both_loops(self) -> None:
         sync = self._sync()
         sync.update_iface_ip("10.0.0.9")
         assert sync._iface_ip == "10.0.0.9"
-        assert sync._reopen.is_set()
+        assert sync._tx_reopen.is_set()
+        assert sync._rx_reopen.is_set()
 
     def test_unchanged_address_is_a_no_op(self) -> None:
         """A steady station must not rebuild its sockets on every poll."""
         sync = self._sync()
         sync.update_iface_ip("192.168.1.5")
-        assert sync._reopen.is_set() is False
+        assert not sync._tx_reopen.is_set()
+        assert not sync._rx_reopen.is_set()
+
+    def test_reopen_forces_a_rebuild_at_the_same_address(self) -> None:
+        """A link that dropped and came back with the same lease has had its
+        memberships torn down by the kernel; the address string cannot show
+        that, so the caller has to be able to force it."""
+        sync = self._sync()
+        sync.reopen()
+        assert sync._tx_reopen.is_set()
+        assert sync._rx_reopen.is_set()
+
+    def test_the_loops_do_not_consume_each_others_event(self) -> None:
+        """One shared event is a trap: RX wakes within its 1s socket timeout
+        while TX is parked for a whole heartbeat, so RX would clear the flag
+        and TX would keep IP_MULTICAST_IF on the dead address forever."""
+        sync = self._sync()
+        sync.reopen()
+        # Model the RX loop reaching its clear first.
+        sync._rx_reopen.clear()
+        assert sync._tx_reopen.is_set(), "RX consumed the TX repoint"
+
+    def test_tx_socket_is_rebuilt_on_a_repoint(self) -> None:
+        """The behaviour the whole fix exists for. Driven on a daemon thread so
+        a regression fails the assertion instead of hanging the suite."""
+        sync = self._sync()
+        opened: list[MagicMock] = []
+
+        def _open():
+            sock = MagicMock()
+            opened.append(sock)
+            return sock
+
+        sync._open_tx_socket = _open  # type: ignore[method-assign]
+        worker = threading.Thread(target=sync._send_loop, daemon=True)
+        worker.start()
+        try:
+            deadline = time.monotonic() + 3.0
+            while not opened and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert opened, "send loop never opened a socket"
+            before = len(opened)
+            sync.reopen()
+            deadline = time.monotonic() + 3.0
+            while len(opened) == before and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert len(opened) > before, "TX socket was not rebuilt after the repoint"
+            assert opened[before - 1].close.called
+        finally:
+            sync._stop_event.set()
+            worker.join(timeout=5.0)
 
     def test_rx_socket_joins_on_the_new_address(self) -> None:
         sync = self._sync()
@@ -1277,21 +1371,3 @@ class TestUpdateIfaceIp:
         with patch.object(_socket, "socket", return_value=sock):
             assert sync._open_rx_socket() is sock
         assert memberships[0].endswith(_socket.inet_aton("10.0.0.9"))
-
-    def test_send_loop_drops_its_socket_on_repoint(self) -> None:
-        """The TX socket pins IP_MULTICAST_IF, so it must be reopened rather
-        than reused after the address moves."""
-        sync = self._sync()
-        opened: list[MagicMock] = []
-
-        def _open():
-            sock = MagicMock()
-            opened.append(sock)
-            if len(opened) == 2:
-                sync._stop_event.set()
-            return sock
-
-        sync._open_tx_socket = _open  # type: ignore[method-assign]
-        sync._reopen.set()
-        sync._send_loop()
-        assert len(opened) >= 1

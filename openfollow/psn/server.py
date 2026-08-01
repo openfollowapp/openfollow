@@ -129,6 +129,18 @@ class PsnServer:
         self._data_thread.start()
         self._info_thread.start()
 
+    def bound_source_ip(self) -> str | None:
+        """Address this server is sending from, or ``None`` when stopped.
+
+        Lets the network observer tell "already bound correctly" from "needs a
+        rebind" without tearing the socket down to find out - a rebind kills
+        the background retry thread that recovers a boot where the multicast
+        route came up late.
+        """
+        if self._stop_event.is_set() or self._data_thread is None:
+            return None
+        return self._source_ip
+
     def stop(self) -> None:
         """Signal threads to stop, wait for them, then close the socket."""
         self._stop_event.set()

@@ -964,27 +964,28 @@ class AppRuntimeServices:
         self._app._selected_id = self._app._controlled_ids[0] if self._app._controlled_ids else None
 
     def _resolved_plane_source_ip(self, pin: str, *, label: str) -> str:
-        """Resolve one plane's interface pin to a concrete bind IP.
+        """Resolve one plane's configured interface to a concrete bind IP.
 
         A blank *pin* follows ``psn_source_iface`` (the station-wide default),
-        which in turn falls back to auto-detect – so a station that pins
-        nothing behaves exactly as it did before per-plane pins existed. A pin
-        that's down falls through rather than failing closed, so a stale pin
-        never silently stalls the plane; *label* names the config field in the
-        warning that surfaces when the pin isn't honoured.
+        which in turn auto-detects – inheritance for an *unset* value only.
+        Once an interface is configured it is the only one this plane may use:
+        when it has no address the result is empty and the caller binds nothing
+        rather than moving the plane onto a different network. *label* names the
+        config field in the error.
         """
-        from openfollow.net_utils import resolve_plane_source_ip
+        from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
 
         resolved, status = resolve_plane_source_ip(
             pin,
             self._app._config.psn_source_iface,
         )
-        if pin and status != "iface":
-            logger.warning(
-                "Configured %s '%s' is unavailable; falling back to %s. %s may use the wrong interface.",
+        if status == "down":
+            configured = plane_source_iface(pin, self._app._config.psn_source_iface)
+            logger.error(
+                "Configured %s '%s' has no address; %s stays down until it returns "
+                "(it will not be sent on another interface).",
                 label,
-                pin,
-                resolved or "OS default",
+                configured,
                 label,
             )
         return resolved
@@ -1465,6 +1466,22 @@ class AppRuntimeServices:
         # hot-reload branch needs a parallel sync. Keeping it outside
         # ``manager.restart`` keeps the manager registry-agnostic.
         self._sync_osc_binding_conflicts()
+
+    def apply_station_iface_change(self) -> None:
+        """Rebind every plane that inherits the station interface.
+
+        A plane with a blank pin follows ``psn_source_iface``, so changing only
+        the Station default row moves it – but the hot-reload dispatcher gates
+        each plane on its *own* dataclass differing, which it doesn't here.
+        Without this the panel would immediately render the new address for a
+        plane still sending from the old interface until a restart.
+
+        PSN itself is not included: the dispatcher pairs this with
+        ``apply_psn_source_ip_change``, which owns the receiver/server rebind.
+        """
+        otp_cfg = self._app._config.otp_output
+        if self._app._otp_server is not None and otp_cfg.enabled and not otp_cfg.source_iface:
+            self.apply_otp_output_change(otp_cfg)
 
     def apply_psn_source_ip_change(
         self,

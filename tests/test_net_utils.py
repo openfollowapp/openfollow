@@ -467,8 +467,9 @@ class TestResolveSourceIp:
 
 class TestResolvePlaneSourceIp:
     """``resolve_plane_source_ip(pin, station_iface)`` resolves one network
-    plane's pin, falling through to the station-wide pin and then to
-    auto-detect. A blank plane pin means "follow the station interface"."""
+    plane's *configured* interface. Inheritance happens for an unset value
+    only – a configured interface that is down reports ``down`` and the plane
+    binds nothing rather than moving to a different network."""
 
     @staticmethod
     def _ifaces(monkeypatch, spec: dict[str, list[tuple[int, str]]]) -> None:
@@ -503,27 +504,35 @@ class TestResolvePlaneSourceIp:
         )
         assert resolve_plane_source_ip("", "eth0") == ("192.168.1.5", "station")
 
-    def test_down_plane_pin_falls_through_to_station(self, monkeypatch) -> None:
-        """A plane pinned to an interface that's gone must not fail closed:
-        it degrades to the station interface, and the non-"iface" status is
-        what makes the caller warn."""
+    def test_down_plane_pin_does_not_move_to_the_station_interface(self, monkeypatch) -> None:
+        """The load-bearing rule: a pinned plane whose interface is gone stops.
+        Rebinding it to the station interface would put show data on whatever
+        network that happens to be – silently, mid-show."""
         self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.5")]})
-        assert resolve_plane_source_ip("eth9", "eth0") == ("192.168.1.5", "station")
+        assert resolve_plane_source_ip("eth9", "eth0") == ("", "down")
 
-    def test_both_pins_down_falls_through_to_primary(self, monkeypatch) -> None:
-        """Plane pin and station pin both unavailable → auto-detect rather
-        than an empty bind."""
+    def test_down_station_interface_does_not_auto_detect(self, monkeypatch) -> None:
+        """Same rule one level up: an explicitly configured station interface
+        that is down must not silently become the OS primary."""
         self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.5")]})
         monkeypatch.setattr(
             net_utils_module,
             "get_primary_local_ipv4",
             lambda default="": "172.16.4.20",
         )
-        assert resolve_plane_source_ip("eth9", "eth8") == ("172.16.4.20", "primary")
+        assert resolve_plane_source_ip("", "eth8") == ("", "down")
+
+    def test_a_new_address_on_the_configured_interface_is_followed(self, monkeypatch) -> None:
+        """Only the interface is fixed. A reconnect that yields a different
+        DHCP lease on the same NIC must resolve to the new address."""
+        self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.5")]})
+        assert resolve_plane_source_ip("eth0", "") == ("192.168.1.5", "iface")
+        self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.77")]})
+        assert resolve_plane_source_ip("eth0", "") == ("192.168.1.77", "iface")
 
     def test_no_pins_at_all_is_auto_detect(self, monkeypatch) -> None:
-        """The pre-existing default config: nothing pinned anywhere, so the
-        result must match what ``resolve_source_ip("")`` already returned."""
+        """Nothing configured anywhere is not an error – auto-detect is the
+        chosen behaviour, so it still resolves."""
         self._ifaces(monkeypatch, {})
         monkeypatch.setattr(
             net_utils_module,
@@ -532,22 +541,16 @@ class TestResolvePlaneSourceIp:
         )
         assert resolve_plane_source_ip("", "") == ("192.168.1.50", "primary")
 
-    def test_fallback_disabled_reports_none(self, monkeypatch) -> None:
-        """``fallback=False`` refuses to auto-detect, for callers that would
-        rather wait for the pinned interface than bind the wrong one."""
-        self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.5")]})
-        assert resolve_plane_source_ip("eth9", "eth8", fallback=False) == ("", "none")
-
-    def test_offline_reports_none(self, monkeypatch) -> None:
-        """No usable address anywhere – an empty bind lets the OS pick, which
-        is the documented meaning of an empty source IP downstream."""
+    def test_offline_with_nothing_configured_reports_none(self, monkeypatch) -> None:
+        """Distinct from ``down``: nothing was configured, so nothing is
+        broken – there is simply no address to auto-detect yet."""
         self._ifaces(monkeypatch, {})
         monkeypatch.setattr(
             net_utils_module,
             "get_primary_local_ipv4",
             lambda default="": "",
         )
-        assert resolve_plane_source_ip("eth9", "eth8") == ("", "none")
+        assert resolve_plane_source_ip("", "") == ("", "none")
 
     def test_loopback_only_primary_is_rejected(self, monkeypatch) -> None:
         """A loopback primary is not a usable bind for LAN multicast, so it
@@ -560,9 +563,9 @@ class TestResolvePlaneSourceIp:
         )
         assert resolve_plane_source_ip("", "") == ("", "none")
 
-    def test_station_pin_skipped_when_it_has_no_address(self, monkeypatch) -> None:
-        """A station interface that exists but holds only IPv6 / loopback is
-        not a usable IPv4 bind – fall through instead of returning ""."""
+    def test_configured_interface_without_ipv4_is_down(self, monkeypatch) -> None:
+        """An interface holding only IPv6 / loopback has no usable IPv4 bind.
+        It is configured, so it is ``down`` – not a reason to auto-detect."""
         self._ifaces(
             monkeypatch,
             {
@@ -574,7 +577,18 @@ class TestResolvePlaneSourceIp:
             "get_primary_local_ipv4",
             lambda default="": "10.1.1.4",
         )
-        assert resolve_plane_source_ip("", "eth0") == ("10.1.1.4", "primary")
+        assert resolve_plane_source_ip("", "eth0") == ("", "down")
+
+
+class TestPlaneSourceIface:
+    def test_pin_wins(self) -> None:
+        assert net_utils_module.plane_source_iface("eth1", "eth0") == "eth1"
+
+    def test_blank_pin_inherits_the_station(self) -> None:
+        assert net_utils_module.plane_source_iface("", "eth0") == "eth0"
+
+    def test_nothing_configured_is_empty(self) -> None:
+        assert net_utils_module.plane_source_iface("", "") == ""
 
 
 class TestWaitForSourceIp:

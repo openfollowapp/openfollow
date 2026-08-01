@@ -60,6 +60,7 @@ class _DummyRuntimeServices:
         self.psn_source_ip_changes: list[str] = []
         self.psn_mcast_ip_changes: list[str] = []
         self.psn_combined_changes: list[tuple[str, str]] = []
+        self.station_iface_follow_calls = 0
         self.psn_system_name_changes: list[str] = []
         self.detection_changes: list[DetectionConfig] = []
         self.detection_swaps: list[DetectionConfig] = []
@@ -88,6 +89,9 @@ class _DummyRuntimeServices:
             self.psn_combined_changes.append(
                 (new_source_ip, str(new_mcast_ip)),
             )
+
+    def apply_station_iface_change(self) -> None:
+        self.station_iface_follow_calls += 1
 
     def apply_psn_mcast_ip_change(self, new_mcast_ip: str) -> None:
         self.psn_mcast_ip_changes.append(new_mcast_ip)
@@ -1453,6 +1457,59 @@ def test_apply_runtime_rebinds_on_psn_source_iface_change(monkeypatch) -> None:
     assert app._config.psn_source_iface == "eth0"
     assert app._runtime_services.psn_source_ip_changes == ["192.168.178.59"]
     assert app._web_commands.restart_requested is False
+
+
+def test_station_iface_change_repoints_the_planes_that_follow_it(monkeypatch) -> None:
+    """A plane with a blank pin follows the station interface, but its own
+    dataclass is unchanged – so nothing else in the dispatcher re-applies it.
+    Without this the panel renders the new address for a plane still sending
+    from the old interface until a restart."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+    app = _DummyApp(AppConfig(psn_source_iface="eth0"))
+    apply_runtime_config_changes(app, AppConfig(psn_source_iface="eth1"))
+
+    assert app._runtime_services.station_iface_follow_calls == 1
+
+
+def test_station_iface_rollback_does_not_repoint_followers(monkeypatch) -> None:
+    """The PSN rebind failed and the iface reverted, so the followers are
+    still correctly on the old interface – repointing them would move them
+    to an interface the station isn't actually using."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+    app = _DummyApp(AppConfig(psn_source_iface="eth0"))
+
+    def _boom(*_a: object, **_kw: object) -> None:
+        raise OSError("bind failed")
+
+    app._runtime_services.apply_psn_source_ip_change = _boom  # type: ignore[method-assign]
+    apply_runtime_config_changes(app, AppConfig(psn_source_iface="eth1"))
+
+    assert app._config.psn_source_iface == "eth0"
+    assert app._runtime_services.station_iface_follow_calls == 0
 
 
 def test_apply_runtime_strips_whitespace_from_psn_source_iface() -> None:

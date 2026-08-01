@@ -16,8 +16,11 @@ from typing import Literal
 import psutil
 
 # Status from resolve_source_ip / resolve_plane_source_ip: "iface" (pinned),
-# "station" (fell through to the station-wide pin), "primary" (auto), "none" (offline).
-ResolveStatus = Literal["iface", "station", "primary", "none"]
+# "station" (inherited the station-wide pin), "primary" (auto-detected),
+# "down" (an interface *is* configured but currently has no address – an error
+# state, never a reason to bind elsewhere), "none" (nothing configured and
+# nothing to auto-detect).
+ResolveStatus = Literal["iface", "station", "primary", "down", "none"]
 
 
 def get_primary_local_ipv4(default: str = "N/A") -> str:
@@ -111,36 +114,42 @@ def resolve_source_ip(
     return "", "none"
 
 
+def plane_source_iface(pin: str, station_iface: str = "") -> str:
+    """Return the interface a plane is configured to use, or "" for auto-detect.
+
+    A blank *pin* means "follow the station interface"; a blank station
+    interface in turn means "let the OS choose". This resolves *configuration*
+    only – it never looks at whether the interface currently has an address.
+    """
+    return pin or station_iface
+
+
 def resolve_plane_source_ip(
     pin: str,
     station_iface: str = "",
-    *,
-    fallback: bool = True,
 ) -> tuple[str, ResolveStatus]:
-    """Resolve one network plane's interface pin to a concrete bind IP.
+    """Resolve one network plane's configured interface to a concrete bind IP.
 
-    Tries *pin* first, then *station_iface* (the station-wide default), then
-    auto-detect. A blank *pin* therefore means "follow the station interface",
-    and a blank station interface in turn means "let the OS choose" – so a
-    station that pins nothing behaves exactly as it did before per-plane pins
-    existed.
+    Inheritance happens for an **unset** value only: blank pin follows
+    *station_iface*, blank station interface auto-detects. Once an interface is
+    configured, it is the only one this plane may use – if it currently has no
+    address the result is ``("", "down")`` and the caller must bind nothing,
+    surface the error and retry.
 
-    A pin that is down falls through rather than failing closed, so a stale pin
-    never silently stalls a plane; the returned status says which step actually
-    produced the address, which is what the caller warns on.
+    It deliberately does **not** fall through to another interface. Silently
+    moving PSN onto the office LAN because a lighting VLAN went dark is worse
+    than PSN stopping: a dead output is diagnosable, a misrouted one is not.
+
+    The *address* is free to change – callers re-resolve on every retry so a new
+    DHCP lease on the same interface is picked up automatically. Only the
+    interface is fixed.
     """
-    if pin:
-        ip_for_pin = get_iface_ipv4(pin)
-        if ip_for_pin:
-            return ip_for_pin, "iface"
-
-    if station_iface:
-        ip_for_station = get_iface_ipv4(station_iface)
-        if ip_for_station:
-            return ip_for_station, "station"
-
-    if not fallback:
-        return "", "none"
+    configured = plane_source_iface(pin, station_iface)
+    if configured:
+        resolved = get_iface_ipv4(configured)
+        if resolved:
+            return resolved, "iface" if pin else "station"
+        return "", "down"
 
     primary = get_primary_local_ipv4(default="")
     if primary and not primary.startswith("127."):

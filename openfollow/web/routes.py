@@ -918,6 +918,13 @@ def get_section_data(cfg: AppConfig, section: str) -> dict[str, Any] | None:
             "web_pin": cfg.web_pin,
             "update_service_name": cfg.update_service_name,
         }
+    if section == "interface_assignment":
+        # Mirrors what the panel POSTs, so GET and POST agree on the section's
+        # shape instead of GET 404ing while POST silently writes.
+        return {
+            form_key: getattr(cfg if attr is None else getattr(cfg, attr), field_name)
+            for form_key, (attr, field_name) in _INTERFACE_ASSIGNMENT_TARGETS.items()
+        }
     section_attr = _SECTION_CONFIG_ATTRS.get(section)
     if section_attr is None:
         return None
@@ -931,6 +938,12 @@ def get_section_data(cfg: AppConfig, section: str) -> dict[str, Any] | None:
 # or full-config-import. ``psn_source_iface`` pins the local NIC and only
 # makes sense for this device. Stripped at both ends (broadcaster-forward
 # and peer-receive) so an out-of-date peer can't poison this device.
+# Interface Assignment form key -> (sub-config attr or None for top-level, field).
+_INTERFACE_ASSIGNMENT_TARGETS: dict[str, tuple[str | None, str]] = {
+    "psn_source_iface": (None, "psn_source_iface"),
+    "otp_output.source_iface": ("otp_output", "source_iface"),
+}
+
 _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "psn": frozenset({"psn_source_iface"}),
     # ``web_pin`` (login credential) and ``web_port`` (local bind) are
@@ -950,6 +963,11 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     # form save path applies this field, so the section broadcast/receive must
     # strip it (matching the full export/import redaction).
     "video_source": frozenset({"testpattern_selected_media"}),
+    # Every row of the Interface Assignment panel names a NIC on THIS box, so
+    # the whole section is device-local. The section is also refused outright
+    # by ``_BROADCAST_EXCLUDED_SECTIONS``; this entry is the peer-receive half,
+    # covering a direct POST from an out-of-date sender.
+    "interface_assignment": frozenset(_INTERFACE_ASSIGNMENT_TARGETS),
 }
 
 
@@ -972,12 +990,6 @@ def strip_device_local_fields(
 # top-level ``AppConfig`` field, otherwise the sub-config attribute. Storage
 # stays per-section (so the existing save / hot-reload / device-local
 # machinery applies unchanged); only the editing surface is central.
-_INTERFACE_ASSIGNMENT_TARGETS: dict[str, tuple[str | None, str]] = {
-    "psn_source_iface": (None, "psn_source_iface"),
-    "otp_output.source_iface": ("otp_output", "source_iface"),
-}
-
-
 def _apply_interface_assignment(cfg: AppConfig, data: Mapping[str, Any]) -> None:
     """Write the Interface Assignment panel's pins onto their owning configs.
 
@@ -1033,23 +1045,31 @@ def build_interface_assignment_rows(cfg: AppConfig) -> list[dict[str, Any]]:
     """Rows for the Interface Assignment panel, in render order.
 
     Every row carries the address the plane will actually bind, resolved
-    through the same ``pin → station → auto`` chain the runtime uses – so a
-    row left on "Follow station interface" visibly shows where it points
-    rather than an empty cell.
+    through the same chain the runtime uses – so a row left on "Follow station
+    interface" visibly shows where it points rather than an empty cell.
+
+    A configured interface with no address renders as an explicit error rather
+    than as some other interface's address: the plane will not send there, and a
+    row showing a working address for a plane that is down would be a lie.
 
     Planes with no pin of their own (PSN, discovery, marker sync) render
     read-only: they follow ``psn_source_iface``, which the Station default row
     owns, so giving them their own dropdown would imply an independence they
     don't have.
     """
-    from openfollow.net_utils import resolve_plane_source_ip
+    from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
+
+    def _plane_address(pin: str, station_iface: str) -> str:
+        resolved, status = resolve_plane_source_ip(pin, station_iface)
+        if status == "down":
+            return f"{plane_source_iface(pin, station_iface)} is down"
+        return resolved
 
     station = cfg.psn_source_iface
-    station_ip, _status = resolve_plane_source_ip("", station)
+    station_ip = _plane_address(station, "")
 
     def _addr(pin: str) -> str:
-        resolved, _ = resolve_plane_source_ip(pin, station)
-        return resolved
+        return _plane_address(pin, station)
 
     return [
         {
@@ -2411,7 +2431,9 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
 # ``destination_id`` and its target move together) but are NEVER real-time
 # shared between stations: each station keeps its own OSC routing + zones.
 _BROADCAST_EXCLUDED_SECTIONS = frozenset(
-    {"osc_destinations", "osc_transmitters", "trigger_zones"},
+    # ``interface_assignment`` names NICs on this box; copying it to a peer
+    # would repin that peer's PSN and OTP to an interface it may not have.
+    {"osc_destinations", "osc_transmitters", "trigger_zones", "interface_assignment"},
 )
 
 

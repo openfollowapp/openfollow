@@ -6,9 +6,9 @@
 %# being edited is never ambiguous.
 %#
 %# Two modes, as before: VIEW (editable=false) disables the fields and
-%# live-polls every 5s; EDIT adds Apply / Renew / Cancel. The poll is
-%# suppressed while an interface is expanded so it can't collapse the form
-%# mid-edit.
+%# live-polls every 5s; EDIT adds Apply / Renew / Cancel. The poll carries the
+%# expanded interface in its path – dropping it would re-render the card on the
+%# active interface every 5s and collapse the row the operator is reading.
 %#
 %# Rendered into the #network-interface region (heading + fold live in
 %# general.tpl), swapped in place on toggle / apply / renew.
@@ -31,7 +31,7 @@
       hx-swap="innerHTML" hx-trigger="submit"
       hx-on:submit="netScheduleReload(this)"
 % elif _polls:
-      hx-get="/section/network/status" hx-trigger="every 5s"
+      hx-get="/section/network/status{{'/' + _editing if _editing else ''}}" hx-trigger="every 5s"
       hx-target="#network-interface" hx-swap="innerHTML"
 % end
       >
@@ -194,8 +194,12 @@
                                 hx-post="/section/network/renew" hx-target="#network-interface"
                                 hx-swap="innerHTML" hx-include="closest form">Renew DHCP lease</button>
                         % end
+                        %# Back to View mode on the same row. Targeting /edit
+                        %# would re-render the editor, leaving no way out of
+                        %# Edit mode short of a page reload.
                         <button type="button" class="ghost-btn"
-                                hx-get="/section/network/edit" hx-target="#network-interface"
+                                hx-get="/section/network/status{{'/' + _editing if _editing else ''}}"
+                                hx-target="#network-interface"
                                 hx-swap="innerHTML">Cancel</button>
                     </div>
                     % end
@@ -209,8 +213,11 @@
             <span><span class="ia-dot up"></span> up with an address</span>
             <span><span class="ia-dot down"></span> no address</span>
             <span class="ia-legend-actions">
+                %# Keeps the open interface in the path so re-reading the
+                %# adapter list doesn't move the expansion (and, in Edit mode,
+                %# doesn't discard what the operator has typed).
                 <button type="button" class="secondary small"
-                        hx-get="{{'/section/network/edit' if _editable else '/section/network/status'}}?scan=1"
+                        hx-get="{{'/section/network/edit' if _editable else '/section/network/status'}}{{'/' + _editing if _editing else ''}}?scan=1"
                         hx-target="#network-interface" hx-swap="innerHTML">Scan</button>
             </span>
         </div>

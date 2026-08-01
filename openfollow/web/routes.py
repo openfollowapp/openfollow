@@ -4863,8 +4863,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/interface_assignment")
     def get_interface_assignment() -> Any:
-        """Render the panel. Also the ``Scan`` path – the addresses are
-        re-resolved on every render, so a plain re-fetch refreshes them."""
+        """Render the panel. Also the ``Scan`` path: addresses are re-resolved
+        here and each picker re-reads the live interface list on load, so a
+        plain re-fetch refreshes both. Re-rendering (rather than refreshing the
+        pickers in place) is what keeps Scan from reverting an unsaved
+        selection to the value on disk."""
         return _render_interface_assignment(_request_scoped_config())
 
     @app.post("/section/interface_assignment")

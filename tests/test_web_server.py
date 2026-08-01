@@ -702,6 +702,66 @@ def test_interface_assignment_renders_rows_with_resolved_addresses(
     assert "10.0.0.9" in body
 
 
+def test_interface_assignment_shows_a_down_interface_as_an_error(
+    live_server,
+    monkeypatch,
+) -> None:
+    """A configured interface with no address must not render as some other
+    interface's address – the plane will not send there."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {"eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.178.59")]},
+    )
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_source_iface = "eth0"
+    cfg.otp_output.source_iface = "eth_gone"
+    save_config(cfg, server.config_path)
+
+    status, body = _get(base, "/section/interface_assignment")
+    assert status == 200
+    # Scope to the OTP row: the station-following rows legitimately carry the
+    # station address, and it must not leak into OTP's cell.
+    otp_row = body[body.index("OTP output") :].split("</tr>", 1)[0]
+    assert "eth_gone is down" in otp_row
+    assert "192.168.178.59" not in otp_row
+
+
+def test_interface_assignment_scan_rerenders_the_panel(live_server) -> None:
+    """Scan re-renders instead of refreshing the pickers in place: an in-place
+    refresh re-marked the SAVED value as selected and silently discarded an
+    unsaved choice."""
+    _server, base = live_server
+    _status, body = _get(base, "/section/interface_assignment")
+    assert 'hx-get="/section/interface_assignment"' in body
+    assert 'hx-target="#interface-assignment-section"' in body
+    # The pickers load once and are not re-fetched by Scan.
+    assert "click from:#refresh-iface-assignment" not in body
+
+
+def test_interface_assignment_pickers_have_accessible_names(live_server) -> None:
+    """A <th scope="row"> names cells, not a nested control."""
+    _server, base = live_server
+    _status, body = _get(base, "/section/interface_assignment")
+    assert 'aria-label="Station default interface"' in body
+    assert 'aria-label="OTP output interface"' in body
+
+
+def test_protocol_sections_link_switches_to_the_general_tab(live_server) -> None:
+    """A bare href="#id" does nothing when the target sits in a display:none
+    tab, so the pointer had no effect at all."""
+    _server, base = live_server
+    for path in ("/section/psn", "/section/otp_output"):
+        _status, body = _get(base, path)
+        assert "goToSection('general', 'interface-assignment')" in body
+
+
 def test_interface_assignment_save_round_trips_to_disk(
     live_server,
     monkeypatch,

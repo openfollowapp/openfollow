@@ -108,3 +108,24 @@ def test_every_install_route_ships_an_mdns_responder() -> None:
     assert "avahi-daemon" in (_REPO_ROOT / "packaging" / "debian" / "control.in").read_text(encoding="utf-8")
     assert "avahi-daemon" in _read("ansible playbook")
     assert "avahi-daemon" in _read("image layer")
+
+
+def test_help_quotes_the_timeout_that_is_actually_shipped() -> None:
+    """The operator reads this to know how long to wait before the fallback
+    address appears. A number that drifts from the provisioned one sends them
+    looking for a fault that isn't there."""
+    help_text = (_REPO_ROOT / "openfollow" / "web" / "help" / "general-network-interface.md").read_text(
+        encoding="utf-8"
+    )
+    timeout = next(prop for prop in _REQUIRED if prop.startswith("ipv4.dhcp-timeout")).split("=")[1]
+    assert f"about {timeout} seconds" in help_text
+
+
+def test_help_does_not_promise_the_station_name_resolves() -> None:
+    """The name that answers mDNS is the machine's hostname, which is only
+    usually the station name - the HUD shows the real one for that reason, and
+    the help must not contradict it."""
+    help_text = (_REPO_ROOT / "openfollow" / "web" / "help" / "general-network-interface.md").read_text(
+        encoding="utf-8"
+    )
+    assert "<station-name>.local" not in help_text

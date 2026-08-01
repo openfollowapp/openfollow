@@ -1271,6 +1271,7 @@ class TestGetNetworkInterfaces:
         rows[0]["name"] = "corrupted"
         assert [r["name"] for r in srv.get_network_interfaces()] == ["eth0"]
 
+
 # ---------------------------------------------------------------------------
 # Always-reachable web UI: the wildcard bind is what makes the link-local
 # fallback usable, so it has to survive a station that boots with no address.

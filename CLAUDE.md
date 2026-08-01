@@ -510,11 +510,28 @@ of the global golden accent, so each card is identifiable at a glance.
 
 ### UI copy: explanations live in the help drawer (REQUIRED)
 
-Keep inline form copy **terse**: a `<label>` names the control, and a **one-line** `field-note` / `section-note` may *orient* ("Mouse controls for the on-display UI"; "…storage, OSC, and PSN/RTTrPM/OTP stay metric regardless"). Anything past that one line – multi-sentence behaviour, defaults, side-effects, caveats, the "why" – belongs in that section's **help drawer markdown** (`openfollow/web/help/<section>.md`, surfaced by the per-section `?` drawer via `data-help="<section>"`), **not** inline as a long `field-note` / `title` tooltip.
+**Do not add inline help to web forms.** A `<label>` (plus a `placeholder` where
+one genuinely helps) is the whole of a control's inline copy. Everything else –
+what the setting does, when to use it, defaults, side-effects, caveats, examples,
+and "manage X under Y" pointers – goes in that section's **help drawer markdown**
+(`openfollow/web/help/<section>.md`, surfaced by the per-section `?` drawer via
+`data-help="<section>"`).
 
-- The line is: terse orienting note inline = fine; behavioural *explanation* = help drawer. When in doubt, if it teaches *how the feature behaves* (not just *what the field is*), it's an explanation.
-- When you add or change a control, update the matching `openfollow/web/help/<section>.md` (and keep the website-docs mirror in mind – see the `Check help on merge` auto-memory). The help drawer is the single home for the explanation, so it can't drift between the form and the docs.
-- Concretely: do **not** write a `field-note` like "Turning this off also disables X; turning it back on does not re-enable…" – that's a behavioural explanation. Put it in the help `.md`. The experimental-features toggle originally made this mistake; the sentence now lives in `help/general-station.md`.
+- **A new `field-note` is a review blocker**, including a terse one-line pointer.
+  "For a camera looking from upstage", "Comma-separated; e.g. …", and
+  "Manage destinations under OSC Destinations." have all been stripped on sight.
+  If the label alone doesn't identify the control, fix the label.
+- When you add or change a control, update the matching
+  `openfollow/web/help/<section>.md` (and keep the website-docs mirror in mind –
+  see the `Check help on merge` auto-memory). The help drawer is the single home
+  for the explanation, so it can't drift between the form and the docs.
+- The same goes for `title` tooltips carrying explanation. A `title` is fine for
+  a badge or icon with no visible label (e.g. the "This session" interface badge).
+- Existing `field-note`s predate this rule – leave them where they are unless you
+  are already editing that block, then move the text into the help `.md`.
+- `section-note` (the one-line subtitle beside a section's `<h2>`) is a *name*,
+  not help: "Marker speed limits, default speed, and default position" is fine;
+  a sentence teaching behaviour is not.
 
 ### Key routes
 | Route | Method | Description |

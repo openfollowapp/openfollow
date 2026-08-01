@@ -90,7 +90,6 @@
             <div class="field checkbox-field wide">
                 <label for="movement-invert-control-direction">Invert control direction</label>
                 <div class="checkbox-wrap"><input type="checkbox" id="movement-invert-control-direction" name="invert_control_direction" {{'checked' if config.marker.invert_control_direction else ''}}></div>
-                <span class="field-note">For a camera looking from upstage.</span>
             </div>
         </div>
     </div>

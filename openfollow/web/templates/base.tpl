@@ -3549,6 +3549,17 @@
  });
  writeStorage('psnfs:active-tab:' + location.pathname, tabId);
  }
+ // Cross-tab pointer links. A bare href="#id" does nothing when the target
+ // sits in an inactive tab, because .tab-content is display:none - so switch
+ // to the owning tab first, then scroll once layout has settled.
+ function goToSection(tabId, targetId) {
+   switchTab(tabId);
+   var el = document.getElementById(targetId);
+   if (!el) { return; }
+   requestAnimationFrame(function () {
+     el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+   });
+ }
  function initTabs() {
  var stored = readStorage('psnfs:active-tab:' + location.pathname);
  var first = document.querySelector('.tab-btn');

@@ -31,9 +31,15 @@
                     %# Interface names are stable across DHCP renewals; the
                     %# option list (and its blank-option wording) comes from the
                     %# shared route so every picker stays consistent.
-                    <select name="{{row['key']}}"
+                    %#
+                    %# ``load`` only: ``current`` is baked in at render time, so
+                    %# re-fetching on Scan would re-mark the SAVED value as
+                    %# selected and silently discard an unsaved choice. Scan
+                    %# re-renders the whole panel instead, which refreshes both
+                    %# the option lists and the resolved addresses.
+                    <select name="{{row['key']}}" aria-label="{{row['label']}} interface"
                             hx-get="/network/interfaces/by_name?blank={{row['blank']}}&current={{row['value']}}"
-                            hx-trigger="load, click from:#refresh-iface-assignment"
+                            hx-trigger="load"
                             hx-target="this" hx-swap="innerHTML">
                         <option value="{{row['value']}}">{{row['value'] or '-- Loading... --'}}</option>
                     </select>
@@ -49,6 +55,8 @@
 
     <div class="actions">
         <button type="submit" class="save-btn">Save</button>
-        <button type="button" id="refresh-iface-assignment" class="secondary">Scan</button>
+        <button type="button" id="refresh-iface-assignment" class="secondary"
+                hx-get="/section/interface_assignment"
+                hx-target="#interface-assignment-section" hx-swap="outerHTML">Scan</button>
     </div>
 </form>

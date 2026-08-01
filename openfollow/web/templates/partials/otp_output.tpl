@@ -51,7 +51,8 @@
                 %# General > Interface Assignment, alongside every other plane.
                 <div class="ia-pointer">
                     <span class="ia-pointer-value">{{config.otp_output.source_iface or 'Follows station interface'}}</span>
-                    <a class="ia-link" href="#interface-assignment-section">Change in General &rsaquo; Interface Assignment</a>
+                    <a class="ia-link" href="#interface-assignment"
+                       onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Interface Assignment</a>
                 </div>
             </div>
         </div>

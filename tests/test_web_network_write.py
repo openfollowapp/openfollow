@@ -93,6 +93,25 @@ class FakeNetwork:
             "lease_display": self.lease_display,
         }
 
+    def interfaces_provider(self) -> list[dict]:
+        """What the services layer emits for the interface list.
+
+        Wired into the fixture so the list tests exercise the real row shape
+        instead of the synthesised fallback ``_build_network_form_context``
+        falls back to when no provider is present.
+        """
+        return [
+            {
+                "name": name,
+                "is_up": True,
+                "address": self.address if name == self.interfaces[0] else "",
+                "prefix": self.prefix if name == self.interfaces[0] else None,
+                "subnet_mask": self.subnet_mask if name == self.interfaces[0] else "",
+                "method": self.method,
+            }
+            for name in self.interfaces
+        ]
+
     def apply_handler(self, iface: str, config: object) -> ApplyResult:
         self.applied.append((iface, config))
         return self.apply_result
@@ -171,6 +190,7 @@ def net_server(tmp_path, monkeypatch):
         port=port,
         system_name="TestSystem",
         network_config_provider=fake.config_provider,
+        network_interfaces_provider=fake.interfaces_provider,
         network_apply_handler=fake.apply_handler,
         network_renew_handler=fake.renew_handler,
     )
@@ -611,8 +631,12 @@ def test_active_interface_is_expanded_and_others_offer_configure(net_server) -> 
     _status, body = _get(base, "/section/network/status")
     # eth0 is FakeNetwork's active interface: expanded, so no button of its own.
     assert "Configure <code>eth0</code>" in body
-    assert "/section/network/status/wlan0" in body
-    assert "/section/network/status/eth0" not in body
+    # Assert on the button, not the bare path – the 5s poll also carries the
+    # expanded interface in its URL, so a substring check would match that.
+    assert '/section/network/status/wlan0"' in body
+    buttons = [seg for seg in body.split("<button") if ">Configure</button>" in seg]
+    assert any("/section/network/status/wlan0" in b for b in buttons)
+    assert not any("/section/network/status/eth0" in b for b in buttons)
 
 
 def test_view_mode_can_expand_an_interface_read_only(net_server) -> None:
@@ -718,3 +742,47 @@ def test_interface_list_uses_the_richer_provider_when_wired(tmp_path, monkeypatc
         assert len(calls) == before + 1
     finally:
         server.stop()
+
+
+# --------------------------------------------------------------------------- #
+# Expanded-row survival: poll, Cancel and Scan must not move the expansion
+# --------------------------------------------------------------------------- #
+
+
+def test_view_poll_carries_the_expanded_interface(net_server) -> None:
+    """The 5s poll used to GET the iface-less route, so a row opened in View
+    mode collapsed back to the active interface every five seconds and could
+    not be read."""
+    _fake, base = net_server
+    status, body = _get(base, "/section/network/status/wlan0")
+    assert status == 200
+    assert "/section/network/status/wlan0" in body
+    assert "every 5s" in body
+
+
+def test_cancel_returns_to_view_mode_on_the_same_row(net_server) -> None:
+    """Cancel targeted /section/network/edit, which re-rendered the editor –
+    leaving Edit mode with no exit short of a page reload."""
+    _fake, base = net_server
+    status, body = _get(base, "/section/network/edit/wlan0")
+    assert status == 200
+    cancel = body[body.index(">Cancel<") - 400 : body.index(">Cancel<")]
+    assert "/section/network/status/wlan0" in cancel
+    assert "/section/network/edit" not in cancel
+
+
+def test_scan_keeps_the_open_interface(net_server) -> None:
+    """Scan dropped the iface segment, so re-reading the adapter list moved the
+    expansion and discarded anything typed into the editor."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/edit/wlan0")
+    assert "/section/network/edit/wlan0?scan=1" in body
+
+
+def test_interface_rows_come_from_the_provider(net_server) -> None:
+    """Exercises the real provider row shape rather than the synthesised
+    fallback the card uses when no provider is wired."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/status")
+    assert "eth0" in body and "wlan0" in body
+    assert "10.0.0.5" in body

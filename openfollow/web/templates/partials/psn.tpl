@@ -42,7 +42,8 @@
                 % end
                 <div class="ia-pointer">
                     <span class="ia-pointer-value">{{config.psn_source_iface or 'Auto-detect'}}</span>
-                    <a class="ia-link" href="#interface-assignment-section">Change in General &rsaquo; Interface Assignment</a>
+                    <a class="ia-link" href="#interface-assignment"
+                       onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Interface Assignment</a>
                 </div>
             </div>
         </div>

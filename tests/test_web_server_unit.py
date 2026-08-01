@@ -1270,3 +1270,69 @@ class TestGetNetworkInterfaces:
         srv.get_network_interfaces()
         rows[0]["name"] = "corrupted"
         assert [r["name"] for r in srv.get_network_interfaces()] == ["eth0"]
+
+# ---------------------------------------------------------------------------
+# Always-reachable web UI: the wildcard bind is what makes the link-local
+# fallback usable, so it has to survive a station that boots with no address.
+# ---------------------------------------------------------------------------
+
+
+def test_web_bind_defaults_to_every_interface() -> None:
+    """Restricting the web UI is opt-in – the default must accept on every
+    interface so an address appearing later is immediately reachable."""
+    import inspect
+
+    from openfollow.web.server import ConfigWebServer as _Srv
+
+    assert inspect.signature(_Srv.__init__).parameters["host"].default == "0.0.0.0"
+
+
+def test_resolve_web_bind_returns_wildcard_without_an_explicit_address(monkeypatch) -> None:
+    import openfollow.services as services_module
+    from openfollow.configuration import AppConfig
+
+    class _App:
+        _config = AppConfig(web_bind="")
+
+    services = services_module.AppRuntimeServices.__new__(services_module.AppRuntimeServices)
+    services._app = _App()
+    assert services._resolve_web_bind() == "0.0.0.0"
+
+
+def test_start_succeeds_with_no_non_loopback_addresses(tmp_path, monkeypatch) -> None:
+    """A station whose DHCP never answered has no routable address at startup.
+    The listener still has to come up, so the UI is live the moment the
+    link-local fallback assigns one - no restart."""
+    monkeypatch.setattr(
+        "openfollow.web.server.get_local_ipv4_addresses",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        "openfollow.web.server.get_primary_local_ipv4",
+        lambda default="127.0.0.1": default,
+    )
+    srv = _make_quiet_server(tmp_path, monkeypatch, host="0.0.0.0")
+    monkeypatch.setattr(srv, "_can_bind", lambda h, p: True)
+    monkeypatch.setattr(srv._beacon_sender, "start", lambda: None)
+    monkeypatch.setattr(srv._beacon_receiver, "start", lambda: None)
+
+    class _Server:
+        def serve_forever(self) -> None:
+            return None
+
+        def shutdown(self) -> None:
+            return None
+
+    monkeypatch.setattr(srv, "_run", lambda host, port, slot: None)
+    srv.start()
+    try:
+        assert srv._thread is not None
+    finally:
+        srv.stop()
+
+
+def test_wildcard_bind_needs_no_separate_loopback_listener(tmp_path, monkeypatch) -> None:
+    """0.0.0.0 already covers 127.0.0.1 – a second listener would be a wasted
+    socket and a second port to explain."""
+    srv = _make_quiet_server(tmp_path, monkeypatch, host="0.0.0.0")
+    assert srv._needs_loopback_listener() is False

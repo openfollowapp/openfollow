@@ -177,6 +177,28 @@ Network page silently falls back to a read-only view. This also matches the Ansi
 deploy path, which already assumes NetworkManager. The `.deb`'s
 `NetworkManager-wait-online` timeout drop-in bounds a cable-less boot to ~15 s.
 
+**No-DHCP fallback.** Both the image layer and the Ansible playbook write
+`/etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf`:
+
+```ini
+[connection]
+ipv4.may-fail=true
+ipv4.dhcp-timeout=20
+ipv4.link-local=4
+```
+
+Without it a show LAN with no DHCP server leaves the NIC with no IPv4 address
+at all – the web server is up and avahi is answering, but nothing can reach
+either. `may-fail` lets activation finish without a lease, `dhcp-timeout`
+bounds the wait, and `link-local=4` is *fallback* (not `3`, *enabled*): the
+169.254 address appears only once DHCP has given up and goes away again when a
+lease arrives, so a healthy LAN never carries a second address. It is a
+connection **default** rather than a per-profile setting because no profile
+exists at image-build time, and defaults also cover profiles created later.
+The operator reaches the station at `<hostname>.local` or at the address on the
+on-screen HUD; `tests/test_dhcp_fallback_provisioning.py` pins both files
+against the app's own DHCP timeout so they can't drift apart.
+
 **Single account.** `rpi-image-gen`'s `rpi-user-credentials` layer creates the
 `openfollow` login user (password `openfollow`, **passwordless sudo**, in the
 `video/render/input/audio/plugdev/dialout/sudo` groups) *before* the `.deb`

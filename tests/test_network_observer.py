@@ -348,6 +348,13 @@ class TestAlertsAndThrottling:
         failing["now"] = True
         assert obs.alerts() == ["plane0: interface is down"]
 
+    def test_a_plane_never_polled_contributes_no_alert(self) -> None:
+        """A plane added but not yet reached - a disabled one, or the first
+        tick - must not render a phantom row."""
+        rec = _Recorder()
+        obs, _clk = _observer(rec)
+        assert obs.alerts() == []
+
     def test_poll_is_throttled(self) -> None:
         rec = _Recorder()
         obs, clk = _observer(rec)

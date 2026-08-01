@@ -99,3 +99,12 @@ def test_nothing_arms_the_fallback_at_runtime() -> None:
         assert "ensure_dhcp_fallback" not in text
         assert "ipv4.link-local" not in text
         assert "ipv4.dhcp-timeout" not in text
+
+
+def test_every_install_route_ships_an_mdns_responder() -> None:
+    """The HUD advertises <hostname>.local as the recovery route that survives
+    an address change. A station without a responder answers nothing there, so
+    the advice sends the operator to a dead name - worse than showing none."""
+    assert "avahi-daemon" in (_REPO_ROOT / "packaging" / "debian" / "control.in").read_text(encoding="utf-8")
+    assert "avahi-daemon" in _read("ansible playbook")
+    assert "avahi-daemon" in _read("image layer")

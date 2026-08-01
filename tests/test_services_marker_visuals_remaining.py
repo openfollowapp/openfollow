@@ -19,6 +19,7 @@ point, ``build_marker_visual_state``, which:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -328,6 +329,61 @@ class TestSystemStatsFlow:
         collector = SimpleNamespace(update=lambda: stats)
         state = _build(app, pool, system_stats=collector)
         assert state.ip_text == "10.0.0.7:9000 (wlan0)"
+
+    @pytest.mark.parametrize(
+        "ip,expected",
+        [("169.254.8.31", True), ("192.168.1.5", False), ("N/A", False)],
+    )
+    def test_link_local_address_is_flagged_as_a_fallback(
+        self,
+        pool: OverlayStatePool,
+        ip: str,
+        expected: bool,
+    ) -> None:
+        """The HUD qualifier hangs off this flag – a 169.254 address means
+        DHCP never answered, not that the station is on the show LAN."""
+        app = _build_app()
+        stats = SimpleNamespace(
+            cpu_percent=0.0,
+            ram_percent=0.0,
+            temperature=None,
+            ip_address=ip,
+            iface_name="eth0",
+        )
+        collector = SimpleNamespace(update=lambda: stats)
+        state = _build(app, pool, system_stats=collector)
+        assert state.ip_is_fallback is expected
+
+
+class TestHostnameRow:
+    def test_hostname_is_the_running_name_not_the_station_slug(
+        self,
+        pool: OverlayStatePool,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When the rename was skipped, advertising the desired slug would
+        send the operator to a name avahi never answers on."""
+        import openfollow.privilege.device_repair as device_repair
+
+        monkeypatch.setattr(device_repair, "current_hostname", lambda: "raspberrypi")
+        app = _build_app()
+        app._config = replace(app._config, psn_system_name="Noble Bear")
+        state = _build(app, pool)
+        assert state.hostname_text == "raspberrypi.local"
+
+    @pytest.mark.parametrize("name", ["", "localhost"])
+    def test_unusable_hostname_yields_no_row(
+        self,
+        pool: OverlayStatePool,
+        monkeypatch: pytest.MonkeyPatch,
+        name: str,
+    ) -> None:
+        import openfollow.privilege.device_repair as device_repair
+
+        monkeypatch.setattr(device_repair, "current_hostname", lambda: name)
+        app = _build_app()
+        state = _build(app, pool)
+        assert state.hostname_text == ""
 
 
 # --------------------------------------------------------------------------- #

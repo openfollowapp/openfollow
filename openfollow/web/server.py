@@ -522,6 +522,17 @@ class ConfigWebServer:
         """
         self._refresh_local_ip()
 
+    def reopen_beacons(self) -> None:
+        """Rebuild both beacon sockets regardless of whether the IP changed.
+
+        Called on recovery from an interface outage: the kernel drops the
+        group membership and the egress route when an address is removed, and
+        the same address coming back does not restore either - so the
+        unchanged-IP guard in ``update_iface_ip`` is not enough on its own.
+        """
+        self._beacon_sender.reopen()
+        self._beacon_receiver.reopen()
+
     def get_local_peer_info(self) -> PeerInfo:
         """Get info about this server as a PeerInfo object."""
         self._refresh_local_ip()

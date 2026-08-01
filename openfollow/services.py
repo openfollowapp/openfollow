@@ -631,6 +631,9 @@ class AppRuntimeServices:
         # Built lazily on the first housekeeping poll so construction stays
         # free of interface enumeration.
         self._network_observer: NetworkPlaneObserver | None = None
+        # Whether the station interface has been seen without an address since
+        # the followers were last repointed.
+        self._station_saw_outage = False
 
         backend_choice = self._network_backend_choice(app)
         self._network_adapter = _select_network_adapter(
@@ -1007,13 +1010,28 @@ class AppRuntimeServices:
 
         address, status = resolve_plane_source_ip("", self._app._config.psn_source_iface)
         if status in ("down", "none"):
+            self._station_saw_outage = True
             return
+
+        # The observer forces its own planes to rebuild after an outage even at
+        # an unchanged address; these followers need the same treatment, and
+        # both of their entry points short-circuit on an unchanged IP. Without
+        # this a replug that returns the same DHCP lease leaves catalog sync
+        # and the beacon joined to memberships the kernel already dropped -
+        # still looking healthy, converging with nobody.
+        recovered = self._station_saw_outage
+        self._station_saw_outage = False
+
         server = self._app._web_server
         if server is not None:
             server.refresh_local_ip()
+            if recovered:
+                server.reopen_beacons()
         sync = getattr(self._app, "_marker_catalog_sync", None)
         if sync is not None:
             sync.update_iface_ip(address)
+            if recovered:
+                sync.reopen()
 
     def network_alerts(self) -> list[str]:
         """Planes currently stopped because their interface has no address."""

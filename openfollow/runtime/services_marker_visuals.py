@@ -420,11 +420,11 @@ def build_marker_visual_state(
             state.ip_text = ip
         state.ip_is_fallback = is_link_local(ip)
 
+    state.network_alerts = list(network_alerts or ())
+
     # Carries the port for the same reason the IP row does: on a fallback bind
     # the UI is not on 80, and a name pointing at a dead port is worse than no
     # name at all.
-    state.network_alerts = list(network_alerts or ())
-
     hostname = _local_hostname()
     state.hostname_text = hostname + _port_suffix(web_port) if hostname else ""
 

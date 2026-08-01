@@ -1076,3 +1076,81 @@ def test_plane_current_reports_the_live_binding(monkeypatch) -> None:
     planes = {p.label: p for p in services._build_network_planes()}
     assert planes["PSN"].current() == "192.168.1.5"
     assert planes["OTP output"].current() is None
+
+
+class _FollowerSync:
+    def __init__(self) -> None:
+        self.ips: list[str] = []
+        self.reopens = 0
+
+    def update_iface_ip(self, ip: str) -> None:
+        self.ips.append(ip)
+
+    def reopen(self) -> None:
+        self.reopens += 1
+
+
+class _FollowerServer:
+    def __init__(self) -> None:
+        self.refreshes = 0
+        self.reopens = 0
+
+    def refresh_local_ip(self) -> None:
+        self.refreshes += 1
+
+    def reopen_beacons(self) -> None:
+        self.reopens += 1
+
+
+def _wire_followers(services):
+    sync, server = _FollowerSync(), _FollowerServer()
+    services._app._marker_catalog_sync = sync
+    services._app._web_server = server
+    return sync, server
+
+
+def test_station_followers_rebuild_after_a_same_lease_flap(monkeypatch) -> None:
+    """The observer forces its own planes to rebuild after an outage even at an
+    unchanged address; the followers short-circuit on an unchanged IP, so a
+    replug returning the same lease left catalog sync and the beacon joined to
+    memberships the kernel had already dropped - converging with nobody while
+    looking healthy."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.psn_source_iface = "eth0"
+    sync, server = _wire_followers(services)
+
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._follow_station_ip()
+    assert (sync.reopens, server.reopens) == (0, 0)
+
+    _fake_ifaces(monkeypatch, {})  # cable out
+    services._follow_station_ip()
+
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})  # same lease back
+    services._follow_station_ip()
+    assert sync.reopens == 1
+    assert server.reopens == 1
+
+
+def test_a_steady_station_never_forces_a_rebuild(monkeypatch) -> None:
+    """Rebuilding sockets once a second would be worse than the bug."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.psn_source_iface = "eth0"
+    sync, server = _wire_followers(services)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    for _ in range(5):
+        services._follow_station_ip()
+    assert (sync.reopens, server.reopens) == (0, 0)
+
+
+def test_the_outage_flag_clears_after_one_recovery(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.psn_source_iface = "eth0"
+    sync, server = _wire_followers(services)
+    _fake_ifaces(monkeypatch, {})
+    services._follow_station_ip()
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._follow_station_ip()
+    services._follow_station_ip()
+    assert sync.reopens == 1
+    assert server.reopens == 1

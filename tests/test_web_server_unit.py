@@ -1328,3 +1328,15 @@ def test_refresh_local_ip_is_publicly_callable(tmp_path, monkeypatch) -> None:
     srv._local_ip_provider = lambda: "10.0.0.77"
     srv.refresh_local_ip()
     assert srv.local_ip == "10.0.0.77"
+
+
+def test_reopen_beacons_rebuilds_both_sockets(tmp_path, monkeypatch) -> None:
+    """Recovery from an interface outage: the unchanged-IP guard in
+    update_iface_ip is not enough, because the kernel already dropped the
+    membership and the route while the address string stayed put."""
+    srv = _make_quiet_server(tmp_path, monkeypatch)
+    srv._beacon_sender._reopen.clear()
+    srv._beacon_receiver._reopen.clear()
+    srv.reopen_beacons()
+    assert srv._beacon_sender._reopen.is_set()
+    assert srv._beacon_receiver._reopen.is_set()

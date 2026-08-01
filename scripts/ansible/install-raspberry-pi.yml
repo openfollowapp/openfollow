@@ -1061,6 +1061,8 @@
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/nmcli con mod *
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/nmcli con up *
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/nmcli con down *
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/nmcli con add *
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/nmcli con delete *
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/tee /etc/dhcpcd.conf.tmp
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/mv /etc/dhcpcd.conf.tmp /etc/dhcpcd.conf
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl reload dhcpcd

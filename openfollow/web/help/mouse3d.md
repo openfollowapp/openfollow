@@ -39,6 +39,8 @@ The defaults are in the table above (push drives x / y / z with the up/down moti
 
 **Invert** – flips that axis's direction.
 
+> For a camera looking from **upstage**, use **Invert control direction** under Markers & Zones → Marker Movement rather than inverting axes here. It reverses left/right and forward/back together for the 3D Mouse, keyboard and gamepad at once, so every device on the station agrees on which way is stage left. Per-axis **Invert** here is for the puck's own feel, and stacks on top of it.
+
 ## Response curve
 
 **Response curve** – shapes how deflection maps to speed, shared across all axes:

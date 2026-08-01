@@ -84,6 +84,16 @@
         </div>
     </div>
 
+    <div class="group">
+        <h3 class="group-title">Control direction</h3>
+        <div class="row">
+            <div class="field checkbox-field wide">
+                <label for="movement-invert-control-direction">Invert control direction</label>
+                <div class="checkbox-wrap"><input type="checkbox" id="movement-invert-control-direction" name="invert_control_direction" {{'checked' if config.marker.invert_control_direction else ''}}></div>
+            </div>
+        </div>
+    </div>
+
     <div class="actions">
         <button type="submit" class="save-btn">Save</button>
     </div>

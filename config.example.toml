@@ -61,6 +61,11 @@ move_speed = 2.0
 default_pos_x = 0.0
 default_pos_y = 0.0
 default_pos_z = 1.6
+# Reverse left/right and forward/back for keyboard, gamepad and 3D mouse.
+# For a camera placed upstage looking downstage, whose picture is rotated
+# 180 degrees from the stage axes. Height is never affected; the mouse and
+# OSC set absolute positions and are unaffected.
+invert_control_direction = false
 ball_visible = true
 ball_size = 0.15
 transparency = 0.3

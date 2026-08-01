@@ -12,9 +12,20 @@ See `docs/PROJECT_STRUCTURE.md` for layout.
 
 ## Code comments
 
-- Keep comments short and concise.
-- Do NOT reference issue or PR numbers in code or comments. Put that context in
-  commit messages / PR descriptions instead.
+- **Short, precise, technical, and only where required.** One line is the
+  target; two is the ceiling outside a genuinely subtle invariant. Match the
+  density of the surrounding file.
+- Comment the **non-obvious** part only. Delete anything the code, the field
+  name, or an adjacent string already says – a comment restating the line below
+  it is noise.
+- Don't repeat a comment above each of several near-identical blocks. Put it on
+  the first and leave the rest bare.
+- **Reasoning belongs in the commit message / PR description, not the source**:
+  why a decision was taken, what alternatives were weighed, what review raised
+  it. Same rule for issue and PR numbers – never in code or comments.
+- Docstrings follow the same instinct once they grow into essays. A load-bearing
+  contract (what callers must not do, an invariant a refactor could break) earns
+  more room than an inline comment; a narrative does not.
 - Do NOT leave "legacy" / "removed" / "no longer" breadcrumbs when deleting a
   feature. Write code, comments, tests, and docs as if the current design was
   always the only one – e.g. ONNX Runtime is *the* detection backend, not "the
@@ -148,7 +159,7 @@ All config lives in `config.toml` (auto-reloaded when file changes on disk).
 ### Sub-configs
 - **CameraConfig:** pos_x/y/z, pitch/yaw/roll, fov
 - **GridConfig:** visible, width, depth, spacing, x_offset, y_offset, z_offset, origin_visible, origin_length, origin_thickness
-- **MarkerConfig:** min_speed, max_speed, move_speed, default_pos_x/y/z, ball_visible, ball_size, transparency, crosshair_visible, crosshair_size, crosshair_color, crosshair_thickness, drop_line, drop_line_thickness, ground_circle, ground_circle_size, ground_circle_filled, z_display_from_stage
+- **MarkerConfig:** min_speed, max_speed, move_speed, default_pos_x/y/z, `invert_control_direction` (flips X **and** Y together for *relative* input – keyboard, gamepad, 3D mouse – so an upstage camera's picture matches the controls; applied once in `InputManager.update` via `_oriented`, never on Z, and never on the absolute paths: 2D mouse unprojection and OSC writes), ball_visible, ball_size, transparency, crosshair_visible, crosshair_size, crosshair_color, crosshair_thickness, drop_line, drop_line_thickness, ground_circle, ground_circle_size, ground_circle_filled, z_display_from_stage
 - **ControllerConfig:** enabled, keyboard_enabled, mouse_enabled, mouse_hysteresis_px, mouse_smoothing, mouse_max_y, mouse_wheel_z_enabled, mouse_wheel_invert, mouse_wheel_z_step, mouse_double_click_reset, deadzone, invert_y, curve, the gamepad button map (`btn_reset`, `btn_source_select`, `btn_speed_up/down`, `btn_move_z_up/down`, `btn_settings`, `btn_next/prev_marker`, …), the keyboard binding map (`key_move_layout`, `key_reset`, `key_speed_up/down`, `key_toggle_help`, `key_toggle_zones`, `key_settings`, …), `move_xy_stick` (no LED fields)
 - **DetectionConfig:** enabled (the **only** detection on/off – the web Tracking control writes it; `True` ⇒ detection runs and drives markers per `pin_mode`), model (default `yolo26n.onnx`; the web Models picker abstracts the five YOLO26 sizes as quality tiers Fastest/Fast/Balanced/Accurate/Most Accurate, pre-shipped with each distribution – see "Pre-shipped detection models"), storage_path (not exposed in the UI; device-local – stripped from config export and preserved-across-import so a path never crosses machines; blank auto-resolves to `/mnt/nvme/openfollow/yolo` when `/mnt/nvme` is a mountpoint, else a `yolo` folder under the working dir – via `resolve_detection_storage_path` in [`video/detection.py`](openfollow/video/detection.py), used by `_prepare_model_path` + the web model-discover/export helpers; set an absolute path in `config.toml` to override), inference_size (hidden in the UI; auto-detected from the model's export), confidence, interval_ms, show_boxes, show_labels, box_color, box_thickness, max_persons, pin_marker_id (`-1` = follow selected marker; used by `replace` mode only), pin_point (`top`|`bottom`), smoothing, prediction, grace_period_ms, pin_mode (`replace`|`assist`, default `assist`; `replace` = Fully Automatic auto-pins one marker, `assist` = AI-Assisted refines **all** controlled markers), assist_radius_m, assist_strength, masks_enabled (master switch for region-of-interest masking, default `False` ⇒ masks inactive even when drawn; `True` ⇒ detection confined to the enabled masks; live-applied via the `/api/detection/masks/enabled` route + staged-config drain), masks (`list[DetectionMaskConfig]`: region-of-interest polygons in normalised 0–1 frame coords; detection confined to the union of enabled masks only when `masks_enabled`, empty = unrestricted; live-applied, no restart). CLAHE preprocessing is always on (no config field). There is no `pin_marker` boolean – `enabled` gates the whole subsystem.
 - **OscConfig:** enabled, port (default 8765), allowed_sender_ips (default `[]` = allow-all + startup WARNING; normalised to `list[str]` by `__post_init__` to survive malformed TOML)
@@ -510,11 +521,28 @@ of the global golden accent, so each card is identifiable at a glance.
 
 ### UI copy: explanations live in the help drawer (REQUIRED)
 
-Keep inline form copy **terse**: a `<label>` names the control, and a **one-line** `field-note` / `section-note` may *orient* ("Mouse controls for the on-display UI"; "…storage, OSC, and PSN/RTTrPM/OTP stay metric regardless"). Anything past that one line – multi-sentence behaviour, defaults, side-effects, caveats, the "why" – belongs in that section's **help drawer markdown** (`openfollow/web/help/<section>.md`, surfaced by the per-section `?` drawer via `data-help="<section>"`), **not** inline as a long `field-note` / `title` tooltip.
+**Do not add inline help to web forms.** A `<label>` (plus a `placeholder` where
+one genuinely helps) is the whole of a control's inline copy. Everything else –
+what the setting does, when to use it, defaults, side-effects, caveats, examples,
+and "manage X under Y" pointers – goes in that section's **help drawer markdown**
+(`openfollow/web/help/<section>.md`, surfaced by the per-section `?` drawer via
+`data-help="<section>"`).
 
-- The line is: terse orienting note inline = fine; behavioural *explanation* = help drawer. When in doubt, if it teaches *how the feature behaves* (not just *what the field is*), it's an explanation.
-- When you add or change a control, update the matching `openfollow/web/help/<section>.md` (and keep the website-docs mirror in mind – see the `Check help on merge` auto-memory). The help drawer is the single home for the explanation, so it can't drift between the form and the docs.
-- Concretely: do **not** write a `field-note` like "Turning this off also disables X; turning it back on does not re-enable…" – that's a behavioural explanation. Put it in the help `.md`. The experimental-features toggle originally made this mistake; the sentence now lives in `help/general-station.md`.
+- **A new `field-note` is a review blocker**, including a terse one-line pointer.
+  "For a camera looking from upstage", "Comma-separated; e.g. …", and
+  "Manage destinations under OSC Destinations." have all been stripped on sight.
+  If the label alone doesn't identify the control, fix the label.
+- When you add or change a control, update the matching
+  `openfollow/web/help/<section>.md` (and keep the website-docs mirror in mind –
+  see the `Check help on merge` auto-memory). The help drawer is the single home
+  for the explanation, so it can't drift between the form and the docs.
+- The same goes for `title` tooltips carrying explanation. A `title` is fine for
+  a badge or icon with no visible label (e.g. the "This session" interface badge).
+- Existing `field-note`s predate this rule – leave them where they are unless you
+  are already editing that block, then move the text into the help `.md`.
+- `section-note` (the one-line subtitle beside a section's `<h2>`) is a *name*,
+  not help: "Marker speed limits, default speed, and default position" is fine;
+  a sentence teaching behaviour is not.
 
 ### Key routes
 | Route | Method | Description |

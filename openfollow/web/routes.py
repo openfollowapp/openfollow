@@ -1465,6 +1465,7 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "default_pos_x": _as_float,
         "default_pos_y": _as_float,
         "default_pos_z": _as_float,
+        "invert_control_direction": _as_bool,
     },
     "marker": {
         "ball_visible": _as_bool,
@@ -4848,8 +4849,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/section/movement")
     def update_movement() -> Any:
-        """Update movement speed settings."""
-        cfg = _save_section_from_form("movement")
+        """Update movement speed settings.
+
+        Only this route lists ``invert_control_direction`` in ``bool_fields``:
+        it renders the checkbox, and an unchecked box isn't posted. The
+        ``marker`` section shares ``MarkerConfig`` but must leave it alone.
+        """
+        cfg = _save_section_from_form(
+            "movement",
+            bool_fields=("invert_control_direction",),
+        )
         return template("partials/movement", config=cfg, saved=True)
 
     @app.post("/section/marker")

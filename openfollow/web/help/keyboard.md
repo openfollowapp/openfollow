@@ -20,6 +20,8 @@ Expand **Button Mapping** to customise which keys perform which actions. Click *
 
 Arrow keys are reserved for navigating the on-screen menu and cannot be used for movement.
 
+> If these keys move the marker the *opposite* way to what you see on screen, check **Invert control direction** under Markers & Zones → Marker Movement. It reverses left/right and forward/back for the keyboard, gamepad and 3D Mouse together, so the controls match a camera looking from upstage.
+
 - **Z+** – raise the active marker. Default: `q`.
 - **Z-** – lower the active marker. Default: `e`.
 

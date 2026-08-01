@@ -2338,6 +2338,7 @@ def test_marker_config_coerces_all_boolean_flags() -> None:
         ground_circle="true",  # type: ignore[arg-type]
         ground_circle_filled="false",  # type: ignore[arg-type]
         z_display_from_stage="yes",  # type: ignore[arg-type]
+        invert_control_direction="true",  # type: ignore[arg-type]
     )
     assert cfg.ball_visible is False
     assert cfg.crosshair_visible is False
@@ -2345,6 +2346,36 @@ def test_marker_config_coerces_all_boolean_flags() -> None:
     assert cfg.ground_circle is True
     assert cfg.ground_circle_filled is False
     assert cfg.z_display_from_stage is True
+    assert cfg.invert_control_direction is True
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (True, True),
+        (False, False),
+        ("on", True),
+        ("off", False),
+        ("true", True),
+        # Unrecognised input falls back to the default rather than guessing.
+        # Notably an int: ``_coerce_bool`` accepts only real bools and known
+        # string forms, so ``1`` is not "truthy" here - same as every sibling flag.
+        (1, False),
+        (None, False),
+        ("banana", False),
+    ],
+)
+def test_marker_config_coerces_invert_control_direction(raw: object, expected: bool) -> None:
+    """The flag reaches the input loop's sign arithmetic every frame, so a
+    hand-edited TOML must never leave a non-bool there."""
+    cfg = MarkerConfig(invert_control_direction=raw)  # type: ignore[arg-type]
+    assert cfg.invert_control_direction is expected
+
+
+def test_marker_config_control_direction_defaults_off() -> None:
+    """Default must be off: enabling it for an existing install would reverse
+    every operator's controls on upgrade."""
+    assert MarkerConfig().invert_control_direction is False
 
 
 @pytest.mark.parametrize("bad_value", ["abc", "", [1.0]])

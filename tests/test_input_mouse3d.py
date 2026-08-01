@@ -1798,3 +1798,24 @@ def test_manager_detect_devices_ignore_none_reads_until_timeout() -> None:
     backend = _FakeBackend([Mouse3DDeviceInfo(path="/dev/hidraw2")], {"/dev/hidraw2": lambda: FakeDevice([])})
     mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
     assert mgr.detect_pressed_button(timeout=0.03) is None
+
+
+def test_invert_control_direction_flips_mouse3d_xy_not_z(wired) -> None:  # noqa: ANN001
+    """The 3D mouse feeds relative velocity like the stick, so the upstage
+    flip applies to it too. Z is height and stays as-is."""
+    manager, app = wired
+    app._config.mouse3d.enabled = True
+    app._config.marker.invert_control_direction = True
+    manager.mouse3d_manager.next_update = Mouse3DUpdate(velocity=(1.0, 2.0, 3.0))
+    manager.update(1.0)  # dt=1, move_speed=2.0
+    assert app._server.get_marker(10).pos == pytest.approx((-2.0, -4.0, 6.0))
+
+
+def test_invert_control_direction_leaves_mouse3d_reset_absolute(wired) -> None:  # noqa: ANN001
+    """Reset is an absolute write to the default position, not a delta."""
+    manager, app = wired
+    app._config.mouse3d.enabled = True
+    app._config.marker.invert_control_direction = True
+    manager.mouse3d_manager.next_update = Mouse3DUpdate(reset=True)
+    manager.update(0.016)
+    assert app._server.get_marker(10).pos == pytest.approx((5.0, 6.0, 7.0))

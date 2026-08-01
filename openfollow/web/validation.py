@@ -419,6 +419,7 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "default_pos_x": FieldRule(_as_float, human_error="Must be a number."),
         "default_pos_y": FieldRule(_as_float, human_error="Must be a number."),
         "default_pos_z": FieldRule(_as_float, human_error="Must be a number."),
+        "invert_control_direction": FieldRule(_as_bool),
     },
     "marker": {
         "ball_visible": FieldRule(_as_bool),

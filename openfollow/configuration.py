@@ -2943,6 +2943,17 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         # now-active pin (cleared on a honoured pin, restored on rollback).
         app._refresh_psn_source_advisory()
 
+    # Planes with a blank pin follow the station interface, but each is gated
+    # on its own dataclass differing – which it doesn't when only the Station
+    # default row moved. Covers both iface paths above; the equality check
+    # skips it when either rolled back. Runs on the same pass, so the panel's
+    # address column never advertises an interface a plane isn't on yet.
+    if psn_iface_changed and app._config.psn_source_iface == new_psn_source_iface:
+        _apply(
+            "station_iface_followers",
+            app._runtime_services.apply_station_iface_change,
+        )
+
     # Video pipeline live-swap. Change detection is plugin-driven via the
     # active source's ``config_changed(old, new)`` – covers ``video_source_type``
     # and per-plugin fields (rtsp_url, srt_host, …). Distinct from the

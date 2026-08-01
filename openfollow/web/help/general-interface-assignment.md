@@ -12,7 +12,15 @@ Interfaces are pinned **by name** (`eth0`, `wlan0`, `eth0.10`), not by IP addres
 - **Follow station interface** – the default for every other row. That row uses whatever Station default resolves to, so on a single-adapter station you never have to touch this panel.
 - A specific interface – that function uses it regardless of what the station default is.
 
-If a pinned interface is down or missing, the function falls back to the station interface rather than going silent, and the log records that the pin wasn't honoured. A stale pin degrades output onto the wrong network; it never stops it.
+## When a configured interface is unavailable
+
+A function stays on the interface you gave it, always. If that interface has no address – cable out, switch port down, VLAN gone – the function **stops** and the Address column says so. It does not move to another interface.
+
+That is deliberate. During a show, output that has stopped is something you can see and diagnose; output that quietly reappeared on the office LAN is not. It also means nothing this station sends can end up on a network you didn't choose.
+
+The function resumes on its own as soon as the interface has an address again – no restart, no re-save. Nothing about your configuration changes while the interface is away.
+
+The **address** is allowed to change. If the interface is on DHCP and comes back with a different address than before, that is normal and the function follows it. Only the interface itself is fixed.
 
 ## Rows that can't be pinned
 

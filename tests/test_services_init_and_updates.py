@@ -612,7 +612,7 @@ class TestInitOtp:
         monkeypatch.setattr(
             net_utils,
             "resolve_plane_source_ip",
-            lambda pin, station="", *, fallback=True: ("", "none"),
+            lambda pin, station="": ("", "none"),
         )
 
     def test_blank_source_iface_follows_station_interface(
@@ -712,7 +712,7 @@ class TestInitOtp:
         monkeypatch.setattr(
             net_utils,
             "resolve_plane_source_ip",
-            lambda pin, station="", *, fallback=True: ("192.168.1.5", "iface"),
+            lambda pin, station="": ("192.168.1.5", "iface"),
         )
         monkeypatch.setattr(services_module, "OtpServer", _FakeOtpServer)
 
@@ -746,9 +746,20 @@ class TestInitOtp:
         services.init_otp()
         assert services._app._otp_server.registered == []
 
-    def test_enabled_source_iface_unavailable_falls_back_and_warns(
-        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, caplog
+    def test_enabled_source_iface_unavailable_stays_down_and_errors(
+        self,
+        services: AppRuntimeServices,
+        monkeypatch,
+        caplog,
     ) -> None:
+        """A pinned interface that is gone must not put OTP on another network.
+
+        The operator chose that interface; sending stage data out of whatever
+        NIC happens to be up instead is worse than sending nothing, because a
+        stopped output is visible and a misrouted one is not.
+        """
+        from dataclasses import replace
+
         cfg = replace(
             services._app._config,
             otp_output=OtpOutputConfig(
@@ -765,19 +776,20 @@ class TestInitOtp:
 
         from openfollow import net_utils
 
-        # Pinned iface is down → falls back to the primary, status "primary".
         monkeypatch.setattr(
             net_utils,
             "resolve_plane_source_ip",
-            lambda pin, station="", *, fallback=True: ("192.168.1.9", "primary"),
+            lambda pin, station="": ("", "down"),
         )
         monkeypatch.setattr(services_module, "OtpServer", _FakeOtpServer)
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level("ERROR"):
             services.init_otp()
-        # Output stays alive on the fallback IP, with a warning about the dead pin.
-        assert services._app._otp_server._source_ip == "192.168.1.9"
-        assert any("otp_output.source_iface" in r.message for r in caplog.records)
+        assert services._app._otp_server._source_ip == ""
+        record = next(r for r in caplog.records if "otp_output.source_iface" in r.message)
+        assert record.levelname == "ERROR"
+        # Names the interface the operator configured, not the one it fell to.
+        assert "eth9_gone" in record.message
 
 
 # --------------------------------------------------------------------------- #
@@ -1770,14 +1782,19 @@ class TestApplyOtpOutputChange:
     """Four-state matrix: (currently_running × new_enabled)."""
 
     @pytest.fixture(autouse=True)
-    def _stub_resolve_source_ip(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Keep the forward-restart iface→IP resolution hermetic."""
+    def _stub_resolve_plane_source_ip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Keep the forward-restart iface→IP resolution hermetic.
+
+        Stubs the resolver the OTP path actually calls – stubbing
+        ``resolve_source_ip`` instead left these tests resolving a real host
+        address and opening a real UDP socket.
+        """
         from openfollow import net_utils
 
         monkeypatch.setattr(
             net_utils,
-            "resolve_source_ip",
-            lambda iface, *, fallback=True: ("", "none"),
+            "resolve_plane_source_ip",
+            lambda pin, station="": ("", "none"),
         )
 
     def _enabled_cfg(self, **overrides: Any) -> OtpOutputConfig:
@@ -3870,3 +3887,55 @@ class TestSwapDetector:
 
         with pytest.raises(RuntimeError, match="not initialised"):
             services.swap_detector(new_cfg)
+
+
+# --------------------------------------------------------------------------- #
+# apply_station_iface_change – planes that inherit the station interface
+# --------------------------------------------------------------------------- #
+
+
+class TestApplyStationIfaceChange:
+    """Only planes with a blank pin follow the station default; a plane with
+    its own pin must not be touched when the station moves."""
+
+    def _services_with_otp(self, services: AppRuntimeServices, source_iface: str, *, enabled: bool = True):
+        from dataclasses import replace
+
+        services._app._config = replace(
+            services._app._config,
+            otp_output=OtpOutputConfig(
+                enabled=enabled,
+                system_number=1,
+                port=5568,
+                source_iface=source_iface,
+            ),
+        )
+        calls: list[OtpOutputConfig] = []
+        services.apply_otp_output_change = calls.append  # type: ignore[method-assign]
+        return calls
+
+    def test_blank_pin_is_repointed(self, services: AppRuntimeServices) -> None:
+        services._app._otp_server = _FakeOtpServer()
+        calls = self._services_with_otp(services, "")
+        services.apply_station_iface_change()
+        assert len(calls) == 1
+
+    def test_own_pin_is_left_alone(self, services: AppRuntimeServices) -> None:
+        """OTP pinned to its own interface is unaffected by the station moving –
+        repointing it would silently override the operator's choice."""
+        services._app._otp_server = _FakeOtpServer()
+        calls = self._services_with_otp(services, "eth1")
+        services.apply_station_iface_change()
+        assert calls == []
+
+    def test_disabled_output_is_left_alone(self, services: AppRuntimeServices) -> None:
+        services._app._otp_server = _FakeOtpServer()
+        calls = self._services_with_otp(services, "", enabled=False)
+        services.apply_station_iface_change()
+        assert calls == []
+
+    def test_no_running_server_is_a_no_op(self, services: AppRuntimeServices) -> None:
+        services._app._otp_server = None
+        calls = self._services_with_otp(services, "")
+        services.apply_station_iface_change()
+        assert calls == []

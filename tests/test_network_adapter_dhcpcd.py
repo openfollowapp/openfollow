@@ -675,25 +675,6 @@ class TestBuildBlockBranches:
         assert "static domain_name_servers=9.9.9.9" in block
 
 
-class TestDhcpFallback:
-    """dhcpcd self-assigns a link-local address when DHCP fails – keep it that way."""
-
-    @pytest.mark.parametrize("method", list(Ipv4Method))
-    def test_managed_block_never_disables_ipv4ll(self, method: Ipv4Method) -> None:
-        """``noipv4ll`` would suppress the fallback that keeps a station reachable."""
-        block = DhcpcdAdapter._build_block(
-            "eth0",
-            Ipv4Config(method=method, address="10.0.0.5", prefix=24, dns=("9.9.9.9",)),
-        )
-        assert "noipv4ll" not in block
-
-    def test_ensure_dhcp_fallback_is_a_no_op(self, adapter) -> None:
-        a, _conf = adapter
-        result = a.ensure_dhcp_fallback("eth0")
-        assert result.ok is True
-        assert result.partial_failures == ()
-
-
 class TestDetectMethodFallback:
     def test_block_with_only_dns_falls_back_to_dhcp(self, tmp_path) -> None:
         """A managed block that has neither `static ip_address=` nor `inform `

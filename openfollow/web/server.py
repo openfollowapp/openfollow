@@ -139,6 +139,15 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
             sem.release()
 
 
+def _copy_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy the list *and* each row.
+
+    Copying only the list leaves every caller holding the cached dicts, so a
+    template helper decorating a row corrupts what the next render reads.
+    """
+    return [dict(row) for row in rows]
+
+
 class ConfigWebServer:
     """Threaded web server for configuration UI with peer discovery."""
 
@@ -415,7 +424,7 @@ class ConfigWebServer:
         if not force:
             with self._network_ifaces_lock:
                 if self._network_ifaces_ts and now - self._network_ifaces_ts < _NETWORK_IFACES_TTL:
-                    return list(self._network_ifaces_cache)
+                    return _copy_rows(self._network_ifaces_cache)
         try:
             rows = self._network_interfaces_provider()
         except Exception:  # noqa: BLE001
@@ -423,11 +432,11 @@ class ConfigWebServer:
             # Serve the last good snapshot rather than blanking the list on a
             # transient backend failure.
             with self._network_ifaces_lock:
-                return list(self._network_ifaces_cache)
+                return _copy_rows(self._network_ifaces_cache)
         with self._network_ifaces_lock:
-            self._network_ifaces_cache = list(rows)
+            self._network_ifaces_cache = _copy_rows(rows)
             self._network_ifaces_ts = time.monotonic()
-        return list(rows)
+        return _copy_rows(rows)
 
     def apply_network(self, iface: str, config: Any) -> ApplyResult:
         """Apply IPv4 config to iface; always returns ApplyResult."""

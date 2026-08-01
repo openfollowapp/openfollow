@@ -1246,3 +1246,27 @@ class TestGetNetworkInterfaces:
         )
         srv.get_network_interfaces().append({"name": "bogus"})
         assert [r["name"] for r in srv.get_network_interfaces()] == ["eth0"]
+
+    def test_caller_cannot_mutate_a_cached_row(self, tmp_path, monkeypatch) -> None:
+        """Copying only the list leaves every caller holding the cached dicts,
+        so a helper decorating a row corrupts the next render."""
+        srv = _make_quiet_server(
+            tmp_path,
+            monkeypatch,
+            network_interfaces_provider=lambda: [{"name": "eth0"}],
+        )
+        srv.get_network_interfaces()[0]["name"] = "corrupted"
+        assert [r["name"] for r in srv.get_network_interfaces()] == ["eth0"]
+
+    def test_the_provider_cannot_mutate_the_cache_afterwards(self, tmp_path, monkeypatch) -> None:
+        """The services provider rebuilds its rows each call, but a future one
+        reusing dicts must not reach into what is already cached."""
+        rows = [{"name": "eth0"}]
+        srv = _make_quiet_server(
+            tmp_path,
+            monkeypatch,
+            network_interfaces_provider=lambda: rows,
+        )
+        srv.get_network_interfaces()
+        rows[0]["name"] = "corrupted"
+        assert [r["name"] for r in srv.get_network_interfaces()] == ["eth0"]

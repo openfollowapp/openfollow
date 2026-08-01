@@ -36,6 +36,11 @@ _NMCLI_TIMEOUT = 8
 # that merely names the same device.
 _ADDRESSABLE_CONNECTION_TYPES = frozenset({"802-3-ethernet", "802-11-wireless", "vlan"})
 
+# How long the inactive-profile map is reused. Long enough to cover one page
+# render (which resolves every interface), short enough that a profile created
+# or renamed from a shell shows up promptly.
+_INACTIVE_MAP_TTL_S = 2.0
+
 
 def _unescape_terse(value: str) -> str:
     """Reverse nmcli ``-t`` (terse) escaping in a field value: a literal
@@ -64,6 +69,7 @@ class NetworkManagerAdapter(NetworkAdapter):
 
     def __init__(self, *, broker: PrivilegeBroker | None = None) -> None:
         self._broker = broker
+        self._inactive_map_cache: tuple[float, dict[str, str]] | None = None
 
     def _run(self, argv: Sequence[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
         """Execute read-only nmcli call."""
@@ -156,36 +162,57 @@ class NetworkManagerAdapter(NetworkAdapter):
         return self._inactive_connection_for(iface)
 
     def _inactive_connection_for(self, iface: str) -> str | None:
-        """Find a deactivated profile by its configured interface name.
+        """Find a deactivated profile by its configured interface name."""
+        return self._inactive_profile_map().get(iface)
+
+    def _inactive_profile_map(self) -> dict[str, str]:
+        """interface name -> best inactive profile, built in one pass.
+
+        Briefly cached because the cost is multiplicative otherwise: reading a
+        profile's ``connection.interface-name`` needs its own ``nmcli`` call,
+        and ``_connection_for`` runs once per interface via ``get_state``. On a
+        station with several down interfaces and a handful of saved profiles
+        that is dozens of subprocess spawns for one page render, each with an
+        8 s timeout, on a web request thread.
 
         Ranked so the choice is stable when a device has several profiles:
-        autoconnect first (that is the one NetworkManager would bring up),
-        then the higher autoconnect-priority, then name order as a tiebreak.
-        Without a deterministic order the operator's edit could land on a
-        different profile each time they pressed Apply.
+        autoconnect first (that is the one NetworkManager would bring up), then
+        the higher autoconnect-priority, then name order. Without a
+        deterministic order the operator's edit could land on a different
+        profile each time they pressed Apply.
         """
+        now = time.monotonic()
+        cached = self._inactive_map_cache
+        if cached is not None and now - cached[0] < _INACTIVE_MAP_TTL_S:
+            return cached[1]
+
         try:
             res = self._run(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"])
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
-            return None
+            return {}
 
-        candidates: list[tuple[int, int, str]] = []
+        ranked: dict[str, tuple[int, int, str]] = {}
         for line in res.stdout.splitlines():
             name, _, kind = line.partition(":")
             if not name or kind not in _ADDRESSABLE_CONNECTION_TYPES:
                 continue
             details = self._connection_details(name)
-            if details.get("connection.interface-name") != iface:
+            bound_iface = details.get("connection.interface-name", "")
+            if not bound_iface:
                 continue
             autoconnect = 0 if details.get("connection.autoconnect", "").lower() == "yes" else 1
             try:
                 priority = -int(details.get("connection.autoconnect-priority", "0") or 0)
             except ValueError:
                 priority = 0
-            candidates.append((autoconnect, priority, name))
-        if not candidates:
-            return None
-        return min(candidates)[2]
+            candidate = (autoconnect, priority, name)
+            best = ranked.get(bound_iface)
+            if best is None or candidate < best:
+                ranked[bound_iface] = candidate
+
+        out = {bound_iface: candidate[2] for bound_iface, candidate in ranked.items()}
+        self._inactive_map_cache = (now, out)
+        return out
 
     def _connection_details(self, name: str) -> dict[str, str]:
         """First value of each requested field for one profile, or ``{}``."""
@@ -517,13 +544,16 @@ class NetworkManagerAdapter(NetworkAdapter):
             # the settings are persisted and take effect on next plug-in, so
             # reporting a hard failure would be wrong.
             if not self._has_carrier(iface):
+                # Reported through partial_failures, not just the message: the
+                # web layer redirects the browser to the new address on a clean
+                # apply, and there is nothing listening there until the cable
+                # goes in. partial_failures is the existing channel that keeps
+                # the operator on the page with the note visible.
+                pending = f"{iface} has no link, so the settings take effect when the cable is connected."
                 return ApplyResult(
                     ok=True,
-                    message=(
-                        f"Saved to profile '{name}'. {iface} has no link, so the settings "
-                        f"take effect when the cable is connected."
-                    ),
-                    partial_failures=tuple(partial),
+                    message=f"Saved to profile '{name}'. {pending}",
+                    partial_failures=(*partial, pending),
                 )
             return ApplyResult(
                 ok=False,

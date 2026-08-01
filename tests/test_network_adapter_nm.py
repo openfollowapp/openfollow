@@ -269,6 +269,44 @@ class TestInactiveProfileLookup:
         self._details(responses, "Alpha", iface="eth0")
         assert a._connection_for("eth0") == "Alpha"
 
+    def test_profiles_are_read_once_for_many_interfaces(self, adapter) -> None:
+        """Reading a profile's interface-name needs its own nmcli call, and
+        _connection_for runs once per interface via get_state. Uncached, one
+        page render on a station with several down interfaces costs dozens of
+        subprocess spawns on a web request thread."""
+        a, captured, responses = adapter
+        self._no_active(responses)
+        self._profiles(responses, "A:802-3-ethernet\nB:802-3-ethernet\n")
+        self._details(responses, "A", iface="eth0")
+        self._details(responses, "B", iface="eth1")
+
+        for _ in range(4):
+            assert a._connection_for("eth0") == "A"
+            assert a._connection_for("eth1") == "B"
+
+        detail_calls = [c for c in captured if "connection.interface-name,connection.autoconnect" in " ".join(c)]
+        assert len(detail_calls) == 2, "profile details re-read per interface per call"
+
+    def test_a_worse_candidate_does_not_displace_the_best(self, adapter) -> None:
+        """Ranking runs while the map is built, so a later profile must lose
+        to an earlier better one rather than overwriting it."""
+        a, _captured, responses = adapter
+        self._no_active(responses)
+        self._profiles(responses, "Auto:802-3-ethernet\nManual:802-3-ethernet\n")
+        self._details(responses, "Auto", iface="eth0", autoconnect="yes")
+        self._details(responses, "Manual", iface="eth0", autoconnect="no")
+        assert a._connection_for("eth0") == "Auto"
+
+    def test_a_profile_bound_to_no_interface_is_ignored(self, adapter) -> None:
+        """A profile that matches by MAC rather than name has an empty
+        interface-name; treating "" as a match would hand every unnamed
+        interface the same profile."""
+        a, _captured, responses = adapter
+        self._no_active(responses)
+        self._profiles(responses, "Roaming:802-3-ethernet\n")
+        self._details(responses, "Roaming", iface="")
+        assert a._connection_for("eth0") is None
+
     def test_unreadable_priority_does_not_break_the_lookup(self, adapter) -> None:
         a, _captured, responses = adapter
         self._no_active(responses)
@@ -292,6 +330,11 @@ class TestInactiveProfileLookup:
         assert result.ok is True
         assert "no link" in result.message
         assert "Wired" in result.message
+        # Reported through partial_failures too: the web layer redirects the
+        # browser to the new address on a CLEAN apply, and nothing is listening
+        # there until the cable goes in. This is what keeps the operator on the
+        # page with the note visible instead of on a dead one.
+        assert any("no link" in note for note in result.partial_failures)
 
     def test_an_activation_failure_with_a_link_is_still_a_failure(self, adapter) -> None:
         """Only an explicit no-carrier state downgrades to pending; anything

@@ -289,13 +289,19 @@ class InputManager:
             gamepad_result.next_marker_pressed = False
             gamepad_result.prev_marker_pressed = False
 
+        # Read once per frame and share with every relative-input device below,
+        # so they can't diverge on how the flag is resolved. Read live (not
+        # cached at construction) so toggling it applies without a restart,
+        # like the ``mouse_enabled`` gate.
+        invert_xy = self.app._config.marker.invert_control_direction
+
         # 3D Mouse (6DOF): consume the latest device snapshot. Button edges fold
         # into the shared action flags; movement/reset/speed route to the marker
         # the mouse's unified controller slot drives. Gated on the live enabled flag.
         if self.app._config.mouse3d.enabled:
             try:
                 for local_idx, m3d in self.mouse3d_manager.update(dt).items():
-                    self._apply_mouse3d(m3d, local_idx, dt, gamepad_result, slots)
+                    self._apply_mouse3d(m3d, local_idx, dt, gamepad_result, slots, invert_xy)
             except Exception:
                 self._mouse3d_update_err_log.log()
 
@@ -324,11 +330,6 @@ class InputManager:
         # Early exit for movement if no controlled markers
         if not self.app._controlled_ids:
             return gamepad_result
-
-        # Read live so toggling it applies without a restart, like the
-        # ``mouse_enabled`` gate above. Shared by all three relative-input
-        # devices below.
-        invert_xy = self.app._config.marker.invert_control_direction
 
         # Get keyboard velocity for selected marker
         try:
@@ -411,6 +412,7 @@ class InputManager:
         dt: float,
         gamepad_result: GamepadUpdate,
         slots: list[tuple[str, int]],
+        invert_xy: bool,
     ) -> None:
         """Apply one connected 3D Mouse's frame (``local_idx`` = its device index).
 
@@ -421,7 +423,9 @@ class InputManager:
         marker this puck's unified slot drives (the selected marker when it's the
         only controller, its fixed slot otherwise); the velocity is a unit rate
         scaled here by the marker's move-speed. ``slots`` is the frame's
-        unified-controller snapshot.
+        unified-controller snapshot, and ``invert_xy`` the frame's shared
+        control-direction flag – passed in rather than re-read so every
+        relative-input device resolves it identically.
         """
         if self.marker_cycle_active(slots):
             if m3d.next_marker:
@@ -447,7 +451,7 @@ class InputManager:
                 self.app.adjust_move_speed(direction, marker_id=marker_id)
         vx, vy, vz = m3d.velocity
         if vx or vy or vz:
-            vx, vy = _oriented(vx, vy, self.app._config.marker.invert_control_direction)
+            vx, vy = _oriented(vx, vy, invert_xy)
             speed = self.app.get_marker_move_speed(marker_id)
             x, y, z = marker.pos
             marker.set_pos(x + vx * speed * dt, y + vy * speed * dt, z + vz * speed * dt)

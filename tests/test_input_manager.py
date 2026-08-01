@@ -705,3 +705,27 @@ def test_invert_control_direction_applies_live(monkeypatch) -> None:
     app._config.marker.invert_control_direction = True
     manager.update(1.0)
     assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_invert_control_direction_leaves_osc_positions_absolute(monkeypatch) -> None:
+    """OSC sets an absolute stage coordinate, not a direction of travel, so the
+    upstage flip must never touch it - a console commanding x=3 must land the
+    marker at x=3 whichever way the camera faces.
+
+    Pins the invariant the flip's docstrings assert, so a later refactor that
+    pushes the sign down into ``Marker.set_pos`` or a shared delta helper can't
+    silently reverse the absolute paths with a green suite.
+    """
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+
+    app = _DummyApp()
+    app._config.marker.invert_control_direction = True
+    manager = InputManager(app)
+    manager.osc_handler = SimpleNamespace(
+        flush_updates=lambda: {10: {"x": 3.0, "y": 4.0, "z": 5.0}},
+    )
+
+    manager.update(1.0)
+
+    assert app._server.get_marker(10).pos == pytest.approx((3.0, 4.0, 5.0))

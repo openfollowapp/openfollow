@@ -903,7 +903,7 @@ def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> Non
     draw_status_badge(renderer, cr, state, w, h)
 
 
-def build_info_panel_rows(state: OverlayState, *, source_max_len: int | None = None) -> list[tuple[str, str]]:
+def build_info_panel_rows(state: OverlayState, *, source_max_len: int = 38) -> list[tuple[str, str]]:
     """Label/value rows shared by the bottom-left panel and the Settings card.
 
     The two recovery routes an operator has when the web UI is unreachable are
@@ -916,15 +916,12 @@ def build_info_panel_rows(state: OverlayState, *, source_max_len: int | None = N
         # Without this an operator reads a 169.254 address as a working lease
         # and waits for a station that will never appear on the show LAN.
         ip_value = f"{ip_value} - DHCP unavailable"
-    source_value = (
-        format_source_text(state.video_source_type, state.source_label)
-        if source_max_len is None
-        else format_source_text(state.video_source_type, state.source_label, max_len=source_max_len)
-    )
     rows = [("IP Address:", ip_value)]
     if state.hostname_text:
         rows.append(("Web address:", state.hostname_text))
-    rows.append(("Video Source:", source_value))
+    rows.append(
+        ("Video Source:", format_source_text(state.video_source_type, state.source_label, max_len=source_max_len))
+    )
     rows.append(("Station:", state.station_name or "OpenFollow"))
     return rows
 

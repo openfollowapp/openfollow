@@ -1345,3 +1345,26 @@ def test_beacon_receiver_recv_loop_dispatches_then_exits_on_stop() -> None:
 
     receiver._recv_loop(_OneThenStop())
     assert receiver.packets_received == 1
+
+
+class TestPublicReopen:
+    """A link that flapped needs both sockets rebuilt even at an unchanged
+    address: the kernel drops the group membership and the egress route when
+    the address is removed, and the same address returning does not restore
+    either - so the unchanged-IP guard in update_iface_ip is not enough."""
+
+    def test_sender_reopen_arms_a_rebuild(self) -> None:
+        from openfollow.web.discovery import BeaconSender
+
+        sender = BeaconSender(name="Node", web_port=80, version="0.1.0", iface_ip="")
+        assert not sender._reopen.is_set()
+        sender.reopen()
+        assert sender._reopen.is_set()
+
+    def test_receiver_reopen_arms_a_rebuild(self) -> None:
+        from openfollow.web.discovery import BeaconReceiver
+
+        receiver = BeaconReceiver()
+        assert not receiver._reopen.is_set()
+        receiver.reopen()
+        assert receiver._reopen.is_set()

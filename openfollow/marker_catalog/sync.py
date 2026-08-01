@@ -344,7 +344,7 @@ class MarkerCatalogSync:
         A no-op when the address is unchanged. That is *not* enough on its own:
         an interface that drops and returns with the same lease has had its
         memberships torn down by the kernel while the address string stayed
-        put, so the observer calls :meth:`reopen` for that case.
+        put, so the station-follower path calls :meth:`reopen` on recovery.
         """
         if iface_ip == self._iface_ip:
             return

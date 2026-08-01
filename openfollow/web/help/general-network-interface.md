@@ -24,8 +24,6 @@ A **This session** marker means your browser reached the station over that adapt
 
 **Lease remaining** – countdown on the active DHCP lease (read-only, refreshes every 5 s).
 
-**Setting an address before the cable is in.** You can configure an adapter that has no link yet – useful for pre-staging a static address before the unit goes on the show network. Apply saves the settings to the adapter's saved profile and tells you they are pending; they take effect the moment the cable is connected. Renewing a DHCP lease still needs a link, because there is no network to ask.
-
 > Applying may disconnect this web session. A static/manual address reloads the UI at the new address automatically; for DHCP, reconnect manually if the session drops.
 
 ## If DHCP is unavailable

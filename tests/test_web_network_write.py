@@ -806,17 +806,11 @@ def test_card_synthesises_rows_when_no_interface_provider_is_wired(net_server) -
     assert "10.0.0.5" in body
 
 
-def test_pre_staging_a_static_address_does_not_redirect_to_a_dead_address(net_server) -> None:
-    """Saving a static address while the cable is out is a supported workflow.
-    It reports success, so the clean-apply branch would send the browser to an
-    address with no carrier behind it - the operator loses the UI and never
-    sees the note explaining the settings are pending."""
+def test_a_pending_apply_does_not_redirect_to_a_dead_address(net_server) -> None:
+    """The interface never came up, so nothing is serving the new address.
+    Redirecting there loses the UI and discards the explanation with the body."""
     fake, base = net_server
-    fake.apply_result = ApplyResult(
-        ok=True,
-        message="Saved to profile 'Wired'. eth0 has no link, so the settings take effect when the cable is connected.",
-        partial_failures=("eth0 has no link, so the settings take effect when the cable is connected.",),
-    )
+    fake.apply_result = ApplyResult(ok=True, pending=True, message="Saved. eth0 has no link yet.")
     status, body, headers = _post_resp(
         base,
         "/section/network/apply",
@@ -829,4 +823,42 @@ def test_pre_staging_a_static_address_does_not_redirect_to_a_dead_address(net_se
     )
     assert status == 200
     assert "hx-redirect" not in headers
-    assert "no link" in body
+    assert "no link yet" in body
+    # The settings were still written - this is "saved", not "failed".
+    assert fake.applied and fake.applied[0][0] == "eth0"
+
+
+def test_a_pending_apply_does_not_advise_reconnecting(net_server) -> None:
+    """The partial-failure path tells the operator to reconnect at the new
+    address. For a pending apply that is the one thing they must not do."""
+    fake, base = net_server
+    fake.apply_result = ApplyResult(ok=True, pending=True, message="Saved. eth0 has no link yet.")
+    _status, body, _headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {
+            "iface": "eth0",
+            "method": "static",
+            "address": "192.168.9.9",
+            "subnet_mask": "255.255.255.0",
+        },
+    )
+    assert "Reconnect at" not in body
+    assert "applied" not in body.lower()
+
+
+def test_a_clean_apply_still_redirects(net_server) -> None:
+    """The pending gate must not suppress the normal static-apply redirect."""
+    fake, base = net_server
+    fake.apply_result = ApplyResult(ok=True, message="Applied.")
+    _status, _body, headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {
+            "iface": "eth0",
+            "method": "static",
+            "address": "192.168.9.9",
+            "subnet_mask": "255.255.255.0",
+        },
+    )
+    assert "hx-redirect" in headers

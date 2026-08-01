@@ -53,10 +53,7 @@ class _BrokerCallResult:
 # Shown when the privilege broker is absent, which on a real device means the
 # sudoers rules were never installed. "Broker not configured." named an
 # internal object and left the operator with nothing to try.
-_NO_BROKER_MESSAGE = (
-    "This build cannot change network settings - the privileged helper is not configured. "
-    "Configure the interface from the on-screen Settings menu instead."
-)
+_NO_BROKER_MESSAGE = "Cannot change network settings - the privileged helper is not configured."
 
 _BLOCK_START = "# >>> openfollow managed: {iface} >>>"
 _BLOCK_END = "# <<< openfollow managed: {iface} <<<"
@@ -427,7 +424,30 @@ class DhcpcdAdapter(NetworkAdapter):
         warning = self._verify_static_applied(iface, config)
         if warning:
             partial.append(warning)
+        if not self._has_carrier(iface):
+            # ``dhcpcd -n`` returns 0 on a carrier-less interface - it only
+            # signals the daemon - so without this the apply reads as clean and
+            # the web layer redirects the browser to an address nothing is
+            # serving yet.
+            return ApplyResult(
+                ok=True,
+                pending=True,
+                message=f"Saved. {iface} has no link yet.",
+                partial_failures=tuple(partial),
+            )
         return ApplyResult(ok=True, message="Applied.", partial_failures=tuple(partial))
+
+    def _has_carrier(self, iface: str) -> bool:
+        """False only when the kernel explicitly reports the link is down.
+
+        An unreadable state counts as having carrier, so an apply we can't
+        explain is never downgraded to a reassuring "saved, pending".
+        """
+        try:
+            state = Path(f"/sys/class/net/{iface}/operstate").read_text(encoding="utf-8").strip()
+        except OSError:
+            return True
+        return state != "down"
 
     def _restore_conf(self, text: str) -> None:
         """Best-effort restore of the prior conf after a failed bounce.

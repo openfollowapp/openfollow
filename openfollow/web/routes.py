@@ -4608,9 +4608,24 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             method in (Ipv4Method.STATIC, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS)
             and address
             and not result.partial_failures
+            # Nothing is serving that address yet, so a redirect lands on a
+            # dead page and the explanation is lost with the response body.
+            and not result.pending
         ):
             response.set_header("HX-Redirect", _network_redirect_url(address))
             return ""
+        if result.pending:
+            # Deliberately not "applied", and no reconnect advice: the
+            # interface never came up, so telling the operator to browse to the
+            # new address would send them nowhere.
+            return template(
+                "partials/network",
+                net=_build_network_form_context(
+                    iface=iface,
+                    editable=False,
+                    banner={"kind": "info", "text": result.message},
+                ),
+            )
         text = "Network settings applied."
         if result.partial_failures:
             text += " Warnings: " + "; ".join(result.partial_failures)

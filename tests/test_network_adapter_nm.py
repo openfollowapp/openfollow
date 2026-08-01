@@ -181,7 +181,252 @@ class TestApplyIpv4:
         _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is False
-        assert "No NetworkManager" in result.message
+        # Says what the operator should check, not what the adapter didn't find.
+        assert "eth0" in result.message
+        assert "No NetworkManager connection profile bound" not in result.message
+
+
+class TestInactiveProfileLookup:
+    """nmcli fills the DEVICE column only for *active* connections, so a
+    profile whose carrier dropped is invisible to a DEVICE match. Pre-staging a
+    static address before plugging into the show network is exactly when a
+    static address matters most."""
+
+    def _no_active(self, responses) -> None:
+        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"], stdout="")
+        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
+
+    def _profiles(self, responses, rows: str) -> None:
+        _set(responses, ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"], stdout=rows)
+
+    def _details(self, responses, name: str, *, iface: str, autoconnect: str = "yes", priority: str = "0") -> None:
+        _set(
+            responses,
+            [
+                "nmcli",
+                "-t",
+                "-f",
+                "connection.interface-name,connection.autoconnect,connection.autoconnect-priority",
+                "connection",
+                "show",
+                name,
+            ],
+            stdout=(
+                f"connection.interface-name:{iface}\n"
+                f"connection.autoconnect:{autoconnect}\n"
+                f"connection.autoconnect-priority:{priority}\n"
+            ),
+        )
+
+    def test_finds_a_deactivated_profile_by_interface_name(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._no_active(responses)
+        self._profiles(responses, "Wired connection 1:802-3-ethernet\n")
+        self._details(responses, "Wired connection 1", iface="eth0")
+        assert a._connection_for("eth0") == "Wired connection 1"
+
+    def test_ignores_a_profile_for_another_interface(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._no_active(responses)
+        self._profiles(responses, "Other:802-3-ethernet\n")
+        self._details(responses, "Other", iface="eth1")
+        assert a._connection_for("eth0") is None
+
+    def test_ignores_non_addressable_connection_types(self, adapter) -> None:
+        """A bridge or tun profile naming the same device is not something the
+        Network page can hand an IPv4 address to."""
+        a, _captured, responses = adapter
+        self._no_active(responses)
+        self._profiles(responses, "br0:bridge\ntun0:tun\n")
+        self._details(responses, "br0", iface="eth0")
+        assert a._connection_for("eth0") is None
+
+    def test_autoconnect_profile_wins(self, adapter) -> None:
+        """NetworkManager would bring that one up, so it is the one an
+        operator's edit should land on."""
+        a, _captured, responses = adapter
+        self._no_active(responses)
+        self._profiles(responses, "Manual:802-3-ethernet\nAuto:802-3-ethernet\n")
+        self._details(responses, "Manual", iface="eth0", autoconnect="no")
+        self._details(responses, "Auto", iface="eth0", autoconnect="yes")
+        assert a._connection_for("eth0") == "Auto"
+
+    def test_higher_autoconnect_priority_wins(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._no_active(responses)
+        self._profiles(responses, "Low:802-3-ethernet\nHigh:802-3-ethernet\n")
+        self._details(responses, "Low", iface="eth0", priority="1")
+        self._details(responses, "High", iface="eth0", priority="10")
+        assert a._connection_for("eth0") == "High"
+
+    def test_name_order_breaks_a_tie(self, adapter) -> None:
+        """Deterministic: without an order the edit could land on a different
+        profile each time Apply is pressed."""
+        a, _captured, responses = adapter
+        self._no_active(responses)
+        self._profiles(responses, "Bravo:802-3-ethernet\nAlpha:802-3-ethernet\n")
+        self._details(responses, "Bravo", iface="eth0")
+        self._details(responses, "Alpha", iface="eth0")
+        assert a._connection_for("eth0") == "Alpha"
+
+    def test_unreadable_priority_does_not_break_the_lookup(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._no_active(responses)
+        self._profiles(responses, "Wired:802-3-ethernet\n")
+        self._details(responses, "Wired", iface="eth0", priority="not-a-number")
+        assert a._connection_for("eth0") == "Wired"
+
+    def test_link_down_apply_saves_and_reports_pending(self, adapter) -> None:
+        """The whole point of the fallback: the settings persist and take
+        effect on next plug-in, so this is not a failure."""
+        a, _captured, responses = adapter
+        self._no_active(responses)
+        self._profiles(responses, "Wired:802-3-ethernet\n")
+        self._details(responses, "Wired", iface="eth0")
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:unavailable\n")
+        a._broker.exceptions = [None, None, make_failure("no carrier")]
+        result = a.apply_ipv4(
+            "eth0",
+            Ipv4Config(method=Ipv4Method.STATIC, address="192.168.1.50", prefix=24),
+        )
+        assert result.ok is True
+        assert "no link" in result.message
+        assert "Wired" in result.message
+
+    def test_an_activation_failure_with_a_link_is_still_a_failure(self, adapter) -> None:
+        """Only an explicit no-carrier state downgrades to pending; anything
+        else must keep surfacing as an error rather than a reassuring note."""
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired:eth0\n",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:disconnected\n")
+        a._broker.exceptions = [None, None, make_failure("activation failed")]
+        result = a.apply_ipv4(
+            "eth0",
+            Ipv4Config(method=Ipv4Method.STATIC, address="192.168.1.50", prefix=24),
+        )
+        assert result.ok is False
+        assert "activation failed" in result.message
+
+
+class TestLookupSubprocessFailures:
+    """nmcli being unavailable mid-lookup must degrade, not raise: the Network
+    page is the operator's recovery surface and has to keep rendering."""
+
+    def _raise(self, a, monkeypatch, failing: list[str]) -> None:
+        original = a._run
+
+        def _run(argv, *, check=True):
+            # Compare a prefix of the SAME length, or a shorter marker never
+            # matches and the failure is silently never injected.
+            if list(argv)[: len(failing)] == failing:
+                raise RuntimeError("nmcli gone")
+            return original(argv, check=check)
+
+        monkeypatch.setattr(a, "_run", _run)
+
+    def test_profile_list_failure_reports_no_profile(self, adapter, monkeypatch) -> None:
+        a, _captured, responses = adapter
+        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"], stdout="")
+        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
+        self._raise(a, monkeypatch, ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"])
+        assert a._connection_for("eth0") is None
+
+    def test_detail_read_failure_skips_that_profile(self, adapter, monkeypatch) -> None:
+        a, _captured, responses = adapter
+        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"], stdout="")
+        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
+        _set(responses, ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"], stdout="Wired:802-3-ethernet\n")
+        self._raise(
+            a,
+            monkeypatch,
+            [
+                "nmcli",
+                "-t",
+                "-f",
+                "connection.interface-name,connection.autoconnect,connection.autoconnect-priority",
+            ],
+        )
+        assert a._connection_for("eth0") is None
+
+    def test_device_state_failure_falls_back_to_the_generic_message(self, adapter, monkeypatch) -> None:
+        a, _captured, responses = adapter
+        for argv in (
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"],
+            ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"],
+        ):
+            _set(responses, argv, stdout="")
+        self._raise(a, monkeypatch, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"])
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert result.ok is False
+        assert "not present on this system" in result.message
+
+
+class TestActionableMessages:
+    """Each cause needs a different operator action, so each needs its own
+    message - "no profile bound" described adapter state and told them nothing."""
+
+    def _no_profile(self, responses) -> None:
+        for argv in (
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"],
+            ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"],
+        ):
+            _set(responses, argv, stdout="")
+
+    def test_unmanaged_device_says_how_to_hand_it_to_networkmanager(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._no_profile(responses)
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:unmanaged\n")
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert result.ok is False
+        assert "not managed by NetworkManager" in result.message
+        assert "unmanaged-devices" in result.message
+
+    def test_known_device_without_a_profile_says_how_to_get_one(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._no_profile(responses)
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:disconnected\n")
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert "No saved network profile" in result.message
+        assert "Connect the cable once" in result.message
+
+    def test_absent_device_says_to_check_the_adapter(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._no_profile(responses)
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="")
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert "not present on this system" in result.message
+
+    def test_renew_without_a_link_explains_why(self, adapter) -> None:
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired:eth0\n",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:unavailable\n")
+        a._broker.exceptions = [None, make_failure("no carrier")]
+        result = a.renew_lease("eth0")
+        assert result.ok is False
+        assert "no link" in result.message
+
+    def test_save_failure_names_the_profile(self, adapter) -> None:
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired:eth0\n",
+        )
+        a._broker.exceptions = [make_failure("read-only")]
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert result.ok is False
+        assert "Wired" in result.message
+        assert "read-only" in result.message
 
 
 class TestRenewLease:
@@ -204,7 +449,8 @@ class TestRenewLease:
         _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
         result = a.renew_lease("eth0")
         assert result.ok is False
-        assert "No NetworkManager" in result.message
+        assert "eth0" in result.message
+        assert "No NetworkManager profile for" not in result.message
 
     def test_renew_propagates_up_failure(self, adapter) -> None:
         a, _captured, responses = adapter

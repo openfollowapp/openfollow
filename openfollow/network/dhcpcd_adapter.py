@@ -50,6 +50,14 @@ class _BrokerCallResult:
     detail: str
 
 
+# Shown when the privilege broker is absent, which on a real device means the
+# sudoers rules were never installed. "Broker not configured." named an
+# internal object and left the operator with nothing to try.
+_NO_BROKER_MESSAGE = (
+    "This build cannot change network settings - the privileged helper is not configured. "
+    "Configure the interface from the on-screen Settings menu instead."
+)
+
 _BLOCK_START = "# >>> openfollow managed: {iface} >>>"
 _BLOCK_END = "# <<< openfollow managed: {iface} <<<"
 _DHCPCD_TIMEOUT = 8
@@ -337,7 +345,10 @@ class DhcpcdAdapter(NetworkAdapter):
         # ``parse_ipv4`` (via validate_apply) rejects embedded newlines, which
         # blocks injecting extra directives into the conf.
         if not _IFACE_RE.fullmatch(iface):
-            return ApplyResult(ok=False, message=f"Invalid interface name: {iface!r}")
+            return ApplyResult(
+                ok=False,
+                message=f"{iface!r} is not a valid interface name, so nothing was changed.",
+            )
         errors = validate_apply(config.method, config.address, config.prefix, config.router, list(config.dns))
         if errors:
             return ApplyResult(ok=False, message="; ".join(errors))
@@ -352,9 +363,20 @@ class DhcpcdAdapter(NetworkAdapter):
             except PrivilegeError as exc:
                 return ApplyResult(ok=False, message=str(exc))
             except OSError as exc:
-                return ApplyResult(ok=False, message=f"Cannot write {self.conf_path}: {exc}")
+                return ApplyResult(
+                    ok=False,
+                    message=(
+                        f"Could not write {self.conf_path}: {exc}. Check the file is present and not mounted read-only."
+                    ),
+                )
         except Exception as exc:  # noqa: BLE001
-            return ApplyResult(ok=False, message=f"Failed to update dhcpcd.conf: {exc}")
+            return ApplyResult(
+                ok=False,
+                message=(
+                    f"Could not update {self.conf_path}: {exc}. Nothing was changed; "
+                    f"the interface keeps its current settings."
+                ),
+            )
 
         partial: list[str] = []
         release = self._broker_run(
@@ -375,7 +397,7 @@ class DhcpcdAdapter(NetworkAdapter):
         # prior conf so the next reload/reboot doesn't silently come up on it.
         if rebind is None:
             self._restore_conf(current)
-            return ApplyResult(ok=False, message="Broker not configured.")
+            return ApplyResult(ok=False, message=_NO_BROKER_MESSAGE)
         if not rebind.ok:
             reload_ = self._broker_run(
                 NETWORK_DHCPCD_RELOAD,
@@ -456,9 +478,12 @@ class DhcpcdAdapter(NetworkAdapter):
             reason=f"Renew DHCP lease on {iface}",
         )
         if result is None:
-            return ApplyResult(ok=False, message="Broker not configured.")
+            return ApplyResult(ok=False, message=_NO_BROKER_MESSAGE)
         if not result.ok:
-            return ApplyResult(ok=False, message=result.detail)
+            return ApplyResult(
+                ok=False,
+                message=f"Could not renew the lease on {iface}. {result.detail}".strip(),
+            )
         return ApplyResult(ok=True, message="Lease renewed.")
 
     def _broker_run(

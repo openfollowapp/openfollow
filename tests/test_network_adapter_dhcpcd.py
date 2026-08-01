@@ -519,7 +519,9 @@ class TestApplyErrors:
         a._read_conf = boom
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is False
-        assert "Failed to update" in result.message
+        assert "Could not update" in result.message
+        # Says the interface was left alone, so the operator knows where they stand.
+        assert "Nothing was changed" in result.message
 
 
 class TestRenewErrors:
@@ -632,7 +634,9 @@ class TestRenewErrors:
         a = DhcpcdAdapter(conf_path=conf)  # broker omitted
         result = a.renew_lease("eth0")
         assert result.ok is False
-        assert "Broker" in result.message
+        # Names something the operator can act on, not an internal object.
+        assert "privileged helper is not configured" in result.message
+        assert "Settings menu" in result.message
 
 
 class TestBuildBlockBranches:
@@ -896,7 +900,7 @@ class TestApplyRollback:
         a = DhcpcdAdapter(conf_path=conf)  # no broker → bounce never happens
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is False
-        assert "Broker not configured" in result.message
+        assert "privileged helper is not configured" in result.message
         assert conf.read_text() == original
 
     def test_rebounce_attempted_after_double_failure(self, tmp_path) -> None:

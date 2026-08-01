@@ -31,12 +31,6 @@ logger = logging.getLogger(__name__)
 
 _NMCLI_TIMEOUT = 8
 
-# Seconds NetworkManager waits for a DHCP lease before giving up on it and
-# letting the link-local fallback take the interface. Long enough for a slow
-# show-LAN server to answer, short enough that an operator watching the HUD
-# sees the fallback address rather than an interface stuck with no address.
-_DHCP_TIMEOUT_S = 20
-
 
 def _unescape_terse(value: str) -> str:
     """Reverse nmcli ``-t`` (terse) escaping in a field value: a literal
@@ -293,68 +287,6 @@ class NetworkManagerAdapter(NetworkAdapter):
 
     # ---- mutation -------------------------------------------------------
 
-    def _set_link_local_fallback(self, name: str) -> list[str]:
-        """Set ``ipv4.link-local=fallback`` on *name*, tolerating an older nmcli.
-
-        Issued as its own ``con mod`` so a NetworkManager predating the
-        property records a partial failure instead of failing the whole apply –
-        the addressing the operator asked for still lands. ``fallback`` rather
-        than ``enabled``: the 169.254 address then appears only once DHCP has
-        failed and goes away when a lease arrives, so a healthy LAN never
-        carries a second address.
-        """
-        ok, detail = self._run_privileged(
-            NETWORK_NM_CON_MOD,
-            ["/usr/bin/nmcli", "con", "mod", "id", name, "ipv4.link-local", "fallback"],
-            reason=f"Enable link-local fallback on NetworkManager profile {name}",
-        )
-        if ok:
-            return []
-        logger.warning("Could not enable link-local fallback on %s: %s", name, detail)
-        return [f"ipv4.link-local: {detail or 'not supported by this NetworkManager'}"]
-
-    def ensure_dhcp_fallback(self, iface: str) -> ApplyResult:
-        """Arm *iface* against DHCP failure without touching its addressing.
-
-        The recovery path for an interface that came up with no address at
-        all: bound the DHCP wait, enable the link-local fallback, re-activate
-        once. A profile that isn't on DHCP is left alone – it already carries
-        the address the operator configured.
-        """
-        name = self._connection_for(iface)
-        if not name:
-            return ApplyResult(ok=False, message=f"No NetworkManager connection profile bound to {iface}.")
-        if self._read_method(iface) != Ipv4Method.DHCP:
-            return ApplyResult(ok=False, message=f"{iface} is not configured for DHCP.")
-
-        ok, detail = self._run_privileged(
-            NETWORK_NM_CON_MOD,
-            [
-                "/usr/bin/nmcli",
-                "con",
-                "mod",
-                "id",
-                name,
-                "ipv4.may-fail",
-                "yes",
-                "ipv4.dhcp-timeout",
-                str(_DHCP_TIMEOUT_S),
-            ],
-            reason=f"Bound the DHCP wait on NetworkManager profile {name}",
-        )
-        if not ok:
-            return ApplyResult(ok=False, message=detail or "nmcli con mod failed")
-        partial = self._set_link_local_fallback(name)
-
-        up_ok, up_detail = self._run_privileged(
-            NETWORK_NM_CON_UP,
-            ["/usr/bin/nmcli", "con", "up", "id", name],
-            reason=f"Re-activate NetworkManager profile {name}",
-        )
-        if not up_ok:
-            return ApplyResult(ok=False, message=up_detail or "nmcli con up failed")
-        return ApplyResult(ok=True, message="Link-local fallback enabled.", partial_failures=tuple(partial))
-
     def apply_ipv4(self, iface: str, config: Ipv4Config) -> ApplyResult:
         # Defence-in-depth: re-validate operator-influenced values at the
         # privileged boundary so the root-run nmcli argv is safe regardless of
@@ -395,15 +327,6 @@ class NetworkManagerAdapter(NetworkAdapter):
                 modify_argv += ["ipv4.dns", " ".join(config.dns), "ipv4.ignore-auto-dns", "yes"]
             else:
                 modify_argv += ["ipv4.dns", ""]
-            # Bound the DHCP wait and let activation succeed without a lease,
-            # so a show LAN with no DHCP server ends at the link-local
-            # fallback below instead of retrying forever with no address.
-            modify_argv += [
-                "ipv4.may-fail",
-                "yes",
-                "ipv4.dhcp-timeout",
-                str(_DHCP_TIMEOUT_S),
-            ]
         elif config.method == Ipv4Method.STATIC:
             # Use explicit is None check to preserve /0 CIDR prefix.
             prefix = 24 if config.prefix is None else config.prefix
@@ -464,8 +387,6 @@ class NetworkManagerAdapter(NetworkAdapter):
             return ApplyResult(ok=False, message=detail or "nmcli con mod failed")
 
         partial: list[str] = []
-        if config.method == Ipv4Method.DHCP:
-            partial += self._set_link_local_fallback(name)
         # con down can fail; con up failure is fatal.
         down_ok, down_detail = self._run_privileged(
             NETWORK_NM_CON_DOWN,

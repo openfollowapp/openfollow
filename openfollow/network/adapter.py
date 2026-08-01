@@ -111,15 +111,6 @@ class NetworkAdapter(ABC):
     def renew_lease(self, iface: str) -> ApplyResult:
         """Release + re-acquire the DHCP lease for ``iface``."""
 
-    def ensure_dhcp_fallback(self, iface: str) -> ApplyResult:
-        """Arm ``iface`` to self-assign a link-local address when DHCP fails.
-
-        Backends that can't express the fallback report it here rather than
-        silently doing nothing, so the startup recovery path can say why the
-        station is still without an address.
-        """
-        return ApplyResult(ok=False, message=f"{self.backend_name} cannot arm a DHCP fallback.")
-
     def is_writable(self) -> bool:
         """Return True if this adapter can mutate host state."""
         return True

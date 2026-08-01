@@ -28,6 +28,24 @@ class _RobustReceiver(pypsn.Receiver):  # type: ignore[misc]
     callback error crashes the thread.  This subclass fixes both issues.
     """
 
+    # Bound so a caller on the GTK thread can't stall the render loop. pypsn's
+    # own ``stop()`` does a plain ``self.join()`` with no timeout while ``run``
+    # is blocked in ``recvfrom``; closing the fd does not reliably wake a
+    # thread already parked there, so the join waits out the socket timeout.
+    _JOIN_TIMEOUT_S = 3.0
+
+    def stop(self) -> None:
+        """Signal the loop to end and join it, but never block indefinitely."""
+        self.running = False
+        if self.socket is not None:
+            try:
+                self.socket.close()
+            except OSError:
+                pass
+        self.join(timeout=self._JOIN_TIMEOUT_S)
+        if self.is_alive():
+            logger.warning("PSN receiver thread did not stop within %.0fs", self._JOIN_TIMEOUT_S)
+
     def run(self) -> None:
         if self.socket is None:
             return
@@ -115,6 +133,12 @@ class PsnReceiver:
         if self._receiver is not None:
             self._receiver.stop()
             self._receiver = None
+
+    def bound_source_ip(self) -> str | None:
+        """Address this receiver is joined on, or ``None`` when stopped."""
+        if self._receiver is None:
+            return None
+        return self._source_ip
 
     def rebind(self, source_ip: str) -> None:
         """Recreate socket bound to new interface; raises on failure."""

@@ -615,6 +615,12 @@ class OtpServer:
         """True unless the test-only unicast/loopback branch is active."""
         return self._mcast_ip_override != ""
 
+    def bound_source_ip(self) -> str | None:
+        """Address this server is sending from, or ``None`` when stopped."""
+        if self._stop_event.is_set() or self._transform_thread is None:
+            return None
+        return self._source_ip
+
     def stop(self) -> None:
         """Signal threads to stop, wait for them, then close the socket."""
         self._stop_event.set()

@@ -35,7 +35,12 @@ def get_primary_local_ipv4(default: str = "N/A") -> str:
     except OSError:
         pass
 
-    for ip in get_local_ipv4_addresses():
+    # Sorted, not set-iteration order: on an offline show LAN the probe above
+    # always fails, so this branch decides the station's address. Unordered
+    # iteration makes that pick flip when an unrelated address appears (a VPN,
+    # docker0, a second lease), which reads downstream as a genuine IP change
+    # and repoints the data planes onto a network nobody chose.
+    for ip in sorted(get_local_ipv4_addresses()):
         if not ip.startswith("127."):
             return ip
 

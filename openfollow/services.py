@@ -923,17 +923,34 @@ class AppRuntimeServices:
         def _apply_psn(address: str) -> None:
             self.apply_psn_source_ip_change(address)
 
+        def _current_psn() -> str | None:
+            server = self._app._server
+            return server.bound_source_ip() if server is not None else None
+
         def _suspend_psn() -> None:
-            # Both directions: leaving the receiver joined on a dead address
-            # would keep viewer markers showing stale positions.
+            # Both directions, and both attempted even if the first raises:
+            # leaving the receiver joined on a dead address would keep viewer
+            # markers showing stale positions, which is the thing this exists
+            # to prevent.
+            errors: list[Exception] = []
             for service in (self._app._server, self._app._psn_receiver):
-                if service is not None:
+                if service is None:
+                    continue
+                try:
                     service.stop()
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(exc)
+            if errors:
+                raise errors[0]
 
         def _apply_otp(_address: str) -> None:
             # The orchestrator re-resolves the pin itself, so it always binds
             # the address this poll just observed.
             self.apply_otp_output_change(self._app._config.otp_output)
+
+        def _current_otp() -> str | None:
+            server = self._app._otp_server
+            return server.bound_source_ip() if server is not None else None
 
         def _suspend_otp() -> None:
             if self._app._otp_server is not None:
@@ -943,14 +960,19 @@ class AppRuntimeServices:
             Plane(
                 label="PSN",
                 resolve=_resolver(lambda: self._app._config.psn_source_iface, is_station=True),
+                current=_current_psn,
                 apply=_apply_psn,
                 suspend=_suspend_psn,
             ),
             Plane(
                 label="OTP output",
                 resolve=_resolver(lambda: self._app._config.otp_output.source_iface, is_station=False),
+                current=_current_otp,
                 apply=_apply_otp,
                 suspend=_suspend_otp,
+                # A switched-off output is not broken; alerting on it would put
+                # a second fault on the HUD for a protocol nobody enabled.
+                enabled=lambda: self._app._config.otp_output.enabled,
             ),
         ]
 
@@ -966,17 +988,32 @@ class AppRuntimeServices:
         if observer is None:
             observer = NetworkPlaneObserver(planes=self._build_network_planes(), clock=time.monotonic)
             self._network_observer = observer
-        observer.poll()
-        self._follow_station_ip()
+        # Inside the same throttle: resolving the station address enumerates
+        # every adapter, and housekeeping runs at 100 ms.
+        if observer.poll():
+            self._follow_station_ip()
 
     def _follow_station_ip(self) -> None:
-        """Repoint the services that track the station address rather than pin one."""
+        """Repoint the services that track the station address rather than pin one.
+
+        Resolved fail-closed, like every other plane: the station interface
+        being down must not move catalog sync or the discovery beacon onto
+        whatever else happens to be up. Doing so would put this station's
+        identity - its name, marker names and colours, its selection - on a
+        network the operator never chose, at the exact moment the observer is
+        stopping PSN for that same reason.
+        """
+        from openfollow.net_utils import resolve_plane_source_ip
+
+        address, status = resolve_plane_source_ip("", self._app._config.psn_source_iface)
+        if status in ("down", "none"):
+            return
         server = self._app._web_server
         if server is not None:
             server.refresh_local_ip()
         sync = getattr(self._app, "_marker_catalog_sync", None)
         if sync is not None:
-            sync.update_iface_ip(self._resolved_source_ip())
+            sync.update_iface_ip(address)
 
     def network_alerts(self) -> list[str]:
         """Planes currently stopped because their interface has no address."""

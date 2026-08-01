@@ -215,10 +215,13 @@ class TestActionableMessages:
         assert "No saved profile" in result.message
         assert "Connect the cable once" in result.message
 
-    def test_absent_device_says_to_check_the_adapter(self, adapter) -> None:
+    @pytest.mark.parametrize("device_list", ["", "eth1:connected\nwlan0:disconnected\n"])
+    def test_absent_device_says_to_check_the_adapter(self, adapter, device_list: str) -> None:
+        """Absent whether the device table is empty or simply lists others -
+        the second is the realistic case and used to fall through the loop."""
         a, _captured, responses = adapter
         self._no_profile(responses)
-        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="")
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout=device_list)
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert "is not present" in result.message
 
@@ -251,6 +254,47 @@ class TestActionableMessages:
             _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout=f"eth0:{state}\n")
             message = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP)).message
             assert len(message) <= 80, f"{message!r} will be truncated on the HUD"
+
+    def test_apply_reports_pending_when_the_link_is_down(self, adapter) -> None:
+        """The settings persisted; the interface just never came up. Reporting
+        a hard failure would be wrong, and reporting a clean apply would send
+        the browser to an address nothing is serving."""
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired:eth0\n",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:unavailable\n")
+        # con mod ok, con down ok, con up fails with no reason of its own.
+        a._broker.exceptions = [None, None, make_failure("")]
+        result = a.apply_ipv4(
+            "eth0",
+            Ipv4Config(method=Ipv4Method.STATIC, address="192.168.1.50", prefix=24),
+        )
+        assert result.ok is True
+        assert result.pending is True
+        assert "no link" in result.message
+
+    def test_a_named_activation_failure_is_not_pending(self, adapter) -> None:
+        """rfkill and an ungranted con-up both leave the device 'unavailable',
+        so keying on device state alone would tell the operator to plug in a
+        cable that isn't the problem."""
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="HomeWifi:wlan0\n",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="wlan0:unavailable\n")
+        a._broker.exceptions = [None, None, make_failure("Wi-Fi radio disabled by rfkill")]
+        result = a.apply_ipv4(
+            "wlan0",
+            Ipv4Config(method=Ipv4Method.STATIC, address="192.168.1.50", prefix=24),
+        )
+        assert result.ok is False
+        assert result.pending is False
+        assert "rfkill" in result.message
 
     def test_renew_without_a_link_explains_why(self, adapter) -> None:
         a, _captured, responses = adapter

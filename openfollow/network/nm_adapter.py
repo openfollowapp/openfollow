@@ -31,15 +31,10 @@ logger = logging.getLogger(__name__)
 
 _NMCLI_TIMEOUT = 8
 
-# Connection types that carry an IPv4 address the Network page can edit. Used
-# to keep the by-interface-name lookup from matching a bridge/bond/tun profile
-# that merely names the same device.
-_ADDRESSABLE_CONNECTION_TYPES = frozenset({"802-3-ethernet", "802-11-wireless", "vlan"})
-
-# How long the inactive-profile map is reused. Long enough to cover one page
-# render (which resolves every interface), short enough that a profile created
-# or renamed from a shell shows up promptly.
-_INACTIVE_MAP_TTL_S = 2.0
+# Shown when the privilege broker is absent, which on a real device means the
+# sudoers rules were never installed. Kept short: the on-screen banner is one
+# truncated line.
+_NO_BROKER_MESSAGE = "Cannot change network settings - the privileged helper is not configured."
 
 
 def _unescape_terse(value: str) -> str:
@@ -69,7 +64,6 @@ class NetworkManagerAdapter(NetworkAdapter):
 
     def __init__(self, *, broker: PrivilegeBroker | None = None) -> None:
         self._broker = broker
-        self._inactive_map_cache: tuple[float, dict[str, str]] | None = None
 
     def _run(self, argv: Sequence[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
         """Execute read-only nmcli call."""
@@ -92,7 +86,7 @@ class NetworkManagerAdapter(NetworkAdapter):
     ) -> tuple[bool, str]:
         """Invoke capability via broker, return (ok, detail)."""
         if self._broker is None:
-            return (False, "Broker not configured.")
+            return (False, _NO_BROKER_MESSAGE)
         try:
             proc = self._broker.run(
                 capability,
@@ -134,14 +128,6 @@ class NetworkManagerAdapter(NetworkAdapter):
         return out
 
     def _connection_for(self, iface: str) -> str | None:
-        """Return the profile that owns *iface*, active or not.
-
-        The ``DEVICE`` column is only populated for connections nmcli
-        considers **active**, so matching on it finds nothing once the carrier
-        drops and NetworkManager deactivates the profile. That is exactly the
-        pre-stage-a-static-address-before-the-show case, so the last resort
-        matches ``connection.interface-name`` instead.
-        """
         try:
             res = self._run(["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"])
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
@@ -159,89 +145,20 @@ class NetworkManagerAdapter(NetworkAdapter):
             name, _, dev = line.partition(":")
             if dev == iface:
                 return name
-        return self._inactive_connection_for(iface)
+        return None
 
-    def _inactive_connection_for(self, iface: str) -> str | None:
-        """Find a deactivated profile by its configured interface name."""
-        return self._inactive_profile_map().get(iface)
+    def _device_state(self, iface: str) -> str | None:
+        """nmcli's STATE word for *iface*, ``""`` if absent, ``None`` if unreadable.
 
-    def _inactive_profile_map(self) -> dict[str, str]:
-        """interface name -> best inactive profile, built in one pass.
-
-        Briefly cached because the cost is multiplicative otherwise: reading a
-        profile's ``connection.interface-name`` needs its own ``nmcli`` call,
-        and ``_connection_for`` runs once per interface via ``get_state``. On a
-        station with several down interfaces and a handful of saved profiles
-        that is dozens of subprocess spawns for one page render, each with an
-        8 s timeout, on a web request thread.
-
-        Ranked so the choice is stable when a device has several profiles:
-        autoconnect first (that is the one NetworkManager would bring up), then
-        the higher autoconnect-priority, then name order. Without a
-        deterministic order the operator's edit could land on a different
-        profile each time they pressed Apply.
-        """
-        now = time.monotonic()
-        cached = self._inactive_map_cache
-        if cached is not None and now - cached[0] < _INACTIVE_MAP_TTL_S:
-            return cached[1]
-
-        try:
-            res = self._run(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"])
-        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
-            return {}
-
-        ranked: dict[str, tuple[int, int, str]] = {}
-        for line in res.stdout.splitlines():
-            name, _, kind = line.partition(":")
-            if not name or kind not in _ADDRESSABLE_CONNECTION_TYPES:
-                continue
-            details = self._connection_details(name)
-            bound_iface = details.get("connection.interface-name", "")
-            if not bound_iface:
-                continue
-            autoconnect = 0 if details.get("connection.autoconnect", "").lower() == "yes" else 1
-            try:
-                priority = -int(details.get("connection.autoconnect-priority", "0") or 0)
-            except ValueError:
-                priority = 0
-            candidate = (autoconnect, priority, name)
-            best = ranked.get(bound_iface)
-            if best is None or candidate < best:
-                ranked[bound_iface] = candidate
-
-        out = {bound_iface: candidate[2] for bound_iface, candidate in ranked.items()}
-        self._inactive_map_cache = (now, out)
-        return out
-
-    def _connection_details(self, name: str) -> dict[str, str]:
-        """First value of each requested field for one profile, or ``{}``."""
-        try:
-            res = self._run(
-                [
-                    "nmcli",
-                    "-t",
-                    "-f",
-                    "connection.interface-name,connection.autoconnect,connection.autoconnect-priority",
-                    "connection",
-                    "show",
-                    name,
-                ]
-            )
-        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
-            return {}
-        return {key: values[0] for key, values in self._parse_show(res.stdout).items() if values}
-
-    def _device_state(self, iface: str) -> str:
-        """nmcli's STATE word for *iface* (``unmanaged``, ``disconnected``, …).
-
-        Drives the cause-specific apply errors: "no profile" and "NetworkManager
-        isn't managing this device" need different operator actions.
+        The three are different and the callers rely on it: a read failure is
+        not evidence the device is gone, and telling an operator their plugged-in
+        adapter "is not present" because nmcli timed out contradicts the card
+        they just clicked.
         """
         try:
             res = self._run(["nmcli", "-t", "-f", "DEVICE,STATE", "device"])
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
-            return ""
+            return None
         for line in res.stdout.splitlines():
             name, _, state = line.partition(":")
             if name == iface:
@@ -261,20 +178,19 @@ class NetworkManagerAdapter(NetworkAdapter):
         return self._device_state(iface) != "unavailable"
 
     def _no_profile_message(self, iface: str) -> str:
-        """Say what the operator should check, not what the adapter didn't find."""
+        """Say what the operator should check, not what the adapter didn't find.
+
+        Kept to one short sentence: the on-screen Settings banner is a single
+        truncated line, so a second sentence is the half that gets cut.
+        """
         state = self._device_state(iface)
+        if state is None:
+            return f"Could not read {iface} from NetworkManager. Try Scan."
         if state == "unmanaged":
-            return (
-                f"{iface} is not managed by NetworkManager, so its IP settings can't be changed here. "
-                f"Remove it from /etc/network/interfaces or NetworkManager's unmanaged-devices list, "
-                f"then restart NetworkManager."
-            )
+            return f"{iface} is not managed by NetworkManager. See the help drawer."
         if not state:
-            return f"{iface} is not present on this system. Check the adapter is plugged in, then Scan."
-        return (
-            f"No saved network profile exists for {iface}. Connect the cable once so NetworkManager "
-            f"creates one, or create it manually with nmcli."
-        )
+            return f"{iface} is not present. Check the adapter, then Scan."
+        return f"No saved profile for {iface}. Connect the cable once to create one."
 
     def _parse_show(self, text: str) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {}
@@ -543,21 +459,19 @@ class NetworkManagerAdapter(NetworkAdapter):
             # itself saved, and that is the pre-stage-before-the-show workflow:
             # the settings are persisted and take effect on next plug-in, so
             # reporting a hard failure would be wrong.
-            if not self._has_carrier(iface):
-                # Reported through partial_failures, not just the message: the
-                # web layer redirects the browser to the new address on a clean
-                # apply, and there is nothing listening there until the cable
-                # goes in. partial_failures is the existing channel that keeps
-                # the operator on the page with the note visible.
-                pending = f"{iface} has no link, so the settings take effect when the cable is connected."
+            if not self._has_carrier(iface) and not up_detail:
+                # Only when nmcli gave no reason of its own: a real failure -
+                # rfkill, a missing con-up grant - must not be reported as a
+                # cable problem just because the device reads "unavailable".
                 return ApplyResult(
                     ok=True,
-                    message=f"Saved to profile '{name}'. {pending}",
-                    partial_failures=(*partial, pending),
+                    pending=True,
+                    message=f"Saved. {iface} has no link yet.",
+                    partial_failures=tuple(partial),
                 )
             return ApplyResult(
                 ok=False,
-                message=f"Saved the settings, but {iface} could not be brought up. {up_detail}".strip(),
+                message=f"Saved, but {iface} could not be brought up. {up_detail}".strip(),
             )
         return ApplyResult(ok=True, message="Applied.", partial_failures=tuple(partial))
 
@@ -577,13 +491,10 @@ class NetworkManagerAdapter(NetworkAdapter):
             reason=f"Renew DHCP lease via NetworkManager profile {name}",
         )
         if not up_ok:
-            if not self._has_carrier(iface):
-                return ApplyResult(
-                    ok=False,
-                    message=f"{iface} has no link, so there is no network to request a lease from.",
-                )
-            return ApplyResult(
-                ok=False,
-                message=f"Could not renew the lease on {iface}. {up_detail}".strip(),
-            )
+            # Only claim it's the link when nmcli gave no reason of its own -
+            # a missing helper or an ungranted rule is not a cable problem, and
+            # sending the operator to check a cable hides the real fix.
+            if not up_detail and not self._has_carrier(iface):
+                return ApplyResult(ok=False, message=f"{iface} has no link, so there is no lease to request.")
+            return ApplyResult(ok=False, message=f"Could not renew {iface}. {up_detail}".strip())
         return ApplyResult(ok=True, message="Lease renewed.")

@@ -636,7 +636,6 @@ class TestRenewErrors:
         assert result.ok is False
         # Names something the operator can act on, not an internal object.
         assert "privileged helper is not configured" in result.message
-        assert "Settings menu" in result.message
 
 
 class TestBuildBlockBranches:

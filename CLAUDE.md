@@ -12,9 +12,20 @@ See `docs/PROJECT_STRUCTURE.md` for layout.
 
 ## Code comments
 
-- Keep comments short and concise.
-- Do NOT reference issue or PR numbers in code or comments. Put that context in
-  commit messages / PR descriptions instead.
+- **Short, precise, technical, and only where required.** One line is the
+  target; two is the ceiling outside a genuinely subtle invariant. Match the
+  density of the surrounding file.
+- Comment the **non-obvious** part only. Delete anything the code, the field
+  name, or an adjacent string already says – a comment restating the line below
+  it is noise.
+- Don't repeat a comment above each of several near-identical blocks. Put it on
+  the first and leave the rest bare.
+- **Reasoning belongs in the commit message / PR description, not the source**:
+  why a decision was taken, what alternatives were weighed, what review raised
+  it. Same rule for issue and PR numbers – never in code or comments.
+- Docstrings follow the same instinct once they grow into essays. A load-bearing
+  contract (what callers must not do, an invariant a refactor could break) earns
+  more room than an inline comment; a narrative does not.
 - Do NOT leave "legacy" / "removed" / "no longer" breadcrumbs when deleting a
   feature. Write code, comments, tests, and docs as if the current design was
   always the only one – e.g. ONNX Runtime is *the* detection backend, not "the

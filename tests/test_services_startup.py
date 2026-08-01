@@ -915,3 +915,68 @@ def test_follow_station_ip_tolerates_missing_services(monkeypatch) -> None:
 def test_alerts_are_empty_before_the_first_poll(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
     assert services.network_alerts() == []
+
+
+def test_applying_psn_routes_through_the_rebind_orchestrator(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    applied: list[str] = []
+    services.apply_psn_source_ip_change = applied.append  # type: ignore[method-assign]
+    psn = next(p for p in services._build_network_planes() if p.label == "PSN")
+    psn.apply("10.0.0.9")
+    assert applied == ["10.0.0.9"]
+
+
+def test_suspending_psn_tolerates_a_service_that_never_started(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._server = None
+    services._app._psn_receiver = None
+    next(p for p in services._build_network_planes() if p.label == "PSN").suspend()
+
+
+def test_applying_otp_re_resolves_through_its_orchestrator(monkeypatch) -> None:
+    """The orchestrator resolves the pin itself, so it binds the address this
+    poll observed rather than one the observer passed along."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    applied: list[object] = []
+    services.apply_otp_output_change = applied.append  # type: ignore[method-assign]
+    otp = next(p for p in services._build_network_planes() if p.label == "OTP output")
+    otp.apply("10.0.0.9")
+    assert applied == [services._app._config.otp_output]
+
+
+def test_suspending_otp_stops_the_server(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _Server:
+        def __init__(self) -> None:
+            self.stopped = 0
+
+        def stop(self) -> None:
+            self.stopped += 1
+
+    server = _Server()
+    services._app._otp_server = server
+    otp = next(p for p in services._build_network_planes() if p.label == "OTP output")
+    otp.suspend()
+    assert server.stopped == 1
+    services._app._otp_server = None
+    otp.suspend()  # no server to stop
+
+
+def test_observe_builds_the_observer_once_and_follows_the_station(monkeypatch) -> None:
+    """Housekeeping calls this ~10x/s; rebuilding the plane list each time
+    would re-enumerate interfaces on every tick."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "eth0"
+    services.apply_psn_source_ip_change = lambda _ip: None  # type: ignore[method-assign]
+    services.apply_otp_output_change = lambda _cfg: None  # type: ignore[method-assign]
+
+    followed: list[int] = []
+    services._follow_station_ip = lambda: followed.append(1)  # type: ignore[method-assign]
+
+    services.observe_network_planes()
+    first = services._network_observer
+    services.observe_network_planes()
+    assert services._network_observer is first
+    assert len(followed) == 2

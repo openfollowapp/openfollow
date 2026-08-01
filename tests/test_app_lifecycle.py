@@ -40,6 +40,13 @@ class _FakeRuntimeServices:
         self.calls: list[str] = []
         self.init_errors: dict[str, Exception] = {}
         self._status_flags: dict[str, Any] = {}
+        # Startup network repair: default to "nothing to repair" so the
+        # loopback path stays a single wait unless a test opts in.
+        self.repair_result = False
+
+    def repair_missing_network_address(self) -> bool:
+        self.calls.append("repair_missing_network_address")
+        return self.repair_result
 
     def init_canvas(self) -> None:
         self.calls.append("init_canvas")
@@ -270,6 +277,45 @@ class TestRun:
             app.run()
         assert any(r.levelname == "WARNING" and "loopback" in r.message for r in caplog.records)
         assert not any("Network ready" in r.message for r in caplog.records)
+
+    def test_loopback_arms_the_dhcp_fallback_and_rechecks(
+        self,
+        patched_ctor,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog,  # noqa: ANN001
+    ) -> None:
+        """A repaired interface has to be re-read: the address the recovery
+        produced is the one the subsystems below should bind."""
+        from openfollow import net_utils
+
+        results = iter(["127.0.0.1", "169.254.8.31"])
+        monkeypatch.setattr(net_utils, "wait_for_source_ip", lambda **kw: next(results))
+        app = OpenFollowApp(config_path=patched_ctor.cfg_path)
+        app._runtime_services.repair_result = True
+        with caplog.at_level("INFO"):
+            app.run()
+        assert "repair_missing_network_address" in app._runtime_services.calls
+        assert any("169.254.8.31" in r.message for r in caplog.records)
+
+    def test_loopback_without_repair_does_not_wait_twice(
+        self,
+        patched_ctor,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Nothing repaired means nothing changed – a second wait would only
+        stall startup for another timeout on a station with no network."""
+        from openfollow import net_utils
+
+        waits: list[dict] = []
+
+        def _spy(**kwargs: object) -> str:
+            waits.append(dict(kwargs))
+            return "127.0.0.1"
+
+        monkeypatch.setattr(net_utils, "wait_for_source_ip", _spy)
+        app = OpenFollowApp(config_path=patched_ctor.cfg_path)
+        app.run()
+        assert len(waits) == 1
 
     def test_uses_short_bounded_ip_wait(
         self,

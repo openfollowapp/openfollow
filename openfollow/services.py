@@ -2114,7 +2114,6 @@ class AppRuntimeServices:
         machine nobody is sitting at.
         """
         from openfollow.network.adapter import is_loopback
-        from openfollow.privilege.broker import PrivilegeError
         from openfollow.privilege.capabilities import (
             NETWORK_NM_CON_MOD,
             NETWORK_NM_CON_UP,
@@ -2151,9 +2150,8 @@ class AppRuntimeServices:
                     repaired = True
                 else:
                     logger.warning("Could not arm the DHCP fallback on %s: %s", name, result.message)
-        except (OSError, PrivilegeError):
+        except Exception:  # noqa: BLE001 - startup must proceed whatever the backend does
             logger.exception("Startup network repair failed")
-            return repaired
         return repaired
 
     def _network_state_provider(self) -> dict[str, Any] | None:

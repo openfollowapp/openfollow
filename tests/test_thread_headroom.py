@@ -8,13 +8,13 @@ N x cores threads and freeze an interactive desktop. tests/conftest.py caps it
 with cv2.setNumThreads(1). These tests pin that so dropping the cap fails loudly.
 """
 
-import os
 import subprocess
 import sys
+from pathlib import Path
 
-import numpy as np
-import psutil
 import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 pytestmark = pytest.mark.unit
 
@@ -55,21 +55,25 @@ def test_setnumthreads_caps_the_opencv_pool() -> None:
     assert capped <= 2, f"setNumThreads(1) left {capped} threads"
 
 
-def test_conftest_caps_opencv_in_the_test_process() -> None:
-    """conftest.py must cap OpenCV in the worker itself, not just a subprocess.
+def test_conftest_applies_the_opencv_cap() -> None:
+    """Importing conftest.py must actually collapse the pool, not just intend to.
 
-    Warm cv2 here, then compare this (capped) worker's thread count against a
-    freshly spawned uncapped process: capped stays far below the full pool. The
-    pool only registers on >=4 cores, so below that the signal is unmeasurable.
+    ``test_setnumthreads_caps_the_opencv_pool`` proves the lever works; this
+    proves conftest.py pulls it. Importing the real conftest into a fresh probe
+    process keeps the two halves independent – deleting the ``setNumThreads``
+    call fails here while the lever test stays green.
+
+    Measured in a subprocess, not in this worker. A worker's own thread count
+    stops being a signal once the suite is running: threads left alive by
+    earlier tests (web listeners, OSC servers, discovery beacons) inflate it
+    until it no longer reflects OpenCV at all. ``cv2.getNumThreads()`` is no
+    substitute either – under the GCD parallel framework macOS builds use, it
+    keeps reporting the core count after a successful cap.
+
+    ``sys.path`` is seeded with the repo root explicitly so the probe doesn't
+    depend on the working directory pytest was launched from.
     """
-    if (os.cpu_count() or 1) < 4:
-        pytest.skip("OpenCV pool too small to measure below 4 cores")
-    img = (np.random.rand(480, 640) * 255).astype("uint8")
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    for _ in range(20):
-        clahe.apply(img)
-    in_process = psutil.Process().num_threads()
-    uncapped = _probe_threads(cap="")
-    assert in_process < uncapped, (
-        f"this worker holds {in_process} threads vs {uncapped} for an uncapped process - conftest.py did not cap OpenCV"
+    capped = _probe_threads(
+        cap=f"import sys; sys.path.insert(0, {str(_REPO_ROOT)!r}); import tests.conftest  # noqa: F401",
     )
+    assert capped <= 2, f"conftest.py left {capped} threads - the OpenCV cap is not being applied"

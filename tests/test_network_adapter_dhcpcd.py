@@ -1197,3 +1197,59 @@ class TestApplyBoundaryValidation:
         )
         assert result.ok is False
         assert conf.read_text() == ""  # nothing written
+
+
+class TestPendingOnADeadLink:
+    """``dhcpcd -n`` returns 0 on a carrier-less interface - it only signals the
+    daemon - so without an explicit pending state the apply reads as clean and
+    the web layer redirects the browser to an address nothing is serving."""
+
+    def test_apply_reports_pending_when_the_link_is_down(self, adapter, monkeypatch) -> None:
+        a, _conf = adapter
+        monkeypatch.setattr(a, "_has_carrier", lambda _iface: False)
+        result = a.apply_ipv4(
+            "eth0",
+            Ipv4Config(method=Ipv4Method.STATIC, address="192.168.9.9", prefix=24),
+        )
+        assert result.ok is True
+        assert result.pending is True
+        assert "no link" in result.message
+
+    def test_apply_is_not_pending_with_a_link(self, adapter, monkeypatch) -> None:
+        a, _conf = adapter
+        monkeypatch.setattr(a, "_has_carrier", lambda _iface: True)
+        result = a.apply_ipv4(
+            "eth0",
+            Ipv4Config(method=Ipv4Method.STATIC, address="192.168.9.9", prefix=24),
+        )
+        assert result.ok is True
+        assert result.pending is False
+
+    def test_carrier_reads_the_kernel_operstate(self, adapter, tmp_path, monkeypatch) -> None:
+        a, _conf = adapter
+        import openfollow.network.dhcpcd_adapter as mod
+
+        class _Path:
+            def __init__(self, value: str) -> None:
+                self._value = value
+
+            def read_text(self, encoding: str = "utf-8") -> str:
+                return self._value
+
+        monkeypatch.setattr(mod, "Path", lambda _p: _Path("down\n"))
+        assert a._has_carrier("eth0") is False
+        monkeypatch.setattr(mod, "Path", lambda _p: _Path("up\n"))
+        assert a._has_carrier("eth0") is True
+
+    def test_an_unreadable_operstate_counts_as_having_carrier(self, adapter, monkeypatch) -> None:
+        """An apply we can't explain must never be downgraded to a reassuring
+        "saved, pending"."""
+        a, _conf = adapter
+        import openfollow.network.dhcpcd_adapter as mod
+
+        class _Missing:
+            def read_text(self, encoding: str = "utf-8") -> str:
+                raise OSError("no such file")
+
+        monkeypatch.setattr(mod, "Path", lambda _p: _Missing())
+        assert a._has_carrier("eth0") is True

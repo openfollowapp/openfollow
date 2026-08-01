@@ -602,3 +602,130 @@ def test_update_isolates_mouse_failure(monkeypatch) -> None:
     result = manager.update(0.016)
 
     assert result.settings_open_pressed is True
+
+
+# --------------------------------------------------------------------------- #
+# invert_control_direction – upstage-camera control flip
+# --------------------------------------------------------------------------- #
+
+
+def test_invert_control_direction_flips_keyboard_xy_not_z(monkeypatch) -> None:
+    """With the camera upstage the picture is rotated 180°, so X and Y must
+    reverse together. Z is height and reads the same from any camera position,
+    so it must be left alone."""
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    _FakeKeyboardHandler.next_velocity = (1.0, 2.0, 3.0)
+
+    app = _DummyApp()
+    app._config.marker.invert_control_direction = True
+    manager = InputManager(app)
+    manager.update(1.0)
+
+    assert app._server.get_marker(10).pos == pytest.approx((-1.0, -2.0, 3.0))
+
+
+def test_keyboard_direction_is_unchanged_by_default(monkeypatch) -> None:
+    """Default-off: an existing install must not have its controls reversed
+    by the upgrade."""
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    _FakeKeyboardHandler.next_velocity = (1.0, 2.0, 3.0)
+
+    app = _DummyApp()
+    manager = InputManager(app)
+    manager.update(1.0)
+
+    assert app._server.get_marker(10).pos == pytest.approx((1.0, 2.0, 3.0))
+
+
+def test_invert_control_direction_flips_gamepad_xy_not_z(monkeypatch) -> None:
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    _FakeGamepadHandler.joystick_indices = (0,)
+    _FakeGamepadHandler.next_update = GamepadUpdate(movements={0: (1.0, 2.0, 3.0)})
+
+    app = _DummyApp()
+    app._selected_id = 11
+    app._config.marker.invert_control_direction = True
+    manager = InputManager(app)
+    manager.update(1.0)
+
+    assert app._server.get_marker(11).pos == pytest.approx((-1.0, -2.0, 3.0))
+
+
+def test_invert_control_direction_flips_each_gamepad_independently(monkeypatch) -> None:
+    """Multi-operator: the flip is a property of the shared camera view, so it
+    applies to every pad, not just the selected marker's."""
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    _FakeGamepadHandler.joystick_indices = (0, 1)
+    _FakeGamepadHandler.next_update = GamepadUpdate(
+        movements={0: (1.0, 0.0, 0.0), 1: (0.0, 2.0, 0.0)},
+    )
+
+    app = _DummyApp()
+    app._config.marker.invert_control_direction = True
+    manager = InputManager(app)
+    manager.update(1.0)
+
+    assert app._server.get_marker(10).pos == pytest.approx((-1.0, 0.0, 0.0))
+    assert app._server.get_marker(11).pos == pytest.approx((0.0, -2.0, 0.0))
+
+
+def test_invert_control_direction_leaves_gamepad_reset_absolute(monkeypatch) -> None:
+    """Reset writes an absolute default position, not a delta – flipping it
+    would send the marker to the wrong corner of the stage."""
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    _FakeGamepadHandler.joystick_indices = (0,)
+    _FakeGamepadHandler.next_update = GamepadUpdate(resets={0})
+
+    app = _DummyApp()
+    app._selected_id = 11
+    app._config.marker.invert_control_direction = True
+    manager = InputManager(app)
+    manager.update(0.016)
+
+    assert app._server.get_marker(11).pos == pytest.approx((5.0, 6.0, 7.0))
+
+
+def test_invert_control_direction_applies_live(monkeypatch) -> None:
+    """Read per frame, so toggling it in the web UI takes effect without a
+    restart – the same contract as the mouse_enabled gate."""
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    _FakeKeyboardHandler.next_velocity = (1.0, 0.0, 0.0)
+
+    app = _DummyApp()
+    manager = InputManager(app)
+    manager.update(1.0)
+    assert app._server.get_marker(10).pos == pytest.approx((1.0, 0.0, 0.0))
+
+    app._config.marker.invert_control_direction = True
+    manager.update(1.0)
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_invert_control_direction_leaves_osc_positions_absolute(monkeypatch) -> None:
+    """OSC sets an absolute stage coordinate, not a direction of travel, so the
+    upstage flip must never touch it - a console commanding x=3 must land the
+    marker at x=3 whichever way the camera faces.
+
+    Pins the invariant the flip's docstrings assert, so a later refactor that
+    pushes the sign down into ``Marker.set_pos`` or a shared delta helper can't
+    silently reverse the absolute paths with a green suite.
+    """
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+
+    app = _DummyApp()
+    app._config.marker.invert_control_direction = True
+    manager = InputManager(app)
+    manager.osc_handler = SimpleNamespace(
+        flush_updates=lambda: {10: {"x": 3.0, "y": 4.0, "z": 5.0}},
+    )
+
+    manager.update(1.0)
+
+    assert app._server.get_marker(10).pos == pytest.approx((3.0, 4.0, 5.0))

@@ -677,11 +677,12 @@ class GamepadHandler:
         a fader. Stick Y is conventionally ``+1 = down`` on every backend
         we support, so the raw value is negated before returning.
 
-        ``invert_y`` is *not* applied here. ``invert_y`` flips XY movement
-        for operators who prefer flight-style camera control; that
-        preference doesn't naturally map to fader semantics, where
-        "stick up = fader up" is universal regardless of how the
-        operator's brain models XY marker movement.
+        ``invert_y`` is *not* applied here. ``invert_y`` flips the stick's Y
+        axis only (not X, and not Z – height comes from the triggers) for
+        operators who prefer flight-style camera control; that preference
+        doesn't naturally map to fader semantics, where "stick up = fader up"
+        is universal regardless of how the operator's brain models marker
+        movement.
 
         Returns ``0.0`` when no stick is configured, when the chosen
         axis index is past the joystick's reported axis count (raw

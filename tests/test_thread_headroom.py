@@ -8,13 +8,23 @@ N x cores threads and freeze an interactive desktop. tests/conftest.py caps it
 with cv2.setNumThreads(1). These tests pin that so dropping the cap fails loudly.
 """
 
-import os
 import subprocess
 import sys
+from pathlib import Path
 
-import numpy as np
-import psutil
 import pytest
+
+_CONFTEST = Path(__file__).resolve().with_name("conftest.py")
+
+# Load conftest.py by *path*, never as the module ``tests.conftest``. This
+# repo's ``tests/`` has no ``__init__.py``, so it is only a PEP 420 namespace
+# portion – and a regular package anywhere on ``sys.path`` beats a namespace
+# portion outright, whatever the path order. ``ultralytics`` (this project's own
+# ``export`` extra) installs a top-level ``tests`` package with its own
+# ``conftest.py``, so importing by name silently loads *that* file in any
+# environment where the extra is present, and this guard passes while testing
+# nothing.
+_LOAD_CONFTEST = f"import runpy; runpy.run_path({str(_CONFTEST)!r})"
 
 pytestmark = pytest.mark.unit
 
@@ -55,21 +65,31 @@ def test_setnumthreads_caps_the_opencv_pool() -> None:
     assert capped <= 2, f"setNumThreads(1) left {capped} threads"
 
 
-def test_conftest_caps_opencv_in_the_test_process() -> None:
-    """conftest.py must cap OpenCV in the worker itself, not just a subprocess.
+def test_conftest_applies_the_opencv_cap() -> None:
+    """Importing conftest.py must actually collapse the pool, not just intend to.
 
-    Warm cv2 here, then compare this (capped) worker's thread count against a
-    freshly spawned uncapped process: capped stays far below the full pool. The
-    pool only registers on >=4 cores, so below that the signal is unmeasurable.
+    ``test_setnumthreads_caps_the_opencv_pool`` proves the lever works; this
+    proves conftest.py pulls it. Importing the real conftest into a fresh probe
+    process keeps the two halves independent – deleting the ``setNumThreads``
+    call fails here while the lever test stays green.
+
+    Measured in a subprocess, not in this worker. A worker's own thread count
+    stops being a signal once the suite is running: threads left alive by
+    earlier tests (web listeners, OSC servers, discovery beacons) inflate it
+    until it no longer reflects OpenCV at all. ``cv2.getNumThreads()`` is no
+    substitute either – under the GCD parallel framework macOS builds use, it
+    keeps reporting the core count after a successful cap.
+
+    The comparison is against a live uncapped probe rather than a fixed
+    threshold: on a small-core runner the pool barely fans out, so ``capped <=
+    2`` would hold even with the cap deleted and the guard would report green on
+    a real regression. When the uncapped pool is too small to measure at all,
+    skip rather than assert on noise.
     """
-    if (os.cpu_count() or 1) < 4:
-        pytest.skip("OpenCV pool too small to measure below 4 cores")
-    img = (np.random.rand(480, 640) * 255).astype("uint8")
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    for _ in range(20):
-        clahe.apply(img)
-    in_process = psutil.Process().num_threads()
     uncapped = _probe_threads(cap="")
-    assert in_process < uncapped, (
-        f"this worker holds {in_process} threads vs {uncapped} for an uncapped process - conftest.py did not cap OpenCV"
+    if uncapped < 3:
+        pytest.skip(f"OpenCV pool too small to measure (uncapped process held {uncapped} threads)")
+    capped = _probe_threads(cap=_LOAD_CONFTEST)
+    assert capped < uncapped, (
+        f"conftest.py left {capped} threads vs {uncapped} uncapped - the OpenCV cap is not being applied"
     )

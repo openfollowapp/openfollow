@@ -28,6 +28,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _oriented(vx: float, vy: float, invert: bool) -> tuple[float, float]:
+    """Flip X/Y for an upstage camera, whose view is 180° from the stage axes.
+
+    Relative input only. The 2D mouse (cursor unprojection) and OSC are
+    absolute, so they already follow the picture and must not be flipped. Z is
+    never touched.
+    """
+    return (-vx, -vy) if invert else (vx, vy)
+
+
 class InputManager:
     """Coordinates input from keyboard, gamepads, and OSC.
 
@@ -272,13 +282,16 @@ class InputManager:
             gamepad_result.next_marker_pressed = False
             gamepad_result.prev_marker_pressed = False
 
+        # Read live (applies without a restart) and shared, so the three devices agree.
+        invert_xy = self.app._config.marker.invert_control_direction
+
         # 3D Mouse (6DOF): consume the latest device snapshot. Button edges fold
         # into the shared action flags; movement/reset/speed route to the marker
         # the mouse's unified controller slot drives. Gated on the live enabled flag.
         if self.app._config.mouse3d.enabled:
             try:
                 for local_idx, m3d in self.mouse3d_manager.update(dt).items():
-                    self._apply_mouse3d(m3d, local_idx, dt, gamepad_result, slots)
+                    self._apply_mouse3d(m3d, local_idx, dt, gamepad_result, slots, invert_xy)
             except Exception:
                 self._mouse3d_update_err_log.log()
 
@@ -319,6 +332,7 @@ class InputManager:
                 marker = self._get_marker(self.app._selected_id)
                 if marker:
                     vx, vy, vz = keyboard_velocity
+                    vx, vy = _oriented(vx, vy, invert_xy)
                     x, y, z = marker.pos
                     marker.set_pos(x + vx * dt, y + vy * dt, z + vz * dt)
         except Exception:
@@ -349,8 +363,9 @@ class InputManager:
                 continue
             marker = self._get_marker(marker_id)
             if marker:
+                ovx, ovy = _oriented(vx, vy, invert_xy)
                 x, y, z = marker.pos
-                marker.set_pos(x + vx * dt, y + vy * dt, z + vz * dt)
+                marker.set_pos(x + ovx * dt, y + ovy * dt, z + vz * dt)
 
         # Apply OSC position jumps (absolute writes – full triples
         # overwrite all axes, per-axis updates merge with the marker's
@@ -387,6 +402,7 @@ class InputManager:
         dt: float,
         gamepad_result: GamepadUpdate,
         slots: list[tuple[str, int]],
+        invert_xy: bool,
     ) -> None:
         """Apply one connected 3D Mouse's frame (``local_idx`` = its device index).
 
@@ -397,7 +413,8 @@ class InputManager:
         marker this puck's unified slot drives (the selected marker when it's the
         only controller, its fixed slot otherwise); the velocity is a unit rate
         scaled here by the marker's move-speed. ``slots`` is the frame's
-        unified-controller snapshot.
+        unified-controller snapshot, and ``invert_xy`` the frame's shared
+        control-direction flag.
         """
         if self.marker_cycle_active(slots):
             if m3d.next_marker:
@@ -423,6 +440,7 @@ class InputManager:
                 self.app.adjust_move_speed(direction, marker_id=marker_id)
         vx, vy, vz = m3d.velocity
         if vx or vy or vz:
+            vx, vy = _oriented(vx, vy, invert_xy)
             speed = self.app.get_marker_move_speed(marker_id)
             x, y, z = marker.pos
             marker.set_pos(x + vx * speed * dt, y + vy * speed * dt, z + vz * speed * dt)

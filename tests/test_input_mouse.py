@@ -264,6 +264,30 @@ class TestPosition:
         assert x == pytest.approx(wx)
         assert y == pytest.approx(wy)
 
+    def test_invert_control_direction_leaves_mouse_absolute(self) -> None:
+        """Mouse control positions the marker where the cursor is, so it is
+        correct from any camera angle by construction and must NOT be flipped by
+        ``invert_control_direction`` – which only reverses relative input
+        (keyboard, gamepad, 3D mouse).
+
+        Pins the invariant the flip's docstrings and the help drawer assert, so
+        a later refactor that pushes the sign down into ``Marker.set_pos`` or a
+        shared delta helper can't silently reverse dragging with a green suite.
+        """
+        app = _DummyApp()
+        app._config.marker.invert_control_direction = True
+        handler = MouseHandler(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        tx, ty = cx + 90, cy - 30
+        handler.on_pointer_move(tx, ty)
+        handler.update()
+        wx, wy = _world_at(app, tx, ty)
+        x, y, _ = app._server.get_marker(1).pos
+        # Lands under the cursor, not mirrored through the stage origin.
+        assert x == pytest.approx(wx)
+        assert y == pytest.approx(wy)
+
     def test_smoothing_glides_partway(self) -> None:
         app = _DummyApp()
         app._config.controller.mouse_smoothing = 0.5

@@ -834,29 +834,31 @@ class TestRecvLoopOneIteration:
             selection_provider=lambda: ([], []),
         )
 
-    def test_bind_failure_returns_immediately(self) -> None:
+    def test_bind_failure_retries_then_gives_up(self, monkeypatch) -> None:
+        """An interface switch makes the address briefly unavailable, so one
+        failure must not disable sync input for the session - but a
+        permanently taken port must not spin for the life of the process."""
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_RETRY_S", 0.0)
         sync = self._sync()
         bad_sock = MagicMock()
         bad_sock.bind.side_effect = OSError("port busy")
         with patch.object(_socket, "socket", return_value=bad_sock):
             sync._recv_loop()
-        bad_sock.close.assert_called_once()
+        assert bad_sock.close.call_count == marker_sync._RX_OPEN_MAX_RETRIES
 
     def test_reuseport_attribute_error_swallowed(self) -> None:
+        """SO_REUSEPORT is absent on some platforms; its absence must not stop
+        the socket being opened."""
         sync = self._sync()
         sock = MagicMock()
-        # Make setsockopt fail with AttributeError on the SO_REUSEPORT call only.
 
         def setsockopt(level, opt, val):
             if opt == _socket.SO_REUSEPORT:
                 raise AttributeError("not available")
 
         sock.setsockopt.side_effect = setsockopt
-        # bind succeeds (default MagicMock); set stop so recv loop exits.
-        sync._stop_event.set()
         with patch.object(_socket, "socket", return_value=sock):
-            sync._recv_loop()
-        sock.close.assert_called_once()
+            assert sync._open_rx_socket() is sock
 
     def test_fallback_join_on_iface_failure(self) -> None:
         """When IP_ADD_MEMBERSHIP fails on the bound iface (e.g. iface
@@ -879,7 +881,7 @@ class TestRecvLoopOneIteration:
 
         sock.setsockopt.side_effect = setsockopt
         with patch.object(_socket, "socket", return_value=sock):
-            sync._recv_loop()
+            assert sync._open_rx_socket() is None
         # Two IP_ADD_MEMBERSHIP attempts (iface, then 0.0.0.0 fallback).
         assert len(membership_calls) == 2
         sock.close.assert_called_once()
@@ -1229,3 +1231,67 @@ def test_entry_from_dict_caps_huge_version() -> None:
     back = _entry_from_dict({"id": 1, "name": "A", "color": "#ffffff", "version": 10**30})
     assert back is not None
     assert back.version == 2**63 - 1
+
+
+class TestUpdateIfaceIp:
+    """Sync has to follow the station onto a new address.
+
+    Both sockets pin the interface at open time - TX via IP_MULTICAST_IF, RX
+    via IP_ADD_MEMBERSHIP - and an idle recv times out rather than raising, so
+    without an explicit repoint sync silently stops converging after an
+    interface switch.
+    """
+
+    def _sync(self, iface_ip: str = "192.168.1.5") -> MarkerCatalogSync:
+        return MarkerCatalogSync(
+            MarkerCatalog(),
+            station_id="station-A",
+            station_name_provider=lambda: "X",
+            selection_provider=lambda: ([], []),
+            iface_ip=iface_ip,
+        )
+
+    def test_new_address_arms_a_rebuild(self) -> None:
+        sync = self._sync()
+        sync.update_iface_ip("10.0.0.9")
+        assert sync._iface_ip == "10.0.0.9"
+        assert sync._reopen.is_set()
+
+    def test_unchanged_address_is_a_no_op(self) -> None:
+        """A steady station must not rebuild its sockets on every poll."""
+        sync = self._sync()
+        sync.update_iface_ip("192.168.1.5")
+        assert sync._reopen.is_set() is False
+
+    def test_rx_socket_joins_on_the_new_address(self) -> None:
+        sync = self._sync()
+        sync.update_iface_ip("10.0.0.9")
+        sock = MagicMock()
+        memberships: list[bytes] = []
+
+        def setsockopt(level, opt, val):
+            if opt == _socket.IP_ADD_MEMBERSHIP:
+                memberships.append(val)
+
+        sock.setsockopt.side_effect = setsockopt
+        with patch.object(_socket, "socket", return_value=sock):
+            assert sync._open_rx_socket() is sock
+        assert memberships[0].endswith(_socket.inet_aton("10.0.0.9"))
+
+    def test_send_loop_drops_its_socket_on_repoint(self) -> None:
+        """The TX socket pins IP_MULTICAST_IF, so it must be reopened rather
+        than reused after the address moves."""
+        sync = self._sync()
+        opened: list[MagicMock] = []
+
+        def _open():
+            sock = MagicMock()
+            opened.append(sock)
+            if len(opened) == 2:
+                sync._stop_event.set()
+            return sock
+
+        sync._open_tx_socket = _open  # type: ignore[method-assign]
+        sync._reopen.set()
+        sync._send_loop()
+        assert len(opened) >= 1

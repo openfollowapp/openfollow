@@ -469,6 +469,10 @@ class OpenFollowApp:
     def _animate(self) -> None:
         runtime_animate(self)
 
+    def _observe_network_planes(self) -> None:
+        """Keep each network plane on its configured interface (polled)."""
+        self._runtime_services.observe_network_planes()
+
     def _run_housekeeping(self) -> bool:
         return runtime_housekeeping(self)
 

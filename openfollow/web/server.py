@@ -511,6 +511,17 @@ class ConfigWebServer:
             self._beacon_receiver.update_iface_ip(candidate)
         logger.info("Local IP changed to %s; beacon interface repointed.", candidate)
 
+    def refresh_local_ip(self) -> None:
+        """Public entry point for the runtime network observer.
+
+        The refresh used to happen only on a request path, so a station whose
+        address changed healed its self-row and beacon interface only while
+        somebody had a browser tab open. The observer calls this on a timer
+        instead; the internal throttle still applies, so the request paths
+        calling it too costs nothing.
+        """
+        self._refresh_local_ip()
+
     def get_local_peer_info(self) -> PeerInfo:
         """Get info about this server as a PeerInfo object."""
         self._refresh_local_ip()

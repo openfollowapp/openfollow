@@ -1021,6 +1021,27 @@ class TestBottomLeftInfoPanel:
         assert spans[1][0] > spans[0][0]
         assert spans[1][1] < spans[0][1]
 
+    def test_down_plane_alerts_render_on_the_panel(self) -> None:
+        """When the interface carrying the web UI is the one that went away,
+        the HUD is the only surface the operator has left."""
+        state = _base_state(ip_text="192.168.1.2")
+        state.network_alerts = ["PSN: eth0.10 is down", "OTP output: eth0.20 is down"]
+        cr = FakeCairo()
+        draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
+        texts = cr.show_text_strings()
+        assert "Network:" in texts
+        assert "PSN: eth0.10 is down" in texts
+        assert "OTP output: eth0.20 is down" in texts
+        # Labelled once, so a multi-plane outage doesn't repeat the word.
+        assert texts.count("Network:") == 1
+
+    def test_no_network_row_when_every_plane_is_up(self) -> None:
+        state = _base_state(ip_text="192.168.1.2")
+        state.network_alerts = []
+        cr = FakeCairo()
+        draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert "Network:" not in cr.show_text_strings()
+
     def test_empty_ip_falls_back_to_unavailable(self) -> None:
         state = _base_state(ip_text="")
         cr = FakeCairo()

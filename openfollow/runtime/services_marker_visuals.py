@@ -372,6 +372,7 @@ def build_marker_visual_state(
     system_stats: Any,
     person_detector: Any,
     cam_params_buffer: npt.NDArray[Any],
+    network_alerts: list[str] | None = None,
 ) -> OverlayState:
     """Build a complete OverlayState snapshot for atomic renderer swap."""
     controlled_set = set(app._controlled_ids)
@@ -422,6 +423,8 @@ def build_marker_visual_state(
     # Carries the port for the same reason the IP row does: on a fallback bind
     # the UI is not on 80, and a name pointing at a dead port is worse than no
     # name at all.
+    state.network_alerts = list(network_alerts or ())
+
     hostname = _local_hostname()
     state.hostname_text = hostname + _port_suffix(web_port) if hostname else ""
 

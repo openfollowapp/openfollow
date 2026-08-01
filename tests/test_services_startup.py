@@ -810,3 +810,108 @@ def test_network_interfaces_provider_degrades_one_failing_row(monkeypatch) -> No
     rows = {r["name"]: r for r in services._network_interfaces_provider()}
     assert rows["eth0"]["address"] == ""
     assert rows["eth1"]["address"] == "10.0.0.9"
+
+
+# --------------------------------------------------------------------------- #
+# Network plane observer wiring
+# --------------------------------------------------------------------------- #
+
+
+def _fake_ifaces(monkeypatch, spec: dict[str, str]) -> None:
+    import socket as _socket
+    from types import SimpleNamespace
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {name: [SimpleNamespace(family=_socket.AF_INET, address=addr)] for name, addr in spec.items()},
+    )
+
+
+def test_planes_resolve_their_own_and_the_station_interface(monkeypatch) -> None:
+    """PSN is the station itself; OTP inherits it only when its own pin is blank."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+    services._app._config.psn_source_iface = "eth0"
+    services._app._config.otp_output.source_iface = "eth1"
+
+    resolved = {p.label: p.resolve() for p in services._build_network_planes()}
+    assert resolved["PSN"] == ("192.168.1.5", "iface", "eth0")
+    assert resolved["OTP output"] == ("10.0.0.9", "iface", "eth1")
+
+    services._app._config.otp_output.source_iface = ""
+    resolved = {p.label: p.resolve() for p in services._build_network_planes()}
+    assert resolved["OTP output"] == ("192.168.1.5", "station", "eth0")
+
+
+def test_a_down_plane_reports_down_not_another_interface(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "eth0"
+    services._app._config.otp_output.source_iface = "eth_gone"
+
+    resolved = {p.label: p.resolve() for p in services._build_network_planes()}
+    assert resolved["OTP output"] == ("", "down", "eth_gone")
+
+
+def test_suspending_psn_stops_both_directions(monkeypatch) -> None:
+    """Leaving the receiver joined on a dead address would keep viewer markers
+    showing stale positions."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _Stoppable:
+        def __init__(self) -> None:
+            self.stopped = 0
+
+        def stop(self) -> None:
+            self.stopped += 1
+
+    server, receiver = _Stoppable(), _Stoppable()
+    services._app._server = server
+    services._app._psn_receiver = receiver
+    psn = next(p for p in services._build_network_planes() if p.label == "PSN")
+    psn.suspend()
+    assert (server.stopped, receiver.stopped) == (1, 1)
+
+
+def test_station_followers_are_repointed_without_a_web_request(monkeypatch) -> None:
+    """These used to heal only from a request path, so a station whose address
+    changed stayed stale unless somebody had a browser tab open."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "eth0"
+
+    class _Server:
+        def __init__(self) -> None:
+            self.refreshes = 0
+
+        def refresh_local_ip(self) -> None:
+            self.refreshes += 1
+
+    class _Sync:
+        def __init__(self) -> None:
+            self.ips: list[str] = []
+
+        def update_iface_ip(self, ip: str) -> None:
+            self.ips.append(ip)
+
+    server, sync = _Server(), _Sync()
+    services._app._web_server = server
+    services._app._marker_catalog_sync = sync
+    services._follow_station_ip()
+    assert server.refreshes == 1
+    assert sync.ips == ["192.168.1.5"]
+
+
+def test_follow_station_ip_tolerates_missing_services(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._web_server = None
+    services._app._marker_catalog_sync = None
+    services._follow_station_ip()
+
+
+def test_alerts_are_empty_before_the_first_poll(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    assert services.network_alerts() == []

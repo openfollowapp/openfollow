@@ -931,6 +931,10 @@ def build_info_panel_rows(state: OverlayState, *, source_max_len: int = 38) -> l
         ("Video Source:", format_source_text(state.video_source_type, state.source_label, max_len=source_max_len))
     )
     rows.append(("Station:", state.station_name or "OpenFollow"))
+    # Labelled once; the rest are bare so a multi-plane outage doesn't repeat
+    # the word down the panel.
+    for i, alert in enumerate(state.network_alerts):
+        rows.append(("Network:" if i == 0 else "", alert))
     return rows
 
 

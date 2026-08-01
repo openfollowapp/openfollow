@@ -49,6 +49,12 @@ _SEND_ERROR_BACKOFF = HEARTBEAT_INTERVAL
 
 # Reject packets larger than 60KB to prevent receive buffer exhaustion.
 _MAX_RX_PACKET = 60 * 1024
+
+# Receive-socket open retries. An interface switch makes the address briefly
+# unavailable, so a single failure must not disable sync input for the session;
+# a permanently taken port must not spin forever either.
+_RX_OPEN_MAX_RETRIES = 5
+_RX_OPEN_RETRY_S = 1.0
 _MAX_TX_PACKET = 1400
 
 _TRANSIENT_SEND_ERRNOS: frozenset[int] = frozenset(
@@ -203,6 +209,9 @@ class MarkerCatalogSync:
         self._iface_ip = iface_ip
 
         self._stop_event = threading.Event()
+        # Set by ``update_iface_ip`` to make both loops drop and rebuild their
+        # sockets, so sync follows the station onto its new address.
+        self._reopen = threading.Event()
         self._send_thread: threading.Thread | None = None
         self._recv_thread: threading.Thread | None = None
 
@@ -218,6 +227,22 @@ class MarkerCatalogSync:
         self._peer_cap_log_ts = float("-inf")
 
     # -- Public API ----------------------------------------------------------
+
+    def update_iface_ip(self, iface_ip: str) -> None:
+        """Repoint both sockets after the station's address changed.
+
+        The TX socket pins ``IP_MULTICAST_IF`` and the RX socket joins
+        ``IP_ADD_MEMBERSHIP`` on the address they were opened with, and neither
+        notices when that address goes away – an idle recv times out rather
+        than raising, so nothing triggers a rebuild. Without this, sync stops
+        converging after an interface switch until the app restarts.
+
+        A no-op when the address is unchanged.
+        """
+        if iface_ip == self._iface_ip:
+            return
+        self._iface_ip = iface_ip
+        self._reopen.set()
 
     def start(self) -> None:
         if self._send_thread is not None:
@@ -303,6 +328,9 @@ class MarkerCatalogSync:
         sock: socket.socket | None = None
         next_heartbeat = time.monotonic()
         while not self._stop_event.is_set():
+            if self._reopen.is_set() and sock is not None:
+                sock.close()
+                sock = None
             if sock is None:
                 try:
                     sock = self._open_tx_socket()
@@ -433,7 +461,13 @@ class MarkerCatalogSync:
 
     # -- Receive path ---------------------------------------------------------
 
-    def _recv_loop(self) -> None:
+    def _open_rx_socket(self) -> socket.socket | None:
+        """Bind the catalog port and join the group on the current interface.
+
+        Returns ``None`` when the port can't be bound or the group can't be
+        joined at all; the caller retries so a transient failure during an
+        interface switch doesn't kill sync for the session.
+        """
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -445,7 +479,7 @@ class MarkerCatalogSync:
         except OSError as exc:
             logger.error("MarkerCatalogSync: bind failed: %s", exc)
             sock.close()
-            return
+            return None
 
         iface_addr = socket.inet_aton(self._iface_ip) if self._iface_ip else socket.inet_aton("0.0.0.0")
         mreq = socket.inet_aton(CATALOG_MCAST_GROUP) + iface_addr
@@ -463,19 +497,45 @@ class MarkerCatalogSync:
             except OSError as exc2:
                 logger.error("MarkerCatalogSync: fallback join failed: %s", exc2)
                 sock.close()
-                return
+                return None
         sock.settimeout(1.0)
-        try:
-            while not self._stop_event.is_set():
-                try:
-                    data, _addr = sock.recvfrom(_MAX_RX_PACKET)
-                except TimeoutError:
-                    continue
-                except OSError:
-                    continue
-                self._handle_packet(data)
-        finally:
-            sock.close()
+        return sock
+
+    def _recv_loop(self) -> None:
+        # Outer loop so a repoint rebuilds the socket: the group membership is
+        # bound to the address it was joined with, and an idle recv times out
+        # rather than raising, so nothing else would ever notice the change.
+        #
+        # A failed open is retried rather than fatal - during an interface
+        # switch the address is briefly gone - but only for a bounded run, so a
+        # permanently unavailable port logs and gives up instead of spinning
+        # for the life of the process.
+        failures = 0
+        while not self._stop_event.is_set():
+            sock = self._open_rx_socket()
+            if sock is None:
+                failures += 1
+                if failures >= _RX_OPEN_MAX_RETRIES:
+                    logger.error(
+                        "MarkerCatalogSync: receive socket unavailable after %d attempts; sync input disabled.",
+                        failures,
+                    )
+                    return
+                self._stop_event.wait(_RX_OPEN_RETRY_S)
+                continue
+            failures = 0
+            self._reopen.clear()
+            try:
+                while not self._stop_event.is_set() and not self._reopen.is_set():
+                    try:
+                        data, _addr = sock.recvfrom(_MAX_RX_PACKET)
+                    except TimeoutError:
+                        continue
+                    except OSError:
+                        continue
+                    self._handle_packet(data)
+            finally:
+                sock.close()
 
     def _handle_packet(self, data: bytes) -> None:
         decoded = _parse_beacon(data)

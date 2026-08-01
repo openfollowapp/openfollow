@@ -128,6 +128,7 @@ def _make_fake_app(
         _check_pi_network_worker=_recorder("check_pi_network_worker"),
         _check_button_detection_request=_recorder("check_button_detection_request"),
         _check_marker_speeds_persist=_recorder("check_marker_speeds_persist"),
+        _observe_network_planes=_recorder("observe_network_planes"),
         _check_video_disconnect_banner=_recorder("check_video_disconnect_banner"),
         _process_input=_recorder("process_input"),
         _refresh_iface_list=_recorder("refresh_iface_list"),
@@ -263,6 +264,7 @@ class TestHousekeeping:
             "check_pi_network_worker",
             "check_button_detection_request",
             "check_marker_speeds_persist",
+            "observe_network_planes",
         ]
 
     def test_swallows_check_exception_and_keeps_timer(self) -> None:
@@ -283,6 +285,7 @@ class TestHousekeeping:
             "check_pi_network_worker",
             "check_button_detection_request",
             "check_marker_speeds_persist",
+            "observe_network_planes",
         ]
 
 

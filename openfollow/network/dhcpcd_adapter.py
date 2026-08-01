@@ -331,6 +331,15 @@ class DhcpcdAdapter(NetworkAdapter):
 
     # ---- mutation -------------------------------------------------------
 
+    def ensure_dhcp_fallback(self, iface: str) -> ApplyResult:
+        """No-op: dhcpcd self-assigns a link-local address unless told not to.
+
+        IPv4LL is dhcpcd's own default and ``_build_block`` never writes
+        ``noipv4ll``, so the fallback this returns success for is already in
+        force – there is nothing to apply.
+        """
+        return ApplyResult(ok=True, message="dhcpcd self-assigns a link-local address when DHCP fails.")
+
     def apply_ipv4(self, iface: str, config: Ipv4Config) -> ApplyResult:
         # Defence-in-depth: re-validate at the privileged boundary so the conf
         # write and the ``dhcpcd <iface>`` argv are safe regardless of caller.

@@ -65,6 +65,14 @@ class TestPsutilAdapter:
         assert renew.ok is False
         assert "Read-only" in renew.message
 
+    def test_dhcp_fallback_reports_unsupported(self) -> None:
+        """The startup recovery path must be told why no address appeared,
+        not silently no-op on a backend that can't arm the fallback."""
+        adapter = PsutilReadOnlyAdapter()
+        res = adapter.ensure_dhcp_fallback("eth0")
+        assert res.ok is False
+        assert adapter.backend_name in res.message
+
     def test_is_writable_false(self) -> None:
         assert PsutilReadOnlyAdapter().is_writable() is False
 

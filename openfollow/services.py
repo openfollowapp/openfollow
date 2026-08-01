@@ -2127,6 +2127,64 @@ class AppRuntimeServices:
 
         return inputs.usb_camera_names()
 
+    def repair_missing_network_address(self) -> bool:
+        """Arm the DHCP fallback on interfaces that booted with no address.
+
+        The startup recovery path: reaching here means the station came up
+        without a usable address, so every subsystem is about to bind loopback
+        and stay there. Re-arming the profile lets NetworkManager self-assign a
+        link-local address, which is enough for the operator to reach the web
+        UI from the same segment and fix the real problem.
+
+        Mirrors :func:`device_repair.sync_station_hostname`: idempotent, never
+        prompts for a password, never raises, and returns ``True`` only when it
+        actually changed something. The grant has to already be passwordless –
+        a password prompt during startup would block the render loop on a
+        machine nobody is sitting at.
+        """
+        from openfollow.network.adapter import is_loopback
+        from openfollow.privilege.broker import PrivilegeError
+        from openfollow.privilege.capabilities import (
+            NETWORK_NM_CON_MOD,
+            NETWORK_NM_CON_UP,
+            CapabilityState,
+        )
+
+        adapter = getattr(self, "_network_adapter", None)
+        broker = getattr(self, "_privilege_broker", None)
+        if adapter is None or broker is None or not adapter.is_writable():
+            return False
+        if any(broker.state(cap) != CapabilityState.PASSWORDLESS for cap in (NETWORK_NM_CON_MOD, NETWORK_NM_CON_UP)):
+            logger.warning(
+                "No address at startup and the network grants are not passwordless – "
+                "cannot arm the DHCP fallback; reach the station over SSH or a DHCP-served LAN."
+            )
+            return False
+
+        pin = self._app._config.psn_source_iface
+        repaired = False
+        try:
+            candidates = [i.name for i in adapter.list_interfaces() if not is_loopback(i)]
+            if pin:
+                candidates = [name for name in candidates if name == pin]
+            for name in candidates:
+                state = adapter.get_state(name)
+                # Only interfaces that actually came up empty – an addressed
+                # interface is already doing its job, and re-upping it would
+                # drop traffic for no reason.
+                if state is not None and state.address_source != "none":
+                    continue
+                result = adapter.ensure_dhcp_fallback(name)
+                if result.ok:
+                    logger.info("Armed the DHCP fallback on %s after a startup address timeout.", name)
+                    repaired = True
+                else:
+                    logger.warning("Could not arm the DHCP fallback on %s: %s", name, result.message)
+        except (OSError, PrivilegeError):
+            logger.exception("Startup network repair failed")
+            return repaired
+        return repaired
+
     def _network_state_provider(self) -> dict[str, Any] | None:
         """Snapshot the active adapter's state for the web Overview.
 

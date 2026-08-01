@@ -37,6 +37,6 @@ Two things this does **not** change, because they already follow the picture:
 - **Mouse control** – clicking and dragging a marker positions it where the cursor is, so it is correct from any camera angle by construction.
 - **OSC** – position messages set an absolute stage coordinate rather than a direction of travel.
 
-> The gamepad's own **Invert Y** (Input → Gamepad) is a separate stick-feel preference and still applies on top of this. With both switched on they cancel out on the gamepad's Y axis, while the keyboard and 3D Mouse still flip – so use one or the other, not both.
+> The gamepad's own **Invert Stick Y** (Input → Gamepad) is a separate stick-feel preference and still applies on top of this. With both switched on they cancel out on that stick's Y axis, while the keyboard and 3D Mouse still flip – so use one or the other, not both.
 
 **Save** – write the current values to this station's configuration. Settings apply immediately but are not stored until you save.

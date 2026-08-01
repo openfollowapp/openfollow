@@ -5,7 +5,9 @@ Configure how a connected USB gamepad drives markers: stick sensitivity and resp
 ## General
 
 - **Enabled** – master toggle for gamepad input. Turn off to ignore the controller while keeping its configuration intact.
-- **Invert Y/Z Mapping** – flips the forward/back sense of the movement stick. Enable for flight-sim style, where pushing up moves the marker downstage.
+- **Invert Stick Y** – flips the forward/back sense of the movement stick, and nothing else. Enable for flight-sim style, where pushing up moves the marker downstage. Left/right and height are unaffected: height comes from the triggers, not the stick.
+
+    > This is a personal stick-feel preference, separate from **Invert control direction** under Markers & Zones → Marker Movement, which reverses *both* axes for every input device so the controls match an upstage camera's view. With both switched on they cancel out on this stick's Y axis while the keyboard and 3D Mouse still flip – use one or the other, not both.
 - **Axis Deadzone (0–1)** – the fraction of stick travel treated as zero. Default `0.15`. Raise it if the marker creeps when the stick is released; lower it for tighter response on a well-centred stick.
 - **Response Curve** – how stick deflection translates to marker velocity:
   - `Linear` – velocity scales proportionally with deflection.

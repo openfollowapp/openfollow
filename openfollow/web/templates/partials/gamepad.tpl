@@ -13,7 +13,7 @@
                 <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if config.controller.enabled else ''}}></div>
             </div>
             <div class="field checkbox-field">
-                <label>Invert Y/Z Mapping</label>
+                <label>Invert Stick Y</label>
                 <div class="checkbox-wrap"><input type="checkbox" name="invert_y" {{'checked' if config.controller.invert_y else ''}}></div>
             </div>
             <div class="field">

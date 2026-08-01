@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Override Debian version (default: read from pyproject.toml)"
+        description: "Release tag / version to build, e.g. v0.4.1 (default: read from pyproject.toml)"
         required: false
         type: string
 
@@ -126,8 +126,12 @@ jobs:
         if: github.event_name == 'release' || github.event.inputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name || github.event.inputs.version }}
-        run: gh release upload "$TAG" dist/openfollow_*_${{ matrix.arch }}.ofupdate dist/openfollow_*_${{ matrix.arch }}.deb --clobber --repo "$GITHUB_REPOSITORY"
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        # Dispatch input may omit the 'v'; a release event's tag is used verbatim.
+        run: |
+          TAG="${RELEASE_TAG:-v${INPUT_VERSION#v}}"
+          gh release upload "$TAG" dist/openfollow_*_${{ matrix.arch }}.ofupdate dist/openfollow_*_${{ matrix.arch }}.deb --clobber --repo "$GITHUB_REPOSITORY"
 
   # Build the flashable Raspberry Pi OS Lite (Trixie, arm64) appliance images, with
   # the arm64 .deb from the build job pre-installed, using rpi-image-gen (cloned at a
@@ -251,12 +255,18 @@ jobs:
         if: github.event_name == 'release' || github.event.inputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name || github.event.inputs.version }}
-        run: gh release upload "$TAG" "${{ steps.img.outputs.path }}" --clobber
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          TAG="${RELEASE_TAG:-v${INPUT_VERSION#v}}"
+          gh release upload "$TAG" "${{ steps.img.outputs.path }}" --clobber
 
       - name: Attach SBOM to GitHub Release
         if: github.event_name == 'release' || github.event.inputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name || github.event.inputs.version }}
-        run: gh release upload "$TAG" "${{ steps.sbom.outputs.path }}" --clobber
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          TAG="${RELEASE_TAG:-v${INPUT_VERSION#v}}"
+          gh release upload "$TAG" "${{ steps.sbom.outputs.path }}" --clobber

@@ -87,6 +87,7 @@ def housekeeping(app: OpenFollowApp) -> bool:
         app._check_pi_network_worker,
         app._check_button_detection_request,
         app._check_marker_speeds_persist,
+        app._observe_network_planes,
     ):
         try:
             check()

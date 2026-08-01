@@ -1314,3 +1314,17 @@ def test_pinned_bind_gets_a_loopback_listener(tmp_path, monkeypatch) -> None:
     assert srv._needs_loopback_listener() is True
     for host in ("127.0.0.1", "::1", "0.0.0.0", ""):
         assert _make_quiet_server(tmp_path, monkeypatch, host=host)._needs_loopback_listener() is False
+
+
+def test_refresh_local_ip_is_publicly_callable(tmp_path, monkeypatch) -> None:
+    """The runtime observer drives the refresh on a timer. It used to happen
+    only on a request path, so a station whose address changed healed its
+    self-row and beacon interface only while a browser tab was open."""
+    monkeypatch.setattr(
+        "openfollow.web.server.get_local_ipv4_addresses",
+        lambda: {"10.0.0.55"},
+    )
+    srv = _make_quiet_server(tmp_path, monkeypatch, local_ip="10.0.0.55")
+    srv._local_ip_provider = lambda: "10.0.0.77"
+    srv.refresh_local_ip()
+    assert srv.local_ip == "10.0.0.77"

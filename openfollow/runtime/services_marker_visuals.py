@@ -13,6 +13,7 @@ import numpy.typing as npt
 
 from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, GridConfig
 from openfollow.net_utils import list_iface_ipv4
+from openfollow.network.validate import is_link_local
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
 from openfollow.runtime.overlay_state import (
     MarkerOverlayData,
@@ -23,6 +24,23 @@ from openfollow.runtime.overlay_state import (
 from openfollow.runtime.services_detection_pin import is_assist_controlled
 from openfollow.runtime_metrics import OverlayStatePool
 from openfollow.units import UnitSystem
+
+
+def _local_hostname() -> str:
+    """Return ``<hostname>.local``, or ``""`` when the host has no usable name.
+
+    Always the running system's actual hostname, never the station slug the
+    config asks for: when the rename was skipped (no passwordless grant, no
+    ``hostnamectl``) advertising the desired name would send the operator to
+    an address avahi never answers on.
+    """
+    from openfollow.privilege.device_repair import current_hostname
+
+    name = current_hostname()
+    if not name or name == "localhost":
+        return ""
+    return f"{name}.local"
+
 
 # Same pattern ``GridConfig.__post_init__`` enforces. Duplicated here rather
 # than imported from configuration.py so this module doesn't reach into the
@@ -412,6 +430,9 @@ def build_marker_visual_state(
             state.ip_text = f"{base} ({stats.iface_name})" if stats.iface_name else base
         else:
             state.ip_text = ip
+        state.ip_is_fallback = is_link_local(ip)
+
+    state.hostname_text = _local_hostname()
 
     # The station name is the operator-set ``psn_system_name`` (the
     # same value the discovery beacon and PSN info packets advertise).

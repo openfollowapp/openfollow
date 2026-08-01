@@ -14,7 +14,17 @@ from pathlib import Path
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_CONFTEST = Path(__file__).resolve().with_name("conftest.py")
+
+# Load conftest.py by *path*, never as the module ``tests.conftest``. This
+# repo's ``tests/`` has no ``__init__.py``, so it is only a PEP 420 namespace
+# portion – and a regular package anywhere on ``sys.path`` beats a namespace
+# portion outright, whatever the path order. ``ultralytics`` (this project's own
+# ``export`` extra) installs a top-level ``tests`` package with its own
+# ``conftest.py``, so importing by name silently loads *that* file in any
+# environment where the extra is present, and this guard passes while testing
+# nothing.
+_LOAD_CONFTEST = f"import runpy; runpy.run_path({str(_CONFTEST)!r})"
 
 pytestmark = pytest.mark.unit
 
@@ -70,10 +80,16 @@ def test_conftest_applies_the_opencv_cap() -> None:
     substitute either – under the GCD parallel framework macOS builds use, it
     keeps reporting the core count after a successful cap.
 
-    ``sys.path`` is seeded with the repo root explicitly so the probe doesn't
-    depend on the working directory pytest was launched from.
+    The comparison is against a live uncapped probe rather than a fixed
+    threshold: on a small-core runner the pool barely fans out, so ``capped <=
+    2`` would hold even with the cap deleted and the guard would report green on
+    a real regression. When the uncapped pool is too small to measure at all,
+    skip rather than assert on noise.
     """
-    capped = _probe_threads(
-        cap=f"import sys; sys.path.insert(0, {str(_REPO_ROOT)!r}); import tests.conftest  # noqa: F401",
+    uncapped = _probe_threads(cap="")
+    if uncapped < 3:
+        pytest.skip(f"OpenCV pool too small to measure (uncapped process held {uncapped} threads)")
+    capped = _probe_threads(cap=_LOAD_CONFTEST)
+    assert capped < uncapped, (
+        f"conftest.py left {capped} threads vs {uncapped} uncapped - the OpenCV cap is not being applied"
     )
-    assert capped <= 2, f"conftest.py left {capped} threads - the OpenCV cap is not being applied"

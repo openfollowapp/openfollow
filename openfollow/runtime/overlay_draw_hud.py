@@ -28,14 +28,17 @@ from openfollow.runtime.overlay_draw_style import (
     speed_color,
 )
 from openfollow.runtime.overlay_layout import (
+    INFO_PANEL_ROW_H,
     HelpSections,
     bottom_left_info_panel_layout,
     build_help_sections,
     build_system_stats_text,
     centered_panel_layout,
+    fader_stack_bottom_padding,
     format_source_text,
     friendly_button_label,
     help_sections_height,
+    info_panel_height,
     key_label,
     marker_card_y,
     selectable_list_layout,
@@ -932,10 +935,10 @@ def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: 
     label_size = 9.5
     value_size = 10.8
     side_padding = 12.0
-    row_h = 20.0
-    # Rows of 20 px + 14 px top/bottom padding. Derived, not fixed: the
-    # hostname row is absent on a host with no usable name.
-    panel_h = row_h * len(rows) + 14.0
+    row_h = INFO_PANEL_ROW_H
+    # Derived, not fixed: the hostname row is absent on a host with no usable
+    # name, and the fader stack above reserves this same height.
+    panel_h = info_panel_height(len(rows))
 
     # Memoize layout + truncated values so unchanged panel skips measurement.
     cache_key = (tuple(rows), w, h)
@@ -1190,12 +1193,16 @@ def draw_virtual_faders(
     card_m = 6.0
     # Left edge aligned with info panel for shared left margin.
     card_x = 10.0
+    # The info panel below grows with its row count, so reserve its real
+    # height rather than a fixed one.
+    bottom_padding = fader_stack_bottom_padding(len(build_info_panel_rows(state)))
     for i, vf in enumerate(state.virtual_faders_display):
         card_y = virtual_fader_card_y(
             i,
             h,
             card_h=card_h,
             card_margin=card_m,
+            bottom_padding=bottom_padding,
         )
         draw_virtual_fader_card(
             renderer,

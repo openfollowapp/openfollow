@@ -1277,62 +1277,39 @@ class TestGetNetworkInterfaces:
 # ---------------------------------------------------------------------------
 
 
-def test_web_bind_defaults_to_every_interface() -> None:
-    """Restricting the web UI is opt-in – the default must accept on every
-    interface so an address appearing later is immediately reachable."""
-    import inspect
+def test_wildcard_bind_accepts_on_every_interface(monkeypatch) -> None:
+    """The bind must reach the socket layer as INADDR_ANY. A station whose
+    address only appears after the DHCP fallback kicks in is reachable the
+    moment it does, with no restart - but only if the listener took the
+    wildcard rather than an address resolved at startup."""
+    from openfollow.web import server as server_mod
 
-    from openfollow.web.server import ConfigWebServer as _Srv
+    created: list[_FakeSocket] = []
 
-    assert inspect.signature(_Srv.__init__).parameters["host"].default == "0.0.0.0"
+    def _factory(*_a, **_kw) -> _FakeSocket:
+        sock = _FakeSocket()
+        created.append(sock)
+        return sock
 
-
-def test_resolve_web_bind_returns_wildcard_without_an_explicit_address(monkeypatch) -> None:
-    import openfollow.services as services_module
-    from openfollow.configuration import AppConfig
-
-    class _App:
-        _config = AppConfig(web_bind="")
-
-    services = services_module.AppRuntimeServices.__new__(services_module.AppRuntimeServices)
-    services._app = _App()
-    assert services._resolve_web_bind() == "0.0.0.0"
+    monkeypatch.setattr(server_mod.socket, "socket", _factory)
+    assert ConfigWebServer._can_bind("0.0.0.0", 12345) is True
+    assert created[-1].binds == [("", 12345)]
 
 
-def test_start_succeeds_with_no_non_loopback_addresses(tmp_path, monkeypatch) -> None:
-    """A station whose DHCP never answered has no routable address at startup.
-    The listener still has to come up, so the UI is live the moment the
-    link-local fallback assigns one - no restart."""
-    monkeypatch.setattr(
-        "openfollow.web.server.get_local_ipv4_addresses",
-        lambda: [],
-    )
-    monkeypatch.setattr(
-        "openfollow.web.server.get_primary_local_ipv4",
-        lambda default="127.0.0.1": default,
-    )
-    srv = _make_quiet_server(tmp_path, monkeypatch, host="0.0.0.0")
-    monkeypatch.setattr(srv, "_can_bind", lambda h, p: True)
-    monkeypatch.setattr(srv._beacon_sender, "start", lambda: None)
-    monkeypatch.setattr(srv._beacon_receiver, "start", lambda: None)
-
-    class _Server:
-        def serve_forever(self) -> None:
-            return None
-
-        def shutdown(self) -> None:
-            return None
-
-    monkeypatch.setattr(srv, "_run", lambda host, port, slot: None)
-    srv.start()
-    try:
-        assert srv._thread is not None
-    finally:
-        srv.stop()
-
-
-def test_wildcard_bind_needs_no_separate_loopback_listener(tmp_path, monkeypatch) -> None:
-    """0.0.0.0 already covers 127.0.0.1 – a second listener would be a wasted
-    socket and a second port to explain."""
+def test_default_host_is_the_wildcard(tmp_path, monkeypatch) -> None:
+    """Restricting the web UI is opt-in. Asserted on a constructed server so
+    a change to how the default is applied is caught, not just its literal."""
     srv = _make_quiet_server(tmp_path, monkeypatch, host="0.0.0.0")
     assert srv._needs_loopback_listener() is False
+    bare = ConfigWebServer(config_path=str(tmp_path / "c.toml"), port=1, system_name="x")
+    assert bare._host == "0.0.0.0"
+
+
+def test_pinned_bind_gets_a_loopback_listener(tmp_path, monkeypatch) -> None:
+    """A pinned non-loopback bind still has to serve the on-screen browser,
+    so the loopback slot is what keeps the device usable while the UI is
+    restricted to one interface."""
+    srv = _make_quiet_server(tmp_path, monkeypatch, host="192.168.1.5")
+    assert srv._needs_loopback_listener() is True
+    for host in ("127.0.0.1", "::1", "0.0.0.0", ""):
+        assert _make_quiet_server(tmp_path, monkeypatch, host=host)._needs_loopback_listener() is False

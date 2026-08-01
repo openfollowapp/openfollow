@@ -182,6 +182,20 @@
         enabled: true
         state: started
 
+    # The HUD tells the operator to browse to <hostname>.local, which is the
+    # only recovery route that survives an address change. Without a responder
+    # that name resolves nowhere and the advice is worse than none.
+    - name: Install the mDNS responder that answers <hostname>.local
+      ansible.builtin.apt:
+        name: avahi-daemon
+        state: present
+
+    - name: Ensure avahi-daemon is enabled and running
+      ansible.builtin.systemd:
+        name: avahi-daemon
+        enabled: true
+        state: started
+
     - name: Ensure SSH include directory exists
       ansible.builtin.file:
         path: /etc/ssh/sshd_config.d

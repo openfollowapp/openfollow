@@ -108,6 +108,12 @@
       ansible.builtin.systemd:
         daemon_reload: true
 
+    - name: reload networkmanager
+      # NetworkManager parses conf.d only at startup, so a drop-in written to an
+      # already-running Pi is inert until it re-reads.
+      ansible.builtin.command: nmcli general reload
+      changed_when: true
+
     - name: reload udev
       # Apply the 3D Mouse hidraw rule and re-trigger so an already-connected
       # device gets plugdev access without a replug.
@@ -425,8 +431,10 @@
         content: |
           [connection]
           ipv4.may-fail=true
-          ipv4.dhcp-timeout=20
+          ipv4.dhcp-timeout=45
           ipv4.link-local=4
+      notify:
+        - reload networkmanager
 
     - name: Mask getty on tty1
       ansible.builtin.systemd:

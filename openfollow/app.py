@@ -376,15 +376,6 @@ class OpenFollowApp:
                 "networking is available.",
                 resolved_ip,
             )
-            # Arm the link-local fallback so the operator gets an address to
-            # reach the web UI on. Runs after the wait, not instead of it: a
-            # slow DHCP server should still win.
-            if svc.repair_missing_network_address():
-                resolved_ip = wait_for_source_ip(
-                    iface=self._config.psn_source_iface,
-                    timeout_s=10.0,
-                )
-                logger.info("Network repaired at startup – local IP %s", resolved_ip)
         else:
             logger.info("Network ready for startup – local IP %s", resolved_ip)
 

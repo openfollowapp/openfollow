@@ -184,122 +184,6 @@ class TestApplyIpv4:
         assert "No NetworkManager" in result.message
 
 
-class TestDhcpFallback:
-    """A DHCP profile must end up with an address even when no server answers."""
-
-    def _prime_connection(self, responses, name="Wired connection 1", device="eth0"):
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout=f"{name}:{device}\n",
-        )
-
-    def _prime_method(self, responses, name="Wired connection 1", method="auto"):
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "ipv4.method,ipv4.addresses", "connection", "show", name],
-            stdout=f"ipv4.method:{method}\n",
-        )
-
-    def test_dhcp_bounds_the_wait_and_allows_failure(self, adapter) -> None:
-        a, captured, responses = adapter
-        self._prime_connection(responses)
-        a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
-        modify = next(c for c in captured if c[:3] == ["nmcli", "connection", "modify"])
-        assert modify[modify.index("ipv4.may-fail") + 1] == "yes"
-        timeout = modify[modify.index("ipv4.dhcp-timeout") + 1]
-        assert timeout.isdigit() and 0 < int(timeout) <= 60
-
-    def test_dhcp_sets_link_local_to_fallback_in_its_own_call(self, adapter) -> None:
-        """``fallback``, not ``enabled`` – a healthy LAN must gain no second address."""
-        a, captured, responses = adapter
-        self._prime_connection(responses)
-        a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
-        modifies = [c for c in captured if c[:3] == ["nmcli", "connection", "modify"]]
-        link_local = [c for c in modifies if "ipv4.link-local" in c]
-        assert len(link_local) == 1
-        assert link_local[0][link_local[0].index("ipv4.link-local") + 1] == "fallback"
-        assert link_local[0] is not modifies[0]
-
-    @pytest.mark.parametrize(
-        "method,config",
-        [
-            (Ipv4Method.STATIC, {"address": "192.168.1.50", "prefix": 24}),
-            (Ipv4Method.DHCP_WITH_MANUAL_ADDRESS, {"address": "10.0.0.5", "prefix": 24}),
-        ],
-    )
-    def test_addressed_methods_get_no_fallback(self, adapter, method, config) -> None:
-        """Both render as a manual NM profile, so they always carry an address."""
-        a, captured, responses = adapter
-        self._prime_connection(responses)
-        a.apply_ipv4("eth0", Ipv4Config(method=method, **config))
-        assert not [c for c in captured if "ipv4.link-local" in c]
-        assert not [c for c in captured if "ipv4.dhcp-timeout" in c]
-
-    def test_link_local_failure_does_not_fail_the_apply(self, adapter) -> None:
-        """An older NetworkManager lacking the property must not lose the addressing."""
-        a, captured, responses = adapter
-        self._prime_connection(responses)
-        a._broker.exceptions = [None, make_failure("unknown property ipv4.link-local")]
-        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
-        assert result.ok is True
-        assert any("ipv4.link-local" in p for p in result.partial_failures)
-        assert [c for c in captured if c[:3] == ["nmcli", "connection", "up"]]
-
-    def test_ensure_dhcp_fallback_rearms_and_reactivates(self, adapter) -> None:
-        a, captured, responses = adapter
-        self._prime_connection(responses)
-        self._prime_method(responses)
-        result = a.ensure_dhcp_fallback("eth0")
-        assert result.ok is True
-        modifies = [c for c in captured if c[:3] == ["nmcli", "connection", "modify"]]
-        assert any("ipv4.dhcp-timeout" in c for c in modifies)
-        assert any("ipv4.link-local" in c for c in modifies)
-        # Addressing is untouched: re-arming must not rewrite method or address.
-        assert not [c for c in modifies if "ipv4.addresses" in c]
-        assert [c for c in captured if c[:3] == ["nmcli", "connection", "up"]]
-
-    def test_ensure_dhcp_fallback_leaves_a_static_profile_alone(self, adapter) -> None:
-        a, captured, responses = adapter
-        self._prime_connection(responses)
-        self._prime_method(responses, method="manual")
-        result = a.ensure_dhcp_fallback("eth0")
-        assert result.ok is False
-        assert "not configured for DHCP" in result.message
-        assert not [c for c in captured if c[:3] == ["nmcli", "connection", "modify"]]
-
-    def test_ensure_dhcp_fallback_propagates_a_modify_failure(self, adapter) -> None:
-        """The caller re-runs the network wait only when something changed –
-        a failed re-arm must not report success."""
-        a, captured, responses = adapter
-        self._prime_connection(responses)
-        self._prime_method(responses)
-        a._broker.exceptions = [make_failure("read-only profile")]
-        result = a.ensure_dhcp_fallback("eth0")
-        assert result.ok is False
-        assert "read-only profile" in result.message
-        # Short-circuits: no point re-activating a profile that wasn't modified.
-        assert not [c for c in captured if c[:3] == ["nmcli", "connection", "up"]]
-
-    def test_ensure_dhcp_fallback_propagates_an_activation_failure(self, adapter) -> None:
-        """Properties set but the interface never came up – no address yet."""
-        a, _captured, responses = adapter
-        self._prime_connection(responses)
-        self._prime_method(responses)
-        a._broker.exceptions = [None, None, make_failure("device not ready")]
-        result = a.ensure_dhcp_fallback("eth0")
-        assert result.ok is False
-        assert "device not ready" in result.message
-
-    def test_ensure_dhcp_fallback_without_a_profile_reports_failure(self, adapter) -> None:
-        a, _captured, responses = adapter
-        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"], stdout="")
-        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
-        result = a.ensure_dhcp_fallback("eth0")
-        assert result.ok is False
-        assert "No NetworkManager" in result.message
-
-
 class TestRenewLease:
     def test_renew_does_down_then_up(self, adapter) -> None:
         a, captured, responses = adapter
@@ -749,12 +633,11 @@ class TestApplyVariants:
             ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
             stdout="Wired:eth0\n",
         )
-        # Apply: 1) mod (ok), 2) link-local (ok), 3) down (ok), 4) up (fail)
-        # – apply is the gate, so this surfaces as ``ok=False`` not a
-        # partial. Asserts the message preserves the broker stderr.
+        # Apply: 1) mod (ok), 2) down (ok), 3) up (fail) – apply is the
+        # gate, so this surfaces as ``ok=False`` not a partial. Asserts
+        # the message preserves the broker stderr.
         a._broker.responses = [
             subprocess.CompletedProcess(["sudo"], 0, "", ""),  # mod
-            subprocess.CompletedProcess(["sudo"], 0, "", ""),  # link-local
             subprocess.CompletedProcess(["sudo"], 0, "", ""),  # down
             subprocess.CompletedProcess(["sudo"], 1, "", "up failed"),  # up
         ]
@@ -973,11 +856,10 @@ class TestApplyConnectionVerbFailures:
             ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
             stdout="Wired:eth0\n",
         )
-        # Apply: 1) mod (ok), 2) link-local (ok), 3) down (fail; downgraded
-        # to warning), 4) up (fail; gate).
+        # Apply: 1) mod (ok), 2) down (fail; downgraded to warning),
+        # 3) up (fail; gate).
         a._broker.responses = [
             subprocess.CompletedProcess(["sudo"], 0, "", ""),  # mod
-            subprocess.CompletedProcess(["sudo"], 0, "", ""),  # link-local
             subprocess.CompletedProcess(["sudo"], 1, "", "down was already down"),  # down
             subprocess.CompletedProcess(["sudo"], 1, "", "up failed"),  # up
         ]

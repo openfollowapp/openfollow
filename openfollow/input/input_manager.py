@@ -29,18 +29,11 @@ logger = logging.getLogger(__name__)
 
 
 def _oriented(vx: float, vy: float, invert: bool) -> tuple[float, float]:
-    """Flip X/Y when the operator's view is rotated 180° from the stage axes.
+    """Flip X/Y for an upstage camera, whose view is 180° from the stage axes.
 
-    Marker input is driven in PSN stage axes, so a camera placed upstage
-    looking downstage sees the marker travel opposite to the stick. Inverting
-    both axes together is exactly that 180° case; a single-axis flip would be a
-    mirror, which matches no real camera placement.
-
-    Z is never touched – height reads the same from any camera position.
-
-    Applies only to *relative* input (keyboard, gamepad, 3D mouse). The 2D
-    mouse unprojects the cursor onto the stage plane and OSC writes absolute
-    positions, so both already follow the picture and must not be flipped.
+    Relative input only. The 2D mouse (cursor unprojection) and OSC are
+    absolute, so they already follow the picture and must not be flipped. Z is
+    never touched.
     """
     return (-vx, -vy) if invert else (vx, vy)
 
@@ -289,10 +282,7 @@ class InputManager:
             gamepad_result.next_marker_pressed = False
             gamepad_result.prev_marker_pressed = False
 
-        # Read once per frame and share with every relative-input device below,
-        # so they can't diverge on how the flag is resolved. Read live (not
-        # cached at construction) so toggling it applies without a restart,
-        # like the ``mouse_enabled`` gate.
+        # Read live (applies without a restart) and shared, so the three devices agree.
         invert_xy = self.app._config.marker.invert_control_direction
 
         # 3D Mouse (6DOF): consume the latest device snapshot. Button edges fold
@@ -424,8 +414,7 @@ class InputManager:
         only controller, its fixed slot otherwise); the velocity is a unit rate
         scaled here by the marker's move-speed. ``slots`` is the frame's
         unified-controller snapshot, and ``invert_xy`` the frame's shared
-        control-direction flag – passed in rather than re-read so every
-        relative-input device resolves it identically.
+        control-direction flag.
         """
         if self.marker_cycle_active(slots):
             if m3d.next_marker:

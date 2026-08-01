@@ -4851,12 +4851,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def update_movement() -> Any:
         """Update movement speed settings.
 
-        ``invert_control_direction`` lives on ``MarkerConfig``, which the
-        ``marker`` (visuals) section also writes. Only this route declares it as
-        a bool field: an unchecked box isn't posted at all, so the section that
-        owns the control must coerce the absence to ``False`` (or it could never
-        be turned off), while the section that doesn't render it must leave the
-        stored value alone.
+        Only this route lists ``invert_control_direction`` in ``bool_fields``:
+        it renders the checkbox, and an unchecked box isn't posted. The
+        ``marker`` section shares ``MarkerConfig`` but must leave it alone.
         """
         cfg = _save_section_from_form(
             "movement",

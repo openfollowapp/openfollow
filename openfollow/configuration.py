@@ -468,10 +468,7 @@ class MarkerConfig:
     default_pos_x: float = 0.0
     default_pos_y: float = 0.0
     default_pos_z: float = 1.6
-    # Flip X and Y for relative marker input (keyboard, gamepad, 3D mouse).
-    # A camera placed upstage looking downstage reverses both axes on screen,
-    # so without this the marker travels opposite to the stick. Named for the
-    # effect, not the camera: a full camera-POV input conversion supersedes it.
+    # Relative input only (keyboard, gamepad, 3D mouse); for an upstage camera.
     invert_control_direction: bool = False
     ball_visible: bool = True
     ball_size: float = 0.15

@@ -268,6 +268,29 @@ class TestDhcpFallback:
         assert "not configured for DHCP" in result.message
         assert not [c for c in captured if c[:3] == ["nmcli", "connection", "modify"]]
 
+    def test_ensure_dhcp_fallback_propagates_a_modify_failure(self, adapter) -> None:
+        """The caller re-runs the network wait only when something changed –
+        a failed re-arm must not report success."""
+        a, captured, responses = adapter
+        self._prime_connection(responses)
+        self._prime_method(responses)
+        a._broker.exceptions = [make_failure("read-only profile")]
+        result = a.ensure_dhcp_fallback("eth0")
+        assert result.ok is False
+        assert "read-only profile" in result.message
+        # Short-circuits: no point re-activating a profile that wasn't modified.
+        assert not [c for c in captured if c[:3] == ["nmcli", "connection", "up"]]
+
+    def test_ensure_dhcp_fallback_propagates_an_activation_failure(self, adapter) -> None:
+        """Properties set but the interface never came up – no address yet."""
+        a, _captured, responses = adapter
+        self._prime_connection(responses)
+        self._prime_method(responses)
+        a._broker.exceptions = [None, None, make_failure("device not ready")]
+        result = a.ensure_dhcp_fallback("eth0")
+        assert result.ok is False
+        assert "device not ready" in result.message
+
     def test_ensure_dhcp_fallback_without_a_profile_reports_failure(self, adapter) -> None:
         a, _captured, responses = adapter
         _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"], stdout="")

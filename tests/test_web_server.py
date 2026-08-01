@@ -5027,6 +5027,44 @@ def test_update_marker_post_persists_visual_booleans(live_server) -> None:
     assert saved.marker.ground_circle is False
 
 
+def test_marker_save_preserves_invert_control_direction(live_server) -> None:
+    """``invert_control_direction`` lives on MarkerConfig but is rendered by the
+    *movement* section, so the marker (visuals) form never posts it. It must not
+    appear in this route's bool fields, or saving a visual toggle would silently
+    reverse the operator's controls."""
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.marker.invert_control_direction = True
+    save_config(cfg, server.config_path)
+
+    status, _ = _post_form(base, "/section/marker", {"ball_visible": "on"})
+    assert status == 200
+    assert load_config(server.config_path).marker.invert_control_direction is True
+
+
+def test_movement_save_can_turn_invert_control_direction_on_and_off(live_server) -> None:
+    """An unchecked checkbox isn't posted at all, so the owning section has to
+    declare it as a bool field – otherwise it could be switched on but never
+    off, stranding the operator with reversed controls."""
+    server, base = live_server
+
+    status, _ = _post_form(
+        base,
+        "/section/movement",
+        {"min_speed": "0.2", "move_speed": "1.5", "max_speed": "4.0", "invert_control_direction": "on"},
+    )
+    assert status == 200
+    assert load_config(server.config_path).marker.invert_control_direction is True
+
+    status, _ = _post_form(
+        base,
+        "/section/movement",
+        {"min_speed": "0.2", "move_speed": "1.5", "max_speed": "4.0"},
+    )
+    assert status == 200
+    assert load_config(server.config_path).marker.invert_control_direction is False
+
+
 def test_api_video_snapshot_returns_jpeg_when_provider_yields_bytes(
     tmp_path,
     monkeypatch,

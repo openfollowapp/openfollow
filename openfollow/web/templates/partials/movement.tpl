@@ -84,6 +84,17 @@
         </div>
     </div>
 
+    <div class="group">
+        <h3 class="group-title">Control direction</h3>
+        <div class="row">
+            <div class="field checkbox-field wide">
+                <label>Invert control direction</label>
+                <div class="checkbox-wrap"><input type="checkbox" name="invert_control_direction" {{'checked' if config.marker.invert_control_direction else ''}}></div>
+                <span class="field-note">For a camera looking from upstage.</span>
+            </div>
+        </div>
+    </div>
+
     <div class="actions">
         <button type="submit" class="save-btn">Save</button>
     </div>

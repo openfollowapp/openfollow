@@ -468,6 +468,11 @@ class MarkerConfig:
     default_pos_x: float = 0.0
     default_pos_y: float = 0.0
     default_pos_z: float = 1.6
+    # Flip X and Y for relative marker input (keyboard, gamepad, 3D mouse).
+    # A camera placed upstage looking downstage reverses both axes on screen,
+    # so without this the marker travels opposite to the stick. Named for the
+    # effect, not the camera: a full camera-POV input conversion supersedes it.
+    invert_control_direction: bool = False
     ball_visible: bool = True
     ball_size: float = 0.15
     transparency: float = 0.3
@@ -493,6 +498,7 @@ class MarkerConfig:
         self.default_pos_x = _coerce_float(self.default_pos_x, 0.0)
         self.default_pos_y = _coerce_float(self.default_pos_y, 0.0)
         self.default_pos_z = _coerce_float(self.default_pos_z, 1.6)
+        self.invert_control_direction = _coerce_bool(self.invert_control_direction, False)
         self.ball_visible = _coerce_bool(self.ball_visible, True)
         self.crosshair_visible = _coerce_bool(self.crosshair_visible, True)
         self.drop_line = _coerce_bool(self.drop_line, True)

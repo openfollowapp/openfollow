@@ -28,6 +28,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _oriented(vx: float, vy: float, invert: bool) -> tuple[float, float]:
+    """Flip X/Y when the operator's view is rotated 180° from the stage axes.
+
+    Marker input is driven in PSN stage axes, so a camera placed upstage
+    looking downstage sees the marker travel opposite to the stick. Inverting
+    both axes together is exactly that 180° case; a single-axis flip would be a
+    mirror, which matches no real camera placement.
+
+    Z is never touched – height reads the same from any camera position.
+
+    Applies only to *relative* input (keyboard, gamepad, 3D mouse). The 2D
+    mouse unprojects the cursor onto the stage plane and OSC writes absolute
+    positions, so both already follow the picture and must not be flipped.
+    """
+    return (-vx, -vy) if invert else (vx, vy)
+
+
 class InputManager:
     """Coordinates input from keyboard, gamepads, and OSC.
 
@@ -308,6 +325,11 @@ class InputManager:
         if not self.app._controlled_ids:
             return gamepad_result
 
+        # Read live so toggling it applies without a restart, like the
+        # ``mouse_enabled`` gate above. Shared by all three relative-input
+        # devices below.
+        invert_xy = self.app._config.marker.invert_control_direction
+
         # Get keyboard velocity for selected marker
         try:
             keyboard_velocity = self.keyboard_handler.update(dt)
@@ -319,6 +341,7 @@ class InputManager:
                 marker = self._get_marker(self.app._selected_id)
                 if marker:
                     vx, vy, vz = keyboard_velocity
+                    vx, vy = _oriented(vx, vy, invert_xy)
                     x, y, z = marker.pos
                     marker.set_pos(x + vx * dt, y + vy * dt, z + vz * dt)
         except Exception:
@@ -349,8 +372,9 @@ class InputManager:
                 continue
             marker = self._get_marker(marker_id)
             if marker:
+                ovx, ovy = _oriented(vx, vy, invert_xy)
                 x, y, z = marker.pos
-                marker.set_pos(x + vx * dt, y + vy * dt, z + vz * dt)
+                marker.set_pos(x + ovx * dt, y + ovy * dt, z + vz * dt)
 
         # Apply OSC position jumps (absolute writes – full triples
         # overwrite all axes, per-axis updates merge with the marker's
@@ -423,6 +447,7 @@ class InputManager:
                 self.app.adjust_move_speed(direction, marker_id=marker_id)
         vx, vy, vz = m3d.velocity
         if vx or vy or vz:
+            vx, vy = _oriented(vx, vy, self.app._config.marker.invert_control_direction)
             speed = self.app.get_marker_move_speed(marker_id)
             x, y, z = marker.pos
             marker.set_pos(x + vx * speed * dt, y + vy * speed * dt, z + vz * speed * dt)

@@ -854,20 +854,39 @@ class AppRuntimeServices:
         overlay.state = state
 
     def _resolved_source_ip(self) -> str:
-        """Return the concrete IP to bind PSN/marker-sync sockets to.
+        """Return the concrete IP to bind the station's own sockets to.
 
-        Central resolution point for the iface-pin model. Resolves the
-        active ``psn_source_iface`` with fallback enabled so a stale pin
-        never disables PSN: when the pinned interface isn't live, the
-        auto-detected primary wins and the app keeps running.
-        ``init_psn`` / ``init_psn_receiver`` / the marker-catalog sync
-        all route through here so they agree on the same validated IP.
+        Central resolution point for the iface-pin model: ``init_psn`` /
+        ``init_psn_receiver`` / the marker-catalog sync all route through here
+        so they agree on the same validated address.
+
+        Fail-closed, like every per-plane pin. A configured station interface
+        with no address returns ``""``, which callers must read as "do not
+        start" rather than passing on - every downstream socket treats an empty
+        source as *auto-detect* and would put this station's identity on
+        whatever interface happens to be up. Use :meth:`station_source_ip_or_none`
+        when the distinction matters.
         """
-        from openfollow.net_utils import resolve_source_ip
+        return self.station_source_ip_or_none() or ""
 
-        resolved, _status = resolve_source_ip(
-            self._app._config.psn_source_iface,
-        )
+    def station_source_ip_or_none(self) -> str | None:
+        """Station bind address, or ``None`` when its interface has no address.
+
+        ``None`` and ``""`` are different: ``""`` means nothing is configured
+        and auto-detect found nothing, while ``None`` means the operator chose
+        an interface that is currently down - which must stop the plane, not
+        move it.
+        """
+        from openfollow.net_utils import resolve_plane_source_ip
+
+        resolved, status = resolve_plane_source_ip("", self._app._config.psn_source_iface)
+        if status == "down":
+            logger.error(
+                "Configured psn_source_iface '%s' has no address; PSN stays down until it "
+                "returns (it will not be sent on another interface).",
+                self._app._config.psn_source_iface,
+            )
+            return None
         return resolved
 
     def init_online_sync(self) -> None:
@@ -902,7 +921,11 @@ class AppRuntimeServices:
         return self._app._config.web_bind or "0.0.0.0"
 
     def init_psn(self) -> None:
-        source_ip = self._resolved_source_ip()
+        source_ip = self.station_source_ip_or_none()
+        if source_ip is None:
+            # Configured station interface has no address. Binding "" would
+            # send PSN via the OS routing table.
+            return
         server = PsnServer(
             system_name=self._app._config.psn_system_name,
             mcast_ip=self._app._config.psn_mcast_ip,
@@ -963,15 +986,17 @@ class AppRuntimeServices:
             marker.set_pos(*default_pos)
         self._app._selected_id = self._app._controlled_ids[0] if self._app._controlled_ids else None
 
-    def _resolved_plane_source_ip(self, pin: str, *, label: str) -> str:
+    def _resolved_plane_source_ip(self, pin: str, *, label: str) -> str | None:
         """Resolve one plane's configured interface to a concrete bind IP.
 
         A blank *pin* follows ``psn_source_iface`` (the station-wide default),
         which in turn auto-detects – inheritance for an *unset* value only.
-        Once an interface is configured it is the only one this plane may use:
-        when it has no address the result is empty and the caller binds nothing
-        rather than moving the plane onto a different network. *label* names the
-        config field in the error.
+        Once an interface is configured it is the only one this plane may use.
+        When it has no address the result is ``None`` and the caller must not
+        start the service at all - an empty string would be wrong, because
+        every downstream socket reads "" as *auto-detect* and would send on
+        whatever interface the OS picks. *label* names the config field in the
+        error.
         """
         from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
 
@@ -988,17 +1013,24 @@ class AppRuntimeServices:
                 configured,
                 label,
             )
+            return None
         return resolved
 
     def init_otp(self) -> None:
         cfg = self._app._config.otp_output
         if not cfg.enabled:
             return
+        source_ip = self._resolved_plane_source_ip(cfg.source_iface, label="otp_output.source_iface")
+        if source_ip is None:
+            # Configured interface has no address. Starting with "" would bind
+            # via the OS routing table, i.e. send stage data on whatever NIC
+            # happens to be up - the outcome the pin exists to prevent.
+            return
         self._app._otp_server = OtpServer(
             system_name=self._app._config.psn_system_name,
             system_number=cfg.system_number,
             port=cfg.port,
-            source_ip=self._resolved_plane_source_ip(cfg.source_iface, label="otp_output.source_iface"),
+            source_ip=source_ip,
             priority=cfg.priority,
         )
         server = self._app._server
@@ -1336,12 +1368,18 @@ class AppRuntimeServices:
             old_port = server._port
             old_source_ip = server._source_ip
             old_priority = server._priority
+            new_source_ip = self._resolved_plane_source_ip(new_cfg.source_iface, label="otp_output.source_iface")
+            if new_source_ip is None:
+                # Configured interface has no address: stop rather than
+                # restart, because "" would rebind via the OS routing table.
+                server.stop()
+                return
             try:
                 server.restart(
                     system_name=self._app._config.psn_system_name,
                     system_number=new_cfg.system_number,
                     port=new_cfg.port,
-                    source_ip=self._resolved_plane_source_ip(new_cfg.source_iface, label="otp_output.source_iface"),
+                    source_ip=new_source_ip,
                     priority=new_cfg.priority,
                 )
             except Exception:

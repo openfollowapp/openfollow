@@ -512,10 +512,12 @@ class TestInitPsn:
         assert factory.instances[0].start_called is True
         assert factory.last_kwargs["source_ip"] == "10.0.0.1"
 
-    def test_stale_iface_falls_back_to_primary(
+    def test_stale_iface_stops_psn_rather_than_moving_it(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When the pinned iface is down/missing, init_psn falls back to the auto-detected primary."""
+        """A configured station interface that is down must not put PSN on
+        whatever else is up. Passing "" would do exactly that, because every
+        downstream socket reads an empty source as auto-detect."""
         cfg = replace(services._app._config, psn_source_iface="ghost0")
         services._app._config = cfg
 
@@ -536,7 +538,8 @@ class TestInitPsn:
         monkeypatch.setattr(services_module, "PsnServer", factory)
 
         services.init_psn()
-        assert factory.last_kwargs["source_ip"] == "10.0.0.1"
+        assert factory.last_kwargs == {}
+        assert services._app._server is None
 
     def _stub_primary_ip(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import socket as _socket
@@ -785,7 +788,9 @@ class TestInitOtp:
 
         with caplog.at_level("ERROR"):
             services.init_otp()
-        assert services._app._otp_server._source_ip == ""
+        # Not started at all. Constructing it with "" would bind via the OS
+        # routing table, which is the leak the pin exists to prevent.
+        assert services._app._otp_server is None
         record = next(r for r in caplog.records if "otp_output.source_iface" in r.message)
         assert record.levelname == "ERROR"
         # Names the interface the operator configured, not the one it fell to.

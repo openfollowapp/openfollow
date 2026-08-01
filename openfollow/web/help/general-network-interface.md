@@ -28,11 +28,11 @@ A **This session** marker means your browser reached the station over that adapt
 
 ## If DHCP is unavailable
 
-On a show LAN with no DHCP server, an adapter set to `DHCP (automatic)` waits about 20 seconds and then self-assigns an address in the `169.254.x.x` range so the station is still reachable from the same network segment. It is a fallback, not a lease: as soon as a real DHCP server appears the station takes a normal address and the `169.254` one goes away.
+On a show LAN with no DHCP server, an adapter set to `DHCP (automatic)` waits about 45 seconds and then self-assigns an address in the `169.254.x.x` range so the station is still reachable from the same network segment. It is a fallback, not a lease: as soon as a real DHCP server appears the station takes a normal address and the `169.254` one goes away.
 
 Two ways to reach a station in that state, both shown on the on-screen HUD:
 
-- **By name** – browse to `<station-name>.local`. This works whatever address the station ends up with. macOS resolves it natively; Windows needs Bonjour installed, and some corporate images block mDNS entirely.
+- **By name** – browse to the address shown on the station's own screen under `Web address` (for example `openfollow-noble-bear.local`). This works whatever address the station ends up with. It is the machine's actual hostname, which is usually the station name but can differ, so read it off the screen rather than assuming. macOS resolves it natively; Windows needs Bonjour installed, and some corporate images block mDNS entirely.
 - **By address** – read the address off the station's screen and type it into your browser. The HUD marks it `DHCP unavailable` so a fallback address isn't mistaken for a working lease.
 
 Your computer needs an address on the same network to reach a `169.254` one. Most laptops self-assign one automatically when they see no DHCP server either; if yours doesn't, give the interface a static `169.254.x.x` address with a `255.255.0.0` subnet mask.

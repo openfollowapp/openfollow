@@ -3944,3 +3944,40 @@ class TestApplyStationIfaceChange:
         calls = self._services_with_otp(services, "")
         services.apply_station_iface_change()
         assert calls == []
+
+
+class TestOtpLiveRestartOnADownInterface:
+    """The live path has the same hole as init: restarting with "" rebinds via
+    the OS routing table, so a save while the interface is dark would move the
+    output rather than stop it."""
+
+    def test_stops_instead_of_restarting(self, services: AppRuntimeServices, monkeypatch) -> None:
+        from openfollow import net_utils
+
+        monkeypatch.setattr(
+            net_utils,
+            "resolve_plane_source_ip",
+            lambda pin, station="": ("", "down"),
+        )
+
+        class _Server:
+            def __init__(self) -> None:
+                self.stopped = 0
+                self.restarts = 0
+                self._system_number = 1
+                self._port = 5568
+                self._source_ip = "192.168.1.5"
+                self._priority = 100
+
+            def stop(self) -> None:
+                self.stopped += 1
+
+            def restart(self, **_kwargs: Any) -> None:
+                self.restarts += 1
+
+        server = _Server()
+        services._app._otp_server = server
+        services.apply_otp_output_change(
+            OtpOutputConfig(enabled=True, system_number=1, port=5568, source_iface="eth_gone")
+        )
+        assert (server.stopped, server.restarts) == (1, 0)

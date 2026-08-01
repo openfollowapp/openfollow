@@ -371,6 +371,21 @@ class TestHostnameRow:
         state = _build(app, pool)
         assert state.hostname_text == "raspberrypi.local"
 
+    def test_hostname_carries_a_non_default_port(
+        self,
+        pool: OverlayStatePool,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """On a fallback bind the UI is not on port 80, so a bare name would
+        send the operator to a port with nothing listening."""
+        import openfollow.privilege.device_repair as device_repair
+
+        monkeypatch.setattr(device_repair, "current_hostname", lambda: "raspberrypi")
+        app = _build_app()
+        app._config = replace(app._config, web_port=8080)
+        state = _build(app, pool)
+        assert state.hostname_text == "raspberrypi.local:8080"
+
     @pytest.mark.parametrize("name", ["", "localhost"])
     def test_unusable_hostname_yields_no_row(
         self,

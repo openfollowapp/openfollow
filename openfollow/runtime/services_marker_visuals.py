@@ -26,6 +26,15 @@ from openfollow.runtime_metrics import OverlayStatePool
 from openfollow.units import UnitSystem
 
 
+def _port_suffix(port: int) -> str:
+    """``":8080"``, or ``""`` for port 80.
+
+    80 is the HTTP default and implicit in a typed URL, so showing it is noise
+    - but on a fallback bind the port is load-bearing and must be displayed.
+    """
+    return "" if port == 80 else f":{port}"
+
+
 def _local_hostname() -> str:
     """Return ``<hostname>.local``, or ``""`` when the host has no usable name.
 
@@ -407,6 +416,12 @@ def build_marker_visual_state(
 
     state = overlay_state_pool.acquire()
 
+    # The actually-bound port from the running web server so the HUD reflects
+    # reachability, not just configuration. Falls back to the configured port
+    # when the server is not yet wired (early-startup snapshots, stubbed apps).
+    web_server = getattr(app, "_web_server", None)
+    web_port = web_server.display_port if web_server is not None else app._config.web_port
+
     if system_stats is not None:
         stats = system_stats.update()
         state.cpu_percent = stats.cpu_percent
@@ -414,15 +429,7 @@ def build_marker_visual_state(
         state.temperature = stats.temperature
         ip = stats.ip_address
         if ip and ip != "N/A":
-            # Prefer the actually-bound port from the running web server so
-            # the HUD reflects reachability, not just configuration. Fall
-            # back to the configured port when the server is not yet wired
-            # (e.g. early-startup snapshots, unit tests with a stubbed app).
-            web_server = getattr(app, "_web_server", None)
-            port = web_server.display_port if web_server is not None else app._config.web_port
-            # Port 80 is the HTTP default and is implicit in URLs typed
-            # into a browser, so omit it for a cleaner display.
-            base = ip if port == 80 else f"{ip}:{port}"
+            base = ip + _port_suffix(web_port)
             # Append the iface name in parens so the operator on a
             # multi-homed host can tell at a glance which NIC the IP belongs
             # to (``"192.168.178.61 (eth0)"``). Empty iface (offline /
@@ -432,7 +439,11 @@ def build_marker_visual_state(
             state.ip_text = ip
         state.ip_is_fallback = is_link_local(ip)
 
-    state.hostname_text = _local_hostname()
+    # Carries the port for the same reason the IP row does: on a fallback bind
+    # the UI is not on 80, and a name pointing at a dead port is worse than no
+    # name at all.
+    hostname = _local_hostname()
+    state.hostname_text = hostname + _port_suffix(web_port) if hostname else ""
 
     # The station name is the operator-set ``psn_system_name`` (the
     # same value the discovery beacon and PSN info packets advertise).

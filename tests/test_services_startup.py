@@ -932,12 +932,15 @@ def test_repair_reports_false_when_arming_fails(monkeypatch) -> None:
     assert adapter.armed == ["eth0"]
 
 
-def test_repair_never_raises_on_a_backend_error(monkeypatch) -> None:
+@pytest.mark.parametrize("error", [OSError("nmcli exploded"), RuntimeError("backend gone")])
+def test_repair_never_raises_on_a_backend_error(monkeypatch, error: Exception) -> None:
+    """Startup has to proceed whatever the backend does - a repair that throws
+    would take down a station that was merely missing an address."""
     services = _build_services_with_psutil_backend(monkeypatch)
 
     class _Exploding(_RepairAdapter):
         def get_state(self, iface):
-            raise OSError("nmcli exploded")
+            raise error
 
     adapter = _Exploding({"eth0": _addressless("eth0")})
     _wire_repair(services, adapter)

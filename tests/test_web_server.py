@@ -6365,25 +6365,35 @@ def test_section_broadcast_receive_does_not_carry_or_clobber_speeds(tmp_path, mo
 
 
 def test_vlan_subinterface_is_offered_as_a_plane_pin(live_server, monkeypatch) -> None:
-    """A VLAN needs no plumbing beyond creating the link: once eth0.10 exists
-    it is an ordinary netdev, so it reaches the interface pickers through the
-    same psutil enumeration every other adapter uses. This is the claim the
-    VLAN work rests on – if it breaks, tagged VLANs stop being assignable
-    while every other test still passes."""
+    """A VLAN needs no plumbing beyond creating the link and addressing it.
+
+    Once eth0.10 has an IPv4 it is an ordinary netdev and reaches the interface
+    pickers through the same psutil enumeration every other adapter uses - the
+    claim the VLAN work rests on. The unaddressed half is asserted too: the
+    pickers list interfaces that HAVE an address, so a freshly created VLAN is
+    deliberately not selectable until Configure gives it one. Hardware
+    validation found that ordering, which an addressed-only test hides.
+    """
     import socket as _socket
     from types import SimpleNamespace
 
     from openfollow import net_utils as net_utils_mod
 
-    monkeypatch.setattr(
-        net_utils_mod.psutil,
-        "net_if_addrs",
-        lambda: {
-            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.178.59")],
-            "eth0.10": [SimpleNamespace(family=_socket.AF_INET, address="10.20.0.5")],
-        },
-    )
+    def _addrs(vlan_address: str | None):
+        rows = {"eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.178.59")]}
+        # An unaddressed VLAN still exists as a netdev; psutil reports it with
+        # no AF_INET entry, which is exactly the state right after Create.
+        rows["eth0.10"] = [SimpleNamespace(family=_socket.AF_INET, address=vlan_address)] if vlan_address else []
+        return rows
+
     _, base = live_server
+
+    monkeypatch.setattr(net_utils_mod.psutil, "net_if_addrs", lambda: _addrs(None))
+    status, body = _get(base, "/network/interfaces/by_name")
+    assert status == 200
+    assert 'value="eth0.10"' not in body
+
+    monkeypatch.setattr(net_utils_mod.psutil, "net_if_addrs", lambda: _addrs("10.20.0.5"))
     status, body = _get(base, "/network/interfaces/by_name")
     assert status == 200
     assert 'value="eth0.10"' in body

@@ -56,19 +56,6 @@ def parse_prefix(value: str | int | None) -> int | None:
     return n if 0 <= n <= 32 else None
 
 
-def is_link_local(value: str | None) -> bool:
-    """Return True for an RFC 3927 (169.254/16) self-assigned address.
-
-    A link-local address means DHCP never answered, so the station is only
-    reachable from the same segment – callers surface it as a degraded state
-    rather than a normal address.
-    """
-    parsed = parse_ipv4(value)
-    if parsed is None:
-        return False
-    return ipaddress.IPv4Address(parsed).is_link_local
-
-
 def prefix_to_mask(prefix: int | None) -> str | None:
     """Render CIDR prefix length as dotted IPv4 mask (e.g. 24 → "255.255.255.0")."""
     if not isinstance(prefix, int) or not 0 <= prefix <= 32:

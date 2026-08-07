@@ -108,12 +108,6 @@
       ansible.builtin.systemd:
         daemon_reload: true
 
-    - name: reload networkmanager
-      # NetworkManager parses conf.d only at startup, so a drop-in written to an
-      # already-running Pi is inert until it re-reads.
-      ansible.builtin.command: nmcli general reload
-      changed_when: true
-
     - name: reload udev
       # Apply the 3D Mouse hidraw rule and re-trigger so an already-connected
       # device gets plugdev access without a replug.
@@ -179,20 +173,6 @@
     - name: Ensure SSH service is enabled and running
       ansible.builtin.systemd:
         name: ssh
-        enabled: true
-        state: started
-
-    # The HUD tells the operator to browse to <hostname>.local, which is the
-    # only recovery route that survives an address change. Without a responder
-    # that name resolves nowhere and the advice is worse than none.
-    - name: Install the mDNS responder that answers <hostname>.local
-      ansible.builtin.apt:
-        name: avahi-daemon
-        state: present
-
-    - name: Ensure avahi-daemon is enabled and running
-      ansible.builtin.systemd:
-        name: avahi-daemon
         enabled: true
         state: started
 
@@ -423,32 +403,6 @@
       when: "'NetworkManager-wait-online.service' in ansible_facts.services"
       notify:
         - reload systemd
-
-    - name: Ensure NetworkManager conf.d directory exists
-      ansible.builtin.file:
-        path: /etc/NetworkManager/conf.d
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
-
-    # Without this NetworkManager leaves a NIC with no IPv4 address at all when
-    # the show LAN has no DHCP server - web server up, avahi answering, nothing
-    # reachable. link-local=4 is "fallback": the 169.254 address appears only
-    # once DHCP has given up and goes away again when a lease arrives.
-    - name: Fall back to a link-local address when DHCP never answers
-      ansible.builtin.copy:
-        dest: /etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf
-        owner: root
-        group: root
-        mode: "0644"
-        content: |
-          [connection]
-          ipv4.may-fail=true
-          ipv4.dhcp-timeout=45
-          ipv4.link-local=4
-      notify:
-        - reload networkmanager
 
     - name: Mask getty on tty1
       ansible.builtin.systemd:

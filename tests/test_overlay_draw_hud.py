@@ -969,58 +969,6 @@ class TestBottomLeftInfoPanel:
         assert "192.168.1.2" in texts
         assert any("NDI" in t for t in texts)
 
-    def test_hostname_row_renders_alongside_the_ip(self) -> None:
-        """``<slug>.local`` is the recovery route that survives an address
-        change, so it is on the panel whenever the host has a usable name."""
-        state = _base_state(ip_text="192.168.1.2")
-        state.hostname_text = "openfollow-noble-bear.local"
-        cr = FakeCairo()
-        draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
-        texts = cr.show_text_strings()
-        assert "Web address:" in texts
-        assert "openfollow-noble-bear.local" in texts
-
-    def test_no_hostname_row_when_the_host_has_no_name(self) -> None:
-        state = _base_state(ip_text="192.168.1.2")
-        state.hostname_text = ""
-        cr = FakeCairo()
-        draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
-        assert "Web address:" not in cr.show_text_strings()
-
-    def test_link_local_address_carries_the_dhcp_qualifier(self) -> None:
-        """Without it an operator reads a 169.254 address as a working lease."""
-        state = _base_state(ip_text="169.254.8.31")
-        state.ip_is_fallback = True
-        cr = FakeCairo()
-        draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
-        assert any("DHCP unavailable" in t for t in cr.show_text_strings())
-
-    def test_routable_address_carries_no_qualifier(self) -> None:
-        state = _base_state(ip_text="192.168.1.2")
-        state.ip_is_fallback = False
-        cr = FakeCairo()
-        draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
-        assert not any("DHCP unavailable" in t for t in cr.show_text_strings())
-
-    def test_panel_height_follows_the_row_count(self) -> None:
-        """The height was hardcoded for three rows; a fourth row has to grow
-        the panel rather than render outside it."""
-        without = _base_state(ip_text="192.168.1.2")
-        without.hostname_text = ""
-        with_host = _base_state(ip_text="192.168.1.2")
-        with_host.hostname_text = "openfollow-noble-bear.local"
-
-        spans = []
-        for state in (without, with_host):
-            cr = FakeCairo()
-            draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
-            ys = [t.y for t in cr.texts]
-            spans.append((max(ys) - min(ys), min(ys)))
-        # One more row of text, and the panel grows upward to hold it – the
-        # bottom row stays put because the panel is bottom-anchored.
-        assert spans[1][0] > spans[0][0]
-        assert spans[1][1] < spans[0][1]
-
     def test_empty_ip_falls_back_to_unavailable(self) -> None:
         state = _base_state(ip_text="")
         cr = FakeCairo()

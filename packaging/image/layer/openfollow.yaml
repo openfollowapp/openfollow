@@ -78,26 +78,6 @@ mmdebstrap:
     #     "NetworkManager owns every interface" explicit and conflict-free.
     - chroot "$1" systemctl mask systemd-networkd.service systemd-networkd.socket systemd-networkd-wait-online.service
 
-    # 2a'. Keep the station reachable on a show LAN with no DHCP server. Without
-    #      this NM leaves the NIC with no IPv4 address at all: the web server is
-    #      up and avahi is answering, but nothing can reach either. Set as a
-    #      connection default rather than on a profile because no profile exists
-    #      yet at build time, and this way it also covers profiles created later.
-    #      link-local=4 is "fallback" - the 169.254 address appears only once
-    #      DHCP has given up and goes away when a lease arrives, so a healthy LAN
-    #      never carries a second address. 45s is NM's own default, long enough
-    #      to clear spanning-tree convergence on a switch port without portfast
-    #      so an ordinary cable replug gets its real lease back.
-    - |-
-      set -eu
-      mkdir -p "$1/etc/NetworkManager/conf.d"
-      cat > "$1/etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf" <<'NMFALLBACK'
-      [connection]
-      ipv4.may-fail=true
-      ipv4.dhcp-timeout=45
-      ipv4.link-local=4
-      NMFALLBACK
-
     # 2b. Enable lingering for openfollow so /run/user/<uid> exists at boot before
     #     login – the Cage kiosk session needs XDG_RUNTIME_DIR. The deb postinst
     #     tries `loginctl enable-linger` but that no-ops in a chroot (no logind);

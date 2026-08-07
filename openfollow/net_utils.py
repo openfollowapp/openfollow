@@ -15,12 +15,8 @@ from typing import Literal
 
 import psutil
 
-# Status from resolve_source_ip / resolve_plane_source_ip: "iface" (pinned),
-# "station" (inherited the station-wide pin), "primary" (auto-detected),
-# "down" (an interface *is* configured but currently has no address – an error
-# state, never a reason to bind elsewhere), "none" (nothing configured and
-# nothing to auto-detect).
-ResolveStatus = Literal["iface", "station", "primary", "down", "none"]
+# Status from resolve_source_ip: "iface" (pinned), "primary" (auto), "none" (offline).
+ResolveStatus = Literal["iface", "primary", "none"]
 
 
 def get_primary_local_ipv4(default: str = "N/A") -> str:
@@ -107,49 +103,6 @@ def resolve_source_ip(
 
     if not fallback:
         return "", "none"
-
-    primary = get_primary_local_ipv4(default="")
-    if primary and not primary.startswith("127."):
-        return primary, "primary"
-    return "", "none"
-
-
-def plane_source_iface(pin: str, station_iface: str = "") -> str:
-    """Return the interface a plane is configured to use, or "" for auto-detect.
-
-    A blank *pin* means "follow the station interface"; a blank station
-    interface in turn means "let the OS choose". This resolves *configuration*
-    only – it never looks at whether the interface currently has an address.
-    """
-    return pin or station_iface
-
-
-def resolve_plane_source_ip(
-    pin: str,
-    station_iface: str = "",
-) -> tuple[str, ResolveStatus]:
-    """Resolve one network plane's configured interface to a concrete bind IP.
-
-    Inheritance happens for an **unset** value only: blank pin follows
-    *station_iface*, blank station interface auto-detects. Once an interface is
-    configured, it is the only one this plane may use – if it currently has no
-    address the result is ``("", "down")`` and the caller must bind nothing,
-    surface the error and retry.
-
-    It deliberately does **not** fall through to another interface. Silently
-    moving PSN onto the office LAN because a lighting VLAN went dark is worse
-    than PSN stopping: a dead output is diagnosable, a misrouted one is not.
-
-    The *address* is free to change – callers re-resolve on every retry so a new
-    DHCP lease on the same interface is picked up automatically. Only the
-    interface is fixed.
-    """
-    configured = plane_source_iface(pin, station_iface)
-    if configured:
-        resolved = get_iface_ipv4(configured)
-        if resolved:
-            return resolved, "iface" if pin else "station"
-        return "", "down"
 
     primary = get_primary_local_ipv4(default="")
     if primary and not primary.startswith("127."):

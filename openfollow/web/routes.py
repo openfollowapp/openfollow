@@ -198,7 +198,6 @@ VALID_SECTIONS = {
     "trigger_zones",
     "osc_bindings",
     "osc_destinations",
-    "interface_assignment",
 }
 _WEB_STATIC_DIR = Path(__file__).with_name("static")
 
@@ -285,15 +284,6 @@ _WEB_HELP_DIR = Path(__file__).with_name("help")
 _HELP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]+$")
 _GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-# Wording for the empty option in an interface picker, keyed by ``?blank=``.
-# Allow-listed rather than interpolated: the label is rendered into HTML.
-# "auto" = nothing to fall back to (the station picker itself); "station" =
-# an empty pin follows ``psn_source_iface`` (every per-plane picker).
-_BLANK_IFACE_LABELS = {
-    "auto": "-- Auto-detect --",
-    "station": "-- Follow station interface --",
-}
-
 _SECTION_CONFIG_ATTRS = {
     "camera": "camera",
     "grid": "grid",
@@ -918,13 +908,6 @@ def get_section_data(cfg: AppConfig, section: str) -> dict[str, Any] | None:
             "web_pin": cfg.web_pin,
             "update_service_name": cfg.update_service_name,
         }
-    if section == "interface_assignment":
-        # Mirrors what the panel POSTs, so GET and POST agree on the section's
-        # shape instead of GET 404ing while POST silently writes.
-        return {
-            form_key: getattr(cfg if attr is None else getattr(cfg, attr), field_name)
-            for form_key, (attr, field_name) in _INTERFACE_ASSIGNMENT_TARGETS.items()
-        }
     section_attr = _SECTION_CONFIG_ATTRS.get(section)
     if section_attr is None:
         return None
@@ -938,12 +921,6 @@ def get_section_data(cfg: AppConfig, section: str) -> dict[str, Any] | None:
 # or full-config-import. ``psn_source_iface`` pins the local NIC and only
 # makes sense for this device. Stripped at both ends (broadcaster-forward
 # and peer-receive) so an out-of-date peer can't poison this device.
-# Interface Assignment form key -> (sub-config attr or None for top-level, field).
-_INTERFACE_ASSIGNMENT_TARGETS: dict[str, tuple[str | None, str]] = {
-    "psn_source_iface": (None, "psn_source_iface"),
-    "otp_output.source_iface": ("otp_output", "source_iface"),
-}
-
 _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "psn": frozenset({"psn_source_iface"}),
     # ``web_pin`` (login credential) and ``web_port`` (local bind) are
@@ -963,11 +940,6 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     # form save path applies this field, so the section broadcast/receive must
     # strip it (matching the full export/import redaction).
     "video_source": frozenset({"testpattern_selected_media"}),
-    # Every row of the Interface Assignment panel names a NIC on THIS box, so
-    # the whole section is device-local. The section is also refused outright
-    # by ``_BROADCAST_EXCLUDED_SECTIONS``; this entry is the peer-receive half,
-    # covering a direct POST from an out-of-date sender.
-    "interface_assignment": frozenset(_INTERFACE_ASSIGNMENT_TARGETS),
 }
 
 
@@ -985,136 +957,8 @@ def strip_device_local_fields(
     return {k: v for k, v in data.items() if k not in drop}
 
 
-# Editable rows of the Interface Assignment panel, in render order. Each maps
-# the form field name to the config attribute that owns it: ``None`` for a
-# top-level ``AppConfig`` field, otherwise the sub-config attribute. Storage
-# stays per-section (so the existing save / hot-reload / device-local
-# machinery applies unchanged); only the editing surface is central.
-def _apply_interface_assignment(cfg: AppConfig, data: Mapping[str, Any]) -> None:
-    """Write the Interface Assignment panel's pins onto their owning configs.
-
-    Each pin is stripped to mirror its ``__post_init__``, then every touched
-    dataclass has ``__post_init__`` re-run so a crafted POST can't bypass
-    validation a hand-edited TOML would trip.
-    """
-    touched: set[str | None] = set()
-    for form_key, (attr, field_name) in _INTERFACE_ASSIGNMENT_TARGETS.items():
-        if form_key not in data:
-            continue
-        target = cfg if attr is None else getattr(cfg, attr)
-        setattr(
-            target,
-            field_name,
-            _as_str(data[form_key], getattr(target, field_name)).strip(),
-        )
-        touched.add(attr)
-    for attr in touched:
-        # ``AppConfig.__post_init__`` is expensive and re-normalises unrelated
-        # fields, but it is also the only thing that validates a top-level pin
-        # – run it only when a top-level row actually changed.
-        (cfg if attr is None else getattr(cfg, attr)).__post_init__()
-
-
-def request_local_iface(environ: Mapping[str, Any]) -> str:
-    """Interface a request arrived on, or "" when it can't be told.
-
-    Drives the "this session" marker in the Network Settings interface list,
-    so an operator can see which adapter they are connected through before
-    editing its address and cutting their own session.
-
-    Reads the accepted connection's local address (put in the environ by the
-    WSGI handler) rather than the Host header: with the default wildcard bind
-    the operator usually arrives via ``<slug>.local``, so the header holds a
-    name, not the address avahi resolved it to.
-
-    Returns "" rather than guessing when the address is loopback, absent, or
-    not one of this host's addresses. A missing marker is a missed warning; a
-    wrong one would point at the wrong adapter, which is worse.
-    """
-    from openfollow.web.server import LOCAL_ADDR_ENVIRON_KEY
-
-    local_addr = str(environ.get(LOCAL_ADDR_ENVIRON_KEY) or "").strip()
-    if not local_addr or local_addr.startswith("127."):
-        return ""
-    from openfollow.net_utils import get_iface_for_ip
-
-    return get_iface_for_ip(local_addr)
-
-
-def build_interface_assignment_rows(cfg: AppConfig) -> list[dict[str, Any]]:
-    """Rows for the Interface Assignment panel, in render order.
-
-    Every row carries the address the plane will actually bind, resolved
-    through the same chain the runtime uses – so a row left on "Follow station
-    interface" visibly shows where it points rather than an empty cell.
-
-    A configured interface with no address renders as an explicit error rather
-    than as some other interface's address: the plane will not send there, and a
-    row showing a working address for a plane that is down would be a lie.
-
-    Planes with no pin of their own (PSN, discovery, marker sync) render
-    read-only: they follow ``psn_source_iface``, which the Station default row
-    owns, so giving them their own dropdown would imply an independence they
-    don't have.
-    """
-    from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
-
-    def _plane_address(pin: str, station_iface: str) -> str:
-        resolved, status = resolve_plane_source_ip(pin, station_iface)
-        if status == "down":
-            return f"{plane_source_iface(pin, station_iface)} is down"
-        return resolved
-
-    station = cfg.psn_source_iface
-    station_ip = _plane_address(station, "")
-
-    def _addr(pin: str) -> str:
-        return _plane_address(pin, station)
-
-    return [
-        {
-            "key": "psn_source_iface",
-            "label": "Station default",
-            "value": station,
-            "address": station_ip,
-            "editable": True,
-            "blank": "auto",
-        },
-        {
-            "key": "",
-            "label": "PSN in / out",
-            "value": "",
-            "address": station_ip,
-            "editable": False,
-            "blank": "",
-            "note": "Follows station interface",
-        },
-        {
-            "key": "otp_output.source_iface",
-            "label": "OTP output",
-            "value": cfg.otp_output.source_iface,
-            "address": _addr(cfg.otp_output.source_iface),
-            "editable": True,
-            "blank": "station",
-        },
-        {
-            "key": "",
-            "label": "Discovery / marker sync",
-            "value": "",
-            "address": station_ip,
-            "editable": False,
-            "blank": "",
-            "note": "Follows station interface",
-        },
-    ]
-
-
 def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> bool:
     """Apply section updates in-place. Returns False for unknown sections."""
-    if section == "interface_assignment":
-        _apply_interface_assignment(cfg, data)
-        return True
-
     if section == "video_source":
         if "video_source_type" in data:
             from openfollow.video.inputs import get_available_input_ids
@@ -2431,9 +2275,7 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
 # ``destination_id`` and its target move together) but are NEVER real-time
 # shared between stations: each station keeps its own OSC routing + zones.
 _BROADCAST_EXCLUDED_SECTIONS = frozenset(
-    # ``interface_assignment`` names NICs on this box; copying it to a peer
-    # would repin that peer's PSN and OTP to an interface it may not have.
-    {"osc_destinations", "osc_transmitters", "trigger_zones", "interface_assignment"},
+    {"osc_destinations", "osc_transmitters", "trigger_zones"},
 )
 
 
@@ -4342,11 +4184,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     # ----------------------------------------------------------------------
 
     _NETWORK_METHODS = ("dhcp", "dhcp_manual", "static")
-    _NETWORK_METHOD_LABELS = {
-        "dhcp": "DHCP",
-        "dhcp_manual": "DHCP + manual",
-        "static": "Static",
-    }
 
     def _network_method_value(raw: str) -> str:
         return raw if raw in _NETWORK_METHODS else "dhcp"
@@ -4387,33 +4224,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "lease_display": cfg.get("lease_display"),
             "banner": banner,
         }
-        # The interface list replaced the old single picker, so the card can
-        # show a multi-NIC (or tagged-VLAN) station's whole layout. ``Scan``
-        # forces a re-read; ordinary renders come off the TTL cache.
-        rows = server.get_network_interfaces(force=bool(request.query.get("scan")))
-        if not rows:
-            # No richer provider wired (or it failed): synthesise the list from
-            # the single-interface snapshot so the card still renders every
-            # adapter. Only the open interface has address / method detail,
-            # which is exactly what the card showed before the list existed.
-            rows = [
-                {
-                    "name": name,
-                    "address": net["address"] if name == net["active_interface"] else "",
-                    "prefix": net["prefix"] if name == net["active_interface"] else None,
-                    "method": net["method"] if name == net["active_interface"] else "",
-                }
-                for name in net["interfaces"]
-            ]
-        net["iface_rows"] = [
-            {**row, "method_label": _NETWORK_METHOD_LABELS.get(row.get("method", ""), row.get("method", ""))}
-            for row in rows
-        ]
-        net["session_iface"] = request_local_iface(request.environ)
-        # One interface is always the current one – the same interface the card
-        # showed before the list existed – so its detail is expanded by default
-        # and picking another row moves the expansion.
-        net["editing_iface"] = net["active_interface"]
         if method is not None:
             net["method"] = _network_method_value(method)
         if overrides:
@@ -4477,33 +4287,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         return template(
             "partials/network",
             net=_build_network_form_context(editable=True),
-        )
-
-    @app.get("/section/network/status/<iface>")
-    def get_network_status_iface(iface: str) -> Any:
-        """Expand one interface's details read-only.
-
-        The list shows address and method; DNS and lease live in the detail,
-        so View mode can open a row too rather than forcing the operator into
-        Edit mode just to read a value.
-        """
-        return template(
-            "partials/network",
-            net=_build_network_form_context(iface=iface, editable=False),
-        )
-
-    @app.get("/section/network/edit/<iface>")
-    def get_network_edit_iface(iface: str) -> Any:
-        """Open one interface's editor, expanded under its row in the list.
-
-        The interface is named in the path rather than carried in a picker, so
-        which adapter is being edited is never ambiguous.
-        ``_build_network_form_context`` sanitises it against the adapter's live
-        list, falling back to the active interface if it's unknown.
-        """
-        return template(
-            "partials/network",
-            net=_build_network_form_context(iface=iface, editable=True),
         )
 
     @app.post("/section/network")
@@ -4852,34 +4635,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # this code path.
         template_name = "partials/gamepad" if name == "controller" else f"partials/{name}"
         return template(template_name, config=config, **extra)
-
-    def _render_interface_assignment(cfg: AppConfig, *, saved: bool = False) -> Any:
-        return template(
-            "partials/interface_assignment",
-            config=cfg,
-            saved=saved,
-            assignment_rows=build_interface_assignment_rows(cfg),
-        )
-
-    @app.get("/section/interface_assignment")
-    def get_interface_assignment() -> Any:
-        """Render the panel. Also the ``Scan`` path: addresses are re-resolved
-        here and each picker re-reads the live interface list on load, so a
-        plain re-fetch refreshes both. Re-rendering (rather than refreshing the
-        pickers in place) is what keeps Scan from reverting an unsaved
-        selection to the value on disk."""
-        return _render_interface_assignment(_request_scoped_config())
-
-    @app.post("/section/interface_assignment")
-    def update_interface_assignment() -> Any:
-        """Save every pin, then let the config file-watcher live-apply them.
-
-        Each row's field lives on the sub-config that owns its protocol, so
-        the existing per-section hot-reload orchestrators pick the changes up
-        with no dispatch of this panel's own – nothing here needs a restart.
-        """
-        cfg = _save_section_from_form("interface_assignment")
-        return _render_interface_assignment(cfg, saved=True)
 
     @app.post("/section/video_source")
     def update_video_source() -> Any:
@@ -7240,13 +6995,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         selects that iface in the rendered list; without it the route
         defaults to ``psn_source_iface`` so the PSN picker keeps working
         with a plain ``hx-get``.
-
-        ``?blank=station`` labels the empty option "Follow station interface"
-        instead of "Auto-detect". Per-plane pickers use it because an empty
-        pin follows ``psn_source_iface``, while the station picker itself has
-        nothing to follow and keeps the auto-detect wording. Unknown values
-        fall back to auto-detect – the label is allow-listed, never
-        interpolated from the query.
         """
         from openfollow.net_utils import list_iface_ipv4
 
@@ -7254,9 +7002,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # ``?current=`` present (even empty) overrides; absent → PSN default. An
         # empty OTP pin must stay empty (auto-detect), not fall back to PSN's.
         current = request.query.current if "current" in request.query else cfg.psn_source_iface
-        blank_label = _BLANK_IFACE_LABELS.get(request.query.blank, _BLANK_IFACE_LABELS["auto"])
         ifaces = list_iface_ipv4()
-        options = [f'<option value="">{blank_label}</option>']
+        options = ['<option value="">-- Auto-detect --</option>']
         names = {name for name, _ in ifaces}
         for name, ip in ifaces:
             selected = "selected" if name == current else ""

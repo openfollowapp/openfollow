@@ -794,104 +794,6 @@
  /* Full-width within its container (e.g. the login Unlock button). */
  .btn-block { width: 100%; }
  /* Network form: compact label:value grid matching the read-only status table. */
- /* Interface Assignment: function -> interface rows. Built from the existing
- tokens so it inherits the surrounding look with no new palette. */
- .ia-table {
- width: 100%;
- border-collapse: collapse;
- font-size: 0.86rem;
- }
- .ia-table th, .ia-table td {
- text-align: left;
- padding: 0.42rem 0.6rem;
- border-bottom: 1px solid var(--border-soft);
- vertical-align: middle;
- }
- .ia-table thead th {
- font-size: 0.72rem;
- text-transform: uppercase;
- letter-spacing: 0.06em;
- color: var(--muted);
- font-weight: 700;
- border-bottom: 1px solid var(--border);
- }
- .ia-table tbody tr:last-child th,
- .ia-table tbody tr:last-child td { border-bottom: 0; }
- .ia-table tbody th[scope="row"] { font-weight: 600; white-space: nowrap; }
- .ia-assign td:nth-child(2) { width: 46%; min-width: 220px; }
- .ia-assign select { width: 100%; max-width: 22rem; margin: 0; }
- .ia-addr { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
- .ia-readonly th[scope="row"] { font-weight: 500; }
- /* Read-only pointer shown by each protocol section now that the pin itself
- is edited centrally in Interface Assignment. Dashed border marks it as a
- report rather than a control. */
- .ia-pointer {
- display: flex;
- flex-direction: column;
- gap: 0.2rem;
- padding: 0.5rem 0.7rem;
- border: 1px dashed var(--border);
- border-radius: 10px;
- background: var(--surface);
- }
- .ia-pointer-value { font-size: 0.86rem; }
- /* Interface list in Network Settings: status dot, session badge, and the
- per-interface editor that expands under its own row. */
- .ia-nics td:first-child, .ia-nics th:first-child { width: 1.4rem; padding-right: 0; }
- .ia-actions { text-align: right; white-space: nowrap; }
- .ia-dot {
- display: inline-block;
- width: 8px; height: 8px;
- border-radius: 50%;
- background: var(--ok);
- box-shadow: 0 0 0 3px rgba(125, 229, 159, 0.14);
- }
- .ia-dot.down { background: rgba(247, 245, 233, 0.3); box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.05); }
- .ia-badge {
- display: inline-block;
- margin-left: 0.3rem;
- padding: 0.06rem 0.45rem;
- border-radius: 999px;
- font-size: 0.66rem;
- font-weight: 800;
- letter-spacing: 0.05em;
- text-transform: uppercase;
- white-space: nowrap;
- }
- .ia-badge.session {
- color: var(--ok);
- background: rgba(125, 229, 159, 0.12);
- border: 1px solid rgba(125, 229, 159, 0.35);
- }
- .ia-legend {
- display: flex;
- align-items: center;
- gap: 1rem;
- margin-top: 0.6rem;
- font-size: 0.75rem;
- color: var(--muted);
- }
- .ia-legend .ia-dot { margin-right: 0.3rem; }
- .ia-legend-actions { margin-left: auto; display: inline-flex; gap: 0.4rem; }
- .ia-nics tr.is-configuring > td { background: var(--accent-soft); }
- .ia-editor-row > td { padding: 0 !important; background: var(--bg-soft); }
- .ia-editor { padding: 0.9rem 1rem 1rem; border-left: 3px solid var(--accent); }
- .ia-editor-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.7rem; }
- .ia-editor-head .group-title { margin: 0; }
- .ia-editor .group:last-of-type { border-bottom: 0; }
- .ia-link {
- color: var(--accent);
- text-decoration: none;
- font-size: 0.8rem;
- }
- .ia-link:hover { text-decoration: underline; }
- @media (max-width: 720px) {
- .ia-table thead { display: none; }
- .ia-table, .ia-table tbody, .ia-table tr, .ia-table th, .ia-table td { display: block; width: 100%; }
- .ia-table tbody tr { border-bottom: 1px solid var(--border-soft); padding: 0.45rem 0; }
- .ia-table th, .ia-table td { border-bottom: 0; padding: 0.2rem 0; }
- .ia-assign td:nth-child(2) { width: 100%; }
- }
  .network-grid {
  display: grid;
  grid-template-columns: minmax(7rem, 9rem) 1fr;
@@ -3548,17 +3450,6 @@
  el.classList.toggle('active', el.id === 'tab-' + tabId);
  });
  writeStorage('psnfs:active-tab:' + location.pathname, tabId);
- }
- // Cross-tab pointer links. A bare href="#id" does nothing when the target
- // sits in an inactive tab, because .tab-content is display:none - so switch
- // to the owning tab first, then scroll once layout has settled.
- function goToSection(tabId, targetId) {
-   switchTab(tabId);
-   var el = document.getElementById(targetId);
-   if (!el) { return; }
-   requestAnimationFrame(function () {
-     el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-   });
  }
  function initTabs() {
  var stored = readStorage('psnfs:active-tab:' + location.pathname);

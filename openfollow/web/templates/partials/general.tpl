@@ -156,17 +156,6 @@
 </div>
 
 %# ------------------------------------------------------------------
-%# 2b. Interface Assignment – which network each function uses. Sits
-%# below Network Settings ("what address does this NIC have") and reads
-%# the same interface list. Lazy-loaded like the network region so the
-%# General render doesn't pay for the address resolution.
-%# ------------------------------------------------------------------
-<div id="interface-assignment" hx-get="/section/interface_assignment" hx-trigger="load"
-     hx-target="this" hx-swap="innerHTML">
-    <p class="muted">Loading interface assignment…</p>
-</div>
-
-%# ------------------------------------------------------------------
 %# 3. Software Update – GitHub Releases signed-bundle (.ofupdate) installer.
 %#
 %# Default-collapsed: most operators rarely update manually. Hidden on

@@ -11,7 +11,7 @@ Sends tracked marker positions as ANSI E1.59 Object Transform Protocol (OTP) mul
 - **Multicast addresses** – read-only display of the two addresses derived automatically from System Number, per ANSI E1.59 Table 15-19. **Transform** carries the position data (e.g. `239.159.1.1` for System Number 1); **Advertisement** carries discovery packets (`239.159.2.1`). Adjust System Number to change the group.
 - **UDP Port** – port the transmitter binds to and sends from, 1–65535. Default: `5568`.
 - **Priority** – OTP priority value sent in each packet, 0 – 200. When multiple OTP sources are present, receivers use priority to resolve conflicts – higher values win. Default: `100`.
-- **Source Interface** – read-only here; it reports which interface OTP multicast currently leaves from. Set it under **General → Interface Assignment**, where every protocol's interface is chosen in one place. `Follows station interface` (the default) is right on a single-adapter station; on a host with both Ethernet and Wi-Fi, pin it to the adapter on the lighting network so packets reach the right subnet. A pinned interface that's down falls back to the station interface rather than going silent.
+- **Source Interface (optional)** – selects which network interface the multicast packets are sent from, pinned by name (`eth0` / `wlan0`) like the PSN source interface, so the pin survives a DHCP lease change. Leave blank (Auto) on a single-NIC station; on a host with both Ethernet and Wi-Fi, pin it to the interface on the show network so packets reach the right subnet. A pinned interface that's down falls back to the primary interface. Click **Scan** to refresh the detected interfaces.
 
 ## Saving
 

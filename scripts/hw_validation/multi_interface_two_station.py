@@ -496,9 +496,18 @@ def main() -> int:
         if created:
             status, _body = web.post_form("/section/network/vlan/delete", {"iface": vlan_name})
             gone = not netdev_exists(ssh_base, args.dut, vlan_name)
-            print(f"  {vlan_name} deleted (HTTP {status}), netdev gone: {gone}")
             if not gone:
-                print(f"  WARNING: {vlan_name} still present – remove it with: sudo nmcli con delete {vlan_name}")
+                # The web delete refuses the interface the request arrived on -
+                # by design, and exactly the case when the run was pointed at
+                # the VLAN's own address to exercise that guard. Refusing is
+                # correct; leaving the VLAN behind while claiming the station
+                # was restored is not, so fall back to removing it over SSH.
+                print(f"  web delete did not remove {vlan_name} (HTTP {status}); removing over SSH")
+                ssh(ssh_base, args.dut, f"sudo nmcli con delete {vlan_name} >/dev/null 2>&1 || true")
+                gone = not netdev_exists(ssh_base, args.dut, vlan_name)
+            print(f"  {vlan_name} removed: {gone}")
+            if not gone:
+                print(f"  WARNING: {vlan_name} still present - remove it with: sudo nmcli con delete {vlan_name}")
 
     failures = rep.failed()
     print(f"\n{'FAIL' if failures else 'PASS'} – {len(rep.rows) - len(failures)}/{len(rep.rows)} checks passed")

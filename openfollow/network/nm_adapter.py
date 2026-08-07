@@ -40,6 +40,35 @@ _NMCLI_TIMEOUT = 8
 _NO_BROKER_MESSAGE = "Cannot change network settings - the privileged helper is not configured."
 
 
+def _split_terse(line: str) -> list[str]:
+    """Split one nmcli ``-t`` row on its *unescaped* field separators.
+
+    ``nmcli -t`` emits a literal ``:`` inside a value as ``\\:``, so splitting
+    on every colon shifts each field after a colon-bearing one: a profile named
+    ``Wired connection: office`` yields a fragment where the UUID belongs, and
+    the device column lands on the type. Unescapes as it goes, so callers get
+    finished values.
+    """
+    fields: list[str] = []
+    current: list[str] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        char = line[i]
+        if char == "\\" and i + 1 < n:
+            current.append(line[i + 1])
+            i += 2
+        elif char == ":":
+            fields.append("".join(current))
+            current = []
+            i += 1
+        else:
+            current.append(char)
+            i += 1
+    fields.append("".join(current))
+    return fields
+
+
 def _unescape_terse(value: str) -> str:
     """Reverse nmcli ``-t`` (terse) escaping in a field value: a literal
     ``:`` is emitted as ``\\:`` and a literal ``\\`` as ``\\\\``. Without
@@ -527,7 +556,7 @@ class NetworkManagerAdapter(NetworkAdapter):
         out: list[tuple[str, str]] = []
         device_by_uuid: dict[str, str] = {}
         for line in res.stdout.splitlines():
-            parts = [_unescape_terse(p) for p in line.split(":")]
+            parts = _split_terse(line)
             if len(parts) < 4:
                 continue
             name, uuid, kind, device = parts[0], parts[1], parts[2], parts[3]

@@ -910,9 +910,14 @@ def build_info_panel_rows(state: OverlayState, *, source_max_len: int = 38) -> l
     """Label/value rows shared by the bottom-left panel and the Settings card.
 
     The two recovery routes an operator has when the web UI is unreachable are
-    reading the address off this panel and browsing ``<slug>.local``, so both
-    are always present – a row that appears only in the broken state is a row
-    nobody has learned to look for.
+    reading the address off this panel and browsing ``<hostname>.local`` – the
+    running system's hostname, not the station name the config asks for, since
+    a rename that was skipped would otherwise send them to a name avahi never
+    answers on. Both rows show in normal operation rather than only in the
+    broken state, because a row that appears only when things break is a row
+    nobody has learned to look for. The hostname row is the one exception: it
+    is omitted when the host has no usable name, where naming nothing beats
+    naming something wrong.
     """
     ip_value = state.ip_text or "Unavailable"
     if state.ip_is_fallback:

@@ -520,7 +520,7 @@ class TestApplyOscOutput:
         assert len(rows) == 1
         assert rows[0].name == "ADM-OSC 2D"
         assert rows[0].address == "/adm/obj/[markerid]/xyz"
-        assert rows[0].args == ["[x.frac]", "[y.frac]", "0"]
+        assert rows[0].args == ["[x.frac]", "[y.frac]", "0.0"]
         assert rows[0].id == payload["row_id"]
 
     def test_apply_restores_extended_fields(self, live_server) -> None:

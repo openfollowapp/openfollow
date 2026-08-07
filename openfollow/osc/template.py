@@ -1166,13 +1166,13 @@ BUILTIN_TEMPLATES: tuple[BuiltinTemplate, ...] = (
         trigger=_DEFAULT_STREAM_30HZ_TRIGGER,
     ),
     # ``id`` stays ``adm-osc`` so existing rows referencing it keep
-    # resolving. Third arg is a literal ``0``, not the marker's absolute
-    # Z, so the 2D variant stays 2D.
+    # resolving. Third arg is a literal, not the marker's absolute Z, so
+    # the 2D variant stays 2D; ADM-OSC types the triplet as three floats.
     BuiltinTemplate(
         id="adm-osc",
         name="ADM-OSC 2D",
         address="/adm/obj/[markerid]/xyz",
-        args=("[x.frac]", "[y.frac]", "0"),
+        args=("[x.frac]", "[y.frac]", "0.0"),
         trigger=_DEFAULT_STREAM_30HZ_TRIGGER,
     ),
     # 3D variant: ``[z.frac]`` for height. Requires

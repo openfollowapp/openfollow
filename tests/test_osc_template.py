@@ -844,8 +844,10 @@ def test_builtin_etc_eos_patch_wire_format() -> None:
 
 
 def test_builtin_adm_osc_2d_uses_fractional_xy_zero_z() -> None:
-    """Args ``[x.frac]``, ``[y.frac]``, ``0``. The id stays ``adm-osc``
-    for compat with stored ``template_id``."""
+    """Args ``[x.frac]``, ``[y.frac]``, ``0.0``. ADM-OSC types the
+    triplet as three floats, so the flat-Z literal must not land as an
+    ``i``. The id stays ``adm-osc`` for compat with stored
+    ``template_id``."""
     tpl = builtin_by_id("adm-osc")
     assert tpl is not None
     assert tpl.name == "ADM-OSC 2D"
@@ -856,7 +858,7 @@ def test_builtin_adm_osc_2d_uses_fractional_xy_zero_z() -> None:
     typed = [osc_arg_for(ct, rc) for ct in arg_cts]
     assert typed[0] == ("f", pytest.approx(0.5))  # 2.5 / 5
     assert typed[1] == ("f", pytest.approx(-0.5))  # -1.5 / 3
-    assert typed[2] == ("i", 0)  # literal zero, irrespective of pos.z
+    assert typed[2] == ("f", pytest.approx(0.0))  # flat, irrespective of pos.z
 
 
 def test_builtin_adm_osc_3d_uses_fractional_xyz() -> None:

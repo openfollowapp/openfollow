@@ -69,6 +69,20 @@ def _split_terse(line: str) -> list[str]:
     return fields
 
 
+def _name_and_device(line: str) -> tuple[str, str]:
+    """Split one ``NAME,DEVICE`` row, tolerating a colon in the profile name.
+
+    ``partition(":")`` cuts at the escaped colon inside the name, so the device
+    column lands in the remainder and never matches - which makes a profile
+    called ``Wired connection: office`` invisible to every lookup, and reports
+    "no profile bound to eth0" for an interface that has one.
+    """
+    fields = _split_terse(line)
+    if len(fields) < 2:
+        return ("", "")
+    return (fields[0], fields[1])
+
+
 def _unescape_terse(value: str) -> str:
     """Reverse nmcli ``-t`` (terse) escaping in a field value: a literal
     ``:`` is emitted as ``\\:`` and a literal ``\\`` as ``\\\\``. Without
@@ -165,7 +179,7 @@ class NetworkManagerAdapter(NetworkAdapter):
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
             return None
         for line in res.stdout.splitlines():
-            name, _, dev = line.partition(":")
+            name, dev = _name_and_device(line)
             if dev == iface:
                 return name
         # Fallback to any profile bound to this device
@@ -174,7 +188,7 @@ class NetworkManagerAdapter(NetworkAdapter):
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
             return None
         for line in res.stdout.splitlines():
-            name, _, dev = line.partition(":")
+            name, dev = _name_and_device(line)
             if dev == iface:
                 return name
         return None

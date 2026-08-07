@@ -1156,6 +1156,65 @@ class TestConnectionForActiveLoopFallthrough:
         assert a._connection_for("eth0") is None
 
 
+class TestConnectionLookupSurvivesAColonInTheName:
+    """A colon in a profile name must not hide the profile.
+
+    ``nmcli -t`` escapes it as ``\\:``, and cutting at the first colon puts the
+    device column in the remainder where it can never match - so the profile is
+    invisible to every lookup and ``apply_ipv4`` answers "No NetworkManager
+    connection profile bound to eth0" for an interface that has one. That is
+    the same failure the actionable-message work exists to remove, reached by a
+    different route.
+    """
+
+    def test_active_pass_finds_a_colon_named_profile(self, adapter) -> None:
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired connection\\: office:eth0\n",
+        )
+        assert a._connection_for("eth0") == "Wired connection: office"
+
+    def test_fallback_pass_finds_a_colon_named_profile(self, adapter) -> None:
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="",
+        )
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"],
+            stdout="Wired connection\\: office:eth0\n",
+        )
+        assert a._connection_for("eth0") == "Wired connection: office"
+
+    def test_apply_reaches_the_profile_instead_of_reporting_none(self, adapter) -> None:
+        """The operator-visible half: the apply succeeds rather than claiming
+        the interface has no profile."""
+        a, captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired connection\\: office:eth0\n",
+        )
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert result.ok is True, result.message
+        modify = next(c for c in captured if c[:3] == ["nmcli", "connection", "modify"])
+        assert "Wired connection: office" in modify
+
+    def test_a_short_row_is_ignored(self, adapter) -> None:
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="truncated\n",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
+        assert a._connection_for("eth0") is None
+
+
 class TestVlans:
     _CONNECTIONS = ["nmcli", "-t", "-f", "NAME,UUID,TYPE,DEVICE", "connection", "show"]
 

@@ -6362,3 +6362,29 @@ def test_section_broadcast_receive_does_not_carry_or_clobber_speeds(tmp_path, mo
         assert reloaded.marker_move_speeds == {5: 1.0}
     finally:
         server.stop()
+
+
+def test_vlan_subinterface_is_offered_as_a_plane_pin(live_server, monkeypatch) -> None:
+    """A VLAN needs no plumbing beyond creating the link: once eth0.10 exists
+    it is an ordinary netdev, so it reaches the interface pickers through the
+    same psutil enumeration every other adapter uses. This is the claim the
+    VLAN work rests on – if it breaks, tagged VLANs stop being assignable
+    while every other test still passes."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.178.59")],
+            "eth0.10": [SimpleNamespace(family=_socket.AF_INET, address="10.20.0.5")],
+        },
+    )
+    _, base = live_server
+    status, body = _get(base, "/network/interfaces/by_name")
+    assert status == 200
+    assert 'value="eth0.10"' in body
+    assert "eth0.10 – 10.20.0.5" in body

@@ -68,8 +68,20 @@ from openfollow.configuration import (
 # namespace at call time (tests monkeypatch it for persist-failure paths).
 from openfollow.marker_catalog import save_catalog
 from openfollow.net_utils import get_local_ipv4_addresses
-from openfollow.network.adapter import Ipv4Config, Ipv4Method
-from openfollow.network.validate import parse_prefix, validate_apply
+from openfollow.network.adapter import (
+    LOOPBACK_NAMES,
+    VLAN_UNSUPPORTED_MESSAGE,
+    Ipv4Config,
+    Ipv4Method,
+)
+from openfollow.network.validate import (
+    VLAN_ID_RANGE_MESSAGE,
+    parse_prefix,
+    parse_vlan_id,
+    validate_apply,
+    validate_vlan_create,
+    vlan_interface_name,
+)
 from openfollow.templates import (
     TEMPLATE_FILE_SUFFIX,
     TEMPLATE_LEGACY_SUFFIX,
@@ -4405,9 +4417,26 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 }
                 for name in net["interfaces"]
             ]
+        # A VLAN row carries its tag so the operator can tell eth0.10 apart
+        # from a physical NIC that happens to be named with a dot, and so the
+        # delete control renders only where deleting is meaningful.
+        vlan_info = server.get_network_vlans()
+        vlan_ids = {str(v.get("name", "")): v.get("vlan_id") for v in vlan_info.get("vlans", [])}
+        net["supports_vlans"] = bool(vlan_info.get("supported"))
         net["iface_rows"] = [
-            {**row, "method_label": _NETWORK_METHOD_LABELS.get(row.get("method", ""), row.get("method", ""))}
+            {
+                **row,
+                "method_label": _NETWORK_METHOD_LABELS.get(row.get("method", ""), row.get("method", "")),
+                "vlan_id": vlan_ids.get(str(row.get("name", ""))),
+            }
             for row in rows
+        ]
+        # A VLAN cannot parent another VLAN (no QinQ) and loopback carries no
+        # tags, so neither is offered as a parent.
+        net["vlan_parents"] = [
+            name
+            for name in (str(row.get("name", "")) for row in rows)
+            if name and name not in vlan_ids and name not in LOOPBACK_NAMES
         ]
         net["session_iface"] = request_local_iface(request.environ)
         # One interface is always the current one – the same interface the card
@@ -4430,6 +4459,24 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if not cfg or not cfg.get("interfaces"):
             return None
         return cfg.get("active_interface") or None
+
+    def _network_vlan_response(
+        *,
+        iface: str | None = None,
+        banner: dict[str, str] | None = None,
+    ) -> Any:
+        """Re-render the card after a VLAN create / delete.
+
+        The interface list is force-refreshed because a VLAN that was just
+        created (or removed) has to appear (or vanish) immediately – waiting
+        out the TTL would show the operator a list that contradicts the banner
+        they are reading.
+        """
+        server.get_network_interfaces(force=True)
+        return template(
+            "partials/network",
+            net=_build_network_form_context(iface=iface, editable=True, banner=banner),
+        )
 
     def _network_redirect_url(address: str) -> str:
         """Build a same-scheme/same-port URL on ``address`` so a static /
@@ -4627,6 +4674,60 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 banner={"kind": "ok", "text": text},
             ),
         )
+
+    @app.post("/section/network/vlan/create")
+    def network_vlan_create() -> Any:
+        parent = (request.forms.get("vlan_parent") or "").strip()
+        raw_id = (request.forms.get("vlan_id") or "").strip()
+        vlans = server.get_network_vlans()
+        if not vlans.get("supported"):
+            return _network_vlan_response(
+                banner={"kind": "error", "text": VLAN_UNSUPPORTED_MESSAGE},
+            )
+        vlan_id = parse_vlan_id(raw_id)
+        if vlan_id is None:
+            return _network_vlan_response(banner={"kind": "error", "text": VLAN_ID_RANGE_MESSAGE})
+        names = [str(row.get("name", "")) for row in server.get_network_interfaces()]
+        vlan_names = [str(v.get("name", "")) for v in vlans.get("vlans", [])]
+        errors = validate_vlan_create(parent, vlan_id, interfaces=names, vlan_names=vlan_names)
+        if errors:
+            return _network_vlan_response(banner={"kind": "error", "text": errors[0]})
+        with _config_write_lock:
+            result = server.create_network_vlan(parent, vlan_id)
+        if not result.ok:
+            return _network_vlan_response(banner={"kind": "error", "text": result.message})
+        return _network_vlan_response(
+            iface=vlan_interface_name(parent, vlan_id),
+            banner={"kind": "ok", "text": result.message},
+        )
+
+    @app.post("/section/network/vlan/delete")
+    def network_vlan_delete() -> Any:
+        name = (request.forms.get("iface") or "").strip()
+        vlans = server.get_network_vlans()
+        if not vlans.get("supported"):
+            return _network_vlan_response(
+                banner={"kind": "error", "text": VLAN_UNSUPPORTED_MESSAGE},
+            )
+        if name not in [str(v.get("name", "")) for v in vlans.get("vlans", [])]:
+            return _network_vlan_response(
+                banner={"kind": "error", "text": f"{name or 'That interface'} is not a VLAN and cannot be deleted."},
+            )
+        # Deleting the interface the browser arrived on cuts the operator's own
+        # session mid-request, and the page they would need to undo it is the
+        # one that just became unreachable.
+        if name and name == request_local_iface(request.environ):
+            return _network_vlan_response(
+                iface=name,
+                banner={
+                    "kind": "error",
+                    "text": f"This session is connected over {name}. Reconnect on another interface to delete it.",
+                },
+            )
+        with _config_write_lock:
+            result = server.delete_network_vlan(name)
+        banner_kind = "ok" if result.ok else "error"
+        return _network_vlan_response(banner={"kind": banner_kind, "text": result.message})
 
     @app.post("/section/network/renew")
     def network_renew() -> Any:

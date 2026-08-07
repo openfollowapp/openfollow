@@ -1100,6 +1100,19 @@ class TestVlans:
         assert result.ok is True
         assert ["nmcli", "connection", "delete", "id", "vlan10"] in captured
 
+    def test_delete_targets_the_matching_profile_not_the_first(self, adapter) -> None:
+        """With several VLANs on one parent, deleting the wrong profile tears
+        down a different network than the operator asked for."""
+        a, captured, responses = adapter
+        self._prime(
+            responses,
+            "vlan10:uuid-v10:vlan:eth0.10\nvlan20:uuid-v20:vlan:eth0.20\n",
+        )
+        result = a.delete_vlan("eth0.20")
+        assert result.ok is True
+        assert ["nmcli", "connection", "delete", "id", "vlan20"] in captured
+        assert ["nmcli", "connection", "delete", "id", "vlan10"] not in captured
+
     def test_delete_uses_the_delete_capability(self, adapter) -> None:
         a, _captured, responses = adapter
         self._prime(responses, "vlan10:uuid-v10:vlan:eth0.10\n")

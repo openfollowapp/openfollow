@@ -378,7 +378,7 @@ def test_marker_card_y_stacking() -> None:
 def test_virtual_fader_card_y_stacks_bottom_up() -> None:
     """Lowest stack index sits at highest Y (bottom edge); each index
     is exactly ``card_h + card_margin`` pixels higher than the next."""
-    # Default: card_h=28, card_margin=6, bottom_padding=98.
+    # Default: card_h=28, card_margin=6, bottom_padding=98 (three-row panel).
     # Index 0 → 720 - 98 - 28 = 594.
     assert virtual_fader_card_y(0, frame_height=720) == 594.0
     # Index 1 → 594 - (28 + 6) = 560.
@@ -387,30 +387,50 @@ def test_virtual_fader_card_y_stacks_bottom_up() -> None:
     assert virtual_fader_card_y(2, frame_height=720) == 526.0
 
 
-def test_virtual_fader_card_y_clears_bottom_left_info_panel() -> None:
-    """The default ``bottom_padding`` is set so the lowest fader
-    card sits above the bottom-left info panel – preserving the
-    layout invariant."""
-    # Derive the info-panel reserved height from the layout helper rather
-    # than hard-coding it, so a panel-height change can't mask a regression.
+@pytest.mark.parametrize("row_count", [3, 4, 5])
+def test_virtual_fader_card_y_clears_bottom_left_info_panel(row_count: int) -> None:
+    """The lowest fader card must sit above the info panel at every row count.
+
+    The panel gains a row when the station has a resolvable hostname, so a
+    padding derived from three rows put the lowest card on top of it. The
+    reserved height is computed from the same helper the panel uses, so this
+    cannot be satisfied by a stale constant.
+    """
     from openfollow.runtime.overlay_layout import (
         bottom_left_info_panel_layout,
+        fader_stack_bottom_padding,
+        info_panel_height,
     )
 
-    info_panel_h = 54.0
     info_layout = bottom_left_info_panel_layout(
         frame_width=1280,
         frame_height=720,
         label_w=80.0,
         value_w=120.0,
         side_padding=12.0,
-        panel_h=info_panel_h,
+        panel_h=info_panel_height(row_count),
     )
-    reserved = 720 - info_layout.panel_y  # info_panel_h + bottom margin
     bottom_y = (
-        virtual_fader_card_y(0, frame_height=720) + 28.0  # card_h
+        virtual_fader_card_y(
+            0,
+            frame_height=720,
+            bottom_padding=fader_stack_bottom_padding(row_count),
+        )
+        + 28.0  # card_h
     )
-    assert 720 - bottom_y >= reserved
+    assert bottom_y <= info_layout.panel_y
+
+
+def test_default_fader_padding_matches_a_three_row_panel() -> None:
+    """The default exists for callers that don't know the row count; it must
+    stay in step with the helper rather than drifting as its own constant."""
+    from openfollow.runtime.overlay_layout import fader_stack_bottom_padding
+
+    assert virtual_fader_card_y(0, frame_height=720) == virtual_fader_card_y(
+        0,
+        frame_height=720,
+        bottom_padding=fader_stack_bottom_padding(3),
+    )
 
 
 # ---------------------------------------------------------------------------

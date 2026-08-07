@@ -1270,3 +1270,47 @@ class TestGetNetworkInterfaces:
         srv.get_network_interfaces()
         rows[0]["name"] = "corrupted"
         assert [r["name"] for r in srv.get_network_interfaces()] == ["eth0"]
+
+
+# ---------------------------------------------------------------------------
+# Always-reachable web UI: the wildcard bind is what makes the link-local
+# fallback usable, so it has to survive a station that boots with no address.
+# ---------------------------------------------------------------------------
+
+
+def test_wildcard_bind_accepts_on_every_interface(monkeypatch) -> None:
+    """The bind must reach the socket layer as INADDR_ANY. A station whose
+    address only appears after the DHCP fallback kicks in is reachable the
+    moment it does, with no restart - but only if the listener took the
+    wildcard rather than an address resolved at startup."""
+    from openfollow.web import server as server_mod
+
+    created: list[_FakeSocket] = []
+
+    def _factory(*_a, **_kw) -> _FakeSocket:
+        sock = _FakeSocket()
+        created.append(sock)
+        return sock
+
+    monkeypatch.setattr(server_mod.socket, "socket", _factory)
+    assert ConfigWebServer._can_bind("0.0.0.0", 12345) is True
+    assert created[-1].binds == [("", 12345)]
+
+
+def test_default_host_is_the_wildcard(tmp_path, monkeypatch) -> None:
+    """Restricting the web UI is opt-in. Asserted on a constructed server so
+    a change to how the default is applied is caught, not just its literal."""
+    srv = _make_quiet_server(tmp_path, monkeypatch, host="0.0.0.0")
+    assert srv._needs_loopback_listener() is False
+    bare = ConfigWebServer(config_path=str(tmp_path / "c.toml"), port=1, system_name="x")
+    assert bare._host == "0.0.0.0"
+
+
+def test_pinned_bind_gets_a_loopback_listener(tmp_path, monkeypatch) -> None:
+    """A pinned non-loopback bind still has to serve the on-screen browser,
+    so the loopback slot is what keeps the device usable while the UI is
+    restricted to one interface."""
+    srv = _make_quiet_server(tmp_path, monkeypatch, host="192.168.1.5")
+    assert srv._needs_loopback_listener() is True
+    for host in ("127.0.0.1", "::1", "0.0.0.0", ""):
+        assert _make_quiet_server(tmp_path, monkeypatch, host=host)._needs_loopback_listener() is False

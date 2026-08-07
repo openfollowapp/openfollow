@@ -180,6 +180,15 @@ class OverlayState:
     mouse_enabled: bool = False
     mouse_double_click_reset: bool = True
     ip_text: str = ""
+    # ``<hostname>.local`` – the recovery route that works whatever address
+    # the station ends up with, so the HUD carries it alongside the IP. Always
+    # the real ``current_hostname()``: advertising a name avahi isn't
+    # answering to is worse than showing none.
+    hostname_text: str = ""
+    # True when ip_text is an RFC 3927 self-assigned address, i.e. DHCP never
+    # answered. Drives the qualifier that stops an operator reading a
+    # 169.254 address as a working lease.
+    ip_is_fallback: bool = False
     show_hud_help: bool = True
     # System stats (CPU, RAM, temperature)
     cpu_percent: float = 0.0
@@ -315,6 +324,8 @@ class OverlayState:
         self.mouse_enabled = False
         self.mouse_double_click_reset = True
         self.ip_text = ""
+        self.hostname_text = ""
+        self.ip_is_fallback = False
         self.show_hud_help = True
         self.cpu_percent = 0.0
         self.ram_percent = 0.0

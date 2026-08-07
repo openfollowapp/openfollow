@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from openfollow.osc.template import BUILTIN_TEMPLATES
 from openfollow.templates import (
     TEMPLATE_FILE_SUFFIX,
     TEMPLATE_LEGACY_SUFFIX,
@@ -922,6 +923,8 @@ class TestSlugify:
         [
             ("My Cue", "my-cue"),
             ("ETC Eos", "etc-eos"),
+            # Pins the bundled patch template's filename to the slug rule.
+            ("ETC Eos (Patch)", "etc-eos-patch"),
             ("d&b absolute", "d-b-absolute"),
             ("Indoor / Outdoor!", "indoor-outdoor"),
             ("café", "cafe"),  # NFKD strips accents
@@ -1107,25 +1110,42 @@ class TestDeleteUserTemplate:
 class TestBootstrap:
     def test_seeds_bundled_templates(self, tmp_path: Path) -> None:
         n = seed_system_templates(tmp_path)
-        assert n == 4
+        assert n == 5
         sysdir = tmp_path / "system"
         files = sorted(p.name for p in sysdir.glob(f"*{TEMPLATE_FILE_SUFFIX}"))
         assert files == [
             "osc_output.adm-osc-3d.oftemplate",
             "osc_output.adm-osc.oftemplate",
             "osc_output.dnb-absolute.oftemplate",
+            "osc_output.etc-eos-patch.oftemplate",
             "osc_output.etc-eos.oftemplate",
         ]
 
     def test_seeded_files_load_cleanly(self, tmp_path: Path) -> None:
         seed_system_templates(tmp_path)
         loaded = list_templates(tmp_path)
-        assert len(loaded) == 4
+        assert len(loaded) == 5
         for entry in loaded:
             assert entry.error == "", entry.error
             assert entry.is_system is True
             assert entry.template is not None
             assert entry.template.type == "osc_output"
+
+    def test_seeded_payloads_match_the_in_code_builtins(self, tmp_path: Path) -> None:
+        """The bundled files and ``BUILTIN_TEMPLATES`` carry the same
+        addresses and args; keyed by display name, which both spell."""
+        seed_system_templates(tmp_path)
+        on_disk = {
+            entry.template.name: entry.template.payload
+            for entry in list_templates(tmp_path)
+            if entry.template is not None
+        }
+        assert sorted(on_disk) == sorted(t.name for t in BUILTIN_TEMPLATES)
+        for builtin in BUILTIN_TEMPLATES:
+            payload = on_disk[builtin.name]
+            assert payload["address"] == builtin.address
+            assert payload["args"] == list(builtin.args)
+            assert payload["trigger"] == dict(builtin.trigger)
 
     def test_idempotent_overwrite(self, tmp_path: Path) -> None:
         # A re-seed restores a mutated file.

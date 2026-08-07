@@ -114,6 +114,8 @@ Read-only panels showing what the transmitter is doing right now.
 
 **Template** dropdown + **+ New transmitter** – choose a template and click the button to add a transmitter pre-filled with its address and arguments. Leave the dropdown on *empty* to start with a blank transmitter. Drag the ⋮⋮ handle on the left of a collapsed transmitter to reorder – order is cosmetic, transmitters evaluate independently.
 
+The two ETC templates target the same Augment3d object by different routes. **ETC Eos** moves a Scenic Element Movable in Live, so its position is a channel parameter the console can record into a cue. **ETC Eos (Patch)** writes the object's patch position instead, which never lands in cue data but is a patch edit. Both expect the marker ID to match the Eos channel number, and both send metres along Augment3d's own axes, so X and Y need no conversion. Height does: `[z]` is measured from the PSN origin, while Augment3d measures from its own origin. If your **Grid** section sets a non-zero *Z offset*, put the Augment3d origin at the same height, or the element floats by that difference.
+
 ## Saving & sharing
 
 - **Save** – write the transmitter's current settings to disk. Changes apply immediately but are lost on reload unless saved.

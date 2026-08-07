@@ -267,7 +267,7 @@
  contenteditable="true"
  spellcheck="false"
  data-osc-message-editor="{{row.id}}"
- data-osc-message-placeholder="/eos/set/patch/[markerid]/augment3d/position [x] [z] [y] 0 0 0"
+ data-osc-message-placeholder="/eos/chan/[markerid]/xyz [x] [y] [z]"
  data-osc-unresolved-placeholders="{{json.dumps(list(row_unresolved))}}"
  data-osc-placeholder-names="{{json.dumps(list(placeholders))}}"
  data-osc-registered-marker-ids="{{json.dumps(list(_registered_marker_ids))}}"

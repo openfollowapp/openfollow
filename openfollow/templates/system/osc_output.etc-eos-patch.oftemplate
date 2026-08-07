@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "osc_output",
+  "id": "system-osc_output-etc-eos-patch",
+  "name": "ETC Eos (Patch)",
+  "is_system": true,
+  "payload": {
+    "address": "/eos/set/patch/[markerid]/augment3d/position",
+    "args": ["[x]", "[y]", "[z]", "0.0", "0.0", "0.0"],
+    "trigger": {"kind": "stream", "rate_hz": 30}
+  }
+}

@@ -4063,6 +4063,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 select_value=f"file:{entry.filename}",
             )
             (system if entry.is_system else user).append(view)
+        # By display name, not the loader's filename order: a slug suffix
+        # sorts a variant above the entry it varies ("etc-eos-patch" before
+        # "etc-eos"), which reads as the wrong default in the picker.
+        user.sort(key=lambda v: v.name.casefold())
+        system.sort(key=lambda v: v.name.casefold())
         return user, system
 
     @app.get("/")

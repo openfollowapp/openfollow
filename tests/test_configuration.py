@@ -60,6 +60,7 @@ class _DummyRuntimeServices:
         self.psn_source_ip_changes: list[str] = []
         self.psn_mcast_ip_changes: list[str] = []
         self.psn_combined_changes: list[tuple[str, str]] = []
+        self.psn_suspends = 0
         self.station_iface_follow_calls = 0
         self.psn_system_name_changes: list[str] = []
         self.detection_changes: list[DetectionConfig] = []
@@ -89,6 +90,9 @@ class _DummyRuntimeServices:
             self.psn_combined_changes.append(
                 (new_source_ip, str(new_mcast_ip)),
             )
+
+    def suspend_psn_planes(self) -> None:
+        self.psn_suspends += 1
 
     def apply_station_iface_change(self) -> None:
         self.station_iface_follow_calls += 1
@@ -1313,11 +1317,23 @@ def test_apply_runtime_combines_psn_mcast_and_iface_change(monkeypatch) -> None:
     assert app._config.psn_source_iface == "eth0"
 
 
-def test_apply_runtime_combined_psn_failure_reverts_both_fields() -> None:
+def test_apply_runtime_combined_psn_failure_reverts_both_fields(monkeypatch) -> None:
     """When the combined orchestrator raises, both stored fields
     revert so the next hot-reload pass re-attempts. Without
     reverting both, a stuck ``stored == new`` for either field
-    would silently no-op the next pass."""
+    would silently no-op the next pass.
+
+    ``eth0`` is made live so this exercises the rebind path; a down interface
+    suspends instead and is covered separately."""
+    import socket as _socket
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {"eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")]},
+    )
 
     class _FailingRuntimeServices(_DummyRuntimeServices):
         def apply_psn_source_ip_change(
@@ -1342,6 +1358,8 @@ def test_apply_runtime_combined_psn_failure_reverts_both_fields() -> None:
     assert app._config.psn_mcast_ip == "236.10.10.10"
     assert app._config.psn_source_iface == "wlan0"
     assert app._web_commands.restart_requested is False
+    # A live interface takes the rebind path, never the fail-closed suspend.
+    assert app._runtime_services.psn_suspends == 0
 
 
 def test_apply_runtime_psn_mcast_ip_failure_reverts_config() -> None:
@@ -3813,7 +3831,17 @@ def test_apply_runtime_rttrpm_failure_reverts_config_and_preserves_reference() -
     assert app._config.viewer_marker_ids == [7]
 
 
-def test_apply_runtime_psn_source_iface_failure_reverts_config() -> None:
+def test_apply_runtime_psn_source_iface_failure_reverts_config(monkeypatch) -> None:
+    """``eth0`` is live here, so the rebind path runs and its failure reverts."""
+    import socket as _socket
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {"eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")]},
+    )
 
     class _FailingRuntimeServices(_DummyRuntimeServices):
         def apply_psn_source_ip_change(self, new_source_ip: str) -> None:
@@ -3821,11 +3849,54 @@ def test_apply_runtime_psn_source_iface_failure_reverts_config() -> None:
 
     app = _DummyApp(AppConfig(psn_source_iface=""))
     app._runtime_services = _FailingRuntimeServices()
-    new_config = AppConfig(psn_source_iface="ghost0")
+    new_config = AppConfig(psn_source_iface="eth0")
 
     apply_runtime_config_changes(app, new_config)
 
     # Stored config reverted so a subsequent reload retries.
+    assert app._config.psn_source_iface == ""
+    assert app._web_commands.restart_requested is False
+    assert app._runtime_services.psn_suspends == 0
+
+
+def test_apply_runtime_down_iface_suspends_and_never_rebinds(monkeypatch) -> None:
+    """A pin to an interface with no address must stop PSN, not move it.
+
+    The hot-reload path used to resolve through the fail-open chain, so this
+    same edit rebound PSN to the OS-primary interface - stage data on the
+    network the operator had just deselected, while the panel showed the
+    interface as down.
+    """
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", dict)
+    monkeypatch.setattr(net_utils_module, "get_primary_local_ipv4", lambda default="": "10.0.0.1")
+
+    app = _DummyApp(AppConfig(psn_source_iface=""))
+    apply_runtime_config_changes(app, AppConfig(psn_source_iface="ghost0"))
+
+    assert app._runtime_services.psn_suspends == 1
+    assert app._runtime_services.psn_source_ip_changes == []
+    assert app._runtime_services.psn_combined_changes == []
+    # The operator's choice is honoured and kept - the plane stops, the pin stays.
+    assert app._config.psn_source_iface == "ghost0"
+
+
+def test_apply_runtime_suspend_failure_reverts_config(monkeypatch) -> None:
+    """A failing suspend reverts like a failing rebind, so the next pass retries."""
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", dict)
+    monkeypatch.setattr(net_utils_module, "get_primary_local_ipv4", lambda default="": "10.0.0.1")
+
+    class _FailingRuntimeServices(_DummyRuntimeServices):
+        def suspend_psn_planes(self) -> None:
+            raise OSError("simulated suspend failure")
+
+    app = _DummyApp(AppConfig(psn_source_iface=""))
+    app._runtime_services = _FailingRuntimeServices()
+    apply_runtime_config_changes(app, AppConfig(psn_source_iface="ghost0"))
+
     assert app._config.psn_source_iface == ""
     assert app._web_commands.restart_requested is False
 

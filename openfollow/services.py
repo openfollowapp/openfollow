@@ -1521,6 +1521,26 @@ class AppRuntimeServices:
         if self._app._otp_server is not None and otp_cfg.enabled and not otp_cfg.source_iface:
             self.apply_otp_output_change(otp_cfg)
 
+    def suspend_psn_planes(self) -> None:
+        """Stop PSN output and input because the station interface has no address.
+
+        The counterpart to ``init_psn`` declining to start: a live pin change to
+        an interface that is currently down must leave PSN sending nowhere, not
+        rebind it to whatever the OS routing table picks. Both sides stop so the
+        station cannot answer on one interface while advertising another.
+        """
+        logger.error(
+            "Configured psn_source_iface '%s' has no address; PSN input and output are stopped "
+            "(they will not be moved to another interface).",
+            self._app._config.psn_source_iface,
+        )
+        server = self._app._server
+        if server is not None:
+            server.stop()
+        receiver = self._app._psn_receiver
+        if receiver is not None:
+            receiver.stop()
+
     def apply_psn_source_ip_change(
         self,
         new_source_ip: str,

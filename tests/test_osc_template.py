@@ -240,10 +240,39 @@ def test_render_consecutive_placeholders() -> None:
     assert render(ct, _ctx(pos=(1.0, 2.0, 3.0))) == "123"
 
 
-def test_render_uses_g_format_for_floats() -> None:
-    """`g` format trims trailing zeros so [x] doesn't read as 1.0000000000."""
+def test_render_trims_trailing_zeros() -> None:
+    """Trailing zeros are trimmed so [x] doesn't read as 1.0000000000."""
     ct = compile_template("[x]")
     assert render(ct, _ctx(pos=(1.0, 0.0, 0.0))) == "1"
+
+
+@pytest.mark.parametrize(
+    ("x", "expected"),
+    [
+        (0.0000032, "0.000003"),  # an EMA glide decaying toward zero
+        (-0.0000032, "-0.000003"),
+        (1e-12, "0"),  # below stage resolution – reads as zero, not 1e-12
+        (1.25e9, "1250000000"),
+        (-1234.5678, "-1234.5678"),
+        (0.0, "0"),
+    ],
+)
+def test_render_never_emits_exponent_notation(x: float, expected: str) -> None:
+    """A console parsing a rendered position rejects ``3.2e-06``; the
+    renderer must spell every magnitude out in full."""
+    rendered = render(compile_template("[x]"), _ctx(pos=(x, 0.0, 0.0)))
+    assert "e" not in rendered.lower()
+    assert rendered == expected
+
+
+@pytest.mark.parametrize(
+    ("x", "expected"),
+    [(float("inf"), "inf"), (float("-inf"), "-inf"), (float("nan"), "nan")],
+)
+def test_render_spells_out_non_finite_positions(x: float, expected: str) -> None:
+    """A non-finite position renders with no decimal point, so the
+    trailing-zero trim passes it through whole."""
+    assert render(compile_template("[x]"), _ctx(pos=(x, 0.0, 0.0))) == expected
 
 
 def test_absolute_placeholders_pass_through_when_outside_grid() -> None:
@@ -778,21 +807,40 @@ def test_render_default_slot_raises_when_marker_id_is_none(
 
 
 def test_builtin_etc_eos_wire_format() -> None:
-    """Args order X, Z, Y, 0, 0, 0 – the Z-up→Y-up swap is done by
-    placeholder choice, not code."""
+    """The marker id addresses the Eos channel; three float args carry
+    the position."""
     tpl = builtin_by_id("etc")
+    assert tpl is not None
+    addr_ct = compile_template(tpl.address)
+    arg_cts = [compile_template(a) for a in tpl.args]
+    rc = _ctx(pos=(1.0, 2.0, 3.0), marker_id=5)
+    assert render(addr_ct, rc) == "/eos/chan/5/xyz"
+    typed = [osc_arg_for(ct, rc) for ct in arg_cts]
+    assert typed == [
+        ("f", pytest.approx(1.0)),
+        ("f", pytest.approx(2.0)),
+        ("f", pytest.approx(3.0)),
+    ]
+
+
+def test_builtin_etc_eos_patch_wire_format() -> None:
+    """Position plus three rotation args, all floats – a bare ``0``
+    would type as ``i`` and Eos rejects the message."""
+    tpl = builtin_by_id("etc-patch")
     assert tpl is not None
     addr_ct = compile_template(tpl.address)
     arg_cts = [compile_template(a) for a in tpl.args]
     rc = _ctx(pos=(1.0, 2.0, 3.0), marker_id=5)
     assert render(addr_ct, rc) == "/eos/set/patch/5/augment3d/position"
     typed = [osc_arg_for(ct, rc) for ct in arg_cts]
-    assert typed[0] == ("f", pytest.approx(1.0))  # [x]
-    assert typed[1] == ("f", pytest.approx(3.0))  # [z]
-    assert typed[2] == ("f", pytest.approx(2.0))  # [y]
-    assert typed[3] == ("i", 0)
-    assert typed[4] == ("i", 0)
-    assert typed[5] == ("i", 0)
+    assert typed == [
+        ("f", pytest.approx(1.0)),
+        ("f", pytest.approx(2.0)),
+        ("f", pytest.approx(3.0)),
+        ("f", pytest.approx(0.0)),
+        ("f", pytest.approx(0.0)),
+        ("f", pytest.approx(0.0)),
+    ]
 
 
 def test_builtin_adm_osc_2d_uses_fractional_xy_zero_z() -> None:
@@ -857,14 +905,20 @@ def test_builtin_templates_have_unique_ids() -> None:
     assert len(ids) == len(set(ids))
 
 
-@pytest.mark.parametrize("template_id", ["etc", "adm-osc", "adm-osc-3d", "dnb-abs"])
+@pytest.mark.parametrize(
+    "template_id",
+    ["etc", "etc-patch", "adm-osc", "adm-osc-3d", "dnb-abs"],
+)
 def test_builtin_template_carries_stream_30hz_trigger_pre_fill(template_id: str) -> None:
     tpl = builtin_by_id(template_id)
     assert tpl is not None
     assert tpl.trigger == {"kind": "stream", "rate_hz": 30}
 
 
-@pytest.mark.parametrize("template_id", ["etc", "adm-osc", "dnb-abs"])
+@pytest.mark.parametrize(
+    "template_id",
+    ["etc", "etc-patch", "adm-osc", "adm-osc-3d", "dnb-abs"],
+)
 def test_builtin_template_trigger_is_immutable(template_id: str) -> None:
     """The trigger field is a read-only ``MappingProxyType`` – mutation
     raises ``TypeError``."""

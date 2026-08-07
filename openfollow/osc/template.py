@@ -155,6 +155,11 @@ PLACEHOLDERS: frozenset[str] = _SOURCES
 # see ``_is_ascii_digit``.
 _RANGE_PREFIX_RE = re.compile(r"(-?[0-9]+(?:\.[0-9]+)?)-(-?[0-9]+(?:\.[0-9]+)?)")
 
+# Six decimals is a micrometre at stage scale. The precision must stay
+# non-zero: :func:`_format_value` trims trailing zeros, and a ``".0f"``
+# render carries no decimal point to stop the trim at.
+_FLOAT_FORMAT: str = ".6f"
+
 
 class RenderError(ValueError):
     """Raised when a placeholder cannot be resolved at render time.
@@ -1017,9 +1022,9 @@ def render(ct: CompiledTemplate, rc: RenderContext) -> str:
 def _format_value(value: Any) -> str:
     """Stringify a slot value for string-rendered OSC templates.
 
-    Integers render as decimal strings. Other numerics use ``format(...,
-    "g")``, which trims trailing zeros (``1.0`` → ``"1"``) and may emit
-    exponent notation at extreme magnitudes. Reached by multi-part
+    Integers render as decimal strings. Other numerics render fixed-point
+    with trailing zeros trimmed (``1.0`` → ``"1"``, ``2.5`` → ``"2.5"``),
+    never in exponent notation at any magnitude. Reached by multi-part
     templates; single-slot args go through :func:`osc_arg_for` to keep
     their OSC typetag.
     """
@@ -1027,7 +1032,9 @@ def _format_value(value: Any) -> str:
         return str(int(value))
     if isinstance(value, int):
         return str(value)
-    return format(float(value), "g")
+    # A finite value always renders a decimal point, so the trim can't eat
+    # significant digits; ``inf`` / ``nan`` carry none and pass through.
+    return format(float(value), _FLOAT_FORMAT).rstrip("0").rstrip(".")
 
 
 def _wire_type(slot: _Slot) -> str:
@@ -1140,11 +1147,22 @@ class BuiltinTemplate:
 # ``builtin.trigger`` always being populated. All share the one read-only
 # ``MappingProxyType`` instance – sharing is safe since it's immutable.
 BUILTIN_TEMPLATES: tuple[BuiltinTemplate, ...] = (
+    # Augment3d shares our stage frame (X lateral, Y depth, Z height) and
+    # metres, so the marker position maps across 1:1.
     BuiltinTemplate(
         id="etc",
         name="ETC Eos",
+        address="/eos/chan/[markerid]/xyz",
+        args=("[x]", "[y]", "[z]"),
+        trigger=_DEFAULT_STREAM_30HZ_TRIGGER,
+    ),
+    # Patch variant: same position, plus three rotation args. The ``0.0``
+    # literals type as OSC ``f`` – Eos rejects the ``i`` a bare ``0`` gives.
+    BuiltinTemplate(
+        id="etc-patch",
+        name="ETC Eos (Patch)",
         address="/eos/set/patch/[markerid]/augment3d/position",
-        args=("[x]", "[z]", "[y]", "0", "0", "0"),
+        args=("[x]", "[y]", "[z]", "0.0", "0.0", "0.0"),
         trigger=_DEFAULT_STREAM_30HZ_TRIGGER,
     ),
     # ``id`` stays ``adm-osc`` so existing rows referencing it keep

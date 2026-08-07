@@ -1513,14 +1513,45 @@ def test_add_with_builtin_template_populates_address_and_args(live_server) -> No
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[0]
     assert row.name == "ETC Eos"
-    assert row.address.startswith("/eos/")
-    assert row.args  # non-empty
+    assert row.address == "/eos/chan/[markerid]/xyz"
+    assert row.args == ["[x]", "[y]", "[z]"]
+
+
+def test_add_with_patch_template_keeps_rotations_float_typed(live_server) -> None:
+    """The rotation literals must survive the apply + ``__post_init__``
+    round-trip as ``"0.0"``; normalised to ``"0"`` they would go on the
+    wire as OSC ``i`` and Eos rejects the message."""
+    _, base, cfg_path = live_server
+    _post_form(
+        base,
+        "/section/osc_bindings/add",
+        {"template_id": "file:osc_output.etc-eos-patch.oftemplate"},
+    )
+    row = load_config(cfg_path).osc_transmitters.transmitters[0]
+    assert row.address == "/eos/set/patch/[markerid]/augment3d/position"
+    assert row.args == ["[x]", "[y]", "[z]", "0.0", "0.0", "0.0"]
+
+
+def test_template_dropdown_lists_defaults_by_display_name(live_server) -> None:
+    """Filename order puts a slug-suffixed variant above the entry it
+    varies; the picker must read in display-name order instead."""
+    _, base, _ = live_server
+    _, body = _get(base, "/section/osc_bindings")
+    listed = re.findall(r'<option value="file:[^"]+">([^<]+)</option>', body)
+    assert listed == [
+        "ADM-OSC 2D",
+        "ADM-OSC 3D",
+        "d&amp;b absolute",
+        "ETC Eos",
+        "ETC Eos (Patch)",
+    ]
 
 
 @pytest.mark.parametrize(
     "template_filename,template_name",
     [
         ("osc_output.etc-eos.oftemplate", "ETC Eos"),
+        ("osc_output.etc-eos-patch.oftemplate", "ETC Eos (Patch)"),
         # Filename stays ``adm-osc`` while the display name carries the
         # 2D/3D suffix, so existing rows whose template_id references this
         # file keep resolving.

@@ -191,6 +191,7 @@ class TestBootstrap:
             "osc_output.adm-osc-3d.oftemplate",
             "osc_output.adm-osc.oftemplate",
             "osc_output.dnb-absolute.oftemplate",
+            "osc_output.etc-eos-patch.oftemplate",
             "osc_output.etc-eos.oftemplate",
         ]
 
@@ -207,7 +208,13 @@ class TestList:
         assert status == 200
         payload = json.loads(body)
         names = sorted(t["name"] for t in payload["templates"])
-        assert names == ["ADM-OSC 2D", "ADM-OSC 3D", "ETC Eos", "d&b absolute"]
+        assert names == [
+            "ADM-OSC 2D",
+            "ADM-OSC 3D",
+            "ETC Eos",
+            "ETC Eos (Patch)",
+            "d&b absolute",
+        ]
         for entry in payload["templates"]:
             assert entry["is_system"] is True
             assert entry["type"] == "osc_output"
@@ -225,7 +232,7 @@ class TestList:
         assert status == 200
         names = sorted(t["name"] for t in json.loads(body)["templates"])
         assert "Mine" in names
-        assert len(names) == 5
+        assert len(names) == 6
 
     def test_filters_by_type(self, live_server) -> None:
         _, base, cfg_path = live_server

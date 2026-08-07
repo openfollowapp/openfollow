@@ -1056,6 +1056,34 @@ class TestVlans:
         )
         assert a.list_vlans() == []
 
+    def test_a_colon_in_a_profile_name_does_not_shift_the_columns(self, adapter) -> None:
+        """nmcli -t escapes a literal ':' in a value as '\\:'.
+
+        Splitting on every colon shifts each field after a colon-bearing name,
+        so an unrelated profile called "Wired connection: office" poisons the
+        UUID->device map that resolves a VLAN's parent - and a VLAN whose own
+        name contains one drops out of the list entirely, which makes it
+        undeletable from the UI.
+        """
+        a, _captured, responses = adapter
+        self._prime(
+            responses,
+            "Wired connection\\: office:uuid-eth0:802-3-ethernet:eth0\nvlan\\: ten:uuid-v10:vlan:eth0.10\n",
+        )
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan: ten"],
+            stdout="vlan.parent:uuid-eth0\nvlan.id:10\n",
+        )
+        assert a.list_vlans() == [VlanInterface(name="eth0.10", parent="eth0", vlan_id=10)]
+
+    def test_a_colon_named_vlan_is_still_deletable(self, adapter) -> None:
+        a, captured, responses = adapter
+        self._prime(responses, "vlan\\: ten:uuid-v10:vlan:eth0.10\n")
+        result = a.delete_vlan("eth0.10")
+        assert result.ok is True
+        assert ["nmcli", "connection", "delete", "id", "vlan: ten"] in captured
+
     def test_ignores_non_vlan_profiles(self, adapter) -> None:
         a, _captured, responses = adapter
         self._prime(responses, "Wired connection 1:uuid-eth0:802-3-ethernet:eth0\n")

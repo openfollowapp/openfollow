@@ -35,8 +35,10 @@ class _Recorder:
         self.suspends = 0
         self.is_enabled = True
         self.apply_error: Exception | None = None
+        self.resolves = 0
 
     def resolve(self) -> tuple[str, str, str]:
+        self.resolves += 1
         return self.address, self.status, self.iface
 
     def current(self) -> str | None:
@@ -325,7 +327,12 @@ class TestAlertsAndThrottling:
         assert obs.alerts() == ["plane0: interface is down"]
 
     def test_alert_survives_a_resolver_that_raises(self) -> None:
-        """Rendering the HUD must not depend on nmcli still answering."""
+        """Rendering the HUD must not depend on nmcli still answering.
+
+        ``alerts()`` reads the interface name cached by the last poll, so a
+        backend that has since died cannot reach the render path at all - and
+        the operator still gets the interface named rather than a placeholder.
+        """
         rec = _Recorder()
         failing = {"now": False}
 
@@ -346,7 +353,7 @@ class TestAlertsAndThrottling:
         rec.go_down()
         _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
         failing["now"] = True
-        assert obs.alerts() == ["plane0: interface is down"]
+        assert obs.alerts() == ["plane0: eth0 is down"]
 
     def test_a_plane_never_polled_contributes_no_alert(self) -> None:
         """A plane added but not yet reached - a disabled one, or the first
@@ -368,3 +375,35 @@ class TestAlertsAndThrottling:
         obs, _clk = _observer(rec)
         obs.poll()
         assert obs.poll(force=True) is True
+
+
+class TestAlertsStayOffTheRenderPath:
+    """``alerts()`` feeds the HUD, so it runs once per rendered frame.
+
+    Resolving there walked every interface via psutil for as long as an outage
+    lasted - at 60-120 Hz, on the frame loop, exactly while the station is
+    already in trouble.
+    """
+
+    def test_alerts_never_resolve(self) -> None:
+        rec = _Recorder()
+        rec.bound = "192.168.1.5"
+        obs, clk = _observer(rec)
+        rec.go_down()
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        assert obs.alerts(), "expected a suspended plane to raise an alert"
+
+        before = rec.resolves
+        for _ in range(120):
+            obs.alerts()
+        assert rec.resolves == before
+
+    def test_the_alert_still_names_the_interface(self) -> None:
+        """Caching must not cost the operator the one detail that makes the
+        line actionable."""
+        rec = _Recorder(iface="eth0.10")
+        rec.bound = "192.168.1.5"
+        obs, clk = _observer(rec)
+        rec.go_down()
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        assert any("eth0.10" in line for line in obs.alerts())

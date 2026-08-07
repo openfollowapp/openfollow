@@ -96,6 +96,9 @@ class _PlaneState:
     failure: str = ""
     retry_at: float = 0.0
     backoff: float = _RETRY_BACKOFF_S
+    # Interface name from the last resolve, so ``alerts()`` can name it without
+    # re-resolving. ``alerts()`` runs on the render path.
+    iface: str = ""
 
 
 @dataclass
@@ -155,6 +158,7 @@ class NetworkPlaneObserver:
             return
 
         address, status, iface = plane.resolve()
+        state.iface = iface
         # "none" is nothing configured and nothing to auto-detect: the station
         # has no address at all. Binding "" would hand the plane INADDR_ANY,
         # which is the wrong network by definition.
@@ -209,6 +213,11 @@ class NetworkPlaneObserver:
         Rendered on the HUD, which is the only surface an operator has when the
         interface carrying the web UI is the one that went away. Emitted in
         plane order so the rows don't reshuffle between frames.
+
+        Reads the interface name cached by the last poll rather than resolving
+        it: this runs once per rendered frame (60-120 Hz), and resolving walks
+        every interface via psutil - so an outage would put that enumeration on
+        the render path for as long as it lasted.
         """
         out: list[str] = []
         for plane in self.planes:
@@ -216,16 +225,9 @@ class NetworkPlaneObserver:
             if state is None:
                 continue
             if state.suspended:
-                out.append(f"{plane.label}: {self._iface_of(plane)} is down")
+                out.append(f"{plane.label}: {state.iface or 'interface'} is down")
             elif state.failure:
                 # A plane whose rebind keeps failing is just as dead as a
                 # suspended one, and used to surface nowhere at all.
                 out.append(f"{plane.label}: {state.failure}")
         return out
-
-    @staticmethod
-    def _iface_of(plane: Plane) -> str:
-        try:
-            return plane.resolve()[2] or "interface"
-        except Exception:  # noqa: BLE001
-            return "interface"

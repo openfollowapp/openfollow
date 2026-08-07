@@ -31,6 +31,7 @@ from openfollow.configuration import (
     MarkerConfig,
     OtpOutputConfig,
     RttrpmOutputConfig,
+    apply_runtime_config_changes,
 )
 from openfollow.net_utils import resolve_plane_source_ip as _REAL_RESOLVE_PLANE_SOURCE_IP
 from openfollow.psn.server import _UNCHANGED as _UNCHANGED_SENTINEL
@@ -3981,3 +3982,123 @@ class TestOtpLiveRestartOnADownInterface:
             OtpOutputConfig(enabled=True, system_number=1, port=5568, source_iface="eth_gone")
         )
         assert (server.stopped, server.restarts) == (1, 0)
+
+
+class TestStationIfaceHotReloadFailsClosed:
+    """A live Save must behave the same as a reboot on the same config.
+
+    Startup refuses to start PSN when the configured station interface has no
+    address. The hot-reload path used to resolve through the fail-open chain,
+    so the identical config moved PSN onto the OS-primary interface after a
+    Save and stopped it after a restart - and the panel meanwhile rendered
+    "<iface> is down".
+    """
+
+    def _apply_iface_change(
+        self,
+        services: AppRuntimeServices,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        new_iface: str,
+        new_mcast: str | None = None,
+    ) -> tuple[list[str], list[str]]:
+        """Drive the dispatcher for a station-interface change on a host where
+        ``new_iface`` does not exist. Returns (rebind calls, suspend calls)."""
+        from openfollow import net_utils
+
+        monkeypatch.setattr(net_utils.psutil, "net_if_addrs", dict)
+        monkeypatch.setattr(net_utils, "get_primary_local_ipv4", lambda default="": "10.0.0.1")
+
+        rebinds: list[str] = []
+        suspends: list[str] = []
+        monkeypatch.setattr(
+            services,
+            "apply_psn_source_ip_change",
+            lambda ip, **_kw: rebinds.append(ip),
+        )
+        monkeypatch.setattr(services, "suspend_psn_planes", lambda: suspends.append("suspended"))
+        monkeypatch.setattr(services, "apply_station_iface_change", lambda: None)
+
+        app = services._app
+        app._runtime_services = services
+        app._refresh_psn_source_advisory = lambda: None  # type: ignore[method-assign]
+        new_cfg = replace(
+            app._config,
+            psn_source_iface=new_iface,
+            **({"psn_mcast_ip": new_mcast} if new_mcast else {}),
+        )
+        apply_runtime_config_changes(app, new_cfg)
+        return rebinds, suspends
+
+    def test_down_iface_suspends_instead_of_rebinding(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rebinds, suspends = self._apply_iface_change(services, monkeypatch, new_iface="ghost0")
+        assert suspends == ["suspended"]
+        assert rebinds == [], f"PSN was rebound to {rebinds!r} instead of stopping"
+
+    def test_down_iface_suspends_on_the_combined_mcast_path(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Changing the multicast group in the same Save must not reopen the
+        fall-through the single-field path just closed."""
+        rebinds, suspends = self._apply_iface_change(
+            services,
+            monkeypatch,
+            new_iface="ghost0",
+            new_mcast="236.10.10.11",
+        )
+        assert suspends == ["suspended"]
+        assert rebinds == []
+
+    def test_a_live_interface_still_rebinds(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The fail-closed branch must not swallow the normal case."""
+        import socket
+        from types import SimpleNamespace
+
+        from openfollow import net_utils
+
+        monkeypatch.setattr(
+            net_utils.psutil,
+            "net_if_addrs",
+            lambda: {"eth9": [SimpleNamespace(family=socket.AF_INET, address="172.16.9.9")]},
+        )
+        rebinds: list[str] = []
+        suspends: list[str] = []
+        monkeypatch.setattr(services, "apply_psn_source_ip_change", lambda ip, **_kw: rebinds.append(ip))
+        monkeypatch.setattr(services, "suspend_psn_planes", lambda: suspends.append("suspended"))
+        monkeypatch.setattr(services, "apply_station_iface_change", lambda: None)
+        app = services._app
+        app._runtime_services = services
+        app._refresh_psn_source_advisory = lambda: None  # type: ignore[method-assign]
+        apply_runtime_config_changes(app, replace(app._config, psn_source_iface="eth9"))
+        assert rebinds == ["172.16.9.9"]
+        assert suspends == []
+
+
+class TestSuspendPsnPlanes:
+    def test_stops_both_directions(self, services: AppRuntimeServices) -> None:
+        """Both sides stop, or the station answers on one interface while
+        advertising another."""
+
+        class _Stoppable:
+            def __init__(self) -> None:
+                self.stopped = False
+
+            def stop(self) -> None:
+                self.stopped = True
+
+        server = _Stoppable()
+        receiver = _Stoppable()
+        services._app._server = server  # type: ignore[assignment]
+        services._app._psn_receiver = receiver  # type: ignore[assignment]
+        services.suspend_psn_planes()
+        assert server.stopped is True
+        assert receiver.stopped is True
+
+    def test_tolerates_planes_that_never_started(self, services: AppRuntimeServices) -> None:
+        services._app._server = None
+        services._app._psn_receiver = None
+        services.suspend_psn_planes()  # must not raise

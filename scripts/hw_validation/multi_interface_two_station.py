@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
 import subprocess
 import sys
 import time
@@ -54,7 +55,9 @@ import urllib.parse
 import urllib.request
 
 CAPTURE_SECONDS = 8
-SETTLE_SECONDS = 4
+SETTLE_SECONDS = 6
+_VENV_PYTHON = "/opt/openfollow/venv/bin/python"
+_REMOTE_PROBE_DIR = "/tmp"  # noqa: S108 - a throwaway copy of a repo script on the DUT
 
 
 # --------------------------------------------------------------------------- #
@@ -180,19 +183,63 @@ def capture_psn(
     nic: str,
     mcast: str,
     seconds: int = CAPTURE_SECONDS,
-) -> str:
-    """Return tcpdump's link-level output for PSN traffic on ``nic``.
+) -> list[dict]:
+    """Return the PSN frames seen on ``nic``, each with its 802.1Q tag.
 
-    ``-e`` prints the ethernet header, which is what carries the 802.1Q tag –
-    without it a tagged and an untagged frame look identical.
+    Uses the bundled ``vlan_tag_probe.py`` rather than ``tcpdump``: a station
+    ships neither tcpdump nor an uplink to install one, so a tcpdump-based
+    check reports "no traffic" on every station and reads as a pass.
+
+    Capture on the **parent**, not the VLAN. Tagging happens on egress to the
+    parent, so the VLAN interface itself sees its own frames untagged.
     """
-    cmd = f"sudo timeout {seconds + 2} tcpdump -l -n -e -c 40 -i {nic} host {mcast} 2>/dev/null || true"
-    result = ssh(ssh_base, host, cmd, timeout=seconds + 20)
-    return result.stdout
+    remote = f"{_REMOTE_PROBE_DIR}/vlan_tag_probe.py"
+    cmd = f"sudo {_VENV_PYTHON} {remote} --iface {nic} --dst {mcast} --seconds {seconds} --json"
+    result = ssh(ssh_base, host, cmd, timeout=seconds + 25)
+    try:
+        parsed = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def push_probe(ssh_base: list[str], host: str) -> bool:
+    """Copy the capture probe onto the DUT. Returns False if it cannot land."""
+    local = pathlib.Path(__file__).resolve().with_name("vlan_tag_probe.py")
+    try:
+        source = local.read_text()
+    except OSError:
+        return False
+    written = ssh(
+        ssh_base,
+        host,
+        f"cat > {_REMOTE_PROBE_DIR}/vlan_tag_probe.py <<'OF_PROBE_EOF'\n{source}\nOF_PROBE_EOF\necho ok",
+        timeout=30,
+    )
+    return "ok" in written.stdout
+
+
+def tags_in(frames: list[dict], source_ip: str = "") -> set[str]:
+    """Distinct tags among ``frames``, optionally only those from ``source_ip``."""
+    return {
+        ("untagged" if f.get("vlan") is None else f"vlan {f['vlan']}")
+        for f in frames
+        if not source_ip or f.get("src") == source_ip
+    }
 
 
 def set_psn_pin(web: Web, iface: str) -> tuple[int, str]:
-    return web.post_json("/api/config/interface_assignment", {"psn_source_iface": iface})
+    """Set the station pin through the panel's form POST.
+
+    NOT ``/api/config/interface_assignment``: ``psn_source_iface`` is
+    device-local, so the JSON section API strips it and answers
+    ``{"success": true}`` having written nothing. A pin set that way silently
+    never applies, and every downstream assertion then measures the old pin.
+    """
+    return web.post_form(
+        "/section/interface_assignment",
+        {"psn_source_iface": iface, "otp_output.source_iface": ""},
+    )
 
 
 def read_psn_pin(web: Web) -> str:
@@ -277,53 +324,95 @@ def phase_guards(rep: Report, web: Web, args, vlan_name: str) -> None:
 
 def phase_traffic_separation(rep: Report, web: Web, ssh_base: list[str], args, vlan_name: str) -> None:
     print("\n[4] Traffic separation")
-    if not iface_address(ssh_base, args.dut, vlan_name):
-        rep.skip(
-            "PSN leaves tagged on the parent NIC",
-            f"{vlan_name} has no address; give it one in Network Settings first",
-        )
-        rep.skip("PSN does not leak to the other NIC", "no address on the VLAN")
+    vlan_addr = iface_address(ssh_base, args.dut, vlan_name).split("/")[0]
+    if not vlan_addr:
+        # A VLAN with no address is not offered as a pin at all: the interface
+        # pickers are built from interfaces that HAVE an IPv4, so an unaddressed
+        # VLAN cannot be selected and nothing downstream would be measuring the
+        # pin. Give it an address in Network Settings first.
+        rep.skip("PSN leaves tagged on the parent NIC", f"{vlan_name} has no address")
+        rep.skip("PSN stops when its interface goes dark", f"{vlan_name} has no address")
         return
 
     status, _body = set_psn_pin(web, vlan_name)
     if not rep.check("PSN pin accepted", status == 200, f"HTTP {status}"):
         return
+    if not rep.check(
+        "pin persisted",
+        read_psn_pin(web) == vlan_name,
+        "the pin did not reach config - a device-local field was stripped",
+    ):
+        return
     time.sleep(SETTLE_SECONDS)
 
-    tagged = capture_psn(ssh_base, args.dut, args.parent, args.psn_mcast)
+    frames = capture_psn(ssh_base, args.dut, args.parent, args.psn_mcast)
+    ours = tags_in(frames, vlan_addr)
     rep.check(
         "PSN leaves tagged on the parent NIC",
-        f"vlan {args.vlan_id}" in tagged,
-        f"no 802.1Q tag {args.vlan_id} seen on {args.parent}",
+        ours == {f"vlan {args.vlan_id}"},
+        f"frames from {vlan_addr} carried {sorted(ours) or ['nothing']}",
+    )
+    rep.check(
+        "no untagged PSN from this station",
+        not any(f.get("vlan") is None and f.get("src") == vlan_addr for f in frames),
+        "the same station sent untagged PSN while pinned",
     )
     if args.other_nic:
         leaked = capture_psn(ssh_base, args.dut, args.other_nic, args.psn_mcast)
         rep.check(
             "PSN does not leak to the other NIC",
-            args.psn_mcast not in leaked,
-            f"PSN frames seen on {args.other_nic} – the pin is not holding",
+            not any(f.get("src") == vlan_addr for f in leaked),
+            f"PSN from {vlan_addr} seen on {args.other_nic}",
         )
     else:
-        rep.skip("PSN does not leak to the other NIC", "no --other-nic given")
+        rep.skip("PSN does not leak to the other NIC", "no --other-nic given (needs a second interface)")
 
 
-def phase_fail_closed(rep: Report, ssh_base: list[str], args, vlan_name: str) -> None:
-    print("\n[5] Fail closed when the pinned interface goes dark")
-    if not iface_address(ssh_base, args.dut, vlan_name):
-        rep.skip("PSN stops rather than moving interface", "the VLAN had no address to lose")
+def phase_fail_closed(rep: Report, web: Web, ssh_base: list[str], args) -> None:
+    """The load-bearing rule: a configured interface with no address must stop
+    the plane, never move it. Pinning to an absent interface exercises it
+    without needing a second NIC or a link to unplug.
+
+    Note the capture cannot use another station as a control here. Suspending
+    PSN stops the receiver too, which drops this port's IGMP membership, so the
+    switch prunes the group and every station's PSN disappears from the capture
+    - not just ours. The pinned station's own send socket is the direct
+    evidence, so that is what this asserts.
+    """
+    print("\n[5] Fail closed when the pinned interface is unavailable")
+    absent = f"{args.parent}9999"
+    status, _body = set_psn_pin(web, absent)
+    if not rep.check("pin to an absent interface accepted", status == 200, f"HTTP {status}"):
         return
-    ssh(ssh_base, args.dut, f"sudo nmcli con down {vlan_name} >/dev/null 2>&1 || true")
     time.sleep(SETTLE_SECONDS)
-    try:
-        nics = [args.parent] + ([args.other_nic] if args.other_nic else [])
-        seen_on = [nic for nic in nics if args.psn_mcast in capture_psn(ssh_base, args.dut, nic, args.psn_mcast)]
-        rep.check(
-            "PSN stops rather than moving interface",
-            not seen_on,
-            f"PSN reappeared on {', '.join(seen_on)} after its pinned interface went down",
-        )
-    finally:
-        ssh(ssh_base, args.dut, f"sudo nmcli con up {vlan_name} >/dev/null 2>&1 || true")
+
+    sockets = ssh(
+        ssh_base,
+        args.dut,
+        f"sudo ss -unap 2>/dev/null | grep -c '{args.psn_mcast}' || true",
+    ).stdout.strip()
+    rep.check(
+        "PSN sockets are closed, not rebound",
+        sockets in ("", "0"),
+        f"{sockets} PSN socket(s) still open on a down pin",
+    )
+    frames = capture_psn(ssh_base, args.dut, args.parent, args.psn_mcast)
+    rep.check(
+        "no PSN on the wire while suspended",
+        not frames,
+        f"{len(frames)} PSN frames still leaving",
+    )
+    logged = ssh(
+        ssh_base,
+        args.dut,
+        "sudo journalctl -u openfollow --since '-2min' --no-pager"
+        " | grep -c 'will not be sent on another interface' || true",
+    ).stdout.strip()
+    rep.check(
+        "the operator is told why it stopped",
+        logged not in ("", "0"),
+        "nothing in the journal names the down interface",
+    )
 
 
 def phase_companion(rep: Report, args, vlan_name: str) -> None:
@@ -383,6 +472,10 @@ def main() -> int:
         print(f"{vlan_name} already exists – choose a free --vlan-id so cleanup can't remove a real one.")
         return 2
 
+    if not push_probe(ssh_base, args.dut):
+        print("Could not copy vlan_tag_probe.py onto the DUT.", file=sys.stderr)
+        return 2
+
     web = Web(args.dut, args.pin)
     original_pin = read_psn_pin(web)
     print(f"Original PSN pin: {original_pin or '(auto-detect)'}")
@@ -394,7 +487,7 @@ def main() -> int:
             phase_no_extra_plumbing(rep, web, vlan_name)
             phase_guards(rep, web, args, vlan_name)
             phase_traffic_separation(rep, web, ssh_base, args, vlan_name)
-            phase_fail_closed(rep, ssh_base, args, vlan_name)
+            phase_fail_closed(rep, web, ssh_base, args)
             phase_companion(rep, args, vlan_name)
     finally:
         print("\n[cleanup]")

@@ -18,6 +18,7 @@ to grow into a fuller two-Pi validation suite (see the tracking issue).
 | `osc_socket_options_probe.py` | DUT | Builds clients via the deployed `OscService._make_client` and asserts the broadcast/multicast socket options (#482). |
 | `eos_console_probe.py` | workstation | Drives the deployed `OscTransmitterManager` at an Eos console / ETCnomad. `verify` reads Eos's own parameter values back and asserts the bundled ETC Eos templates' X/Y/Z mapping, exiting `0` (mapping correct) / `1` (mismatch or setup fault). `test` / `sweep` / `stream` drive the console for an operator to watch; their exit code reports only whether the sends reached the socket. |
 | `marker_catalog_two_station.py` | workstation | Reproduces the clock-skew marker-rename revert across two stations: steps station B's clock ahead, renames on A, asserts the rename holds on both. Exits `0` (PASS) / `1` (FAIL). |
+| `multi_interface_two_station.py` | workstation | Drives the multi-interface feature end-to-end: creates a tagged VLAN from the web UI, asserts it becomes a pinnable netdev, exercises the delete guards, then proves PSN leaves tagged on the pinned NIC, never leaks to another, and **stops** when its interface goes down. Exits `0` (PASS) / `1` (FAIL). |
 
 ## DUT-local probes (no companion)
 
@@ -136,3 +137,38 @@ python3 scripts/hw_validation/raw_udp_probe.py listen --port 8765
 # companion
 python3 scripts/hw_validation/raw_udp_probe.py send --host <DUT_IP> --port 8765
 ```
+
+## Multi-interface networking (two stations)
+
+`multi_interface_two_station.py` runs from a **workstation** and drives the DUT
+over HTTP + SSH. It is the hardware half of issue #50 – the parts a fake-socket
+test cannot reach, because they depend on a real switch, real 802.1Q tags, and a
+real interface going down.
+
+```sh
+python3 scripts/hw_validation/multi_interface_two_station.py \
+    --dut <DUT_IP> --parent eth0 --other-nic wlan0 --vlan-id 10 \
+    --ssh-user openfollow --ssh-key ~/.ssh/openfollow_pi --pin <WEB_PIN>
+```
+
+The two load-bearing checks are the last ones:
+
+- **Traffic separation** – with PSN pinned to `eth0.10`, `tcpdump -e` on the
+  parent must show PSN frames carrying `vlan 10`, and the other NIC must show
+  none. If PSN appears on the office LAN the feature has failed at its purpose.
+- **Fail closed** – taking the pinned interface down must make PSN **stop**. It
+  must not reappear on another NIC. On a show, a dead output is diagnosable and
+  a misrouted one is not.
+
+The DUT's `--parent` NIC has to be on a **trunk (tagged) switch port** carrying
+the VLAN, or there is nothing to capture and those steps report as skipped
+rather than passing vacuously. Give the VLAN an address in Network Settings
+before the run, otherwise the traffic phases skip too.
+
+The script restores what it changed in a `finally`: the PSN pin returns to its
+original value and the VLAN it created is deleted. It refuses to start if the
+VLAN name already exists, so cleanup can never remove one you rely on.
+
+`--companion` currently only confirms the second station's web UI is reachable;
+end-to-end receipt on the tagged network is still an eyes-on check of its viewer
+markers.

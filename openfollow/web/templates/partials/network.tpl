@@ -25,6 +25,10 @@
 % _session = _net.get("session_iface", "")
 % _editing = _net.get("editing_iface", "")
 % _polls = _net.get("available") and not _editable
+%# Creating a link is an Edit-mode action on a backend that owns links; on a
+%# read-only or non-NetworkManager stack the card renders exactly as before.
+% _vlan_parents = _net.get("vlan_parents", [])
+% _vlan_add = bool(_editable and _net.get("supports_vlans") and _vlan_parents)
 <form id="network-config-section" class="network-config"
 % if _editable:
       hx-post="/section/network/apply" hx-target="#network-interface"
@@ -95,6 +99,9 @@
                         %# their own session is arriving on.
                         <span class="ia-badge session" title="Your browser reached this station over this interface">This session</span>
                         % end
+                        % if row.get("vlan_id") is not None:
+                        <span class="ia-badge vlan">VLAN {{row.get("vlan_id")}}</span>
+                        % end
                     </td>
                     <td class="{{'' if _addr else 'muted'}}">{{(_addr + ('/' + str(_prefix) if _prefix else '')) if _addr else '(no address)'}}</td>
                     <td class="muted">{{row.get('method_label', '')}}</td>
@@ -113,7 +120,11 @@
                 % if _open:
                 <tr class="ia-editor-row"><td colspan="5"><div class="ia-editor">
                     <div class="ia-editor-head">
-                        <h4 class="group-title">Configure <code>{{_name}}</code></h4>
+                        <h4 class="group-title">Configure <code>{{_name}}</code>
+                            % if row.get("vlan_id") is not None:
+                            <span class="ia-badge vlan">VLAN {{row.get("vlan_id")}}</span>
+                            % end
+                        </h4>
                     </div>
 
                     % if _name == _session:
@@ -194,6 +205,14 @@
                                 hx-post="/section/network/renew" hx-target="#network-interface"
                                 hx-swap="innerHTML" hx-include="closest form">Renew DHCP lease</button>
                         % end
+                        %# Delete lives inside the open editor, so it can only
+                        %# ever be aimed at the interface named in the header.
+                        % if row.get("vlan_id") is not None:
+                        <button type="button" class="danger"
+                                hx-post="/section/network/vlan/delete" hx-target="#network-interface"
+                                hx-swap="innerHTML" hx-include="closest form"
+                                hx-confirm="Delete {{_name}}? Any function pinned to it stops sending until it is reassigned.">Delete VLAN</button>
+                        % end
                         %# Back to View mode on the same row. Targeting /edit
                         %# would re-render the editor, leaving no way out of
                         %# Edit mode short of a page reload.
@@ -213,6 +232,10 @@
             <span><span class="ia-dot up"></span> up with an address</span>
             <span><span class="ia-dot down"></span> no address</span>
             <span class="ia-legend-actions">
+                % if _vlan_add:
+                <button type="button" class="secondary small"
+                        onclick="this.closest('.group').querySelector('.ia-vlan-add').hidden = false; this.hidden = true;">+ Add VLAN</button>
+                % end
                 %# Keeps the open interface in the path so re-reading the
                 %# adapter list doesn't move the expansion (and, in Edit mode,
                 %# doesn't discard what the operator has typed).
@@ -221,6 +244,30 @@
                         hx-target="#network-interface" hx-swap="innerHTML">Scan</button>
             </span>
         </div>
+
+        % if _vlan_add:
+        <div class="ia-vlan-add" hidden>
+            <h4 class="group-title">Add VLAN</h4>
+            <div class="network-grid">
+                <label for="net-vlan-parent">Parent interface</label>
+                <select id="net-vlan-parent" name="vlan_parent">
+                    % for _parent in _vlan_parents:
+                    <option value="{{_parent}}">{{_parent}}</option>
+                    % end
+                </select>
+
+                <label for="net-vlan-id">VLAN ID</label>
+                <input type="number" id="net-vlan-id" name="vlan_id" min="1" max="4094" step="1" placeholder="10">
+            </div>
+            <div class="actions">
+                <button type="button" class="save-btn"
+                        hx-post="/section/network/vlan/create" hx-target="#network-interface"
+                        hx-swap="innerHTML" hx-include="closest form">Create</button>
+                <button type="button" class="ghost-btn"
+                        onclick="var b=this.closest('.group'); b.querySelector('.ia-vlan-add').hidden = true; b.querySelector('.ia-legend-actions button').hidden = false;">Cancel</button>
+            </div>
+        </div>
+        % end
         % end
     </div>
     % end

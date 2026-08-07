@@ -16,6 +16,7 @@ _MAX_DNS = 3
 _VLAN_ID_MIN = 1
 _VLAN_ID_MAX = 4094
 _IFNAMSIZ = 15
+VLAN_ID_RANGE_MESSAGE = f"VLAN ID must be a whole number between {_VLAN_ID_MIN} and {_VLAN_ID_MAX}."
 
 
 def parse_ipv4(value: str | None) -> str | None:
@@ -167,7 +168,7 @@ def validate_vlan_create(
 
     parsed = parse_vlan_id(vlan_id)
     if parsed is None:
-        errors.append(f"VLAN ID must be a whole number between {_VLAN_ID_MIN} and {_VLAN_ID_MAX}.")
+        errors.append(VLAN_ID_RANGE_MESSAGE)
     elif name:
         derived = vlan_interface_name(name, parsed)
         if len(derived) > _IFNAMSIZ:

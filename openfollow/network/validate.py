@@ -7,10 +7,15 @@ from __future__ import annotations
 import ipaddress
 import re
 
-from openfollow.network.adapter import Ipv4Method
+from openfollow.network.adapter import LOOPBACK_NAMES, Ipv4Method
 
 _DNS_SEP_RE = re.compile(r"[\s,;]+")
 _MAX_DNS = 3
+# 0 and 4095 are reserved by 802.1Q; IFNAMSIZ caps a Linux interface name at
+# 15 usable characters, which the derived ``<parent>.<id>`` has to fit inside.
+_VLAN_ID_MIN = 1
+_VLAN_ID_MAX = 4094
+_IFNAMSIZ = 15
 
 
 def parse_ipv4(value: str | None) -> str | None:
@@ -105,6 +110,71 @@ def parse_dns_list(value: str | None) -> list[str]:
         if len(out) >= _MAX_DNS:
             break
     return out
+
+
+def parse_vlan_id(value: str | int | None) -> int | None:
+    """Return the 802.1Q VLAN ID, or ``None`` when it is not one.
+
+    ``bool`` is an ``int`` subclass and ``int(12.5)`` truncates, so both are
+    rejected outright rather than coerced – a VLAN ID that quietly became a
+    different VLAN ID would put stage traffic on the wrong tag. Digit strings
+    are screened the same way ``parse_prefix`` screens a prefix, because
+    ``str.isdigit`` is True for Unicode digits that ``int()`` handles
+    differently.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        vlan_id = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text.isascii() or not text.isdigit():
+            return None
+        vlan_id = int(text)
+    else:
+        return None
+    return vlan_id if _VLAN_ID_MIN <= vlan_id <= _VLAN_ID_MAX else None
+
+
+def vlan_interface_name(parent: str, vlan_id: int) -> str:
+    """Return the interface name a VLAN on ``parent`` gets."""
+    return f"{parent.strip()}.{vlan_id}"
+
+
+def validate_vlan_create(
+    parent: str,
+    vlan_id: str | int | None,
+    *,
+    interfaces: list[str] | tuple[str, ...],
+    vlan_names: list[str] | tuple[str, ...] = (),
+) -> list[str]:
+    """Return human-readable errors for a VLAN create request; empty when valid.
+
+    ``interfaces`` is every device the backend reports and ``vlan_names`` the
+    subset that are themselves VLANs – the parent has to be in the first and
+    out of the second, because a VLAN on a VLAN is QinQ and is out of scope.
+    """
+    errors: list[str] = []
+    name = (parent or "").strip()
+    if not name:
+        errors.append("Choose a parent interface.")
+    elif name not in interfaces:
+        errors.append(f"{name} is not a network interface on this station.")
+    elif name in vlan_names:
+        errors.append(f"{name} is already a VLAN. A VLAN cannot be stacked on another VLAN.")
+    elif name in LOOPBACK_NAMES:
+        errors.append("The loopback interface cannot carry a VLAN.")
+
+    parsed = parse_vlan_id(vlan_id)
+    if parsed is None:
+        errors.append(f"VLAN ID must be a whole number between {_VLAN_ID_MIN} and {_VLAN_ID_MAX}.")
+    elif name:
+        derived = vlan_interface_name(name, parsed)
+        if len(derived) > _IFNAMSIZ:
+            errors.append(f"The interface name {derived} is longer than the {_IFNAMSIZ} characters Linux allows.")
+        elif derived in interfaces:
+            errors.append(f"{derived} already exists.")
+    return errors
 
 
 def validate_apply(

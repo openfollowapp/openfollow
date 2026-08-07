@@ -8,7 +8,7 @@ import subprocess
 
 import pytest
 
-from openfollow.network.adapter import Ipv4Config, Ipv4Method
+from openfollow.network.adapter import VLAN_UNSUPPORTED_MESSAGE, Ipv4Config, Ipv4Method
 from openfollow.network.dhcpcd_adapter import DhcpcdAdapter
 from tests._fake_broker import FakeBroker, make_failure, make_nonzero
 
@@ -1194,3 +1194,26 @@ class TestApplyBoundaryValidation:
         )
         assert result.ok is False
         assert conf.read_text() == ""  # nothing written
+
+
+class TestVlansUnsupported:
+    """dhcpcd configures addresses on links; it does not create them. The Pi
+    image masks systemd-networkd, so NetworkManager owns link creation."""
+
+    def test_reports_unsupported(self, broker: FakeBroker) -> None:
+        assert DhcpcdAdapter(broker=broker).supports_vlans() is False
+
+    def test_lists_nothing(self, broker: FakeBroker) -> None:
+        assert DhcpcdAdapter(broker=broker).list_vlans() == []
+
+    def test_create_refuses(self, broker: FakeBroker) -> None:
+        result = DhcpcdAdapter(broker=broker).create_vlan("eth0", 10)
+        assert result.ok is False
+        assert result.message == VLAN_UNSUPPORTED_MESSAGE
+        assert broker.calls == []
+
+    def test_delete_refuses(self, broker: FakeBroker) -> None:
+        result = DhcpcdAdapter(broker=broker).delete_vlan("eth0.10")
+        assert result.ok is False
+        assert result.message == VLAN_UNSUPPORTED_MESSAGE
+        assert broker.calls == []

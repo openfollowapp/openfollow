@@ -4618,12 +4618,18 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # Deliberately not "applied", and no reconnect advice: the
             # interface never came up, so telling the operator to browse to the
             # new address would send them nowhere.
+            pending_text = result.message
+            if result.partial_failures:
+                # This is the one path that keeps the operator on the page in
+                # order to explain itself, so dropping the caveats here loses
+                # them entirely - there is no redirect to read them after.
+                pending_text += " Warnings: " + "; ".join(result.partial_failures)
             return template(
                 "partials/network",
                 net=_build_network_form_context(
                     iface=iface,
                     editable=False,
-                    banner={"kind": "info", "text": result.message},
+                    banner={"kind": "info", "text": pending_text},
                 ),
             )
         text = "Network settings applied."

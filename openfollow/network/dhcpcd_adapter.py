@@ -363,15 +363,15 @@ class DhcpcdAdapter(NetworkAdapter):
                 return ApplyResult(
                     ok=False,
                     message=(
-                        f"Could not write {self.conf_path}: {exc}. Check the file is present and not mounted read-only."
+                        f"Could not write {self.conf_path}; check it exists and is not mounted read-only ({exc})."
                     ),
                 )
         except Exception as exc:  # noqa: BLE001
             return ApplyResult(
                 ok=False,
                 message=(
-                    f"Could not update {self.conf_path}: {exc}. Nothing was changed; "
-                    f"the interface keeps its current settings."
+                    f"Could not update {self.conf_path}; nothing was changed and {iface} keeps its "
+                    f"current settings ({exc})."
                 ),
             )
 
@@ -415,8 +415,8 @@ class DhcpcdAdapter(NetworkAdapter):
                 return ApplyResult(
                     ok=False,
                     message=(
-                        f"dhcpcd -n failed ({rebind.detail}); systemctl reload dhcpcd also failed: {detail}. "
-                        f"Restored the prior config; the device may need a manual retry."
+                        f"Could not apply the new config so the previous one was restored; {iface} may "
+                        f"need a manual retry (dhcpcd -n: {rebind.detail}; reload: {detail})."
                     ),
                 )
             partial.append(f"dhcpcd -n: {rebind.detail} (fell back to systemctl reload)")
@@ -432,7 +432,7 @@ class DhcpcdAdapter(NetworkAdapter):
             return ApplyResult(
                 ok=True,
                 pending=True,
-                message=f"Saved. {iface} has no link yet.",
+                message=f"Saved; the settings take effect when {iface} has a link.",
                 partial_failures=tuple(partial),
             )
         return ApplyResult(ok=True, message="Applied.", partial_failures=tuple(partial))

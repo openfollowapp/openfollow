@@ -862,3 +862,34 @@ def test_a_clean_apply_still_redirects(net_server) -> None:
         },
     )
     assert "hx-redirect" in headers
+
+
+def test_a_pending_apply_still_shows_its_warnings(net_server) -> None:
+    """Pending is the one path that keeps the operator on the page in order to
+    explain itself, so warnings dropped here are lost outright - there is no
+    later redirect where they could resurface.
+
+    Both backends can return pending with caveats (an ``nmcli con down``
+    failure, a dhcpcd reload fallback), and those are the caveats that tell an
+    operator the save is not the whole story.
+    """
+    fake, base = net_server
+    fake.apply_result = ApplyResult(
+        ok=True,
+        pending=True,
+        message="Saved; the settings take effect when eth0 has a link.",
+        partial_failures=("dhcpcd -n: rebind refused (fell back to systemctl reload)",),
+    )
+    status, body = _post(
+        base,
+        "/section/network/apply",
+        {
+            "iface": "eth0",
+            "method": "static",
+            "address": "192.168.9.9",
+            "subnet_mask": "255.255.255.0",
+        },
+    )
+    assert status == 200
+    assert "take effect when eth0 has a link" in body
+    assert "rebind refused" in body, "the pending banner dropped its warnings"

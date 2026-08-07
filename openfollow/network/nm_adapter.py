@@ -436,7 +436,9 @@ class NetworkManagerAdapter(NetworkAdapter):
         if not ok:
             return ApplyResult(
                 ok=False,
-                message=f"Could not save the settings to profile '{name}'. {detail}".strip(),
+                message=f"Could not save the settings to profile '{name}'; nothing was changed ({detail})."
+                if detail
+                else f"Could not save the settings to profile '{name}'; nothing was changed.",
             )
 
         partial: list[str] = []
@@ -466,12 +468,14 @@ class NetworkManagerAdapter(NetworkAdapter):
                 return ApplyResult(
                     ok=True,
                     pending=True,
-                    message=f"Saved. {iface} has no link yet.",
+                    message=f"Saved; the settings take effect when {iface} has a link.",
                     partial_failures=tuple(partial),
                 )
             return ApplyResult(
                 ok=False,
-                message=f"Saved, but {iface} could not be brought up. {up_detail}".strip(),
+                message=f"Saved, but {iface} could not be brought up ({up_detail})."
+                if up_detail
+                else f"Saved, but {iface} could not be brought up.",
             )
         return ApplyResult(ok=True, message="Applied.", partial_failures=tuple(partial))
 
@@ -496,5 +500,8 @@ class NetworkManagerAdapter(NetworkAdapter):
             # sending the operator to check a cable hides the real fix.
             if not up_detail and not self._has_carrier(iface):
                 return ApplyResult(ok=False, message=f"{iface} has no link, so there is no lease to request.")
-            return ApplyResult(ok=False, message=f"Could not renew {iface}. {up_detail}".strip())
+            return ApplyResult(
+                ok=False,
+                message=f"Could not renew {iface} ({up_detail})." if up_detail else f"Could not renew {iface}.",
+            )
         return ApplyResult(ok=True, message="Lease renewed.")

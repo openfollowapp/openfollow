@@ -274,7 +274,7 @@ class TestActionableMessages:
         )
         assert result.ok is True
         assert result.pending is True
-        assert "no link" in result.message
+        assert "has a link" in result.message
 
     def test_a_named_activation_failure_is_not_pending(self, adapter) -> None:
         """rfkill and an ungranted con-up both leave the device 'unavailable',

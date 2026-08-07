@@ -8,8 +8,9 @@ import subprocess
 
 import pytest
 
-from openfollow.network.adapter import Ipv4Config, Ipv4Method
+from openfollow.network.adapter import Ipv4Config, Ipv4Method, VlanInterface
 from openfollow.network.nm_adapter import NetworkManagerAdapter
+from openfollow.privilege.capabilities import NETWORK_NM_CON_ADD, NETWORK_NM_CON_DELETE
 from tests._fake_broker import FakeBroker, make_failure
 
 pytestmark = pytest.mark.unit
@@ -1153,3 +1154,182 @@ class TestConnectionForActiveLoopFallthrough:
             stdout="Profile-A:other0\nProfile-B:other1\n",
         )
         assert a._connection_for("eth0") is None
+
+
+class TestVlans:
+    _CONNECTIONS = ["nmcli", "-t", "-f", "NAME,UUID,TYPE,DEVICE", "connection", "show"]
+
+    def _prime(self, responses, stdout: str) -> None:
+        _set(responses, self._CONNECTIONS, stdout=stdout)
+
+    def test_backend_supports_vlans(self, adapter) -> None:
+        a, _captured, _responses = adapter
+        assert a.supports_vlans() is True
+
+    def test_lists_vlans_with_parent_and_id(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(
+            responses,
+            "Wired connection 1:uuid-eth0:802-3-ethernet:eth0\nvlan10:uuid-v10:vlan:eth0.10\n",
+        )
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan10"],
+            stdout="vlan.parent:eth0\nvlan.id:10\n",
+        )
+        assert a.list_vlans() == [VlanInterface(name="eth0.10", parent="eth0", vlan_id=10)]
+
+    def test_resolves_a_uuid_parent_back_to_an_interface(self, adapter) -> None:
+        """nmcli stores ``vlan.parent`` as either an interface name or the
+        parent profile's UUID. A raw UUID in the parent column would render
+        as gibberish in the interface list."""
+        a, _captured, responses = adapter
+        self._prime(
+            responses,
+            "Wired connection 1:uuid-eth0:802-3-ethernet:eth0\nvlan10:uuid-v10:vlan:eth0.10\n",
+        )
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan10"],
+            stdout="vlan.parent:uuid-eth0\nvlan.id:10\n",
+        )
+        assert a.list_vlans() == [VlanInterface(name="eth0.10", parent="eth0", vlan_id=10)]
+
+    def test_skips_a_profile_with_an_unreadable_id(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "vlan10:uuid-v10:vlan:eth0.10\n")
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan10"],
+            stdout="vlan.parent:eth0\nvlan.id:not-a-number\n",
+        )
+        assert a.list_vlans() == []
+
+    def test_skips_a_profile_with_no_device(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "vlan10:uuid-v10:vlan:\n")
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan10"],
+            stdout="vlan.parent:eth0\nvlan.id:10\n",
+        )
+        assert a.list_vlans() == []
+
+    def test_ignores_non_vlan_profiles(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "Wired connection 1:uuid-eth0:802-3-ethernet:eth0\n")
+        assert a.list_vlans() == []
+
+    def test_create_issues_the_add_argv(self, adapter) -> None:
+        a, captured, _responses = adapter
+        result = a.create_vlan("eth0", 10)
+        assert result.ok is True
+        assert [
+            "nmcli",
+            "connection",
+            "add",
+            "type",
+            "vlan",
+            "con-name",
+            "eth0.10",
+            "ifname",
+            "eth0.10",
+            "dev",
+            "eth0",
+            "id",
+            "10",
+        ] in captured
+
+    def test_create_uses_the_add_capability(self, adapter) -> None:
+        a, _captured, _responses = adapter
+        a.create_vlan("eth0", 10)
+        assert a._broker.calls[-1].capability is NETWORK_NM_CON_ADD
+
+    def test_create_reports_a_broker_failure(self, adapter) -> None:
+        a, _captured, _responses = adapter
+        a._broker.exceptions.append(make_failure("parent device not found"))
+        result = a.create_vlan("eth0", 10)
+        assert result.ok is False
+        assert "parent device not found" in result.message
+
+    def test_delete_issues_the_delete_argv_for_the_bound_profile(self, adapter) -> None:
+        a, captured, responses = adapter
+        self._prime(responses, "vlan10:uuid-v10:vlan:eth0.10\n")
+        result = a.delete_vlan("eth0.10")
+        assert result.ok is True
+        assert ["nmcli", "connection", "delete", "id", "vlan10"] in captured
+
+    def test_delete_uses_the_delete_capability(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "vlan10:uuid-v10:vlan:eth0.10\n")
+        a.delete_vlan("eth0.10")
+        assert a._broker.calls[-1].capability is NETWORK_NM_CON_DELETE
+
+    def test_delete_refuses_a_non_vlan_interface(self, adapter) -> None:
+        """``con delete`` is a wildcarded grant, so this is the check that
+        keeps it off a physical NIC's profile."""
+        a, captured, responses = adapter
+        self._prime(responses, "Wired connection 1:uuid-eth0:802-3-ethernet:eth0\n")
+        result = a.delete_vlan("eth0")
+        assert result.ok is False
+        assert "not a VLAN" in result.message
+        assert not any("delete" in argv for argv in captured)
+
+    def test_delete_reports_a_broker_failure(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "vlan10:uuid-v10:vlan:eth0.10\n")
+        a._broker.exceptions.append(make_failure("profile is in use"))
+        result = a.delete_vlan("eth0.10")
+        assert result.ok is False
+        assert "profile is in use" in result.message
+
+    def test_profile_list_survives_an_nmcli_failure(self, adapter) -> None:
+        a, _captured, _responses = adapter
+
+        def _boom(argv, *, check=True):
+            raise RuntimeError("nmcli exploded")
+
+        a._run = _boom
+        assert a.list_vlans() == []
+        assert a.delete_vlan("eth0.10").ok is False
+
+    def test_profile_list_skips_short_rows(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "truncated:row\n\nvlan10:uuid-v10:vlan:eth0.10\n")
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan10"],
+            stdout="vlan.parent:eth0\nvlan.id:10\n",
+        )
+        assert a.list_vlans() == [VlanInterface(name="eth0.10", parent="eth0", vlan_id=10)]
+
+    def test_skips_a_profile_whose_detail_read_fails(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "vlan10:uuid-v10:vlan:eth0.10\n")
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan10"],
+            stdout="",
+            returncode=1,
+        )
+
+        original = a._run
+
+        def _run(argv, *, check=True):
+            result = original(argv, check=False)
+            if check and result.returncode != 0:
+                raise RuntimeError("nmcli failed")
+            return result
+
+        a._run = _run
+        assert a.list_vlans() == []
+
+    def test_skips_a_profile_with_no_parent(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "vlan10:uuid-v10:vlan:eth0.10\n")
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan10"],
+            stdout="vlan.parent:\nvlan.id:10\n",
+        )
+        assert a.list_vlans() == []

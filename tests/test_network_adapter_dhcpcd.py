@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 
 import pytest
@@ -448,7 +449,8 @@ class TestApplyErrors:
         a = DhcpcdAdapter(conf_path=conf, broker=broker)
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is False
-        assert "systemctl reload dhcpcd also failed" in result.message
+        assert "previous one was restored" in result.message
+        assert "reload boom" in result.message
 
     def test_release_partial_failure_is_warning(self, tmp_path) -> None:
         from openfollow.network.adapter import Ipv4Config, Ipv4Method
@@ -521,7 +523,7 @@ class TestApplyErrors:
         assert result.ok is False
         assert "Could not update" in result.message
         # Says the interface was left alone, so the operator knows where they stand.
-        assert "Nothing was changed" in result.message
+        assert "nothing was changed" in result.message
 
 
 class TestRenewErrors:
@@ -949,7 +951,8 @@ class TestApplyRollback:
         a = DhcpcdAdapter(conf_path=conf, broker=broker)
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is False
-        assert "systemctl reload dhcpcd also failed" in result.message
+        assert "previous one was restored" in result.message
+        assert "reload boom" in result.message
 
     def test_restore_failure_is_logged_not_raised(self, tmp_path, caplog) -> None:
         from openfollow.network.adapter import Ipv4Config, Ipv4Method
@@ -1213,7 +1216,7 @@ class TestPendingOnADeadLink:
         )
         assert result.ok is True
         assert result.pending is True
-        assert "no link" in result.message
+        assert "has a link" in result.message
 
     def test_apply_is_not_pending_with_a_link(self, adapter, monkeypatch) -> None:
         a, _conf = adapter
@@ -1253,3 +1256,43 @@ class TestPendingOnADeadLink:
 
         monkeypatch.setattr(mod, "Path", lambda _p: _Missing())
         assert a._has_carrier("eth0") is True
+
+
+class TestMessagesFitTheOnScreenBanner:
+    """Every operator-facing message must be one sentence.
+
+    The on-screen Settings banner is a single truncated line, so a second
+    sentence is the half that gets cut - and it is reliably the actionable
+    half, because the first sentence says what broke and the second says what
+    to do about it. Asserting the shape here means a regression fails CI
+    rather than waiting for someone to read it on a device.
+    """
+
+    # ". " before a capital is the two-sentence signature. It cannot match a
+    # path like ``dhcpcd.conf`` or an address like ``192.168.1.5``, which is
+    # why the check is not simply "contains a period".
+    _SECOND_SENTENCE = re.compile(r"\.\s+[A-Z]")
+
+    def _messages(self, broker: FakeBroker, tmp_path) -> list[str]:
+        """Drive the failure paths and collect what the operator would see."""
+        out: list[str] = []
+        adapter = DhcpcdAdapter(conf_path=str(tmp_path / "dhcpcd.conf"), broker=broker)
+
+        out.append(adapter.apply_ipv4("bad iface!", Ipv4Config(method=Ipv4Method.DHCP)).message)
+
+        def _boom() -> str:
+            raise OSError("read crashed")
+
+        adapter._read_conf = _boom  # type: ignore[method-assign]
+        out.append(adapter.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP)).message)
+        return [m for m in out if m]
+
+    def test_no_message_carries_a_second_sentence(self, broker: FakeBroker, tmp_path) -> None:
+        offenders = [m for m in self._messages(broker, tmp_path) if self._SECOND_SENTENCE.search(m)]
+        assert offenders == [], f"multi-sentence operator messages: {offenders}"
+
+    def test_the_detector_would_catch_a_two_sentence_message(self) -> None:
+        """Guards the guard: a check that never matches proves nothing."""
+        assert self._SECOND_SENTENCE.search("Could not update the file. Nothing was changed.")
+        assert not self._SECOND_SENTENCE.search("Could not update /etc/dhcpcd.conf; nothing was changed.")
+        assert not self._SECOND_SENTENCE.search("Saved; eth0 is at 192.168.1.5 now.")

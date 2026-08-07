@@ -4102,3 +4102,66 @@ class TestSuspendPsnPlanes:
         services._app._server = None
         services._app._psn_receiver = None
         services.suspend_psn_planes()  # must not raise
+
+
+class TestStationFollowersDoNotBindOnADownInterface:
+    """``_resolved_source_ip()`` collapses "configured but down" into ``""``,
+    and every socket reads an empty source as auto-detect.
+
+    PSN output already refused to start in that state, but the receiver and the
+    marker-catalog sync took the collapsed value - so a station whose interface
+    was down stopped sending while still joining the multicast group, and
+    trading marker names with peers, on whatever interface the OS picked. Those
+    are the surfaces that carry this station's identity.
+    """
+
+    @staticmethod
+    def _down_station(services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch) -> None:
+        services._app._config = replace(services._app._config, psn_source_iface="ghost0")
+        from openfollow import net_utils
+
+        monkeypatch.setattr(net_utils.psutil, "net_if_addrs", dict)
+        monkeypatch.setattr(net_utils, "get_primary_local_ipv4", lambda default="": "10.0.0.1")
+
+    def test_psn_receiver_does_not_start(self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._down_station(services, monkeypatch)
+        built: list[object] = []
+        monkeypatch.setattr(
+            services_module,
+            "PsnReceiver",
+            lambda **kw: built.append(kw) or SimpleNamespace(start=lambda: None),
+        )
+        services._app._psn_receiver = None
+        services.init_psn_receiver()
+        assert built == [], f"receiver was constructed with {built!r}"
+        assert services._app._psn_receiver is None
+
+    def test_psn_receiver_still_starts_on_a_live_interface(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal must not swallow the ordinary case."""
+        from openfollow import net_utils
+
+        services._app._config = replace(services._app._config, psn_source_iface="eth0")
+        monkeypatch.setattr(
+            net_utils.psutil,
+            "net_if_addrs",
+            lambda: {"eth0": [SimpleNamespace(family=socket.AF_INET, address="192.168.9.9")]},
+        )
+        built: list[dict] = []
+        monkeypatch.setattr(
+            services_module,
+            "PsnReceiver",
+            lambda **kw: built.append(kw) or SimpleNamespace(start=lambda: None),
+        )
+        services.init_psn_receiver()
+        assert [k["source_ip"] for k in built] == ["192.168.9.9"]
+
+    def test_resolved_source_ip_still_collapses_for_display_callers(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The stats IP and the online-sync worker tolerate an unknown address;
+        only the binding callers need the distinction."""
+        self._down_station(services, monkeypatch)
+        assert services._resolved_source_ip() == ""
+        assert services.station_source_ip_or_none() is None

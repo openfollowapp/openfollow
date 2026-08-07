@@ -860,12 +860,16 @@ class AppRuntimeServices:
         ``init_psn_receiver`` / the marker-catalog sync all route through here
         so they agree on the same validated address.
 
-        Fail-closed, like every per-plane pin. A configured station interface
-        with no address returns ``""``, which callers must read as "do not
-        start" rather than passing on - every downstream socket treats an empty
-        source as *auto-detect* and would put this station's identity on
-        whatever interface happens to be up. Use :meth:`station_source_ip_or_none`
-        when the distinction matters.
+        **Not fail-closed, and not for binding.** A configured station
+        interface with no address collapses to ``""`` here, and every socket
+        reads an empty source as *auto-detect* - so binding to this value puts
+        the station on whatever interface happens to be up, which is the
+        outcome the pin exists to prevent.
+
+        Use it only where an unknown address is harmless: a displayed IP, or a
+        worker that skips when there is no address. Anything that **binds** -
+        PSN in and out, marker-catalog sync - must call
+        :meth:`station_source_ip_or_none` and not start on ``None``.
         """
         return self.station_source_ip_or_none() or ""
 
@@ -1064,12 +1068,17 @@ class AppRuntimeServices:
         self._app._rttrpm_server.start()
 
     def init_psn_receiver(self) -> None:
-        # Read the resolved IP (iface pin first, then explicit IP, then
-        # auto-detect) so the receiver binds to the same interface as the
-        # server. Reading ``psn_source_ip`` directly would skip iface-pin.
+        # Same resolution as ``init_psn`` so input and output land on the same
+        # interface, and the same refusal: a configured station interface with
+        # no address means bind nothing. Passing "" would join the multicast
+        # group on whatever interface the OS picks, so the station would answer
+        # on a network the operator did not choose while its output was stopped.
+        source_ip = self.station_source_ip_or_none()
+        if source_ip is None:
+            return
         self._app._psn_receiver = PsnReceiver(
             ignore_ids=self._app._controlled_ids,
-            source_ip=self._resolved_source_ip(),
+            source_ip=source_ip,
         )
         self._app._psn_receiver.start()
 

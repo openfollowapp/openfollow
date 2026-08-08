@@ -1,14 +1,14 @@
 <form id="video-source-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="video_source" data-help="video_source"
       hx-post="/section/video_source" hx-target="#video-source-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
-        <h2>Video Source</h2>
-        <span class="section-note">Camera input and live preview</span>
+        <h2>{{_('Video Source')}}</h2>
+        <span class="section-note">{{_('Camera input and live preview')}}</span>
     </div>
 
     <div class="group">
         <div class="row">
             <div class="field">
-                <label>Source Type</label>
+                <label>{{_('Source Type')}}</label>
                 <select name="video_source_type" id="video-source-type"
                         onchange="ofVideoSourceToggle(this.value)">
                     % for iid, iname in available_inputs:
@@ -28,7 +28,7 @@
             <div class="field wide">
                 <button type="button" class="btn-link capture-btn"
                         hx-post="/video-input/testpattern/capture" hx-swap="none"
-                        hx-on::after-request="window.openfollowCaptureFeedback(event)">Capture frame to gallery</button>
+                        hx-on::after-request="window.openfollowCaptureFeedback(event)">{{_('Capture frame to gallery')}}</button>
                 <span id="capture-feedback" class="field-note" role="status" aria-live="polite"></span>
             </div>
         </div>
@@ -57,12 +57,12 @@
         <!-- Connection recovery applies to network inputs only (RTSP/SRT/RTP). -->
         <div class="row" id="recovery-row" style="display:{{'' if config.video_source_type in ('rtsp', 'srt', 'rtp') else 'none'}}">
             <div class="field">
-                <label>Stall Timeout (s)</label>
+                <label>{{_('Stall Timeout')}} (s)</label>
                 <input type="number" name="stall_timeout" value="{{config.stall_timeout}}"
                        min="0" step="0.1" placeholder="3.0">
             </div>
             <div class="field">
-                <label>Heal Interval (s)</label>
+                <label>{{_('Heal Interval')}} (s)</label>
                 <input type="number" name="heal_interval" value="{{config.heal_interval}}"
                        min="0" step="0.1" placeholder="5.0">
             </div>
@@ -71,14 +71,14 @@
         <div class="row" id="preview-row" style="margin-top:0.5rem;display:{{'none' if config.video_source_type == 'testpattern' else ''}}">
             <div class="field checkbox-field inline">
                 <input type="checkbox" id="show-preview-cb">
-                <label for="show-preview-cb">Show Preview</label>
+                <label for="show-preview-cb">{{_('Show Preview')}}</label>
             </div>
         </div>
         <div id="video-preview-wrap" style="display:none;">
             <div class="row">
                 <div class="field" style="min-width:100%;">
-                    <img id="video-preview" class="video-preview" alt="Video preview">
-                    <span id="video-preview-hint" class="video-preview-hint">No preview available – waiting for video source.</span>
+                    <img id="video-preview" class="video-preview" alt="{{_('Video preview')}}">
+                    <span id="video-preview-hint" class="video-preview-hint">{{_('No preview available – waiting for video source.')}}</span>
                 </div>
             </div>
         </div>
@@ -125,6 +125,6 @@
     </div>
 
     <div class="actions">
-        <button type="submit" class="save-btn">Save</button>
+        <button type="submit" class="save-btn">{{_('Save')}}</button>
     </div>
 </form>

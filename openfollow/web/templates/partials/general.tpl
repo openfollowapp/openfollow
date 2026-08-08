@@ -34,7 +34,7 @@
      hx-get="/section/general"
      hx-trigger="every 2s"
      hx-swap="none"
-     hx-on::after-request="if(event.detail.successful) window.location.reload()">App is restarting... Please wait.</div>
+     hx-on::after-request="if(event.detail.successful) window.location.reload()">{{_('App is restarting... Please wait.')}}</div>
 % end
 
 %# ------------------------------------------------------------------
@@ -49,8 +49,8 @@
 % _unit_system = config.ui.unit_system
 <div class="section" data-fold-key="general-station" data-help="general-station" data-fold-default="expanded">
     <div class="section-head">
-        <h2>Station Settings</h2>
-        <span class="section-note">Identity, display units, and web access</span>
+        <h2>{{_('Station Settings')}}</h2>
+        <span class="section-note">{{_('Identity, display units, and web access')}}</span>
     </div>
 
     %# Station name + Web Access PIN – one form, saved together via
@@ -61,27 +61,27 @@
           hx-post="/section/general" hx-target="#general-network-section" hx-swap="outerHTML"
           hx-select="#general-network-section" hx-trigger="submit">
         <div class="group">
-            <h3 class="group-title">Station name</h3>
+            <h3 class="group-title">{{_('Station name')}}</h3>
             <div class="row">
                 <div class="field wide">
-                    <label>Station name</label>
+                    <label>{{_('Station name')}}</label>
                     <input id="general-psn-system-name" type="text" name="psn_system_name" value="{{config.psn_system_name}}"
                            placeholder="OpenFollow"
                            hx-get="/api/validate/general/psn_system_name" hx-trigger="blur changed delay:200ms"
                            hx-target="#general-psn-system-name-error" hx-swap="innerHTML" hx-include="closest form"
                            aria-describedby="general-psn-system-name-error" aria-invalid="false">
                     <span id="general-psn-system-name-error" class="field-error"></span>
-                    <span class="field-note">Identifies this station in PSN output and on the network.</span>
+                    <span class="field-note">{{_('Identifies this station in PSN output and on the network.')}}</span>
                 </div>
             </div>
         </div>
         <div class="group group--divider">
-            <h3 class="group-title">Web access</h3>
+            <h3 class="group-title">{{_('Web access')}}</h3>
             <div class="row">
                 <div class="field wide">
-                    <label>PIN (leave empty to disable)</label>
+                    <label>{{_('PIN (leave empty to disable)')}}</label>
                     <input id="general-web-pin" type="password" name="web_pin" value="{{config.web_pin}}"
-                           placeholder="No PIN set" autocomplete="off"
+                           placeholder="{{_('No PIN set')}}" autocomplete="off"
                            hx-get="/api/validate/general/web_pin" hx-trigger="blur changed delay:200ms"
                            hx-target="#general-web-pin-error" hx-swap="innerHTML" hx-include="closest form"
                            aria-describedby="general-web-pin-error" aria-invalid="false">
@@ -96,15 +96,15 @@
           hx-post="/settings/unit-system" hx-target="#general-display-section" hx-swap="outerHTML"
           hx-select="#general-display-section" hx-trigger="change">
         <div class="group group--divider">
-            <h3 class="group-title">Display units</h3>
+            <h3 class="group-title">{{_('Display units')}}</h3>
             <div class="row">
                 <div class="field wide">
-                    <label for="general-unit-system">Unit system</label>
+                    <label for="general-unit-system">{{_('Unit system')}}</label>
                     <select id="general-unit-system" name="unit_system">
-                        <option value="metric" {{'selected' if _unit_system == 'metric' else ''}}>Metric (m, m/s)</option>
-                        <option value="imperial" {{'selected' if _unit_system == 'imperial' else ''}}>Imperial (ft / in, ft/s)</option>
+                        <option value="metric" {{'selected' if _unit_system == 'metric' else ''}}>{{_('Metric (m, m/s)')}}</option>
+                        <option value="imperial" {{'selected' if _unit_system == 'imperial' else ''}}>{{_('Imperial (ft / in, ft/s)')}}</option>
                     </select>
-                    <span class="field-note">Units shown in the web UI and on-device overlay. Storage, OSC, and PSN/RTTrPM/OTP stay metric regardless.</span>
+                    <span class="field-note">{{_('Units shown in the web UI and on-device overlay. Storage, OSC, and PSN/RTTrPM/OTP stay metric regardless.')}}</span>
                 </div>
             </div>
         </div>
@@ -115,10 +115,10 @@
     <form id="general-experimental-section"
           hx-post="/settings/experimental" hx-swap="none" hx-trigger="change">
         <div class="group group--divider">
-            <h3 class="group-title">Experimental features</h3>
+            <h3 class="group-title">{{_('Experimental features')}}</h3>
             <div class="row">
                 <div class="field checkbox-field wide">
-                    <label for="general-show-experimental">Show experimental features</label>
+                    <label for="general-show-experimental">{{_('Show experimental features')}}</label>
                     <div class="checkbox-wrap">
                         <input type="checkbox" id="general-show-experimental" name="show_experimental_features"
                                {{'checked' if config.ui.show_experimental_features else ''}}
@@ -133,7 +133,7 @@
     %# above live-apply on change, so only Station name + Web Access PIN need it).
     %# ``form=`` keeps it submitting the network form from outside it.
     <div class="actions">
-        <button type="submit" form="general-network-section" class="save-btn">Save</button>
+        <button type="submit" form="general-network-section" class="save-btn">{{_('Save')}}</button>
     </div>
 </div>
 
@@ -146,12 +146,12 @@
 %# ------------------------------------------------------------------
 <div class="section" data-fold-key="general-network-interface" data-help="general-network-interface" data-fold-default="expanded">
     <div class="section-head">
-        <h2>Network Settings</h2>
-        <span class="section-note">Device IP address configuration</span>
+        <h2>{{_('Network Settings')}}</h2>
+        <span class="section-note">{{_('Device IP address configuration')}}</span>
     </div>
     <div id="network-interface" hx-get="/section/network/status" hx-trigger="load"
          hx-target="this" hx-swap="innerHTML">
-        <p class="muted">Loading network configuration…</p>
+        <p class="muted">{{_('Loading network configuration…')}}</p>
     </div>
 </div>
 
@@ -166,8 +166,8 @@
      data-fold-key="general-software-update" data-help="general-software-update"
      data-fold-default="{{'expanded' if (defined('update_available') and update_available) else 'collapsed'}}">
     <div class="section-head">
-        <h2>Software Update</h2>
-        <span class="section-note">Install the latest release from GitHub</span>
+        <h2>{{_('Software Update')}}</h2>
+        <span class="section-note">{{_('Install the latest release from GitHub')}}</span>
     </div>
 
     %# Update-available banner – shown when the background online-sync check has
@@ -176,33 +176,33 @@
     % if defined('update_available') and update_available:
     <div class="notice" role="status" aria-live="polite"
          style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-        <span><strong>Update available:</strong> version {{latest_version}} is ready to install (installed v{{current_version}}).</span>
+        <span><strong>{{_('Update available:')}}</strong> {{_('version')}} {{latest_version}} {{_('is ready to install (installed v')}}{{current_version}}{{_(').')}}</span>
         <button type="button" class="update-btn" style="margin:0"
                 onclick="openfollowCheckUpdate(this)"
                 {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}>
-            Install now
+            {{_('Install now')}}
         </button>
     </div>
     % end
 
-    <p class="field-note">Installed: v{{current_version}}</p>
+    <p class="field-note">{{_('Installed')}}: v{{current_version}}</p>
 
     % if update_state == 'failed':
-    <div class="update-notice error">{{update_message or 'Update failed.'}} {{update_error}}</div>
+    <div class="update-notice error">{{_('Update failed.')}} {{update_error}}</div>
     % end
     %# ``update_feedback`` is rendered once at the top of this partial.
 
     <div class="actions">
         <button type="button" class="update-btn" onclick="openfollowCheckUpdate(this)" {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}>
-            Check &amp; Install Latest
+            {{_('Check & Install Latest')}}
         </button>
     </div>
 
     %# Offline install – collapsed by default; venues without internet expand this.
     <details class="inline-advanced" data-adv-key="general-offline-install">
-        <summary>Offline install</summary>
+        <summary>{{_('Offline install')}}</summary>
         <div class="inline-advanced-content">
-            <p class="field-note">Install an .ofupdate release bundle without internet access.</p>
+            <p class="field-note">{{_('Install an .ofupdate release bundle without internet access.')}}</p>
             <input type="file" id="general-update-file" style="display:none"
                    accept=".ofupdate"
                    {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}
@@ -211,13 +211,13 @@
                 <button type="button" class="btn-secondary"
                         onclick="document.getElementById('general-update-file').click()"
                         {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}>
-                    Choose file
+                    {{_('Choose file')}}
                 </button>
                 <span id="general-update-filename" class="field-note" style="margin:0;align-self:center"></span>
             </div>
             <div class="actions">
                 <button type="button" class="update-btn" onclick="openfollowUploadUpdate(this)" {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}>
-                    Upload &amp; Install
+                    {{_('Upload & Install')}}
                 </button>
             </div>
         </div>
@@ -232,7 +232,7 @@
 window.openfollowCheckUpdate = async function (btn) {
   const original = btn.textContent;
   btn.disabled = true;
-  btn.textContent = 'Checking…';
+  btn.textContent = {{_('Checking…')}};
   let info;
   try {
     const resp = await fetch('/section/general/deb-update/check', {
@@ -248,28 +248,28 @@ window.openfollowCheckUpdate = async function (btn) {
 
   if (!info.ok) {
     openModal({
-      title: 'Update check failed',
-      bodyHTML: '<p>Could not reach the update server:</p><p>' + escapeHTML(info.error || 'Unknown error') + '</p>',
-      footerButtons: [{ label: 'Close', kind: 'primary', onClick: () => closeModal() }],
+      title: {{_('Update check failed')}},
+      bodyHTML: '<p>' + {{_('Could not reach the update server:')}} + '</p><p>' + escapeHTML(info.error || {{_('Unknown error')}}) + '</p>',
+      footerButtons: [{ label: {{_('Close')}}, kind: 'primary', onClick: () => closeModal() }],
     });
     return;
   }
 
   if (!info.available) {
     openModal({
-      title: 'Up to date',
-      bodyHTML: '<p>This device already runs the latest version (' + escapeHTML(info.current) + ').</p>',
-      footerButtons: [{ label: 'Done', kind: 'primary', onClick: () => closeModal() }],
+      title: {{_('Up to date')}},
+      bodyHTML: '<p>' + {{_('This device already runs the latest version (')}} + escapeHTML(info.current) + ').</p>',
+      footerButtons: [{ label: {{_('Done')}}, kind: 'primary', onClick: () => closeModal() }],
     });
     return;
   }
 
   const confirmed = await modalConfirm({
-    title: 'Update available',
-    message: 'Version ' + info.latest + ' is available (installed: ' + info.current
-      + '). Install it now? The device restarts automatically when finished.',
-    confirmLabel: 'Install now',
-    cancelLabel: 'Not now',
+    title: {{_('Update available')}},
+    message: {{_('Version ')}} + info.latest + {{_(' is available (installed: ')}} + info.current
+      + {{_('). Install it now? The device restarts automatically when finished.')}},
+    confirmLabel: {{_('Install now')}},
+    cancelLabel: {{_('Not now')}},
   });
   if (!confirmed) return;
 
@@ -287,9 +287,9 @@ window.openfollowCheckUpdate = async function (btn) {
   }
   if (!started.ok) {
     openModal({
-      title: 'Could not start update',
-      bodyHTML: '<p>' + escapeHTML(started.error || 'The update could not be started.') + '</p>',
-      footerButtons: [{ label: 'Close', kind: 'primary', onClick: () => closeModal() }],
+      title: {{_('Could not start update')}},
+      bodyHTML: '<p>' + escapeHTML(started.error || {{_('The update could not be started.')}}) + '</p>',
+      footerButtons: [{ label: {{_('Close')}}, kind: 'primary', onClick: () => closeModal() }],
     });
     return;
   }
@@ -311,12 +311,11 @@ window.openfollowPollUpdate = async function (versionLabel) {
   const MAX_POLLS = 600;  // ~15 min absolute backstop so the modal can't lock forever
   // Locked progress modal: spinner + status line, no footer buttons.
   const showUpdating = (msg) => openModal({
-    title: 'Installing update',
+    title: {{_('Installing update')}},
     dismissable: false,
     bodyHTML: '<div class="modal-progress"><div class="modal-spinner"></div>'
       + '<p>' + escapeHTML(msg) + '</p></div>'
-      + '<p>Keep this device powered on. It restarts automatically and this page'
-      + ' reloads when the update finishes.</p>',
+      + '<p>' + {{_('Keep this device powered on. It restarts automatically and this page reloads when the update finishes.')}} + '</p>',
     footerButtons: [],
   });
   // Dismissable fall-back for every stuck/abandoned path so the operator is
@@ -324,14 +323,13 @@ window.openfollowPollUpdate = async function (versionLabel) {
   const showStuck = (title, msg) => openModal({
     title: title,
     bodyHTML: '<p>' + escapeHTML(msg) + '</p>',
-    footerButtons: [{ label: 'Reload', kind: 'primary', onClick: () => location.reload() }],
+    footerButtons: [{ label: {{_('Reload')}}, kind: 'primary', onClick: () => location.reload() }],
   });
-  showUpdating('Installing version ' + versionLabel + '…');
+  showUpdating({{_('Installing version ')}} + versionLabel + '…');
   for (;;) {
     await new Promise((r) => setTimeout(r, 1500));
     if (++polls >= MAX_POLLS) {
-      showStuck('Still working…', 'The update is taking longer than expected. '
-        + 'Reload the page to check the current version.');
+      showStuck({{_('Still working…')}}, {{_('The update is taking longer than expected. Reload the page to check the current version.')}});
       return;
     }
     let st;
@@ -342,19 +340,18 @@ window.openfollowPollUpdate = async function (versionLabel) {
       sawProgress = true;  // connection dropped – the service is restarting
       failCount++;
       if (failCount >= MAX_FAIL) {
-        showStuck('Device unreachable', 'The device has been unreachable for several minutes. '
-          + 'Check that it is powered on, then reload this page.');
+        showStuck({{_('Device unreachable')}}, {{_('The device has been unreachable for several minutes. Check that it is powered on, then reload this page.')}});
         return;
       }
-      showUpdating('Restarting onto version ' + versionLabel + '…');
+      showUpdating({{_('Restarting onto version ')}} + versionLabel + '…');
       continue;
     }
     if (st.state === 'failed') {
       openModal({
-        title: 'Update failed',
-        bodyHTML: '<p>' + escapeHTML(st.message || 'The update did not complete.') + '</p>'
+        title: {{_('Update failed')}},
+        bodyHTML: '<p>' + escapeHTML(st.message || {{_('The update did not complete.')}}) + '</p>'
           + (st.error ? '<p>' + escapeHTML(st.error) + '</p>' : ''),
-        footerButtons: [{ label: 'Close', kind: 'primary', onClick: () => closeModal() }],
+        footerButtons: [{ label: {{_('Close')}}, kind: 'primary', onClick: () => closeModal() }],
       });
       return;
     }
@@ -364,18 +361,18 @@ window.openfollowPollUpdate = async function (versionLabel) {
         // race, or it never picked the job up) – surface what the server
         // reported and let the operator reload instead of polling forever.
         if (++idleWaits >= MAX_IDLE) {
-          showStuck('Update did not start', st.message
-            || 'The update did not start – the device may already be up to date.');
+          showStuck({{_('Update did not start')}}, st.message
+            || {{_('The update did not start – the device may already be up to date.')}});
           return;
         }
         continue;
       }
       // Briefly confirm, then reload onto the new version automatically.
       openModal({
-        title: 'Update complete',
+        title: {{_('Update complete')}},
         dismissable: false,
         bodyHTML: '<div class="modal-progress"><div class="modal-spinner"></div>'
-          + '<p>Update complete – reloading…</p></div>',
+          + '<p>' + {{_('Update complete – reloading…')}} + '</p></div>',
         footerButtons: [],
       });
       setTimeout(() => location.reload(), 1200);
@@ -384,7 +381,7 @@ window.openfollowPollUpdate = async function (versionLabel) {
     sawProgress = true;
     if (st.state !== lastState) {
       lastState = st.state;
-      showUpdating(st.message || ('Installing version ' + versionLabel + '…'));
+      showUpdating(st.message || ({{_('Installing version ')}} + versionLabel + '…'));
     }
   }
 };
@@ -397,25 +394,24 @@ window.openfollowUploadUpdate = async function (btn) {
   const file = input && input.files && input.files[0];
   if (!file) {
     openModal({
-      title: 'No file selected',
-      bodyHTML: '<p>Choose an .ofupdate release bundle to install first.</p>',
-      footerButtons: [{ label: 'Close', kind: 'primary', onClick: () => closeModal() }],
+      title: {{_('No file selected')}},
+      bodyHTML: '<p>' + {{_('Choose an .ofupdate release bundle to install first.')}} + '</p>',
+      footerButtons: [{ label: {{_('Close')}}, kind: 'primary', onClick: () => closeModal() }],
     });
     return;
   }
 
   const proceed = await modalConfirm({
-    title: 'Install this file?',
-    message: 'Install "' + file.name + '" and restart the device? '
-      + 'It uploads over your local network – only install files you trust.',
-    confirmLabel: 'Install now',
-    cancelLabel: 'Cancel',
+    title: {{_('Install this file?')}},
+    message: {{_('Install "')}} + file.name + {{_('" and restart the device? It uploads over your local network – only install files you trust.')}},
+    confirmLabel: {{_('Install now')}},
+    cancelLabel: {{_('Cancel')}},
   });
   if (!proceed) return;
 
   const original = btn.textContent;
   btn.disabled = true;
-  btn.textContent = 'Uploading…';
+  btn.textContent = {{_('Uploading…')}};
   let info;
   try {
     // Send the bundle as the raw request body (not multipart); filename as a query param.
@@ -434,9 +430,9 @@ window.openfollowUploadUpdate = async function (btn) {
 
   if (!info.ok) {
     openModal({
-      title: 'Upload failed',
-      bodyHTML: '<p>Could not install that file:</p><p>' + escapeHTML(info.error || 'Unknown error') + '</p>',
-      footerButtons: [{ label: 'Close', kind: 'primary', onClick: () => closeModal() }],
+      title: {{_('Upload failed')}},
+      bodyHTML: '<p>' + {{_('Could not install that file:')}} + '</p><p>' + escapeHTML(info.error || {{_('Unknown error')}}) + '</p>',
+      footerButtons: [{ label: {{_('Close')}}, kind: 'primary', onClick: () => closeModal() }],
     });
     return;
   }

@@ -3,7 +3,7 @@
 <head>
  <meta charset="UTF-8">
  <meta name="viewport" content="width=device-width, initial-scale=1.0">
- <title>{{config.psn_system_name if defined('config') and config else 'OpenFollow'}} – Configuration</title>
+ <title>{{config.psn_system_name if defined('config') and config else 'OpenFollow'}} {{_('– Configuration')}}</title>
  %# Cache-bust every bundled asset with a content fingerprint of the static
  %# dir so an app update always serves fresh JS/CSS. Without this, a browser
  %# keeps the previous release's cached script on the offline LAN (no
@@ -2050,14 +2050,21 @@
 <body class="{{'show-experimental' if defined('config') and config and config.ui.show_experimental_features else ''}}">
  <div class="container">
  <header class="hero-panel">
- <a class="hero-logo-link" href="/" aria-label="OpenFollow – back to overview">
- <img class="hero-logo" src="/assets/openfollow.svg?v={{_asset_v}}" alt="OpenFollow logo">
+ <a class="hero-logo-link" href="/" aria-label="{{_('OpenFollow – back to overview')}}">
+ <img class="hero-logo" src="/assets/openfollow.svg?v={{_asset_v}}" alt="{{_('OpenFollow logo')}}">
  </a>
  % if defined('config') and config:
- <div class="station-name-pill hero-station-pill" title="Station name (psn_system_name) – set on the General tab">
+ <div class="station-name-pill hero-station-pill" title="{{_('Station name (psn_system_name) – set on the General tab')}}">
  {{config.psn_system_name}}
  </div>
  % end
+% if len(available_languages) > 1:
+ <div class="lang-switch" role="group" aria-label="{{_('Language')}}">
+ % for code in available_languages:
+ <a href="/set-lang/{{code}}">{{code}}</a>
+ % end
+ </div>
+% end
  </header>
  {{!base}}
  % if defined('on_device') and on_device:
@@ -2067,7 +2074,7 @@
  %# to any of A/B/X/Y/etc., and a stale hint here would tell
  %# operators to press a button that no longer dismisses the
  %# overlay.
- <span><kbd>{{cancel_button or 'Cancel'}}</kbd>Close embedded browser</span>
+ <span><kbd>{{cancel_button or 'Cancel'}}</kbd>{{_('Close embedded browser')}}</span>
  </footer>
  % end
  %# AGPLv3 §5(d) Appropriate Legal Notices. __version__ comes from
@@ -2076,12 +2083,12 @@
  <footer class="license-footer" role="contentinfo">
  OpenFollow v{{__version__}}{{ ' (' + __commit__ + ')' if __commit__ else '' }}
  % if defined('update_supported') and update_supported and defined('update_available') and update_available:
- <span class="update-flag">(Update available: v{{latest_version}})</span>
+ <span class="update-flag">{{_('(Update available: v')}}{{latest_version}})</span>
  % end
  <span class="sep">·</span>
  © 2026 The OpenFollow Project
  <span class="sep">·</span>
- <a href="/about">About &amp; license</a>
+ <a href="/about">{{_('About &amp; license')}}</a>
  </footer>
  </div>
  <div id="toast" class="toast"></div>
@@ -2091,7 +2098,7 @@
  <div class="modal-card">
  <div class="modal-header">
  <h2 class="modal-title" id="modal-title"></h2>
- <button type="button" class="modal-close" data-modal-close aria-label="Close">&times;</button>
+ <button type="button" class="modal-close" data-modal-close aria-label="{{_('Close')}}">&times;</button>
  </div>
  <div class="modal-body" id="modal-body"></div>
  <div class="modal-footer" id="modal-footer"></div>
@@ -2106,9 +2113,9 @@
  <aside id="help-drawer" class="help-drawer" role="dialog" aria-modal="false"
  aria-labelledby="help-drawer-title" aria-hidden="true" inert>
  <div class="help-drawer-head">
- <h2 id="help-drawer-title">Help</h2>
+ <h2 id="help-drawer-title">{{_('Help')}}</h2>
  <button type="button" class="help-drawer-close" data-help-close
- aria-label="Close help">&times;</button>
+ aria-label="{{_('Close help')}}">&times;</button>
  </div>
  <div class="help-drawer-body" id="help-drawer-body" tabindex="-1"></div>
  </aside>

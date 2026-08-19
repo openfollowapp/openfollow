@@ -27,10 +27,12 @@ from openfollow.configuration import (
     HotkeyTrigger,
 )
 from openfollow.input import InputManager
+from openfollow.net_utils import ResolveStatus
 from openfollow.otp import OtpServer
 from openfollow.psn import PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
+from openfollow.runtime.network_observer import NetworkPlaneObserver, Plane
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.runtime.services_detection_pin import _NOMINAL_FRAME_DT
 from openfollow.runtime.services_detection_pin import (
@@ -626,6 +628,13 @@ class AppRuntimeServices:
         # app launch.
         from openfollow.network.detect import select_adapter as _select_network_adapter
 
+        # Built lazily on the first housekeeping poll so construction stays
+        # free of interface enumeration.
+        self._network_observer: NetworkPlaneObserver | None = None
+        # Whether the station interface has been seen without an address since
+        # the followers were last repointed.
+        self._station_saw_outage = False
+
         backend_choice = self._network_backend_choice(app)
         self._network_adapter = _select_network_adapter(
             backend_choice,
@@ -892,6 +901,142 @@ class AppRuntimeServices:
             )
             return None
         return resolved
+
+    def _build_network_planes(self) -> list[Plane]:
+        """Every plane the observer follows, in report order.
+
+        Later PRs add a row each (web UI, OSC in, RTTrPM, OSC destinations,
+        video input); each is one entry here and needs no observer changes.
+        """
+        from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
+
+        def _resolver(
+            pin_getter: Callable[[], str],
+            *,
+            is_station: bool,
+        ) -> Callable[[], tuple[str, ResolveStatus, str]]:
+            def _resolve() -> tuple[str, ResolveStatus, str]:
+                pin = pin_getter()
+                station = "" if is_station else self._app._config.psn_source_iface
+                address, status = resolve_plane_source_ip(pin, station)
+                return address, status, plane_source_iface(pin, station)
+
+            return _resolve
+
+        def _apply_psn(address: str) -> None:
+            self.apply_psn_source_ip_change(address)
+
+        def _current_psn() -> str | None:
+            server = self._app._server
+            return server.bound_source_ip() if server is not None else None
+
+        def _suspend_psn() -> None:
+            # Both directions, and both attempted even if the first raises:
+            # leaving the receiver joined on a dead address would keep viewer
+            # markers showing stale positions, which is the thing this exists
+            # to prevent.
+            errors: list[Exception] = []
+            for service in (self._app._server, self._app._psn_receiver):
+                if service is None:
+                    continue
+                try:
+                    service.stop()
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(exc)
+            if errors:
+                raise errors[0]
+
+        def _apply_otp(_address: str) -> None:
+            # The orchestrator re-resolves the pin itself, so it always binds
+            # the address this poll just observed.
+            self.apply_otp_output_change(self._app._config.otp_output)
+
+        def _current_otp() -> str | None:
+            server = self._app._otp_server
+            return server.bound_source_ip() if server is not None else None
+
+        def _suspend_otp() -> None:
+            if self._app._otp_server is not None:
+                self._app._otp_server.stop()
+
+        return [
+            Plane(
+                label="PSN",
+                resolve=_resolver(lambda: self._app._config.psn_source_iface, is_station=True),
+                current=_current_psn,
+                apply=_apply_psn,
+                suspend=_suspend_psn,
+            ),
+            Plane(
+                label="OTP output",
+                resolve=_resolver(lambda: self._app._config.otp_output.source_iface, is_station=False),
+                current=_current_otp,
+                apply=_apply_otp,
+                suspend=_suspend_otp,
+                # A switched-off output is not broken; alerting on it would put
+                # a second fault on the HUD for a protocol nobody enabled.
+                enabled=lambda: self._app._config.otp_output.enabled,
+            ),
+        ]
+
+    def observe_network_planes(self) -> None:
+        """Follow every plane's configured interface. Called from housekeeping.
+
+        Also repoints the station-followers that have no plane of their own -
+        the web self-row, the discovery beacon and marker-catalog sync. Those
+        were previously repointed from a web request path, so they only healed
+        while somebody had a browser tab open.
+        """
+        observer = self._network_observer
+        if observer is None:
+            observer = NetworkPlaneObserver(planes=self._build_network_planes(), clock=time.monotonic)
+            self._network_observer = observer
+        # Inside the same throttle: resolving the station address enumerates
+        # every adapter, and housekeeping runs at 100 ms.
+        if observer.poll():
+            self._follow_station_ip()
+
+    def _follow_station_ip(self) -> None:
+        """Repoint the services that track the station address rather than pin one.
+
+        Resolved fail-closed, like every other plane: the station interface
+        being down must not move catalog sync or the discovery beacon onto
+        whatever else happens to be up. Doing so would put this station's
+        identity - its name, marker names and colours, its selection - on a
+        network the operator never chose, at the exact moment the observer is
+        stopping PSN for that same reason.
+        """
+        from openfollow.net_utils import resolve_plane_source_ip
+
+        address, status = resolve_plane_source_ip("", self._app._config.psn_source_iface)
+        if status in ("down", "none"):
+            self._station_saw_outage = True
+            return
+
+        # The observer forces its own planes to rebuild after an outage even at
+        # an unchanged address; these followers need the same treatment, and
+        # both of their entry points short-circuit on an unchanged IP. Without
+        # this a replug that returns the same DHCP lease leaves catalog sync
+        # and the beacon joined to memberships the kernel already dropped -
+        # still looking healthy, converging with nobody.
+        recovered = self._station_saw_outage
+        self._station_saw_outage = False
+
+        server = self._app._web_server
+        if server is not None:
+            server.refresh_local_ip()
+            if recovered:
+                server.reopen_beacons()
+        sync = getattr(self._app, "_marker_catalog_sync", None)
+        if sync is not None:
+            sync.update_iface_ip(address)
+            if recovered:
+                sync.reopen()
+
+    def network_alerts(self) -> list[str]:
+        """Planes currently stopped because their interface has no address."""
+        observer = self._network_observer
+        return observer.alerts() if observer is not None else []
 
     def init_online_sync(self) -> None:
         """Start the background online-sync worker.
@@ -2423,6 +2568,7 @@ class AppRuntimeServices:
             system_stats=self._system_stats,
             person_detector=self._person_detector,
             cam_params_buffer=self._cam_params_buffer,
+            network_alerts=self.network_alerts(),
         )
 
         # Atomic swap: release old state back to pool

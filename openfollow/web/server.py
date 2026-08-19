@@ -511,6 +511,28 @@ class ConfigWebServer:
             self._beacon_receiver.update_iface_ip(candidate)
         logger.info("Local IP changed to %s; beacon interface repointed.", candidate)
 
+    def refresh_local_ip(self) -> None:
+        """Public entry point for the runtime network observer.
+
+        The refresh used to happen only on a request path, so a station whose
+        address changed healed its self-row and beacon interface only while
+        somebody had a browser tab open. The observer calls this on a timer
+        instead; the internal throttle still applies, so the request paths
+        calling it too costs nothing.
+        """
+        self._refresh_local_ip()
+
+    def reopen_beacons(self) -> None:
+        """Rebuild both beacon sockets regardless of whether the IP changed.
+
+        Called on recovery from an interface outage: the kernel drops the
+        group membership and the egress route when an address is removed, and
+        the same address coming back does not restore either - so the
+        unchanged-IP guard in ``update_iface_ip`` is not enough on its own.
+        """
+        self._beacon_sender.reopen()
+        self._beacon_receiver.reopen()
+
     def get_local_peer_info(self) -> PeerInfo:
         """Get info about this server as a PeerInfo object."""
         self._refresh_local_ip()

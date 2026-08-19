@@ -167,3 +167,69 @@ def test_receiver_eviction_sweep_is_throttled(monkeypatch) -> None:
     receiver._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
     receiver._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
     assert 99 in receiver._last_seen  # throttled – not yet swept
+
+
+class TestBoundedStop:
+    """pypsn's own stop() does a plain join() with no timeout while run() is
+    blocked in recvfrom. Closing the fd does not reliably wake a thread already
+    parked there, so the join waits out the socket timeout - and this is now
+    called from housekeeping on the GTK thread, where it stalls the render
+    loop and marker motion."""
+
+    def _receiver(self, *, alive: bool, sock=None):
+        from openfollow.psn.receiver import _RobustReceiver
+
+        rx = _RobustReceiver.__new__(_RobustReceiver)
+        rx.running = True
+        rx.socket = sock
+        rx.joins = []
+        rx.join = lambda timeout=None: rx.joins.append(timeout)  # type: ignore[method-assign]
+        rx.is_alive = lambda: alive  # type: ignore[method-assign]
+        return rx
+
+    def test_join_is_bounded(self) -> None:
+        from openfollow.psn.receiver import _RobustReceiver
+
+        rx = self._receiver(alive=False)
+        rx.stop()
+        assert rx.running is False
+        assert rx.joins == [_RobustReceiver._JOIN_TIMEOUT_S]
+
+    def test_socket_is_closed_and_a_close_error_is_swallowed(self) -> None:
+        class _Sock:
+            def __init__(self) -> None:
+                self.closed = 0
+
+            def close(self) -> None:
+                self.closed += 1
+                raise OSError("already gone")
+
+        sock = _Sock()
+        rx = self._receiver(alive=False, sock=sock)
+        rx.stop()
+        assert sock.closed == 1
+
+    def test_a_thread_that_will_not_die_is_logged_not_awaited(self, caplog) -> None:
+        rx = self._receiver(alive=True)
+        with caplog.at_level("WARNING"):
+            rx.stop()
+        assert any("did not stop" in r.message for r in caplog.records)
+
+
+class TestBoundSourceIp:
+    """Drives the observer's 'already bound correctly, leave it alone'
+    decision, which is what keeps the first poll from tearing down a healthy
+    startup binding."""
+
+    def test_reports_none_when_stopped(self) -> None:
+        from openfollow.psn.receiver import PsnReceiver
+
+        rx = PsnReceiver(source_ip="192.168.1.5")
+        assert rx.bound_source_ip() is None
+
+    def test_reports_the_address_when_running(self) -> None:
+        from openfollow.psn.receiver import PsnReceiver
+
+        rx = PsnReceiver(source_ip="192.168.1.5")
+        rx._receiver = object()
+        assert rx.bound_source_ip() == "192.168.1.5"

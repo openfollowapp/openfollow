@@ -323,3 +323,26 @@ def test_handle_send_error_noop_when_stopping() -> None:
 
     assert server._socket is sentinel_socket  # untouched
     assert server._socket_thread is None  # no recovery thread spawned
+
+
+class TestBoundSourceIp:
+    """Drives the observer's 'already bound correctly, leave it alone'
+    decision. Without it the first poll calls rebind(), which kills the
+    background retry thread that recovers a boot where the multicast route
+    came up late - turning a self-healing boot into a permanent outage."""
+
+    def test_reports_none_before_start(self) -> None:
+        srv = PsnServer(source_ip="192.168.1.5", mcast_ip="236.10.10.10")
+        assert srv.bound_source_ip() is None
+
+    def test_reports_the_address_while_running(self) -> None:
+        srv = PsnServer(source_ip="192.168.1.5", mcast_ip="236.10.10.10")
+        srv._stop_event.clear()
+        srv._data_thread = object()  # type: ignore[assignment]
+        assert srv.bound_source_ip() == "192.168.1.5"
+
+    def test_reports_none_once_stopped(self) -> None:
+        srv = PsnServer(source_ip="192.168.1.5", mcast_ip="236.10.10.10")
+        srv._data_thread = object()  # type: ignore[assignment]
+        srv._stop_event.set()
+        assert srv.bound_source_ip() is None

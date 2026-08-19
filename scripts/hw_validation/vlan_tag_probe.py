@@ -30,6 +30,18 @@ import sys
 import time
 
 _ETH_P_ALL = 0x0003
+# The kernel lifts an 802.1Q tag out of the frame on the RECEIVE path and hands
+# it over as socket metadata instead, so reading the ethernet header alone finds
+# a tag on egress and nothing on ingress. That asymmetry is why a capture at the
+# receiving station used to report every delivered frame as untagged. Asking for
+# PACKET_AUXDATA gets the tag back (it is what tcpdump reads to print "vlan 10").
+# socket.SOL_PACKET is not exposed by CPython's socket module.
+_SOL_PACKET = 263
+_PACKET_AUXDATA = 8
+_TP_STATUS_VLAN_VALID = 1 << 4
+# struct tpacket_auxdata: 3x u32 then 4x u16.
+_AUXDATA_FMT = "IIIHHHH"
+_AUXDATA_LEN = struct.calcsize(_AUXDATA_FMT)
 _ETH_P_IP = 0x0800
 _ETH_P_8021Q = 0x8100
 _IPPROTO_UDP = 17
@@ -65,21 +77,38 @@ def _parse(frame: bytes) -> dict[str, object] | None:
     return {"vlan": vlan, "src": src, "dst": dst, "sport": sport, "dport": dport}
 
 
+def _auxdata_vlan(ancillary: list[tuple[int, int, bytes]]) -> int | None:
+    """The VLAN id the kernel stripped on ingress, or ``None`` if it stripped none."""
+    for level, cmsg_type, data in ancillary:
+        if level == _SOL_PACKET and cmsg_type == _PACKET_AUXDATA and len(data) >= _AUXDATA_LEN:
+            status, _len, _snap, _mac, _net, tci, _tpid = struct.unpack(_AUXDATA_FMT, data[:_AUXDATA_LEN])
+            if status & _TP_STATUS_VLAN_VALID:
+                return tci & 0x0FFF
+    return None
+
+
 def capture(iface: str, dst: str, seconds: float, limit: int) -> list[dict[str, object]]:
     sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(_ETH_P_ALL))
     try:
         sock.bind((iface, 0))
+        try:
+            sock.setsockopt(_SOL_PACKET, _PACKET_AUXDATA, 1)
+        except OSError:  # pragma: no cover - older kernel; egress tags still read
+            pass
         sock.settimeout(0.5)
         deadline = time.monotonic() + seconds
         seen: list[dict[str, object]] = []
         while time.monotonic() < deadline and len(seen) < limit:
             try:
-                frame = sock.recv(65535)
+                frame, ancillary, _flags, _addr = sock.recvmsg(65535, socket.CMSG_SPACE(_AUXDATA_LEN))
             except TimeoutError:
                 continue
             parsed = _parse(frame)
-            if parsed is not None and (not dst or parsed["dst"] == dst):
-                seen.append(parsed)
+            if parsed is None or (dst and parsed["dst"] != dst):
+                continue
+            if parsed["vlan"] is None:
+                parsed["vlan"] = _auxdata_vlan(ancillary)
+            seen.append(parsed)
         return seen
     finally:
         sock.close()

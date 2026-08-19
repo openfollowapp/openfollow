@@ -1297,6 +1297,7 @@ class TestMessagesFitTheOnScreenBanner:
         assert not self._SECOND_SENTENCE.search("Could not update /etc/dhcpcd.conf; nothing was changed.")
         assert not self._SECOND_SENTENCE.search("Saved; eth0 is at 192.168.1.5 now.")
 
+
 class TestVlansUnsupported:
     """dhcpcd configures addresses on links; it does not create them. The Pi
     image masks systemd-networkd, so NetworkManager owns link creation."""

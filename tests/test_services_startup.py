@@ -1180,6 +1180,7 @@ def test_the_outage_flag_clears_after_one_recovery(monkeypatch) -> None:
     assert sync.reopens == 1
     assert server.reopens == 1
 
+
 # VLAN providers / handlers
 # --------------------------------------------------------------------------- #
 

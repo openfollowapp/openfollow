@@ -174,6 +174,15 @@ validation step cannot install one. `vlan_tag_probe.py` is a raw `AF_PACKET`
 socket in the bundled venv's Python. A tcpdump-based check reports "no traffic"
 on every station, which reads as a pass.
 
+**A tag is in the frame on the way out and in socket metadata on the way in.**
+The kernel lifts an 802.1Q header off on ingress, so reading the ethernet header
+alone finds the tag at the sender and nothing at the receiver - a delivered
+frame reports as untagged, which reads as a leak. The probe asks for
+`PACKET_AUXDATA` and recovers the tag from there, the same source tcpdump uses
+to print `vlan 10`. Note also that a capture sees a multicast group only if
+something on that host has joined it: without a joiner the switch prunes the
+group and the capture reports zero frames, which reads as "never arrived".
+
 **A VLAN is not pinnable until it has an address.** The interface pickers list
 interfaces that *have* an IPv4, so a freshly created VLAN is absent from them
 until `Configure` gives it one. The Create banner says so; the script skips the

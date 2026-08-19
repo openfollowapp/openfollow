@@ -985,6 +985,7 @@ def test_a_pending_apply_still_shows_its_warnings(net_server) -> None:
     assert "take effect when eth0 has a link" in body
     assert "rebind refused" in body, "the pending banner dropped its warnings"
 
+
 # --------------------------------------------------------------------------- #
 # VLAN create / delete
 # --------------------------------------------------------------------------- #

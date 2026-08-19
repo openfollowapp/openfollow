@@ -149,9 +149,13 @@ class Report:
     def __init__(self) -> None:
         self.rows: list[tuple[str, bool, str]] = []
 
-    def check(self, name: str, ok: bool, detail: str = "") -> bool:
-        self.rows.append((name, ok, detail))
-        print(f"  [{'PASS' if ok else 'FAIL'}] {name}{f' – {detail}' if detail else ''}", flush=True)
+    def check(self, name: str, ok: bool, detail: str = "", *, on_fail: str = "") -> bool:
+        """*detail* is evidence and prints either way; *on_fail* explains a
+        failure and prints only when there is one. Printing a failure
+        explanation beside PASS makes a green run read like a red one."""
+        shown = detail if ok else (on_fail or detail)
+        self.rows.append((name, ok, shown))
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}{f' - {shown}' if shown else ''}", flush=True)
         return ok
 
     def skip(self, name: str, why: str) -> None:
@@ -263,7 +267,7 @@ def phase_vlan_lifecycle(rep: Report, web: Web, ssh_base: list[str], args, vlan_
     if not rep.check(
         "create reported success",
         "Created" in body or vlan_name in body,
-        "banner did not confirm creation",
+        on_fail="banner did not confirm creation",
     ):
         print(f"      body excerpt: {body[:400]}")
         return False
@@ -271,23 +275,32 @@ def phase_vlan_lifecycle(rep: Report, web: Web, ssh_base: list[str], args, vlan_
     return rep.check(
         f"{vlan_name} exists as a netdev on the DUT",
         netdev_exists(ssh_base, args.dut, vlan_name),
-        "ip link does not show it",
+        on_fail="ip link does not show it",
     )
 
 
-def phase_no_extra_plumbing(rep: Report, web: Web, vlan_name: str) -> None:
+def phase_no_extra_plumbing(rep: Report, web: Web, ssh_base: list[str], args, vlan_name: str) -> None:
     print("\n[2] A VLAN is an ordinary netdev (no extra plumbing)")
     _status, card = web.get("/section/network/edit")
     rep.check(
         "VLAN appears in the Network Settings list",
         vlan_name in card,
-        "not in the interface list",
+        on_fail="not in the interface list",
     )
+    # Same ordering the traffic phase respects: the pickers list interfaces that
+    # HAVE an IPv4, so a VLAN is absent from them until something addresses it.
+    # Reporting that as a failure blames the feature for its documented
+    # sequence. A station provisioned with the DHCP-fallback drop-in self-
+    # assigns a link-local here within seconds; one without it stays empty until
+    # Configure gives it an address.
+    if not iface_address(ssh_base, args.dut, vlan_name):
+        rep.skip("VLAN is offered as a plane pin", f"{vlan_name} has no address yet")
+        return
     _status, picker = web.get("/network/interfaces/by_name")
     rep.check(
         "VLAN is offered as a plane pin",
         f'value="{vlan_name}"' in picker,
-        "not offered in the interface picker",
+        on_fail="not offered in the interface picker",
     )
 
 
@@ -297,13 +310,13 @@ def phase_guards(rep: Report, web: Web, args, vlan_name: str) -> None:
     rep.check(
         "deleting a non-VLAN adapter is refused",
         "is not a VLAN" in body,
-        "the parent NIC was not protected",
+        on_fail="the parent NIC was not protected",
     )
     _status, body = web.post_form("/section/network/vlan/delete", {"iface": "definitely-not-real"})
     rep.check(
         "deleting an unknown adapter is refused",
         "is not a VLAN" in body,
-        "an unknown name was not rejected",
+        on_fail="an unknown name was not rejected",
     )
     # The session guard only fires when the browser arrived over the interface
     # being deleted, which needs the request to come in on the VLAN itself.
@@ -313,7 +326,7 @@ def phase_guards(rep: Report, web: Web, args, vlan_name: str) -> None:
         rep.check(
             "deleting this session's own adapter is refused",
             "This session is connected over" in body,
-            "the session guard did not fire",
+            on_fail="the session guard did not fire",
         )
     else:
         rep.skip(
@@ -340,7 +353,7 @@ def phase_traffic_separation(rep: Report, web: Web, ssh_base: list[str], args, v
     if not rep.check(
         "pin persisted",
         read_psn_pin(web) == vlan_name,
-        "the pin did not reach config - a device-local field was stripped",
+        on_fail="the pin did not reach config - a device-local field was stripped",
     ):
         return
     time.sleep(SETTLE_SECONDS)
@@ -355,7 +368,7 @@ def phase_traffic_separation(rep: Report, web: Web, ssh_base: list[str], args, v
     rep.check(
         "no untagged PSN from this station",
         not any(f.get("vlan") is None and f.get("src") == vlan_addr for f in frames),
-        "the same station sent untagged PSN while pinned",
+        on_fail="the same station sent untagged PSN while pinned",
     )
     if args.other_nic:
         leaked = capture_psn(ssh_base, args.dut, args.other_nic, args.psn_mcast)
@@ -394,13 +407,13 @@ def phase_fail_closed(rep: Report, web: Web, ssh_base: list[str], args) -> None:
     rep.check(
         "PSN sockets are closed, not rebound",
         sockets in ("", "0"),
-        f"{sockets} PSN socket(s) still open on a down pin",
+        f"{sockets or '0'} PSN socket(s) open",
     )
     frames = capture_psn(ssh_base, args.dut, args.parent, args.psn_mcast)
     rep.check(
         "no PSN on the wire while suspended",
         not frames,
-        f"{len(frames)} PSN frames still leaving",
+        f"{len(frames)} PSN frames on the wire",
     )
     logged = ssh(
         ssh_base,
@@ -411,7 +424,7 @@ def phase_fail_closed(rep: Report, web: Web, ssh_base: list[str], args) -> None:
     rep.check(
         "the operator is told why it stopped",
         logged not in ("", "0"),
-        "nothing in the journal names the down interface",
+        on_fail="nothing in the journal names the down interface",
     )
 
 
@@ -484,7 +497,7 @@ def main() -> int:
     try:
         created = phase_vlan_lifecycle(rep, web, ssh_base, args, vlan_name)
         if created:
-            phase_no_extra_plumbing(rep, web, vlan_name)
+            phase_no_extra_plumbing(rep, web, ssh_base, args, vlan_name)
             phase_guards(rep, web, args, vlan_name)
             phase_traffic_separation(rep, web, ssh_base, args, vlan_name)
             phase_fail_closed(rep, web, ssh_base, args)

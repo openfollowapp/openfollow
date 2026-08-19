@@ -24,14 +24,14 @@ class NetworkInterface:
     is_up: bool
 
 
-_LOOPBACK_NAMES = frozenset({"lo", "lo0"})
+LOOPBACK_NAMES = frozenset({"lo", "lo0"})
 
 
 def is_loopback(iface: NetworkInterface) -> bool:
     """Return True if interface is loopback (matches kind or well-known names)."""
     if (iface.kind or "").lower() == "loopback":
         return True
-    return iface.name in _LOOPBACK_NAMES
+    return iface.name in LOOPBACK_NAMES
 
 
 @dataclass(frozen=True)
@@ -84,10 +84,20 @@ class NetworkState:
 
 
 @dataclass(frozen=True)
+class VlanInterface:
+    name: str
+    parent: str
+    vlan_id: int
+
+
+@dataclass(frozen=True)
 class ApplyResult:
     ok: bool
     message: str = ""
     partial_failures: tuple[str, ...] = field(default_factory=tuple)
+
+
+VLAN_UNSUPPORTED_MESSAGE = "This network backend cannot create VLAN interfaces."
 
 
 class NetworkAdapter(ABC):
@@ -114,6 +124,29 @@ class NetworkAdapter(ABC):
     def is_writable(self) -> bool:
         """Return True if this adapter can mutate host state."""
         return True
+
+    # ---- VLAN sub-interfaces --------------------------------------------
+    #
+    # Creating the link is the whole of the new work: once ``eth0.10`` exists
+    # it is an ordinary netdev, so listing, addressing and pinning it all run
+    # through the paths above unchanged. Backends that do not own links report
+    # unsupported here and the UI omits the controls entirely.
+
+    def supports_vlans(self) -> bool:
+        """Return True if this backend can create and remove VLAN links."""
+        return False
+
+    def list_vlans(self) -> list[VlanInterface]:
+        """Return the VLAN sub-interfaces this backend knows about."""
+        return []
+
+    def create_vlan(self, parent: str, vlan_id: int) -> ApplyResult:
+        """Create a ``<parent>.<vlan_id>`` VLAN link."""
+        return ApplyResult(ok=False, message=VLAN_UNSUPPORTED_MESSAGE)
+
+    def delete_vlan(self, name: str) -> ApplyResult:
+        """Remove the VLAN link named ``name``."""
+        return ApplyResult(ok=False, message=VLAN_UNSUPPORTED_MESSAGE)
 
     def get_ipv6_state(self, iface: str) -> None:
         """Stub for future IPv6 support."""

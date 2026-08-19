@@ -2005,6 +2005,9 @@ class AppRuntimeServices:
             network_interfaces_provider=self._network_interfaces_provider,
             network_apply_handler=self._handle_network_apply,
             network_renew_handler=self._handle_network_renew,
+            network_vlan_provider=self._network_vlan_provider,
+            network_vlan_create_handler=self._handle_network_vlan_create,
+            network_vlan_delete_handler=self._handle_network_vlan_delete,
             # Privilege capability snapshot for the diagnostics bundle.
             privilege_states_provider=self._privilege_states_provider,
             marker_catalog_provider=lambda: self._app._marker_catalog,
@@ -2330,6 +2333,47 @@ class AppRuntimeServices:
             return ApplyResult(ok=False, message="Read-only host – cannot renew.")
         with self._network_op_lock:
             return cast(ApplyResult, adapter.renew_lease(iface))
+
+    def _network_vlan_provider(self) -> dict[str, Any]:
+        """Whether this backend owns VLAN links, and the ones that exist."""
+        adapter = getattr(self, "_network_adapter", None)
+        if adapter is None or not adapter.supports_vlans():
+            return {"supported": False, "vlans": []}
+        try:
+            vlans = adapter.list_vlans()
+        except Exception:  # noqa: BLE001
+            logger.exception("VLAN list read failed")
+            return {"supported": True, "vlans": []}
+        return {
+            "supported": True,
+            "vlans": [{"name": v.name, "parent": v.parent, "vlan_id": v.vlan_id} for v in vlans],
+        }
+
+    def _handle_network_vlan_create(self, parent: str, vlan_id: int) -> ApplyResult:
+        """Create a VLAN sub-interface, serialised with the other network
+        writes (see :meth:`_handle_network_apply`)."""
+        from openfollow.network.adapter import ApplyResult
+
+        adapter = getattr(self, "_network_adapter", None)
+        if adapter is None:
+            return ApplyResult(ok=False, message="No network adapter available.")
+        if not adapter.is_writable():
+            return ApplyResult(ok=False, message="Read-only host – cannot create a VLAN.")
+        with self._network_op_lock:
+            return cast(ApplyResult, adapter.create_vlan(parent, vlan_id))
+
+    def _handle_network_vlan_delete(self, name: str) -> ApplyResult:
+        """Delete a VLAN sub-interface, serialised with the other network
+        writes (see :meth:`_handle_network_apply`)."""
+        from openfollow.network.adapter import ApplyResult
+
+        adapter = getattr(self, "_network_adapter", None)
+        if adapter is None:
+            return ApplyResult(ok=False, message="No network adapter available.")
+        if not adapter.is_writable():
+            return ApplyResult(ok=False, message="Read-only host – cannot delete a VLAN.")
+        with self._network_op_lock:
+            return cast(ApplyResult, adapter.delete_vlan(name))
 
     def _privilege_states_provider(self) -> dict[str, str]:
         """Snapshot every capability's state for the web UI.

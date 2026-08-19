@@ -177,6 +177,23 @@ Network page silently falls back to a read-only view. This also matches the Ansi
 deploy path, which already assumes NetworkManager. The `.deb`'s
 `NetworkManager-wait-online` timeout drop-in bounds a cable-less boot to ~15 s.
 
+NetworkManager also owns tagged-VLAN sub-interfaces, which the Network page creates
+and removes via two sudoers grants beside the existing `nmcli con mod` / `up` / `down`
+rules:
+
+```
+/usr/bin/nmcli con add *
+/usr/bin/nmcli con delete *
+```
+
+Both are wildcarded because the profile name is operator-influenced. The narrowing is
+in the app layer rather than the sudoers rule: it refuses to delete a profile that is
+not a VLAN, and refuses to delete the interface serving the current request. That
+placement yields an actionable error rather than a bare sudo failure, and the threat
+model here is a web user holding the PIN, not someone with shell access. The runtime
+drop-in renders both from `ALL_CAPABILITIES`; only the Ansible playbook mirrors them
+by hand.
+
 **No-DHCP fallback.** All three install routes – the image layer, the Ansible
 playbook and the `.deb` – write
 `/etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf`:

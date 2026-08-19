@@ -449,6 +449,26 @@
       notify:
         - reload networkmanager
 
+    # Kernel ethN names follow probe order, not device identity, so two USB
+    # adapters can swap across a reboot. A plane pins an interface by name and
+    # both names still resolve after a swap, so it would bind the wrong adapter
+    # with nothing down to notice. Matched by driver, not USB path: the onboard
+    # NIC is USB-attached on Pi 3 / Zero and has to keep the name eth0.
+    - name: Name USB network adapters after their MAC so a pin cannot move
+      ansible.builtin.copy:
+        dest: /etc/systemd/network/72-openfollow-usb-net-by-mac.link
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Match]
+          Driver=r8152 ax88179_178a asix ax88172a aqc111 cdc_ether cdc_ncm cdc_eem rndis_host smsc75xx sr9700 sr9800 dm9601 mcs7830 pegasus
+
+          [Link]
+          NamePolicy=mac
+      notify:
+        - reload udev
+
     - name: Mask getty on tty1
       ansible.builtin.systemd:
         name: getty@tty1.service

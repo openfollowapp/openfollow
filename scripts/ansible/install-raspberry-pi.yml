@@ -444,7 +444,6 @@
         mode: "0644"
         content: |
           [connection]
-          ipv4.may-fail=true
           ipv4.dhcp-timeout=45
           ipv4.link-local=4
       notify:

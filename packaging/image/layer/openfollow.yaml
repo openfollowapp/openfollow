@@ -93,7 +93,6 @@ mmdebstrap:
       mkdir -p "$1/etc/NetworkManager/conf.d"
       cat > "$1/etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf" <<'NMFALLBACK'
       [connection]
-      ipv4.may-fail=true
       ipv4.dhcp-timeout=45
       ipv4.link-local=4
       NMFALLBACK

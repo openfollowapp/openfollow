@@ -28,7 +28,7 @@ A **This session** marker means your browser reached the station over that adapt
 
 ## If DHCP is unavailable
 
-On a show LAN with no DHCP server, an adapter set to `DHCP (automatic)` waits about 45 seconds and then self-assigns an address in the `169.254.x.x` range so the station is still reachable from the same network segment. It is a fallback, not a lease: as soon as a real DHCP server appears the station takes a normal address and the `169.254` one goes away.
+On a show LAN with no DHCP server, an adapter set to `DHCP (automatic)` self-assigns an address in the `169.254.x.x` range within a few seconds so the station is still reachable from the same network segment. It is a fallback, not a lease: as soon as a real DHCP server appears the station takes a normal address and the `169.254` one goes away.
 
 Two ways to reach a station in that state, both shown on the on-screen HUD:
 

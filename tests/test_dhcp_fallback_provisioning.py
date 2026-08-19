@@ -30,13 +30,15 @@ _SOURCES = {
 }
 
 # NMSettingIP4LinkLocal 4 = fallback; 3 ("enabled") would put a 169.254 address
-# on healthy interfaces too. 45s is NM's own default, long enough to clear
-# spanning-tree convergence so an ordinary replug gets its real lease back.
+# on healthy interfaces too. 45s pins NM's own DHCP retry window.
 _REQUIRED = (
-    "ipv4.may-fail=true",
     "ipv4.dhcp-timeout=45",
     "ipv4.link-local=4",
 )
+
+# NetworkManager accepts only a subset of properties as [connection] defaults.
+# One it rejects, logged on every config read as "unknown key".
+_REJECTED_BY_NETWORKMANAGER = ("ipv4.may-fail",)
 
 # Routes carrying the property block itself; the build script only installs it.
 _BLOCK_SOURCES = ("image layer", "ansible playbook", "deb drop-in")
@@ -71,6 +73,16 @@ def test_routes_agree_on_the_properties(name: str, prop: str) -> None:
 @pytest.mark.parametrize("name", sorted(_BLOCK_SOURCES))
 def test_fallback_is_not_unconditionally_enabled(name: str) -> None:
     assert "ipv4.link-local=3" not in _read(name)
+
+
+@pytest.mark.parametrize("name", sorted(_BLOCK_SOURCES))
+@pytest.mark.parametrize("prop", _REJECTED_BY_NETWORKMANAGER)
+def test_no_property_networkmanager_rejects_as_a_connection_default(name: str, prop: str) -> None:
+    """A key NM does not accept here makes it log "unknown key" every time it
+    reads its config, and leaves a provisioning file whose comments describe a
+    setting that never applied - the reader has no way to tell which of the
+    remaining ones are real."""
+    assert prop not in _read(name)
 
 
 def test_ansible_reloads_networkmanager_after_writing_it() -> None:
@@ -110,15 +122,16 @@ def test_every_install_route_ships_an_mdns_responder() -> None:
     assert "avahi-daemon" in _read("image layer")
 
 
-def test_help_quotes_the_timeout_that_is_actually_shipped() -> None:
-    """The operator reads this to know how long to wait before the fallback
-    address appears. A number that drifts from the provisioned one sends them
-    looking for a fault that isn't there."""
+def test_help_does_not_tie_the_fallback_to_the_dhcp_timeout() -> None:
+    """``ipv4.link-local=4`` is not gated on ``ipv4.dhcp-timeout``: the 169.254
+    address lands within seconds of the first failed lease attempt, not after
+    the retry window. Quoting the timeout as the wait sends an operator away
+    from a station that is already reachable."""
     help_text = (_REPO_ROOT / "openfollow" / "web" / "help" / "general-network-interface.md").read_text(
         encoding="utf-8"
     )
     timeout = next(prop for prop in _REQUIRED if prop.startswith("ipv4.dhcp-timeout")).split("=")[1]
-    assert f"about {timeout} seconds" in help_text
+    assert f"{timeout} seconds" not in help_text
 
 
 def test_help_does_not_promise_the_station_name_resolves() -> None:

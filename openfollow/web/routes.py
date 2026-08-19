@@ -289,6 +289,10 @@ _GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 # Allow-listed rather than interpolated: the label is rendered into HTML.
 # "auto" = nothing to fall back to (the station picker itself); "station" =
 # an empty pin follows ``psn_source_iface`` (every per-plane picker).
+# Longest interface name the kernel hands out (IFNAMSIZ - 1). A POST is not
+# bound by it, and a rejected name is echoed back to the operator.
+_IFNAME_MAX = 15
+
 _BLANK_IFACE_LABELS = {
     "auto": "-- Auto-detect --",
     "station": "-- Follow station interface --",
@@ -4420,16 +4424,29 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             net.update(overrides)
         return net
 
-    def _resolve_network_iface(iface: str) -> str | None:
-        """Validate the posted interface against the adapter's live list,
-        defaulting to the active interface. A privileged adapter write must
-        never receive a raw/forged/empty POST value – the render path already
-        sanitises the same way (``iface if iface in names else …``). Returns
-        ``None`` when no interface is available (no adapter / read-only-empty)."""
+    def _resolve_network_iface(iface: str) -> tuple[str | None, str]:
+        """Validate the posted interface against the adapter's live list.
+
+        A privileged adapter write must never receive a raw/forged POST value.
+        Blank means "whichever interface the form defaulted to" and resolves to
+        the active one. A *named* interface the host does not have is an error,
+        never a substitution: applying it to whichever NIC happens to be active
+        would rewrite and bounce the one the operator is connected over, and the
+        page that posted it had simply gone stale behind an unplugged adapter.
+
+        Returns ``(iface, "")``, or ``(None, message)`` naming what to do.
+        """
         cfg = server.get_network_config(iface or None)
         if not cfg or not cfg.get("interfaces"):
-            return None
-        return cfg.get("active_interface") or None
+            return (None, "Network interface not available on this host.")
+        if iface and iface not in cfg["interfaces"]:
+            # Truncated because a POST is free to carry more than a kernel
+            # interface name can hold, and the banner echoes this back.
+            return (None, f"{iface[:_IFNAME_MAX]} is not present. Check the adapter, then Scan.")
+        resolved = cfg.get("active_interface") or None
+        if resolved is None:
+            return (None, "Network interface not available on this host.")
+        return (resolved, "")
 
     def _network_redirect_url(address: str) -> str:
         """Build a same-scheme/same-port URL on ``address`` so a static /
@@ -4524,13 +4541,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/network/apply")
     def network_apply() -> Any:
         iface, method_value, fields = _parse_network_form()
-        resolved = _resolve_network_iface(iface)
+        resolved, resolve_error = _resolve_network_iface(iface)
         if resolved is None:
             return template(
                 "partials/network",
                 net=_build_network_form_context(
                     editable=True,
-                    banner={"kind": "error", "text": "Network interface not available on this host."},
+                    banner={"kind": "error", "text": resolve_error},
                 ),
             )
         iface = resolved
@@ -4608,9 +4625,30 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             method in (Ipv4Method.STATIC, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS)
             and address
             and not result.partial_failures
+            # Nothing is serving that address yet, so a redirect lands on a
+            # dead page and the explanation is lost with the response body.
+            and not result.pending
         ):
             response.set_header("HX-Redirect", _network_redirect_url(address))
             return ""
+        if result.pending:
+            # Deliberately not "applied", and no reconnect advice: the
+            # interface never came up, so telling the operator to browse to the
+            # new address would send them nowhere.
+            pending_text = result.message
+            if result.partial_failures:
+                # This is the one path that keeps the operator on the page in
+                # order to explain itself, so dropping the caveats here loses
+                # them entirely - there is no redirect to read them after.
+                pending_text += " Warnings: " + "; ".join(result.partial_failures)
+            return template(
+                "partials/network",
+                net=_build_network_form_context(
+                    iface=iface,
+                    editable=False,
+                    banner={"kind": "info", "text": pending_text},
+                ),
+            )
         text = "Network settings applied."
         if result.partial_failures:
             text += " Warnings: " + "; ".join(result.partial_failures)
@@ -4630,13 +4668,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/section/network/renew")
     def network_renew() -> Any:
-        iface = _resolve_network_iface((request.forms.get("iface") or "").strip())
+        iface, resolve_error = _resolve_network_iface((request.forms.get("iface") or "").strip())
         if iface is None:
             return template(
                 "partials/network",
                 net=_build_network_form_context(
                     editable=False,
-                    banner={"kind": "error", "text": "Network interface not available on this host."},
+                    banner={"kind": "error", "text": resolve_error},
                 ),
             )
         result = server.renew_network(iface)

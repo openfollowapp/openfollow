@@ -71,6 +71,7 @@ class FakeNetwork:
         self.dns = list(dns)
         self.lease_display = lease_display
         self.applied: list[tuple[str, object]] = []
+        self.omit_active = False
         self.renewed: list[str] = []
         self.apply_result = ApplyResult(ok=True)
         self.renew_result = ApplyResult(ok=True)
@@ -79,6 +80,10 @@ class FakeNetwork:
     def config_provider(self, iface: str | None = None) -> dict | None:
         if not self.interfaces:
             return {"interfaces": [], "writable": self.writable, "backend": "fake"}
+        if self.omit_active:
+            # A snapshot that lists interfaces but names no active one: the
+            # write path must not read a bind target out of it.
+            return {"interfaces": self.interfaces, "writable": self.writable, "backend": "fake"}
         active = iface if iface in self.interfaces else self.interfaces[0]
         return {
             "interfaces": self.interfaces,
@@ -288,9 +293,13 @@ def test_apply_static_calls_adapter_and_redirects_to_new_ip(net_server) -> None:
     assert "192.168.1.50" in headers.get("hx-redirect", "")
 
 
-def test_apply_unknown_iface_defaults_to_active(net_server) -> None:
+def test_apply_unknown_iface_touches_nothing(net_server) -> None:
+    """An interface the host does not have must not be silently redirected onto
+    the active one. Substituting reconfigures and bounces the NIC the operator
+    is connected over - on a station that means PSN, OSC and the beacon all drop
+    - and the page that posted it had only gone stale behind a pulled adapter."""
     fake, base = net_server
-    status, _, headers = _post_resp(
+    status, body, headers = _post_resp(
         base,
         "/section/network/apply",
         {
@@ -301,9 +310,71 @@ def test_apply_unknown_iface_defaults_to_active(net_server) -> None:
         },
     )
     assert status == 200
-    assert len(fake.applied) == 1
-    assert fake.applied[0][0] == "eth0"  # not the forged "bogus0"
-    assert "192.168.1.50" in headers.get("hx-redirect", "")
+    assert fake.applied == []  # neither "bogus0" nor the active interface
+    assert "hx-redirect" not in {k.lower() for k in headers}
+    assert "bogus0 is not present" in body
+    assert "Scan" in body
+
+
+def test_apply_unknown_iface_message_is_bounded(net_server) -> None:
+    """The rejected name is echoed back, and a POST is not bound by IFNAMSIZ."""
+    fake, base = net_server
+    _status, body, _headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {"iface": "b" * 400, "method": "dhcp"},
+    )
+    assert fake.applied == []
+    assert "b" * 400 not in body
+    assert "b" * 15 in body
+
+
+def test_apply_blank_iface_still_defaults_to_active(net_server) -> None:
+    """Blank is the form's own default, not a forged value - it must keep
+    resolving to the active interface or Apply breaks on the ordinary path."""
+    fake, base = net_server
+    status, _body, _headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {
+            "iface": "",
+            "method": "static",
+            "address": "192.168.1.50",
+            "subnet_mask": "255.255.255.0",
+        },
+    )
+    assert status == 200
+    assert [iface for iface, _cfg in fake.applied] == ["eth0"]
+
+
+def test_apply_snapshot_without_an_active_interface_touches_nothing(net_server) -> None:
+    """The snapshot names the interfaces but not which one is active, so there
+    is no target to write to. Falling through to the adapter with whatever
+    ``active_interface`` happened to be missing would apply somewhere nobody
+    chose."""
+    fake, base = net_server
+    fake.omit_active = True
+    status, body, _headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {"iface": "", "method": "dhcp"},
+    )
+    assert status == 200
+    assert fake.applied == []
+    assert "not available on this host" in body
+
+
+def test_renew_unknown_iface_touches_nothing(net_server) -> None:
+    """Same substitution, same consequence: renewing the lease on the NIC the
+    operator arrived over drops the session they are holding."""
+    fake, base = net_server
+    _status, body, _headers = _post_resp(
+        base,
+        "/section/network/renew",
+        {"iface": "bogus0"},
+    )
+    assert fake.renewed == []
+    assert "bogus0 is not present" in body
 
 
 def test_apply_dhcp_manual_redirects_to_manual_address(net_server) -> None:
@@ -804,3 +875,92 @@ def test_card_synthesises_rows_when_no_interface_provider_is_wired(net_server) -
     assert "eth0" in body and "wlan0" in body
     # Only the open interface carries detail on this path.
     assert "10.0.0.5" in body
+
+
+def test_a_pending_apply_does_not_redirect_to_a_dead_address(net_server) -> None:
+    """The interface never came up, so nothing is serving the new address.
+    Redirecting there loses the UI and discards the explanation with the body."""
+    fake, base = net_server
+    fake.apply_result = ApplyResult(ok=True, pending=True, message="Saved. eth0 has no link yet.")
+    status, body, headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {
+            "iface": "eth0",
+            "method": "static",
+            "address": "192.168.9.9",
+            "subnet_mask": "255.255.255.0",
+        },
+    )
+    assert status == 200
+    assert "hx-redirect" not in headers
+    assert "no link yet" in body
+    # The settings were still written - this is "saved", not "failed".
+    assert fake.applied and fake.applied[0][0] == "eth0"
+
+
+def test_a_pending_apply_does_not_advise_reconnecting(net_server) -> None:
+    """The partial-failure path tells the operator to reconnect at the new
+    address. For a pending apply that is the one thing they must not do."""
+    fake, base = net_server
+    fake.apply_result = ApplyResult(ok=True, pending=True, message="Saved. eth0 has no link yet.")
+    _status, body, _headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {
+            "iface": "eth0",
+            "method": "static",
+            "address": "192.168.9.9",
+            "subnet_mask": "255.255.255.0",
+        },
+    )
+    assert "Reconnect at" not in body
+    assert "applied" not in body.lower()
+
+
+def test_a_clean_apply_still_redirects(net_server) -> None:
+    """The pending gate must not suppress the normal static-apply redirect."""
+    fake, base = net_server
+    fake.apply_result = ApplyResult(ok=True, message="Applied.")
+    _status, _body, headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {
+            "iface": "eth0",
+            "method": "static",
+            "address": "192.168.9.9",
+            "subnet_mask": "255.255.255.0",
+        },
+    )
+    assert "hx-redirect" in headers
+
+
+def test_a_pending_apply_still_shows_its_warnings(net_server) -> None:
+    """Pending is the one path that keeps the operator on the page in order to
+    explain itself, so warnings dropped here are lost outright - there is no
+    later redirect where they could resurface.
+
+    Both backends can return pending with caveats (an ``nmcli con down``
+    failure, a dhcpcd reload fallback), and those are the caveats that tell an
+    operator the save is not the whole story.
+    """
+    fake, base = net_server
+    fake.apply_result = ApplyResult(
+        ok=True,
+        pending=True,
+        message="Saved; the settings take effect when eth0 has a link.",
+        partial_failures=("dhcpcd -n: rebind refused (fell back to systemctl reload)",),
+    )
+    status, body = _post(
+        base,
+        "/section/network/apply",
+        {
+            "iface": "eth0",
+            "method": "static",
+            "address": "192.168.9.9",
+            "subnet_mask": "255.255.255.0",
+        },
+    )
+    assert status == 200
+    assert "take effect when eth0 has a link" in body
+    assert "rebind refused" in body, "the pending banner dropped its warnings"

@@ -50,6 +50,11 @@ class _BrokerCallResult:
     detail: str
 
 
+# Shown when the privilege broker is absent, which on a real device means the
+# sudoers rules were never installed. "Broker not configured." named an
+# internal object and left the operator with nothing to try.
+_NO_BROKER_MESSAGE = "Cannot change network settings - the privileged helper is not configured."
+
 _BLOCK_START = "# >>> openfollow managed: {iface} >>>"
 _BLOCK_END = "# <<< openfollow managed: {iface} <<<"
 _DHCPCD_TIMEOUT = 8
@@ -337,7 +342,10 @@ class DhcpcdAdapter(NetworkAdapter):
         # ``parse_ipv4`` (via validate_apply) rejects embedded newlines, which
         # blocks injecting extra directives into the conf.
         if not _IFACE_RE.fullmatch(iface):
-            return ApplyResult(ok=False, message=f"Invalid interface name: {iface!r}")
+            return ApplyResult(
+                ok=False,
+                message=f"{iface!r} is not a valid interface name, so nothing was changed.",
+            )
         errors = validate_apply(config.method, config.address, config.prefix, config.router, list(config.dns))
         if errors:
             return ApplyResult(ok=False, message="; ".join(errors))
@@ -352,9 +360,20 @@ class DhcpcdAdapter(NetworkAdapter):
             except PrivilegeError as exc:
                 return ApplyResult(ok=False, message=str(exc))
             except OSError as exc:
-                return ApplyResult(ok=False, message=f"Cannot write {self.conf_path}: {exc}")
+                return ApplyResult(
+                    ok=False,
+                    message=(
+                        f"Could not write {self.conf_path}; check it exists and is not mounted read-only ({exc})."
+                    ),
+                )
         except Exception as exc:  # noqa: BLE001
-            return ApplyResult(ok=False, message=f"Failed to update dhcpcd.conf: {exc}")
+            return ApplyResult(
+                ok=False,
+                message=(
+                    f"Could not update {self.conf_path}; nothing was changed and {iface} keeps its "
+                    f"current settings ({exc})."
+                ),
+            )
 
         partial: list[str] = []
         release = self._broker_run(
@@ -375,7 +394,7 @@ class DhcpcdAdapter(NetworkAdapter):
         # prior conf so the next reload/reboot doesn't silently come up on it.
         if rebind is None:
             self._restore_conf(current)
-            return ApplyResult(ok=False, message="Broker not configured.")
+            return ApplyResult(ok=False, message=_NO_BROKER_MESSAGE)
         if not rebind.ok:
             reload_ = self._broker_run(
                 NETWORK_DHCPCD_RELOAD,
@@ -396,8 +415,8 @@ class DhcpcdAdapter(NetworkAdapter):
                 return ApplyResult(
                     ok=False,
                     message=(
-                        f"dhcpcd -n failed ({rebind.detail}); systemctl reload dhcpcd also failed: {detail}. "
-                        f"Restored the prior config; the device may need a manual retry."
+                        f"Could not apply the new config so the previous one was restored; {iface} may "
+                        f"need a manual retry (dhcpcd -n: {rebind.detail}; reload: {detail})."
                     ),
                 )
             partial.append(f"dhcpcd -n: {rebind.detail} (fell back to systemctl reload)")
@@ -405,7 +424,30 @@ class DhcpcdAdapter(NetworkAdapter):
         warning = self._verify_static_applied(iface, config)
         if warning:
             partial.append(warning)
+        if not self._has_carrier(iface):
+            # ``dhcpcd -n`` returns 0 on a carrier-less interface - it only
+            # signals the daemon - so without this the apply reads as clean and
+            # the web layer redirects the browser to an address nothing is
+            # serving yet.
+            return ApplyResult(
+                ok=True,
+                pending=True,
+                message=f"Saved; the settings take effect when {iface} has a link.",
+                partial_failures=tuple(partial),
+            )
         return ApplyResult(ok=True, message="Applied.", partial_failures=tuple(partial))
+
+    def _has_carrier(self, iface: str) -> bool:
+        """False only when the kernel explicitly reports the link is down.
+
+        An unreadable state counts as having carrier, so an apply we can't
+        explain is never downgraded to a reassuring "saved, pending".
+        """
+        try:
+            state = Path(f"/sys/class/net/{iface}/operstate").read_text(encoding="utf-8").strip()
+        except OSError:
+            return True
+        return state != "down"
 
     def _restore_conf(self, text: str) -> None:
         """Best-effort restore of the prior conf after a failed bounce.
@@ -456,9 +498,12 @@ class DhcpcdAdapter(NetworkAdapter):
             reason=f"Renew DHCP lease on {iface}",
         )
         if result is None:
-            return ApplyResult(ok=False, message="Broker not configured.")
+            return ApplyResult(ok=False, message=_NO_BROKER_MESSAGE)
         if not result.ok:
-            return ApplyResult(ok=False, message=result.detail)
+            return ApplyResult(
+                ok=False,
+                message=f"Could not renew the lease on {iface}. {result.detail}".strip(),
+            )
         return ApplyResult(ok=True, message="Lease renewed.")
 
     def _broker_run(

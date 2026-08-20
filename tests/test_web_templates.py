@@ -191,7 +191,7 @@ class TestBootstrap:
             "osc_output.adm-osc-3d.oftemplate",
             "osc_output.adm-osc.oftemplate",
             "osc_output.dnb-absolute.oftemplate",
-            "osc_output.etc-eos-patch.oftemplate",
+            "osc_output.etc-eos-user-99.oftemplate",
             "osc_output.etc-eos.oftemplate",
         ]
 
@@ -212,7 +212,7 @@ class TestList:
             "ADM-OSC 2D",
             "ADM-OSC 3D",
             "ETC Eos",
-            "ETC Eos (Patch)",
+            "ETC Eos (User 99)",
             "d&b absolute",
         ]
         for entry in payload["templates"]:

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "osc_output",
+  "id": "system-osc_output-etc-eos-user-99",
+  "name": "ETC Eos (User 99)",
+  "is_system": true,
+  "payload": {
+    "address": "/eos/user/99/chan/[markerid]/xyz",
+    "args": ["[x]", "[y]", "[z]"],
+    "trigger": {"kind": "stream", "rate_hz": 30}
+  }
+}

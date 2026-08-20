@@ -1156,13 +1156,13 @@ BUILTIN_TEMPLATES: tuple[BuiltinTemplate, ...] = (
         args=("[x]", "[y]", "[z]"),
         trigger=_DEFAULT_STREAM_30HZ_TRIGGER,
     ),
-    # Patch variant: same position, plus three rotation args. The ``0.0``
-    # literals type as OSC ``f`` – Eos rejects the ``i`` a bare ``0`` gives.
+    # Same message addressed to a specific Eos user rather than whichever
+    # one is current, so a 30 Hz stream can't disturb the operator's prompt.
     BuiltinTemplate(
-        id="etc-patch",
-        name="ETC Eos (Patch)",
-        address="/eos/set/patch/[markerid]/augment3d/position",
-        args=("[x]", "[y]", "[z]", "0.0", "0.0", "0.0"),
+        id="etc-user99",
+        name="ETC Eos (User 99)",
+        address="/eos/user/99/chan/[markerid]/xyz",
+        args=("[x]", "[y]", "[z]"),
         trigger=_DEFAULT_STREAM_30HZ_TRIGGER,
     ),
     # ``id`` stays ``adm-osc`` so existing rows referencing it keep

@@ -406,8 +406,8 @@ def test_z_frac_render_error_carries_actionable_hint() -> None:
 
 
 def test_render_markerid_substitutes_int() -> None:
-    ct = compile_template("/eos/set/patch/[markerid]/augment3d/position")
-    assert render(ct, _ctx(marker_id=42)) == "/eos/set/patch/42/augment3d/position"
+    ct = compile_template("/eos/user/99/chan/[markerid]/xyz")
+    assert render(ct, _ctx(marker_id=42)) == "/eos/user/99/chan/42/xyz"
 
 
 def test_markerid_alone_is_int_typed() -> None:
@@ -823,24 +823,31 @@ def test_builtin_etc_eos_wire_format() -> None:
     ]
 
 
-def test_builtin_etc_eos_patch_wire_format() -> None:
-    """Position plus three rotation args, all floats – a bare ``0``
-    would type as ``i`` and Eos rejects the message."""
-    tpl = builtin_by_id("etc-patch")
+def test_builtin_etc_eos_user_99_wire_format() -> None:
+    """Same channel address and three float args as the current-user
+    variant, prefixed with the explicit Eos user."""
+    tpl = builtin_by_id("etc-user99")
     assert tpl is not None
     addr_ct = compile_template(tpl.address)
     arg_cts = [compile_template(a) for a in tpl.args]
     rc = _ctx(pos=(1.0, 2.0, 3.0), marker_id=5)
-    assert render(addr_ct, rc) == "/eos/set/patch/5/augment3d/position"
+    assert render(addr_ct, rc) == "/eos/user/99/chan/5/xyz"
     typed = [osc_arg_for(ct, rc) for ct in arg_cts]
     assert typed == [
         ("f", pytest.approx(1.0)),
         ("f", pytest.approx(2.0)),
         ("f", pytest.approx(3.0)),
-        ("f", pytest.approx(0.0)),
-        ("f", pytest.approx(0.0)),
-        ("f", pytest.approx(0.0)),
     ]
+
+
+def test_builtin_etc_eos_variants_differ_only_by_user_prefix() -> None:
+    """The user-scoped variant must stay in lockstep with the plain one:
+    same args, same channel suffix, differing only by the prefix."""
+    plain = builtin_by_id("etc")
+    scoped = builtin_by_id("etc-user99")
+    assert plain is not None and scoped is not None
+    assert scoped.args == plain.args
+    assert scoped.address == plain.address.replace("/eos/", "/eos/user/99/", 1)
 
 
 def test_builtin_adm_osc_2d_uses_fractional_xy_zero_z() -> None:
@@ -909,7 +916,7 @@ def test_builtin_templates_have_unique_ids() -> None:
 
 @pytest.mark.parametrize(
     "template_id",
-    ["etc", "etc-patch", "adm-osc", "adm-osc-3d", "dnb-abs"],
+    ["etc", "etc-user99", "adm-osc", "adm-osc-3d", "dnb-abs"],
 )
 def test_builtin_template_carries_stream_30hz_trigger_pre_fill(template_id: str) -> None:
     tpl = builtin_by_id(template_id)
@@ -919,7 +926,7 @@ def test_builtin_template_carries_stream_30hz_trigger_pre_fill(template_id: str)
 
 @pytest.mark.parametrize(
     "template_id",
-    ["etc", "etc-patch", "adm-osc", "adm-osc-3d", "dnb-abs"],
+    ["etc", "etc-user99", "adm-osc", "adm-osc-3d", "dnb-abs"],
 )
 def test_builtin_template_trigger_is_immutable(template_id: str) -> None:
     """The trigger field is a read-only ``MappingProxyType`` – mutation

@@ -1517,19 +1517,19 @@ def test_add_with_builtin_template_populates_address_and_args(live_server) -> No
     assert row.args == ["[x]", "[y]", "[z]"]
 
 
-def test_add_with_patch_template_keeps_rotations_float_typed(live_server) -> None:
-    """The rotation literals must survive the apply + ``__post_init__``
-    round-trip as ``"0.0"``; normalised to ``"0"`` they would go on the
-    wire as OSC ``i`` and Eos rejects the message."""
+def test_add_with_template_keeps_literal_float_typed(live_server) -> None:
+    """A ``"0.0"`` literal must survive the apply + ``__post_init__``
+    round-trip; normalised to ``"0"`` it would go on the wire as OSC
+    ``i`` where the receiver expects three floats."""
     _, base, cfg_path = live_server
     _post_form(
         base,
         "/section/osc_bindings/add",
-        {"template_id": "file:osc_output.etc-eos-patch.oftemplate"},
+        {"template_id": "file:osc_output.adm-osc.oftemplate"},
     )
     row = load_config(cfg_path).osc_transmitters.transmitters[0]
-    assert row.address == "/eos/set/patch/[markerid]/augment3d/position"
-    assert row.args == ["[x]", "[y]", "[z]", "0.0", "0.0", "0.0"]
+    assert row.address == "/adm/obj/[markerid]/xyz"
+    assert row.args == ["[x.frac]", "[y.frac]", "0.0"]
 
 
 def test_template_dropdown_lists_defaults_by_display_name(live_server) -> None:
@@ -1543,7 +1543,7 @@ def test_template_dropdown_lists_defaults_by_display_name(live_server) -> None:
         "ADM-OSC 3D",
         "d&amp;b absolute",
         "ETC Eos",
-        "ETC Eos (Patch)",
+        "ETC Eos (User 99)",
     ]
 
 
@@ -1551,7 +1551,7 @@ def test_template_dropdown_lists_defaults_by_display_name(live_server) -> None:
     "template_filename,template_name",
     [
         ("osc_output.etc-eos.oftemplate", "ETC Eos"),
-        ("osc_output.etc-eos-patch.oftemplate", "ETC Eos (Patch)"),
+        ("osc_output.etc-eos-user-99.oftemplate", "ETC Eos (User 99)"),
         # Filename stays ``adm-osc`` while the display name carries the
         # 2D/3D suffix, so existing rows whose template_id references this
         # file keep resolving.
@@ -1996,8 +1996,8 @@ def test_preview_returns_provider_payload(tmp_path, monkeypatch) -> None:
         tmp_path,
         monkeypatch,
         osc_binding_preview_provider=lambda rid: {
-            "address": "/eos/set/patch/1/augment3d/position",
-            "args": [1.0, 2.0, 0.0, 0, 0, 0],
+            "address": "/eos/chan/1/xyz",
+            "args": [1.0, 2.0, 0.0],
             "skipped": False,
         },
     )
@@ -2009,7 +2009,8 @@ def test_preview_returns_provider_payload(tmp_path, monkeypatch) -> None:
         assert status == 200
         payload = json.loads(body)
         assert payload["available"] is True
-        assert payload["address"].startswith("/eos/")
+        assert payload["address"] == "/eos/chan/1/xyz"
+        assert payload["args"] == [1.0, 2.0, 0.0]
     finally:
         server.stop()
 

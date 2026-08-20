@@ -923,8 +923,8 @@ class TestSlugify:
         [
             ("My Cue", "my-cue"),
             ("ETC Eos", "etc-eos"),
-            # Pins the bundled patch template's filename to the slug rule.
-            ("ETC Eos (Patch)", "etc-eos-patch"),
+            # Pins the bundled user-scoped template's filename to the slug rule.
+            ("ETC Eos (User 99)", "etc-eos-user-99"),
             ("d&b absolute", "d-b-absolute"),
             ("Indoor / Outdoor!", "indoor-outdoor"),
             ("café", "cafe"),  # NFKD strips accents
@@ -1117,7 +1117,7 @@ class TestBootstrap:
             "osc_output.adm-osc-3d.oftemplate",
             "osc_output.adm-osc.oftemplate",
             "osc_output.dnb-absolute.oftemplate",
-            "osc_output.etc-eos-patch.oftemplate",
+            "osc_output.etc-eos-user-99.oftemplate",
             "osc_output.etc-eos.oftemplate",
         ]
 

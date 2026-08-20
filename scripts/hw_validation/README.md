@@ -16,6 +16,7 @@ to grow into a fuller two-Pi validation suite (see the tracking issue).
 | `raw_udp_probe.py` | both | Dependency-free UDP reachability preflight – tells a network drop apart from an app bug. |
 | `psn_packet_size_probe.py` | DUT | Builds real multi-tracker PSN datagrams with the deployed encoder, round-trips them through a loopback socket at 1500 vs 65535, and guards the receiver's `recvfrom` buffer (#463). |
 | `osc_socket_options_probe.py` | DUT | Builds clients via the deployed `OscService._make_client` and asserts the broadcast/multicast socket options (#482). |
+| `eos_console_probe.py` | workstation | Drives the deployed `OscTransmitterManager` at an Eos console / ETCnomad through single-axis sweeps, so the bundled ETC Eos templates' X/Y/Z convention can be observed in Augment3d. Exits `0` (sent) / `1` (nothing transmitted); the axis verdict is the operator's. |
 | `marker_catalog_two_station.py` | workstation | Reproduces the clock-skew marker-rename revert across two stations: steps station B's clock ahead, renames on A, asserts the rename holds on both. Exits `0` (PASS) / `1` (FAIL). |
 
 ## DUT-local probes (no companion)
@@ -36,6 +37,32 @@ poetry run python scripts/hw_validation/osc_socket_options_probe.py
 - **OSC** – a plain `SimpleUDPClient` to `255.255.255.255` raises `EACCES`; the
   probe confirms the deployed `_make_client` sets `SO_BROADCAST` (and reports the
   multicast TTL/loop) so broadcast/multicast rows actually transmit.
+
+## Eos console / ETCnomad axis convention
+
+`eos_console_probe.py` verifies the bundled **ETC Eos** templates against a real
+console. Unit tests pin the wire bytes; only hardware can say which axis each
+argument lands on. The probe drives the deployed `OscTransmitterManager` and
+`OscService`, so the bytes on the wire are the app's, not a re-render.
+
+```sh
+# assert the axis mapping - reads Eos's own values back, no human needed
+python3 scripts/hw_validation/eos_console_probe.py --host <EOS_IP> --channel 401 verify
+
+# look at it yourself: one packet / one axis at a time / 30 Hz soak
+python3 scripts/hw_validation/eos_console_probe.py --host <EOS_IP> --channel 401 test
+python3 scripts/hw_validation/eos_console_probe.py --host <EOS_IP> --channel 401 sweep
+python3 scripts/hw_validation/eos_console_probe.py --host <EOS_IP> --channel 401 stream
+```
+
+`verify` exits `0` / `1` and needs **OSC TX enabled on the console** pointed back
+at `--rx-port` (default 8001). The other three report only that the sends left
+the transmitter; their verdict is the operator's, from Augment3d.
+
+**Console setup, the failure modes, and the Eos behaviours that mislead a manual
+run are in [`docs/EOS_NOMAD_VERIFICATION.md`](../../docs/EOS_NOMAD_VERIFICATION.md).**
+Read it before a first run - notably that Eos silently discards OSC arriving on a
+duplicate-subnet interface, which looks exactly like a broken template.
 
 ## Two-station marker-catalog conflict (clock skew)
 

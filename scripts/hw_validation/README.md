@@ -16,7 +16,7 @@ to grow into a fuller two-Pi validation suite (see the tracking issue).
 | `raw_udp_probe.py` | both | Dependency-free UDP reachability preflight – tells a network drop apart from an app bug. |
 | `psn_packet_size_probe.py` | DUT | Builds real multi-tracker PSN datagrams with the deployed encoder, round-trips them through a loopback socket at 1500 vs 65535, and guards the receiver's `recvfrom` buffer (#463). |
 | `osc_socket_options_probe.py` | DUT | Builds clients via the deployed `OscService._make_client` and asserts the broadcast/multicast socket options (#482). |
-| `eos_console_probe.py` | workstation | Drives the deployed `OscTransmitterManager` at an Eos console / ETCnomad through single-axis sweeps, so the bundled ETC Eos templates' X/Y/Z convention can be observed in Augment3d. Exits `0` (sent) / `1` (nothing transmitted); the axis verdict is the operator's. |
+| `eos_console_probe.py` | workstation | Drives the deployed `OscTransmitterManager` at an Eos console / ETCnomad. `verify` reads Eos's own parameter values back and asserts the bundled ETC Eos templates' X/Y/Z mapping, exiting `0` (mapping correct) / `1` (mismatch or setup fault). `test` / `sweep` / `stream` drive the console for an operator to watch; their exit code reports only whether the sends reached the socket. |
 | `marker_catalog_two_station.py` | workstation | Reproduces the clock-skew marker-rename revert across two stations: steps station B's clock ahead, renames on A, asserts the rename holds on both. Exits `0` (PASS) / `1` (FAIL). |
 
 ## DUT-local probes (no companion)
@@ -74,7 +74,7 @@ NTP and steps station B's clock ~1 h ahead so B's write carries a far-future
 converge on A's name and hold it. B's clock + NTP are restored in a `finally`.
 
 The catalog resolves conflicts by a Lamport logical clock, so the rename wins
-despite the skew (on the old wall-clock code the test FAILS — B keeps the stale
+despite the skew (on the old wall-clock code the test FAILS – B keeps the stale
 name). Needs HTTP reachability to both web UIs and passwordless SSH (key auth) to
 both as a sudo-capable user. The marker id must already exist in the catalog.
 

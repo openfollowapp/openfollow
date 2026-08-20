@@ -49,7 +49,7 @@ Same page. This is what lets the console report back, turning the check from
 
 - **OSC TX** on.
 - **OSC UDP TX Port** = `8001` (must match `--rx-port`).
-- **OSC UDP TX IP Adresse** = the address of the machine running the probe.
+- **OSC UDP TX IP Address** = the address of the machine running the probe.
 
 ### A channel to drive
 
@@ -60,8 +60,8 @@ Either works, and testing both is worth the two minutes:
 | **Scenic Element Movable** | `ETC Fixtures > Scenic Element > Scenic Element Movable` | Sets the object's position |
 | **Moving light** | any automated fixture | Sets its focus XYZ |
 
-A Scenic Element Movable has **no DMX footprint**; `>>Fehler: Dieses Gerat
-benutzt keine DMX-Adressen` when assigning an address is expected, not a problem.
+A Scenic Element Movable has **no DMX footprint**, so Eos rejects any attempt to
+give it a DMX address. That rejection is expected, not a problem.
 The channel number must equal the OpenFollow marker id, because the template
 renders `[markerid]` straight into the address.
 

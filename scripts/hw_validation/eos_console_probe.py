@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
 """Drive the deployed OSC transmitter at an Eos console / ETCnomad.
 
 Runs the shipped ``OscTransmitterManager`` + ``OscService`` against stub
@@ -10,17 +12,22 @@ mapping onto Augment3d's axes is documented, not observed, and no unit test
 can catch a wrong convention. Sweep one axis with the other two pinned at
 zero and watch which way the scenic object travels.
 
+    # assert the axis mapping from Eos's own readback, no operator needed
+    python3 scripts/hw_validation/eos_console_probe.py --host 10.0.0.5 --channel 401 verify
+
     # one-shot, confirms Eos accepts the message at all
     python3 scripts/hw_validation/eos_console_probe.py --host 10.0.0.5 --channel 1 test
 
-    # the axis convention check
+    # drive one axis at a time and watch which way the object travels
     python3 scripts/hw_validation/eos_console_probe.py --host 10.0.0.5 --channel 1 sweep
 
     # 30 Hz soak: does the console stay responsive
     python3 scripts/hw_validation/eos_console_probe.py --host 10.0.0.5 --channel 1 stream
 
-Exit code reports whether the *sends* succeeded, not whether the object moved
-the right way - that verdict is the operator's, from Augment3d and Tab 99.
+``verify`` asserts the mapping and its exit code is the verdict. For ``test`` /
+``sweep`` / ``stream`` the exit code reports only whether the sends reached the
+socket; whether the object moved correctly is the operator's call, from
+Augment3d. See docs/EOS_NOMAD_VERIFICATION.md for console setup.
 """
 
 from __future__ import annotations
@@ -32,6 +39,7 @@ import struct
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -67,23 +75,6 @@ _AXIS_EXPECTATION = {
 }
 
 
-class _CountingOscService(OscService):
-    """Real service, plus a send counter.
-
-    The transmitter's ring buffer caps at 100 entries, so a before/after
-    delta on it under-reports a long sweep and reads zero once it is full.
-    Counting at the socket boundary is what "did it transmit" actually means.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.sent = 0
-
-    def send(self, address: str, args: Any = (), **kwargs: Any) -> None:
-        super().send(address, args, **kwargs)
-        self.sent += 1
-
-
 class _StubMarker:
     """Stands in for ``psn.marker.Marker``; the renderer reads ``pos`` only."""
 
@@ -94,8 +85,8 @@ class _StubMarker:
 def _type_tag(value: Any) -> str:
     """OSC type tag pythonosc will encode ``value`` as.
 
-    Test 6 hinges on this: the patch template's rotation args are written
-    ``0.0`` so they type as ``f``; a bare ``0`` would go out as ``i``.
+    Printed alongside each send so the operator can match what left here
+    against what the console reports receiving.
     """
     if isinstance(value, bool):
         return "T" if value else "F"
@@ -115,7 +106,7 @@ def _typetag_string(args: list[Any]) -> str:
 @dataclass
 class _Probe:
     manager: OscTransmitterManager
-    service: _CountingOscService
+    service: OscService
     marker: _StubMarker
     row: OscTransmitterConfig
     dest: OscDestinationConfig
@@ -128,13 +119,25 @@ class _Probe:
         )
 
 
-def _build(args: argparse.Namespace) -> _Probe:
-    builtin = builtin_by_id(args.template)
+def _row_for(template_id: str, args: argparse.Namespace) -> OscTransmitterConfig:
+    """Build the transmitter row for a bundled template."""
+    builtin = builtin_by_id(template_id)
     if builtin is None:
-        raise SystemExit(f"unknown template id {args.template!r}")
+        raise SystemExit(f"unknown template id {template_id!r}")
+    return OscTransmitterConfig(
+        id=_ROW_ID,
+        enabled=True,
+        name=f"probe:{builtin.id}",
+        destination_id=_DEST_ID,
+        markers=[str(args.channel)],
+        template_id=builtin.id,
+        address=builtin.address,
+        args=list(builtin.args),
+        trigger={"kind": "stream", "rate_hz": args.rate, "mode": "always"},
+    )
 
-    template_args = list(builtin.args)
 
+def _build(args: argparse.Namespace) -> _Probe:
     marker = _StubMarker()
     dest = OscDestinationConfig(
         id=_DEST_ID,
@@ -143,18 +146,8 @@ def _build(args: argparse.Namespace) -> _Probe:
         port=args.port,
         protocol="udp",
     )
-    row = OscTransmitterConfig(
-        id=_ROW_ID,
-        enabled=True,
-        name=f"probe:{builtin.id}",
-        destination_id=_DEST_ID,
-        markers=[str(args.channel)],
-        template_id=builtin.id,
-        address=builtin.address,
-        args=template_args,
-        trigger={"kind": "stream", "rate_hz": args.rate, "mode": "always"},
-    )
-    service = _CountingOscService()
+    row = _row_for(args.template, args)
+    service = OscService()
     manager = OscTransmitterManager(
         osc_service=service,
         marker_provider=lambda mid: marker if mid == args.channel else None,
@@ -163,6 +156,34 @@ def _build(args: argparse.Namespace) -> _Probe:
     probe = _Probe(manager=manager, service=service, marker=marker, row=row, dest=dest)
     probe.apply(row)
     return probe
+
+
+def _sent_count(probe: _Probe) -> int:
+    """Messages that actually reached the socket for this probe's target.
+
+    ``OscService.send`` returns early on an invalid target, a missing
+    python-osc, or a client it could not build, and swallows send errors into
+    per-target stats. Counting calls instead of reading those stats would
+    report a full sweep as sent while nothing left the host.
+    """
+    stats = probe.service.stats_for(probe.dest.host, probe.dest.port, probe.dest.protocol, probe.dest.framing)
+    return stats.total_sent
+
+
+def _send_errors(probe: _Probe) -> tuple[int, str]:
+    stats = probe.service.stats_for(probe.dest.host, probe.dest.port, probe.dest.protocol, probe.dest.framing)
+    return stats.total_errors, stats.last_error
+
+
+def _effective_rate(probe: _Probe) -> int:
+    """Rate the row will actually stream at.
+
+    ``OscTransmitterConfig`` snaps ``rate_hz`` to a supported value, so a
+    ``--rate 25`` run streams at 20 Hz. Printing the requested number would
+    record a result against a rate that was never used.
+    """
+    trigger = probe.row.trigger
+    return int(getattr(trigger, "rate_hz", probe.row.rate_hz))
 
 
 def _describe(probe: _Probe) -> None:
@@ -185,6 +206,10 @@ def _describe(probe: _Probe) -> None:
 # from this address, which a silently-discarding interface does not.
 _PING_TOKEN = "openfollow-verify"
 
+# Ring capacity for received messages. A verify run sees a few hundred; the
+# cap only matters when /eos/subscribe is left streaming at a busy desk.
+_LISTENER_CAPACITY = 4000
+
 # Values the assertion drives. Distinct from each other, non-zero, and
 # asymmetric in sign so a transposed or mirrored axis cannot coincidentally
 # satisfy the check. The alternate set is used when the channel already holds
@@ -198,8 +223,28 @@ def _osc_pad(index: int) -> int:
     return (index + 3) & ~3
 
 
-def _parse_osc(data: bytes) -> tuple[str, list[Any]]:
-    """Minimal OSC decode for the reply types Eos sends (s/f/i/T/F)."""
+def _parse_osc(data: bytes) -> list[tuple[str, list[Any]]]:
+    """Decode a datagram into its OSC messages (types s/f/i/T/F).
+
+    Returns a list because a datagram may be a bundle. Decoding a bundle as a
+    bare message yields ``("#bundle", [])``, which reads downstream as "the
+    console sent nothing" and gets misreported as a discarding interface.
+    """
+    if data.startswith(b"#bundle\x00"):
+        out: list[tuple[str, list[Any]]] = []
+        off = 16  # 8-byte "#bundle\0" + 8-byte timetag
+        while off + 4 <= len(data):
+            (size,) = struct.unpack_from(">i", data, off)
+            off += 4
+            if size <= 0 or off + size > len(data):
+                break
+            out.extend(_parse_osc(data[off : off + size]))
+            off += size
+        return out
+    return [_parse_message(data)]
+
+
+def _parse_message(data: bytes) -> tuple[str, list[Any]]:
     try:
         end = data.index(b"\x00")
     except ValueError:
@@ -245,7 +290,10 @@ class _EosListener:
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(("0.0.0.0", port))
         self._sock.settimeout(0.3)
-        self._messages: list[tuple[str, list[Any]]] = []
+        # Bounded: /eos/subscribe has the console streaming continuously, and a
+        # long --settle on a busy desk would otherwise accumulate every message.
+        self._messages: deque[tuple[str, list[Any]]] = deque(maxlen=_LISTENER_CAPACITY)
+        self._received = 0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
@@ -258,14 +306,24 @@ class _EosListener:
                 continue
             except OSError:
                 break
-            self._messages.append(_parse_osc(data))
+            parsed = _parse_osc(data)
+            self._messages.extend(parsed)
+            self._received += len(parsed)
 
     def mark(self) -> int:
-        """Index to read forward from, so a probe sees only its own replies."""
-        return len(self._messages)
+        """Point to read forward from, so a probe sees only its own replies.
+
+        Counts messages ever received rather than the ring's length: the ring
+        drops from the front once full, which would shift positional indices.
+        """
+        return self._received
 
     def since(self, mark: int) -> list[tuple[str, list[Any]]]:
-        return self._messages[mark:]
+        wanted = self._received - mark
+        if wanted <= 0:
+            return []
+        items = list(self._messages)
+        return items[-wanted:] if wanted <= len(items) else items
 
     def close(self) -> None:
         self._stop.set()
@@ -284,7 +342,10 @@ def _focus_values(messages: list[tuple[str, list[Any]]]) -> dict[str, float]:
     for address, args in messages:
         if "/active/wheel/" not in address or len(args) < 3:
             continue
-        if not isinstance(args[0], str) or not isinstance(args[2], (int, float)):
+        # bool is an int subclass: an OSC T/F argument would otherwise be
+        # stored as 1.0 / 0.0 under a real parameter's label and, under
+        # last-write-wins, fabricate an axis mismatch.
+        if not isinstance(args[0], str) or isinstance(args[2], bool) or not isinstance(args[2], (int, float)):
             continue
         label = args[0].split("[")[0].strip()
         if label:
@@ -293,7 +354,7 @@ def _focus_values(messages: list[tuple[str, list[Any]]]) -> dict[str, float]:
 
 
 def _do_test(probe: _Probe, args: argparse.Namespace) -> int:
-    """One-shot send at a fixed position (tests 1 and 5)."""
+    """One-shot send at a fixed position."""
     probe.marker.pos = (args.x, args.y, args.z)
     print(f"position   : x={args.x} y={args.y} z={args.z}")
     result = probe.manager.test_send(_ROW_ID)
@@ -317,9 +378,14 @@ def _sweep_axis(probe: _Probe, axis: str, args: argparse.Namespace) -> int:
     print(f"  expect   : {_AXIS_EXPECTATION[axis]}")
     print(f"  range    : {-args.span:+.2f} m .. {args.span:+.2f} m over {args.duration:.0f}s")
     if args.pause:
-        input("  press Enter to start (Ctrl-C to abort) ... ")
+        try:
+            input("  press Enter to start (Ctrl-C to abort) ... ")
+        except EOFError:
+            # No stdin (ssh without a tty, cron, piped input): carry on rather
+            # than dying before a single message is sent.
+            print("  (no stdin - running unattended)")
 
-    sent_before = probe.service.sent
+    sent_before = _sent_count(probe)
     start = time.monotonic()
     last_print = 0.0
     try:
@@ -342,9 +408,12 @@ def _sweep_axis(probe: _Probe, axis: str, args: argparse.Namespace) -> int:
         # Park at origin and let one more tick carry it out, so the object
         # doesn't stay parked wherever the loop happened to end.
         probe.marker.pos = (0.0, 0.0, 0.0)
-        time.sleep(2.0 / max(args.rate, 1))
-    sent = probe.service.sent - sent_before
+        time.sleep(2.0 / max(_effective_rate(probe), 1))
+    sent = _sent_count(probe) - sent_before
+    errors, last_error = _send_errors(probe)
     print(f"\r  sent     : {sent} messages" + " " * 16)
+    if errors:
+        print(f"  send errors: {errors} ({last_error})")
     if sent == 0:
         print("  FAIL: nothing left the transmitter")
         return 1
@@ -360,6 +429,13 @@ def _do_sweep(probe: _Probe, args: argparse.Namespace) -> int:
     try:
         for axis in axes:
             rc |= _sweep_axis(probe, axis, args)
+    except KeyboardInterrupt:
+        # The prompt advertises Ctrl-C as the way out, so honour it rather
+        # than surfacing a traceback. Park at origin on the way.
+        print("\n  interrupted")
+        probe.marker.pos = (0.0, 0.0, 0.0)
+        time.sleep(2.0 / max(_effective_rate(probe), 1))
+        rc = 1
     finally:
         probe.manager.stop()
     print("\nSweeps complete. The verdict is what you saw in Augment3d:")
@@ -369,8 +445,11 @@ def _do_sweep(probe: _Probe, args: argparse.Namespace) -> int:
 
 
 def _do_stream(probe: _Probe, args: argparse.Namespace) -> int:
-    """Continuous circular drive - the 30 Hz soak (test 7)."""
-    print(f"\nstreaming a {args.span:.1f} m circle at {args.rate} Hz for {args.duration:.0f}s")
+    """Continuous circular drive - the sustained-rate soak."""
+    rate = _effective_rate(probe)
+    if rate != args.rate:
+        print(f"  note: --rate {args.rate} is not a supported rate; the row streams at {rate} Hz")
+    print(f"\nstreaming a {args.span:.1f} m circle at {rate} Hz for {args.duration:.0f}s")
     print("watch: object tracks smoothly, console stays responsive to manual input")
     probe.manager.start()
     start = time.monotonic()
@@ -387,15 +466,18 @@ def _do_stream(probe: _Probe, args: argparse.Namespace) -> int:
                 args.z,
             )
             if elapsed - last_print >= 0.25:
-                print(f"\r  t={elapsed:5.1f}s  sent={probe.service.sent}   ", end="", flush=True)
+                print(f"\r  t={elapsed:5.1f}s  sent={_sent_count(probe)}   ", end="", flush=True)
                 last_print = elapsed
             time.sleep(1.0 / 60.0)
     except KeyboardInterrupt:
         print("\n  interrupted")
     finally:
         probe.manager.stop()
-    sent = probe.service.sent
+    sent = _sent_count(probe)
+    errors, last_error = _send_errors(probe)
     print(f"\r  sent     : {sent} messages in {time.monotonic() - start:.1f}s" + " " * 16)
+    if errors:
+        print(f"  send errors: {errors} ({last_error})")
     return 0 if sent else 1
 
 
@@ -513,22 +595,27 @@ def _do_verify(args: argparse.Namespace) -> int:
         print(f"  listening: udp/{args.rx_port}\n")
 
         if not _check_link(svc, listener, args):
-            print("SETUP FAIL: no /eos/out/ping reply. Either OSC TX is off on the console")
-            print("            (set its TX port to this port and TX address to this machine),")
-            print("            or Eos is discarding input from this interface - it does that")
-            print("            silently when two interfaces share a subnet. Check")
-            print("            Setup > Device > Network for a duplicate.")
+            print("SETUP FAIL: no /eos/out/ping reply. One of:")
+            print("  - the console is not running, or not reachable at this address;")
+            print("  - OSC TX is off (set its TX port to this port, TX address to this machine);")
+            print("  - Eos is discarding input from this interface, which it does silently")
+            print("    when two interfaces share a subnet. Check Setup > Device > Network.")
             return 1
         print("  link OK  : console answered /eos/ping")
 
         _instrument(svc, args.host, args.port, "/eos/subscribe", [1])
         time.sleep(0.5)
 
+        args.template = template_ids[0]
+        probe = _build(args)
         results = {}
         for tpl_id in template_ids:
-            args.template = tpl_id
-            results[tpl_id] = _verify_one(_build(args), svc, listener, args)
+            probe.apply(_row_for(tpl_id, args))
+            results[tpl_id] = _verify_one(probe, svc, listener, args)
+        probe.service.shutdown_clients()
     finally:
+        _instrument(svc, args.host, args.port, "/eos/subscribe", [0])
+        svc.shutdown_clients()
         listener.close()
 
     print("\n" + "=" * 58)
@@ -563,8 +650,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--park-channel",
         type=int,
-        default=1,
-        help="verify: channel to park the selection on so a re-select reports (default 1)",
+        default=None,
+        help="verify: channel to park the selection on so a re-select reports (default: --channel + 1)",
     )
     parser.add_argument("--settle", type=float, default=2.0, help="verify: seconds to wait for replies (default 2)")
     parser.add_argument("--tolerance", type=float, default=0.05, help="verify: metres of slack (default 0.05)")
@@ -572,6 +659,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "verify":
+        # Eos reports only changes, so the selection has to move off the target
+        # and back for it to re-report. Parking on the target itself is silent,
+        # and an empty baseline reads as "channel has no position parameters".
+        if args.park_channel is None:
+            args.park_channel = args.channel + 1
+        if args.park_channel == args.channel:
+            print(f"--park-channel must differ from --channel (both {args.channel})")
+            return 1
         return _do_verify(args)
     if args.template is None:
         args.template = "etc"

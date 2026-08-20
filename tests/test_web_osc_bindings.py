@@ -2009,7 +2009,8 @@ def test_preview_returns_provider_payload(tmp_path, monkeypatch) -> None:
         assert status == 200
         payload = json.loads(body)
         assert payload["available"] is True
-        assert payload["address"].startswith("/eos/")
+        assert payload["address"] == "/eos/chan/1/xyz"
+        assert payload["args"] == [1.0, 2.0, 0.0]
     finally:
         server.stop()
 

@@ -20,9 +20,11 @@ this station + bright-fox") – it's never applied as a remote write.
 
 from __future__ import annotations
 
+import bisect
 import errno
 import json
 import logging
+import math
 import socket
 import threading
 import time
@@ -58,10 +60,11 @@ _MAX_RX_PACKET = 60 * 1024
 _MAX_TX_PACKET = 1400
 # ``json.dumps`` writes ", " between array items.
 _JSON_ITEM_SEPARATOR_LEN = 2
-# Bound the per-heartbeat burst. The full-catalog resend is the amplification
-# vector: tombstones are never collected, and any peer can insert entries we
-# then rebroadcast. Chunks past the cap ride the next heartbeat instead.
+# Chunks per heartbeat; the rest ride the following beats.
 _MAX_HEARTBEAT_CHUNKS = 8
+# Bytes the envelope must leave for entries, so a large selection can never
+# squeeze the catalog out of its own beacon.
+_MIN_ENTRY_BUDGET = 400
 _CHUNK_LOG_INTERVAL = 30.0
 
 _TRANSIENT_SEND_ERRNOS: frozenset[int] = frozenset(
@@ -155,11 +158,12 @@ def _chunk_entries(
 ) -> tuple[list[list[MarkerEntry]], list[int]]:
     """Split ``entries`` into groups whose JSON array body fits ``budget`` bytes.
 
-    ``budget`` is the room the beacon shell leaves for the array contents: each
-    entry's serialised size plus the separator between items. Also returns the
-    ids of entries too large to fit a group on their own - unreachable while
-    :class:`MarkerEntry` bounds ``name`` and ``origin``, but kept so one
-    outsized entry can never stall the rest of the catalog.
+    ``budget`` is the room the beacon envelope leaves for the array contents:
+    each entry's serialised size plus the separator between items. Also returns
+    the ids of entries too large to fit a group on their own: ``MarkerEntry``
+    bounds ``name`` and ``origin`` in code points, but ``json.dumps`` escapes
+    non-ASCII to 6-12 bytes apiece, so a bounded entry can still outgrow a whole
+    datagram. Reporting them keeps one outsized entry from stalling the rest.
     """
     chunks: list[list[MarkerEntry]] = []
     skipped: list[int] = []
@@ -181,6 +185,54 @@ def _chunk_entries(
     if current:
         chunks.append(current)
     return chunks, skipped
+
+
+def _fit_envelope(
+    *,
+    kind: str,
+    station_id: str,
+    station_name: str,
+    controlled_ids: list[int],
+    viewer_ids: list[int],
+) -> tuple[str, list[int], list[int], bool]:
+    """Shrink the beacon envelope until it leaves ``_MIN_ENTRY_BUDGET`` for entries.
+
+    The envelope is as unbounded as the entry array was: a station viewing every
+    marker on the LAN serialises hundreds of ids, which would otherwise crowd the
+    catalog out of its own beacon or push the empty-entries shell past the cap and
+    drop the beacon outright. Selection is display-only, so trimming ids (then the
+    station name) degrades a peer's "controlled by" list rather than stopping the
+    catalog from syncing. Returns the fitted parts and whether anything was cut.
+    """
+    limit = _MAX_TX_PACKET - _MIN_ENTRY_BUDGET
+    name = _sanitize_text(station_name, _STATION_NAME_MAX_LEN)
+    controlled = list(controlled_ids)
+    viewer = list(viewer_ids)
+    trimmed = len(name) != len(station_name)
+
+    def envelope_len() -> int:
+        return len(
+            _build_beacon(
+                kind=kind,
+                station_id=station_id,
+                station_name=name,
+                controlled_ids=controlled,
+                viewer_ids=viewer,
+                entries=[],
+            )
+        )
+
+    # One pop per iteration, but only for selections far larger than any real
+    # station's - a typical envelope clears the limit on the first check.
+    while envelope_len() > limit:
+        if viewer or controlled:
+            (viewer if len(viewer) >= len(controlled) else controlled).pop()
+        elif name:
+            name = name[: len(name) * 3 // 4]
+        else:
+            break  # station_id alone busts the limit; caller drops the beacon
+        trimmed = True
+    return name, controlled, viewer, trimmed
 
 
 def _parse_beacon(data: bytes) -> dict[str, object] | None:
@@ -249,11 +301,12 @@ class MarkerCatalogSync:
         # below _PEER_CAP_LOG_INTERVAL at boot, which 0.0 would suppress for ~30s
         # during a startup flood. Mirrors web.discovery.
         self._peer_cap_log_ts = float("-inf")
-        # Send-thread only – rotating window start when the catalog needs more
-        # than ``_MAX_HEARTBEAT_CHUNKS`` datagrams.
-        self._heartbeat_chunk_offset = 0
+        # Send-thread only. Highest id sent by the last heartbeat; the next one
+        # resumes above it when the catalog needs more than one burst.
+        self._heartbeat_cursor_id = 0
         self._rotation_log_ts = float("-inf")
         self._unchunkable_log_ts = float("-inf")
+        self._envelope_log_ts = float("-inf")
 
     # -- Public API ----------------------------------------------------------
 
@@ -326,7 +379,7 @@ class MarkerCatalogSync:
                 "rotating the window so every entry still reaches peers within %.0fs.",
                 total_chunks,
                 _MAX_HEARTBEAT_CHUNKS,
-                (total_chunks / _MAX_HEARTBEAT_CHUNKS) * HEARTBEAT_INTERVAL,
+                math.ceil(total_chunks / _MAX_HEARTBEAT_CHUNKS) * HEARTBEAT_INTERVAL,
             )
             self._rotation_log_ts = now
 
@@ -341,6 +394,17 @@ class MarkerCatalogSync:
                 ", ".join(str(i) for i in ids[:10]),
             )
             self._unchunkable_log_ts = now
+
+    def _note_envelope_trim(self) -> None:
+        """Log that the selection had to be cut to leave room for entries."""
+        now = time.monotonic()
+        if (now - self._envelope_log_ts) >= _CHUNK_LOG_INTERVAL:
+            logger.warning(
+                "MarkerCatalogSync: selection too large for a %d-byte beacon; "
+                "trimming the ids peers display so the catalog still syncs.",
+                _MAX_TX_PACKET,
+            )
+            self._envelope_log_ts = now
 
     # -- Send path ------------------------------------------------------------
 
@@ -435,9 +499,10 @@ class MarkerCatalogSync:
     ) -> None:
         """Emit ``entries`` as one or more sub-MTU beacons.
 
-        A mid-burst ``OSError`` propagates to the caller (which rebuilds the
-        socket and backs off); the undelivered chunks simply ride the next
-        heartbeat.
+        A mid-burst ``OSError`` propagates to the caller, which rebuilds the
+        socket and backs off. Undelivered heartbeat chunks are retried from the
+        same cursor next beat; a failed delta is lost until a heartbeat happens
+        to carry those ids, which is why the cursor only advances on success.
         """
         try:
             station_name = self._station_name_provider()
@@ -447,8 +512,15 @@ class MarkerCatalogSync:
             controlled, viewer = self._selection_provider()
         except Exception:
             controlled, viewer = [], []
-        controlled_ids = list(controlled)
-        viewer_ids = list(viewer)
+        station_name, controlled_ids, viewer_ids, trimmed = _fit_envelope(
+            kind=kind,
+            station_id=self._station_id,
+            station_name=station_name,
+            controlled_ids=list(controlled),
+            viewer_ids=list(viewer),
+        )
+        if trimmed:
+            self._note_envelope_trim()
 
         def build(chunk: list[MarkerEntry]) -> bytes:
             return _build_beacon(
@@ -462,8 +534,8 @@ class MarkerCatalogSync:
 
         shell = build([])
         if len(shell) > _MAX_TX_PACKET:
-            # Nothing to split: the envelope alone busts the cap. Truncating
-            # JSON would only wire-poison peers with an unparseable packet.
+            # Irreducible envelope – only a station_id past the cap gets here.
+            # Truncating JSON would wire-poison peers with an unparseable packet.
             logger.error(
                 "MarkerCatalogSync: %s envelope alone is %d bytes, over the %d-byte cap; dropping beacon.",
                 kind,
@@ -472,30 +544,36 @@ class MarkerCatalogSync:
             )
             return
 
-        chunks, skipped = _chunk_entries(entries, _MAX_TX_PACKET - len(shell))
+        ordered = self._heartbeat_order(entries) if kind == "heartbeat" else entries
+        chunks, skipped = _chunk_entries(ordered, _MAX_TX_PACKET - len(shell))
         if skipped:
             self._note_unchunkable(skipped)
         if kind == "heartbeat" and len(chunks) > _MAX_HEARTBEAT_CHUNKS:
-            chunks = self._rotate_heartbeat_chunks(chunks)
+            self._note_chunk_rotation(len(chunks))
+            chunks = chunks[:_MAX_HEARTBEAT_CHUNKS]
         if not chunks:
             # No entries (or none sendable) – the selection still has to reach peers.
             chunks = [[]]
         for chunk in chunks:
             sock.sendto(build(chunk), (CATALOG_MCAST_GROUP, CATALOG_PORT))
+        if kind == "heartbeat" and chunks[-1]:
+            # Only after the whole burst lands, so a mid-burst failure retries
+            # these entries next beat instead of skipping past them.
+            self._heartbeat_cursor_id = chunks[-1][-1].id
 
-    def _rotate_heartbeat_chunks(
-        self,
-        chunks: list[list[MarkerEntry]],
-    ) -> list[list[MarkerEntry]]:
-        """Take a ``_MAX_HEARTBEAT_CHUNKS``-wide window, advancing it each
-        heartbeat so entries past the cap still reach peers within a few cycles.
+    def _heartbeat_order(self, entries: list[MarkerEntry]) -> list[MarkerEntry]:
+        """Rotate ``entries`` to resume above the last id the previous beat sent.
+
+        Keyed on the id rather than a chunk index so that adding or removing
+        markers between beats reshuffles chunk boundaries without starving the
+        entries the window was about to reach.
         """
-        total = len(chunks)
-        start = self._heartbeat_chunk_offset % total
-        window = [chunks[(start + i) % total] for i in range(_MAX_HEARTBEAT_CHUNKS)]
-        self._heartbeat_chunk_offset = (start + _MAX_HEARTBEAT_CHUNKS) % total
-        self._note_chunk_rotation(total)
-        return window
+        if not entries:
+            return entries
+        start = bisect.bisect_right([e.id for e in entries], self._heartbeat_cursor_id)
+        if start >= len(entries):
+            return entries  # cursor past the end: wrap to the start
+        return entries[start:] + entries[:start]
 
     def _handle_send_error(
         self,
@@ -610,11 +688,11 @@ class MarkerCatalogSync:
             if self._catalog.merge_entry(entry):
                 changed.append(entry.id)
         # Rate ceiling: on_change fires synchronously on the recv thread once
-        # per heartbeat that merges any change, so a peer toggling updated_at
-        # every heartbeat couples inbound multicast to the callback's cost
-        # (the app persists, fsync + atomic rename). Writes are serialized and
-        # atomic; a persistence consumer that wants to decouple should debounce
-        # on its side (the send path already debounces deltas).
+        # per *datagram* that merges any change - so up to _MAX_HEARTBEAT_CHUNKS
+        # times per peer heartbeat while a station converges on a large catalog,
+        # each costing the app a persist (fsync + atomic rename). Writes are
+        # serialized and atomic; a persistence consumer that wants to decouple
+        # should debounce on its side (the send path already debounces deltas).
         if changed and self._on_change is not None:
             try:
                 self._on_change(changed)

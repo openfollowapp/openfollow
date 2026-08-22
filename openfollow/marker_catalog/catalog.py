@@ -327,6 +327,14 @@ def load_catalog(path: str) -> MarkerCatalog:
         except ValueError:
             logger.warning("markers.toml: dropping invalid entry %r", raw)
             continue
+        raw_name = raw.get("name")
+        if isinstance(raw_name, str) and entry.name != raw_name:
+            logger.warning(
+                "markers.toml: marker %d name shortened to %d characters (was %d).",
+                entry.id,
+                len(entry.name),
+                len(raw_name),
+            )
         catalog._entries[entry.id] = entry
     # Resume the logical clock above every persisted version so edits after a
     # restart keep out-ranking what's on disk (and what peers still hold).

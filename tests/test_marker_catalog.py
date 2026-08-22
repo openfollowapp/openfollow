@@ -586,6 +586,29 @@ class TestMarkerEntryNameBounds:
         assert entry is not None
         assert entry.name == "N" * 64
 
+    def test_load_warns_when_it_shortens_a_name(self, tmp_path, caplog) -> None:
+        """An upgrade that shortens an existing name must say so - the next
+        save rewrites markers.toml, and the peer still holding the long name
+        has the same version, so the two stations never reconverge on it."""
+        path = tmp_path / "markers.toml"
+        path.write_text(
+            '[[marker]]\nid = 1\nname = "' + "N" * 100 + '"\ncolor = "#ffffff"\nupdated_at = 1.0\n',
+            encoding="utf-8",
+        )
+        with caplog.at_level("WARNING", logger="openfollow.marker_catalog.catalog"):
+            load_catalog(str(path))
+        assert any("name shortened to 64 characters (was 100)" in r.message for r in caplog.records)
+
+    def test_load_stays_quiet_for_a_name_within_the_cap(self, tmp_path, caplog) -> None:
+        path = tmp_path / "markers.toml"
+        path.write_text(
+            '[[marker]]\nid = 1\nname = "Follow Spot"\ncolor = "#ffffff"\nupdated_at = 1.0\n',
+            encoding="utf-8",
+        )
+        with caplog.at_level("WARNING", logger="openfollow.marker_catalog.catalog"):
+            load_catalog(str(path))
+        assert not [r for r in caplog.records if "shortened" in r.message]
+
     def test_upsert_caps_name(self) -> None:
         cat = MarkerCatalog()
         entry = cat.upsert(1, "N" * 300, "#ff0000")

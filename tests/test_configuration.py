@@ -1994,6 +1994,13 @@ def test_app_config_normalises_psn_system_name(
     assert cfg.psn_system_name == expected
 
 
+def test_app_config_caps_psn_system_name_at_the_field_rule_bound() -> None:
+    """A hand-edited config.toml must not bypass the 64-char bound the web form
+    enforces: the name also sizes the marker-catalog beacon envelope."""
+    cfg = AppConfig(psn_system_name="S" * 300)
+    assert cfg.psn_system_name == "S" * 64
+
+
 @pytest.mark.parametrize("bad_fps", [True, False, None, "60", 3.14])
 def test_rttrpm_output_config_rejects_non_int_fps_and_clamps_to_one(bad_fps: object) -> None:
     # TOML loaders occasionally hand through unexpected types (a bool that

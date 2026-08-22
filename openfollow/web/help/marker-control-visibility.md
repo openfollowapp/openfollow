@@ -4,10 +4,10 @@ Defines which markers exist in the show and how this station drives and displays
 
 ## Shared catalog
 
-A live table of every marker, synced to all stations within a few seconds of saving. Each row:
+A live table of every marker, synced to all stations within a few seconds of saving. Very large catalogs (roughly 55 markers and up) sync in batches, so the last of them can take a few heartbeats longer to appear on every station. Each row:
 
 - **ID** – numeric identifier (integer ≥ 1) that receivers see on PSN, OSC, OTP, and RTTrPM. Match your console's numbering.
-- **Name** – a human-readable label for the interface; not sent on the PSN wire.
+- **Name** – a human-readable label for the interface, up to 64 characters; longer names are shortened when saved. Not sent on the PSN wire.
 - **Color** – the marker's swatch on the Operator Screen and web UI; click it to open the picker. The add-row suggests the first unused palette colour.
 - **Controlled by / Viewed by** – read-only: which stations currently claim control or view. A ⚠ and red row highlight flag a control conflict (more than one station controlling the same marker); resolve it in each station's selection table.
 - **Save** / **Delete** (per row) – commit a row's name/colour, or remove the marker from all stations (after a confirmation prompt).

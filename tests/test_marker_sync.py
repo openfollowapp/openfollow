@@ -21,6 +21,8 @@ import pytest
 import openfollow.marker_catalog.sync as marker_sync
 from openfollow.marker_catalog.catalog import MarkerCatalog, MarkerEntry
 from openfollow.marker_catalog.sync import (
+    _MAX_HEARTBEAT_CHUNKS,
+    _MAX_TX_PACKET,
     CATALOG_MCAST_GROUP,
     CATALOG_PORT,
     DELTA_DEBOUNCE,
@@ -28,6 +30,7 @@ from openfollow.marker_catalog.sync import (
     MarkerCatalogSync,
     PeerSelection,
     _build_beacon,
+    _chunk_entries,
     _coerce_id_list,
     _entry_from_dict,
     _parse_beacon,
@@ -461,35 +464,405 @@ class TestSendPacket:
         assert decoded["controlled_ids"] == []
         assert decoded["viewer_ids"] == []
 
-    def test_oversized_payload_falls_back_to_selection_only(self) -> None:
-        """An oversized entries payload triggers a selection-only beacon
-        (no entries) instead of a byte-truncated invalid-JSON packet
-        that every peer would reject."""
-        sync = self._sync()
-        # Build a synthetic entry set large enough to exceed _MAX_TX_PACKET
-        # (60 KiB) on the wire – each entry name is ~600 bytes.
-        big_entries = [MarkerEntry(id=i, name="x" * 600, color="#ff0000", updated_at=0.0) for i in range(1, 200)]
+    def test_irreducible_envelope_drops_beacon(self) -> None:
+        """Pathological case: the envelope busts the cap even with the whole
+        selection and station name cut away (only a station_id past the cap
+        gets here). Drop the beacon rather than wire-poison peers with a
+        truncated invalid packet."""
+        sync = MarkerCatalogSync(
+            MarkerCatalog(),
+            station_id="x" * 70000,
+            station_name_provider=lambda: "OpenFollow X",
+            selection_provider=lambda: ([1, 2], [3]),
+        )
         sock = MagicMock()
-        sync._send_packet(sock, kind="heartbeat", entries=big_entries)
-        assert sock.sendto.call_count == 1
-        data, _ = sock.sendto.call_args[0]
-        decoded = _parse_beacon(data)
-        assert decoded is not None
-        # Fallback drops entries but keeps selection / station_id.
-        assert decoded["entries"] == []
-        assert decoded["station_id"] == "station-A"
-        assert decoded["controlled_ids"] == [1, 2]
-
-    def test_oversized_fallback_also_too_large_drops_beacon(self) -> None:
-        """Pathological case: even the empty-entries shell is bigger
-        than the cap (e.g. astronomically long station name). Drop the
-        beacon entirely rather than wire-poison peers with a truncated
-        invalid packet."""
-        sync = self._sync(station_name_provider=lambda: "x" * 70000)
-        sock = MagicMock()
-        # Entries don't matter – even the empty shell is oversize.
         sync._send_packet(sock, kind="heartbeat", entries=[])
         assert sock.sendto.call_count == 0
+
+
+def _catalog_entries(n: int, *, name: str = "Follow") -> list[MarkerEntry]:
+    """A realistic catalog: 32-hex origin (a station UUID) on every entry."""
+    return [
+        MarkerEntry(
+            id=i,
+            name=f"{name} {i}",
+            color="#ff0000",
+            updated_at=1755900000.123456,
+            tombstone=False,
+            version=i,
+            origin="c" * 32,
+        )
+        for i in range(1, n + 1)
+    ]
+
+
+def _sent_ids(sock: MagicMock) -> set[int]:
+    ids: set[int] = set()
+    for call in sock.sendto.call_args_list:
+        decoded = _parse_beacon(call[0][0])
+        assert decoded is not None
+        raw_entries = decoded["entries"]
+        assert isinstance(raw_entries, list)
+        for raw in raw_entries:
+            entry = _entry_from_dict(raw)
+            assert entry is not None
+            ids.add(entry.id)
+    return ids
+
+
+class TestChunkEntries:
+    """Packing contract for the pure chunker."""
+
+    def test_no_entries_yields_no_chunks(self) -> None:
+        assert _chunk_entries([], 1000) == ([], [])
+
+    def test_everything_fitting_stays_one_chunk(self) -> None:
+        entries = _catalog_entries(3)
+        chunks, skipped = _chunk_entries(entries, 10_000)
+        assert skipped == []
+        assert [e.id for e in chunks[0]] == [1, 2, 3]
+        assert len(chunks) == 1
+
+    def test_splits_at_the_budget_boundary(self) -> None:
+        """Two entries that exactly fill the budget share a chunk; one byte
+        less of budget splits them."""
+        entries = _catalog_entries(2)
+        exact = sum(len(json.dumps(marker_sync._entry_to_dict(e)).encode()) for e in entries) + 2
+        chunks, _ = _chunk_entries(entries, exact)
+        assert len(chunks) == 1
+        chunks, _ = _chunk_entries(entries, exact - 1)
+        assert [[e.id for e in c] for c in chunks] == [[1], [2]]
+
+    def test_preserves_every_entry_in_order(self) -> None:
+        entries = _catalog_entries(40)
+        chunks, skipped = _chunk_entries(entries, 1200)
+        assert skipped == []
+        assert len(chunks) > 1
+        assert [e.id for c in chunks for e in c] == list(range(1, 41))
+
+    def test_entry_too_large_for_any_chunk_is_reported_not_dropped_silently(self) -> None:
+        """A budget below one entry's own size can't be satisfied by splitting;
+        the id is reported so the caller can log it, and its neighbours still pack."""
+        entries = _catalog_entries(3)
+        one = len(json.dumps(marker_sync._entry_to_dict(entries[1])).encode())
+        chunks, skipped = _chunk_entries(entries, one)
+        # Every entry here is the same size, so all three are individually
+        # sendable at this budget – one per chunk.
+        assert skipped == []
+        assert len(chunks) == 3
+        chunks, skipped = _chunk_entries(entries, one - 1)
+        assert chunks == []
+        assert skipped == [1, 2, 3]
+
+
+class TestChunkedBeacons:
+    """#80: a catalog larger than one datagram must still reach peers."""
+
+    def _sync(self, **kwargs):
+        return MarkerCatalogSync(
+            MarkerCatalog(),
+            station_id="c" * 32,
+            station_name_provider=kwargs.get("station_name_provider", lambda: "OpenFollow bright-weasel"),
+            selection_provider=kwargs.get("selection_provider", lambda: ([1, 2], [3])),
+        )
+
+    def test_eight_entries_still_reach_peers(self) -> None:
+        """The exact reproduction from the issue: eight entries overflow a
+        single beacon, and used to be replaced by an empty-entries fallback."""
+        sync = self._sync()
+        sock = MagicMock()
+        sync._send_packet(sock, kind="heartbeat", entries=_catalog_entries(8))
+        assert sock.sendto.call_count > 1
+        assert _sent_ids(sock) == set(range(1, 9))
+
+    @pytest.mark.parametrize("count", [8, 20, 40])
+    def test_every_datagram_stays_under_the_mtu_cap(self, count: int) -> None:
+        sync = self._sync()
+        sock = MagicMock()
+        sync._send_packet(sock, kind="heartbeat", entries=_catalog_entries(count))
+        sizes = [len(call[0][0]) for call in sock.sendto.call_args_list]
+        assert sizes and max(sizes) <= _MAX_TX_PACKET
+        assert _sent_ids(sock) == set(range(1, count + 1))
+
+    def test_each_datagram_carries_the_station_selection(self) -> None:
+        """Selection repeats in every chunk, so a dropped datagram costs
+        entries but never the 'controlled by' display."""
+        sync = self._sync()
+        sock = MagicMock()
+        sync._send_packet(sock, kind="heartbeat", entries=_catalog_entries(20))
+        for call in sock.sendto.call_args_list:
+            decoded = _parse_beacon(call[0][0])
+            assert decoded is not None
+            assert decoded["station_id"] == "c" * 32
+            assert decoded["controlled_ids"] == [1, 2]
+            assert decoded["viewer_ids"] == [3]
+            assert call[0][1] == (CATALOG_MCAST_GROUP, CATALOG_PORT)
+
+    def test_a_peer_converges_on_the_full_catalog_without_reassembly(self) -> None:
+        """Each chunk is a standalone beacon: merging them in any order
+        reproduces the sender's catalog, names and colours intact."""
+        sync = self._sync()
+        sock = MagicMock()
+        sync._send_packet(sock, kind="heartbeat", entries=_catalog_entries(40))
+        packets = [call[0][0] for call in sock.sendto.call_args_list]
+
+        received = MarkerCatalog()
+        peer = MarkerCatalogSync(
+            received,
+            station_id="peer-B",
+            station_name_provider=lambda: "peer",
+            selection_provider=lambda: ([], []),
+        )
+        for data in reversed(packets):
+            peer._handle_packet(data)
+        assert {e.id: e.name for e in received.live_entries()} == {i: f"Follow {i}" for i in range(1, 41)}
+        assert {e.color for e in received.live_entries()} == {"#ff0000"}
+
+    def test_heartbeat_burst_is_capped(self) -> None:
+        sync = self._sync()
+        sock = MagicMock()
+        sync._send_packet(sock, kind="heartbeat", entries=_catalog_entries(200))
+        assert sock.sendto.call_count == _MAX_HEARTBEAT_CHUNKS
+
+    def test_heartbeat_window_rotates_until_every_entry_is_sent(self) -> None:
+        """Past the burst cap the window advances each heartbeat, so a large
+        catalog still converges rather than silently truncating at the cap."""
+        sync = self._sync()
+        entries = _catalog_entries(200)
+        seen: set[int] = set()
+        for _ in range(20):
+            sock = MagicMock()
+            sync._send_packet(sock, kind="heartbeat", entries=entries)
+            seen |= _sent_ids(sock)
+            if seen == set(range(1, 201)):
+                break
+        assert seen == set(range(1, 201))
+
+    def test_delta_beacons_are_not_capped(self) -> None:
+        """Deltas carry only locally-edited ids, so they send in full rather
+        than deferring part of an operator's edit to the next heartbeat."""
+        sync = self._sync()
+        sock = MagicMock()
+        sync._send_packet(sock, kind="delta", entries=_catalog_entries(200))
+        assert sock.sendto.call_count > _MAX_HEARTBEAT_CHUNKS
+        assert _sent_ids(sock) == set(range(1, 201))
+
+    def test_entries_that_cannot_be_serialised_small_enough_are_skipped(self) -> None:
+        """MarkerEntry bounds name/origin in code points, but json escapes
+        non-ASCII to up to 12 bytes apiece - so a bounded entry can still
+        outgrow a datagram. It is skipped; its neighbours still go out."""
+        sync = self._sync()
+        huge = MarkerEntry(id=7, name="M", color="#ff0000", updated_at=0.0, origin="\N{PERFORMING ARTS}" * 128)
+        sock = MagicMock()
+        sync._send_packet(sock, kind="heartbeat", entries=[*_catalog_entries(3), huge])
+        assert _sent_ids(sock) == {1, 2, 3}
+        assert all(len(call[0][0]) <= _MAX_TX_PACKET for call in sock.sendto.call_args_list)
+
+    def test_a_huge_station_name_does_not_starve_the_entries(self) -> None:
+        """The envelope is trimmed to fit rather than allowed to crowd the
+        catalog out of its own beacon."""
+        sync = self._sync(station_name_provider=lambda: "x" * 1150)
+        sock = MagicMock()
+        sync._send_packet(sock, kind="heartbeat", entries=_catalog_entries(4))
+        assert _sent_ids(sock) == {1, 2, 3, 4}
+        assert all(len(call[0][0]) <= _MAX_TX_PACKET for call in sock.sendto.call_args_list)
+
+    def test_a_large_selection_does_not_drop_the_beacon(self) -> None:
+        """Regression: a station viewing every marker on the LAN serialises
+        hundreds of ids. That used to push the empty-entries envelope past the
+        cap and drop the beacon outright - the same silent failure as #80."""
+        sync = self._sync(selection_provider=lambda: (list(range(1, 151)), list(range(1, 151))))
+        sock = MagicMock()
+        sync._send_packet(sock, kind="heartbeat", entries=_catalog_entries(10))
+        assert sock.sendto.call_count > 0
+        assert _sent_ids(sock) == set(range(1, 11))
+        assert all(len(call[0][0]) <= _MAX_TX_PACKET for call in sock.sendto.call_args_list)
+
+    def test_mid_burst_send_error_propagates_to_the_caller(self) -> None:
+        """The send loop owns socket rebuild + back-off; a failure partway
+        through a burst must reach it instead of being swallowed."""
+        sync = self._sync()
+        sock = MagicMock()
+        sock.sendto.side_effect = [None, OSError(errno.ENETDOWN, "down")]
+        with pytest.raises(OSError):
+            sync._send_packet(sock, kind="heartbeat", entries=_catalog_entries(40))
+
+
+class TestEnvelopeFitting:
+    """The envelope must never crowd out the entries it wraps."""
+
+    def _fit(self, name: str, controlled: list[int], viewer: list[int]):
+        return marker_sync._fit_envelope(
+            kind="heartbeat",
+            station_id="c" * 32,
+            station_name=name,
+            controlled_ids=controlled,
+            viewer_ids=viewer,
+        )
+
+    def test_a_normal_envelope_is_left_alone(self) -> None:
+        name, controlled, viewer, trimmed = self._fit("OpenFollow bright-weasel", [1, 2], [3])
+        assert (name, controlled, viewer, trimmed) == ("OpenFollow bright-weasel", [1, 2], [3], False)
+
+    @pytest.mark.parametrize("count", [150, 400])
+    def test_a_huge_selection_is_trimmed_to_leave_room_for_entries(self, count: int) -> None:
+        name, controlled, viewer, trimmed = self._fit("station", list(range(1, count)), list(range(1, count)))
+        assert trimmed
+        shell = _build_beacon(
+            kind="heartbeat",
+            station_id="c" * 32,
+            station_name=name,
+            controlled_ids=controlled,
+            viewer_ids=viewer,
+            entries=[],
+        )
+        assert _MAX_TX_PACKET - len(shell) >= marker_sync._MIN_ENTRY_BUDGET
+
+    def test_both_id_lists_are_trimmed_evenly(self) -> None:
+        _, controlled, viewer, _ = self._fit("station", list(range(1, 200)), list(range(1, 200)))
+        assert abs(len(controlled) - len(viewer)) <= 1
+        assert controlled and viewer
+
+    def test_station_name_is_shortened_once_the_ids_are_gone(self) -> None:
+        name, controlled, viewer, trimmed = self._fit("\N{PERFORMING ARTS}" * 128, [], [])
+        assert trimmed
+        assert len(name) < 128
+        assert (controlled, viewer) == ([], [])
+
+    def test_an_irreducible_envelope_gives_up_rather_than_looping(self) -> None:
+        name, controlled, viewer, trimmed = marker_sync._fit_envelope(
+            kind="heartbeat",
+            station_id="x" * 5000,
+            station_name="station",
+            controlled_ids=[1],
+            viewer_ids=[2],
+        )
+        assert (name, controlled, viewer) == ("", [], [])
+        assert trimmed
+
+    def test_envelope_trim_warning_is_throttled(self, caplog: pytest.LogCaptureFixture) -> None:
+        sync = _make_sync()
+        with caplog.at_level("WARNING", logger="openfollow.marker_catalog.sync"):
+            sync._note_envelope_trim()
+            sync._note_envelope_trim()
+            sync._envelope_log_ts -= marker_sync._CHUNK_LOG_INTERVAL
+            sync._note_envelope_trim()
+        assert sum("selection too large" in r.message for r in caplog.records) == 2
+
+
+class TestHeartbeatCursor:
+    """Rotation resumes by marker id, so repacking can't starve an entry."""
+
+    def _sync(self):
+        return MarkerCatalogSync(
+            MarkerCatalog(),
+            station_id="c" * 32,
+            station_name_provider=lambda: "OpenFollow bright-weasel",
+            selection_provider=lambda: ([], []),
+        )
+
+    def test_order_is_untouched_from_a_fresh_cursor(self) -> None:
+        sync = self._sync()
+        entries = _catalog_entries(5)
+        assert [e.id for e in sync._heartbeat_order(entries)] == [1, 2, 3, 4, 5]
+
+    def test_order_resumes_above_the_cursor(self) -> None:
+        sync = self._sync()
+        sync._heartbeat_cursor_id = 3
+        assert [e.id for e in sync._heartbeat_order(_catalog_entries(5))] == [4, 5, 1, 2, 3]
+
+    def test_a_cursor_past_the_last_id_wraps_to_the_start(self) -> None:
+        sync = self._sync()
+        sync._heartbeat_cursor_id = 999
+        assert [e.id for e in sync._heartbeat_order(_catalog_entries(3))] == [1, 2, 3]
+
+    def test_an_empty_catalog_is_returned_unchanged(self) -> None:
+        assert self._sync()._heartbeat_order([]) == []
+
+    def test_cursor_survives_entries_being_removed_between_beats(self) -> None:
+        """A chunk-index window would re-derive an arbitrary slice when the
+        catalog repacks; an id cursor resumes where it actually left off."""
+        sync = self._sync()
+        sync._heartbeat_cursor_id = 60
+        shrunk = [e for e in _catalog_entries(100) if e.id % 2 == 0]
+        assert [e.id for e in sync._heartbeat_order(shrunk)][0] == 62
+
+    def test_cursor_does_not_advance_when_the_burst_fails(self) -> None:
+        """Otherwise a link flap mid-burst skips a whole window of entries
+        until the cursor wraps all the way round."""
+        sync = self._sync()
+        sock = MagicMock()
+        sock.sendto.side_effect = [None, OSError(errno.ENETDOWN, "down")]
+        with pytest.raises(OSError):
+            sync._send_packet(sock, kind="heartbeat", entries=_catalog_entries(200))
+        assert sync._heartbeat_cursor_id == 0
+
+    def test_cursor_advances_to_the_last_id_actually_sent(self) -> None:
+        sync = self._sync()
+        sock = MagicMock()
+        sync._send_packet(sock, kind="heartbeat", entries=_catalog_entries(200))
+        assert sync._heartbeat_cursor_id == max(_sent_ids(sock))
+
+    def test_a_delta_leaves_the_heartbeat_cursor_alone(self) -> None:
+        sync = self._sync()
+        sync._heartbeat_cursor_id = 42
+        sync._send_packet(MagicMock(), kind="delta", entries=_catalog_entries(3))
+        assert sync._heartbeat_cursor_id == 42
+
+
+class TestChunkNotices:
+    def _sync(self):
+        return MarkerCatalogSync(
+            MarkerCatalog(),
+            station_id="c" * 32,
+            station_name_provider=lambda: "OpenFollow bright-weasel",
+            selection_provider=lambda: ([], []),
+        )
+
+    def test_rotation_warning_is_throttled(self, caplog: pytest.LogCaptureFixture) -> None:
+        sync = self._sync()
+        with caplog.at_level("WARNING", logger="openfollow.marker_catalog.sync"):
+            sync._note_chunk_rotation(30)
+            sync._note_chunk_rotation(30)
+        assert sum("rotating the window" in r.message for r in caplog.records) == 1
+
+    def test_rotation_warning_fires_again_after_the_interval(self, caplog: pytest.LogCaptureFixture) -> None:
+        sync = self._sync()
+        with caplog.at_level("WARNING", logger="openfollow.marker_catalog.sync"):
+            sync._note_chunk_rotation(30)
+            sync._rotation_log_ts -= marker_sync._CHUNK_LOG_INTERVAL
+            sync._note_chunk_rotation(30)
+        assert sum("rotating the window" in r.message for r in caplog.records) == 2
+
+    @pytest.mark.parametrize(("chunks", "seconds"), [(9, 10), (16, 10), (17, 15), (21, 15)])
+    def test_rotation_warning_rounds_convergence_up_to_whole_beats(
+        self, chunks: int, seconds: int, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Covering 9 chunks 8-at-a-time takes two beats, not 1.125 - the
+        operator-facing estimate must not undersell how long a big catalog
+        takes to reach every station."""
+        sync = self._sync()
+        with caplog.at_level("WARNING", logger="openfollow.marker_catalog.sync"):
+            sync._note_chunk_rotation(chunks)
+        assert f"within {seconds}s" in caplog.records[0].message
+
+    def test_unchunkable_error_is_throttled(self, caplog: pytest.LogCaptureFixture) -> None:
+        sync = self._sync()
+        with caplog.at_level("ERROR", logger="openfollow.marker_catalog.sync"):
+            sync._note_unchunkable([1, 2])
+            sync._note_unchunkable([1, 2])
+        assert sum("too large for a" in r.message for r in caplog.records) == 1
+
+    def test_unchunkable_error_fires_again_after_the_interval(self, caplog: pytest.LogCaptureFixture) -> None:
+        sync = self._sync()
+        with caplog.at_level("ERROR", logger="openfollow.marker_catalog.sync"):
+            sync._note_unchunkable(list(range(1, 30)))
+            sync._unchunkable_log_ts -= marker_sync._CHUNK_LOG_INTERVAL
+            sync._note_unchunkable([7])
+        messages = [r.message for r in caplog.records if "too large for a" in r.message]
+        assert len(messages) == 2
+        # Only the first ten ids are named, so the line can't grow unbounded.
+        assert messages[0].endswith("(ids: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10).")
 
 
 class TestHandleSendError:
@@ -1219,6 +1592,17 @@ def test_entry_from_dict_sanitizes_origin() -> None:
     assert back is not None
     # Control chars (NUL, LF, ESC) dropped; printable remainder kept.
     assert back.origin == "stX"
+
+
+def test_entry_from_dict_caps_and_sanitizes_name() -> None:
+    """A peer-supplied name is bounded on intake, so no inbound entry can grow
+    past what one beacon chunk holds - or smuggle escapes into the UI."""
+    from openfollow.marker_catalog.sync import _entry_from_dict
+
+    back = _entry_from_dict({"id": 1, "name": "Spo\x1bt" + "z" * 300, "color": "#ffffff"})
+    assert back is not None
+    assert back.name == "Spot" + "z" * 60
+    assert len(back.name) == 64
 
 
 def test_entry_from_dict_caps_huge_version() -> None:

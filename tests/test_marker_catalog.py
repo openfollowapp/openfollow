@@ -533,6 +533,66 @@ class TestMarkerEntryVersion:
         assert len(entry.origin) <= 128
 
 
+class TestMarkerEntryNameBounds:
+    """A bounded name is what lets the sync layer fit any entry in one beacon."""
+
+    def test_name_length_capped(self) -> None:
+        entry = MarkerEntry(id=1, name="F" * 500, color="#ff0000", updated_at=0.0)
+        assert len(entry.name) == 64
+        assert entry.name == "F" * 64
+
+    def test_name_under_the_cap_is_untouched(self) -> None:
+        entry = MarkerEntry(id=1, name="Follow Spot 1 – Küche 🎭", color="#ff0000", updated_at=0.0)
+        assert entry.name == "Follow Spot 1 – Küche 🎭"
+
+    def test_control_characters_stripped_from_name(self) -> None:
+        # A peer-supplied name lands in the web UI and the HUD; escapes and
+        # newlines must not survive the wire.
+        entry = MarkerEntry(id=1, name="Fol\x1b[31mlow\n1", color="#ff0000", updated_at=0.0)
+        assert entry.name == "Fol[31mlow1"
+
+    def test_bounded_entry_fits_a_single_beacon(self) -> None:
+        """The invariant the chunker relies on: a maximally-sized entry still
+        serialises small enough to be sent on its own."""
+        from openfollow.marker_catalog.sync import _MAX_TX_PACKET, _build_beacon
+
+        entry = MarkerEntry(
+            id=999999,
+            name="F" * 100,
+            color="#ff0000",
+            updated_at=1755900000.123456,
+            version=2**63 - 1,
+            origin="o" * 200,
+        )
+        data = _build_beacon(
+            kind="heartbeat",
+            station_id="c" * 32,
+            station_name="OpenFollow bright-weasel",
+            controlled_ids=[],
+            viewer_ids=[],
+            entries=[entry],
+        )
+        assert len(data) <= _MAX_TX_PACKET
+
+    def test_load_caps_name_from_disk(self, tmp_path) -> None:
+        # A hand-edited markers.toml goes through the same cap as the wire path.
+        path = tmp_path / "markers.toml"
+        path.write_text(
+            '[[marker]]\nid = 1\nname = "' + "N" * 300 + '"\ncolor = "#ffffff"\nupdated_at = 1.0\n',
+            encoding="utf-8",
+        )
+        cat = load_catalog(str(path))
+        entry = cat.get_any(1)
+        assert entry is not None
+        assert entry.name == "N" * 64
+
+    def test_upsert_caps_name(self) -> None:
+        cat = MarkerCatalog()
+        entry = cat.upsert(1, "N" * 300, "#ff0000")
+        assert entry.name == "N" * 64
+        assert cat.get(1).name == "N" * 64
+
+
 class TestLogicalClockConflictResolution:
     """The clock-skew bug: a fresh local edit must win over a stale remote even
     when the remote carries a larger (clock-ahead) wall-clock ``updated_at``."""

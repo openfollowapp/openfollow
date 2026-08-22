@@ -121,6 +121,22 @@ class TestCatalogEndpoints:
         assert catalog.get(1).name == "Spot 1"
         assert sync.delta_requests == [[1]]
 
+    def test_put_caps_an_overlong_name(self, live_server) -> None:
+        """An over-length name is truncated on save and the truncated value is
+        echoed back, so the UI can't show a name peers will never receive."""
+        _, base, _, catalog, _ = live_server
+        status, body = _request(
+            base,
+            "/api/markers/catalog/5",
+            method="PUT",
+            body={"name": "N" * 300, "color": "#ff0000"},
+        )
+        assert status == 200
+        entry = catalog.get(5)
+        assert entry is not None
+        assert entry.name == "N" * 64
+        assert json.loads(body)["entry"]["name"] == "N" * 64
+
     def test_put_id_zero_rejected(self, live_server) -> None:
         _, base, _, _, _ = live_server
         status, _ = _request(

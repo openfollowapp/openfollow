@@ -45,17 +45,20 @@ _DEFAULT_COLOR = "#ffffff"
 _MAX_VERSION = 2**63 - 1
 # Cap the origin (a station id, normally a ~36-char UUID).
 _ORIGIN_MAX_LEN = 128
+# Cap the display name. A bounded name is what lets the sync layer guarantee
+# every entry fits inside one sub-MTU beacon chunk.
+_NAME_MAX_LEN = 64
 
 
-def _sanitize_origin(value: object) -> str:
-    """Coerce origin to a printable, length-capped station id.
+def _sanitize_text(value: object, max_len: int) -> str:
+    """Coerce ``value`` to a printable, length-capped string.
 
     Single choke point shared by the dataclass, the loader, and the sync
     receiver so disk and wire enforce the same contract.
     """
     if not isinstance(value, str):
         return ""
-    return "".join(ch for ch in value if ch.isprintable())[:_ORIGIN_MAX_LEN]
+    return "".join(ch for ch in value if ch.isprintable())[:max_len]
 
 
 @dataclass
@@ -81,8 +84,7 @@ class MarkerEntry:
             raise ValueError("MarkerEntry.id must be int")
         if self.id < 1:
             raise ValueError("MarkerEntry.id must be >= 1")
-        if not isinstance(self.name, str):
-            self.name = ""
+        self.name = _sanitize_text(self.name, _NAME_MAX_LEN)
         self.color = _coerce_hex_color(self.color, _DEFAULT_COLOR)
         try:
             self.updated_at = float(self.updated_at)
@@ -100,7 +102,7 @@ class MarkerEntry:
             self.version = 0
         elif self.version > _MAX_VERSION:
             self.version = _MAX_VERSION
-        self.origin = _sanitize_origin(self.origin)
+        self.origin = _sanitize_text(self.origin, _ORIGIN_MAX_LEN)
 
 
 def _entry_rank(entry: MarkerEntry) -> tuple[int, float, str]:

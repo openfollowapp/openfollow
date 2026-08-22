@@ -332,7 +332,7 @@
         // polls as diff renderer reuses row node).
         tr.innerHTML =
             '<td data-cell="id"></td>' +
-            '<td><input type="text" data-field="name"></td>' +
+            '<td><input type="text" data-field="name" maxlength="64"></td>' +
             '<td><button type="button" class="color-swatch-trigger" data-field="color" ' +
                 'data-color-picker="full" aria-label="Marker colour"></button></td>' +
             '<td class="cell-soft" data-cell="controlled-by"></td>' +
@@ -411,7 +411,7 @@
         // Add-row status span reports duplicate / success / error.
         tr.innerHTML =
             '<td><input type="number" min="1" id="new-marker-id" style="width: 4rem;"></td>' +
-            '<td><input type="text" id="new-marker-name"></td>' +
+            '<td><input type="text" id="new-marker-name" maxlength="64"></td>' +
             '<td><button type="button" class="color-swatch-trigger" id="new-marker-color" ' +
                 'data-color-picker="full" aria-label="New marker colour"></button></td>' +
             '<td colspan="2"><span id="add-marker-feedback" class="add-feedback" aria-live="polite"></span></td>' +

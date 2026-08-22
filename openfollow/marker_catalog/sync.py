@@ -9,6 +9,11 @@ the full catalog plus its own selection (controlled / viewer ids);
 on local catalog edit, a smaller "delta" beacon is queued and
 flushed after a short debounce.
 
+A catalog too large for one sub-MTU datagram is split across several
+beacons. Entries merge independently and idempotently on the receiver,
+so every chunk is a complete beacon in its own right - there is no
+sequencing and no reassembly.
+
 Selection is broadcast purely for UI display ("controlled by:
 this station + bright-fox") – it's never applied as a remote write.
 """
@@ -24,7 +29,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from openfollow.marker_catalog.catalog import MarkerCatalog, MarkerEntry
+from openfollow.marker_catalog.catalog import MarkerCatalog, MarkerEntry, _sanitize_text
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +54,15 @@ _SEND_ERROR_BACKOFF = HEARTBEAT_INTERVAL
 
 # Reject packets larger than 60KB to prevent receive buffer exhaustion.
 _MAX_RX_PACKET = 60 * 1024
+# Stay under a typical MTU so a beacon is never IP-fragmented on multicast.
 _MAX_TX_PACKET = 1400
+# ``json.dumps`` writes ", " between array items.
+_JSON_ITEM_SEPARATOR_LEN = 2
+# Bound the per-heartbeat burst. The full-catalog resend is the amplification
+# vector: tombstones are never collected, and any peer can insert entries we
+# then rebroadcast. Chunks past the cap ride the next heartbeat instead.
+_MAX_HEARTBEAT_CHUNKS = 8
+_CHUNK_LOG_INTERVAL = 30.0
 
 _TRANSIENT_SEND_ERRNOS: frozenset[int] = frozenset(
     {
@@ -136,6 +149,40 @@ def _build_beacon(
     return json.dumps(payload).encode("utf-8")
 
 
+def _chunk_entries(
+    entries: list[MarkerEntry],
+    budget: int,
+) -> tuple[list[list[MarkerEntry]], list[int]]:
+    """Split ``entries`` into groups whose JSON array body fits ``budget`` bytes.
+
+    ``budget`` is the room the beacon shell leaves for the array contents: each
+    entry's serialised size plus the separator between items. Also returns the
+    ids of entries too large to fit a group on their own - unreachable while
+    :class:`MarkerEntry` bounds ``name`` and ``origin``, but kept so one
+    outsized entry can never stall the rest of the catalog.
+    """
+    chunks: list[list[MarkerEntry]] = []
+    skipped: list[int] = []
+    current: list[MarkerEntry] = []
+    used = 0
+    for entry in entries:
+        size = len(json.dumps(_entry_to_dict(entry)).encode("utf-8"))
+        if size > budget:
+            skipped.append(entry.id)
+            continue
+        extra = size if not current else size + _JSON_ITEM_SEPARATOR_LEN
+        if used + extra > budget:
+            chunks.append(current)
+            current = [entry]
+            used = size
+            continue
+        current.append(entry)
+        used += extra
+    if current:
+        chunks.append(current)
+    return chunks, skipped
+
+
 def _parse_beacon(data: bytes) -> dict[str, object] | None:
     """Parse an untrusted datagram. Returns ``None`` on any malformed input."""
     if len(data) > _MAX_RX_PACKET:
@@ -162,20 +209,6 @@ def _coerce_id_list(value: object) -> list[int]:
             continue
         out.append(v)
     return out
-
-
-def _sanitize_text(value: object, max_len: int) -> str:
-    """Coerce ``value`` to a printable, length-capped string.
-
-    Mirrors :func:`web.discovery._sanitize_beacon_text`: non-string input
-    becomes ``""``, control characters are dropped (so an untrusted station_id
-    / station_name can't inject terminal escapes or newlines into the web UI),
-    and the result is capped at ``max_len`` to bound per-entry memory.
-    """
-    if not isinstance(value, str):
-        return ""
-    cleaned = "".join(ch for ch in value if ch.isprintable())
-    return cleaned[:max_len]
 
 
 class MarkerCatalogSync:
@@ -216,6 +249,11 @@ class MarkerCatalogSync:
         # below _PEER_CAP_LOG_INTERVAL at boot, which 0.0 would suppress for ~30s
         # during a startup flood. Mirrors web.discovery.
         self._peer_cap_log_ts = float("-inf")
+        # Send-thread only – rotating window start when the catalog needs more
+        # than ``_MAX_HEARTBEAT_CHUNKS`` datagrams.
+        self._heartbeat_chunk_offset = 0
+        self._rotation_log_ts = float("-inf")
+        self._unchunkable_log_ts = float("-inf")
 
     # -- Public API ----------------------------------------------------------
 
@@ -278,6 +316,31 @@ class MarkerCatalogSync:
                 MAX_PEER_SELECTIONS,
             )
             self._peer_cap_log_ts = now
+
+    def _note_chunk_rotation(self, total_chunks: int) -> None:
+        """Log that the catalog outgrew one heartbeat's chunk budget."""
+        now = time.monotonic()
+        if (now - self._rotation_log_ts) >= _CHUNK_LOG_INTERVAL:
+            logger.warning(
+                "MarkerCatalogSync: catalog needs %d beacons but a heartbeat sends %d; "
+                "rotating the window so every entry still reaches peers within %.0fs.",
+                total_chunks,
+                _MAX_HEARTBEAT_CHUNKS,
+                (total_chunks / _MAX_HEARTBEAT_CHUNKS) * HEARTBEAT_INTERVAL,
+            )
+            self._rotation_log_ts = now
+
+    def _note_unchunkable(self, ids: list[int]) -> None:
+        """Log entries too large to fit a beacon of their own."""
+        now = time.monotonic()
+        if (now - self._unchunkable_log_ts) >= _CHUNK_LOG_INTERVAL:
+            logger.error(
+                "MarkerCatalogSync: %d entr(y/ies) too large for a %d-byte beacon; not sent to peers (ids: %s).",
+                len(ids),
+                _MAX_TX_PACKET,
+                ", ".join(str(i) for i in ids[:10]),
+            )
+            self._unchunkable_log_ts = now
 
     # -- Send path ------------------------------------------------------------
 
@@ -370,6 +433,12 @@ class MarkerCatalogSync:
         kind: str,
         entries: list[MarkerEntry],
     ) -> None:
+        """Emit ``entries`` as one or more sub-MTU beacons.
+
+        A mid-burst ``OSError`` propagates to the caller (which rebuilds the
+        socket and backs off); the undelivered chunks simply ride the next
+        heartbeat.
+        """
         try:
             station_name = self._station_name_provider()
         except Exception:
@@ -378,40 +447,55 @@ class MarkerCatalogSync:
             controlled, viewer = self._selection_provider()
         except Exception:
             controlled, viewer = [], []
-        data = _build_beacon(
-            kind=kind,
-            station_id=self._station_id,
-            station_name=station_name,
-            controlled_ids=list(controlled),
-            viewer_ids=list(viewer),
-            entries=entries,
-        )
-        if len(data) > _MAX_TX_PACKET:
-            # Don't truncate JSON; send selection-only beacon instead.
-            fallback = _build_beacon(
+        controlled_ids = list(controlled)
+        viewer_ids = list(viewer)
+
+        def build(chunk: list[MarkerEntry]) -> bytes:
+            return _build_beacon(
                 kind=kind,
                 station_id=self._station_id,
                 station_name=station_name,
-                controlled_ids=list(controlled),
-                viewer_ids=list(viewer),
-                entries=[],
+                controlled_ids=controlled_ids,
+                viewer_ids=viewer_ids,
+                entries=chunk,
             )
+
+        shell = build([])
+        if len(shell) > _MAX_TX_PACKET:
+            # Nothing to split: the envelope alone busts the cap. Truncating
+            # JSON would only wire-poison peers with an unparseable packet.
             logger.error(
-                "MarkerCatalogSync: %s payload %d bytes exceeds %d-byte cap; "
-                "sending selection-only beacon (chunked entry beacons deferred).",
+                "MarkerCatalogSync: %s envelope alone is %d bytes, over the %d-byte cap; dropping beacon.",
                 kind,
-                len(data),
+                len(shell),
                 _MAX_TX_PACKET,
             )
-            if len(fallback) > _MAX_TX_PACKET:
-                # Selection-only shell still too big; drop beacon.
-                logger.error(
-                    "MarkerCatalogSync: selection-only fallback also %d bytes; dropping beacon.",
-                    len(fallback),
-                )
-                return
-            data = fallback
-        sock.sendto(data, (CATALOG_MCAST_GROUP, CATALOG_PORT))
+            return
+
+        chunks, skipped = _chunk_entries(entries, _MAX_TX_PACKET - len(shell))
+        if skipped:
+            self._note_unchunkable(skipped)
+        if kind == "heartbeat" and len(chunks) > _MAX_HEARTBEAT_CHUNKS:
+            chunks = self._rotate_heartbeat_chunks(chunks)
+        if not chunks:
+            # No entries (or none sendable) – the selection still has to reach peers.
+            chunks = [[]]
+        for chunk in chunks:
+            sock.sendto(build(chunk), (CATALOG_MCAST_GROUP, CATALOG_PORT))
+
+    def _rotate_heartbeat_chunks(
+        self,
+        chunks: list[list[MarkerEntry]],
+    ) -> list[list[MarkerEntry]]:
+        """Take a ``_MAX_HEARTBEAT_CHUNKS``-wide window, advancing it each
+        heartbeat so entries past the cap still reach peers within a few cycles.
+        """
+        total = len(chunks)
+        start = self._heartbeat_chunk_offset % total
+        window = [chunks[(start + i) % total] for i in range(_MAX_HEARTBEAT_CHUNKS)]
+        self._heartbeat_chunk_offset = (start + _MAX_HEARTBEAT_CHUNKS) % total
+        self._note_chunk_rotation(total)
+        return window
 
     def _handle_send_error(
         self,

@@ -29,6 +29,20 @@ from openfollow.psn.receiver import PsnReceiver, _RobustReceiver
 
 pytestmark = pytest.mark.unit
 
+
+def _packet_clock(first: float, rest: float):
+    """Fake ``time.monotonic`` for a two-packet test.
+
+    The receiver reads the clock once per packet, at the top of ``_on_packet``,
+    so the first read is packet one's timestamp and every later read is packet
+    two's. Returning ``rest`` forever afterwards keeps the timeline stable when
+    something else on the thread reads the clock too - a marker stamping its own
+    data write, for instance - which an exhausting iterator could not.
+    """
+    seq = iter([first])
+    return lambda: next(seq, rest)
+
+
 # --------------------------------------------------------------------------- #
 # Fakes
 # --------------------------------------------------------------------------- #
@@ -417,8 +431,7 @@ class TestOnPacketEdgeCases:
     def test_dt_outside_window_skips_speed_derivation(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
         # First packet at t=1, second at t=3 → dt=2.0, outside window.
-        times = iter([1.0, 3.0])
-        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 3.0))
         recv = PsnReceiver()
         recv._on_packet(
             _FakeDataPacket(
@@ -446,8 +459,7 @@ class TestOnPacketEdgeCases:
         of snapping to zero between movement bursts.
         """
         monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
-        times = iter([1.0, 1.1])  # dt=0.1, inside the window
-        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.1))  # dt=0.1, inside the window
         recv = PsnReceiver()
         recv._on_packet(
             _FakeDataPacket(

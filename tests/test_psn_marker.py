@@ -102,3 +102,73 @@ def test_setters_use_lock_and_do_not_tear_reads() -> None:
     t.set_pos(40.0, 50.0, 60.0)
     # After a completed set_pos there is only one visible state.
     assert t.pos == (40.0, 50.0, 60.0)
+
+
+class _StepClock:
+    """Deterministic stand-in for the monotonic PSN clock."""
+
+    def __init__(self, now: int = 0) -> None:
+        self.now = now
+
+    def __call__(self) -> int:
+        return self.now
+
+
+class TestTrackerTimestampAndStatus:
+    """#85: every tracker shipped ``TIMESTAMP=0`` and ``STATUS=0.0`` forever.
+
+    The PSN spec defines the per-tracker timestamp as the time of that tracker's
+    last data update (microseconds, sharing the packet header's base) and status
+    as the tracker's validity, so a receiver can tell a live tracker from a
+    stale one.
+    """
+
+    def test_position_updates_advance_the_timestamp(self) -> None:
+        clock = _StepClock(1_000)
+        t = Marker(marker_id=1, name="T1", clock=clock)
+        t.set_pos(1.0, 0.0, 0.0)
+        first = t.timestamp
+        clock.now = 17_500
+        t.set_pos(2.0, 0.0, 0.0)
+        assert first == 1_000
+        assert t.timestamp == 17_500
+
+    def test_speed_updates_also_advance_the_timestamp(self) -> None:
+        """A controlled marker gets an unconditional per-frame speed write, so
+        a marker that is live but not moving still reads as fresh."""
+        clock = _StepClock(500)
+        t = Marker(marker_id=1, name="T1", clock=clock)
+        t.set_speed(2.0, 0.0, 0.0)
+        assert t.timestamp == 500
+
+    def test_rename_does_not_advance_the_timestamp(self) -> None:
+        """A rename is metadata, not tracker data - it must not make a stale
+        marker look freshly updated."""
+        clock = _StepClock(100)
+        t = Marker(marker_id=1, name="T1", clock=clock)
+        t.set_pos(1.0, 0.0, 0.0)
+        clock.now = 900
+        t.set_name("renamed")
+        assert t.timestamp == 100
+
+    def test_status_goes_valid_on_the_first_data_write(self) -> None:
+        t = Marker(marker_id=1, name="T1", clock=_StepClock(1))
+        assert t.status == 0.0  # nothing written yet
+        t.set_pos(1.0, 0.0, 0.0)
+        assert t.status == 1.0
+
+    @pytest.mark.parametrize(
+        ("given", "expected"),
+        [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0), (7.5, 1.0), (-3.0, 0.0)],
+    )
+    def test_set_status_clamps_to_the_validity_range(self, given: float, expected: float) -> None:
+        t = Marker(marker_id=1, name="T1")
+        t.set_status(given)
+        assert t.status == expected
+
+    def test_to_psn_marker_carries_both_fields(self) -> None:
+        t = Marker(marker_id=9, name="T9", clock=_StepClock(4_242))
+        t.set_pos(1.0, 2.0, 3.0)
+        converted = t.to_psn_marker()
+        assert converted.timestamp == 4_242
+        assert converted.status == 1.0

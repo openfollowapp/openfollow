@@ -5,11 +5,18 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 
 import pypsn
 
+from openfollow.psn.clock import psn_timestamp_usec
+
 Vec3 = tuple[float, float, float]
 _ZERO: Vec3 = (0.0, 0.0, 0.0)
+# PSN_DATA_TRACKER_STATUS carries the tracker's validity as a float. A marker we
+# are actively driving is fully valid; 0.0 means "no data written yet".
+_VALID = 1.0
+_INVALID = 0.0
 
 
 class Marker:
@@ -21,6 +28,9 @@ class Marker:
     Thread-safety: Position/speed/orientation reads and writes are protected
     by an internal lock to prevent torn reads when background PSN threads
     read state while the main thread updates it.
+
+    Every data write stamps ``timestamp`` and marks the marker valid, so a
+    receiver can tell a marker that is still being updated from a stale one.
     """
 
     __slots__ = (
@@ -33,10 +43,17 @@ class Marker:
         "_trgtpos",
         "_status",
         "_timestamp",
+        "_clock",
         "_lock",
     )
 
-    def __init__(self, marker_id: int, name: str) -> None:
+    def __init__(
+        self,
+        marker_id: int,
+        name: str,
+        *,
+        clock: Callable[[], int] = psn_timestamp_usec,
+    ) -> None:
         # Marker id 0 reserved on PSN wire; validate early.
         if not isinstance(marker_id, int) or isinstance(marker_id, bool):
             raise ValueError("marker_id must be int")
@@ -49,8 +66,9 @@ class Marker:
         self._ori: Vec3 = _ZERO
         self._accel: Vec3 = _ZERO
         self._trgtpos: Vec3 = _ZERO
-        self._status: float = 0.0
+        self._status: float = _INVALID
         self._timestamp: int = 0
+        self._clock = clock
         self._lock = threading.Lock()
 
     @property
@@ -92,6 +110,7 @@ class Marker:
         """Set the marker position in PSN coordinates."""
         with self._lock:
             self._pos = (x, y, z)
+            self._stamp_locked()
 
     def set_name(self, name: str) -> None:
         """Update the marker name (used by live catalog rename)."""
@@ -102,6 +121,21 @@ class Marker:
         """Set the marker speed vector."""
         with self._lock:
             self._speed = (x, y, z)
+            self._stamp_locked()
+
+    def set_status(self, status: float) -> None:
+        """Set the tracker validity, clamped to the 0.0-1.0 range."""
+        with self._lock:
+            self._status = min(1.0, max(0.0, float(status)))
+
+    def _stamp_locked(self) -> None:
+        """Record the time of this data write. Caller holds ``_lock``.
+
+        ``set_name`` deliberately does not stamp - a rename is metadata, not
+        tracker data, and must not make a stale marker look fresh.
+        """
+        self._timestamp = self._clock()
+        self._status = _VALID
 
     def to_psn_marker(self) -> pypsn.PsnTracker:
         """Convert to pypsn.PsnTracker with all fields under lock."""

@@ -309,6 +309,11 @@ install -m 0644 "$DEBIAN_DIR/nm-wait-online-timeout.conf" \
 install -d -m 0755 "$STAGE/etc/NetworkManager/conf.d"
 install -m 0644 "$DEBIAN_DIR/nm-dhcp-fallback.conf" \
   "$STAGE/etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf"
+# Stable names for USB network adapters, so a pin cannot follow probe order onto
+# the wrong NIC (see the .link header).
+install -d -m 0755 "$STAGE/etc/systemd/network"
+install -m 0644 "$DEBIAN_DIR/usb-net-by-mac.link" \
+  "$STAGE/etc/systemd/network/72-openfollow-usb-net-by-mac.link"
 install -m 0644 "$DEBIAN_DIR/copyright"                          "$DOC_DIR/copyright"
 
 # --- control + maintainer scripts --------------------------------------------
@@ -324,6 +329,7 @@ done
 # conffile means an operator who tuned the DHCP timeout keeps that value across
 # an upgrade instead of having it silently replaced.
 printf '%s\n' /etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf \
+                /etc/systemd/network/72-openfollow-usb-net-by-mac.link \
   > "$STAGE/DEBIAN/conffiles"
 
 # --- build --------------------------------------------------------------------

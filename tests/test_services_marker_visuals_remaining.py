@@ -214,6 +214,7 @@ def _build(
     *,
     system_stats: Any = None,
     person_detector: Any = None,
+    network_alerts: list[str] | None = None,
 ) -> OverlayState:
     # Controller badge is stamped from InputManager.get_controller_info.
     return build_marker_visual_state(
@@ -222,6 +223,7 @@ def _build(
         system_stats=system_stats,
         person_detector=person_detector,
         cam_params_buffer=np.zeros(7, dtype=np.float64),
+        network_alerts=network_alerts,
     )
 
 
@@ -353,6 +355,30 @@ class TestSystemStatsFlow:
         collector = SimpleNamespace(update=lambda: stats)
         state = _build(app, pool, system_stats=collector)
         assert state.ip_is_fallback is expected
+
+
+class TestNetworkAlerts:
+    """The observer-to-HUD seam. Nothing asserted this end to end, so blanking
+    the field left the whole suite green while the one surface an operator has
+    during an outage silently went empty."""
+
+    def test_alerts_reach_the_overlay_state(self, pool: OverlayStatePool) -> None:
+        app = _build_app()
+        state = _build(app, pool, network_alerts=["PSN: eth0.10 is down"])
+        assert state.network_alerts == ["PSN: eth0.10 is down"]
+
+    def test_no_alerts_leaves_the_field_empty(self, pool: OverlayStatePool) -> None:
+        app = _build_app()
+        assert _build(app, pool).network_alerts == []
+
+    def test_the_state_owns_its_copy(self, pool: OverlayStatePool) -> None:
+        """The observer rebuilds its list each poll; the overlay must not hold
+        a reference that mutates under the renderer mid-frame."""
+        app = _build_app()
+        alerts = ["PSN: eth0 is down"]
+        state = _build(app, pool, network_alerts=alerts)
+        alerts.append("OTP output: eth1 is down")
+        assert state.network_alerts == ["PSN: eth0 is down"]
 
 
 class TestHostnameRow:

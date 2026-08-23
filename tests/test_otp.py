@@ -1328,3 +1328,28 @@ class TestOtpHandleSendErrorEdges:
             srv._stop_event.set()
             if srv._socket_thread is not None:
                 srv._socket_thread.join(timeout=2.0)
+
+
+class TestOtpBoundSourceIp:
+    """Lets the observer tell a correctly bound output from one needing a
+    rebind, without stopping it to find out."""
+
+    def _server(self):
+        from openfollow.otp.server import OtpServer
+
+        return OtpServer(system_name="X", system_number=1, port=5568, source_ip="10.0.0.9")
+
+    def test_reports_none_before_start(self) -> None:
+        assert self._server().bound_source_ip() is None
+
+    def test_reports_the_address_while_running(self) -> None:
+        srv = self._server()
+        srv._stop_event.clear()
+        srv._transform_thread = object()
+        assert srv.bound_source_ip() == "10.0.0.9"
+
+    def test_reports_none_once_stopped(self) -> None:
+        srv = self._server()
+        srv._transform_thread = object()
+        srv._stop_event.set()
+        assert srv.bound_source_ip() is None

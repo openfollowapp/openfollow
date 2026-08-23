@@ -177,6 +177,46 @@ Network page silently falls back to a read-only view. This also matches the Ansi
 deploy path, which already assumes NetworkManager. The `.deb`'s
 `NetworkManager-wait-online` timeout drop-in bounds a cable-less boot to ~15 s.
 
+**No-DHCP fallback.** All three install routes – the image layer, the Ansible
+playbook and the `.deb` – write
+`/etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf`:
+
+```ini
+[connection]
+ipv4.dhcp-timeout=2147483647
+ipv4.link-local=4
+```
+
+Without it a show LAN with no DHCP server leaves the NIC with no IPv4 address
+at all – the web server is up and avahi is answering, but nothing can reach
+either. `link-local=4` is *fallback* (not `3`, *enabled*): the 169.254 address
+appears only once DHCP has given up and goes away again when a lease arrives,
+so a healthy LAN never carries a second address.
+
+`dhcp-timeout` must not be finite. On expiry NetworkManager fails the
+activation with `ip-config-unavailable` and removes the fallback address along
+with it, so the station goes dark on that interface for the gap before the next
+retry – exactly the outage the drop-in exists to prevent. `2147483647` is
+NetworkManager's *infinity*; the literal word `infinity` is accepted by `nmcli`
+on a profile but silently ignored here, leaving the built-in 45 s in force.
+
+An infinite timeout also serves the case a shorter one broke: a switch port
+without portfast/edge blocks forwarding for roughly 30–50 s of spanning-tree
+convergence after link-up, and DHCP that never gives up still gets the real
+lease once the port starts forwarding.
+
+It is a connection **default** rather than a per-profile setting for two
+reasons: no profile exists at image-build time (NetworkManager isn't running in
+the chroot), and defaults also cover profiles created later. Nothing in the
+running app arms it – the application must never rewrite a NIC's persistent
+NetworkManager profile, so this is provisioning and only provisioning.
+
+The `.deb` declares it a **conffile**, so an operator who tuned the timeout
+keeps that value across an upgrade. The operator reaches a fallen-back station
+at `<hostname>.local` or at the address on the on-screen HUD;
+`tests/test_dhcp_fallback_provisioning.py` pins all three routes against each
+other, and asserts nothing in the app sets these properties at runtime.
+
 **Single account.** `rpi-image-gen`'s `rpi-user-credentials` layer creates the
 `openfollow` login user (password `openfollow`, **passwordless sudo**, in the
 `video/render/input/audio/plugdev/dialout/sudo` groups) *before* the `.deb`

@@ -28,14 +28,17 @@ from openfollow.runtime.overlay_draw_style import (
     speed_color,
 )
 from openfollow.runtime.overlay_layout import (
+    INFO_PANEL_ROW_H,
     HelpSections,
     bottom_left_info_panel_layout,
     build_help_sections,
     build_system_stats_text,
     centered_panel_layout,
+    fader_stack_bottom_padding,
     format_source_text,
     friendly_button_label,
     help_sections_height,
+    info_panel_height,
     key_label,
     marker_card_y,
     selectable_list_layout,
@@ -576,18 +579,9 @@ def _draw_settings_info_card(
     w: float,
 ) -> float:
     """Render IP/Source info card matching bottom-left panel; return y-cursor."""
-    ip_value = state.ip_text or "Unavailable"
-    src_value = format_source_text(
-        state.video_source_type,
-        state.source_label,
-        max_len=64,
-    )
-    station_value = state.station_name or "OpenFollow"
-    rows = [
-        ("IP Address:", ip_value),
-        ("Video Source:", src_value),
-        ("Station:", station_value),
-    ]
+    # The card is wider than the bottom-left panel, so the source string gets
+    # a longer budget here.
+    rows = build_info_panel_rows(state, source_max_len=64)
     # Surface unbound controller pads so operators can spot stray input.
     # 1-based to match the marker-card badge + OSC ``:cN``.
     if state.unbound_controller_indices:
@@ -912,38 +906,55 @@ def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> Non
     draw_status_badge(renderer, cr, state, w, h)
 
 
-def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    ip_label = "IP Address:"
-    src_label = "Video Source:"
-    station_label = "Station:"
+def build_info_panel_rows(state: OverlayState, *, source_max_len: int = 38) -> list[tuple[str, str]]:
+    """Label/value rows shared by the bottom-left panel and the Settings card.
+
+    The two recovery routes an operator has when the web UI is unreachable are
+    reading the address off this panel and browsing ``<hostname>.local`` – the
+    running system's hostname, not the station name the config asks for, since
+    a rename that was skipped would otherwise send them to a name avahi never
+    answers on. Both rows show in normal operation rather than only in the
+    broken state, because a row that appears only when things break is a row
+    nobody has learned to look for. The hostname row is the one exception: it
+    is omitted when the host has no usable name, where naming nothing beats
+    naming something wrong.
+    """
     ip_value = state.ip_text or "Unavailable"
-    src_value = format_source_text(state.video_source_type, state.source_label)
-    station_value = state.station_name or "OpenFollow"
+    if state.ip_is_fallback:
+        # Without this an operator reads a 169.254 address as a working lease
+        # and waits for a station that will never appear on the show LAN.
+        ip_value = f"{ip_value} - DHCP unavailable"
+    rows = [("IP Address:", ip_value)]
+    if state.hostname_text:
+        rows.append(("Web address:", state.hostname_text))
+    rows.append(
+        ("Video Source:", format_source_text(state.video_source_type, state.source_label, max_len=source_max_len))
+    )
+    rows.append(("Station:", state.station_name or "OpenFollow"))
+    return rows
+
+
+def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
+    rows = build_info_panel_rows(state)
 
     label_size = 9.5
     value_size = 10.8
     side_padding = 12.0
-    # Three rows of 20 px + 14 px top/bottom padding.
-    panel_h = 74.0
+    row_h = INFO_PANEL_ROW_H
+    # Derived, not fixed: the hostname row is absent on a host with no usable
+    # name, and the fader stack above reserves this same height.
+    panel_h = info_panel_height(len(rows))
 
     # Memoize layout + truncated values so unchanged panel skips measurement.
-    cache_key = (ip_value, src_value, station_value, w, h)
+    cache_key = (tuple(rows), w, h)
     cached = renderer._info_panel_cache
     if cached is not None and cached[0] == cache_key:
-        layout, ip_value, src_value, station_value = cached[1]
+        layout, rows = cached[1]
     else:
         renderer._set_ui_font(cr, label_size, bold=True)
-        label_w = max(
-            cr.text_extents(ip_label).width,
-            cr.text_extents(src_label).width,
-            cr.text_extents(station_label).width,
-        )
+        label_w = max(cr.text_extents(label).width for label, _ in rows)
         renderer._set_ui_font(cr, value_size)
-        value_w = max(
-            cr.text_extents(ip_value).width,
-            cr.text_extents(src_value).width,
-            cr.text_extents(station_value).width,
-        )
+        value_w = max(cr.text_extents(value).width for _, value in rows)
         layout = bottom_left_info_panel_layout(
             frame_width=w,
             frame_height=h,
@@ -952,25 +963,8 @@ def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: 
             side_padding=side_padding,
             panel_h=panel_h,
         )
-        ip_value = renderer._truncate_text_to_width(
-            cr,
-            ip_value,
-            layout.value_max_w,
-        )
-        src_value = renderer._truncate_text_to_width(
-            cr,
-            src_value,
-            layout.value_max_w,
-        )
-        station_value = renderer._truncate_text_to_width(
-            cr,
-            station_value,
-            layout.value_max_w,
-        )
-        renderer._info_panel_cache = (
-            cache_key,
-            (layout, ip_value, src_value, station_value),
-        )
+        rows = [(label, renderer._truncate_text_to_width(cr, value, layout.value_max_w)) for label, value in rows]
+        renderer._info_panel_cache = (cache_key, (layout, rows))
 
     panel_x = layout.panel_x
     panel_y = layout.panel_y
@@ -1000,29 +994,20 @@ def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: 
     else:
         draw_panel_background(renderer, cr, panel_x, panel_y, panel_w, panel_h, radius=11)
 
-    row1_y = panel_y + 20
-    row2_y = panel_y + 40
-    row3_y = panel_y + 60
     renderer._set_ui_font(cr, label_size, bold=True)
     cr.set_source_rgba(*COLOR_TEXT_MUTED)
-    cr.move_to(label_x, row1_y)
-    cr.show_text(ip_label)
-    cr.move_to(label_x, row2_y)
-    cr.show_text(src_label)
-    cr.move_to(label_x, row3_y)
-    cr.show_text(station_label)
+    for i, (label, _value) in enumerate(rows):
+        cr.move_to(label_x, panel_y + row_h * (i + 1))
+        cr.show_text(label)
 
     renderer._set_ui_font(cr, value_size)
     if in_error:
         cr.set_source_rgb(*COLOR_DANGER)
     else:
         cr.set_source_rgb(*COLOR_TEXT)
-    cr.move_to(value_x, row1_y)
-    cr.show_text(ip_value)
-    cr.move_to(value_x, row2_y)
-    cr.show_text(src_value)
-    cr.move_to(value_x, row3_y)
-    cr.show_text(station_value)
+    for i, (_label, value) in enumerate(rows):
+        cr.move_to(value_x, panel_y + row_h * (i + 1))
+        cr.show_text(value)
 
 
 def draw_system_stats(renderer: Any, cr: Any, state: OverlayState, w: int) -> None:
@@ -1213,12 +1198,16 @@ def draw_virtual_faders(
     card_m = 6.0
     # Left edge aligned with info panel for shared left margin.
     card_x = 10.0
+    # The info panel below grows with its row count, so reserve its real
+    # height rather than a fixed one.
+    bottom_padding = fader_stack_bottom_padding(len(build_info_panel_rows(state)))
     for i, vf in enumerate(state.virtual_faders_display):
         card_y = virtual_fader_card_y(
             i,
             h,
             card_h=card_h,
             card_margin=card_m,
+            bottom_padding=bottom_padding,
         )
         draw_virtual_fader_card(
             renderer,

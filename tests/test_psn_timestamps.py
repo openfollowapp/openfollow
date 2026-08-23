@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""#85: PSN timestamps and tracker validity, from the clock to the wire.
+"""PSN timestamps and tracker validity, from the clock to the wire.
 
 The spec puts the packet header's timestamp in microseconds since the server
 started, and the reference implementation stamps trackers off the same clock, so

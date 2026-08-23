@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""#86: the data and info streams each number their own frames.
+"""The data and info streams each number their own frames.
 
 ``frame_id`` is what a receiver groups a multi-packet frame on and spots a
 dropped frame with, so a counter shared between the two streams makes the data

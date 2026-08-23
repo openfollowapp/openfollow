@@ -2,7 +2,11 @@
 
 The station's IPv4 configuration – the same settings the on-device **Settings → Network** screen writes.
 
-**Interface** – the adapter to configure (often just `eth0`). Switching it reloads the form for that adapter.
+**Interfaces on this station** – every network adapter the station can see, with its address, subnet method, and whether it currently holds an address. **Configure** opens that adapter's settings underneath its own row; opening a different row moves the form there.
+
+A **This session** marker means your browser reached the station over that adapter. Changing its address will drop the page you are reading – the station stays reachable by the name shown on its own screen (`Web address`, e.g. `openfollow-noble-bear.local`) and from the on-screen **Settings → Network** menu, but you will need to reconnect. The marker only appears when the station can tell which adapter you arrived on; with some setups it can't, so its absence is not a guarantee.
+
+**Scan** re-reads the adapter list. Use it after plugging in a USB Ethernet adapter so it appears without waiting.
 
 **Method**:
 

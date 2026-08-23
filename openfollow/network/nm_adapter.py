@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 
 _NMCLI_TIMEOUT = 8
 
+# Shown when the privilege broker is absent, which on a real device means the
+# sudoers rules were never installed. Kept short: the on-screen banner is one
+# truncated line.
+_NO_BROKER_MESSAGE = "Cannot change network settings - the privileged helper is not configured."
+
 
 def _unescape_terse(value: str) -> str:
     """Reverse nmcli ``-t`` (terse) escaping in a field value: a literal
@@ -81,7 +86,7 @@ class NetworkManagerAdapter(NetworkAdapter):
     ) -> tuple[bool, str]:
         """Invoke capability via broker, return (ok, detail)."""
         if self._broker is None:
-            return (False, "Broker not configured.")
+            return (False, _NO_BROKER_MESSAGE)
         try:
             proc = self._broker.run(
                 capability,
@@ -141,6 +146,51 @@ class NetworkManagerAdapter(NetworkAdapter):
             if dev == iface:
                 return name
         return None
+
+    def _device_state(self, iface: str) -> str | None:
+        """nmcli's STATE word for *iface*, ``""`` if absent, ``None`` if unreadable.
+
+        The three are different and the callers rely on it: a read failure is
+        not evidence the device is gone, and telling an operator their plugged-in
+        adapter "is not present" because nmcli timed out contradicts the card
+        they just clicked.
+        """
+        try:
+            res = self._run(["nmcli", "-t", "-f", "DEVICE,STATE", "device"])
+        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
+            return None
+        for line in res.stdout.splitlines():
+            name, _, state = line.partition(":")
+            if name == iface:
+                return state.strip().lower()
+        return ""
+
+    def _has_carrier(self, iface: str) -> bool:
+        """False only when nmcli explicitly reports no link on *iface*.
+
+        Distinguishes "activation failed because the cable is out" – the
+        pre-stage workflow, not an error – from a real activation failure. An
+        unreadable state counts as *having* carrier so an activation failure we
+        can't explain is still reported as one; downgrading it to
+        saved-but-pending would hide a real problem behind a reassuring
+        message.
+        """
+        return self._device_state(iface) != "unavailable"
+
+    def _no_profile_message(self, iface: str) -> str:
+        """Say what the operator should check, not what the adapter didn't find.
+
+        Kept to one short sentence: the on-screen Settings banner is a single
+        truncated line, so a second sentence is the half that gets cut.
+        """
+        state = self._device_state(iface)
+        if state is None:
+            return f"Could not read {iface} from NetworkManager. Try Scan."
+        if state == "unmanaged":
+            return f"{iface} is not managed by NetworkManager. See the help drawer."
+        if not state:
+            return f"{iface} is not present. Check the adapter, then Scan."
+        return f"No saved profile for {iface}. Connect the cable once to create one."
 
     def _parse_show(self, text: str) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {}
@@ -301,7 +351,7 @@ class NetworkManagerAdapter(NetworkAdapter):
         if not name:
             return ApplyResult(
                 ok=False,
-                message=f"No NetworkManager connection profile bound to {iface}.",
+                message=self._no_profile_message(iface),
             )
         # Use long argv form to match sudoers rule. The explicit ``id``
         # keyword (``con mod id <name>``) makes a profile name beginning
@@ -384,7 +434,12 @@ class NetworkManagerAdapter(NetworkAdapter):
             reason=f"Modify NetworkManager profile {name}",
         )
         if not ok:
-            return ApplyResult(ok=False, message=detail or "nmcli con mod failed")
+            return ApplyResult(
+                ok=False,
+                message=f"Could not save the settings to profile '{name}'; nothing was changed ({detail})."
+                if detail
+                else f"Could not save the settings to profile '{name}'; nothing was changed.",
+            )
 
         partial: list[str] = []
         # con down can fail; con up failure is fatal.
@@ -402,13 +457,32 @@ class NetworkManagerAdapter(NetworkAdapter):
             reason=f"Bring NetworkManager profile {name} up",
         )
         if not up_ok:
-            return ApplyResult(ok=False, message=up_detail or "nmcli con up failed")
+            # Activation can only fail for want of a carrier once the profile
+            # itself saved, and that is the pre-stage-before-the-show workflow:
+            # the settings are persisted and take effect on next plug-in, so
+            # reporting a hard failure would be wrong.
+            if not self._has_carrier(iface) and not up_detail:
+                # Only when nmcli gave no reason of its own: a real failure -
+                # rfkill, a missing con-up grant - must not be reported as a
+                # cable problem just because the device reads "unavailable".
+                return ApplyResult(
+                    ok=True,
+                    pending=True,
+                    message=f"Saved; the settings take effect when {iface} has a link.",
+                    partial_failures=tuple(partial),
+                )
+            return ApplyResult(
+                ok=False,
+                message=f"Saved, but {iface} could not be brought up ({up_detail})."
+                if up_detail
+                else f"Saved, but {iface} could not be brought up.",
+            )
         return ApplyResult(ok=True, message="Applied.", partial_failures=tuple(partial))
 
     def renew_lease(self, iface: str) -> ApplyResult:
         name = self._connection_for(iface)
         if not name:
-            return ApplyResult(ok=False, message=f"No NetworkManager profile for {iface}.")
+            return ApplyResult(ok=False, message=self._no_profile_message(iface))
         # NM has no explicit renew verb; use down/up cycle.
         self._run_privileged(
             NETWORK_NM_CON_DOWN,
@@ -421,5 +495,13 @@ class NetworkManagerAdapter(NetworkAdapter):
             reason=f"Renew DHCP lease via NetworkManager profile {name}",
         )
         if not up_ok:
-            return ApplyResult(ok=False, message=up_detail or "nmcli con up failed")
+            # Only claim it's the link when nmcli gave no reason of its own -
+            # a missing helper or an ungranted rule is not a cable problem, and
+            # sending the operator to check a cable hides the real fix.
+            if not up_detail and not self._has_carrier(iface):
+                return ApplyResult(ok=False, message=f"{iface} has no link, so there is no lease to request.")
+            return ApplyResult(
+                ok=False,
+                message=f"Could not renew {iface} ({up_detail})." if up_detail else f"Could not renew {iface}.",
+            )
         return ApplyResult(ok=True, message="Lease renewed.")

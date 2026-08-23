@@ -89,6 +89,15 @@ class ApplyResult:
     message: str = ""
     partial_failures: tuple[str, ...] = field(default_factory=tuple)
 
+    pending: bool = False
+    """The settings were saved but the interface never came up.
+
+    Distinct from ``partial_failures``, which means "activated, with caveats".
+    Callers must not treat a pending apply as reachable: there is no address
+    serving anything yet, so redirecting a browser at it lands on nothing.
+    Every backend that can persist settings without activating them has to set
+    this - the web layer keys the redirect and the banner on it."""
+
 
 class NetworkAdapter(ABC):
     """Abstract adapter for reading/writing host network config."""

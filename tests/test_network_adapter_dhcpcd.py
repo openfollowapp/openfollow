@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 
 import pytest
@@ -448,7 +449,8 @@ class TestApplyErrors:
         a = DhcpcdAdapter(conf_path=conf, broker=broker)
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is False
-        assert "systemctl reload dhcpcd also failed" in result.message
+        assert "previous one was restored" in result.message
+        assert "reload boom" in result.message
 
     def test_release_partial_failure_is_warning(self, tmp_path) -> None:
         from openfollow.network.adapter import Ipv4Config, Ipv4Method
@@ -519,7 +521,9 @@ class TestApplyErrors:
         a._read_conf = boom
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is False
-        assert "Failed to update" in result.message
+        assert "Could not update" in result.message
+        # Says the interface was left alone, so the operator knows where they stand.
+        assert "nothing was changed" in result.message
 
 
 class TestRenewErrors:
@@ -632,7 +636,8 @@ class TestRenewErrors:
         a = DhcpcdAdapter(conf_path=conf)  # broker omitted
         result = a.renew_lease("eth0")
         assert result.ok is False
-        assert "Broker" in result.message
+        # Names something the operator can act on, not an internal object.
+        assert "privileged helper is not configured" in result.message
 
 
 class TestBuildBlockBranches:
@@ -896,7 +901,7 @@ class TestApplyRollback:
         a = DhcpcdAdapter(conf_path=conf)  # no broker → bounce never happens
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is False
-        assert "Broker not configured" in result.message
+        assert "privileged helper is not configured" in result.message
         assert conf.read_text() == original
 
     def test_rebounce_attempted_after_double_failure(self, tmp_path) -> None:
@@ -946,7 +951,8 @@ class TestApplyRollback:
         a = DhcpcdAdapter(conf_path=conf, broker=broker)
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is False
-        assert "systemctl reload dhcpcd also failed" in result.message
+        assert "previous one was restored" in result.message
+        assert "reload boom" in result.message
 
     def test_restore_failure_is_logged_not_raised(self, tmp_path, caplog) -> None:
         from openfollow.network.adapter import Ipv4Config, Ipv4Method
@@ -1194,3 +1200,99 @@ class TestApplyBoundaryValidation:
         )
         assert result.ok is False
         assert conf.read_text() == ""  # nothing written
+
+
+class TestPendingOnADeadLink:
+    """``dhcpcd -n`` returns 0 on a carrier-less interface - it only signals the
+    daemon - so without an explicit pending state the apply reads as clean and
+    the web layer redirects the browser to an address nothing is serving."""
+
+    def test_apply_reports_pending_when_the_link_is_down(self, adapter, monkeypatch) -> None:
+        a, _conf = adapter
+        monkeypatch.setattr(a, "_has_carrier", lambda _iface: False)
+        result = a.apply_ipv4(
+            "eth0",
+            Ipv4Config(method=Ipv4Method.STATIC, address="192.168.9.9", prefix=24),
+        )
+        assert result.ok is True
+        assert result.pending is True
+        assert "has a link" in result.message
+
+    def test_apply_is_not_pending_with_a_link(self, adapter, monkeypatch) -> None:
+        a, _conf = adapter
+        monkeypatch.setattr(a, "_has_carrier", lambda _iface: True)
+        result = a.apply_ipv4(
+            "eth0",
+            Ipv4Config(method=Ipv4Method.STATIC, address="192.168.9.9", prefix=24),
+        )
+        assert result.ok is True
+        assert result.pending is False
+
+    def test_carrier_reads_the_kernel_operstate(self, adapter, tmp_path, monkeypatch) -> None:
+        a, _conf = adapter
+        import openfollow.network.dhcpcd_adapter as mod
+
+        class _Path:
+            def __init__(self, value: str) -> None:
+                self._value = value
+
+            def read_text(self, encoding: str = "utf-8") -> str:
+                return self._value
+
+        monkeypatch.setattr(mod, "Path", lambda _p: _Path("down\n"))
+        assert a._has_carrier("eth0") is False
+        monkeypatch.setattr(mod, "Path", lambda _p: _Path("up\n"))
+        assert a._has_carrier("eth0") is True
+
+    def test_an_unreadable_operstate_counts_as_having_carrier(self, adapter, monkeypatch) -> None:
+        """An apply we can't explain must never be downgraded to a reassuring
+        "saved, pending"."""
+        a, _conf = adapter
+        import openfollow.network.dhcpcd_adapter as mod
+
+        class _Missing:
+            def read_text(self, encoding: str = "utf-8") -> str:
+                raise OSError("no such file")
+
+        monkeypatch.setattr(mod, "Path", lambda _p: _Missing())
+        assert a._has_carrier("eth0") is True
+
+
+class TestMessagesFitTheOnScreenBanner:
+    """Every operator-facing message must be one sentence.
+
+    The on-screen Settings banner is a single truncated line, so a second
+    sentence is the half that gets cut - and it is reliably the actionable
+    half, because the first sentence says what broke and the second says what
+    to do about it. Asserting the shape here means a regression fails CI
+    rather than waiting for someone to read it on a device.
+    """
+
+    # ". " before a capital is the two-sentence signature. It cannot match a
+    # path like ``dhcpcd.conf`` or an address like ``192.168.1.5``, which is
+    # why the check is not simply "contains a period".
+    _SECOND_SENTENCE = re.compile(r"\.\s+[A-Z]")
+
+    def _messages(self, broker: FakeBroker, tmp_path) -> list[str]:
+        """Drive the failure paths and collect what the operator would see."""
+        out: list[str] = []
+        adapter = DhcpcdAdapter(conf_path=str(tmp_path / "dhcpcd.conf"), broker=broker)
+
+        out.append(adapter.apply_ipv4("bad iface!", Ipv4Config(method=Ipv4Method.DHCP)).message)
+
+        def _boom() -> str:
+            raise OSError("read crashed")
+
+        adapter._read_conf = _boom  # type: ignore[method-assign]
+        out.append(adapter.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP)).message)
+        return [m for m in out if m]
+
+    def test_no_message_carries_a_second_sentence(self, broker: FakeBroker, tmp_path) -> None:
+        offenders = [m for m in self._messages(broker, tmp_path) if self._SECOND_SENTENCE.search(m)]
+        assert offenders == [], f"multi-sentence operator messages: {offenders}"
+
+    def test_the_detector_would_catch_a_two_sentence_message(self) -> None:
+        """Guards the guard: a check that never matches proves nothing."""
+        assert self._SECOND_SENTENCE.search("Could not update the file. Nothing was changed.")
+        assert not self._SECOND_SENTENCE.search("Could not update /etc/dhcpcd.conf; nothing was changed.")
+        assert not self._SECOND_SENTENCE.search("Saved; eth0 is at 192.168.1.5 now.")

@@ -35,11 +35,35 @@ def get_primary_local_ipv4(default: str = "N/A") -> str:
     except OSError:
         pass
 
-    for ip in get_local_ipv4_addresses():
+    # Ordered, not set-iteration order: on an offline show LAN the probe above
+    # always fails, so this branch decides the station's address. Unordered
+    # iteration makes that pick flip when an unrelated address appears (a VPN,
+    # docker0, a second lease), which reads downstream as a genuine IP change
+    # and repoints the data planes onto a network nobody chose.
+    #
+    # Link-local sorts last rather than first: a station that took a 169.254
+    # address while DHCP was failing keeps advertising it after a real lease
+    # arrives, because "169." precedes "192." lexicographically. That address
+    # is the station's identity - what peers and consoles reach it at - so a
+    # real lease has to win.
+    for ip in sorted(get_local_ipv4_addresses(), key=_address_preference):
         if not ip.startswith("127."):
             return ip
 
     return default
+
+
+def _address_preference(ip: str) -> tuple[int, tuple[int, ...]]:
+    """Sort key preferring a routable address, then ordering numerically.
+
+    Numeric rather than lexicographic so ``10.0.0.9`` precedes ``10.0.0.10``;
+    the point is a stable pick, and digit-string order is stable but arbitrary.
+    """
+    try:
+        octets = tuple(int(part) for part in ip.split("."))
+    except ValueError:  # pragma: no cover - psutil only yields dotted quads
+        octets = ()
+    return (1 if ip.startswith("169.254.") else 0, octets)
 
 
 def get_local_ipv4_addresses() -> set[str]:

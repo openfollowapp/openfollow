@@ -144,6 +144,7 @@ def _make_fake_app(
         _check_frame_loop_stall=_recorder("check_frame_loop_stall"),
         _frame_stalled=False,
         _frame_stall_since=0.0,
+        _observe_network_planes=_recorder("observe_network_planes"),
         _check_video_disconnect_banner=_recorder("check_video_disconnect_banner"),
         _process_input=_recorder("process_input"),
         _refresh_iface_list=_recorder("refresh_iface_list"),
@@ -299,6 +300,7 @@ class TestHousekeeping:
             # The stall watchdog belongs here and not on the frame clock: a
             # stalled loop cannot report its own stall.
             "check_frame_loop_stall",
+            "observe_network_planes",
         ]
 
     def test_swallows_check_exception_and_keeps_timer(self) -> None:
@@ -323,6 +325,7 @@ class TestHousekeeping:
             "check_camera_setup_requests",
             "check_marker_speeds_persist",
             "check_frame_loop_stall",
+            "observe_network_planes",
         ]
 
 

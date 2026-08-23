@@ -18,7 +18,9 @@ A function stays on the interface you gave it, always. If that interface has no 
 
 That is deliberate. During a show, output that has stopped is something you can see and diagnose; output that quietly reappeared on the office LAN is not. It also means nothing this station sends can end up on a network you didn't choose.
 
-Nothing about your configuration changes while the interface is away. Save the panel again once it is back to start the function on it.
+The function resumes on its own as soon as the interface has an address again – no restart, no re-save. The station checks about once a second, so a cable going back in recovers within a moment. Nothing about your configuration changes while the interface is away.
+
+While a function is stopped, the on-screen display lists it under **Network**, next to the IP address. That matters when the interface that went away is the one carrying this web page: the screen on the device is the only place left to look.
 
 The **address** is allowed to change. If the interface is on DHCP and comes back with a different address than before, that is normal and the function follows it. Only the interface itself is fixed.
 

@@ -729,3 +729,54 @@ class TestWaitForSourceIp:
             )
             == "127.0.0.1"
         )
+
+
+class TestPrimaryAddressPrefersARealLease:
+    """A link-local address must never outrank a routable one.
+
+    The offline probe always fails on a show LAN, so this branch picks the
+    station's identity - the address peers and consoles reach it at. Ordering
+    the raw strings puts ``169.254.x`` ahead of ``192.168.x`` (``"16"`` sorts
+    before ``"19"``), so a station that self-assigned while DHCP was failing
+    kept advertising that address after a real lease arrived.
+    """
+
+    @staticmethod
+    def _offline(monkeypatch, addresses: set[str]) -> None:
+        class FakeSocket:
+            def __init__(self, *a, **kw) -> None:
+                pass
+
+            def connect(self, addr) -> None:
+                raise OSError("No route")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a) -> None:
+                pass
+
+        monkeypatch.setattr(net_utils_module.socket, "socket", FakeSocket)
+        monkeypatch.setattr(net_utils_module, "get_local_ipv4_addresses", lambda: addresses)
+
+    def test_real_lease_beats_link_local(self, monkeypatch) -> None:
+        self._offline(monkeypatch, {"169.254.8.31", "192.168.178.66"})
+        assert get_primary_local_ipv4() == "192.168.178.66"
+
+    def test_link_local_still_used_when_it_is_all_there_is(self, monkeypatch) -> None:
+        """The DHCP-failure fallback is a working address on its own segment,
+        so it is a legitimate last resort - just never a preferred one."""
+        self._offline(monkeypatch, {"169.254.8.31"})
+        assert get_primary_local_ipv4() == "169.254.8.31"
+
+    def test_pick_is_numeric_not_lexicographic(self, monkeypatch) -> None:
+        self._offline(monkeypatch, {"10.0.0.10", "10.0.0.9"})
+        assert get_primary_local_ipv4() == "10.0.0.9"
+
+    def test_pick_is_stable_across_calls(self, monkeypatch) -> None:
+        """The reason ordering exists at all: an unordered pick flips when an
+        unrelated address appears, which reads downstream as a real IP change."""
+        self._offline(monkeypatch, {"192.168.1.50", "172.16.0.4", "10.1.2.3"})
+        first = get_primary_local_ipv4()
+        self._offline(monkeypatch, {"172.16.0.4", "10.1.2.3", "192.168.1.50"})
+        assert get_primary_local_ipv4() == first

@@ -410,6 +410,7 @@ def build_marker_visual_state(
     person_detector: Any,
     cam_params_buffer: npt.NDArray[Any],
     dt: float,
+    network_alerts: list[str] | None = None,
 ) -> OverlayState:
     """Build a complete OverlayState snapshot for atomic renderer swap.
 
@@ -478,6 +479,8 @@ def build_marker_visual_state(
         else:
             state.ip_text = ip
         state.ip_is_fallback = is_link_local(ip)
+
+    state.network_alerts = list(network_alerts or ())
 
     # Carries the port for the same reason the IP row does: on a fallback bind
     # the UI is not on 80, and a name pointing at a dead port is worse than no

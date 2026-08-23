@@ -154,6 +154,15 @@ class BeaconSender:
         if iface_ip == self._iface_ip:
             return
         self._iface_ip = iface_ip
+        self.reopen()
+
+    def reopen(self) -> None:
+        """Force the send socket to rebuild on the next loop iteration.
+
+        For a link that flapped: removing an address drops the egress route,
+        and getting the identical address back does not restore it - so an
+        unchanged-IP guard alone would leave the beacon sending nowhere.
+        """
         self._reopen.set()
 
     def _drain_reopen(self, sock: socket.socket | None) -> socket.socket | None:
@@ -366,6 +375,16 @@ class BeaconReceiver:
         # as local immediately; otherwise our own looped-back beacon passes the
         # filter and we self-list as a peer until the next TTL refresh.
         self._local_ips_ts = 0.0
+        self.reopen()
+
+    def reopen(self) -> None:
+        """Force the receive socket to rebuild on the next loop iteration.
+
+        For a link that flapped: the kernel drops the group membership when the
+        address is removed, and getting the identical address back does not
+        restore it - so an unchanged-IP guard alone would leave the receiver
+        joined to nothing while still looking healthy.
+        """
         self._reopen.set()
 
     def start(self) -> None:

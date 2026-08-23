@@ -2270,7 +2270,10 @@ class AppConfig:
         # startup ``init_psn`` / ``init_otp`` broadcast the same value.
         if not isinstance(self.psn_system_name, str):
             self.psn_system_name = _DEFAULT_PSN_SYSTEM_NAME
-        self.psn_system_name = self.psn_system_name.strip() or _DEFAULT_PSN_SYSTEM_NAME
+        # Cap to match the ``psn_system_name`` FieldRule: a hand-edited TOML
+        # must not bypass the bound the web form enforces, and the value sizes
+        # the marker-catalog beacon envelope.
+        self.psn_system_name = self.psn_system_name.strip()[:64] or _DEFAULT_PSN_SYSTEM_NAME
         # Normalise the Media Gallery selection: a hand-edited non-string (or a
         # blank) must never reach ``media_store.resolve`` / ``re.match`` – which
         # raise ``TypeError`` on a non-string and would crash pipeline build and

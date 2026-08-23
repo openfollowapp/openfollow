@@ -35,6 +35,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
+from conftest import psn_packet_clock as _packet_clock
 
 import openfollow.psn.receiver as receiver_module
 from openfollow.psn.receiver import PsnReceiver
@@ -170,8 +171,7 @@ class TestProtocolSpeedDispatch:
         speed) fires.
         """
         monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
-        times = iter([1.0, 1.1])
-        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.1))
         recv = PsnReceiver()
         # Two packets with None speed → position delta used.
         recv._on_packet(
@@ -215,8 +215,7 @@ class TestPositionDerivedSpeedMath:
         identical, hiding the sign mutant.
         """
         monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
-        times = iter([1.0, 1.5])
-        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.5))
         recv = PsnReceiver()
         # First packet at (10, 0, 0), second at (12, 0, 0) → dx = +2,
         # dt = 0.5 → vx = 4.0.  If subtraction mutates to addition we
@@ -249,8 +248,7 @@ class TestPositionDerivedSpeedMath:
         # block to fire; use 0.999.  prev = (1, 2, 3), new = (11, 7, 13)
         # → deltas (10, 5, 10).  Non-zero prev so additive mutants produce
         # different numbers; distinct deltas per axis so index swaps diverge.
-        times = iter([0.0, 0.999])
-        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(0.0, 0.999))
         recv = PsnReceiver()
         recv._on_packet(
             _FakeDataPacket(
@@ -292,8 +290,9 @@ class TestDtWindowGuard:
 
     def test_dt_just_below_upper_bound_still_derives(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
-        times = iter([0.0, 0.9])  # dt = 0.9, inside the (0.001, 1.0) window
-        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(
+            receiver_module.time, "monotonic", _packet_clock(0.0, 0.9)
+        )  # dt = 0.9, inside the (0.001, 1.0) window
         recv = PsnReceiver()
         recv._on_packet(
             _FakeDataPacket(
@@ -319,8 +318,7 @@ class TestDtWindowGuard:
         this window.
         """
         monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
-        times = iter([0.0, 0.01])
-        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(0.0, 0.01))
         recv = PsnReceiver()
         recv._on_packet(
             _FakeDataPacket(
@@ -359,8 +357,7 @@ class TestPerPacketBookkeeping:
         timeout.
         """
         monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
-        times = iter([5.0, 5.1])
-        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(5.0, 5.1))
         recv = PsnReceiver()
         recv._on_packet(
             _FakeDataPacket(
@@ -377,8 +374,7 @@ class TestPerPacketBookkeeping:
         derivation uses ``prev_pos=None`` and skips the speed update.
         """
         monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
-        times = iter([0.0, 0.5])
-        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(0.0, 0.5))
         recv = PsnReceiver()
         recv._on_packet(
             _FakeDataPacket(

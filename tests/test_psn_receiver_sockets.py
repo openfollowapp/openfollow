@@ -23,11 +23,13 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from conftest import psn_packet_clock as _packet_clock
 
 import openfollow.psn.receiver as receiver_module
 from openfollow.psn.receiver import PsnReceiver, _RobustReceiver
 
 pytestmark = pytest.mark.unit
+
 
 # --------------------------------------------------------------------------- #
 # Fakes
@@ -417,8 +419,7 @@ class TestOnPacketEdgeCases:
     def test_dt_outside_window_skips_speed_derivation(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
         # First packet at t=1, second at t=3 → dt=2.0, outside window.
-        times = iter([1.0, 3.0])
-        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 3.0))
         recv = PsnReceiver()
         recv._on_packet(
             _FakeDataPacket(
@@ -446,8 +447,7 @@ class TestOnPacketEdgeCases:
         of snapping to zero between movement bursts.
         """
         monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
-        times = iter([1.0, 1.1])  # dt=0.1, inside the window
-        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.1))  # dt=0.1, inside the window
         recv = PsnReceiver()
         recv._on_packet(
             _FakeDataPacket(

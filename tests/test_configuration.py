@@ -131,6 +131,10 @@ class _DummyWebCommands:
 @dataclass
 class _DummyMarker:
     marker_id: int
+    pos: tuple[float, float, float] | None = None
+
+    def set_pos(self, x: float, y: float, z: float) -> None:
+        self.pos = (x, y, z)
 
 
 class _DummyPsnServer:
@@ -1639,6 +1643,41 @@ def test_apply_runtime_rewires_controlled_marker_ids() -> None:
     assert app._selected_id == 2
     assert app._psn_receiver.ignore_ids == {2}
     assert app._viewer_ids == [2]
+
+
+def test_apply_runtime_seeds_a_live_added_marker_with_the_default_position() -> None:
+    """Startup registration seeds the default position; the hot-reload add path
+    must match it. An unseeded marker broadcasts (0, 0, 0) and, never having
+    taken a data write, reports STATUS invalid on the PSN wire."""
+    app = _DummyApp(AppConfig(controlled_marker_ids=[1], viewer_marker_ids=[1]))
+    new_config = AppConfig(controlled_marker_ids=[1, 305], viewer_marker_ids=[1, 305])
+    new_config.marker.default_pos_x = 1.5
+    new_config.marker.default_pos_y = -2.0
+    new_config.marker.default_pos_z = 1.6
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._server.markers[305].pos == (1.5, -2.0, 1.6)
+
+
+def test_apply_runtime_seeds_a_marker_restored_by_a_rolled_back_add() -> None:
+    """The rollback re-registers a removed marker; its position went with the
+    discarded Marker, so it needs the same seed the forward path gives."""
+    app = _app_with(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2])
+    orig_add = app._server.add_marker
+
+    def _failing_add(tid, name):  # noqa: ANN001
+        if tid == 3:
+            raise RuntimeError("PSN add failed")
+        return orig_add(tid, name)
+
+    app._server.add_marker = _failing_add  # type: ignore[method-assign]
+    new_config = AppConfig(controlled_marker_ids=[1, 3], viewer_marker_ids=[1, 3])
+
+    apply_runtime_config_changes(app, new_config)
+
+    # Marker 2 is back after the rollback, seeded rather than left at the origin.
+    assert app._server.markers[2].pos == (0.0, 0.0, 1.6)
 
 
 def test_apply_runtime_filters_non_int_and_bool_marker_ids() -> None:

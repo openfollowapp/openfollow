@@ -12,11 +12,12 @@ import errno
 import logging
 import socket
 import threading
-import time
+from collections.abc import Callable
 
 import multicast_expert
 import pypsn
 
+from openfollow.psn.clock import psn_timestamp_usec
 from openfollow.psn.marker import Marker
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ class PsnServer:
         source_ip: str = "",
         data_fps: float = 60.0,
         info_fps: float = 1.0,
+        clock: Callable[[], int] = psn_timestamp_usec,
     ) -> None:
         self._system_name = system_name
         self._target_ip = target_ip
@@ -71,6 +73,7 @@ class PsnServer:
         self._source_ip = source_ip.strip()
         self._data_fps = data_fps
         self._info_fps = info_fps
+        self._clock = clock
 
         self._markers: dict[int, Marker] = {}
         self._lock = threading.Lock()
@@ -86,7 +89,7 @@ class PsnServer:
 
     def add_marker(self, marker_id: int, name: str) -> Marker:
         """Register new marker (marker_id must be >= 1)."""
-        marker = Marker(marker_id, name)
+        marker = Marker(marker_id, name, clock=self._clock)
         with self._lock:
             self._markers[marker_id] = marker
         return marker
@@ -321,7 +324,7 @@ class PsnServer:
             frame_id = self._frame_id
             self._frame_id = (self._frame_id + 1) % 256
         info = pypsn.PsnInfo(
-            timestamp=int(time.time() * 1000),
+            timestamp=self._clock(),
             version_high=2,
             version_low=0,
             frame_id=frame_id,
@@ -339,10 +342,11 @@ class PsnServer:
         if not markers:
             return
         # PSN spec uses "trackers" field name; internally called markers.
-        packet = pypsn.PsnDataPacket(
-            info=self._make_psn_info(),
-            trackers=[t.to_psn_marker() for t in markers],
-        )
+        # Snapshot the trackers before stamping the header: a marker written in
+        # between would otherwise carry a timestamp ahead of the header it ships
+        # in, which underflows a receiver computing age as unsigned.
+        trackers = [t.to_psn_marker() for t in markers]
+        packet = pypsn.PsnDataPacket(info=self._make_psn_info(), trackers=trackers)
         self._send(pypsn.prepare_psn_data_packet_bytes(packet))
 
     def _send_info_packet(self) -> None:

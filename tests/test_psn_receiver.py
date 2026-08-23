@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
+from conftest import psn_packet_clock as _packet_clock
 
 import openfollow.psn.receiver as receiver_module
 from openfollow.psn.receiver import PsnReceiver
@@ -66,8 +67,7 @@ def test_receiver_ignores_ids_and_uses_protocol_speed(monkeypatch) -> None:
 
 def test_receiver_derives_speed_from_position_when_protocol_speed_is_zero(monkeypatch) -> None:
     monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
-    times = iter([1.0, 1.5])
-    monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.5))
 
     receiver = PsnReceiver()
     receiver._on_packet(_FakeDataPacket([_PacketTracker(5, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
@@ -133,8 +133,9 @@ def test_receiver_evicts_stale_markers(monkeypatch) -> None:
     """#540: markers silent past the TTL are dropped from all three dicts so an
     enumerated tracker_id can't persist for the process lifetime."""
     monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
-    times = iter([0.0, 100.0])  # create at t=0, sweep+update at t=100 (> TTL + interval)
-    monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(
+        receiver_module.time, "monotonic", _packet_clock(0.0, 100.0)
+    )  # create at t=0, sweep+update at t=100 (> TTL + interval)
 
     receiver = PsnReceiver()
     receiver._on_packet(
@@ -159,8 +160,9 @@ def test_receiver_eviction_sweep_is_throttled(monkeypatch) -> None:
     """#540: the sweep runs at most every _EVICT_SWEEP_INTERVAL_S so a packet
     flood can't make it hot – a stale entry survives until the next sweep."""
     monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
-    times = iter([2.0, 3.0])  # both within the sweep interval of the 0.0 baseline
-    monkeypatch.setattr(receiver_module.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(
+        receiver_module.time, "monotonic", _packet_clock(2.0, 3.0)
+    )  # both within the sweep interval of the 0.0 baseline
 
     receiver = PsnReceiver()
     receiver._last_seen[99] = -1000.0  # very stale, but no sweep is due yet

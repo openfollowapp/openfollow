@@ -451,6 +451,19 @@ class TestSendPacket:
         assert decoded is not None
         assert decoded["station_name"] == ""
 
+    def test_station_name_provider_returning_non_string_falls_back_to_empty(self) -> None:
+        """A provider that returns a bad value rather than raising must degrade
+        the same way: the send loop only recovers from OSError, so a TypeError
+        here would kill the sender thread and stop the catalog syncing."""
+        sync = self._sync(station_name_provider=lambda: None)
+        sock = MagicMock()
+        sync._send_packet(sock, kind="heartbeat", entries=_catalog_entries(3))
+        data, _ = sock.sendto.call_args[0]
+        decoded = _parse_beacon(data)
+        assert decoded is not None
+        assert decoded["station_name"] == ""
+        assert _sent_ids(sock) == {1, 2, 3}
+
     def test_selection_provider_raises_falls_back_to_empty(self) -> None:
         def bad_provider():
             raise RuntimeError("provider boom")
@@ -691,7 +704,7 @@ class TestChunkedBeacons:
 class TestEnvelopeFitting:
     """The envelope must never crowd out the entries it wraps."""
 
-    def _fit(self, name: str, controlled: list[int], viewer: list[int]):
+    def _fit(self, name: object, controlled: list[int], viewer: list[int]):
         return marker_sync._fit_envelope(
             kind="heartbeat",
             station_id="c" * 32,
@@ -728,6 +741,14 @@ class TestEnvelopeFitting:
         assert trimmed
         assert len(name) < 128
         assert (controlled, viewer) == ([], [])
+
+    @pytest.mark.parametrize("name", [None, 42, ["OpenFollow"]])
+    def test_a_non_string_station_name_is_dropped_rather_than_raising(self, name: object) -> None:
+        """The station name is provider-supplied and reaches the fitter
+        unvalidated; a non-string must degrade to an empty name instead of
+        raising past the send loop, which only recovers from OSError."""
+        fitted, controlled, viewer, trimmed = self._fit(name, [1], [2])
+        assert (fitted, controlled, viewer, trimmed) == ("", [1], [2], True)
 
     def test_an_irreducible_envelope_gives_up_rather_than_looping(self) -> None:
         name, controlled, viewer, trimmed = marker_sync._fit_envelope(

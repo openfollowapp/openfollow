@@ -191,7 +191,7 @@ def _fit_envelope(
     *,
     kind: str,
     station_id: str,
-    station_name: str,
+    station_name: object,
     controlled_ids: list[int],
     viewer_ids: list[int],
 ) -> tuple[str, list[int], list[int], bool]:
@@ -205,10 +205,13 @@ def _fit_envelope(
     catalog from syncing. Returns the fitted parts and whether anything was cut.
     """
     limit = _MAX_TX_PACKET - _MIN_ENTRY_BUDGET
+    # The name comes from a caller-supplied provider, so it is sanitised rather
+    # than trusted: a non-string return degrades to "" instead of raising out of
+    # the send loop, which only recovers from OSError.
     name = _sanitize_text(station_name, _STATION_NAME_MAX_LEN)
     controlled = list(controlled_ids)
     viewer = list(viewer_ids)
-    trimmed = len(name) != len(station_name)
+    trimmed = name != station_name
 
     def envelope_len() -> int:
         return len(

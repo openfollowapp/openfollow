@@ -106,7 +106,7 @@ def test_setters_use_lock_and_do_not_tear_reads() -> None:
 
 
 class TestTrackerTimestampAndStatus:
-    """#85: every tracker shipped ``TIMESTAMP=0`` and ``STATUS=0.0`` forever.
+    """Every tracker carries a real timestamp and status, never a constant zero.
 
     The PSN spec defines the per-tracker timestamp as the time of that tracker's
     last data update (microseconds, sharing the packet header's base) and status

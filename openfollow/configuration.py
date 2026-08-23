@@ -2582,7 +2582,7 @@ def _warn_deprecated_controller_bindings(controller: ControllerConfig) -> None:
         current = getattr(controller, field_name)
         if current != getattr(defaults, field_name):
             logger.warning(
-                "Config field controller.%s=%r is deprecated (issue #71): direct shortcut "
+                "Config field controller.%s=%r is deprecated: direct shortcut "
                 "removed – use the Settings menu (btn_settings, default BACK) instead.",
                 field_name,
                 current,
@@ -2600,7 +2600,7 @@ def _warn_deprecated_controller_bindings(controller: ControllerConfig) -> None:
         current = getattr(controller, field_name)
         if current != getattr(defaults, field_name):
             logger.warning(
-                "Config field controller.%s=%r is deprecated (issue #71): per-menu "
+                "Config field controller.%s=%r is deprecated: per-menu "
                 "confirm/cancel bindings were consolidated – use btn_menu_confirm / "
                 "btn_menu_cancel instead.",
                 field_name,

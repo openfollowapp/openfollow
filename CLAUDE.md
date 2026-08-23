@@ -22,7 +22,13 @@ See `docs/PROJECT_STRUCTURE.md` for layout.
   the first and leave the rest bare.
 - **Reasoning belongs in the commit message / PR description, not the source**:
   why a decision was taken, what alternatives were weighed, what review raised
-  it. Same rule for issue and PR numbers – never in code or comments.
+  it.
+- **A comment must be self-explaining.** Never reference an issue, PR, or bug
+  number in code, a comment, a docstring, or a user-facing string – not even as
+  a leading tag like `"""#86: ..."""`. A reader must not need to open a
+  tracker to know what a comment means, and an operator reading a log line
+  cannot open ours at all. The number goes in the commit message and the PR
+  description.
 - Docstrings follow the same instinct once they grow into essays. A load-bearing
   contract (what callers must not do, an invariant a refactor could break) earns
   more room than an inline comment; a narrative does not.

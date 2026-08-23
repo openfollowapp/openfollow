@@ -2731,8 +2731,7 @@ def _build_diagnostics_cards(
             "journalctl is unreachable and the in-memory ring "
             "wasn't initialised – diagnostics bundles will not "
             "include a log tail. Wire ``setup_logging``'s "
-            "``RingBufferLogHandler`` into ``ConfigWebServer`` "
-            "(see issue #179)."
+            "``RingBufferLogHandler`` into ``ConfigWebServer``."
         )
         log_source_note = "No log source."
     elif "no journald" in log_source_label:

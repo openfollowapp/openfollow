@@ -8,6 +8,7 @@ import pytest
 
 from openfollow.network.adapter import Ipv4Method
 from openfollow.network.validate import (
+    is_link_local,
     parse_dns_list,
     parse_ipv4,
     parse_prefix,
@@ -17,6 +18,28 @@ from openfollow.network.validate import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+class TestIsLinkLocal:
+    @pytest.mark.parametrize(
+        "value",
+        ["169.254.0.1", "169.254.255.254", "  169.254.8.31  ", "169.254.0.0"],
+    )
+    def test_link_local(self, value: str) -> None:
+        assert is_link_local(value) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        # 169.253/169.255 bracket the block: an off-by-one on the second octet
+        # would classify a routable address as a DHCP failure.
+        ["192.168.1.5", "10.0.0.1", "169.253.1.1", "169.255.1.1", "127.0.0.1"],
+    )
+    def test_routable(self, value: str) -> None:
+        assert is_link_local(value) is False
+
+    @pytest.mark.parametrize("value", ["", "   ", None, "not-an-ip", "fe80::1"])
+    def test_unparseable_is_not_link_local(self, value) -> None:
+        assert is_link_local(value) is False
 
 
 class TestParseIpv4:

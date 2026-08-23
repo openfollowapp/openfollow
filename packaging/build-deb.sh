@@ -309,6 +309,11 @@ install -m 0644 "$DEBIAN_DIR/openfollow-splash.service"          "$UNIT_DIR/open
 install -d -m 0755 "$UNIT_DIR/NetworkManager-wait-online.service.d"
 install -m 0644 "$DEBIAN_DIR/nm-wait-online-timeout.conf" \
   "$UNIT_DIR/NetworkManager-wait-online.service.d/10-openfollow-timeout.conf"
+# Link-local fallback so a show LAN with no DHCP server still leaves the
+# station reachable (see the .conf header).
+install -d -m 0755 "$STAGE/etc/NetworkManager/conf.d"
+install -m 0644 "$DEBIAN_DIR/nm-dhcp-fallback.conf" \
+  "$STAGE/etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf"
 install -m 0644 "$DEBIAN_DIR/copyright"                          "$DOC_DIR/copyright"
 
 # --- control + maintainer scripts --------------------------------------------
@@ -324,6 +329,11 @@ done
 # carries its own copy of the stdlib-only program.
 "$DEBIAN_DIR/render-preinst.sh" "$DEBIAN_DIR/preinst.in" \
   "$REPO_ROOT/openfollow/privilege/settings_backup.py" "$STAGE/DEBIAN/preinst"
+# The NM drop-in is the one file this package ships under /etc. Declaring it a
+# conffile means an operator who tuned the DHCP timeout keeps that value across
+# an upgrade instead of having it silently replaced.
+printf '%s\n' /etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf \
+  > "$STAGE/DEBIAN/conffiles"
 
 # --- build --------------------------------------------------------------------
 mkdir -p "$OUT_DIR"

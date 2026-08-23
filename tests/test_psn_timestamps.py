@@ -33,16 +33,31 @@ def _decode(packet: pypsn.PsnDataPacket) -> pypsn.PsnDataPacket:
 class TestMonotonicClock:
     """The clock is pinned by driving ``time.monotonic`` - the function the
     implementation actually reads - so a wall-clock implementation fails these
-    rather than passing them by coincidence."""
+    rather than passing them by coincidence.
 
-    def test_reports_microseconds_elapsed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(time, "monotonic", lambda: clock_module._EPOCH + 0.02)
-        assert clock_module.psn_timestamp_usec() == 20_000
+    The epoch is pinned too, and elapsed times are binary fractions: reading the
+    real epoch would leave the assertion at the mercy of how a host's uptime
+    rounds, and ``(epoch + 0.02) - epoch`` truncates to 19_999 us on some.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _pinned_epoch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(clock_module, "_EPOCH", 1_000.0)
+
+    @pytest.mark.parametrize(
+        ("elapsed_s", "expected_usec"),
+        [(0.25, 250_000), (1.5, 1_500_000), (0.0, 0)],
+    )
+    def test_reports_microseconds_elapsed(
+        self, monkeypatch: pytest.MonkeyPatch, elapsed_s: float, expected_usec: int
+    ) -> None:
+        monkeypatch.setattr(time, "monotonic", lambda: 1_000.0 + elapsed_s)
+        assert clock_module.psn_timestamp_usec() == expected_usec
 
     def test_starts_at_zero_not_at_the_unix_epoch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The spec counts from server start. Wall-clock microseconds would be
         ~1.7e15 here, which is what the pre-fix header sent (in milliseconds)."""
-        monkeypatch.setattr(time, "monotonic", lambda: clock_module._EPOCH)
+        monkeypatch.setattr(time, "monotonic", lambda: 1_000.0)
         assert clock_module.psn_timestamp_usec() == 0
 
     @pytest.mark.parametrize("stepped_to", [10_000_000.0, -5_000.0])
@@ -52,7 +67,7 @@ class TestMonotonicClock:
         """The Pis have no RTC and sync time shortly after boot, stepping the
         wall clock in either direction mid-stream. Holding ``time.monotonic``
         still means a correct implementation cannot move at all."""
-        monkeypatch.setattr(time, "monotonic", lambda: clock_module._EPOCH + 1.0)
+        monkeypatch.setattr(time, "monotonic", lambda: 1_001.0)
         monkeypatch.setattr(time, "time", lambda: 0.0)
         before = clock_module.psn_timestamp_usec()
         monkeypatch.setattr(time, "time", lambda: stepped_to)

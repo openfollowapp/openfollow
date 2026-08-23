@@ -17,6 +17,7 @@ from openfollow.net_utils import (
     get_primary_local_ipv4,
     list_iface_ipv4,
     resolve_iface_ip,
+    resolve_plane_source_ip,
     resolve_source_ip,
 )
 
@@ -462,6 +463,132 @@ class TestResolveSourceIp:
             lambda default="": "",
         )
         assert resolve_source_ip("") == ("", "none")
+
+
+class TestResolvePlaneSourceIp:
+    """``resolve_plane_source_ip(pin, station_iface)`` resolves one network
+    plane's *configured* interface. Inheritance happens for an unset value
+    only – a configured interface that is down reports ``down`` and the plane
+    binds nothing rather than moving to a different network."""
+
+    @staticmethod
+    def _ifaces(monkeypatch, spec: dict[str, list[tuple[int, str]]]) -> None:
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: _fake_addrs(spec),
+        )
+
+    def test_plane_pin_wins_over_station(self, monkeypatch) -> None:
+        """A live plane pin is honoured even when the station pins a
+        different, equally live interface – that's the whole point of
+        splitting a plane onto its own network."""
+        self._ifaces(
+            monkeypatch,
+            {
+                "eth0": [(socket.AF_INET, "192.168.1.5")],
+                "eth1": [(socket.AF_INET, "10.0.0.9")],
+            },
+        )
+        assert resolve_plane_source_ip("eth1", "eth0") == ("10.0.0.9", "iface")
+
+    def test_blank_pin_follows_station(self, monkeypatch) -> None:
+        """Blank pin = "follow station interface" – the default for every
+        plane, and what keeps a single-NIC station behaving as before."""
+        self._ifaces(
+            monkeypatch,
+            {
+                "eth0": [(socket.AF_INET, "192.168.1.5")],
+                "eth1": [(socket.AF_INET, "10.0.0.9")],
+            },
+        )
+        assert resolve_plane_source_ip("", "eth0") == ("192.168.1.5", "station")
+
+    def test_down_plane_pin_does_not_move_to_the_station_interface(self, monkeypatch) -> None:
+        """The load-bearing rule: a pinned plane whose interface is gone stops.
+        Rebinding it to the station interface would put show data on whatever
+        network that happens to be – silently, mid-show."""
+        self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.5")]})
+        assert resolve_plane_source_ip("eth9", "eth0") == ("", "down")
+
+    def test_down_station_interface_does_not_auto_detect(self, monkeypatch) -> None:
+        """Same rule one level up: an explicitly configured station interface
+        that is down must not silently become the OS primary."""
+        self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.5")]})
+        monkeypatch.setattr(
+            net_utils_module,
+            "get_primary_local_ipv4",
+            lambda default="": "172.16.4.20",
+        )
+        assert resolve_plane_source_ip("", "eth8") == ("", "down")
+
+    def test_a_new_address_on_the_configured_interface_is_followed(self, monkeypatch) -> None:
+        """Only the interface is fixed. A reconnect that yields a different
+        DHCP lease on the same NIC must resolve to the new address."""
+        self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.5")]})
+        assert resolve_plane_source_ip("eth0", "") == ("192.168.1.5", "iface")
+        self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.77")]})
+        assert resolve_plane_source_ip("eth0", "") == ("192.168.1.77", "iface")
+
+    def test_no_pins_at_all_is_auto_detect(self, monkeypatch) -> None:
+        """Nothing configured anywhere is not an error – auto-detect is the
+        chosen behaviour, so it still resolves."""
+        self._ifaces(monkeypatch, {})
+        monkeypatch.setattr(
+            net_utils_module,
+            "get_primary_local_ipv4",
+            lambda default="": "192.168.1.50",
+        )
+        assert resolve_plane_source_ip("", "") == ("192.168.1.50", "primary")
+
+    def test_offline_with_nothing_configured_reports_none(self, monkeypatch) -> None:
+        """Distinct from ``down``: nothing was configured, so nothing is
+        broken – there is simply no address to auto-detect yet."""
+        self._ifaces(monkeypatch, {})
+        monkeypatch.setattr(
+            net_utils_module,
+            "get_primary_local_ipv4",
+            lambda default="": "",
+        )
+        assert resolve_plane_source_ip("", "") == ("", "none")
+
+    def test_loopback_only_primary_is_rejected(self, monkeypatch) -> None:
+        """A loopback primary is not a usable bind for LAN multicast, so it
+        must report "none" rather than pinning traffic to 127.x."""
+        self._ifaces(monkeypatch, {})
+        monkeypatch.setattr(
+            net_utils_module,
+            "get_primary_local_ipv4",
+            lambda default="": "127.0.0.1",
+        )
+        assert resolve_plane_source_ip("", "") == ("", "none")
+
+    def test_configured_interface_without_ipv4_is_down(self, monkeypatch) -> None:
+        """An interface holding only IPv6 / loopback has no usable IPv4 bind.
+        It is configured, so it is ``down`` – not a reason to auto-detect."""
+        self._ifaces(
+            monkeypatch,
+            {
+                "eth0": [(socket.AF_INET6, "fe80::1"), (socket.AF_INET, "127.0.0.1")],
+            },
+        )
+        monkeypatch.setattr(
+            net_utils_module,
+            "get_primary_local_ipv4",
+            lambda default="": "10.1.1.4",
+        )
+        assert resolve_plane_source_ip("", "eth0") == ("", "down")
+
+
+class TestPlaneSourceIface:
+    def test_pin_wins(self) -> None:
+        assert net_utils_module.plane_source_iface("eth1", "eth0") == "eth1"
+
+    def test_blank_pin_inherits_the_station(self) -> None:
+        assert net_utils_module.plane_source_iface("", "eth0") == "eth0"
+
+    def test_nothing_configured_is_empty(self) -> None:
+        assert net_utils_module.plane_source_iface("", "") == ""
 
 
 class TestWaitForSourceIp:

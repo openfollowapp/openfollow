@@ -766,14 +766,20 @@ class OpenFollowApp:
                 list(self._viewer_ids),
             )
 
-        # Bind sync to PSN interface for multi-homed hosts.
+        # Sync follows the station interface, and stops with it: an empty
+        # iface_ip joins the multicast group on whatever the OS picks, so a
+        # station whose interface was down would trade marker names with peers
+        # over a network nobody chose.
+        iface_ip = self._runtime_services.station_source_ip_or_none()
+        if iface_ip is None:
+            return
         sync = MarkerCatalogSync(
             self._marker_catalog,
             self._config.station_id,
             station_name_provider=lambda: self._config.psn_system_name,
             selection_provider=_selection_provider,
             on_change=_on_change,
-            iface_ip=self._runtime_services._resolved_source_ip(),
+            iface_ip=iface_ip,
         )
         # Track before start so a mid-``start`` thread-launch failure still
         # leaves the partially-started sync visible to shutdown().

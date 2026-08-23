@@ -17,6 +17,7 @@ between ``OpenFollowApp.run()`` and the per-subsystem classes:
 
 from __future__ import annotations
 
+import socket
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -30,7 +31,9 @@ from openfollow.configuration import (
     MarkerConfig,
     OtpOutputConfig,
     RttrpmOutputConfig,
+    apply_runtime_config_changes,
 )
+from openfollow.net_utils import resolve_plane_source_ip as _REAL_RESOLVE_PLANE_SOURCE_IP
 from openfollow.psn.server import _UNCHANGED as _UNCHANGED_SENTINEL
 from openfollow.runtime.services_marker_visuals import _resolve_marker_color
 from openfollow.services import AppRuntimeServices
@@ -510,10 +513,12 @@ class TestInitPsn:
         assert factory.instances[0].start_called is True
         assert factory.last_kwargs["source_ip"] == "10.0.0.1"
 
-    def test_stale_iface_falls_back_to_primary(
+    def test_stale_iface_stops_psn_rather_than_moving_it(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When the pinned iface is down/missing, init_psn falls back to the auto-detected primary."""
+        """A configured station interface that is down must not put PSN on
+        whatever else is up. Passing "" would do exactly that, because every
+        downstream socket reads an empty source as auto-detect."""
         cfg = replace(services._app._config, psn_source_iface="ghost0")
         services._app._config = cfg
 
@@ -534,7 +539,8 @@ class TestInitPsn:
         monkeypatch.setattr(services_module, "PsnServer", factory)
 
         services.init_psn()
-        assert factory.last_kwargs["source_ip"] == "10.0.0.1"
+        assert factory.last_kwargs == {}
+        assert services._app._server is None
 
     def _stub_primary_ip(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import socket as _socket
@@ -609,9 +615,52 @@ class TestInitOtp:
 
         monkeypatch.setattr(
             net_utils,
-            "resolve_source_ip",
-            lambda iface, *, fallback=True: ("", "none"),
+            "resolve_plane_source_ip",
+            lambda pin, station="": ("", "none"),
         )
+
+    def test_blank_source_iface_follows_station_interface(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        """A blank ``otp_output.source_iface`` means "follow the station
+        interface", so a station pinned to eth0 sends OTP out eth0 instead of
+        whatever the OS routing table picks. Exercises the real resolver
+        against faked interfaces rather than a stubbed seam, because the
+        pin → station → auto chain is the behaviour under test."""
+        import openfollow.net_utils as net_utils_module
+
+        # Undo the class-level stub: this test is about the real
+        # pin → station → auto chain, driven by faked interfaces.
+        monkeypatch.setattr(
+            net_utils_module,
+            "resolve_plane_source_ip",
+            _REAL_RESOLVE_PLANE_SOURCE_IP,
+        )
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: {
+                "eth0": [SimpleNamespace(family=socket.AF_INET, address="192.168.1.5")],
+                "eth1": [SimpleNamespace(family=socket.AF_INET, address="10.0.0.9")],
+            },
+        )
+        cfg = replace(
+            services._app._config,
+            psn_source_iface="eth0",
+            otp_output=OtpOutputConfig(enabled=True, source_iface=""),
+        )
+        services._app._config = cfg
+        services._app._server = _FakePsnServer()
+        services._app._controlled_ids = []
+        monkeypatch.setattr(services_module, "OtpServer", _FakeOtpServer)
+
+        with caplog.at_level("WARNING"):
+            services.init_otp()
+
+        assert services._app._otp_server._source_ip == "192.168.1.5"
+        # Following the station is the documented default, not a degraded
+        # state – it must not warn.
+        assert not [r for r in caplog.records if "source_iface" in r.message]
 
     def test_disabled_is_no_op(self, services: AppRuntimeServices) -> None:
         # Default config has otp_output.enabled=False.
@@ -664,7 +713,11 @@ class TestInitOtp:
         from openfollow import net_utils
 
         # Pinned iface is live → resolves to its own IP, status "iface".
-        monkeypatch.setattr(net_utils, "resolve_source_ip", lambda iface, *, fallback=True: ("192.168.1.5", "iface"))
+        monkeypatch.setattr(
+            net_utils,
+            "resolve_plane_source_ip",
+            lambda pin, station="": ("192.168.1.5", "iface"),
+        )
         monkeypatch.setattr(services_module, "OtpServer", _FakeOtpServer)
 
         with caplog.at_level("WARNING"):
@@ -697,9 +750,20 @@ class TestInitOtp:
         services.init_otp()
         assert services._app._otp_server.registered == []
 
-    def test_enabled_source_iface_unavailable_falls_back_and_warns(
-        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, caplog
+    def test_enabled_source_iface_unavailable_stays_down_and_errors(
+        self,
+        services: AppRuntimeServices,
+        monkeypatch,
+        caplog,
     ) -> None:
+        """A pinned interface that is gone must not put OTP on another network.
+
+        The operator chose that interface; sending stage data out of whatever
+        NIC happens to be up instead is worse than sending nothing, because a
+        stopped output is visible and a misrouted one is not.
+        """
+        from dataclasses import replace
+
         cfg = replace(
             services._app._config,
             otp_output=OtpOutputConfig(
@@ -716,15 +780,22 @@ class TestInitOtp:
 
         from openfollow import net_utils
 
-        # Pinned iface is down → falls back to the primary, status "primary".
-        monkeypatch.setattr(net_utils, "resolve_source_ip", lambda iface, *, fallback=True: ("192.168.1.9", "primary"))
+        monkeypatch.setattr(
+            net_utils,
+            "resolve_plane_source_ip",
+            lambda pin, station="": ("", "down"),
+        )
         monkeypatch.setattr(services_module, "OtpServer", _FakeOtpServer)
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level("ERROR"):
             services.init_otp()
-        # Output stays alive on the fallback IP, with a warning about the dead pin.
-        assert services._app._otp_server._source_ip == "192.168.1.9"
-        assert any("otp_output.source_iface" in r.message for r in caplog.records)
+        # Not started at all. Constructing it with "" would bind via the OS
+        # routing table, which is the leak the pin exists to prevent.
+        assert services._app._otp_server is None
+        record = next(r for r in caplog.records if "otp_output.source_iface" in r.message)
+        assert record.levelname == "ERROR"
+        # Names the interface the operator configured, not the one it fell to.
+        assert "eth9_gone" in record.message
 
 
 # --------------------------------------------------------------------------- #
@@ -1717,14 +1788,19 @@ class TestApplyOtpOutputChange:
     """Four-state matrix: (currently_running × new_enabled)."""
 
     @pytest.fixture(autouse=True)
-    def _stub_resolve_source_ip(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Keep the forward-restart iface→IP resolution hermetic."""
+    def _stub_resolve_plane_source_ip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Keep the forward-restart iface→IP resolution hermetic.
+
+        Stubs the resolver the OTP path actually calls – stubbing
+        ``resolve_source_ip`` instead left these tests resolving a real host
+        address and opening a real UDP socket.
+        """
         from openfollow import net_utils
 
         monkeypatch.setattr(
             net_utils,
-            "resolve_source_ip",
-            lambda iface, *, fallback=True: ("", "none"),
+            "resolve_plane_source_ip",
+            lambda pin, station="": ("", "none"),
         )
 
     def _enabled_cfg(self, **overrides: Any) -> OtpOutputConfig:
@@ -3817,3 +3893,275 @@ class TestSwapDetector:
 
         with pytest.raises(RuntimeError, match="not initialised"):
             services.swap_detector(new_cfg)
+
+
+# --------------------------------------------------------------------------- #
+# apply_station_iface_change – planes that inherit the station interface
+# --------------------------------------------------------------------------- #
+
+
+class TestApplyStationIfaceChange:
+    """Only planes with a blank pin follow the station default; a plane with
+    its own pin must not be touched when the station moves."""
+
+    def _services_with_otp(self, services: AppRuntimeServices, source_iface: str, *, enabled: bool = True):
+        from dataclasses import replace
+
+        services._app._config = replace(
+            services._app._config,
+            otp_output=OtpOutputConfig(
+                enabled=enabled,
+                system_number=1,
+                port=5568,
+                source_iface=source_iface,
+            ),
+        )
+        calls: list[OtpOutputConfig] = []
+        services.apply_otp_output_change = calls.append  # type: ignore[method-assign]
+        return calls
+
+    def test_blank_pin_is_repointed(self, services: AppRuntimeServices) -> None:
+        services._app._otp_server = _FakeOtpServer()
+        calls = self._services_with_otp(services, "")
+        services.apply_station_iface_change()
+        assert len(calls) == 1
+
+    def test_own_pin_is_left_alone(self, services: AppRuntimeServices) -> None:
+        """OTP pinned to its own interface is unaffected by the station moving –
+        repointing it would silently override the operator's choice."""
+        services._app._otp_server = _FakeOtpServer()
+        calls = self._services_with_otp(services, "eth1")
+        services.apply_station_iface_change()
+        assert calls == []
+
+    def test_disabled_output_is_left_alone(self, services: AppRuntimeServices) -> None:
+        services._app._otp_server = _FakeOtpServer()
+        calls = self._services_with_otp(services, "", enabled=False)
+        services.apply_station_iface_change()
+        assert calls == []
+
+    def test_no_running_server_is_a_no_op(self, services: AppRuntimeServices) -> None:
+        services._app._otp_server = None
+        calls = self._services_with_otp(services, "")
+        services.apply_station_iface_change()
+        assert calls == []
+
+
+class TestOtpLiveRestartOnADownInterface:
+    """The live path has the same hole as init: restarting with "" rebinds via
+    the OS routing table, so a save while the interface is dark would move the
+    output rather than stop it."""
+
+    def test_stops_instead_of_restarting(self, services: AppRuntimeServices, monkeypatch) -> None:
+        from openfollow import net_utils
+
+        monkeypatch.setattr(
+            net_utils,
+            "resolve_plane_source_ip",
+            lambda pin, station="": ("", "down"),
+        )
+
+        class _Server:
+            def __init__(self) -> None:
+                self.stopped = 0
+                self.restarts = 0
+                self._system_number = 1
+                self._port = 5568
+                self._source_ip = "192.168.1.5"
+                self._priority = 100
+
+            def stop(self) -> None:
+                self.stopped += 1
+
+            def restart(self, **_kwargs: Any) -> None:
+                self.restarts += 1
+
+        server = _Server()
+        services._app._otp_server = server
+        services.apply_otp_output_change(
+            OtpOutputConfig(enabled=True, system_number=1, port=5568, source_iface="eth_gone")
+        )
+        assert (server.stopped, server.restarts) == (1, 0)
+
+
+class TestStationIfaceHotReloadFailsClosed:
+    """A live Save must behave the same as a reboot on the same config.
+
+    Startup refuses to start PSN when the configured station interface has no
+    address. The hot-reload path used to resolve through the fail-open chain,
+    so the identical config moved PSN onto the OS-primary interface after a
+    Save and stopped it after a restart - and the panel meanwhile rendered
+    "<iface> is down".
+    """
+
+    def _apply_iface_change(
+        self,
+        services: AppRuntimeServices,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        new_iface: str,
+        new_mcast: str | None = None,
+    ) -> tuple[list[str], list[str]]:
+        """Drive the dispatcher for a station-interface change on a host where
+        ``new_iface`` does not exist. Returns (rebind calls, suspend calls)."""
+        from openfollow import net_utils
+
+        monkeypatch.setattr(net_utils.psutil, "net_if_addrs", dict)
+        monkeypatch.setattr(net_utils, "get_primary_local_ipv4", lambda default="": "10.0.0.1")
+
+        rebinds: list[str] = []
+        suspends: list[str] = []
+        monkeypatch.setattr(
+            services,
+            "apply_psn_source_ip_change",
+            lambda ip, **_kw: rebinds.append(ip),
+        )
+        monkeypatch.setattr(services, "suspend_psn_planes", lambda: suspends.append("suspended"))
+        monkeypatch.setattr(services, "apply_station_iface_change", lambda: None)
+
+        app = services._app
+        app._runtime_services = services
+        app._refresh_psn_source_advisory = lambda: None  # type: ignore[method-assign]
+        new_cfg = replace(
+            app._config,
+            psn_source_iface=new_iface,
+            **({"psn_mcast_ip": new_mcast} if new_mcast else {}),
+        )
+        apply_runtime_config_changes(app, new_cfg)
+        return rebinds, suspends
+
+    def test_down_iface_suspends_instead_of_rebinding(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rebinds, suspends = self._apply_iface_change(services, monkeypatch, new_iface="ghost0")
+        assert suspends == ["suspended"]
+        assert rebinds == [], f"PSN was rebound to {rebinds!r} instead of stopping"
+
+    def test_down_iface_suspends_on_the_combined_mcast_path(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Changing the multicast group in the same Save must not reopen the
+        fall-through the single-field path just closed."""
+        rebinds, suspends = self._apply_iface_change(
+            services,
+            monkeypatch,
+            new_iface="ghost0",
+            new_mcast="236.10.10.11",
+        )
+        assert suspends == ["suspended"]
+        assert rebinds == []
+
+    def test_a_live_interface_still_rebinds(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The fail-closed branch must not swallow the normal case."""
+        import socket
+        from types import SimpleNamespace
+
+        from openfollow import net_utils
+
+        monkeypatch.setattr(
+            net_utils.psutil,
+            "net_if_addrs",
+            lambda: {"eth9": [SimpleNamespace(family=socket.AF_INET, address="172.16.9.9")]},
+        )
+        rebinds: list[str] = []
+        suspends: list[str] = []
+        monkeypatch.setattr(services, "apply_psn_source_ip_change", lambda ip, **_kw: rebinds.append(ip))
+        monkeypatch.setattr(services, "suspend_psn_planes", lambda: suspends.append("suspended"))
+        monkeypatch.setattr(services, "apply_station_iface_change", lambda: None)
+        app = services._app
+        app._runtime_services = services
+        app._refresh_psn_source_advisory = lambda: None  # type: ignore[method-assign]
+        apply_runtime_config_changes(app, replace(app._config, psn_source_iface="eth9"))
+        assert rebinds == ["172.16.9.9"]
+        assert suspends == []
+
+
+class TestSuspendPsnPlanes:
+    def test_stops_both_directions(self, services: AppRuntimeServices) -> None:
+        """Both sides stop, or the station answers on one interface while
+        advertising another."""
+
+        class _Stoppable:
+            def __init__(self) -> None:
+                self.stopped = False
+
+            def stop(self) -> None:
+                self.stopped = True
+
+        server = _Stoppable()
+        receiver = _Stoppable()
+        services._app._server = server  # type: ignore[assignment]
+        services._app._psn_receiver = receiver  # type: ignore[assignment]
+        services.suspend_psn_planes()
+        assert server.stopped is True
+        assert receiver.stopped is True
+
+    def test_tolerates_planes_that_never_started(self, services: AppRuntimeServices) -> None:
+        services._app._server = None
+        services._app._psn_receiver = None
+        services.suspend_psn_planes()  # must not raise
+
+
+class TestStationFollowersDoNotBindOnADownInterface:
+    """``_resolved_source_ip()`` collapses "configured but down" into ``""``,
+    and every socket reads an empty source as auto-detect.
+
+    PSN output already refused to start in that state, but the receiver and the
+    marker-catalog sync took the collapsed value - so a station whose interface
+    was down stopped sending while still joining the multicast group, and
+    trading marker names with peers, on whatever interface the OS picked. Those
+    are the surfaces that carry this station's identity.
+    """
+
+    @staticmethod
+    def _down_station(services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch) -> None:
+        services._app._config = replace(services._app._config, psn_source_iface="ghost0")
+        from openfollow import net_utils
+
+        monkeypatch.setattr(net_utils.psutil, "net_if_addrs", dict)
+        monkeypatch.setattr(net_utils, "get_primary_local_ipv4", lambda default="": "10.0.0.1")
+
+    def test_psn_receiver_does_not_start(self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._down_station(services, monkeypatch)
+        built: list[object] = []
+        monkeypatch.setattr(
+            services_module,
+            "PsnReceiver",
+            lambda **kw: built.append(kw) or SimpleNamespace(start=lambda: None),
+        )
+        services._app._psn_receiver = None
+        services.init_psn_receiver()
+        assert built == [], f"receiver was constructed with {built!r}"
+        assert services._app._psn_receiver is None
+
+    def test_psn_receiver_still_starts_on_a_live_interface(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal must not swallow the ordinary case."""
+        from openfollow import net_utils
+
+        services._app._config = replace(services._app._config, psn_source_iface="eth0")
+        monkeypatch.setattr(
+            net_utils.psutil,
+            "net_if_addrs",
+            lambda: {"eth0": [SimpleNamespace(family=socket.AF_INET, address="192.168.9.9")]},
+        )
+        built: list[dict] = []
+        monkeypatch.setattr(
+            services_module,
+            "PsnReceiver",
+            lambda **kw: built.append(kw) or SimpleNamespace(start=lambda: None),
+        )
+        services.init_psn_receiver()
+        assert [k["source_ip"] for k in built] == ["192.168.9.9"]
+
+    def test_resolved_source_ip_still_collapses_for_display_callers(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The stats IP and the online-sync worker tolerate an unknown address;
+        only the binding callers need the distinction."""
+        self._down_station(services, monkeypatch)
+        assert services._resolved_source_ip() == ""
+        assert services.station_source_ip_or_none() is None

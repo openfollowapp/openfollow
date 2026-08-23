@@ -74,6 +74,7 @@ class FakeNetwork:
         self.renewed: list[str] = []
         self.apply_result = ApplyResult(ok=True)
         self.renew_result = ApplyResult(ok=True)
+        self.provide_rows = True
 
     def config_provider(self, iface: str | None = None) -> dict | None:
         if not self.interfaces:
@@ -92,6 +93,28 @@ class FakeNetwork:
             "dns": list(self.dns),
             "lease_display": self.lease_display,
         }
+
+    def interfaces_provider(self) -> list[dict]:
+        """What the services layer emits for the interface list.
+
+        Wired into the fixture so the list tests exercise the real row shape
+        instead of the synthesised fallback ``_build_network_form_context``
+        falls back to when no provider is present. Set ``provide_rows=False``
+        to exercise that fallback.
+        """
+        if not self.provide_rows:
+            return []
+        return [
+            {
+                "name": name,
+                "is_up": True,
+                "address": self.address if name == self.interfaces[0] else "",
+                "prefix": self.prefix if name == self.interfaces[0] else None,
+                "subnet_mask": self.subnet_mask if name == self.interfaces[0] else "",
+                "method": self.method,
+            }
+            for name in self.interfaces
+        ]
 
     def apply_handler(self, iface: str, config: object) -> ApplyResult:
         self.applied.append((iface, config))
@@ -171,6 +194,7 @@ def net_server(tmp_path, monkeypatch):
         port=port,
         system_name="TestSystem",
         network_config_provider=fake.config_provider,
+        network_interfaces_provider=fake.interfaces_provider,
         network_apply_handler=fake.apply_handler,
         network_renew_handler=fake.renew_handler,
     )
@@ -586,3 +610,197 @@ def test_renew_network_swallows_handler_error(tmp_path) -> None:
     srv = _make_server(tmp_path, network_renew_handler=_boom)
     result = srv.renew_network("eth0")
     assert result.ok is False and "nope" in result.message
+
+
+# --------------------------------------------------------------------------- #
+# Interface list (replaced the single Interface picker)
+# --------------------------------------------------------------------------- #
+
+
+def test_status_lists_every_interface(net_server) -> None:
+    """The old picker showed one adapter at a time, so a multi-NIC station's
+    layout was invisible. Every interface is now on screen at once."""
+    _fake, base = net_server
+    status, body = _get(base, "/section/network/status")
+    assert status == 200
+    assert "Interfaces on this station" in body
+    assert "<code>eth0</code>" in body
+    assert "<code>wlan0</code>" in body
+
+
+def test_active_interface_is_expanded_and_others_offer_configure(net_server) -> None:
+    """One interface is always the current one, so its detail is open; the
+    others carry the button that moves the expansion to them."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/status")
+    # eth0 is FakeNetwork's active interface: expanded, so no button of its own.
+    assert "Configure <code>eth0</code>" in body
+    # Assert on the button, not the bare path – the 5s poll also carries the
+    # expanded interface in its URL, so a substring check would match that.
+    assert '/section/network/status/wlan0"' in body
+    buttons = [seg for seg in body.split("<button") if ">Configure</button>" in seg]
+    assert any("/section/network/status/wlan0" in b for b in buttons)
+    assert not any("/section/network/status/eth0" in b for b in buttons)
+
+
+def test_view_mode_can_expand_an_interface_read_only(net_server) -> None:
+    """DNS and lease live in the detail, so View mode has to be able to open a
+    row - otherwise reading a value would mean entering Edit mode."""
+    _fake, base = net_server
+    status, body = _get(base, "/section/network/status/wlan0")
+    assert status == 200
+    assert "Configure <code>wlan0</code>" in body
+    assert "disabled" in body
+    assert ">Apply<" not in body
+
+
+def test_configure_expands_the_named_interface(net_server) -> None:
+    """The interface is named in the path, so which adapter is being edited
+    can't be ambiguous."""
+    _fake, base = net_server
+    status, body = _get(base, "/section/network/edit/wlan0")
+    assert status == 200
+    assert "Configure <code>wlan0</code>" in body
+    # ... and the form still carries it to /apply exactly as before.
+    assert 'name="iface" value="wlan0"' in body
+
+
+def test_unknown_interface_falls_back_to_active(net_server) -> None:
+    """A stale or forged interface name must not reach the privileged write
+    path – it sanitises to the active interface, as the picker did."""
+    _fake, base = net_server
+    status, body = _get(base, "/section/network/edit/../../etc/passwd")
+    assert status in (200, 404)
+    if status == 200:
+        assert 'name="iface" value="eth0"' in body
+
+
+def test_no_interfaces_renders_empty_list_not_a_crash(tmp_path, monkeypatch) -> None:
+    """A host with no adapters must render the card, not raise."""
+    for attr in ("BeaconSender", "BeaconReceiver"):
+        monkeypatch.setattr(getattr(discovery_module, attr), "start", lambda self: None)
+        monkeypatch.setattr(getattr(discovery_module, attr), "stop", lambda self: None)
+    fake = FakeNetwork(interfaces=())
+    port = _find_free_tcp_port()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+    server = ConfigWebServer(
+        config_path=str(config_path),
+        host="127.0.0.1",
+        port=port,
+        system_name="TestSystem",
+        network_config_provider=fake.config_provider,
+    )
+    server.start()
+    try:
+        assert _wait_for_port(port)
+        status, body = _get(f"http://127.0.0.1:{port}", "/section/network/status")
+        assert status == 200
+        assert "unavailable" in body
+    finally:
+        server.stop()
+
+
+def test_interface_list_uses_the_richer_provider_when_wired(tmp_path, monkeypatch) -> None:
+    """With the multi-interface provider wired, every row carries its own
+    address and method – not just the active one."""
+    for attr in ("BeaconSender", "BeaconReceiver"):
+        monkeypatch.setattr(getattr(discovery_module, attr), "start", lambda self: None)
+        monkeypatch.setattr(getattr(discovery_module, attr), "stop", lambda self: None)
+    fake = FakeNetwork()
+    calls: list[int] = []
+
+    def _interfaces() -> list[dict]:
+        calls.append(1)
+        return [
+            {"name": "eth0", "address": "10.0.0.5", "prefix": 24, "method": "dhcp", "is_up": True},
+            {"name": "wlan0", "address": "172.16.4.20", "prefix": 24, "method": "static", "is_up": True},
+        ]
+
+    port = _find_free_tcp_port()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+    server = ConfigWebServer(
+        config_path=str(config_path),
+        host="127.0.0.1",
+        port=port,
+        system_name="TestSystem",
+        network_config_provider=fake.config_provider,
+        network_interfaces_provider=_interfaces,
+    )
+    server.start()
+    try:
+        assert _wait_for_port(port)
+        base = f"http://127.0.0.1:{port}"
+        _status, body = _get(base, "/section/network/status")
+        # wlan0 is not the active interface, yet its own address is shown.
+        assert "172.16.4.20" in body
+        assert "Static" in body
+        # A second render inside the TTL window reuses the snapshot rather
+        # than shelling out to the backend again.
+        before = len(calls)
+        _get(base, "/section/network/status")
+        assert len(calls) == before
+        # Scan bypasses the cache so a freshly plugged NIC appears at once.
+        _get(base, "/section/network/status?scan=1")
+        assert len(calls) == before + 1
+    finally:
+        server.stop()
+
+
+# --------------------------------------------------------------------------- #
+# Expanded-row survival: poll, Cancel and Scan must not move the expansion
+# --------------------------------------------------------------------------- #
+
+
+def test_view_poll_carries_the_expanded_interface(net_server) -> None:
+    """The 5s poll used to GET the iface-less route, so a row opened in View
+    mode collapsed back to the active interface every five seconds and could
+    not be read."""
+    _fake, base = net_server
+    status, body = _get(base, "/section/network/status/wlan0")
+    assert status == 200
+    assert "/section/network/status/wlan0" in body
+    assert "every 5s" in body
+
+
+def test_cancel_returns_to_view_mode_on_the_same_row(net_server) -> None:
+    """Cancel targeted /section/network/edit, which re-rendered the editor –
+    leaving Edit mode with no exit short of a page reload."""
+    _fake, base = net_server
+    status, body = _get(base, "/section/network/edit/wlan0")
+    assert status == 200
+    cancel = body[body.index(">Cancel<") - 400 : body.index(">Cancel<")]
+    assert "/section/network/status/wlan0" in cancel
+    assert "/section/network/edit" not in cancel
+
+
+def test_scan_keeps_the_open_interface(net_server) -> None:
+    """Scan dropped the iface segment, so re-reading the adapter list moved the
+    expansion and discarded anything typed into the editor."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/edit/wlan0")
+    assert "/section/network/edit/wlan0?scan=1" in body
+
+
+def test_interface_rows_come_from_the_provider(net_server) -> None:
+    """Exercises the real provider row shape rather than the synthesised
+    fallback the card uses when no provider is wired."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/status")
+    assert "eth0" in body and "wlan0" in body
+    assert "10.0.0.5" in body
+
+
+def test_card_synthesises_rows_when_no_interface_provider_is_wired(net_server) -> None:
+    """A build without the richer provider (or one whose backend read failed)
+    still has to render every adapter - the card degrades to the single-
+    interface snapshot rather than showing an empty list."""
+    fake, base = net_server
+    fake.provide_rows = False
+    # ?scan=1 bypasses the TTL cache the earlier requests populated.
+    status, body = _get(base, "/section/network/status?scan=1")
+    assert status == 200
+    assert "eth0" in body and "wlan0" in body
+    # Only the open interface carries detail on this path.
+    assert "10.0.0.5" in body

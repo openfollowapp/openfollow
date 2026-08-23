@@ -2852,15 +2852,21 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     psn_mcast_changed = new_psn_mcast_ip != app._config.psn_mcast_ip
     if psn_iface_changed:
         # Resolve the bind IP up-front so receiver/server rebind to the same
-        # value ``init_psn`` uses. Fallback matches startup so clearing the pin
-        # still binds to a real interface instead of going dead.
-        from openfollow.net_utils import resolve_source_ip
+        # value ``init_psn`` uses – through the fail-closed resolver, because a
+        # configured interface with no address must stop PSN rather than move
+        # it. Falling through here would make a live Save behave differently
+        # from a reboot on the same config, and would put stage data on the
+        # network the operator just deselected.
+        from openfollow.net_utils import resolve_plane_source_ip
 
-        new_resolved_source_ip, _new_resolve_status = resolve_source_ip(
+        new_resolved_source_ip, new_resolve_status = resolve_plane_source_ip(
+            "",
             new_psn_source_iface,
         )
     else:
         new_resolved_source_ip = ""
+        new_resolve_status = "none"
+    psn_iface_down = psn_iface_changed and new_resolve_status == "down"
 
     if psn_mcast_changed and psn_iface_changed:
         old_psn_mcast_ip = app._config.psn_mcast_ip
@@ -2869,9 +2875,13 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         app._config.psn_source_iface = new_psn_source_iface
         if not _apply(
             "psn_network",
-            lambda: app._runtime_services.apply_psn_source_ip_change(
-                new_resolved_source_ip,
-                new_mcast_ip=new_psn_mcast_ip,
+            (
+                app._runtime_services.suspend_psn_planes
+                if psn_iface_down
+                else lambda: app._runtime_services.apply_psn_source_ip_change(
+                    new_resolved_source_ip,
+                    new_mcast_ip=new_psn_mcast_ip,
+                )
             ),
         ):
             app._config.psn_mcast_ip = old_psn_mcast_ip
@@ -2937,14 +2947,29 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         app._config.psn_source_iface = new_psn_source_iface
         if not _apply(
             "psn_source_iface",
-            lambda: app._runtime_services.apply_psn_source_ip_change(
-                new_resolved_source_ip,
+            (
+                app._runtime_services.suspend_psn_planes
+                if psn_iface_down
+                else lambda: app._runtime_services.apply_psn_source_ip_change(
+                    new_resolved_source_ip,
+                )
             ),
         ):
             app._config.psn_source_iface = old_psn_source_iface
         # Re-sync the stale-iface advisory so the PSN web partial tracks the
         # now-active pin (cleared on a honoured pin, restored on rollback).
         app._refresh_psn_source_advisory()
+
+    # Planes with a blank pin follow the station interface, but each is gated
+    # on its own dataclass differing – which it doesn't when only the Station
+    # default row moved. Covers both iface paths above; the equality check
+    # skips it when either rolled back. Runs on the same pass, so the panel's
+    # address column never advertises an interface a plane isn't on yet.
+    if psn_iface_changed and app._config.psn_source_iface == new_psn_source_iface:
+        _apply(
+            "station_iface_followers",
+            app._runtime_services.apply_station_iface_change,
+        )
 
     # Video pipeline live-swap. Change detection is plugin-driven via the
     # active source's ``config_changed(old, new)`` – covers ``video_source_type``

@@ -54,6 +54,11 @@ _FALLBACK_PORTS: tuple[int, ...] = (8080, 2010)
 # paths and the resolver enumerates interfaces, so an IP change is picked up
 # within this window rather than re-resolving on every request.
 _LOCAL_IP_REFRESH_TTL = 5.0
+# How long the Network Settings interface list is reused before re-reading.
+# Enumerating every adapter costs one backend call each (an ``nmcli``
+# subprocess on the NetworkManager backend), and addresses don't change on a
+# sub-second cadence. ``Scan`` bypasses this.
+_NETWORK_IFACES_TTL = 5.0
 
 _REQUEST_BUSY_BODY = b"Server busy; retry"
 _REQUEST_BUSY_RESPONSE = (
@@ -64,9 +69,30 @@ _REQUEST_BUSY_RESPONSE = (
 )
 
 
+# WSGI environ key carrying the local (server-side) address of the accepted
+# connection, i.e. the station address this request actually arrived on.
+LOCAL_ADDR_ENVIRON_KEY = "openfollow.local_addr"
+
+
 class _QuietHandler(WSGIRequestHandler):
     def log_request(self, *args: object, **kwargs: object) -> None:
         pass
+
+    def get_environ(self) -> dict[str, Any]:
+        """Add the connection's local address to the environ.
+
+        Needed to answer "which interface did this operator reach us on",
+        which guards them from editing that interface's address and cutting
+        their own session. The Host header can't answer it: with a wildcard
+        bind the operator usually arrives via ``<slug>.local``, so the header
+        holds a name, not the address avahi resolved it to.
+        """
+        environ: dict[str, Any] = super().get_environ()
+        try:
+            environ[LOCAL_ADDR_ENVIRON_KEY] = self.connection.getsockname()[0]
+        except OSError:  # pragma: no cover - socket already torn down
+            pass
+        return environ
 
 
 class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
@@ -111,6 +137,15 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
             super().process_request_thread(request, client_address)
         finally:
             sem.release()
+
+
+def _copy_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy the list *and* each row.
+
+    Copying only the list leaves every caller holding the cached dicts, so a
+    template helper decorating a row corrupts what the next render reads.
+    """
+    return [dict(row) for row in rows]
 
 
 class ConfigWebServer:
@@ -162,6 +197,9 @@ class ConfigWebServer:
         network_state_provider: Callable[[], dict[str, Any] | None] | None = None,
         # Web write path: config snapshot + apply/renew handlers; optional for tests.
         network_config_provider: (Callable[[str | None], dict[str, Any] | None] | None) = None,
+        # Every interface at once, for the Network Settings list. Costs one
+        # backend call per interface, so the result is TTL-cached here.
+        network_interfaces_provider: (Callable[[], list[dict[str, Any]]] | None) = None,
         network_apply_handler: Callable[[str, Any], ApplyResult] | None = None,
         network_renew_handler: Callable[[str], ApplyResult] | None = None,
         # Privilege capability snapshot for the diagnostics bundle; optional for tests.
@@ -229,6 +267,13 @@ class ConfigWebServer:
         self._log_ring = log_ring
         self._network_state_provider = network_state_provider
         self._network_config_provider = network_config_provider
+        self._network_interfaces_provider = network_interfaces_provider
+        # TTL cache for the interface list: enumerating every adapter's method
+        # costs one backend call each, and the General tab re-renders often.
+        # ``Scan`` bypasses it, so a freshly plugged NIC never needs a wait.
+        self._network_ifaces_cache: list[dict[str, Any]] = []
+        self._network_ifaces_ts = 0.0  # monotonic; 0 = never populated
+        self._network_ifaces_lock = threading.Lock()
         self._network_apply_handler = network_apply_handler
         self._network_renew_handler = network_renew_handler
         self._psn_source_advisory_provider = psn_source_advisory_provider
@@ -360,6 +405,38 @@ class ConfigWebServer:
         except Exception:  # noqa: BLE001
             logger.exception("Network config provider raised")
             return None
+
+    def get_network_interfaces(self, *, force: bool = False) -> list[dict[str, Any]]:
+        """Every interface with address / method / up-state, TTL-cached.
+
+        ``force=True`` is the ``Scan`` path: it re-reads immediately so a
+        just-plugged adapter (or a just-created VLAN) shows up without waiting
+        out the TTL.
+
+        The provider is called outside the lock: it shells out per interface,
+        and holding the lock across that would serialise every render behind
+        one slow backend read. A concurrent caller may duplicate the work, but
+        both write the same snapshot, which is cheaper than the contention.
+        """
+        if self._network_interfaces_provider is None:
+            return []
+        now = time.monotonic()
+        if not force:
+            with self._network_ifaces_lock:
+                if self._network_ifaces_ts and now - self._network_ifaces_ts < _NETWORK_IFACES_TTL:
+                    return _copy_rows(self._network_ifaces_cache)
+        try:
+            rows = self._network_interfaces_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("Network interfaces provider raised")
+            # Serve the last good snapshot rather than blanking the list on a
+            # transient backend failure.
+            with self._network_ifaces_lock:
+                return _copy_rows(self._network_ifaces_cache)
+        with self._network_ifaces_lock:
+            self._network_ifaces_cache = _copy_rows(rows)
+            self._network_ifaces_ts = time.monotonic()
+        return _copy_rows(rows)
 
     def apply_network(self, iface: str, config: Any) -> ApplyResult:
         """Apply IPv4 config to iface; always returns ApplyResult."""

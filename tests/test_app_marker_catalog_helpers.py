@@ -326,7 +326,7 @@ class TestInitMarkerCatalogSyncOnChange:
     """Drive the ``_on_change`` closure that wires sync receiver updates
     back into the running PSN server + the on-disk catalog."""
 
-    def _build_fake(self, tmp_path, *, server=None, controlled=None):
+    def _build_fake(self, tmp_path, *, server=None, controlled=None, station_ip="10.0.0.5"):
         cfg = AppConfig(
             controlled_marker_ids=controlled or [1, 2],
             markers_catalog_path=str(tmp_path / "markers.toml"),
@@ -335,10 +335,12 @@ class TestInitMarkerCatalogSyncOnChange:
         catalog = MarkerCatalog()
         catalog.upsert(1, "Renamed", "#ff0000", updated_at=10.0)
         catalog.upsert(2, "AlsoRenamed", "#00ff00", updated_at=10.0)
-        # _init_marker_catalog_sync reads iface IP via _resolved_source_ip.
-        # Stub to stable value to avoid host network dependency.
+        # _init_marker_catalog_sync reads the iface IP via
+        # station_source_ip_or_none. Stub to a stable value to avoid a host
+        # network dependency; None means the station interface is down.
         runtime_services = types.SimpleNamespace(
             _resolved_source_ip=lambda: "10.0.0.5",
+            station_source_ip_or_none=lambda: station_ip,
         )
         fake = types.SimpleNamespace(
             _config=cfg,
@@ -564,8 +566,10 @@ class TestPruneSelectionIds:
 
 
 class TestInitMarkerCatalogSyncIfaceResolution:
-    """Regression for one-way-multicast bug: without resolving iface IP,
-    kernel picks arbitrary outbound. Now uses _resolved_source_ip."""
+    """Regression for the one-way-multicast bug: without resolving the iface
+    IP the kernel picks an arbitrary outbound interface. Resolution goes
+    through ``station_source_ip_or_none`` so a down interface stops sync
+    rather than handing it an empty address, which means the same thing."""
 
     def _build_fake(self, tmp_path, *, resolved_ip: str = "10.0.0.42"):
         cfg = AppConfig(
@@ -576,6 +580,7 @@ class TestInitMarkerCatalogSyncIfaceResolution:
         catalog = MarkerCatalog()
         runtime_services = types.SimpleNamespace(
             _resolved_source_ip=lambda: resolved_ip,
+            station_source_ip_or_none=lambda: resolved_ip,
         )
         fake = types.SimpleNamespace(
             _config=cfg,
@@ -626,3 +631,60 @@ class TestInitMarkerCatalogSyncIfaceResolution:
         fake = self._build_fake(tmp_path, resolved_ip="192.168.0.50")
         captured = self._capture_kwargs(fake, monkeypatch)
         assert captured["iface_ip"] == "192.168.0.50"
+
+
+class TestMarkerCatalogSyncFollowsTheStationInterface:
+    """Sync carries this station's marker names to its peers, so it follows the
+    station interface and stops with it.
+
+    It used to take ``_resolved_source_ip()``, which collapses "configured but
+    down" into ``""`` - and an empty iface_ip joins the multicast group on
+    whatever interface the OS picks, so a station whose interface was gone kept
+    exchanging names over a network nobody chose.
+    """
+
+    def _fake(self, tmp_path, station_ip):
+        cfg = AppConfig(
+            controlled_marker_ids=[1],
+            markers_catalog_path=str(tmp_path / "markers.toml"),
+            station_id="station-A",
+        )
+        fake = types.SimpleNamespace(
+            _config=cfg,
+            _config_path=str(tmp_path / "config.toml"),
+            _marker_catalog=MarkerCatalog(),
+            _server=None,
+            _controlled_ids=[1],
+            _viewer_ids=[],
+            _marker_catalog_sync=None,
+            _runtime_services=types.SimpleNamespace(
+                _resolved_source_ip=lambda: "",
+                station_source_ip_or_none=lambda: station_ip,
+            ),
+        )
+        _bind(fake, "_marker_catalog_path", "_prune_selection_ids")
+        return fake
+
+    def _run(self, fake, monkeypatch):
+        built: list[dict] = []
+
+        class FakeSync:
+            def __init__(self, *args, **kwargs):
+                built.append(kwargs)
+
+            def start(self):
+                pass
+
+        monkeypatch.setattr("openfollow.marker_catalog.sync.MarkerCatalogSync", FakeSync)
+        OpenFollowApp._init_marker_catalog_sync(fake)  # type: ignore[arg-type]
+        return built
+
+    def test_does_not_start_when_the_interface_is_down(self, tmp_path, monkeypatch) -> None:
+        fake = self._fake(tmp_path, None)
+        assert self._run(fake, monkeypatch) == []
+        assert fake._marker_catalog_sync is None
+
+    def test_starts_bound_to_the_station_address(self, tmp_path, monkeypatch) -> None:
+        fake = self._fake(tmp_path, "10.20.0.5")
+        built = self._run(fake, monkeypatch)
+        assert [k["iface_ip"] for k in built] == ["10.20.0.5"]

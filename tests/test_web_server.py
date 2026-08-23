@@ -624,6 +624,257 @@ def test_network_interfaces_by_name_empty_current_does_not_fall_back_to_psn(
     assert "selected" not in body
 
 
+def test_psn_save_preserves_pin_now_that_the_picker_moved(live_server) -> None:
+    """The PSN section no longer posts ``psn_source_iface`` – its picker moved
+    to Interface Assignment. Saving PSN must leave the pin alone rather than
+    clearing it, which is the silent-data-loss trap of dropping a form field."""
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_source_iface = "eth0"
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(
+        base,
+        "/section/psn",
+        {"psn_system_name": "Stage Left", "psn_mcast_ip": "236.10.10.10"},
+    )
+    assert status == 200
+
+    saved = load_config(server.config_path)
+    assert saved.psn_system_name == "Stage Left"
+    assert saved.psn_source_iface == "eth0"
+
+
+def test_otp_save_preserves_pin_now_that_the_picker_moved(live_server) -> None:
+    """Same guard for OTP: its Save posts no ``source_iface`` any more."""
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.otp_output.source_iface = "eth1"
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(
+        base,
+        "/section/otp_output",
+        {"port": "5568", "system_number": "3", "priority": "100"},
+    )
+    assert status == 200
+
+    saved = load_config(server.config_path)
+    assert saved.otp_output.system_number == 3
+    assert saved.otp_output.source_iface == "eth1"
+
+
+def test_interface_assignment_renders_rows_with_resolved_addresses(
+    live_server,
+    monkeypatch,
+) -> None:
+    """The panel shows where each plane will actually bind, including rows
+    left on "follow station" – an empty cell would hide the indirection."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.178.59")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_source_iface = "eth0"
+    cfg.otp_output.source_iface = "eth1"
+    save_config(cfg, server.config_path)
+
+    status, body = _get(base, "/section/interface_assignment")
+    assert status == 200
+    assert "Station default" in body
+    assert "OTP output" in body
+    # PSN follows the station pin and has no picker of its own.
+    assert "PSN in / out" in body
+    assert 'name="psn_source_iface"' in body
+    assert 'name="otp_output.source_iface"' in body
+    # Both resolved addresses are on screen: the station's and the OTP pin's.
+    assert "192.168.178.59" in body
+    assert "10.0.0.9" in body
+
+
+def test_interface_assignment_shows_a_down_interface_as_an_error(
+    live_server,
+    monkeypatch,
+) -> None:
+    """A configured interface with no address must not render as some other
+    interface's address – the plane will not send there."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {"eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.178.59")]},
+    )
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_source_iface = "eth0"
+    cfg.otp_output.source_iface = "eth_gone"
+    save_config(cfg, server.config_path)
+
+    status, body = _get(base, "/section/interface_assignment")
+    assert status == 200
+    # Scope to the OTP row: the station-following rows legitimately carry the
+    # station address, and it must not leak into OTP's cell.
+    otp_row = body[body.index("OTP output") :].split("</tr>", 1)[0]
+    assert "eth_gone is down" in otp_row
+    assert "192.168.178.59" not in otp_row
+
+
+def test_interface_assignment_scan_rerenders_the_panel(live_server) -> None:
+    """Scan re-renders instead of refreshing the pickers in place: an in-place
+    refresh re-marked the SAVED value as selected and silently discarded an
+    unsaved choice."""
+    _server, base = live_server
+    _status, body = _get(base, "/section/interface_assignment")
+    assert 'hx-get="/section/interface_assignment"' in body
+    assert 'hx-target="#interface-assignment-section"' in body
+    # The pickers load once and are not re-fetched by Scan.
+    assert "click from:#refresh-iface-assignment" not in body
+
+
+def test_interface_assignment_pickers_have_accessible_names(live_server) -> None:
+    """A <th scope="row"> names cells, not a nested control."""
+    _server, base = live_server
+    _status, body = _get(base, "/section/interface_assignment")
+    assert 'aria-label="Station default interface"' in body
+    assert 'aria-label="OTP output interface"' in body
+
+
+def test_protocol_sections_link_switches_to_the_general_tab(live_server) -> None:
+    """A bare href="#id" does nothing when the target sits in a display:none
+    tab, so the pointer had no effect at all."""
+    _server, base = live_server
+    for path in ("/section/psn", "/section/otp_output"):
+        _status, body = _get(base, path)
+        assert "goToSection('general', 'interface-assignment')" in body
+
+
+def test_interface_assignment_save_round_trips_to_disk(
+    live_server,
+    monkeypatch,
+) -> None:
+    """One POST writes pins that live on different owning dataclasses."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.178.59")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+    server, base = live_server
+
+    status, body = _post_form(
+        base,
+        "/section/interface_assignment",
+        {"psn_source_iface": "eth0", "otp_output.source_iface": "eth1"},
+    )
+    assert status == 200
+    assert "saved" in body
+
+    saved = load_config(server.config_path)
+    assert saved.psn_source_iface == "eth0"
+    assert saved.otp_output.source_iface == "eth1"
+
+
+def test_interface_assignment_save_can_clear_a_pin(
+    live_server,
+    monkeypatch,
+) -> None:
+    """Selecting "follow station interface" must undo a pin – otherwise a
+    plane can be moved onto its own NIC but never moved back."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {"eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.178.59")]},
+    )
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.otp_output.source_iface = "eth1"
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(
+        base,
+        "/section/interface_assignment",
+        {"psn_source_iface": "eth0", "otp_output.source_iface": ""},
+    )
+    assert status == 200
+    assert load_config(server.config_path).otp_output.source_iface == ""
+
+
+def test_network_interfaces_by_name_blank_station_relabels_empty_option(
+    live_server,
+    monkeypatch,
+) -> None:
+    """Per-plane pickers ask for ``?blank=station``: an empty pin there means
+    "follow the station interface", not "let the OS choose", and the label has
+    to say so or the indirection is invisible."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {"eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.178.59")]},
+    )
+    _server, base = live_server
+
+    status, body = _get(base, "/network/interfaces/by_name?blank=station&current=")
+    assert status == 200
+    assert "Follow station interface" in body
+    assert "Auto-detect" not in body
+
+
+def test_network_interfaces_by_name_unknown_blank_falls_back_to_auto_detect(
+    live_server,
+    monkeypatch,
+) -> None:
+    """The blank label is allow-listed, never interpolated – an unknown (or
+    crafted) ``?blank=`` renders the default wording rather than reaching the
+    HTML."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {"eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.178.59")]},
+    )
+    _server, base = live_server
+
+    status, body = _get(base, "/network/interfaces/by_name?blank=%3Cscript%3E&current=")
+    assert status == 200
+    assert "Auto-detect" in body
+    assert "<script>" not in body
+
+
 # ---------------------------------------------------------------------------
 # JSON API – shape and content
 # ---------------------------------------------------------------------------

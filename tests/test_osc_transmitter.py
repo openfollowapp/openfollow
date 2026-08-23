@@ -2962,11 +2962,10 @@ class TestFaderOnChangeDispatch:
         manager.process_pending_events()
         assert svc.calls == []
 
-    def test_throttle_drops_burst(self) -> None:
-        """Two events in quick succession at rate_hz=60 (~16.67 ms
-        spacing) – the second one falls inside the throttle window
-        and is dropped. The third one, after enough wall-clock
-        time, fires."""
+    def test_throttle_drops_burst(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """At rate_hz=60 (~16.67 ms) the second event falls inside the
+        throttle window and is dropped; a third past the window fires.
+        Drives the time source so the test is hermetic."""
         manager, svc = _manager(fader_values={1: 0.5})
         manager.restart(
             OscTransmittersConfig(
@@ -2975,15 +2974,19 @@ class TestFaderOnChangeDispatch:
                 ]
             )
         )
+        clock_holder = [1000.0]
+        monkeypatch.setattr(
+            "openfollow.osc.transmitter.time.monotonic",
+            lambda: clock_holder[0],
+        )
         manager._handle_fader_change(1, 0.4)
         manager.process_pending_events()
         assert len(svc.calls) == 1
-        # Same instant – throttle drops the second event.
+        clock_holder[0] += 0.01  # inside the window – dropped
         manager._handle_fader_change(1, 0.6)
         manager.process_pending_events()
         assert len(svc.calls) == 1
-        # Sleep past the throttle window.
-        time.sleep(0.02)
+        clock_holder[0] += 0.02  # past the window – fires
         manager._handle_fader_change(1, 0.7)
         manager.process_pending_events()
         assert len(svc.calls) == 2
@@ -3155,7 +3158,8 @@ class TestMarkerFaderOnChangeDispatch:
         manager.process_pending_events()
         assert svc.calls == []
 
-    def test_throttle_drops_burst(self) -> None:
+    def test_throttle_drops_burst(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Same window contract as the fader-index path, on its own counter."""
         manager, svc = _manager(
             markers={4: _FakeMarker((1.0, 2.0, 3.0))},
             marker_fader_values={4: 0.4},
@@ -3167,14 +3171,19 @@ class TestMarkerFaderOnChangeDispatch:
                 ]
             )
         )
+        clock_holder = [1000.0]
+        monkeypatch.setattr(
+            "openfollow.osc.transmitter.time.monotonic",
+            lambda: clock_holder[0],
+        )
         manager._handle_marker_fader_change(4, 0.4)
         manager.process_pending_events()
         assert len(svc.calls) == 1
-        # Same instant – throttle drops the second event.
+        clock_holder[0] += 0.01  # inside the window – dropped
         manager._handle_marker_fader_change(4, 0.6)
         manager.process_pending_events()
         assert len(svc.calls) == 1
-        time.sleep(0.02)
+        clock_holder[0] += 0.02  # past the window – fires
         manager._handle_marker_fader_change(4, 0.7)
         manager.process_pending_events()
         assert len(svc.calls) == 2

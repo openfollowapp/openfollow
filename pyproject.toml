@@ -36,8 +36,8 @@ dependencies = [
     # wheels (easyhid-ng -> cffi), loading the system ``libhidapi`` at runtime;
     # no on-device compile. openfollow/input/mouse3d.py imports it lazily and
     # fail-softs when the lib is absent, so this stays import-safe everywhere.
-    "pyspacemouse>=2.0.0",
-    "packaging>=26.2",
+    "pyspacemouse>=2.1.0",
+    "packaging>=26.3",
     # Render the bundled help ``.md`` docs to HTML for the web UI help drawer.
     # Pure-Python, no native deps (safe on the Pi). ``escape=True`` (see
     # ``openfollow/web/_md.py``) keeps the rendered fragment inert, so no HTML
@@ -51,7 +51,7 @@ detection = ["onnxruntime>=1.17", "opencv-python>=5.0.0.93"]
 # detector runs. Pulls torch, so it's a workstation-only extra, never required
 # at show time. Used by ``scripts/export_onnx.py`` and the web model-export
 # action; installed on demand from the detection UI.
-export = ["ultralytics>=8.4.105"]
+export = ["ultralytics>=8.4.123"]
 
 [project.scripts]
 openfollow = "openfollow.main:main"
@@ -84,12 +84,12 @@ include = [
 # producing a spurious reformat diff) on changes unrelated to the work at hand.
 # The ``ruff-pre-commit`` hook ``rev`` in ``.pre-commit-config.yaml`` is pinned
 # to the SAME version so the local hooks and CI never disagree. Bump together.
-ruff = "0.16.0"
+ruff = "0.16.3"
 pytest = "^9.1.1"
 pytest-cov = "^7.1"
 coverage = { extras = ["toml"], version = "^7.15" }
-pre-commit = "^4.6.1"
-mutmut = "^3.6"
+pre-commit = "^4.6.2"
+mutmut = "^3.7"
 mypy = "^2.3"
 
 # Static type checking: mypy --strict for all openfollow.* modules.
@@ -109,7 +109,7 @@ pip-audit = "^2.10.1"
 optional = true
 
 [tool.poetry.group.package-macos.dependencies]
-pyinstaller = ">=6.10"
+pyinstaller = ">=6.22.2"
 pyinstaller-hooks-contrib = ">=2024.9"
 
 # Linting: ruff check/format (faster pyflakes/pycodestyle/isort/pyupgrade bundle).

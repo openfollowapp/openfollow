@@ -179,9 +179,165 @@ class TestApplyIpv4:
         a, _captured, responses = adapter
         _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"], stdout="")
         _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
+        # Device absent from nmcli entirely: says to check the adapter, which
+        # is the only one of the three causes that fits an unknown device.
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="")
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is False
-        assert "No NetworkManager" in result.message
+        assert "is not present" in result.message
+
+
+class TestActionableMessages:
+    """Each cause needs a different operator action, so each needs its own
+    message - "no profile bound" described adapter state and told them nothing."""
+
+    def _no_profile(self, responses) -> None:
+        for argv in (
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"],
+            ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"],
+        ):
+            _set(responses, argv, stdout="")
+
+    def test_unmanaged_device_says_how_to_hand_it_to_networkmanager(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._no_profile(responses)
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:unmanaged\n")
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert result.ok is False
+        assert "not managed by NetworkManager" in result.message
+
+    def test_known_device_without_a_profile_says_how_to_get_one(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._no_profile(responses)
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:disconnected\n")
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert "No saved profile" in result.message
+        assert "Connect the cable once" in result.message
+
+    @pytest.mark.parametrize("device_list", ["", "eth1:connected\nwlan0:disconnected\n"])
+    def test_absent_device_says_to_check_the_adapter(self, adapter, device_list: str) -> None:
+        """Absent whether the device table is empty or simply lists others -
+        the second is the realistic case and used to fall through the loop."""
+        a, _captured, responses = adapter
+        self._no_profile(responses)
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout=device_list)
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert "is not present" in result.message
+
+    def test_an_unreadable_device_state_is_not_reported_as_absent(self, adapter, monkeypatch) -> None:
+        """nmcli timing out is not evidence the adapter is gone. Telling the
+        operator their plugged-in NIC "is not present" contradicts the card
+        they just clicked to get here."""
+        a, _captured, responses = adapter
+        self._no_profile(responses)
+        original = a._run
+
+        def _run(argv, *, check=True):
+            if list(argv)[:5] == ["nmcli", "-t", "-f", "DEVICE,STATE", "device"]:
+                raise RuntimeError("nmcli wedged")
+            return original(argv, check=check)
+
+        monkeypatch.setattr(a, "_run", _run)
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert result.ok is False
+        assert "Could not read" in result.message
+        assert "not present" not in result.message
+
+    def test_every_apply_message_fits_the_on_screen_banner(self, adapter) -> None:
+        """The Settings > Network banner is one truncated line, so a message
+        long enough to wrap loses exactly the actionable half - and that banner
+        is the operator's surface when the web UI is unreachable."""
+        a, _captured, responses = adapter
+        self._no_profile(responses)
+        for state in ("", "unmanaged", "disconnected"):
+            _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout=f"eth0:{state}\n")
+            message = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP)).message
+            assert len(message) <= 80, f"{message!r} will be truncated on the HUD"
+
+    def test_apply_reports_pending_when_the_link_is_down(self, adapter) -> None:
+        """The settings persisted; the interface just never came up. Reporting
+        a hard failure would be wrong, and reporting a clean apply would send
+        the browser to an address nothing is serving."""
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired:eth0\n",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:unavailable\n")
+        # con mod ok, con down ok, con up fails with no reason of its own.
+        a._broker.exceptions = [None, None, make_failure("")]
+        result = a.apply_ipv4(
+            "eth0",
+            Ipv4Config(method=Ipv4Method.STATIC, address="192.168.1.50", prefix=24),
+        )
+        assert result.ok is True
+        assert result.pending is True
+        assert "has a link" in result.message
+
+    def test_a_named_activation_failure_is_not_pending(self, adapter) -> None:
+        """rfkill and an ungranted con-up both leave the device 'unavailable',
+        so keying on device state alone would tell the operator to plug in a
+        cable that isn't the problem."""
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="HomeWifi:wlan0\n",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="wlan0:unavailable\n")
+        a._broker.exceptions = [None, None, make_failure("Wi-Fi radio disabled by rfkill")]
+        result = a.apply_ipv4(
+            "wlan0",
+            Ipv4Config(method=Ipv4Method.STATIC, address="192.168.1.50", prefix=24),
+        )
+        assert result.ok is False
+        assert result.pending is False
+        assert "rfkill" in result.message
+
+    def test_renew_without_a_link_explains_why(self, adapter) -> None:
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired:eth0\n",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:unavailable\n")
+        # nmcli itself gave no reason, so the link explanation is the right one.
+        a._broker.exceptions = [None, make_failure("")]
+        result = a.renew_lease("eth0")
+        assert result.ok is False
+        assert "no link" in result.message
+
+    def test_renew_does_not_blame_the_cable_for_a_real_failure(self, adapter) -> None:
+        """A missing helper or an ungranted rule is not a link problem, and
+        sending the operator to check a cable hides the actual fix."""
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired:eth0\n",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:unavailable\n")
+        a._broker.exceptions = [None, make_failure("not authorised")]
+        result = a.renew_lease("eth0")
+        assert result.ok is False
+        assert "not authorised" in result.message
+        assert "no link" not in result.message
+
+    def test_save_failure_names_the_profile(self, adapter) -> None:
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired:eth0\n",
+        )
+        a._broker.exceptions = [make_failure("read-only")]
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert result.ok is False
+        assert "Wired" in result.message
+        assert "read-only" in result.message
 
 
 class TestRenewLease:
@@ -202,9 +358,11 @@ class TestRenewLease:
         a, _captured, responses = adapter
         _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"], stdout="")
         _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:disconnected\n")
         result = a.renew_lease("eth0")
         assert result.ok is False
-        assert "No NetworkManager" in result.message
+        # Names the cause the operator can act on, not adapter state.
+        assert "No saved profile" in result.message
 
     def test_renew_propagates_up_failure(self, adapter) -> None:
         a, _captured, responses = adapter
@@ -810,7 +968,7 @@ class TestBrokerNotConfigured:
         monkeypatch.setattr(a, "_run", _run)
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is False
-        assert "Broker" in result.message
+        assert "privileged helper is not configured" in result.message
 
     def test_renew_without_broker_returns_broker_message(self, monkeypatch) -> None:
         import subprocess as sp
@@ -825,7 +983,8 @@ class TestBrokerNotConfigured:
         monkeypatch.setattr(a, "_run", _run)
         result = a.renew_lease("eth0")
         assert result.ok is False
-        assert "Broker" in result.message
+        # Names something the operator can act on, not an internal object.
+        assert "privileged helper is not configured" in result.message
 
     def test_apply_privilege_error_surfaces(self, adapter) -> None:
         """A PrivilegeError on the modify step surfaces with the

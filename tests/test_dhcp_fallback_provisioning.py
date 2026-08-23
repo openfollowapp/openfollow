@@ -11,6 +11,7 @@ and the ``.deb``.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -30,9 +31,10 @@ _SOURCES = {
 }
 
 # NMSettingIP4LinkLocal 4 = fallback; 3 ("enabled") would put a 169.254 address
-# on healthy interfaces too. 45s pins NM's own DHCP retry window.
+# on healthy interfaces too. 2147483647 is NM's "infinity" for a DHCP timeout.
+_NM_INFINITY = "2147483647"
 _REQUIRED = (
-    "ipv4.dhcp-timeout=45",
+    f"ipv4.dhcp-timeout={_NM_INFINITY}",
     "ipv4.link-local=4",
 )
 
@@ -85,6 +87,28 @@ def test_no_property_networkmanager_rejects_as_a_connection_default(name: str, p
     assert prop not in _read(name)
 
 
+@pytest.mark.parametrize("name", sorted(_BLOCK_SOURCES))
+def test_dhcp_timeout_is_not_finite(name: str) -> None:
+    """A finite timeout takes the fallback address away again. On expiry
+    NetworkManager fails the activation with ``ip-config-unavailable`` and
+    removes the link-local along with it, so the interface is dark until the
+    next retry succeeds - the outage this drop-in exists to prevent. Measured
+    on a DHCP-less NIC: the address appeared at 0.5 s and was gone at 45.6 s."""
+    text = _read(name)
+    finite = re.findall(r"ipv4\.dhcp-timeout=(\S+)", text)
+    assert finite, "route writes no ipv4.dhcp-timeout at all"
+    assert all(value == _NM_INFINITY for value in finite), finite
+
+
+@pytest.mark.parametrize("name", sorted(_BLOCK_SOURCES))
+def test_dhcp_timeout_does_not_spell_infinity_as_a_word(name: str) -> None:
+    """``nmcli`` takes ``infinity`` on a profile and stores it as the integer,
+    but as a ``[connection]`` default NetworkManager silently ignores the word
+    and keeps its built-in 45 s. That reinstates the teardown with nothing in
+    the file to show for it, so the sentinel has to stay numeric."""
+    assert "dhcp-timeout=infinity" not in _read(name)
+
+
 def test_ansible_reloads_networkmanager_after_writing_it() -> None:
     """NetworkManager parses conf.d only at startup, so a drop-in written to an
     already-running Pi is inert until it re-reads. Without the notify the
@@ -130,8 +154,8 @@ def test_help_does_not_tie_the_fallback_to_the_dhcp_timeout() -> None:
     help_text = (_REPO_ROOT / "openfollow" / "web" / "help" / "general-network-interface.md").read_text(
         encoding="utf-8"
     )
-    timeout = next(prop for prop in _REQUIRED if prop.startswith("ipv4.dhcp-timeout")).split("=")[1]
-    assert f"{timeout} seconds" not in help_text
+    assert "within a few seconds" in help_text
+    assert "45 seconds" not in help_text
 
 
 def test_help_does_not_promise_the_station_name_resolves() -> None:

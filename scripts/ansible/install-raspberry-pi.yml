@@ -436,6 +436,8 @@
     # the show LAN has no DHCP server - web server up, avahi answering, nothing
     # reachable. link-local=4 is "fallback": the 169.254 address appears only
     # once DHCP has given up and goes away again when a lease arrives.
+    # dhcp-timeout must not be finite - on expiry NM fails the activation and
+    # removes the fallback address. 2147483647 is NM's "infinity".
     - name: Fall back to a link-local address when DHCP never answers
       ansible.builtin.copy:
         dest: /etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf
@@ -444,7 +446,7 @@
         mode: "0644"
         content: |
           [connection]
-          ipv4.dhcp-timeout=45
+          ipv4.dhcp-timeout=2147483647
           ipv4.link-local=4
       notify:
         - reload networkmanager

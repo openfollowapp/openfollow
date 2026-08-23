@@ -183,23 +183,27 @@ playbook and the `.deb` – write
 
 ```ini
 [connection]
-ipv4.may-fail=true
-ipv4.dhcp-timeout=45
+ipv4.dhcp-timeout=2147483647
 ipv4.link-local=4
 ```
 
 Without it a show LAN with no DHCP server leaves the NIC with no IPv4 address
 at all – the web server is up and avahi is answering, but nothing can reach
-either. `may-fail` lets activation finish without a lease, `dhcp-timeout`
-bounds the wait, and `link-local=4` is *fallback* (not `3`, *enabled*): the
-169.254 address appears only once DHCP has given up and goes away again when a
-lease arrives, so a healthy LAN never carries a second address.
+either. `link-local=4` is *fallback* (not `3`, *enabled*): the 169.254 address
+appears only once DHCP has given up and goes away again when a lease arrives,
+so a healthy LAN never carries a second address.
 
-`45` is NetworkManager's own default, and it is deliberately not shorter. A
-switch port without portfast/edge blocks forwarding for roughly 30–50 s of
-spanning-tree convergence after link-up, so a shorter timeout makes an ordinary
-cable replug give up on DHCP and take a link-local address *before* the real
-lease arrives – churning the station's address twice on every replug.
+`dhcp-timeout` must not be finite. On expiry NetworkManager fails the
+activation with `ip-config-unavailable` and removes the fallback address along
+with it, so the station goes dark on that interface for the gap before the next
+retry – exactly the outage the drop-in exists to prevent. `2147483647` is
+NetworkManager's *infinity*; the literal word `infinity` is accepted by `nmcli`
+on a profile but silently ignored here, leaving the built-in 45 s in force.
+
+An infinite timeout also serves the case a shorter one broke: a switch port
+without portfast/edge blocks forwarding for roughly 30–50 s of spanning-tree
+convergence after link-up, and DHCP that never gives up still gets the real
+lease once the port starts forwarding.
 
 It is a connection **default** rather than a per-profile setting for two
 reasons: no profile exists at image-build time (NetworkManager isn't running in

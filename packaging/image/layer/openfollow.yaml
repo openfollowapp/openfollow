@@ -85,15 +85,15 @@ mmdebstrap:
     #      yet at build time, and this way it also covers profiles created later.
     #      link-local=4 is "fallback" - the 169.254 address appears only once
     #      DHCP has given up and goes away when a lease arrives, so a healthy LAN
-    #      never carries a second address. 45s is NM's own default, long enough
-    #      to clear spanning-tree convergence on a switch port without portfast
-    #      so an ordinary cable replug gets its real lease back.
+    #      never carries a second address. dhcp-timeout must not be finite: on
+    #      expiry NM fails the activation and tears the fallback address down
+    #      with it. 2147483647 is NM's "infinity" - the word is rejected here.
     - |-
       set -eu
       mkdir -p "$1/etc/NetworkManager/conf.d"
       cat > "$1/etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf" <<'NMFALLBACK'
       [connection]
-      ipv4.dhcp-timeout=45
+      ipv4.dhcp-timeout=2147483647
       ipv4.link-local=4
       NMFALLBACK
 

@@ -536,6 +536,11 @@ class _FakeWritableAdapter:
         self._state = state
         self.applied: list = []
         self.renewed: list = []
+        self.vlans: list = []
+        self.vlans_created: list = []
+        self.vlans_deleted: list = []
+        self.vlan_support = True
+        self.vlan_list_raises = False
 
     def list_interfaces(self):
         return list(self._ifaces)
@@ -556,6 +561,26 @@ class _FakeWritableAdapter:
         from openfollow.network.adapter import ApplyResult
 
         self.renewed.append(iface)
+        return ApplyResult(ok=True)
+
+    def supports_vlans(self) -> bool:
+        return self.vlan_support
+
+    def list_vlans(self):
+        if self.vlan_list_raises:
+            raise RuntimeError("nmcli exploded")
+        return list(self.vlans)
+
+    def create_vlan(self, parent, vlan_id):
+        from openfollow.network.adapter import ApplyResult
+
+        self.vlans_created.append((parent, vlan_id))
+        return ApplyResult(ok=True)
+
+    def delete_vlan(self, name):
+        from openfollow.network.adapter import ApplyResult
+
+        self.vlans_deleted.append(name)
         return ApplyResult(ok=True)
 
 
@@ -1154,3 +1179,87 @@ def test_the_outage_flag_clears_after_one_recovery(monkeypatch) -> None:
     services._follow_station_ip()
     assert sync.reopens == 1
     assert server.reopens == 1
+
+
+# VLAN providers / handlers
+# --------------------------------------------------------------------------- #
+
+
+def test_vlan_provider_reports_unsupported_without_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = None
+    assert services._network_vlan_provider() == {"supported": False, "vlans": []}
+
+
+def test_vlan_provider_reports_unsupported_on_a_read_only_backend(monkeypatch) -> None:
+    """The psutil backend reads interfaces; it cannot create links."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    assert services._network_vlan_provider() == {"supported": False, "vlans": []}
+
+
+def test_vlan_provider_lists_the_backend_vlans(monkeypatch) -> None:
+    from openfollow.network.adapter import VlanInterface
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    fake = _FakeWritableAdapter([_iface()], None)
+    fake.vlans = [VlanInterface(name="eth0.10", parent="eth0", vlan_id=10)]
+    services._network_adapter = fake
+    assert services._network_vlan_provider() == {
+        "supported": True,
+        "vlans": [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}],
+    }
+
+
+def test_vlan_provider_survives_a_backend_failure(monkeypatch) -> None:
+    """Still reports supported – the backend does own links, this read just
+    failed – so the card keeps the controls rather than pretending the
+    station cannot do VLANs at all."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    fake = _FakeWritableAdapter([_iface()], None)
+    fake.vlan_list_raises = True
+    services._network_adapter = fake
+    assert services._network_vlan_provider() == {"supported": True, "vlans": []}
+
+
+def test_vlan_create_calls_the_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    fake = _FakeWritableAdapter([_iface()], None)
+    services._network_adapter = fake
+    result = services._handle_network_vlan_create("eth0", 10)
+    assert result.ok is True
+    assert fake.vlans_created == [("eth0", 10)]
+
+
+def test_vlan_create_refused_on_a_read_only_host(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    result = services._handle_network_vlan_create("eth0", 10)
+    assert result.ok is False and "Read-only" in result.message
+
+
+def test_vlan_create_refused_without_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = None
+    result = services._handle_network_vlan_create("eth0", 10)
+    assert result.ok is False and "No network adapter" in result.message
+
+
+def test_vlan_delete_calls_the_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    fake = _FakeWritableAdapter([_iface()], None)
+    services._network_adapter = fake
+    result = services._handle_network_vlan_delete("eth0.10")
+    assert result.ok is True
+    assert fake.vlans_deleted == ["eth0.10"]
+
+
+def test_vlan_delete_refused_on_a_read_only_host(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    result = services._handle_network_vlan_delete("eth0.10")
+    assert result.ok is False and "Read-only" in result.message
+
+
+def test_vlan_delete_refused_without_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = None
+    result = services._handle_network_vlan_delete("eth0.10")
+    assert result.ok is False and "No network adapter" in result.message

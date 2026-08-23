@@ -863,6 +863,16 @@
  background: rgba(125, 229, 159, 0.12);
  border: 1px solid rgba(125, 229, 159, 0.35);
  }
+ .ia-badge.vlan {
+ color: var(--muted);
+ background: rgba(255, 255, 255, 0.06);
+ border: 1px solid rgba(255, 255, 255, 0.16);
+ }
+ .ia-vlan-add {
+ margin-top: 0.8rem;
+ padding-top: 0.8rem;
+ border-top: 1px solid rgba(255, 255, 255, 0.08);
+ }
  .ia-legend {
  display: flex;
  align-items: center;

@@ -76,6 +76,12 @@ class FakeNetwork:
         self.apply_result = ApplyResult(ok=True)
         self.renew_result = ApplyResult(ok=True)
         self.provide_rows = True
+        self.supports_vlans = True
+        self.vlans: list[dict] = []
+        self.vlans_created: list[tuple[str, int]] = []
+        self.vlans_deleted: list[str] = []
+        self.vlan_create_result = ApplyResult(ok=True, message="Created.")
+        self.vlan_delete_result = ApplyResult(ok=True, message="Deleted.")
 
     def config_provider(self, iface: str | None = None) -> dict | None:
         if not self.interfaces:
@@ -128,6 +134,17 @@ class FakeNetwork:
     def renew_handler(self, iface: str) -> ApplyResult:
         self.renewed.append(iface)
         return self.renew_result
+
+    def vlan_provider(self) -> dict:
+        return {"supported": self.supports_vlans, "vlans": list(self.vlans)}
+
+    def vlan_create_handler(self, parent: str, vlan_id: int) -> ApplyResult:
+        self.vlans_created.append((parent, vlan_id))
+        return self.vlan_create_result
+
+    def vlan_delete_handler(self, name: str) -> ApplyResult:
+        self.vlans_deleted.append(name)
+        return self.vlan_delete_result
 
 
 def _find_free_tcp_port() -> int:
@@ -202,6 +219,9 @@ def net_server(tmp_path, monkeypatch):
         network_interfaces_provider=fake.interfaces_provider,
         network_apply_handler=fake.apply_handler,
         network_renew_handler=fake.renew_handler,
+        network_vlan_provider=fake.vlan_provider,
+        network_vlan_create_handler=fake.vlan_create_handler,
+        network_vlan_delete_handler=fake.vlan_delete_handler,
     )
     server.start()
     assert _wait_for_port(port)
@@ -964,3 +984,232 @@ def test_a_pending_apply_still_shows_its_warnings(net_server) -> None:
     assert status == 200
     assert "take effect when eth0 has a link" in body
     assert "rebind refused" in body, "the pending banner dropped its warnings"
+
+
+# --------------------------------------------------------------------------- #
+# VLAN create / delete
+# --------------------------------------------------------------------------- #
+
+
+def test_add_vlan_control_only_in_edit_mode(net_server) -> None:
+    """Creating a link is a write, so it follows the same Edit-mode gate as
+    every other write on this card."""
+    _fake, base = net_server
+    _status, view = _get(base, "/section/network/status")
+    assert "+ Add VLAN" not in view
+    _status, edit = _get(base, "/section/network/edit")
+    assert "+ Add VLAN" in edit
+
+
+def test_add_vlan_control_absent_on_a_backend_without_vlans(net_server) -> None:
+    fake, base = net_server
+    fake.supports_vlans = False
+    _status, body = _get(base, "/section/network/edit")
+    assert "+ Add VLAN" not in body
+    assert "/section/network/vlan/create" not in body
+
+
+def test_vlan_rows_carry_their_tag(net_server) -> None:
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10"]
+    fake.vlans = [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}]
+    _status, body = _get(base, "/section/network/edit")
+    assert "VLAN 10" in body
+
+
+def test_a_vlan_is_not_offered_as_a_parent(net_server) -> None:
+    """QinQ is out of scope, so a VLAN can't parent another one."""
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10"]
+    fake.vlans = [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}]
+    _status, body = _get(base, "/section/network/edit")
+    parent_block = body.split('name="vlan_parent"', 1)[1].split("</select>", 1)[0]
+    assert "eth0" in parent_block
+    assert "eth0.10" not in parent_block
+
+
+def test_create_passes_parent_and_id_to_the_adapter(net_server) -> None:
+    fake, base = net_server
+    status, _body = _post(base, "/section/network/vlan/create", {"vlan_parent": "eth0", "vlan_id": "10"})
+    assert status == 200
+    assert fake.vlans_created == [("eth0", 10)]
+
+
+def test_create_rejects_a_reserved_id_without_calling_the_adapter(net_server) -> None:
+    fake, base = net_server
+    status, body = _post(base, "/section/network/vlan/create", {"vlan_parent": "eth0", "vlan_id": "4095"})
+    assert status == 200
+    assert "VLAN ID must be" in body
+    assert fake.vlans_created == []
+
+
+def test_create_rejects_an_unknown_parent_without_calling_the_adapter(net_server) -> None:
+    fake, base = net_server
+    status, body = _post(base, "/section/network/vlan/create", {"vlan_parent": "eth9", "vlan_id": "10"})
+    assert status == 200
+    assert "not a network interface" in body
+    assert fake.vlans_created == []
+
+
+def test_create_rejects_a_duplicate_name_without_calling_the_adapter(net_server) -> None:
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10"]
+    fake.vlans = [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}]
+    status, body = _post(base, "/section/network/vlan/create", {"vlan_parent": "eth0", "vlan_id": "10"})
+    assert status == 200
+    assert "already exists" in body
+    assert fake.vlans_created == []
+
+
+def test_create_refused_on_a_backend_without_vlans(net_server) -> None:
+    fake, base = net_server
+    fake.supports_vlans = False
+    status, body = _post(base, "/section/network/vlan/create", {"vlan_parent": "eth0", "vlan_id": "10"})
+    assert status == 200
+    assert "cannot create VLAN interfaces" in body
+    assert fake.vlans_created == []
+
+
+def test_create_surfaces_an_adapter_failure(net_server) -> None:
+    fake, base = net_server
+    fake.vlan_create_result = ApplyResult(ok=False, message="parent device not found")
+    status, body = _post(base, "/section/network/vlan/create", {"vlan_parent": "eth0", "vlan_id": "10"})
+    assert status == 200
+    assert "parent device not found" in body
+
+
+def test_delete_passes_the_interface_to_the_adapter(net_server) -> None:
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10"]
+    fake.vlans = [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}]
+    status, _body = _post(base, "/section/network/vlan/delete", {"iface": "eth0.10"})
+    assert status == 200
+    assert fake.vlans_deleted == ["eth0.10"]
+
+
+def test_delete_refuses_a_non_vlan_interface(net_server) -> None:
+    """The delete grant is a wildcarded ``nmcli con delete``, so the app layer
+    is what keeps it off a physical NIC's profile."""
+    fake, base = net_server
+    status, body = _post(base, "/section/network/vlan/delete", {"iface": "eth0"})
+    assert status == 200
+    assert "is not a VLAN" in body
+    assert fake.vlans_deleted == []
+
+
+def test_delete_refuses_an_unknown_interface(net_server) -> None:
+    fake, base = net_server
+    status, body = _post(base, "/section/network/vlan/delete", {"iface": "eth9.10"})
+    assert status == 200
+    assert "is not a VLAN" in body
+    assert fake.vlans_deleted == []
+
+
+def test_delete_refused_on_a_backend_without_vlans(net_server) -> None:
+    fake, base = net_server
+    fake.supports_vlans = False
+    status, body = _post(base, "/section/network/vlan/delete", {"iface": "eth0.10"})
+    assert status == 200
+    assert "cannot create VLAN interfaces" in body
+    assert fake.vlans_deleted == []
+
+
+def test_delete_surfaces_an_adapter_failure(net_server) -> None:
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10"]
+    fake.vlans = [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}]
+    fake.vlan_delete_result = ApplyResult(ok=False, message="profile is in use")
+    status, body = _post(base, "/section/network/vlan/delete", {"iface": "eth0.10"})
+    assert status == 200
+    assert "profile is in use" in body
+
+
+def test_delete_control_only_renders_for_a_vlan_row(net_server) -> None:
+    """The control lives inside the open editor so it can only ever be aimed
+    at the interface named in that editor's header."""
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10"]
+    fake.vlans = [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}]
+    _status, physical = _get(base, "/section/network/edit/eth0")
+    assert "Delete VLAN" not in physical
+    _status, vlan = _get(base, "/section/network/edit/eth0.10")
+    assert "Delete VLAN" in vlan
+
+
+def test_delete_refuses_the_interface_serving_this_request(net_server, monkeypatch) -> None:
+    """Deleting the interface the browser arrived on cuts the operator's own
+    session, and the page they would need to undo it is the one that just
+    became unreachable. The test server binds loopback, where
+    ``request_local_iface`` correctly reports no interface, so that single
+    seam is patched to stand in for a real NIC connection."""
+    import openfollow.web.routes as routes_module
+
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10"]
+    fake.vlans = [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}]
+    monkeypatch.setattr(routes_module, "request_local_iface", lambda _environ: "eth0.10")
+    status, body = _post(base, "/section/network/vlan/delete", {"iface": "eth0.10"})
+    assert status == 200
+    assert "This session is connected over eth0.10" in body
+    assert fake.vlans_deleted == []
+
+
+def test_delete_allows_a_vlan_this_request_did_not_arrive_on(net_server, monkeypatch) -> None:
+    import openfollow.web.routes as routes_module
+
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10", "eth0.20"]
+    fake.vlans = [
+        {"name": "eth0.10", "parent": "eth0", "vlan_id": 10},
+        {"name": "eth0.20", "parent": "eth0", "vlan_id": 20},
+    ]
+    monkeypatch.setattr(routes_module, "request_local_iface", lambda _environ: "eth0.10")
+    status, _body = _post(base, "/section/network/vlan/delete", {"iface": "eth0.20"})
+    assert status == 200
+    assert fake.vlans_deleted == ["eth0.20"]
+
+
+def test_get_network_vlans_without_provider_reports_unsupported(tmp_path) -> None:
+    srv = _make_server(tmp_path)
+    assert srv.get_network_vlans() == {"supported": False, "vlans": []}
+
+
+def test_get_network_vlans_swallows_provider_error(tmp_path) -> None:
+    """A failed read must not leave the card offering controls whose backend
+    just proved it can't answer."""
+
+    def _boom():
+        raise RuntimeError("provider down")
+
+    srv = _make_server(tmp_path, network_vlan_provider=_boom)
+    assert srv.get_network_vlans() == {"supported": False, "vlans": []}
+
+
+def test_create_network_vlan_without_handler_is_unavailable(tmp_path) -> None:
+    srv = _make_server(tmp_path)
+    result = srv.create_network_vlan("eth0", 10)
+    assert result.ok is False and "not available" in result.message
+
+
+def test_create_network_vlan_swallows_handler_error(tmp_path) -> None:
+    def _boom(parent, vlan_id):
+        raise RuntimeError("kaboom")
+
+    srv = _make_server(tmp_path, network_vlan_create_handler=_boom)
+    result = srv.create_network_vlan("eth0", 10)
+    assert result.ok is False and "kaboom" in result.message
+
+
+def test_delete_network_vlan_without_handler_is_unavailable(tmp_path) -> None:
+    srv = _make_server(tmp_path)
+    result = srv.delete_network_vlan("eth0.10")
+    assert result.ok is False and "not available" in result.message
+
+
+def test_delete_network_vlan_swallows_handler_error(tmp_path) -> None:
+    def _boom(name):
+        raise RuntimeError("kaboom")
+
+    srv = _make_server(tmp_path, network_vlan_delete_handler=_boom)
+    result = srv.delete_network_vlan("eth0.10")
+    assert result.ok is False and "kaboom" in result.message

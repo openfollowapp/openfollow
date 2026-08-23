@@ -375,6 +375,19 @@ class TestSeedBundledDetectionModels:
 
         assert (tmp_path / "store" / "models" / "yolo26n.onnx").read_bytes() == b"nano"
 
+    def test_no_op_when_nothing_is_bundled(
+        self, services: AppRuntimeServices, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:  # noqa: ANN001
+        # Pinned explicitly: on a host with the .deb installed there is always
+        # something bundled, so this branch is otherwise never taken there.
+        monkeypatch.setattr("openfollow.model_seed.bundled_models_dir", lambda: None)
+        cfg = AppConfig()
+        cfg.detection.storage_path = str(tmp_path / "store")
+
+        services._seed_bundled_detection_models(cfg)
+
+        assert not (tmp_path / "store").exists()
+
 
 # --------------------------------------------------------------------------- #
 # init_camera

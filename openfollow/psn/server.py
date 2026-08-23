@@ -79,8 +79,8 @@ class PsnServer:
         self._markers: dict[int, Marker] = {}
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
-        # Each stream numbers its own frames: on a shared counter the data stream
-        # skips an id whenever an info packet lands between two frames.
+        # A receiver reads a gap in a stream's frame ids as a dropped frame, so
+        # the two streams must not draw from one sequence.
         self._data_frame_id: int = 0
         self._info_frame_id: int = 0
         self._socket: multicast_expert.McastTxSocket | socket.socket | None = None

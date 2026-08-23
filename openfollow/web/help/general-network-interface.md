@@ -39,6 +39,22 @@ Your computer needs an address on the same network to reach a `169.254` one. Mos
 
 A station with a `Static` address never uses the fallback – it already has the address you gave it.
 
+## Tagged VLANs
+
+Many venues deliver one Ethernet run carrying several tagged 802.1Q VLANs rather than a separate cable per network. **+ Add VLAN** creates a sub-interface on top of a physical adapter for one tag, so a single cable can carry lighting, video, and management traffic on separate networks.
+
+A VLAN sub-interface behaves like any other adapter once it exists: it appears in the list as `eth0.10`, takes its own address, and every row in **Interface Assignment** can point at it. That is how PSN reaches the lighting VLAN while OTP goes out on another, over one cable.
+
+- **Parent interface** – the physical adapter carrying the tags. The switch port it plugs into must be configured as a trunk (tagged) port for that VLAN, or no traffic arrives. A VLAN cannot be stacked on another VLAN.
+- **VLAN ID** – `1`–`4094`, matching the tag the switch sends. `0` and `4095` are reserved by the standard.
+- The name is derived as `<parent>.<id>` and cannot be chosen.
+
+The parent keeps its own untagged address; adding VLANs does not take it away. Each new sub-interface starts with no address – use **Configure** on its row to give it one. A tagged lighting VLAN frequently has no DHCP server, in which case the fallback above applies to it too.
+
+**Delete VLAN** appears inside a VLAN row's own settings, so it can only ever remove the adapter named at the top of that form. It is refused for the adapter your browser arrived on – reconnect over another network first. Anything pinned to a deleted VLAN stops sending until it is reassigned.
+
+VLAN creation needs NetworkManager. On a station using another network backend the controls are not shown.
+
 **Modes:** the form opens in **View mode** – fields are locked so settings can't change by mistake. Use **Switch to edit view** to unlock them; **Edit mode** then shows Apply / Renew / Cancel. On a station whose network backend is read-only, the form shows a **Read only** badge instead – configure from the on-screen **Settings → Network** menu, or see openfollow.app for troubleshooting and how to enable web editing.
 
 **Buttons:**
@@ -46,4 +62,6 @@ A station with a `Static` address never uses the fallback – it already has the
 - **Switch to edit view** – unlocks the fields (enters Edit mode). Absent when the backend is read-only.
 - **Apply** – validates and commits the form. Invalid input is rejected and nothing is written.
 - **Renew DHCP lease** – requests a fresh lease (DHCP methods only).
+- **+ Add VLAN** – creates a tagged sub-interface (Edit mode, NetworkManager only).
+- **Delete VLAN** – removes the sub-interface whose settings are open.
 - **Cancel** – discards unsaved edits and returns to View mode.

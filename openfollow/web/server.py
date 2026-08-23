@@ -203,6 +203,9 @@ class ConfigWebServer:
         network_interfaces_provider: (Callable[[], list[dict[str, Any]]] | None) = None,
         network_apply_handler: Callable[[str, Any], ApplyResult] | None = None,
         network_renew_handler: Callable[[str], ApplyResult] | None = None,
+        network_vlan_provider: Callable[[], dict[str, Any]] | None = None,
+        network_vlan_create_handler: Callable[[str, int], ApplyResult] | None = None,
+        network_vlan_delete_handler: Callable[[str], ApplyResult] | None = None,
         # Privilege capability snapshot for the diagnostics bundle; optional for tests.
         privilege_states_provider: Callable[[], dict[str, str]] | None = None,
         # Boot-autostart switch: host state on read, broker-elevated write.
@@ -291,6 +294,9 @@ class ConfigWebServer:
         self._network_ifaces_lock = threading.Lock()
         self._network_apply_handler = network_apply_handler
         self._network_renew_handler = network_renew_handler
+        self._network_vlan_provider = network_vlan_provider
+        self._network_vlan_create_handler = network_vlan_create_handler
+        self._network_vlan_delete_handler = network_vlan_delete_handler
         self._psn_source_advisory_provider = psn_source_advisory_provider
         self._privilege_states_provider = privilege_states_provider
         self._autostart_state_provider = autostart_state_provider
@@ -539,6 +545,46 @@ class ConfigWebServer:
         except Exception:  # noqa: BLE001
             logger.exception("Camera setup restart handler raised")
             return {"ok": False, "error": _CAMERA_SETUP_FAILED}
+
+    def get_network_vlans(self) -> dict[str, Any]:
+        """Return ``{"supported": bool, "vlans": [{name, parent, vlan_id}]}``.
+
+        Reported unsupported when unwired or when the provider fails, so the
+        card omits the VLAN controls rather than offering a button that cannot
+        work.
+        """
+        empty: dict[str, Any] = {"supported": False, "vlans": []}
+        if self._network_vlan_provider is None:
+            return empty
+        try:
+            return self._network_vlan_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("Network VLAN provider raised")
+            return empty
+
+    def create_network_vlan(self, parent: str, vlan_id: int) -> ApplyResult:
+        """Create a VLAN sub-interface on ``parent``; always returns ApplyResult."""
+        from openfollow.network.adapter import ApplyResult
+
+        if self._network_vlan_create_handler is None:
+            return ApplyResult(ok=False, message="Network writes are not available on this build.")
+        try:
+            return self._network_vlan_create_handler(parent, vlan_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("network_vlan_create handler raised")
+            return ApplyResult(ok=False, message=str(exc))
+
+    def delete_network_vlan(self, name: str) -> ApplyResult:
+        """Delete the VLAN sub-interface ``name``; always returns ApplyResult."""
+        from openfollow.network.adapter import ApplyResult
+
+        if self._network_vlan_delete_handler is None:
+            return ApplyResult(ok=False, message="Network writes are not available on this build.")
+        try:
+            return self._network_vlan_delete_handler(name)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("network_vlan_delete handler raised")
+            return ApplyResult(ok=False, message=str(exc))
 
     def get_psn_source_advisory(self) -> dict[str, str]:
         """Startup advisory when pinned PSN source iface unavailable; returns status/banner/resolved_ip."""

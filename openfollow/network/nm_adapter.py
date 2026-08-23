@@ -17,10 +17,13 @@ from openfollow.network.adapter import (
     NetworkAdapter,
     NetworkInterface,
     NetworkState,
+    VlanInterface,
 )
-from openfollow.network.validate import validate_apply
+from openfollow.network.validate import validate_apply, vlan_interface_name
 from openfollow.privilege.broker import PrivilegeBroker, PrivilegeError
 from openfollow.privilege.capabilities import (
+    NETWORK_NM_CON_ADD,
+    NETWORK_NM_CON_DELETE,
     NETWORK_NM_CON_DOWN,
     NETWORK_NM_CON_MOD,
     NETWORK_NM_CON_UP,
@@ -35,6 +38,49 @@ _NMCLI_TIMEOUT = 8
 # sudoers rules were never installed. Kept short: the on-screen banner is one
 # truncated line.
 _NO_BROKER_MESSAGE = "Cannot change network settings - the privileged helper is not configured."
+
+
+def _split_terse(line: str) -> list[str]:
+    """Split one nmcli ``-t`` row on its *unescaped* field separators.
+
+    ``nmcli -t`` emits a literal ``:`` inside a value as ``\\:``, so splitting
+    on every colon shifts each field after a colon-bearing one: a profile named
+    ``Wired connection: office`` yields a fragment where the UUID belongs, and
+    the device column lands on the type. Unescapes as it goes, so callers get
+    finished values.
+    """
+    fields: list[str] = []
+    current: list[str] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        char = line[i]
+        if char == "\\" and i + 1 < n:
+            current.append(line[i + 1])
+            i += 2
+        elif char == ":":
+            fields.append("".join(current))
+            current = []
+            i += 1
+        else:
+            current.append(char)
+            i += 1
+    fields.append("".join(current))
+    return fields
+
+
+def _name_and_device(line: str) -> tuple[str, str]:
+    """Split one ``NAME,DEVICE`` row, tolerating a colon in the profile name.
+
+    ``partition(":")`` cuts at the escaped colon inside the name, so the device
+    column lands in the remainder and never matches - which makes a profile
+    called ``Wired connection: office`` invisible to every lookup, and reports
+    "no profile bound to eth0" for an interface that has one.
+    """
+    fields = _split_terse(line)
+    if len(fields) < 2:
+        return ("", "")
+    return (fields[0], fields[1])
 
 
 def _unescape_terse(value: str) -> str:
@@ -133,7 +179,7 @@ class NetworkManagerAdapter(NetworkAdapter):
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
             return None
         for line in res.stdout.splitlines():
-            name, _, dev = line.partition(":")
+            name, dev = _name_and_device(line)
             if dev == iface:
                 return name
         # Fallback to any profile bound to this device
@@ -142,7 +188,7 @@ class NetworkManagerAdapter(NetworkAdapter):
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
             return None
         for line in res.stdout.splitlines():
-            name, _, dev = line.partition(":")
+            name, dev = _name_and_device(line)
             if dev == iface:
                 return name
         return None
@@ -505,3 +551,103 @@ class NetworkManagerAdapter(NetworkAdapter):
                 message=f"Could not renew {iface} ({up_detail})." if up_detail else f"Could not renew {iface}.",
             )
         return ApplyResult(ok=True, message="Lease renewed.")
+
+    # ---- VLAN sub-interfaces --------------------------------------------
+
+    def supports_vlans(self) -> bool:
+        return True
+
+    def _vlan_profiles(self) -> tuple[list[tuple[str, str]], dict[str, str]]:
+        """Return ``([(profile name, device)], {uuid: device})`` for the
+        connection list, filtered to VLAN profiles. The UUID map covers every
+        profile, not just VLANs, because it exists to resolve a VLAN's parent
+        reference back to an interface name."""
+        try:
+            res = self._run(["nmcli", "-t", "-f", "NAME,UUID,TYPE,DEVICE", "connection", "show"])
+        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError) as exc:
+            logger.warning("nmcli VLAN profile list failed: %s", exc)
+            return ([], {})
+        out: list[tuple[str, str]] = []
+        device_by_uuid: dict[str, str] = {}
+        for line in res.stdout.splitlines():
+            parts = _split_terse(line)
+            if len(parts) < 4:
+                continue
+            name, uuid, kind, device = parts[0], parts[1], parts[2], parts[3]
+            device_by_uuid[uuid] = device
+            if kind == "vlan":
+                out.append((name, device))
+        return (out, device_by_uuid)
+
+    def list_vlans(self) -> list[VlanInterface]:
+        profiles, device_by_uuid = self._vlan_profiles()
+        vlans: list[VlanInterface] = []
+        for name, device in profiles:
+            try:
+                res = self._run(["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", name])
+            except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
+                continue
+            parsed = self._parse_show(res.stdout)
+            raw_parent = (parsed.get("vlan.parent") or [""])[0]
+            raw_id = (parsed.get("vlan.id") or [""])[0]
+            try:
+                vlan_id = int(raw_id)
+            except ValueError:
+                continue
+            # ``vlan.parent`` holds either the parent interface name or the
+            # UUID of the parent's own profile, depending on how the VLAN was
+            # created. Resolve the UUID form back to a device so the caller
+            # always gets a name.
+            parent = device_by_uuid.get(raw_parent, raw_parent)
+            if not parent or not device:
+                continue
+            vlans.append(VlanInterface(name=device, parent=parent, vlan_id=vlan_id))
+        return vlans
+
+    def create_vlan(self, parent: str, vlan_id: int) -> ApplyResult:
+        name = vlan_interface_name(parent, vlan_id)
+        ok, detail = self._run_privileged(
+            NETWORK_NM_CON_ADD,
+            [
+                "/usr/bin/nmcli",
+                "con",
+                "add",
+                "type",
+                "vlan",
+                "con-name",
+                name,
+                "ifname",
+                name,
+                "dev",
+                parent,
+                "id",
+                str(vlan_id),
+            ],
+            reason=f"Create VLAN {vlan_id} on {parent}",
+        )
+        if not ok:
+            return ApplyResult(ok=False, message=detail or f"Could not create VLAN {vlan_id} on {parent}.")
+        return ApplyResult(ok=True, message=f"Created {name}. Give it an address with Configure.")
+
+    def delete_vlan(self, name: str) -> ApplyResult:
+        profile = self._vlan_profile_name(name)
+        if profile is None:
+            return ApplyResult(ok=False, message=f"{name} is not a VLAN interface.")
+        ok, detail = self._run_privileged(
+            NETWORK_NM_CON_DELETE,
+            ["/usr/bin/nmcli", "con", "delete", "id", profile],
+            reason=f"Delete VLAN profile {profile}",
+        )
+        if not ok:
+            return ApplyResult(ok=False, message=detail or f"Could not delete {name}.")
+        return ApplyResult(ok=True, message=f"Deleted {name}.")
+
+    def _vlan_profile_name(self, iface: str) -> str | None:
+        """Return the VLAN profile bound to ``iface``, or None when ``iface``
+        is not a VLAN. This is the check that keeps ``con delete`` – a
+        wildcarded grant – off an operator's physical-NIC profile."""
+        profiles, _ = self._vlan_profiles()
+        for name, device in profiles:
+            if device == iface:
+                return name
+        return None

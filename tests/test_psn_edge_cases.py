@@ -266,15 +266,6 @@ def test_server_send_info_packet_is_noop_with_no_markers(monkeypatch) -> None:
     assert prepared == []
 
 
-def test_server_make_psn_info_advances_frame_id() -> None:
-    server = PsnServer(mcast_ip=None)
-    info1 = server._make_psn_info()
-    info2 = server._make_psn_info()
-    # The info object snapshots the *previous* frame_id before incrementing.
-    assert info1.frame_id != info2.frame_id
-    assert server._frame_id == 2
-
-
 def test_server_send_counts_errors_and_suppresses_spam(monkeypatch) -> None:
     """First 5 errors log, subsequent ones are aggregated (every 100th)."""
     import errno

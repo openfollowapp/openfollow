@@ -153,8 +153,10 @@ class PsnReceiver:
                 # ``data.trackers`` and ``t.tracker_id`` are pypsn's
                 # wire-protocol-derived names; our domain layer
                 # translates them into Marker instances at this seam.
-                # One ``time.monotonic()`` per packet: all trackers in a packet
-                # arrive together, so a single read is cheaper and makes timing consistent.
+                # One read for the whole packet: all trackers in a packet arrive
+                # together, so they share an arrival time. Marker writes below
+                # stamp their own clock for the PSN tracker timestamp; that is a
+                # separate quantity from this arrival bookkeeping.
                 now = time.monotonic()
                 if now - self._last_evict_sweep >= _EVICT_SWEEP_INTERVAL_S:
                     self._last_evict_sweep = now

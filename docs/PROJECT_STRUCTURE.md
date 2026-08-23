@@ -12,6 +12,7 @@ openfollow/              # Single unified package
 ├── net_utils.py         # Local IP/network helpers
 ├── window.py            # GTK native sink window wrapper
 ├── psn/                 # PSN protocol subpackage
+│   ├── clock.py         # Shared microsecond time base (headers + trackers)
 │   ├── marker.py       # Marker state
 │   ├── server.py        # PSN sender
 │   └── receiver.py      # PSN listener

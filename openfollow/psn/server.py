@@ -342,10 +342,11 @@ class PsnServer:
         if not markers:
             return
         # PSN spec uses "trackers" field name; internally called markers.
-        packet = pypsn.PsnDataPacket(
-            info=self._make_psn_info(),
-            trackers=[t.to_psn_marker() for t in markers],
-        )
+        # Snapshot the trackers before stamping the header: a marker written in
+        # between would otherwise carry a timestamp ahead of the header it ships
+        # in, which underflows a receiver computing age as unsigned.
+        trackers = [t.to_psn_marker() for t in markers]
+        packet = pypsn.PsnDataPacket(info=self._make_psn_info(), trackers=trackers)
         self._send(pypsn.prepare_psn_data_packet_bytes(packet))
 
     def _send_info_packet(self) -> None:

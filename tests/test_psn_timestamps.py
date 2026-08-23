@@ -14,20 +14,13 @@ import time
 
 import pypsn
 import pytest
+from conftest import PsnStepClock as _StepClock
 
 from openfollow.psn import clock as clock_module
 from openfollow.psn.marker import Marker
 from openfollow.psn.server import PsnServer
 
 pytestmark = pytest.mark.unit
-
-
-class _StepClock:
-    def __init__(self, now: int = 0) -> None:
-        self.now = now
-
-    def __call__(self) -> int:
-        return self.now
 
 
 def _decode(packet: pypsn.PsnDataPacket) -> pypsn.PsnDataPacket:
@@ -38,25 +31,32 @@ def _decode(packet: pypsn.PsnDataPacket) -> pypsn.PsnDataPacket:
 
 
 class TestMonotonicClock:
-    def test_reports_microseconds(self) -> None:
-        before = clock_module.psn_timestamp_usec()
-        time.sleep(0.02)
-        elapsed = clock_module.psn_timestamp_usec() - before
-        # 20 ms is 20_000 us; a wide upper bound keeps this off the flake list.
-        assert 10_000 < elapsed < 2_000_000
+    """The clock is pinned by driving ``time.monotonic`` - the function the
+    implementation actually reads - so a wall-clock implementation fails these
+    rather than passing them by coincidence."""
 
-    def test_starts_near_zero_not_at_the_unix_epoch(self) -> None:
+    def test_reports_microseconds_elapsed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(time, "monotonic", lambda: clock_module._EPOCH + 0.02)
+        assert clock_module.psn_timestamp_usec() == 20_000
+
+    def test_starts_at_zero_not_at_the_unix_epoch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The spec counts from server start. Wall-clock microseconds would be
         ~1.7e15 here, which is what the pre-fix header sent (in milliseconds)."""
-        assert clock_module.psn_timestamp_usec() < 60 * 60 * 1_000_000
+        monkeypatch.setattr(time, "monotonic", lambda: clock_module._EPOCH)
+        assert clock_module.psn_timestamp_usec() == 0
 
-    def test_does_not_move_when_the_wall_clock_is_stepped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The Pis have no RTC and sync time shortly after boot. A wall-clock
-        timestamp would jump backwards mid-stream; a monotonic one cannot."""
+    @pytest.mark.parametrize("stepped_to", [10_000_000.0, -5_000.0])
+    def test_does_not_move_when_the_wall_clock_is_stepped(
+        self, monkeypatch: pytest.MonkeyPatch, stepped_to: float
+    ) -> None:
+        """The Pis have no RTC and sync time shortly after boot, stepping the
+        wall clock in either direction mid-stream. Holding ``time.monotonic``
+        still means a correct implementation cannot move at all."""
+        monkeypatch.setattr(time, "monotonic", lambda: clock_module._EPOCH + 1.0)
         monkeypatch.setattr(time, "time", lambda: 0.0)
-        stepped = clock_module.psn_timestamp_usec()
-        monkeypatch.setattr(time, "time", lambda: 10_000_000.0)
-        assert clock_module.psn_timestamp_usec() >= stepped
+        before = clock_module.psn_timestamp_usec()
+        monkeypatch.setattr(time, "time", lambda: stepped_to)
+        assert clock_module.psn_timestamp_usec() == before == 1_000_000
 
 
 class TestTrackerFieldsReachTheWire:
@@ -111,8 +111,36 @@ class TestHeaderSharesTheTrackerClock:
         assert info.timestamp == 4_000
         assert info.timestamp - marker.timestamp == 3_000
 
+    def test_a_write_during_the_snapshot_cannot_outrun_the_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The header and the trackers are read at different instants while the
+        GTK thread writes markers at 60-120 Hz. A tracker timestamp ahead of the
+        header it ships in underflows a receiver computing age as unsigned, so
+        the trackers must be snapshotted first."""
+        clock = _StepClock(1_000)
+        server = PsnServer(clock=clock, mcast_ip=None)
+        marker = server.add_marker(301, "Marker 301")
+        marker.set_pos(1.0, 2.0, 3.0)
+
+        sent: list[bytes] = []
+        monkeypatch.setattr(server, "_send", sent.append)
+        real_make = server._make_psn_info
+
+        def _make_then_write() -> pypsn.PsnInfo:
+            info = real_make()
+            clock.now += 5_000
+            marker.set_pos(9.0, 9.0, 9.0)  # a write lands between the two reads
+            return info
+
+        monkeypatch.setattr(server, "_make_psn_info", _make_then_write)
+        server._send_data_packet()
+
+        packet = pypsn.parse_psn_packet(sent[0])
+        assert isinstance(packet, pypsn.PsnDataPacket)
+        assert packet.trackers[0].timestamp <= packet.info.timestamp
+
     def test_header_advances_between_packets(self) -> None:
-        server = PsnServer()
+        clock = _StepClock(1_000)
+        server = PsnServer(clock=clock)
         first = server._make_psn_info().timestamp
-        time.sleep(0.01)
+        clock.now = 17_667
         assert server._make_psn_info().timestamp > first

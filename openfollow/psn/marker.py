@@ -124,18 +124,33 @@ class Marker:
             self._stamp_locked()
 
     def set_status(self, status: float) -> None:
-        """Set the tracker validity, clamped to the 0.0-1.0 range."""
+        """Set the tracker validity, clamped to the 0.0-1.0 range.
+
+        A non-numeric value falls back to the declared default rather than
+        raising: callers derive this from tracking confidence on the frame
+        path, where an exception would take the frame down.
+        """
+        try:
+            value = float(status)
+        except (TypeError, ValueError):
+            value = _INVALID
+        if value != value:  # NaN would reach struct.pack and ship a NaN status.
+            value = _INVALID
         with self._lock:
-            self._status = min(1.0, max(0.0, float(status)))
+            self._status = min(1.0, max(0.0, value))
 
     def _stamp_locked(self) -> None:
         """Record the time of this data write. Caller holds ``_lock``.
 
         ``set_name`` deliberately does not stamp - a rename is metadata, not
-        tracker data, and must not make a stale marker look fresh.
+        tracker data, and must not make a stale marker look fresh. The first
+        data write promotes an untouched marker to valid; an explicit
+        ``set_status`` afterwards stands, so a caller deriving validity from
+        tracking confidence is not overwritten on the next write.
         """
         self._timestamp = self._clock()
-        self._status = _VALID
+        if self._status == _INVALID:
+            self._status = _VALID
 
     def to_psn_marker(self) -> pypsn.PsnTracker:
         """Convert to pypsn.PsnTracker with all fields under lock."""

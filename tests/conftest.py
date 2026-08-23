@@ -10,7 +10,7 @@ vanish from both ``-m unit`` and ``-m "integration or smoke"`` selections.
 
 import os
 import warnings
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -152,3 +152,29 @@ def pytest_collection_modifyitems(
             UnmarkedTestWarning,
             stacklevel=1,
         )
+
+
+class PsnStepClock:
+    """Deterministic stand-in for the monotonic PSN clock (microseconds).
+
+    Shared by the PSN marker / timestamp suites so the tracker-stamp contract
+    is expressed in one place.
+    """
+
+    def __init__(self, now: int = 0) -> None:
+        self.now = now
+
+    def __call__(self) -> int:
+        return self.now
+
+
+def psn_packet_clock(first: float, rest: float) -> Callable[[], float]:
+    """Fake ``time.monotonic`` for a two-packet PsnReceiver test.
+
+    ``_on_packet`` reads the clock once for the packet's arrival time, so the
+    first read is packet one and every later read is packet two. It cannot
+    exhaust: marker writes on the same thread read the clock too, and starving
+    them would fail the test for the wrong reason.
+    """
+    seq = iter([first])
+    return lambda: next(seq, rest)

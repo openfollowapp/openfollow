@@ -11,24 +11,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
+from conftest import psn_packet_clock as _packet_clock
 
 import openfollow.psn.receiver as receiver_module
 from openfollow.psn.receiver import PsnReceiver
 
 pytestmark = pytest.mark.integration
-
-
-def _packet_clock(first: float, rest: float):
-    """Fake ``time.monotonic`` for a two-packet test.
-
-    The receiver reads the clock once per packet, at the top of ``_on_packet``,
-    so the first read is packet one's timestamp and every later read is packet
-    two's. Returning ``rest`` forever afterwards keeps the timeline stable when
-    something else on the thread reads the clock too - a marker stamping its own
-    data write, for instance - which an exhausting iterator could not.
-    """
-    seq = iter([first])
-    return lambda: next(seq, rest)
 
 
 @dataclass

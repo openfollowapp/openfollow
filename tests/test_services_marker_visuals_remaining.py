@@ -569,6 +569,39 @@ class TestSpeedDerivation:
         assert state.markers[0].speed == pytest.approx(5.5)
         assert app._server._markers[1].set_speed_calls == [(5.5, 0.0, 0.0)]
 
+    def test_controlled_marker_absent_from_viewer_ids_still_gets_its_speed_write(self, pool: OverlayStatePool) -> None:
+        """``controlled_marker_ids`` and ``viewer_marker_ids`` are edited
+        independently, and PSN broadcasts every controlled marker. The write is
+        what stamps the tracker's PSN timestamp, so a marker this station drives
+        without viewing must not go stale on the wire while it is transmitted."""
+        app = _build_app(
+            controlled=[1],
+            viewer=[],
+            server_markers={1: _FakeMarker(1)},
+        )
+        state = _build(app, pool)
+
+        assert state.markers == []  # not viewed: no card
+        assert app._server._markers[1].set_speed_calls == [(2.0, 0.0, 0.0)]
+
+    def test_speed_write_happens_once_per_frame_for_a_viewed_controlled_marker(self, pool: OverlayStatePool) -> None:
+        """Moving the write out of the viewer loop must not double-stamp a
+        marker that is both controlled and viewed."""
+        app = _build_app(
+            controlled=[1],
+            viewer=[1],
+            server_markers={1: _FakeMarker(1)},
+        )
+        _build(app, pool)
+        assert app._server._markers[1].set_speed_calls == [(2.0, 0.0, 0.0)]
+
+    def test_unregistered_controlled_marker_is_skipped(self, pool: OverlayStatePool) -> None:
+        """A controlled id the server has not registered yet (mid hot-reload)
+        must not raise on the frame path."""
+        app = _build_app(controlled=[1, 2], viewer=[], server_markers={1: _FakeMarker(1)})
+        _build(app, pool)
+        assert app._server._markers[1].set_speed_calls == [(2.0, 0.0, 0.0)]
+
     def test_viewer_without_gamepad_speed_uses_marker_velocity_norm(self, pool: OverlayStatePool) -> None:
         # Velocity (3, 4, 0) → ‖v‖ = 5.
         app = _build_app(

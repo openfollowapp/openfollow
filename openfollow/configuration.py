@@ -3049,12 +3049,17 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             # Capture old names up front so a rollback re-registers removed
             # markers with their original label.
             old_names = {tid: _marker_name_for_runtime(app, tid) for tid in to_remove}
+            # Seed the same default position startup registration uses: an
+            # unseeded marker broadcasts (0, 0, 0) and, having never taken a
+            # data write, reports itself invalid on the PSN wire.
+            _mk = app._config.marker
+            default_pos = (_mk.default_pos_x, _mk.default_pos_y, _mk.default_pos_z)
 
             def _apply_controlled() -> None:
                 for tid in to_remove:
                     server.remove_marker(tid)
                 for tid in to_add:
-                    server.add_marker(tid, _marker_name_for_runtime(app, tid))
+                    server.add_marker(tid, _marker_name_for_runtime(app, tid)).set_pos(*default_pos)
 
                 # Mirror marker changes to OTP output if active
                 if app._otp_server is not None:
@@ -3100,7 +3105,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 for tid in to_add:
                     server.remove_marker(tid)
                 for tid in to_remove:
-                    server.add_marker(tid, old_names[tid])
+                    server.add_marker(tid, old_names[tid]).set_pos(*default_pos)
 
             _apply("controlled_marker_ids", _apply_controlled, on_failure=_restore_controlled)
         else:

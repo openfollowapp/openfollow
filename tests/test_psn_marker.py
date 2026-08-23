@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pypsn
 import pytest
+from conftest import PsnStepClock as _StepClock
 
 from openfollow.psn.marker import Marker
 
@@ -104,16 +105,6 @@ def test_setters_use_lock_and_do_not_tear_reads() -> None:
     assert t.pos == (40.0, 50.0, 60.0)
 
 
-class _StepClock:
-    """Deterministic stand-in for the monotonic PSN clock."""
-
-    def __init__(self, now: int = 0) -> None:
-        self.now = now
-
-    def __call__(self) -> int:
-        return self.now
-
-
 class TestTrackerTimestampAndStatus:
     """#85: every tracker shipped ``TIMESTAMP=0`` and ``STATUS=0.0`` forever.
 
@@ -165,6 +156,31 @@ class TestTrackerTimestampAndStatus:
         t = Marker(marker_id=1, name="T1")
         t.set_status(given)
         assert t.status == expected
+
+    def test_an_explicit_status_survives_later_data_writes(self) -> None:
+        """``set_status`` is the hook for deriving validity from tracking
+        confidence. A controlled marker takes a data write every frame, so a
+        stamp that reset the status would leave the hook useless."""
+        t = Marker(marker_id=1, name="T1", clock=_StepClock(1))
+        t.set_pos(1.0, 0.0, 0.0)
+        t.set_status(0.4)
+        t.set_pos(2.0, 0.0, 0.0)
+        t.set_speed(1.0, 0.0, 0.0)
+        assert t.status == pytest.approx(0.4)
+
+    @pytest.mark.parametrize("given", [None, "high", object()])
+    def test_a_non_numeric_status_falls_back_instead_of_raising(self, given: object) -> None:
+        """Confidence arrives from the detection path; an unexpected value must
+        not take the frame down."""
+        t = Marker(marker_id=1, name="T1")
+        t.set_status(given)  # type: ignore[arg-type]
+        assert t.status == 0.0
+
+    def test_a_nan_status_never_reaches_the_wire(self) -> None:
+        """``struct.pack`` would happily ship a NaN validity."""
+        t = Marker(marker_id=1, name="T1")
+        t.set_status(float("nan"))
+        assert t.status == 0.0
 
     def test_to_psn_marker_carries_both_fields(self) -> None:
         t = Marker(marker_id=9, name="T9", clock=_StepClock(4_242))

@@ -338,6 +338,16 @@ def build_initial_overlay_state(cfg: Any) -> OverlayState:
     return state
 
 
+def _broadcast_speed(app: Any, marker_id: int, marker_speeds: dict[int, float]) -> float:
+    """Effective speed magnitude a controlled marker sends on PSN.
+
+    ``marker_speeds`` only carries markers with a connected controller; the
+    accessor is the per-marker source of truth for everything else.
+    """
+    speed = marker_speeds.get(marker_id)
+    return speed if speed is not None else app.get_marker_move_speed(marker_id)
+
+
 def build_marker_visual_state(
     app: Any,
     *,
@@ -349,6 +359,16 @@ def build_marker_visual_state(
     """Build a complete OverlayState snapshot for atomic renderer swap."""
     controlled_set = set(app._controlled_ids)
     marker_speeds = app._input_manager.get_marker_gamepad_speeds() if app._input_manager is not None else {}
+
+    # Every controlled marker is broadcast on PSN, so every controlled marker
+    # gets the outbound speed write - not only the ones this station also views.
+    # The write is what stamps the tracker's PSN timestamp, so driving it from
+    # ``viewer_marker_ids`` would let a controlled-but-not-viewed marker go stale
+    # on the wire while still being transmitted at 60 fps.
+    for tid in controlled_set:
+        marker = app._server.get_marker(tid)
+        if marker is not None:
+            marker.set_speed(_broadcast_speed(app, tid, marker_speeds), 0.0, 0.0)
 
     # Fetch controller info once and build a reverse map so the per-marker
     # loop can stamp each marker card with its bound controller without an
@@ -507,9 +527,6 @@ def build_marker_visual_state(
         speed = marker_speeds.get(tid)
         if speed is None and tid in controlled_set:
             speed = app.get_marker_move_speed(tid)
-        if tid in controlled_set:
-            broadcast_speed = speed if speed is not None else app.get_marker_move_speed(tid)
-            marker.set_speed(broadcast_speed, 0.0, 0.0)
         if speed is None and tid not in controlled_set:
             vx, vy, vz = marker.speed
             speed = (vx * vx + vy * vy + vz * vz) ** 0.5

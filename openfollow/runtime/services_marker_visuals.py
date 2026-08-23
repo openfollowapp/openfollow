@@ -364,7 +364,7 @@ def build_marker_visual_state(
     # gets the outbound speed write - not only the ones this station also views.
     # The write is what stamps the tracker's PSN timestamp, so driving it from
     # ``viewer_marker_ids`` would let a controlled-but-not-viewed marker go stale
-    # on the wire while still being transmitted at 60 fps.
+    # on the wire while it is still being transmitted.
     for tid in controlled_set:
         marker = app._server.get_marker(tid)
         if marker is not None:

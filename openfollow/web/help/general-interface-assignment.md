@@ -26,6 +26,16 @@ The **address** is allowed to change. If the interface is on DHCP and comes back
 
 **PSN in / out** and **Discovery / marker sync** always follow the station interface and are shown read-only. They carry this station's identity on the network – the address other stations and consoles see it at – so splitting them from the station default would mean the box advertised one address and answered on another.
 
+## USB Ethernet adapters
+
+A USB adapter is named after its own hardware address, so it appears as something like `enx88a29edf04e3` rather than `eth1`. The name is long, but it belongs to that one physical adapter and stays the same wherever it is plugged in and whatever else is fitted.
+
+That matters because a plain `eth1` is handed out in the order adapters are found at boot, not by which adapter it is. With two fitted, `eth1` and `eth2` can trade places after a restart, and since a pin stores the name, the function would carry on sending to a name that now means the other adapter. Nothing looks wrong in that state, which is why the naming is worth the ugliness.
+
+Replacing a failed adapter gives you a new name, so re-pick the affected rows. A row pinned to an adapter that is no longer present stops and says so rather than moving to another one.
+
+A newly plugged adapter keeps whatever name it already had until it is unplugged and back in, or the station restarts.
+
 ## Saving
 
 Save applies immediately to the running station. PSN, OTP, and the other data planes rebind their sockets in place – no restart, and no interruption to anything on an interface you didn't change.

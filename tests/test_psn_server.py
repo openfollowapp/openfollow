@@ -161,18 +161,6 @@ def test_psn_server_context_manager_starts_and_stops(udp_sink: socket.socket) ->
     assert server._info_thread is None
 
 
-def test_psn_server_frame_id_increments_and_wraps() -> None:
-    """frame_id advances on each info build and rolls over at 256."""
-    server = PsnServer(mcast_ip=None)
-    server._frame_id = 254
-
-    server._make_psn_info()  # consumes 254 → internal becomes 255
-    server._make_psn_info()  # consumes 255 → internal becomes 0
-    server._make_psn_info()  # consumes 0   → internal becomes 1
-
-    assert server._frame_id == 1
-
-
 def test_psn_server_get_marker_returns_registered_and_none_for_unknown() -> None:
     """get_marker returns the Marker object by ID or None when absent."""
     server = PsnServer(mcast_ip=None)

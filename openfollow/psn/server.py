@@ -27,6 +27,7 @@ DEFAULT_PORT = 56565
 
 _MAX_SOCKET_RETRIES = 3
 _SOCKET_RETRY_DELAY = 2.0  # seconds
+_FRAME_ID_WRAP = 256  # frame_id is a uint8 on the wire
 
 
 class _Unchanged:
@@ -78,7 +79,10 @@ class PsnServer:
         self._markers: dict[int, Marker] = {}
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
-        self._frame_id: int = 0
+        # Each stream numbers its own frames: on a shared counter the data stream
+        # skips an id whenever an info packet lands between two frames.
+        self._data_frame_id: int = 0
+        self._info_frame_id: int = 0
         self._socket: multicast_expert.McastTxSocket | socket.socket | None = None
         self._exit_stack: contextlib.ExitStack = contextlib.ExitStack()
         self._data_thread: threading.Thread | None = None
@@ -318,19 +322,29 @@ class PsnServer:
             self._send_info_packet()
             self._stop_event.wait(interval)
 
-    def _make_psn_info(self) -> pypsn.PsnInfo:
-        """Build a ``PsnInfo`` header and advance the frame counter."""
-        with self._lock:
-            frame_id = self._frame_id
-            self._frame_id = (self._frame_id + 1) % 256
-        info = pypsn.PsnInfo(
+    def _make_psn_info(self, frame_id: int) -> pypsn.PsnInfo:
+        """Build a ``PsnInfo`` header carrying ``frame_id``."""
+        return pypsn.PsnInfo(
             timestamp=self._clock(),
             version_high=2,
             version_low=0,
             frame_id=frame_id,
             packet_count=1,
         )
-        return info
+
+    def _next_data_header(self) -> pypsn.PsnInfo:
+        """Build a data-packet header, advancing the data stream's frame counter."""
+        with self._lock:
+            frame_id = self._data_frame_id
+            self._data_frame_id = (self._data_frame_id + 1) % _FRAME_ID_WRAP
+        return self._make_psn_info(frame_id)
+
+    def _next_info_header(self) -> pypsn.PsnInfo:
+        """Build an info-packet header, advancing the info stream's frame counter."""
+        with self._lock:
+            frame_id = self._info_frame_id
+            self._info_frame_id = (self._info_frame_id + 1) % _FRAME_ID_WRAP
+        return self._make_psn_info(frame_id)
 
     def _snapshot_markers(self) -> list[Marker]:
         """Return a consistent copy of the marker list under the lock."""
@@ -346,7 +360,7 @@ class PsnServer:
         # between would otherwise carry a timestamp ahead of the header it ships
         # in, which underflows a receiver computing age as unsigned.
         trackers = [t.to_psn_marker() for t in markers]
-        packet = pypsn.PsnDataPacket(info=self._make_psn_info(), trackers=trackers)
+        packet = pypsn.PsnDataPacket(info=self._next_data_header(), trackers=trackers)
         self._send(pypsn.prepare_psn_data_packet_bytes(packet))
 
     def _send_info_packet(self) -> None:
@@ -354,7 +368,7 @@ class PsnServer:
         if not markers:
             return
         packet = pypsn.PsnInfoPacket(
-            info=self._make_psn_info(),
+            info=self._next_info_header(),
             name=self._system_name,
             trackers=[t.to_psn_marker_info() for t in markers],
         )

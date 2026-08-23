@@ -111,7 +111,7 @@ class TestHeaderSharesTheTrackerClock:
     def test_header_reads_the_injected_clock(self) -> None:
         clock = _StepClock(555_000)
         server = PsnServer(clock=clock)
-        assert server._make_psn_info().timestamp == 555_000
+        assert server._next_data_header().timestamp == 555_000
 
     def test_header_and_tracker_stamps_share_one_time_base(self) -> None:
         """A receiver compares the two to judge tracker freshness, so they must
@@ -121,7 +121,7 @@ class TestHeaderSharesTheTrackerClock:
         marker = server.add_marker(301, "Marker 301")
         marker.set_pos(1.0, 2.0, 3.0)
         clock.now = 4_000
-        info = server._make_psn_info()
+        info = server._next_data_header()
         assert marker.to_psn_marker().timestamp == 1_000
         assert info.timestamp == 4_000
         assert info.timestamp - marker.timestamp == 3_000
@@ -138,7 +138,7 @@ class TestHeaderSharesTheTrackerClock:
 
         sent: list[bytes] = []
         monkeypatch.setattr(server, "_send", sent.append)
-        real_make = server._make_psn_info
+        real_make = server._next_data_header
 
         def _make_then_write() -> pypsn.PsnInfo:
             info = real_make()
@@ -146,7 +146,7 @@ class TestHeaderSharesTheTrackerClock:
             marker.set_pos(9.0, 9.0, 9.0)  # a write lands between the two reads
             return info
 
-        monkeypatch.setattr(server, "_make_psn_info", _make_then_write)
+        monkeypatch.setattr(server, "_next_data_header", _make_then_write)
         server._send_data_packet()
 
         packet = pypsn.parse_psn_packet(sent[0])
@@ -156,6 +156,6 @@ class TestHeaderSharesTheTrackerClock:
     def test_header_advances_between_packets(self) -> None:
         clock = _StepClock(1_000)
         server = PsnServer(clock=clock)
-        first = server._make_psn_info().timestamp
+        first = server._next_data_header().timestamp
         clock.now = 17_667
-        assert server._make_psn_info().timestamp > first
+        assert server._next_data_header().timestamp > first

@@ -8,8 +8,6 @@ Routes are exercised against a live :class:`ConfigWebServer`.
 from __future__ import annotations
 
 import json
-import socket
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -28,29 +26,13 @@ from openfollow.templates import TEMPLATE_VERSION
 from openfollow.templates.loader import list_templates_by_type
 from openfollow.templates.writer import TemplateWriteError, write_user_template
 from openfollow.web.server import ConfigWebServer
+from tests._ports import live_on_free_port
 
 pytestmark = pytest.mark.integration
 
 # ---------------------------------------------------------------------------
 # Live-server fixture
 # ---------------------------------------------------------------------------
-
-
-def _find_free_tcp_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
-def _wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=0.1):
-                return True
-        except OSError:
-            time.sleep(0.05)
-    return False
 
 
 @pytest.fixture()
@@ -60,18 +42,16 @@ def live_server(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
 
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-    )
-    server.start()
-    assert _wait_for_port(port)
-    yield server, f"http://127.0.0.1:{port}", str(config_path)
-    server.stop()
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+        )
+    ) as (server, base):
+        yield server, base, str(config_path)
 
 
 def _get(base: str, path: str) -> tuple[int, str]:

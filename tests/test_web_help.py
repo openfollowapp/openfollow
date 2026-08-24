@@ -8,8 +8,6 @@ guard, and the ``/help/<id>.html`` route (slug allow-list, 404s, content type).
 from __future__ import annotations
 
 import re
-import socket
-import time
 import urllib.error
 import urllib.request
 
@@ -22,6 +20,7 @@ from openfollow.web import server as _server_module  # noqa: F401 – registers 
 from openfollow.web._md import render_help_markdown
 from openfollow.web.routes import _WEB_HELP_DIR
 from openfollow.web.server import ConfigWebServer
+from tests._ports import live_on_free_port
 
 _TEMPLATES_DIR = _WEB_HELP_DIR.parent / "templates"
 
@@ -156,23 +155,6 @@ class TestHelpDocImageAssets:
 # ---------------------------------------------------------------------------
 
 
-def _find_free_tcp_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
-def _wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=0.1):
-                return True
-        except OSError:
-            time.sleep(0.05)
-    return False
-
-
 def _get(base: str, path: str) -> tuple[int, str, str]:
     """GET ``path``; return ``(status, body, content_type)``."""
     try:
@@ -190,17 +172,15 @@ def live_server(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
 
-    port = _find_free_tcp_port()
-    server = ConfigWebServer(
-        config_path=str(tmp_path / "config.toml"),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-    )
-    server.start()
-    assert _wait_for_port(port), f"Web server did not start within 5 s on port {port}"
-    yield f"http://127.0.0.1:{port}"
-    server.stop()
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(tmp_path / "config.toml"),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+        )
+    ) as (_server, base):
+        yield base
 
 
 class TestHelpRoute:

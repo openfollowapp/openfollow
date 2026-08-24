@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import json
 import re
-import socket
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -48,6 +46,7 @@ from openfollow.web.routes import (
     _virtual_fader_names_for_form,
 )
 from openfollow.web.server import ConfigWebServer
+from tests._ports import live_on_free_port, start_on_free_port
 
 pytestmark = pytest.mark.integration
 
@@ -57,23 +56,6 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 
 
-def _find_free_tcp_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
-def _wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=0.1):
-                return True
-        except OSError:
-            time.sleep(0.05)
-    return False
-
-
 @pytest.fixture()
 def live_server(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
@@ -81,20 +63,18 @@ def live_server(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
 
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
     # Seed a controlled marker; id 0 is reserved as "ignored" project-wide.
     config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-    )
-    server.start()
-    assert _wait_for_port(port)
-    yield server, f"http://127.0.0.1:{port}", str(config_path)
-    server.stop()
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+        )
+    ) as (server, base):
+        yield server, base, str(config_path)
 
 
 def _live_server_with_providers(tmp_path, monkeypatch, **providers):
@@ -106,18 +86,17 @@ def _live_server_with_providers(tmp_path, monkeypatch, **providers):
     monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-        **providers,
+    server, base = start_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            **providers,
+        )
     )
-    server.start()
-    assert _wait_for_port(port)
-    return server, f"http://127.0.0.1:{port}", str(config_path)
+    return server, base, str(config_path)
 
 
 def _get(base: str, path: str) -> tuple[int, str]:

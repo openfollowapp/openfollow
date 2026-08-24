@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import socket
 import sys
 import time
 import urllib.error
@@ -27,29 +26,13 @@ import openfollow.web.discovery as discovery_module
 from openfollow.configuration import AppConfig, load_config, save_config
 from openfollow.web import peer_auth
 from openfollow.web.server import ConfigWebServer
+from tests._ports import live_on_free_port, start_on_free_port
 
 pytestmark = pytest.mark.integration
 
 # ---------------------------------------------------------------------------
 # Infrastructure
 # ---------------------------------------------------------------------------
-
-
-def _find_free_tcp_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
-def _wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=0.1):
-                return True
-        except OSError:
-            time.sleep(0.05)
-    return False
 
 
 @pytest.fixture()
@@ -60,20 +43,16 @@ def live_server(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
 
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
-
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-    )
-    server.start()
-    assert _wait_for_port(port), f"Web server did not start within 5 s on port {port}"
-
-    yield server, f"http://127.0.0.1:{port}"
-    server.stop()
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+        )
+    ) as (server, base):
+        yield server, base
 
 
 # ---------------------------------------------------------------------------
@@ -1084,7 +1063,6 @@ def pin_protected_server(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
 
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
 
     # Write a config with a PIN before the server starts; ``_check_auth``
@@ -1093,17 +1071,15 @@ def pin_protected_server(tmp_path, monkeypatch):
     initial.web_pin = "sekret"
     save_config(initial, str(config_path))
 
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-    )
-    server.start()
-    assert _wait_for_port(port), f"Web server did not start within 5 s on port {port}"
-
-    yield server, f"http://127.0.0.1:{port}", "sekret"
-    server.stop()
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+        )
+    ) as (server, base):
+        yield server, base, "sekret"
 
 
 def _signed_post(base: str, path: str, body_bytes: bytes, pin: str) -> int:
@@ -2389,7 +2365,6 @@ def test_api_config_export_sanitises_unsafe_system_name(
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
 
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
 
     # Write config with a risky system name.
@@ -2397,17 +2372,14 @@ def test_api_config_export_sanitises_unsafe_system_name(
     cfg.psn_system_name = "Name with / and ; chars"
     save_config(cfg, str(config_path))
 
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name=cfg.psn_system_name,
-    )
-    server.start()
-    try:
-        assert _wait_for_port(port)
-        base = f"http://127.0.0.1:{port}"
-
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name=cfg.psn_system_name,
+        )
+    ) as (_server, base):
         with urllib.request.urlopen(f"{base}/api/config/export", timeout=5) as resp:
             disposition = resp.headers.get("Content-Disposition", "")
             resp.read()
@@ -2415,8 +2387,6 @@ def test_api_config_export_sanitises_unsafe_system_name(
         # Forward slash and semicolon must be replaced with '-'.
         assert "/" not in disposition.split('filename="', 1)[1].split('"')[0]
         assert ";" not in disposition.split('filename="', 1)[1].split('"')[0]
-    finally:
-        server.stop()
 
 
 def test_api_config_import_rejects_non_object_json(live_server) -> None:
@@ -4476,18 +4446,16 @@ def _live_server_with_zone_providers(tmp_path, monkeypatch, **providers):
     monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-        **providers,
+    return start_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            **providers,
+        )
     )
-    server.start()
-    assert _wait_for_port(port)
-    return server, f"http://127.0.0.1:{port}"
 
 
 def test_api_list_zones_uses_diagnostics_provider_when_attached(
@@ -5078,21 +5046,17 @@ def test_api_video_snapshot_returns_jpeg_when_provider_yields_bytes(
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
 
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="SnapTest",
-        preview_snapshot_provider=lambda: b"\xff\xd8\xff\xe0jpegbody",
-        full_snapshot_provider=lambda: b"\xff\xd8\xff\xe0fulljpeg",
-    )
-    server.start()
-    try:
-        assert _wait_for_port(port)
-        base = f"http://127.0.0.1:{port}"
-
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="SnapTest",
+            preview_snapshot_provider=lambda: b"\xff\xd8\xff\xe0jpegbody",
+            full_snapshot_provider=lambda: b"\xff\xd8\xff\xe0fulljpeg",
+        )
+    ) as (_server, base):
         with urllib.request.urlopen(f"{base}/api/video/snapshot", timeout=5) as r:
             assert r.status == 200
             assert r.headers.get("Content-Type", "").startswith("image/jpeg")
@@ -5103,8 +5067,6 @@ def test_api_video_snapshot_returns_jpeg_when_provider_yields_bytes(
             assert r.status == 200
             assert r.headers.get("Content-Type", "").startswith("image/jpeg")
             assert r.read() == b"\xff\xd8\xff\xe0fulljpeg"
-    finally:
-        server.stop()
 
 
 def test_api_wizard_solve_returns_camera_and_reprojected_corners(live_server) -> None:
@@ -5977,23 +5939,21 @@ def _speeds_server(tmp_path, monkeypatch, *, live_speeds, controlled_ids, disk_s
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
 
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
     cfg = AppConfig(controlled_marker_ids=list(controlled_ids))
     if disk_speeds:
         cfg.marker_move_speeds = dict(disk_speeds)
     save_config(cfg, str(config_path))
 
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-        marker_move_speeds_provider=lambda: dict(live_speeds),
+    return start_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            marker_move_speeds_provider=lambda: dict(live_speeds),
+        )
     )
-    server.start()
-    assert _wait_for_port(port)
-    return server, f"http://127.0.0.1:{port}"
 
 
 def test_section_save_preserves_live_marker_speeds_on_disk(tmp_path, monkeypatch) -> None:

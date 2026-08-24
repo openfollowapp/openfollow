@@ -10,8 +10,6 @@ persist on/off, the one-way cascade-disable of person detection when off
 
 from __future__ import annotations
 
-import socket
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,25 +19,9 @@ import pytest
 import openfollow.web.discovery as discovery_module
 from openfollow.configuration import load_config, save_config
 from openfollow.web.server import ConfigWebServer
+from tests._ports import live_on_free_port
 
 pytestmark = pytest.mark.integration
-
-
-def _find_free_tcp_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return int(s.getsockname()[1])
-
-
-def _wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=0.1):
-                return True
-        except OSError:
-            time.sleep(0.05)
-    return False
 
 
 @pytest.fixture()
@@ -48,17 +30,15 @@ def live_server(tmp_path, monkeypatch):  # noqa: ANN001, ANN201
     for cls in (discovery_module.BeaconSender, discovery_module.BeaconReceiver):
         monkeypatch.setattr(cls, "start", lambda self: None)
         monkeypatch.setattr(cls, "stop", lambda self: None)
-    port = _find_free_tcp_port()
-    server = ConfigWebServer(
-        config_path=str(tmp_path / "config.toml"),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-    )
-    server.start()
-    assert _wait_for_port(port), f"web server did not start on {port}"
-    yield server, f"http://127.0.0.1:{port}"
-    server.stop()
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(tmp_path / "config.toml"),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+        )
+    ) as (server, base):
+        yield server, base
 
 
 def _get(base: str, path: str) -> tuple[int, str]:

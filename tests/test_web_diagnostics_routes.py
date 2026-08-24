@@ -13,7 +13,6 @@ the private-IP allowlist on the peer probe).
 from __future__ import annotations
 
 import os
-import socket
 import time
 import urllib.error
 import urllib.parse
@@ -27,6 +26,7 @@ from openfollow.configuration import load_config, save_config
 from openfollow.logging_setup import setup_logging
 from openfollow.web.discovery import PeerInfo
 from openfollow.web.server import ConfigWebServer
+from tests._ports import live_on_free_port
 
 pytestmark = pytest.mark.integration
 
@@ -51,23 +51,6 @@ def _clear_probe_log_source_cache():
 # ---------------------------------------------------------------------------
 # Infrastructure
 # ---------------------------------------------------------------------------
-
-
-def _find_free_tcp_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
-def _wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=0.1):
-                return True
-        except OSError:
-            time.sleep(0.05)
-    return False
 
 
 @pytest.fixture()
@@ -104,21 +87,19 @@ def live_server(tmp_path, monkeypatch) -> Iterator[tuple[ConfigWebServer, str, s
     original_level = root.level
 
     ring = setup_logging(ring_capacity=64)
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-        log_ring=ring,
-    )
-    server.start()
-    assert _wait_for_port(port)
     try:
-        yield server, f"http://127.0.0.1:{port}", str(config_path)
+        with live_on_free_port(
+            lambda port: ConfigWebServer(
+                config_path=str(config_path),
+                host="127.0.0.1",
+                port=port,
+                system_name="TestSystem",
+                log_ring=ring,
+            )
+        ) as (server, base):
+            yield server, base, str(config_path)
     finally:
-        server.stop()
         root.setLevel(original_level)
         for h in list(root.handlers):
             if h not in original_handlers:

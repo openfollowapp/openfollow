@@ -204,8 +204,8 @@ class PsnReceiver:
                                 dz = new_pos[2] - prev_pos[2]
                                 if dx != 0.0 or dy != 0.0 or dz != 0.0:
                                     speed = (dx / dt, dy / dt, dz / dt)
-                    # The sender's own timestamp and status, verbatim; read
-                    # defensively so a parser swap can't abort the rest of the frame.
+                    # The sender's own timestamp and status, normalised but never
+                    # fabricated; absent fields default rather than abort the frame.
                     self._markers[tid].apply_remote(
                         new_pos,
                         speed,

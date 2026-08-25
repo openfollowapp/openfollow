@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from typing import Any
 
 import pypsn
 
@@ -19,7 +20,7 @@ _VALID = 1.0
 _INVALID = 0.0
 
 
-def _clamped_status(status: float) -> float:
+def _clamped_status(status: Any) -> float:
     """Coerce a status into the spec's 0.0-1.0 range.
 
     A non-numeric or NaN value falls back to the declared default rather than
@@ -36,7 +37,7 @@ def _clamped_status(status: float) -> float:
     return min(1.0, max(0.0, value))
 
 
-def _clamped_timestamp(timestamp: int) -> int:
+def _clamped_timestamp(timestamp: Any) -> int:
     """Coerce a tracker timestamp into a non-negative microsecond count."""
     try:
         value = int(timestamp)
@@ -55,8 +56,9 @@ class Marker:
     by an internal lock to prevent torn reads when background PSN threads
     read state while the main thread updates it.
 
-    Every data write stamps ``timestamp`` and marks the marker valid, so a
-    receiver can tell a marker that is still being updated from a stale one.
+    Every position or speed write stamps ``timestamp`` and marks the marker
+    valid, so a receiver can tell a marker that is still being updated from a
+    stale one. ``set_status`` and ``set_name`` do not stamp.
 
     A marker built from received data (``remote=True``, written via
     ``apply_remote``) instead holds what its sender published, timed from that
@@ -178,8 +180,9 @@ class Marker:
         """Write one received tracker: the sender's values, never a local stamp.
 
         *speed* of ``None`` keeps the previous vector, so a sender that stops
-        publishing speed does not zero the last known one. The whole tracker
-        lands under a single lock acquisition.
+        publishing speed does not zero the last known one. ``timestamp`` and
+        ``status`` are clamped to the spec's ranges, never fabricated. The
+        whole tracker lands under a single lock acquisition.
         """
         remote_status = _clamped_status(status)
         remote_timestamp = _clamped_timestamp(timestamp)

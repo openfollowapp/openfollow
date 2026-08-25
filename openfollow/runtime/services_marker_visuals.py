@@ -545,7 +545,7 @@ def build_marker_visual_state(
         marker_fader = _fader_bus.marker_fader_value(tid) if _fader_bus is not None else None
 
         # Read the position tuple once so x/y/z come from a single locked
-        # snapshot. The receiver thread can call ``set_pos`` between separate
+        # snapshot. The receiver thread can call ``apply_remote`` between separate
         # ``marker.pos`` accesses, which would tear X/Y/Z across two packets.
         px, py, pz = marker.pos
 

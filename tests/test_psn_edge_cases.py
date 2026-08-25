@@ -40,6 +40,8 @@ class _PacketTracker:
     tracker_id: int
     pos: _Vec | None
     speed: _Vec | None
+    timestamp: int = 0
+    status: float = 0.0
 
 
 class _FakeDataPacket:

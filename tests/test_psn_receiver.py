@@ -36,6 +36,18 @@ class _PacketTracker:
     tracker_id: int
     pos: _Vec | None
     speed: _Vec | None
+    timestamp: int = 0
+    status: float = 0.0
+
+
+@dataclass
+class _FieldlessPacketTracker:
+    """A tracker whose parser emitted neither optional chunk - the shape
+    ``pypsn`` would hand us if it stopped exposing the two attributes."""
+
+    tracker_id: int
+    pos: _Vec | None
+    speed: _Vec | None
 
 
 class _FakeDataPacket:
@@ -79,6 +91,70 @@ def test_receiver_derives_speed_from_position_when_protocol_speed_is_zero(monkey
     assert vx == pytest.approx(2.0)
 
 
+def test_receiver_carries_the_wire_timestamp_and_status(monkeypatch) -> None:
+    """Both fields belong to the sender: ``timestamp`` counts from the sender's
+    start and ``status`` is the validity it published. Stamping our own clock
+    (or promoting the status) reports a local quantity under a remote name."""
+    monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+    monkeypatch.setattr(receiver_module.time, "monotonic", lambda: 10.0)
+
+    receiver = PsnReceiver()
+    receiver._on_packet(
+        _FakeDataPacket([_PacketTracker(5, _Vec(1.0, 2.0, 3.0), _Vec(0.0, 0.0, 0.0), timestamp=4_242, status=0.25)])
+    )
+
+    marker = receiver.get_marker(5)
+    assert marker is not None
+    assert marker.timestamp == 4_242
+    assert marker.status == pytest.approx(0.25)
+    assert marker.is_remote is True
+
+
+def test_receiver_lets_the_tracker_timestamp_go_backwards(monkeypatch) -> None:
+    """A restarted sender resets its tracker clock. No local stamp can move
+    backwards, so this fails any implementation that stamps - without the test
+    itself having to know what our clock reads."""
+    monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+    monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.5))
+
+    receiver = PsnReceiver()
+    zero = _Vec(0.0, 0.0, 0.0)
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(5, _Vec(1.0, 0.0, 0.0), zero, timestamp=9_000_000)]))
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(5, _Vec(2.0, 0.0, 0.0), zero, timestamp=25)]))
+
+    marker = receiver.get_marker(5)
+    assert marker is not None
+    assert marker.timestamp == 25
+
+
+def test_receiver_survives_a_tracker_without_timestamp_or_status(monkeypatch) -> None:
+    """``pypsn`` is an unpinned git dependency. If a parser swap stops exposing
+    either field, the tracker must degrade to the default - not raise and take
+    every later tracker in the frame down with it."""
+    monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+    monkeypatch.setattr(receiver_module.time, "monotonic", lambda: 10.0)
+
+    receiver = PsnReceiver()
+    zero = _Vec(0.0, 0.0, 0.0)
+    receiver._on_packet(
+        _FakeDataPacket(
+            [
+                _FieldlessPacketTracker(5, _Vec(1.0, 2.0, 3.0), zero),
+                _PacketTracker(6, _Vec(4.0, 5.0, 6.0), zero, timestamp=77, status=1.0),
+            ]
+        )
+    )
+
+    fieldless = receiver.get_marker(5)
+    assert fieldless is not None
+    assert fieldless.pos == (1.0, 2.0, 3.0)
+    assert fieldless.timestamp == 0
+    assert fieldless.status == 0.0
+    later = receiver.get_marker(6)
+    assert later is not None
+    assert later.timestamp == 77
+
+
 def test_receiver_online_timeout_uses_last_seen(monkeypatch) -> None:
     receiver = PsnReceiver()
     receiver._last_seen[9] = 10.0
@@ -110,8 +186,8 @@ def test_receiver_skips_tracker_id_zero_without_dropping_later_trackers(monkeypa
 
 
 def test_receiver_skips_non_int_tracker_id_without_dropping_later_trackers(monkeypatch) -> None:
-    """#540 Low: a non-int tracker_id must be skipped, not raise on the ``< 1``
-    compare and abort the whole frame."""
+    """A non-int tracker_id must be skipped, not raise on the ``< 1`` compare
+    and abort the whole frame."""
     monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
     monkeypatch.setattr(receiver_module.time, "monotonic", lambda: 10.0)
 

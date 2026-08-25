@@ -106,7 +106,9 @@ def test_setters_use_lock_and_do_not_tear_reads() -> None:
 
 
 class TestTrackerTimestampAndStatus:
-    """Every tracker carries a real timestamp and status, never a constant zero.
+    """Every tracker we drive carries a real timestamp and status, never a
+    constant zero. (A received one carries its sender's values instead - see
+    :class:`TestRemoteMarker`.)
 
     The PSN spec defines the per-tracker timestamp as the time of that tracker's
     last data update (microseconds, sharing the packet header's base) and status
@@ -188,3 +190,70 @@ class TestTrackerTimestampAndStatus:
         converted = t.to_psn_marker()
         assert converted.timestamp == 4_242
         assert converted.status == 1.0
+
+
+class TestRemoteMarker:
+    """A marker mirroring a sender reports what that sender published.
+
+    ``timestamp`` counts from the sender's start, so any value this process
+    could stamp is the wrong quantity. Every test here pins the local clock to
+    a value distinct from the wire value: an implementation that stamps fails
+    them rather than passing by coincidence.
+    """
+
+    def test_wire_timestamp_is_kept_instead_of_the_local_clock(self) -> None:
+        t = Marker(marker_id=1, name="T1", remote=True, clock=_StepClock(999_999))
+        t.apply_remote((1.0, 2.0, 3.0), timestamp=4_242, status=1.0)
+        assert t.timestamp == 4_242
+        assert t.pos == (1.0, 2.0, 3.0)
+
+    def test_wire_status_is_kept_instead_of_being_promoted_to_valid(self) -> None:
+        """The local write path promotes an untouched marker to 1.0 on its first
+        data write; a partial validity the sender published must survive."""
+        t = Marker(marker_id=1, name="T1", remote=True, clock=_StepClock(1))
+        t.apply_remote((0.0, 0.0, 0.0), timestamp=10, status=0.25)
+        assert t.status == pytest.approx(0.25)
+
+    def test_a_later_write_can_move_the_timestamp_backwards(self) -> None:
+        """Two senders' epochs aside, one sender restarting sends its tracker
+        clock back to near zero. Only a verbatim carry can report that."""
+        t = Marker(marker_id=1, name="T1", remote=True, clock=_StepClock(1))
+        t.apply_remote((0.0, 0.0, 0.0), timestamp=9_000_000, status=1.0)
+        t.apply_remote((0.0, 0.0, 0.0), timestamp=25, status=1.0)
+        assert t.timestamp == 25
+
+    def test_speed_is_written_when_given(self) -> None:
+        t = Marker(marker_id=1, name="T1", remote=True)
+        t.apply_remote((0.0, 0.0, 0.0), (5.0, 0.0, 0.0), timestamp=1, status=1.0)
+        assert t.speed == (5.0, 0.0, 0.0)
+
+    def test_omitted_speed_keeps_the_previous_vector(self) -> None:
+        """A stationary marker stops producing a derived speed; zeroing it there
+        would drop the last known value out of the HUD."""
+        t = Marker(marker_id=1, name="T1", remote=True)
+        t.apply_remote((0.0, 0.0, 0.0), (5.0, 0.0, 0.0), timestamp=1, status=1.0)
+        t.apply_remote((1.0, 0.0, 0.0), timestamp=2, status=1.0)
+        assert t.speed == (5.0, 0.0, 0.0)
+
+    @pytest.mark.parametrize(
+        ("given", "expected"),
+        [(0.5, 0.5), (7.5, 1.0), (-3.0, 0.0), (float("nan"), 0.0), ("high", 0.0), (None, 0.0), (10**400, 0.0)],
+    )
+    def test_a_wire_status_is_normalised_to_the_validity_range(self, given: object, expected: float) -> None:
+        """Wire data is untrusted, and the receive thread drops the rest of the
+        packet if a write raises."""
+        t = Marker(marker_id=1, name="T1", remote=True)
+        t.apply_remote((0.0, 0.0, 0.0), timestamp=1, status=given)  # type: ignore[arg-type]
+        assert t.status == pytest.approx(expected)
+
+    @pytest.mark.parametrize(
+        ("given", "expected"), [(7, 7), (-5, 0), ("nope", 0), (None, 0), (float("inf"), 0), (float("nan"), 0)]
+    )
+    def test_a_wire_timestamp_is_normalised_to_a_non_negative_count(self, given: object, expected: int) -> None:
+        t = Marker(marker_id=1, name="T1", remote=True)
+        t.apply_remote((0.0, 0.0, 0.0), timestamp=given, status=1.0)  # type: ignore[arg-type]
+        assert t.timestamp == expected
+
+    def test_markers_are_local_unless_declared_remote(self) -> None:
+        assert Marker(marker_id=1, name="T1").is_remote is False
+        assert Marker(marker_id=1, name="T1", remote=True).is_remote is True

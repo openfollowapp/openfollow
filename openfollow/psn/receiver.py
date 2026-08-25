@@ -63,6 +63,7 @@ DEFAULT_PORT = 56565
 # process lifetime. A returning marker is re-created on its next packet.
 _MARKER_TTL_S = 60.0
 _EVICT_SWEEP_INTERVAL_S = 5.0  # throttle the sweep so a packet flood can't make it hot
+_INVALID_STATUS = 0.0  # what a tracker's validity reads as when the sender publishes none
 
 
 class PsnReceiver:
@@ -154,9 +155,8 @@ class PsnReceiver:
                 # wire-protocol-derived names; our domain layer
                 # translates them into Marker instances at this seam.
                 # One read for the whole packet: all trackers in a packet arrive
-                # together, so they share an arrival time. Marker writes below
-                # stamp their own clock for the PSN tracker timestamp; that is a
-                # separate quantity from this arrival bookkeeping.
+                # together, so they share an arrival time. Local and monotonic -
+                # not comparable to the sender-timed stamp the marker carries.
                 now = time.monotonic()
                 if now - self._last_evict_sweep >= _EVICT_SWEEP_INTERVAL_S:
                     self._last_evict_sweep = now
@@ -176,21 +176,21 @@ class PsnReceiver:
                     ):
                         continue
                     if t.tracker_id not in self._markers:
-                        self._markers[t.tracker_id] = Marker(t.tracker_id, f"Marker {t.tracker_id}")
+                        self._markers[t.tracker_id] = Marker(t.tracker_id, f"Marker {t.tracker_id}", remote=True)
                     tid = t.tracker_id
                     new_pos = (t.pos.x, t.pos.y, t.pos.z)
-                    self._markers[tid].set_pos(*new_pos)
                     # Use protocol speed only if non-zero; many servers (including
                     # OpenFollow itself) always send speed=(0,0,0) even when
                     # the marker is moving, so fall back to position derivation.
                     proto_speed_nonzero = t.speed is not None and (
                         t.speed.x != 0.0 or t.speed.y != 0.0 or t.speed.z != 0.0
                     )
+                    speed: tuple[float, float, float] | None = None
                     if proto_speed_nonzero:
                         # Store as scalar magnitude in the x component so
                         # services.py can read it without directional noise.
                         mag = (t.speed.x**2 + t.speed.y**2 + t.speed.z**2) ** 0.5
-                        self._markers[tid].set_speed(mag, 0.0, 0.0)
+                        speed = (mag, 0.0, 0.0)
                     else:
                         # Derive speed from position delta; only update when
                         # actually moving so the last known speed stays visible.
@@ -203,7 +203,15 @@ class PsnReceiver:
                                 dy = new_pos[1] - prev_pos[1]
                                 dz = new_pos[2] - prev_pos[2]
                                 if dx != 0.0 or dy != 0.0 or dz != 0.0:
-                                    self._markers[tid].set_speed(dx / dt, dy / dt, dz / dt)
+                                    speed = (dx / dt, dy / dt, dz / dt)
+                    # The sender's own timestamp and status, normalised but never
+                    # fabricated; absent fields default rather than abort the frame.
+                    self._markers[tid].apply_remote(
+                        new_pos,
+                        speed,
+                        timestamp=getattr(t, "timestamp", 0),
+                        status=getattr(t, "status", _INVALID_STATUS),
+                    )
                     self._last_pos[tid] = new_pos
                     self._last_seen[tid] = now
         except Exception:

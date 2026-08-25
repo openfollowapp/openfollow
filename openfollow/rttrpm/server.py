@@ -277,9 +277,7 @@ class RttrpmServer:
 
     def start(self) -> None:
         """Open the UDP socket and start the send thread."""
-        # One stop signal per generation. A thread that outlived its join in
-        # stop() keeps the previous, permanently-set one and exits on its next
-        # check, rather than being revived by a shared event being cleared here.
+        # One stop signal per generation – see ``PsnServer.start()``.
         stop_event = threading.Event()
         self._stop_event = stop_event
         self._cap_warned = False
@@ -297,8 +295,9 @@ class RttrpmServer:
             if self._send_thread.is_alive():
                 logger.warning("RTTrPM send thread did not stop within timeout")
             self._send_thread = None
-        sock = self._socket
-        self._socket = None
+        with self._lock:
+            sock = self._socket
+            self._socket = None
         if sock is not None:
             sock.close()
 
@@ -398,20 +397,24 @@ class RttrpmServer:
                 self._maybe_rebuild_socket_after_error(stop_event)
 
     def _maybe_rebuild_socket_after_error(self, stop_event: threading.Event | None = None) -> None:
-        # A send that fails on a superseded generation is judged by its own
-        # event, so a dying survivor can't replace the live socket.
-        if self._resolve_stop(stop_event).is_set():
-            return
+        stop = self._resolve_stop(stop_event)
         with self._lock:
+            if stop.is_set():
+                return
             now = time.monotonic()
             if now < self._next_rebuild_at:
                 return
             self._next_rebuild_at = now + _SOCKET_REBUILD_MIN_INTERVAL_SECONDS
-        self._rebuild_socket_after_error()
+        self._rebuild_socket_after_error(stop)
 
-    def _rebuild_socket_after_error(self) -> None:
+    def _rebuild_socket_after_error(self, stop_event: threading.Event | None = None) -> None:
         """Close and reopen the UDP socket after transient interface errors."""
+        stop = self._resolve_stop(stop_event)
         with self._lock:
+            # Decided under the lock stop() takes to null the socket, so a send
+            # failing on a superseded generation can't replace the live socket.
+            if stop.is_set():
+                return
             old_sock = self._socket
             try:
                 self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

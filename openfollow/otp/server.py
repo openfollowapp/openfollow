@@ -593,9 +593,7 @@ class OtpServer:
 
     def start(self) -> None:
         """Open the network socket and start transform + advertisement threads."""
-        # One stop signal per generation. A thread that outlived its join in
-        # stop() keeps the previous, permanently-set one and exits on its next
-        # check, rather than being revived by a shared event being cleared here.
+        # One stop signal per generation – see ``PsnServer.start()``.
         stop_event = threading.Event()
         self._stop_event = stop_event
         self._exit_stack = contextlib.ExitStack()
@@ -730,6 +728,7 @@ class OtpServer:
 
     def _try_open_multicast_socket_once(self, attempt: int, stop_event: threading.Event | None = None) -> bool:
         """Attempt to create the multicast TX socket once. Returns True on success."""
+        staging = contextlib.ExitStack()
         try:
             groups = self._multicast_groups()
             if self._source_ip:
@@ -745,15 +744,7 @@ class OtpServer:
                     mcast_ips=groups,
                     enable_external_loopback=True,
                 )
-            with self._lock:
-                # A socket thread from a superseded generation must not hand the
-                # live one a socket bound to the interface it just left. The lock
-                # pairs with stop()'s teardown: either that wins and this returns,
-                # or this adopts into the exit stack stop() then closes.
-                if self._resolve_stop(stop_event).is_set():
-                    return False
-                self._socket = self._exit_stack.enter_context(sock)
-            return True
+            opened = staging.enter_context(sock)
         except Exception as exc:
             logger.warning(
                 "OTP multicast socket failed (attempt %d/%d): %s",
@@ -762,6 +753,15 @@ class OtpServer:
                 exc,
             )
             return False
+        # Locked hand-over only, off-lock open. See PsnServer for the rationale.
+        with self._lock:
+            if not self._resolve_stop(stop_event).is_set():
+                self._socket = opened
+                self._exit_stack.push(staging.pop_all())
+                return True
+            stale = staging.pop_all()
+        stale.close()
+        return False
 
     def _retry_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
         """Retry multicast socket creation in the background (bounded)."""
@@ -800,13 +800,12 @@ class OtpServer:
 
     def _handle_send_error(self, exc: OSError, stop_event: threading.Event | None = None) -> None:
         """On a transient interface-change error, rebuild the socket in the background."""
-        # Once stopping, teardown owns the socket/exit-stack lifecycle. A recovery
+        # Once stopping, teardown owns the socket/exit-stack lifecycle: a recovery
         # thread spawned here is orphaned (stop() may already have passed the
-        # socket-thread join) and, after restart()'s start() clears the stop
-        # event, could open a SECOND multicast socket racing the fresh server –
-        # clobbering self._socket and leaking the FD. Mirrors PsnServer.
-        # A send that fails on a superseded generation is judged by its own
-        # event, so a dying survivor can't tear down the live socket.
+        # socket-thread join) and could open a SECOND multicast socket racing the
+        # fresh server – clobbering self._socket and leaking the FD. The caller's
+        # own generation decides, so a send failing on a superseded one can't tear
+        # down the live socket. Mirrors PsnServer.
         stop = self._resolve_stop(stop_event)
         if stop.is_set():
             return
@@ -819,6 +818,11 @@ class OtpServer:
         if not self._is_multicast_mode():
             return
         with self._lock:
+            # Re-check under the lock: stop() sets the event before tearing the
+            # socket/exit-stack down, so spawn and teardown observe one consistent
+            # stop state rather than a stale pre-lock read.
+            if stop.is_set():
+                return
             if self._socket_thread is not None and self._socket_thread.is_alive():
                 return
             old_stack = self._exit_stack

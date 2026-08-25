@@ -1046,8 +1046,11 @@ class TestOtpRetryMulticastBackground:
         # retry budget (_MAX_SOCKET_RETRIES = 3).
         attempts: list[int] = []
 
-        def fake_open(*, attempt: int, **_kw: object) -> bool:
+        handed: list[object] = []
+
+        def fake_open(*, attempt: int, stop_event: object = None) -> bool:
             attempts.append(attempt)
+            handed.append(stop_event)
             return attempt == 2
 
         srv._try_open_multicast_socket_once = fake_open  # type: ignore[assignment]
@@ -1056,6 +1059,7 @@ class TestOtpRetryMulticastBackground:
         with caplog.at_level(_logging.INFO, logger="openfollow.otp.server"):
             srv._retry_multicast_socket_background()
         assert attempts == [2]
+        assert handed == [srv._stop_event]
         assert any("connected on retry" in r.message for r in caplog.records)
 
     def test_retry_exhausts_logs_error(self, caplog) -> None:
@@ -1081,14 +1085,18 @@ class TestOtpRecoverMulticastBackground:
         srv = OtpServer(system_number=1)
         attempts: list[int] = []
 
-        def fake_open(*, attempt: int, **_kw: object) -> bool:
+        handed: list[object] = []
+
+        def fake_open(*, attempt: int, stop_event: object = None) -> bool:
             attempts.append(attempt)
+            handed.append(stop_event)
             return attempt == 3
 
         srv._try_open_multicast_socket_once = fake_open  # type: ignore[assignment]
         srv._stop_event.wait = lambda timeout=None: False  # type: ignore[assignment]
         srv._recover_multicast_socket_background()
         assert attempts == [1, 2, 3]
+        assert handed == [srv._stop_event] * 3
 
     def test_recovery_aborts_when_stop_set_between_iterations(self) -> None:
         srv = OtpServer(system_number=1)
@@ -1404,4 +1412,90 @@ class TestOtpThreadGenerations:
             assert srv._try_open_multicast_socket_once(attempt=1, stop_event=stale) is False
 
         assert srv._socket is None
-        sock.__enter__.assert_not_called()
+        # Opened off the lock, so the discarded socket has to be closed here.
+        sock.__exit__.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ("thread_name", "send_method"),
+        [
+            ("OTP-Transform", "_send_transform_packet"),
+            ("OTP-Advertisement", "_send_advertisement_packets"),
+        ],
+    )
+    def test_a_transform_loop_obeys_the_generation_that_spawned_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        thread_name: str,
+        send_method: str,
+    ) -> None:
+        """See ``PsnServer`` for the rationale: a late-scheduled thread must not
+        take orders from a generation it does not belong to.
+        """
+        with patch("openfollow.otp.server.threading.Thread") as tcls:
+            srv = OtpServer(system_number=1, mcast_ip="")
+            srv.start()
+            spawned = {c.kwargs["name"]: c.kwargs for c in tcls.call_args_list}
+            srv.stop()
+            srv.start()  # a second generation is live; the first thread never ran
+
+            sends: list[object] = []
+
+            def stub(stop_event: threading.Event | None = None) -> None:
+                sends.append(stop_event)
+                srv._stop_event.set()
+
+            monkeypatch.setattr(srv, send_method, stub)
+            spawned[thread_name]["target"](*spawned[thread_name]["args"])
+
+            assert sends == [], "the superseded loop ran under the live generation"
+            srv.stop()
+
+    def test_a_transform_loop_hands_its_generation_to_the_send(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with patch("openfollow.otp.server.threading.Thread") as tcls:
+            srv = OtpServer(system_number=1, mcast_ip="")
+            srv.start()
+            generation = srv._stop_event
+            spawned = {c.kwargs["name"]: c.kwargs for c in tcls.call_args_list}
+            seen: list[object] = []
+
+            def stub(stop_event: threading.Event | None = None) -> None:
+                seen.append(stop_event)
+                generation.set()  # one pass per loop
+
+            monkeypatch.setattr(srv, "_send_transform_packet", stub)
+            monkeypatch.setattr(srv, "_send_advertisement_packets", stub)
+
+            spawned["OTP-Transform"]["target"](*spawned["OTP-Transform"]["args"])
+            generation.clear()
+            spawned["OTP-Advertisement"]["target"](*spawned["OTP-Advertisement"]["args"])
+
+            assert seen == [generation, generation]
+            srv.stop()
+
+    def test_handle_send_error_rechecks_the_stop_signal_under_the_lock(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """stop() sets the event before tearing the socket down, so a pre-lock
+        read that went stale must not spawn a recovery thread teardown will never
+        join.
+        """
+        import errno as _e
+
+        srv = OtpServer(system_number=1)
+        sentinel_socket = MagicMock()
+        srv._socket = sentinel_socket
+        calls = {"n": 0}
+
+        def fake_is_set() -> bool:
+            calls["n"] += 1
+            return calls["n"] >= 2  # False pre-lock, True under the lock
+
+        monkeypatch.setattr(srv._stop_event, "is_set", fake_is_set)
+        srv._handle_send_error(OSError(_e.ENETUNREACH, "transient"))
+
+        assert srv._socket_thread is None
+        assert srv._socket is sentinel_socket

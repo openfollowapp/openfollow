@@ -224,6 +224,7 @@ class PsnServer:
         from openfollow.net_utils import resolve_iface_ip
 
         iface_ip = resolve_iface_ip(self._source_ip)
+        staging = contextlib.ExitStack()
         try:
             if iface_ip:
                 sock = multicast_expert.McastTxSocket(
@@ -238,15 +239,7 @@ class PsnServer:
                     mcast_ips=[mcast_ip],
                     enable_external_loopback=True,
                 )
-            with self._lock:
-                # A socket thread from a superseded generation must not hand the
-                # live one a socket bound to the interface it just left. The lock
-                # pairs with stop()'s teardown: either that wins and this returns,
-                # or this adopts into the exit stack stop() then closes.
-                if self._resolve_stop(stop_event).is_set():
-                    return False
-                self._socket = self._exit_stack.enter_context(sock)
-            return True
+            opened = staging.enter_context(sock)
         except Exception as exc:
             logger.warning(
                 "PSN multicast socket failed (attempt %d/%d): %s",
@@ -255,6 +248,18 @@ class PsnServer:
                 exc,
             )
             return False
+        # The open runs off the lock so a retry on a flapping NIC can't stall the
+        # send loops or stop(); only the hand-over is locked, which is what pairs
+        # with stop()'s teardown. A socket thread from a superseded generation
+        # must not hand the live one a socket bound to the interface it just left.
+        with self._lock:
+            if not self._resolve_stop(stop_event).is_set():
+                self._socket = opened
+                self._exit_stack.push(staging.pop_all())
+                return True
+            stale = staging.pop_all()
+        stale.close()
+        return False
 
     def _retry_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
         """Retry multicast socket creation bounded by _MAX_SOCKET_RETRIES."""

@@ -63,6 +63,7 @@ DEFAULT_PORT = 56565
 # process lifetime. A returning marker is re-created on its next packet.
 _MARKER_TTL_S = 60.0
 _EVICT_SWEEP_INTERVAL_S = 5.0  # throttle the sweep so a packet flood can't make it hot
+_INVALID_STATUS = 0.0  # what a tracker's validity reads as when the sender publishes none
 
 
 class PsnReceiver:
@@ -154,9 +155,8 @@ class PsnReceiver:
                 # wire-protocol-derived names; our domain layer
                 # translates them into Marker instances at this seam.
                 # One read for the whole packet: all trackers in a packet arrive
-                # together, so they share an arrival time. This bookkeeping is
-                # local and monotonic; the tracker timestamp the marker carries
-                # counts from the sender's start and is not comparable to it.
+                # together, so they share an arrival time. Local and monotonic -
+                # not comparable to the sender-timed stamp the marker carries.
                 now = time.monotonic()
                 if now - self._last_evict_sweep >= _EVICT_SWEEP_INTERVAL_S:
                     self._last_evict_sweep = now
@@ -204,13 +204,13 @@ class PsnReceiver:
                                 dz = new_pos[2] - prev_pos[2]
                                 if dx != 0.0 or dy != 0.0 or dz != 0.0:
                                     speed = (dx / dt, dy / dt, dz / dt)
-                    # The sender's own timestamp and status, verbatim - stamping
-                    # our clock here would report a local quantity as theirs.
+                    # The sender's own timestamp and status, verbatim; read
+                    # defensively so a parser swap can't abort the rest of the frame.
                     self._markers[tid].apply_remote(
                         new_pos,
                         speed,
-                        timestamp=t.timestamp,
-                        status=t.status,
+                        timestamp=getattr(t, "timestamp", 0),
+                        status=getattr(t, "status", _INVALID_STATUS),
                     )
                     self._last_pos[tid] = new_pos
                     self._last_seen[tid] = now

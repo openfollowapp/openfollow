@@ -177,12 +177,13 @@ def test_psn_received_marker_pos_is_psn_absolute(offsets) -> None:
     """PSN receiver stores raw PSN coords; no grid-offset translation applied.
 
     This is the *definition* the rest of the system is aligned to:
-    ``set_pos`` is documented as "in PSN coordinates" and must remain so
+    ``apply_remote`` - the write ``PsnReceiver._on_packet`` makes for every
+    received tracker - is documented as "in PSN coordinates" and must remain so
     regardless of any grid offsets configured downstream.
     """
     ox, oy, oz = offsets
-    marker = Marker(7, "remote")
-    marker.set_pos(4.0, 5.0, 6.0)
+    marker = Marker(7, "remote", remote=True)
+    marker.apply_remote((4.0, 5.0, 6.0), timestamp=1, status=1.0)
 
     assert marker.pos == (4.0, 5.0, 6.0)
     # Outgoing PSN packet carries marker.pos verbatim – independent of

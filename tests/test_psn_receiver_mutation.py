@@ -6,8 +6,11 @@ Pins wire-format parse + speed-derivation semantics of
 ``PsnReceiver._on_packet`` against mutation survivors. Targets specific
 branches that survived mutation:
 
-* ``Marker(t.marker_id, f"Marker {t.marker_id}")`` – both the id
-  and the default name must flow through unchanged.
+* ``Marker(t.tracker_id, f"Marker {t.tracker_id}", remote=True)`` – the
+  id, the default name, and the remote flag must flow through unchanged.
+  The remote flag and the four ``apply_remote`` arguments are killed in
+  ``test_psn_receiver.py`` instead, where the wire values they carry are
+  the subject rather than the parse.
 * ``t.speed is not None`` vs ``is None`` – protocol-speed vs
   position-derived dispatch.
 * ``t.speed.x != 0.0 or t.speed.y != 0.0 or t.speed.z != 0.0`` – the
@@ -74,7 +77,7 @@ class _FakeDataPacket:
 
 
 class TestMarkerIdAndNamePreserved:
-    """``Marker(t.marker_id, f"Marker {t.marker_id}")`` – mutmut
+    """``Marker(t.tracker_id, f"Marker {t.tracker_id}")`` – mutmut
     can swap either arg for ``None``; the receiver then hands back a
     ``Marker`` with a ``None`` field.
     """

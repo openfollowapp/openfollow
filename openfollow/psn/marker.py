@@ -29,7 +29,7 @@ def _clamped_status(status: float) -> float:
     """
     try:
         value = float(status)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return _INVALID
     if value != value:  # NaN would reach struct.pack and ship a NaN status.
         return _INVALID
@@ -40,7 +40,7 @@ def _clamped_timestamp(timestamp: int) -> int:
     """Coerce a tracker timestamp into a non-negative microsecond count."""
     try:
         value = int(timestamp)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
     return max(0, value)
 
@@ -59,11 +59,8 @@ class Marker:
     receiver can tell a marker that is still being updated from a stale one.
 
     A marker built from received data (``remote=True``, written via
-    ``apply_remote``) instead holds the values its sender published. Those count
-    from *that sender's* start, so they must never be compared against
-    ``psn_timestamp_usec()`` or re-broadcast as ours; ``is_remote`` is how a
-    holder tells the two epochs apart. Local freshness for a received marker is
-    ``PsnReceiver.is_marker_online``, which times arrival instead.
+    ``apply_remote``) instead holds what its sender published, timed from that
+    sender's start: never comparable to ours, never re-broadcast as ours.
     """
 
     __slots__ = (
@@ -187,9 +184,9 @@ class Marker:
         remote_status = _clamped_status(status)
         remote_timestamp = _clamped_timestamp(timestamp)
         with self._lock:
-            self._pos = pos
+            self._pos = (pos[0], pos[1], pos[2])
             if speed is not None:
-                self._speed = speed
+                self._speed = (speed[0], speed[1], speed[2])
             self._status = remote_status
             self._timestamp = remote_timestamp
 

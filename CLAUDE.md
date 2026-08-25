@@ -301,7 +301,7 @@ The HUD is **not** in the GStreamer chain. The video sink (`gtksink`) is wrapped
 
 | Site | Frame |
 |---|---|
-| `psn/receiver.py` (`set_pos` from incoming PSN packet) | PSN-absolute (raw) |
+| `psn/receiver.py` (`apply_remote` from incoming PSN packet) | PSN-absolute (raw) |
 | `psn/server.py` (`marker.to_psn_marker()` outbound) | PSN-absolute (verbatim) |
 | `input/mouse.py` (`unproject_to_plane` → `set_pos`) | PSN-absolute (direct) |
 | `runtime/services_detection_pin.py` (pin target) | PSN-absolute (direct) |

@@ -106,7 +106,9 @@ def test_setters_use_lock_and_do_not_tear_reads() -> None:
 
 
 class TestTrackerTimestampAndStatus:
-    """Every tracker carries a real timestamp and status, never a constant zero.
+    """Every tracker we drive carries a real timestamp and status, never a
+    constant zero. (A received one carries its sender's values instead - see
+    :class:`TestRemoteMarker`.)
 
     The PSN spec defines the per-tracker timestamp as the time of that tracker's
     last data update (microseconds, sharing the packet header's base) and status
@@ -235,7 +237,7 @@ class TestRemoteMarker:
 
     @pytest.mark.parametrize(
         ("given", "expected"),
-        [(0.5, 0.5), (7.5, 1.0), (-3.0, 0.0), (float("nan"), 0.0), ("high", 0.0), (None, 0.0)],
+        [(0.5, 0.5), (7.5, 1.0), (-3.0, 0.0), (float("nan"), 0.0), ("high", 0.0), (None, 0.0), (10**400, 0.0)],
     )
     def test_a_wire_status_is_normalised_to_the_validity_range(self, given: object, expected: float) -> None:
         """Wire data is untrusted, and the receive thread drops the rest of the
@@ -244,7 +246,9 @@ class TestRemoteMarker:
         t.apply_remote((0.0, 0.0, 0.0), timestamp=1, status=given)  # type: ignore[arg-type]
         assert t.status == pytest.approx(expected)
 
-    @pytest.mark.parametrize(("given", "expected"), [(7, 7), (-5, 0), ("nope", 0), (None, 0)])
+    @pytest.mark.parametrize(
+        ("given", "expected"), [(7, 7), (-5, 0), ("nope", 0), (None, 0), (float("inf"), 0), (float("nan"), 0)]
+    )
     def test_a_wire_timestamp_is_normalised_to_a_non_negative_count(self, given: object, expected: int) -> None:
         t = Marker(marker_id=1, name="T1", remote=True)
         t.apply_remote((0.0, 0.0, 0.0), timestamp=given, status=1.0)  # type: ignore[arg-type]

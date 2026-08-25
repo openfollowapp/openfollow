@@ -18,6 +18,7 @@ to grow into a fuller two-Pi validation suite (see the tracking issue).
 | `osc_socket_options_probe.py` | DUT | Builds clients via the deployed `OscService._make_client` and asserts the broadcast/multicast socket options (#482). |
 | `eos_console_probe.py` | workstation | Drives the deployed `OscTransmitterManager` at an Eos console / ETCnomad. `verify` reads Eos's own parameter values back and asserts the bundled ETC Eos templates' X/Y/Z mapping, exiting `0` (mapping correct) / `1` (mismatch or setup fault). `test` / `sweep` / `stream` drive the console for an operator to watch; their exit code reports only whether the sends reached the socket. |
 | `marker_catalog_two_station.py` | workstation | Reproduces the clock-skew marker-rename revert across two stations: steps station B's clock ahead, renames on A, asserts the rename holds on both. Exits `0` (PASS) / `1` (FAIL). |
+| `osc_marker_paths.py` | companion / workstation | Drives any number of markers along predefined paths (circle, figure8, line, square, spiral, random, static) over OSC, so a receiver can be checked against motion rather than a single static write. Stdlib only. `--dry-run` prints the samples instead of sending. |
 
 ## DUT-local probes (no companion)
 

@@ -10,6 +10,7 @@ wrong (a non-bind failure must surface, an exhausted retry must fail loudly).
 
 from __future__ import annotations
 
+import errno
 import socket
 
 import pytest
@@ -98,7 +99,7 @@ def test_bind_free_udp_port_retries_a_stolen_port() -> None:
     def _bind(port: int) -> None:
         seen.append(port)
         if len(seen) == 1:
-            raise OSError("address already in use")
+            raise OSError(errno.EADDRINUSE, "address already in use")
 
     port = bind_free_udp_port(_bind)
     assert len(seen) == 2
@@ -112,7 +113,7 @@ def test_bind_free_udp_port_gives_up_loudly() -> None:
     def _bind(port: int) -> None:
         nonlocal attempts
         attempts += 1
-        raise OSError("address already in use")
+        raise OSError(errno.EADDRINUSE, "address already in use")
 
     with pytest.raises(AssertionError, match="no free UDP port after 3 attempts"):
         bind_free_udp_port(_bind, attempts=3)
@@ -130,6 +131,24 @@ def test_bind_free_udp_port_does_not_swallow_a_non_bind_failure() -> None:
 
     with pytest.raises(RuntimeError, match="can't start new thread"):
         bind_free_udp_port(_bind)
+    assert attempts == 1
+
+
+def test_bind_free_udp_port_reraises_an_oserror_that_is_not_a_lost_race() -> None:
+    """Only EADDRINUSE means "someone took it, pick another". A persistent
+    failure - fd exhaustion is the realistic one under xdist - would otherwise
+    be retried four more times and reported as this helper's AssertionError,
+    losing the errno that says what actually happened."""
+    attempts = 0
+
+    def _bind(port: int) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise OSError(errno.EMFILE, "Too many open files")
+
+    with pytest.raises(OSError, match="Too many open files") as excinfo:
+        bind_free_udp_port(_bind)
+    assert excinfo.value.errno == errno.EMFILE
     assert attempts == 1
 
 
@@ -167,7 +186,13 @@ def test_wait_for_port_sees_a_listening_socket() -> None:
 
 
 def test_wait_for_port_times_out_on_a_closed_port() -> None:
-    assert wait_for_port(free_tcp_port("127.0.0.1"), timeout=0.2) is False
+    """Hold the port bound but never ``listen()``: connections are refused, and
+    nothing else can take it mid-test. Asserting against a merely *released*
+    port would be the same TOCTOU these helpers exist to close - another worker
+    could bind and listen inside the window and flip the result."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        assert wait_for_port(sock.getsockname()[1], timeout=0.2) is False
 
 
 # ---------------------------------------------------------------------------

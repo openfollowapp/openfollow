@@ -10,7 +10,7 @@ across the handoff, because the listener under test has to bind it, so the fix
 is to retry the *bind* rather than the pick.
 
 The two retry helpers differ because the two failures look different:
-``bind_free_udp_port`` watches for the ``OSError`` a failed bind raises, while
+``bind_free_udp_port`` watches for the ``EADDRINUSE`` a lost bind raises, while
 ``live_on_free_port`` watches for the port never opening, since ``ConfigWebServer``
 answers a taken port by quietly serving a fallback port instead of raising.
 """
@@ -18,6 +18,7 @@ answers a taken port by quietly serving a fallback port instead of raising.
 from __future__ import annotations
 
 import contextlib
+import errno
 import socket
 import time
 from collections.abc import Callable, Iterator
@@ -55,8 +56,10 @@ def free_tcp_port(host: str = "") -> int:
 def bind_free_udp_port(bind: Callable[[int], object], *, attempts: int = BIND_ATTEMPTS) -> int:
     """Call ``bind(port)`` on a free UDP port and return the port it took.
 
-    Only an ``OSError`` from ``bind`` is retried, so a test that injects some
-    other failure into the bind path still sees its own exception. A test
+    Only ``EADDRINUSE`` is retried - the errno a lost race raises. Any other
+    failure is persistent, so retrying it four more times would only bury it
+    under this function's ``AssertionError``. A test that injects its own
+    failure into the bind path likewise still sees its own exception, and one
     asserting the bind-failure contract itself passes an explicitly occupied
     port and calls the listener directly - it wants the collision.
     """
@@ -64,7 +67,9 @@ def bind_free_udp_port(bind: Callable[[int], object], *, attempts: int = BIND_AT
         port = free_udp_port()
         try:
             bind(port)
-        except OSError:
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
             continue
         return port
     raise AssertionError(f"no free UDP port after {attempts} attempts")

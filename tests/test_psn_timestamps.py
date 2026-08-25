@@ -137,7 +137,7 @@ class TestHeaderSharesTheTrackerClock:
         marker.set_pos(1.0, 2.0, 3.0)
 
         sent: list[bytes] = []
-        monkeypatch.setattr(server, "_send", sent.append)
+        monkeypatch.setattr(server, "_send", lambda data, stop_event=None: sent.append(data))
         real_make = server._next_data_header
 
         def _make_then_write() -> pypsn.PsnInfo:

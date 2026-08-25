@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import socket
 import struct
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -813,3 +814,124 @@ class TestRttrpmCapWarning:
                 assert srv._cap_warned is False
             finally:
                 srv.stop()
+
+
+class TestRttrpmThreadGenerations:
+    """A send thread that outlived stop()'s join must not be revived by start().
+
+    ``restart()`` is stop() then start() – the live-apply path for every
+    ``rttrpm_output.*`` edit – and start() opens a fresh socket, so a survivor
+    would stream to the new destination alongside the fresh thread.
+    """
+
+    def test_start_does_not_resurrect_a_send_thread_that_outlived_stop(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        srv = RttrpmServer(host="127.0.0.1")
+        in_send = threading.Event()
+        release = threading.Event()
+        sends: dict[int, int] = {}
+
+        def blocking_send(stop_event: threading.Event | None = None) -> None:
+            ident = threading.get_ident()
+            sends[ident] = sends.get(ident, 0) + 1
+            in_send.set()
+            release.wait(5.0)
+
+        monkeypatch.setattr(srv, "_send_packet", blocking_send)
+
+        srv.start()
+        assert in_send.wait(5.0)
+        survivor = srv._send_thread
+        assert survivor is not None
+
+        srv.stop()  # the join expires – the thread is wedged in the send
+        assert survivor.is_alive()
+
+        srv.start()
+        try:
+            release.set()
+            survivor.join(timeout=5.0)
+            assert not survivor.is_alive(), "the survivor was revived by start()"
+            assert sends[survivor.ident] == 1, "the survivor sent again after stop()"
+        finally:
+            release.set()
+            srv.stop()
+
+    def test_a_stale_generation_send_error_does_not_replace_the_live_socket(self) -> None:
+        import errno as _e
+
+        srv = RttrpmServer(host="127.0.0.1")
+        live_socket = MagicMock()
+        live_socket.sendto.side_effect = OSError(_e.ENETUNREACH, "iface gone")
+        srv._socket = live_socket
+        stale = threading.Event()
+        stale.set()
+
+        srv._send(b"x", stale)
+
+        assert srv._socket is live_socket
+
+    def test_a_send_loop_obeys_the_generation_that_spawned_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """See ``PsnServer`` for the rationale: a late-scheduled thread must not
+        take orders from a generation it does not belong to.
+        """
+        with patch("openfollow.rttrpm.server.threading.Thread") as tcls:
+            srv = RttrpmServer(host="127.0.0.1")
+            srv.start()
+            spawned = tcls.call_args.kwargs
+            srv.stop()
+            srv.start()  # a second generation is live; the first thread never ran
+
+            sends: list[object] = []
+
+            def stub(stop_event: threading.Event | None = None) -> None:
+                sends.append(stop_event)
+                srv._stop_event.set()
+
+            monkeypatch.setattr(srv, "_send_packet", stub)
+            spawned["target"](*spawned["args"])
+
+            assert sends == [], "the superseded loop ran under the live generation"
+            srv.stop()
+
+    def test_a_send_loop_hands_its_generation_to_the_send(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with patch("openfollow.rttrpm.server.threading.Thread") as tcls:
+            srv = RttrpmServer(host="127.0.0.1")
+            srv.start()
+            generation = srv._stop_event
+            spawned = tcls.call_args.kwargs
+            seen: list[object] = []
+
+            def stub(stop_event: threading.Event | None = None) -> None:
+                seen.append(stop_event)
+                generation.set()  # one pass
+
+            monkeypatch.setattr(srv, "_send_packet", stub)
+            spawned["target"](*spawned["args"])
+
+            assert seen == [generation]
+            srv.stop()
+
+    def test_a_stale_generation_cannot_replace_the_socket_under_the_lock(self) -> None:
+        """stop() nulls the socket under the same lock, so a rebuild that passed
+        the throttle before teardown still can't install a socket over the live
+        generation's.
+        """
+        srv = RttrpmServer(host="127.0.0.1")
+        live_socket = MagicMock()
+        srv._socket = live_socket
+        stale = threading.Event()
+        stale.set()
+
+        srv._rebuild_socket_after_error(stale)
+
+        assert srv._socket is live_socket
+        live_socket.close.assert_not_called()

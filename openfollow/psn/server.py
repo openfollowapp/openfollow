@@ -119,20 +119,25 @@ class PsnServer:
 
     def start(self) -> None:
         """Open the network socket and start send threads."""
-        self._stop_event.clear()
+        # One stop signal per generation. A thread that outlived its join in
+        # stop() keeps the previous, permanently-set one and exits on its next
+        # check, rather than being revived by a shared event being cleared here.
+        stop_event = threading.Event()
+        self._stop_event = stop_event
         self._exit_stack = contextlib.ExitStack()
         if self._mcast_ip:
             if not self._try_open_multicast_socket_once(attempt=1):
                 self._socket_thread = threading.Thread(
                     target=self._retry_multicast_socket_background,
+                    args=(stop_event,),
                     daemon=True,
                     name="PSN-SocketRetry",
                 )
                 self._socket_thread.start()
         else:
             self._socket = self._exit_stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-        self._data_thread = threading.Thread(target=self._data_loop, daemon=True, name="PSN-Data")
-        self._info_thread = threading.Thread(target=self._info_loop, daemon=True, name="PSN-Info")
+        self._data_thread = threading.Thread(target=self._data_loop, args=(stop_event,), daemon=True, name="PSN-Data")
+        self._info_thread = threading.Thread(target=self._info_loop, args=(stop_event,), daemon=True, name="PSN-Info")
         self._data_thread.start()
         self._info_thread.start()
 
@@ -204,9 +209,13 @@ class PsnServer:
     def __exit__(self, *args: object) -> None:
         self.stop()
 
+    def _resolve_stop(self, stop_event: threading.Event | None) -> threading.Event:
+        """The caller's generation event; the live one for direct calls."""
+        return self._stop_event if stop_event is None else stop_event
+
     # -- Socket helpers -------------------------------------------------------
 
-    def _try_open_multicast_socket_once(self, attempt: int) -> bool:
+    def _try_open_multicast_socket_once(self, attempt: int, stop_event: threading.Event | None = None) -> bool:
         """Attempt to create the multicast TX socket once. Returns True on success."""
         mcast_ip = self._mcast_ip
         if not mcast_ip:  # pragma: no cover
@@ -215,6 +224,7 @@ class PsnServer:
         from openfollow.net_utils import resolve_iface_ip
 
         iface_ip = resolve_iface_ip(self._source_ip)
+        staging = contextlib.ExitStack()
         try:
             if iface_ip:
                 sock = multicast_expert.McastTxSocket(
@@ -229,8 +239,7 @@ class PsnServer:
                     mcast_ips=[mcast_ip],
                     enable_external_loopback=True,
                 )
-            self._socket = self._exit_stack.enter_context(sock)
-            return True
+            opened = staging.enter_context(sock)
         except Exception as exc:
             logger.warning(
                 "PSN multicast socket failed (attempt %d/%d): %s",
@@ -239,14 +248,27 @@ class PsnServer:
                 exc,
             )
             return False
+        # The open runs off the lock so a retry on a flapping NIC can't stall the
+        # send loops or stop(); only the hand-over is locked, which is what pairs
+        # with stop()'s teardown. A socket thread from a superseded generation
+        # must not hand the live one a socket bound to the interface it just left.
+        with self._lock:
+            if not self._resolve_stop(stop_event).is_set():
+                self._socket = opened
+                self._exit_stack.push(staging.pop_all())
+                return True
+            stale = staging.pop_all()
+        stale.close()
+        return False
 
-    def _retry_multicast_socket_background(self) -> None:
+    def _retry_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
         """Retry multicast socket creation bounded by _MAX_SOCKET_RETRIES."""
+        stop = self._resolve_stop(stop_event)
         for attempt in range(2, _MAX_SOCKET_RETRIES + 1):
-            self._stop_event.wait(_SOCKET_RETRY_DELAY)
-            if self._stop_event.is_set():
+            stop.wait(_SOCKET_RETRY_DELAY)
+            if stop.is_set():
                 return
-            if self._try_open_multicast_socket_once(attempt=attempt):
+            if self._try_open_multicast_socket_once(attempt=attempt, stop_event=stop):
                 logger.info(
                     "PSN multicast socket connected on retry %d/%d.",
                     attempt,
@@ -258,24 +280,28 @@ class PsnServer:
             _MAX_SOCKET_RETRIES,
         )
 
-    def _recover_multicast_socket_background(self) -> None:
+    def _recover_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
         """Recover multicast socket after transient send failure (unbounded until stop_event)."""
+        stop = self._resolve_stop(stop_event)
         attempt = 0
-        while not self._stop_event.is_set():
+        while not stop.is_set():
             attempt += 1
-            self._stop_event.wait(_SOCKET_RETRY_DELAY)
-            if self._stop_event.is_set():
+            stop.wait(_SOCKET_RETRY_DELAY)
+            if stop.is_set():
                 return
-            if self._try_open_multicast_socket_once(attempt=attempt):
+            if self._try_open_multicast_socket_once(attempt=attempt, stop_event=stop):
                 logger.info("PSN multicast socket recovered on attempt %d.", attempt)
                 return
 
-    def _handle_send_error(self, exc: OSError) -> None:
+    def _handle_send_error(self, exc: OSError, stop_event: threading.Event | None = None) -> None:
         """On transient interface error, rebuild socket in background."""
         # Once stopping, teardown owns the socket/exit-stack lifecycle: a recovery
         # thread spawned here would be orphaned (stop() already joined+nulled the
         # socket thread) and could leak an FD racing stop()'s stack close.
-        if self._stop_event.is_set():
+        # A send that fails on a superseded generation is judged by its own
+        # event, so a dying survivor can't tear down the live socket.
+        stop = self._resolve_stop(stop_event)
+        if stop.is_set():
             return
         if exc.errno not in _TRANSIENT_SEND_ERRNOS:
             return
@@ -288,7 +314,7 @@ class PsnServer:
             # socket/exit-stack down, so once it's set no recovery thread is
             # spawned – spawn and teardown observe one consistent stop state
             # rather than relying on the recovery loop's own stop-check.
-            if self._stop_event.is_set():
+            if stop.is_set():
                 return
             if self._socket_thread is not None and self._socket_thread.is_alive():
                 return
@@ -298,6 +324,7 @@ class PsnServer:
             self._exit_stack = contextlib.ExitStack()
             self._socket_thread = threading.Thread(
                 target=self._recover_multicast_socket_background,
+                args=(stop,),
                 daemon=True,
                 name="PSN-SocketRecover",
             )
@@ -310,17 +337,19 @@ class PsnServer:
 
     # -- Send loops -----------------------------------------------------------
 
-    def _data_loop(self) -> None:
+    def _data_loop(self, stop_event: threading.Event | None = None) -> None:
+        stop = self._resolve_stop(stop_event)
         interval = 1.0 / self._data_fps
-        while not self._stop_event.is_set():
-            self._send_data_packet()
-            self._stop_event.wait(interval)
+        while not stop.is_set():
+            self._send_data_packet(stop)
+            stop.wait(interval)
 
-    def _info_loop(self) -> None:
+    def _info_loop(self, stop_event: threading.Event | None = None) -> None:
+        stop = self._resolve_stop(stop_event)
         interval = 1.0 / self._info_fps
-        while not self._stop_event.is_set():
-            self._send_info_packet()
-            self._stop_event.wait(interval)
+        while not stop.is_set():
+            self._send_info_packet(stop)
+            stop.wait(interval)
 
     def _make_psn_info(self, frame_id: int) -> pypsn.PsnInfo:
         """Build a ``PsnInfo`` header carrying ``frame_id``."""
@@ -351,7 +380,7 @@ class PsnServer:
         with self._lock:
             return list(self._markers.values())
 
-    def _send_data_packet(self) -> None:
+    def _send_data_packet(self, stop_event: threading.Event | None = None) -> None:
         markers = self._snapshot_markers()
         if not markers:
             return
@@ -361,9 +390,9 @@ class PsnServer:
         # in, which underflows a receiver computing age as unsigned.
         trackers = [t.to_psn_marker() for t in markers]
         packet = pypsn.PsnDataPacket(info=self._next_data_header(), trackers=trackers)
-        self._send(pypsn.prepare_psn_data_packet_bytes(packet))
+        self._send(pypsn.prepare_psn_data_packet_bytes(packet), stop_event)
 
-    def _send_info_packet(self) -> None:
+    def _send_info_packet(self, stop_event: threading.Event | None = None) -> None:
         markers = self._snapshot_markers()
         if not markers:
             return
@@ -372,9 +401,9 @@ class PsnServer:
             name=self._system_name,
             trackers=[t.to_psn_marker_info() for t in markers],
         )
-        self._send(pypsn.prepare_psn_info_packet_bytes(packet))
+        self._send(pypsn.prepare_psn_info_packet_bytes(packet), stop_event)
 
-    def _send(self, data: bytes) -> None:
+    def _send(self, data: bytes, stop_event: threading.Event | None = None) -> None:
         sock = self._socket
         if sock is None:
             return
@@ -396,4 +425,4 @@ class PsnServer:
                     exc,
                 )
             # Rebuild socket on transient interface errors.
-            self._handle_send_error(exc)
+            self._handle_send_error(exc, stop_event)

@@ -23,7 +23,7 @@ def _capturing_server(monkeypatch: pytest.MonkeyPatch) -> tuple[PsnServer, list[
     server = PsnServer(mcast_ip=None)
     server.add_marker(1, "T1").set_pos(0.0, 0.0, 0.0)
     sent: list[bytes] = []
-    monkeypatch.setattr(server, "_send", sent.append)
+    monkeypatch.setattr(server, "_send", lambda data, stop_event=None: sent.append(data))
     return server, sent
 
 
@@ -91,7 +91,7 @@ def test_a_send_with_no_markers_does_not_consume_a_frame_id(
     tick would hand the first real packet a frame id far past 0, behind a gap."""
     server = PsnServer(mcast_ip=None)
     sent: list[bytes] = []
-    monkeypatch.setattr(server, "_send", sent.append)
+    monkeypatch.setattr(server, "_send", lambda data, stop_event=None: sent.append(data))
 
     for _ in range(5):
         server._send_data_packet()

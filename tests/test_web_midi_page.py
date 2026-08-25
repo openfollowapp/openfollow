@@ -18,8 +18,6 @@ endpoints or the populated Devices table.
 from __future__ import annotations
 
 import contextlib
-import socket
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -37,29 +35,9 @@ from openfollow.configuration import (
     save_config,
 )
 from openfollow.web.server import ConfigWebServer
+from tests._ports import live_on_free_port
 
 pytestmark = pytest.mark.integration
-
-
-def _find_free_tcp_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
-def _wait_for_port(
-    port: int,
-    host: str = "127.0.0.1",
-    timeout: float = 5.0,
-) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=0.1):
-                return True
-        except OSError:
-            time.sleep(0.05)
-    return False
 
 
 def _get(base: str, path: str) -> tuple[int, str]:
@@ -109,18 +87,16 @@ def live_server(tmp_path, monkeypatch):
         "stop",
         lambda self: None,
     )
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-    )
-    server.start()
-    assert _wait_for_port(port)
-    yield server, f"http://127.0.0.1:{port}", str(config_path)
-    server.stop()
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+        )
+    ) as (server, base):
+        yield server, base, str(config_path)
 
 
 @contextlib.contextmanager
@@ -158,7 +134,6 @@ def _live_server_with_midi_providers(
         "stop",
         lambda self: None,
     )
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
 
     def _devices() -> list[dict[str, Any]]:
@@ -181,26 +156,25 @@ def _live_server_with_midi_providers(
     def _capture_poll(row_id: str = "") -> dict[str, Any]:
         return dict(capture_state or {"status": "idle"})
 
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-        midi_discovered_devices_provider=_devices,
-        midi_fader_values_provider=_values,
-        marker_fader_values_provider=_marker_values,
-        midi_capture_arm=_capture_arm,
-        midi_capture_poll=_capture_poll,
-    )
-    # Stash the arm-call counter on the server object so route
-    # tests can assert on it without exposing a global.
-    server._test_capture_arm_calls = capture_arm_calls  # type: ignore[attr-defined]
-    server.start()
-    try:
-        assert _wait_for_port(port)
-        yield server, f"http://127.0.0.1:{port}", str(config_path)
-    finally:
-        server.stop()
+    def _build(port: int) -> ConfigWebServer:
+        server = ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            midi_discovered_devices_provider=_devices,
+            midi_fader_values_provider=_values,
+            marker_fader_values_provider=_marker_values,
+            midi_capture_arm=_capture_arm,
+            midi_capture_poll=_capture_poll,
+        )
+        # Stash the arm-call counter on the server object so route
+        # tests can assert on it without exposing a global.
+        server._test_capture_arm_calls = capture_arm_calls  # type: ignore[attr-defined]
+        return server
+
+    with live_on_free_port(_build) as (server, base):
+        yield server, base, str(config_path)
 
 
 # ---------------------------------------------------------------------------

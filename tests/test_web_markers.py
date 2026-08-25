@@ -11,7 +11,6 @@ own catalog without sharing state across tests.
 from __future__ import annotations
 
 import json
-import socket
 import time
 import urllib.error
 import urllib.parse
@@ -24,25 +23,9 @@ from openfollow.configuration import load_config
 from openfollow.marker_catalog import MarkerCatalog
 from openfollow.marker_catalog.sync import PeerSelection
 from openfollow.web.server import ConfigWebServer
+from tests._ports import live_on_free_port
 
 pytestmark = pytest.mark.integration
-
-
-def _find_free_tcp_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
-def _wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=0.1):
-                return True
-        except OSError:
-            time.sleep(0.05)
-    return False
 
 
 class _FakeSync:
@@ -66,23 +49,20 @@ def live_server(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
 
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
     catalog = MarkerCatalog()
     sync = _FakeSync()
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="OpenFollow test",
-        marker_catalog_provider=lambda: catalog,
-        marker_catalog_sync_provider=lambda: sync,
-    )
-    server.start()
-    assert _wait_for_port(port)
-    base = f"http://127.0.0.1:{port}"
-    yield server, base, str(config_path), catalog, sync
-    server.stop()
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="OpenFollow test",
+            marker_catalog_provider=lambda: catalog,
+            marker_catalog_sync_provider=lambda: sync,
+        )
+    ) as (server, base):
+        yield server, base, str(config_path), catalog, sync
 
 
 def _request(base: str, path: str, method: str = "GET", body: dict | None = None):
@@ -481,19 +461,16 @@ def live_server_no_providers(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
 
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="OpenFollow test",
-    )
-    server.start()
-    assert _wait_for_port(port)
-    base = f"http://127.0.0.1:{port}"
-    yield server, base, str(config_path)
-    server.stop()
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="OpenFollow test",
+        )
+    ) as (server, base):
+        yield server, base, str(config_path)
 
 
 class TestCatalogUnavailable:
@@ -544,21 +521,18 @@ def live_server_no_sync(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
 
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
     catalog = MarkerCatalog()
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="OpenFollow test",
-        marker_catalog_provider=lambda: catalog,
-    )
-    server.start()
-    assert _wait_for_port(port)
-    base = f"http://127.0.0.1:{port}"
-    yield server, base, str(config_path), catalog
-    server.stop()
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="OpenFollow test",
+            marker_catalog_provider=lambda: catalog,
+        )
+    ) as (server, base):
+        yield server, base, str(config_path), catalog
 
 
 class TestSyncUnavailable:
@@ -688,22 +662,19 @@ def live_server_bad_catalog_path(tmp_path, monkeypatch):
     cfg.markers_catalog_path = str(tmp_path / "does-not-exist-dir" / "markers.toml")
     save_config(cfg, str(config_path))
 
-    port = _find_free_tcp_port()
     catalog = MarkerCatalog()
     sync = _FakeSync()
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="OpenFollow test",
-        marker_catalog_provider=lambda: catalog,
-        marker_catalog_sync_provider=lambda: sync,
-    )
-    server.start()
-    assert _wait_for_port(port)
-    base = f"http://127.0.0.1:{port}"
-    yield server, base, str(config_path), catalog, sync
-    server.stop()
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="OpenFollow test",
+            marker_catalog_provider=lambda: catalog,
+            marker_catalog_sync_provider=lambda: sync,
+        )
+    ) as (server, base):
+        yield server, base, str(config_path), catalog, sync
 
 
 class TestCatalogPersistenceFailure:

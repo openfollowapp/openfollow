@@ -25,13 +25,6 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 
 
-def _find_free_udp_port() -> int:
-    """Return a currently-free UDP port number (best-effort)."""
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
 def _recv_typed(sock: socket.socket, expected_type: type, timeout: float = 2.0) -> object | None:
     """Receive packets until one of *expected_type* arrives, or the budget expires."""
     deadline = time.monotonic() + timeout

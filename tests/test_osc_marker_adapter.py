@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import socket
 import time
+from typing import Any
 
 import pytest
 
 from openfollow.osc.input import OscMarkerAdapter
-from openfollow.osc.service import _PYTHONOSC_AVAILABLE, OscService, find_free_udp_port
+from openfollow.osc.service import _PYTHONOSC_AVAILABLE, OscService
+from tests._ports import bind_free_udp_port
 
 pytestmark = pytest.mark.unit
 
@@ -28,6 +30,23 @@ pytestmark = pytest.mark.unit
 
 def _adapter() -> OscMarkerAdapter:
     return OscMarkerAdapter(OscService(), port=12345)
+
+
+def _listening_adapter(svc: OscService, **kwargs: Any) -> tuple[OscMarkerAdapter, int]:
+    """Started adapter on a free port, plus the port it took.
+
+    The adapter takes its port at construction, so a lost port race has to
+    rebuild it rather than re-``start()`` the same one.
+    """
+    built: list[OscMarkerAdapter] = []
+
+    def _start(port: int) -> None:
+        adapter = OscMarkerAdapter(svc, port=port, **kwargs)
+        adapter.start()
+        built.append(adapter)
+
+    port = bind_free_udp_port(_start)
+    return built[-1], port
 
 
 def test_handle_routes_three_floats_into_pending() -> None:
@@ -199,9 +218,7 @@ def test_triple_after_per_axis_clears_partial_state() -> None:
 @pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
 def test_start_idempotent_on_second_call() -> None:
     svc = OscService()
-    port = find_free_udp_port()
-    a = OscMarkerAdapter(svc, port=port)
-    a.start()
+    a, _ = _listening_adapter(svc)
     listener_first = svc._listener
     a.start()
     assert svc._listener is listener_first
@@ -218,9 +235,7 @@ def test_stop_idempotent_when_not_started() -> None:
 @pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
 def test_start_subscribes_triple_and_per_axis_patterns() -> None:
     svc = OscService()
-    port = find_free_udp_port()
-    a = OscMarkerAdapter(svc, port=port)
-    a.start()
+    a, _ = _listening_adapter(svc)
     try:
         assert "/marker/*" in svc._subscriptions
         assert "/marker/*/x" in svc._subscriptions
@@ -268,9 +283,7 @@ def test_real_udp_send_round_trips_through_adapter() -> None:
     """Wire-level proof: send via ``OscService.send`` to the adapter's
     own listener port, observe the dispatch via ``flush_updates``."""
     svc = OscService()
-    port = find_free_udp_port()
-    adapter = OscMarkerAdapter(svc, port=port)
-    adapter.start()
+    adapter, port = _listening_adapter(svc)
     try:
         svc.send(
             "/marker/2",
@@ -294,9 +307,7 @@ def test_real_udp_send_round_trips_through_adapter() -> None:
 @pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
 def test_real_udp_per_axis_round_trip() -> None:
     svc = OscService()
-    port = find_free_udp_port()
-    adapter = OscMarkerAdapter(svc, port=port)
-    adapter.start()
+    adapter, port = _listening_adapter(svc)
     try:
         svc.send("/marker/2/y", [1.5], host="127.0.0.1", port=port)
         deadline = time.monotonic() + 1.0
@@ -317,15 +328,9 @@ def test_real_udp_dispatch_respects_allowlist() -> None:
     """The adapter inherits the listener's allowlist filter – packets
     from a non-allowed sender are dropped before reaching ``flush``."""
     svc = OscService()
-    port = find_free_udp_port()
     # Bind to a specific source address so we can demonstrate filtering;
     # localhost is in the allowlist, "192.0.2.1" wouldn't be (TEST-NET-1).
-    adapter = OscMarkerAdapter(
-        svc,
-        port=port,
-        allowed_sender_ips=["192.0.2.1"],
-    )
-    adapter.start()
+    adapter, port = _listening_adapter(svc, allowed_sender_ips=["192.0.2.1"])
     try:
         svc.send(
             "/marker/0",

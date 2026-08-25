@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import socket
 import struct
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -813,3 +814,61 @@ class TestRttrpmCapWarning:
                 assert srv._cap_warned is False
             finally:
                 srv.stop()
+
+
+class TestRttrpmThreadGenerations:
+    """A send thread that outlived stop()'s join must not be revived by start().
+
+    ``restart()`` is stop() then start() – the live-apply path for every
+    ``rttrpm_output.*`` edit – and start() opens a fresh socket, so a survivor
+    would stream to the new destination alongside the fresh thread.
+    """
+
+    def test_start_does_not_resurrect_a_send_thread_that_outlived_stop(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        srv = RttrpmServer(host="127.0.0.1")
+        in_send = threading.Event()
+        release = threading.Event()
+        sends: dict[int, int] = {}
+
+        def blocking_send(stop_event: threading.Event | None = None) -> None:
+            ident = threading.get_ident()
+            sends[ident] = sends.get(ident, 0) + 1
+            in_send.set()
+            release.wait(5.0)
+
+        monkeypatch.setattr(srv, "_send_packet", blocking_send)
+
+        srv.start()
+        assert in_send.wait(5.0)
+        survivor = srv._send_thread
+        assert survivor is not None
+
+        srv.stop()  # the join expires – the thread is wedged in the send
+        assert survivor.is_alive()
+
+        srv.start()
+        try:
+            release.set()
+            survivor.join(timeout=5.0)
+            assert not survivor.is_alive(), "the survivor was revived by start()"
+            assert sends[survivor.ident] == 1, "the survivor sent again after stop()"
+        finally:
+            release.set()
+            srv.stop()
+
+    def test_a_stale_generation_send_error_does_not_replace_the_live_socket(self) -> None:
+        import errno as _e
+
+        srv = RttrpmServer(host="127.0.0.1")
+        live_socket = MagicMock()
+        live_socket.sendto.side_effect = OSError(_e.ENETUNREACH, "iface gone")
+        srv._socket = live_socket
+        stale = threading.Event()
+        stale.set()
+
+        srv._send(b"x", stale)
+
+        assert srv._socket is live_socket

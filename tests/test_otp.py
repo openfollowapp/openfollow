@@ -13,6 +13,7 @@ thread warnings, and the live-apply ``restart()`` path.
 from __future__ import annotations
 
 import struct
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1045,7 +1046,7 @@ class TestOtpRetryMulticastBackground:
         # retry budget (_MAX_SOCKET_RETRIES = 3).
         attempts: list[int] = []
 
-        def fake_open(*, attempt: int) -> bool:
+        def fake_open(*, attempt: int, **_kw: object) -> bool:
             attempts.append(attempt)
             return attempt == 2
 
@@ -1080,7 +1081,7 @@ class TestOtpRecoverMulticastBackground:
         srv = OtpServer(system_number=1)
         attempts: list[int] = []
 
-        def fake_open(*, attempt: int) -> bool:
+        def fake_open(*, attempt: int, **_kw: object) -> bool:
             attempts.append(attempt)
             return attempt == 3
 
@@ -1328,3 +1329,79 @@ class TestOtpHandleSendErrorEdges:
             srv._stop_event.set()
             if srv._socket_thread is not None:
                 srv._socket_thread.join(timeout=2.0)
+
+
+class TestOtpThreadGenerations:
+    """A thread that outlived stop()'s join must not be revived by start().
+
+    ``restart()`` is stop() then start() – the live-apply path for every
+    ``otp_output.*`` edit – so a survivor would stream alongside the fresh
+    thread and interleave its folio numbers with it.
+    """
+
+    def test_start_does_not_resurrect_a_transform_thread_that_outlived_stop(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        srv = OtpServer(system_number=1, mcast_ip="")  # unicast: plain UDP socket
+        in_send = threading.Event()
+        release = threading.Event()
+        sends: dict[int, int] = {}
+
+        def blocking_send(stop_event: threading.Event | None = None) -> None:
+            ident = threading.get_ident()
+            sends[ident] = sends.get(ident, 0) + 1
+            in_send.set()
+            release.wait(5.0)
+
+        monkeypatch.setattr(srv, "_send_transform_packet", blocking_send)
+        monkeypatch.setattr(srv, "_send_advertisement_packets", lambda stop_event=None: None)
+
+        srv.start()
+        assert in_send.wait(5.0)
+        survivor = srv._transform_thread
+        assert survivor is not None
+
+        srv.stop()  # the join expires – the thread is wedged in the send
+        assert survivor.is_alive()
+
+        srv.start()
+        try:
+            release.set()
+            survivor.join(timeout=5.0)
+            assert not survivor.is_alive(), "the survivor was revived by start()"
+            assert sends[survivor.ident] == 1, "the survivor sent again after stop()"
+        finally:
+            release.set()
+            srv.stop()
+
+    def test_a_stale_generation_send_error_leaves_the_live_socket_alone(self) -> None:
+        import errno as _e
+
+        srv = OtpServer(system_number=1)
+        live_socket = MagicMock()
+        live_socket.sendto.side_effect = OSError(_e.ENETUNREACH, "iface gone")
+        srv._socket = live_socket
+        stale = threading.Event()
+        stale.set()
+
+        srv._send(b"\x00", "239.159.1.1", stale)
+
+        assert srv._socket is live_socket
+        assert srv._socket_thread is None
+
+    def test_a_stale_generation_does_not_adopt_a_socket(self) -> None:
+        """A socket thread mid-open when its generation stopped must not hand
+        the live one a socket bound to the interface it just left.
+        """
+        with patch("openfollow.otp.server.multicast_expert.McastTxSocket") as mcls:
+            sock = MagicMock()
+            mcls.return_value = sock
+            srv = OtpServer(system_number=1)
+            stale = threading.Event()
+            stale.set()
+
+            assert srv._try_open_multicast_socket_once(attempt=1, stop_event=stale) is False
+
+        assert srv._socket is None
+        sock.__enter__.assert_not_called()

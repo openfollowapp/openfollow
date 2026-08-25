@@ -593,23 +593,36 @@ class OtpServer:
 
     def start(self) -> None:
         """Open the network socket and start transform + advertisement threads."""
-        self._stop_event.clear()
+        # One stop signal per generation. A thread that outlived its join in
+        # stop() keeps the previous, permanently-set one and exits on its next
+        # check, rather than being revived by a shared event being cleared here.
+        stop_event = threading.Event()
+        self._stop_event = stop_event
         self._exit_stack = contextlib.ExitStack()
         if self._is_multicast_mode():
             if not self._try_open_multicast_socket_once(attempt=1):
                 self._socket_thread = threading.Thread(
                     target=self._retry_multicast_socket_background,
+                    args=(stop_event,),
                     daemon=True,
                     name="OTP-SocketRetry",
                 )
                 self._socket_thread.start()
         else:
             self._socket = self._exit_stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-        self._adv_thread = threading.Thread(target=self._advertisement_loop, daemon=True, name="OTP-Advertisement")
-        self._transform_thread = threading.Thread(target=self._transform_loop, daemon=True, name="OTP-Transform")
+        self._adv_thread = threading.Thread(
+            target=self._advertisement_loop, args=(stop_event,), daemon=True, name="OTP-Advertisement"
+        )
+        self._transform_thread = threading.Thread(
+            target=self._transform_loop, args=(stop_event,), daemon=True, name="OTP-Transform"
+        )
         # Start advertisement first so receivers see module info before data.
         self._adv_thread.start()
         self._transform_thread.start()
+
+    def _resolve_stop(self, stop_event: threading.Event | None) -> threading.Event:
+        """The caller's generation event; the live one for direct calls."""
+        return self._stop_event if stop_event is None else stop_event
 
     def _is_multicast_mode(self) -> bool:
         """True unless the test-only unicast/loopback branch is active."""
@@ -633,8 +646,13 @@ class OtpServer:
             if self._adv_thread.is_alive():
                 logger.warning("OTP advertisement thread did not stop within timeout")
             self._adv_thread = None
-        self._socket = None
-        self._exit_stack.close()
+        # Null the socket and take the stack under the lock so a socket thread
+        # can't adopt a socket into a stack that teardown is closing. Close it
+        # outside the lock to avoid stalling a send loop on the FD close.
+        with self._lock:
+            self._socket = None
+            stack = self._exit_stack
+        stack.close()
 
     def restart(
         self,
@@ -710,7 +728,7 @@ class OtpServer:
             return [override]
         return [self._transform_dest, self._advertisement_dest]
 
-    def _try_open_multicast_socket_once(self, attempt: int) -> bool:
+    def _try_open_multicast_socket_once(self, attempt: int, stop_event: threading.Event | None = None) -> bool:
         """Attempt to create the multicast TX socket once. Returns True on success."""
         try:
             groups = self._multicast_groups()
@@ -727,7 +745,14 @@ class OtpServer:
                     mcast_ips=groups,
                     enable_external_loopback=True,
                 )
-            self._socket = self._exit_stack.enter_context(sock)
+            with self._lock:
+                # A socket thread from a superseded generation must not hand the
+                # live one a socket bound to the interface it just left. The lock
+                # pairs with stop()'s teardown: either that wins and this returns,
+                # or this adopts into the exit stack stop() then closes.
+                if self._resolve_stop(stop_event).is_set():
+                    return False
+                self._socket = self._exit_stack.enter_context(sock)
             return True
         except Exception as exc:
             logger.warning(
@@ -738,13 +763,14 @@ class OtpServer:
             )
             return False
 
-    def _retry_multicast_socket_background(self) -> None:
+    def _retry_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
         """Retry multicast socket creation in the background (bounded)."""
+        stop = self._resolve_stop(stop_event)
         for attempt in range(2, _MAX_SOCKET_RETRIES + 1):
-            self._stop_event.wait(_SOCKET_RETRY_DELAY)
-            if self._stop_event.is_set():
+            stop.wait(_SOCKET_RETRY_DELAY)
+            if stop.is_set():
                 return
-            if self._try_open_multicast_socket_once(attempt=attempt):
+            if self._try_open_multicast_socket_once(attempt=attempt, stop_event=stop):
                 logger.info(
                     "OTP multicast socket connected on retry %d/%d.",
                     attempt,
@@ -756,29 +782,33 @@ class OtpServer:
             _MAX_SOCKET_RETRIES,
         )
 
-    def _recover_multicast_socket_background(self) -> None:
+    def _recover_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
         """Re-open the multicast socket indefinitely after a transient
         send failure. See ``PsnServer._recover_multicast_socket_background``
         for the same rationale.
         """
+        stop = self._resolve_stop(stop_event)
         attempt = 0
-        while not self._stop_event.is_set():
+        while not stop.is_set():
             attempt += 1
-            self._stop_event.wait(_SOCKET_RETRY_DELAY)
-            if self._stop_event.is_set():
+            stop.wait(_SOCKET_RETRY_DELAY)
+            if stop.is_set():
                 return
-            if self._try_open_multicast_socket_once(attempt=attempt):
+            if self._try_open_multicast_socket_once(attempt=attempt, stop_event=stop):
                 logger.info("OTP multicast socket recovered on attempt %d.", attempt)
                 return
 
-    def _handle_send_error(self, exc: OSError) -> None:
+    def _handle_send_error(self, exc: OSError, stop_event: threading.Event | None = None) -> None:
         """On a transient interface-change error, rebuild the socket in the background."""
         # Once stopping, teardown owns the socket/exit-stack lifecycle. A recovery
         # thread spawned here is orphaned (stop() may already have passed the
         # socket-thread join) and, after restart()'s start() clears the stop
         # event, could open a SECOND multicast socket racing the fresh server –
         # clobbering self._socket and leaking the FD. Mirrors PsnServer.
-        if self._stop_event.is_set():
+        # A send that fails on a superseded generation is judged by its own
+        # event, so a dying survivor can't tear down the live socket.
+        stop = self._resolve_stop(stop_event)
+        if stop.is_set():
             return
         if exc.errno not in _TRANSIENT_SEND_ERRNOS:
             return
@@ -796,6 +826,7 @@ class OtpServer:
             self._exit_stack = contextlib.ExitStack()
             self._socket_thread = threading.Thread(
                 target=self._recover_multicast_socket_background,
+                args=(stop,),
                 daemon=True,
                 name="OTP-SocketRecover",
             )
@@ -807,16 +838,18 @@ class OtpServer:
 
     # -- Send loops -----------------------------------------------------------
 
-    def _transform_loop(self) -> None:
+    def _transform_loop(self, stop_event: threading.Event | None = None) -> None:
+        stop = self._resolve_stop(stop_event)
         interval = 1.0 / self._fps
-        while not self._stop_event.is_set():
-            self._send_transform_packet()
-            self._stop_event.wait(interval)
+        while not stop.is_set():
+            self._send_transform_packet(stop)
+            stop.wait(interval)
 
-    def _advertisement_loop(self) -> None:
-        while not self._stop_event.is_set():
-            self._send_advertisement_packets()
-            self._stop_event.wait(ADVERTISEMENT_INTERVAL_S)
+    def _advertisement_loop(self, stop_event: threading.Event | None = None) -> None:
+        stop = self._resolve_stop(stop_event)
+        while not stop.is_set():
+            self._send_advertisement_packets(stop)
+            stop.wait(ADVERTISEMENT_INTERVAL_S)
 
     def _snapshot_markers(self) -> list[Marker]:
         with self._lock:
@@ -834,7 +867,7 @@ class OtpServer:
     def _current_timestamp(self) -> int:
         return int(time.monotonic() * 1_000_000) - self._start_time_us
 
-    def _send_transform_packet(self) -> None:
+    def _send_transform_packet(self, stop_event: threading.Event | None = None) -> None:
         markers = self._snapshot_markers()
         if not markers:
             return
@@ -867,9 +900,9 @@ class OtpServer:
                     exc,
                 )
             return
-        self._send(payload, self._transform_dest)
+        self._send(payload, self._transform_dest, stop_event)
 
-    def _send_advertisement_packets(self) -> None:
+    def _send_advertisement_packets(self, stop_event: threading.Event | None = None) -> None:
         """Send Module, Name, and System advertisement packets in sequence."""
         markers = self._snapshot_markers()
 
@@ -881,6 +914,7 @@ class OtpServer:
                     folio=self._next_folio("module_adv"),
                 ),
                 self._advertisement_dest,
+                stop_event,
             )
             self._send(
                 encode_otp_name_advertisement_packet(
@@ -891,6 +925,7 @@ class OtpServer:
                     markers=markers,
                 ),
                 self._advertisement_dest,
+                stop_event,
             )
 
         self._send(
@@ -901,9 +936,10 @@ class OtpServer:
                 system_number=self._system_number,
             ),
             self._advertisement_dest,
+            stop_event,
         )
 
-    def _send(self, data: bytes, dest_ip: str) -> None:
+    def _send(self, data: bytes, dest_ip: str, stop_event: threading.Event | None = None) -> None:
         sock = self._socket
         if sock is None:
             return
@@ -923,4 +959,4 @@ class OtpServer:
                     total,
                     exc,
                 )
-            self._handle_send_error(exc)
+            self._handle_send_error(exc, stop_event)

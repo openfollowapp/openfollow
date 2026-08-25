@@ -277,10 +277,16 @@ class RttrpmServer:
 
     def start(self) -> None:
         """Open the UDP socket and start the send thread."""
-        self._stop_event.clear()
+        # One stop signal per generation. A thread that outlived its join in
+        # stop() keeps the previous, permanently-set one and exits on its next
+        # check, rather than being revived by a shared event being cleared here.
+        stop_event = threading.Event()
+        self._stop_event = stop_event
         self._cap_warned = False
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._send_thread = threading.Thread(target=self._send_loop, daemon=True, name="RTTrPM-Send")
+        self._send_thread = threading.Thread(
+            target=self._send_loop, args=(stop_event,), daemon=True, name="RTTrPM-Send"
+        )
         self._send_thread.start()
 
     def stop(self) -> None:
@@ -314,15 +320,20 @@ class RttrpmServer:
 
     # -- Send loop ------------------------------------------------------------
 
-    def _send_loop(self) -> None:
+    def _resolve_stop(self, stop_event: threading.Event | None) -> threading.Event:
+        """The caller's generation event; the live one for direct calls."""
+        return self._stop_event if stop_event is None else stop_event
+
+    def _send_loop(self, stop_event: threading.Event | None = None) -> None:
+        stop = self._resolve_stop(stop_event)
         # Guard against zero fps in direct constructor calls.
         fps = self._fps if self._fps > 0 else 1
         interval = 1.0 / fps
-        while not self._stop_event.is_set():
-            self._send_packet()
-            self._stop_event.wait(interval)
+        while not stop.is_set():
+            self._send_packet(stop)
+            stop.wait(interval)
 
-    def _send_packet(self) -> None:
+    def _send_packet(self, stop_event: threading.Event | None = None) -> None:
         with self._lock:
             markers = list(self._markers.values())
         if not markers:
@@ -331,7 +342,7 @@ class RttrpmServer:
         # (throttled) here so the loop can recover instead of spinning on a
         # dead None socket for the rest of the server's life.
         if self._socket is None:
-            self._maybe_rebuild_socket_after_error()
+            self._maybe_rebuild_socket_after_error(stop_event)
             if self._socket is None:
                 # Still down: skip encoding a packet _send() would only drop.
                 return
@@ -339,7 +350,7 @@ class RttrpmServer:
         self._pkt_id = (self._pkt_id + 1) & 0xFFFFFFFF
         payload = encode_rttrpm_packet(pkt_id, markers, self._context)
         self._warn_if_capped(len(markers), payload)
-        self._send(payload)
+        self._send(payload, stop_event)
 
     def _warn_if_capped(self, submitted: int, payload: bytes) -> None:
         """Warn once per cap episode when markers are dropped from a packet.
@@ -363,7 +374,7 @@ class RttrpmServer:
             submitted,
         )
 
-    def _send(self, data: bytes) -> None:
+    def _send(self, data: bytes, stop_event: threading.Event | None = None) -> None:
         sock = self._socket
         if sock is None:
             return
@@ -384,9 +395,13 @@ class RttrpmServer:
                     exc,
                 )
             if exc.errno in _TRANSIENT_SEND_ERRNOS:
-                self._maybe_rebuild_socket_after_error()
+                self._maybe_rebuild_socket_after_error(stop_event)
 
-    def _maybe_rebuild_socket_after_error(self) -> None:
+    def _maybe_rebuild_socket_after_error(self, stop_event: threading.Event | None = None) -> None:
+        # A send that fails on a superseded generation is judged by its own
+        # event, so a dying survivor can't replace the live socket.
+        if self._resolve_stop(stop_event).is_set():
+            return
         with self._lock:
             now = time.monotonic()
             if now < self._next_rebuild_at:

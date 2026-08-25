@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import socket
+import threading
 from typing import Any
 
 import pytest
@@ -62,6 +63,7 @@ class _FakeMcastSocket:
                 raise failure
         self.kwargs = kwargs
         self.sendto_calls: list[tuple[bytes, tuple[str, int]]] = []
+        self.entered = False
         self.closed = False
         _FakeMcastSocket.instances.append(self)
 
@@ -71,6 +73,7 @@ class _FakeMcastSocket:
             raise _FakeMcastSocket.sendto_raises
 
     def __enter__(self) -> _FakeMcastSocket:
+        self.entered = True
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -279,10 +282,12 @@ class _DummyThread:
         self,
         *,
         target: Any,
+        args: tuple[Any, ...] = (),
         daemon: bool = False,
         name: str = "",
     ) -> None:
         self.target = target
+        self.args = args
         self.daemon = daemon
         self.name = name
         self.started = False
@@ -569,3 +574,83 @@ class TestUpdateSystemName:
         # suite reading ``_send_info_packet`` with a bound sink.
         srv.update_system_name("New")
         assert srv._system_name == "New"
+
+
+# --------------------------------------------------------------------------- #
+# Thread generations – a survivor of stop() must not be revived by start()
+# --------------------------------------------------------------------------- #
+
+_JOIN_BUDGET_S = 5.0
+
+
+class TestThreadGenerations:
+    def test_start_does_not_resurrect_a_send_thread_that_outlived_stop(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A data thread still stuck in a send when stop()'s join expires must
+        not be put back to work by the next start() – ``rebind()`` is stop()
+        then start(), so the survivor would stream alongside the fresh thread.
+        """
+        srv = PsnServer(mcast_ip=None)
+        in_send = threading.Event()
+        release = threading.Event()
+        sends: dict[int, int] = {}
+
+        def blocking_send(stop_event: threading.Event | None = None) -> None:
+            ident = threading.get_ident()
+            sends[ident] = sends.get(ident, 0) + 1
+            in_send.set()
+            release.wait(_JOIN_BUDGET_S)
+
+        monkeypatch.setattr(srv, "_send_data_packet", blocking_send)
+        monkeypatch.setattr(srv, "_send_info_packet", lambda stop_event=None: None)
+
+        srv.start()
+        assert in_send.wait(_JOIN_BUDGET_S)
+        survivor = srv._data_thread
+        assert survivor is not None
+
+        srv.stop()  # the join expires – the thread is wedged in the send
+        assert survivor.is_alive()
+
+        srv.start()  # a fresh generation, as rebind() would
+        try:
+            release.set()
+            survivor.join(timeout=_JOIN_BUDGET_S)
+            assert not survivor.is_alive(), "the survivor was revived by start()"
+            assert sends[survivor.ident] == 1, "the survivor sent again after stop()"
+        finally:
+            release.set()
+            srv.stop()
+
+    def test_a_stale_generation_send_error_leaves_the_live_socket_alone(self) -> None:
+        """What wedges a sender is a send that won't return – the same condition
+        an operator answers by repointing PSN at another interface. The dying
+        survivor's error must not tear down the socket the new generation
+        streams on.
+        """
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        _FakeMcastSocket.sendto_raises = OSError(errno.ENETUNREACH, "iface gone")
+        assert srv._try_open_multicast_socket_once(attempt=1) is True
+        live_socket = srv._socket
+        stale = threading.Event()
+        stale.set()
+
+        srv._send(b"\x00", stale)
+
+        assert srv._socket is live_socket
+        assert srv._socket_thread is None
+
+    def test_a_stale_generation_does_not_adopt_a_socket(self) -> None:
+        """A retry thread mid-open when its generation stopped must not hand the
+        live one a socket bound to the interface it just left.
+        """
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        stale = threading.Event()
+        stale.set()
+
+        assert srv._try_open_multicast_socket_once(attempt=1, stop_event=stale) is False
+
+        assert srv._socket is None
+        assert _FakeMcastSocket.instances[-1].entered is False

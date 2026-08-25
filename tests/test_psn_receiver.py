@@ -36,6 +36,8 @@ class _PacketTracker:
     tracker_id: int
     pos: _Vec | None
     speed: _Vec | None
+    timestamp: int = 0
+    status: float = 0.0
 
 
 class _FakeDataPacket:
@@ -77,6 +79,42 @@ def test_receiver_derives_speed_from_position_when_protocol_speed_is_zero(monkey
     assert marker is not None
     vx, _, _ = marker.speed
     assert vx == pytest.approx(2.0)
+
+
+def test_receiver_carries_the_wire_timestamp_and_status(monkeypatch) -> None:
+    """Both fields belong to the sender: ``timestamp`` counts from the sender's
+    start and ``status`` is the validity it published. Stamping our own clock
+    (or promoting the status) reports a local quantity under a remote name."""
+    monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+    monkeypatch.setattr(receiver_module.time, "monotonic", lambda: 10.0)
+
+    receiver = PsnReceiver()
+    receiver._on_packet(
+        _FakeDataPacket([_PacketTracker(5, _Vec(1.0, 2.0, 3.0), _Vec(0.0, 0.0, 0.0), timestamp=4_242, status=0.25)])
+    )
+
+    marker = receiver.get_marker(5)
+    assert marker is not None
+    assert marker.timestamp == 4_242
+    assert marker.status == pytest.approx(0.25)
+    assert marker.is_remote is True
+
+
+def test_receiver_lets_the_tracker_timestamp_go_backwards(monkeypatch) -> None:
+    """A restarted sender resets its tracker clock. No local stamp can move
+    backwards, so this fails any implementation that stamps - without the test
+    itself having to know what our clock reads."""
+    monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+    monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.5))
+
+    receiver = PsnReceiver()
+    zero = _Vec(0.0, 0.0, 0.0)
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(5, _Vec(1.0, 0.0, 0.0), zero, timestamp=9_000_000)]))
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(5, _Vec(2.0, 0.0, 0.0), zero, timestamp=25)]))
+
+    marker = receiver.get_marker(5)
+    assert marker is not None
+    assert marker.timestamp == 25
 
 
 def test_receiver_online_timeout_uses_last_seen(monkeypatch) -> None:

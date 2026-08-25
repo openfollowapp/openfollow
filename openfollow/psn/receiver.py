@@ -154,9 +154,9 @@ class PsnReceiver:
                 # wire-protocol-derived names; our domain layer
                 # translates them into Marker instances at this seam.
                 # One read for the whole packet: all trackers in a packet arrive
-                # together, so they share an arrival time. Marker writes below
-                # stamp their own clock for the PSN tracker timestamp; that is a
-                # separate quantity from this arrival bookkeeping.
+                # together, so they share an arrival time. This bookkeeping is
+                # local and monotonic; the tracker timestamp the marker carries
+                # counts from the sender's start and is not comparable to it.
                 now = time.monotonic()
                 if now - self._last_evict_sweep >= _EVICT_SWEEP_INTERVAL_S:
                     self._last_evict_sweep = now
@@ -176,21 +176,21 @@ class PsnReceiver:
                     ):
                         continue
                     if t.tracker_id not in self._markers:
-                        self._markers[t.tracker_id] = Marker(t.tracker_id, f"Marker {t.tracker_id}")
+                        self._markers[t.tracker_id] = Marker(t.tracker_id, f"Marker {t.tracker_id}", remote=True)
                     tid = t.tracker_id
                     new_pos = (t.pos.x, t.pos.y, t.pos.z)
-                    self._markers[tid].set_pos(*new_pos)
                     # Use protocol speed only if non-zero; many servers (including
                     # OpenFollow itself) always send speed=(0,0,0) even when
                     # the marker is moving, so fall back to position derivation.
                     proto_speed_nonzero = t.speed is not None and (
                         t.speed.x != 0.0 or t.speed.y != 0.0 or t.speed.z != 0.0
                     )
+                    speed: tuple[float, float, float] | None = None
                     if proto_speed_nonzero:
                         # Store as scalar magnitude in the x component so
                         # services.py can read it without directional noise.
                         mag = (t.speed.x**2 + t.speed.y**2 + t.speed.z**2) ** 0.5
-                        self._markers[tid].set_speed(mag, 0.0, 0.0)
+                        speed = (mag, 0.0, 0.0)
                     else:
                         # Derive speed from position delta; only update when
                         # actually moving so the last known speed stays visible.
@@ -203,7 +203,15 @@ class PsnReceiver:
                                 dy = new_pos[1] - prev_pos[1]
                                 dz = new_pos[2] - prev_pos[2]
                                 if dx != 0.0 or dy != 0.0 or dz != 0.0:
-                                    self._markers[tid].set_speed(dx / dt, dy / dt, dz / dt)
+                                    speed = (dx / dt, dy / dt, dz / dt)
+                    # The sender's own timestamp and status, verbatim - stamping
+                    # our clock here would report a local quantity as theirs.
+                    self._markers[tid].apply_remote(
+                        new_pos,
+                        speed,
+                        timestamp=t.timestamp,
+                        status=t.status,
+                    )
                     self._last_pos[tid] = new_pos
                     self._last_seen[tid] = now
         except Exception:

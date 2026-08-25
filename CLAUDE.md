@@ -327,8 +327,9 @@ The HUD is **not** in the GStreamer chain. The video sink (`gtksink`) is wrapped
 - `_last_seen[tid]`: monotonic timestamp of last received packet
 - `_last_pos[tid]`: previous position for speed derivation
 - **Speed logic (per packet):**
-  1. If `t.speed` is non-zero vector: store as `set_speed(magnitude, 0, 0)`
+  1. If `t.speed` is non-zero vector: store as magnitude in the x component
   2. If `t.speed` is zero or None: derive from `delta_pos/dt`, only when actually moving (preserves last known speed when stationary)
+- **Received markers carry the sender's own `timestamp` / `status`.** Position, speed, and both fields land in one `Marker.apply_remote(...)` write, which never stamps the local clock – the wire values are the sender's, in *its* epoch, and are not comparable to `psn_timestamp_usec()` or to another sender's. Such a marker is built `remote=True` and reports `is_remote`; don't re-broadcast its timestamp as ours. Local freshness is `is_marker_online` (arrival), never the tracker timestamp
 - `is_marker_online(tid, timeout=2.0)`: returns True if packet received within 2s
 - `source_ip` parameter binds receive socket to a specific interface
 

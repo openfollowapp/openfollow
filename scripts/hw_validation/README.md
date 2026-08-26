@@ -15,6 +15,7 @@ to grow into a fuller two-Pi validation suite (see the tracking issue).
 | `analyze_results.py` | anywhere | Asserts every functionality from the receiver JSON; exits non-zero on failure. |
 | `raw_udp_probe.py` | both | Dependency-free UDP reachability preflight – tells a network drop apart from an app bug. |
 | `psn_packet_size_probe.py` | DUT | Builds real multi-tracker PSN datagrams with the deployed encoder, round-trips them through a loopback socket at 1500 vs 65535, and guards the receiver's `recvfrom` buffer (#463). |
+| `output_protocol_driver.py` | DUT | Drives N moving markers out of the deployed PSN / OTP / RTTrPM servers so real consumer software (PSNView, OTPAnalyzer, OTPView) can be pointed at the live output. `--markers 40` splits every stream; `--markers 13` is the control where nothing splits. Classifies datagrams by their own header bytes and reports per-stream counts and largest size. |
 | `output_datagram_size_probe.py` | DUT | Drives the deployed PSN / OTP / RTTrPM send paths at 4-100 markers and asserts no stream emits a datagram past the 1472 B MTU budget - the size at which IP fragments and a loaded show network starts dropping frames. Exits `0` (PASS) / `1` (FAIL). |
 | `osc_socket_options_probe.py` | DUT | Builds clients via the deployed `OscService._make_client` and asserts the broadcast/multicast socket options (#482). |
 | `eos_console_probe.py` | workstation | Drives the deployed `OscTransmitterManager` at an Eos console / ETCnomad. `verify` reads Eos's own parameter values back and asserts the bundled ETC Eos templates' X/Y/Z mapping, exiting `0` (mapping correct) / `1` (mismatch or setup fault). `test` / `sweep` / `stream` drive the console for an operator to watch; their exit code reports only whether the sends reached the socket. |
@@ -38,6 +39,22 @@ poetry run python scripts/hw_validation/osc_socket_options_probe.py
   `recvfrom(1500)` receiver then silently drops the tail markers every frame.
   The probe confirms the deployed receiver's buffer covers a realistic packet
   (40 trackers ≈ 2.1 kB).
+- **Live consumers** – `output_protocol_driver.py` is the one that needs a
+  second machine, but only as a *viewer*: it transmits and you watch. Point the
+  consumer at a **wired** interface. PSN and OTP are multicast at 60 Hz, and
+  60 Hz multicast is routinely dropped over Wi-Fi while low-rate advertisement
+  traffic survives - which looks exactly like a broken split. RTTrPM is unicast,
+  so it needs `--rttrpm-host <consumer IP>`.
+
+  OTPView and OTPAnalyzer both bind UDP `*:5568` without `SO_REUSEPORT`, so only
+  one of them can run at a time; the second silently shows nothing. A packet
+  capture has to bind the group address rather than the wildcard to coexist.
+
+  The paging boundary is where to look: at 40 markers the OTP transform splits
+  31 + 9, so **points 32-40 are the ones that only appear if paging works**, and
+  the name advertisement splits 35 + 5, so **names 36-40 are the second paged
+  stream's proof**. Everything below those numbers rides on page 0 and looks
+  identical either way.
 - **Output sizes** – every marker-carrying output splits a large set across
   datagrams rather than emitting one oversize datagram. The probe walks the
   marker counts where each stream used to cross the line (PSN data 14, OTP

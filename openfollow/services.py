@@ -2296,7 +2296,7 @@ class AppRuntimeServices:
 
         # GIL-atomic assignment (GStreamer thread reads this snapshot).
         # ``init_video`` assigns ``self._overlay_renderer`` before this path
-        # runs (frame tick is gated by canvas readiness), so the None arm is
+        # runs (the frame clock is gated by canvas readiness), so the None arm is
         # unreachable at runtime.
         if self._overlay_renderer is not None:  # pragma: no branch
             self._overlay_renderer.state = state
@@ -2750,15 +2750,14 @@ class AppRuntimeServices:
     def get_runtime_stats_snapshot(self) -> dict[str, Any]:
         """Return a defensive copy of the latest runtime telemetry snapshot.
 
-        Frame-clock liveness is overlaid at *read* time, not taken from the
-        stored snapshot: the snapshot is published from the frame loop, so a
-        stalled loop freezes every other figure in it. Reading the age here is
-        what lets a caller tell a current snapshot from a frozen one.
+        Frame-clock liveness is overlaid at *read* time: the snapshot itself is
+        published from the frame loop, so a stalled loop freezes every other
+        figure in it.
         """
         with self._runtime_stats_lock:
             snapshot = copy.deepcopy(self._runtime_stats_snapshot)
         playback = snapshot["playback"]
-        last_frame = self._app._last_animate_time
+        last_frame = self._app._last_frame_completed
         playback["seconds_since_last_frame"] = (
             float(time.perf_counter() - last_frame) if last_frame is not None else None
         )

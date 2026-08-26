@@ -90,6 +90,10 @@ class _FakeMarker:
         self._stale = stale
 
     @property
+    def clock_now_us(self) -> int:
+        return max(1, psn_timestamp_usec())
+
+    @property
     def timestamp(self) -> int:
         if self._stale:
             return 0
@@ -3680,6 +3684,50 @@ class TestStaleMarkerRows:
         )
         manager._tick_once()
         assert [(c[0], c[1]) for c in svc.calls] == [("/m/1", [1.0]), ("/m/7", [7.0])]
+
+    def test_an_explicit_marker_ref_row_is_skipped_when_stale(self) -> None:
+        """``[x:5]`` reads a marker without setting ``needs_default_marker``, so
+        it bypasses the default-marker branch entirely. Without a check on the
+        explicit resolver these rows keep streaming a frozen coordinate at full
+        rate while an otherwise identical ``[x]`` row correctly goes quiet."""
+        manager, svc = _manager(markers={5: _FakeMarker((1.0, 2.0, 3.0), stale=True)})
+        manager.restart(
+            OscTransmittersConfig(transmitters=[_row(marker_id=5, address="/m", args=["[x:5]"])]),
+        )
+        manager._tick_once()
+        assert svc.calls == []
+
+    def test_an_explicit_marker_ref_row_still_sends_when_fresh(self) -> None:
+        manager, svc = _manager(markers={5: _FakeMarker((1.0, 2.0, 3.0))})
+        manager.restart(
+            OscTransmittersConfig(transmitters=[_row(marker_id=5, address="/m", args=["[x:5]"])]),
+        )
+        manager._tick_once()
+        assert [(c[0], c[1]) for c in svc.calls] == [("/m", [1.0])]
+
+    def test_a_controller_ref_row_is_skipped_when_its_marker_is_stale(self) -> None:
+        """``:cN`` resolves its own marker at render time and likewise never
+        sets ``needs_default_marker``."""
+        manager, svc = _manager(
+            markers={7: _FakeMarker((1.0, 2.0, 3.0), stale=True)},
+            controller_markers={0: 7},
+        )
+        manager.restart(
+            OscTransmittersConfig(transmitters=[_row(marker_id=7, address="/m", args=["[x:c1]"])]),
+        )
+        manager._tick_once()
+        assert svc.calls == []
+
+    def test_a_controller_ref_row_still_sends_when_fresh(self) -> None:
+        manager, svc = _manager(
+            markers={7: _FakeMarker((1.0, 2.0, 3.0))},
+            controller_markers={0: 7},
+        )
+        manager.restart(
+            OscTransmittersConfig(transmitters=[_row(marker_id=7, address="/m", args=["[x:c1]"])]),
+        )
+        manager._tick_once()
+        assert [(c[0], c[1]) for c in svc.calls] == [("/m", [1.0])]
 
     def test_a_constant_row_is_unaffected_by_a_stale_marker(self) -> None:
         """The marker is only the on-change gate here, not part of the output,

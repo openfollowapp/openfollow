@@ -32,8 +32,12 @@
 %     tracking_chip_class = "off"
 % end
 % show_missing_banner = bool(tracking_missing) and tracking_enabled
-% frame_stalled = bool(playback.get("stalled"))
 % frame_age = playback.get("seconds_since_last_frame")
+% # The watchdog flag alone is not enough: it is set from the housekeeping
+% # timeout, which is the same main loop the frame clock is on, so a block
+% # inside one callback stops both. The age is measured on the web thread and
+% # keeps growing, so it is what decides the chip.
+% frame_stalled = bool(playback.get("stalled")) or (frame_age is not None and frame_age >= 1.0)
 % if frame_stalled:
 %     frame_clock_state = "Stalled %.0f s" % frame_age if frame_age is not None else "Stalled"
 % elif frame_age is None:

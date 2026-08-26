@@ -271,6 +271,9 @@ class OpenFollowApp:
         self._frame_err_log = ThrottledExceptionLogger(logger, "Unhandled exception in frame clock")
         # Frame-clock liveness, maintained by the housekeeping watchdog and read
         # by ``/api/stats``. The frame loop can't report its own stall.
+        # Stamped only by a frame that ran to completion, so a raising or hung
+        # frame reads as stopped rather than healthy.
+        self._last_frame_completed: float | None = None
         self._frame_stalled: bool = False
         self._frame_stall_since: float = 0.0
 

@@ -21,12 +21,8 @@ _ZERO: Vec3 = (0.0, 0.0, 0.0)
 _VALID = 1.0
 _INVALID = 0.0
 
-# A locally-driven marker is rewritten once per frame by
-# ``build_marker_visual_state``, so its timestamp doubles as a per-marker "the
-# frame loop ran" stamp. Older than this and the position on the wire is a lie,
-# not merely late - roughly 60 missed frames, wide enough that a GC pause or a
-# config reload never trips it. Deliberately not a config field: it is a safety
-# threshold, not a preference.
+# The per-frame write in ``build_marker_visual_state`` is what stamps a marker,
+# so its age doubles as a "the frame loop ran" signal. ~60 missed frames.
 MARKER_STALE_AFTER_S = 1.0
 
 
@@ -156,6 +152,11 @@ class Marker:
         """True when this marker mirrors a sender on the network."""
         return self._remote
 
+    @property
+    def clock_now_us(self) -> int:
+        """Now, on the clock this marker's timestamps are stamped from."""
+        return self._clock()
+
     def set_pos(self, x: float, y: float, z: float) -> None:
         """Set the marker position in PSN coordinates."""
         with self._lock:
@@ -253,23 +254,26 @@ def marker_age_s(marker: Marker, *, now_us: int | None = None) -> float:
     ours - and one that has never been written has no stamp at all. Both report
     ``inf`` so a caller that treats "old" as "do not publish" fails safe.
 
-    *now_us* pins the reference instant. Pass one sample when ageing several
-    markers for the same packet so they share a coherent snapshot instead of
-    each being measured against a slightly later clock read.
+    *now_us* pins the reference instant, and must come from the same clock the
+    marker was built with (:attr:`Marker.clock_now_us`). Pass one sample when
+    ageing several markers for one packet so they share a snapshot.
     """
     if marker.is_remote:
         return math.inf
     timestamp = marker.timestamp
     if timestamp <= 0:
         return math.inf
-    reference = psn_timestamp_usec() if now_us is None else now_us
+    # The marker's own clock, not the module one: ``PsnServer`` passes its
+    # ``clock=`` down to every marker it creates, and mixing the two epochs
+    # ages a freshly-written marker against an unrelated origin.
+    reference = marker.clock_now_us if now_us is None else now_us
     return (reference - timestamp) / 1_000_000.0
 
 
-def is_marker_stale(marker: Marker) -> bool:
+def is_marker_stale(marker: Marker, *, now_us: int | None = None) -> bool:
     """True when *marker* has gone unwritten long enough to stop trusting it.
 
     The single rule behind every output protocol's staleness handling, so PSN,
     OTP, RTTrPM, and OSC can't drift apart on when a position stops counting.
     """
-    return marker_age_s(marker) >= MARKER_STALE_AFTER_S
+    return marker_age_s(marker, now_us=now_us) >= MARKER_STALE_AFTER_S

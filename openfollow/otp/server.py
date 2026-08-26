@@ -16,7 +16,6 @@ from uuid import uuid4
 
 import multicast_expert
 
-from openfollow.psn.clock import psn_timestamp_usec
 from openfollow.psn.marker import Marker, marker_age_s
 
 logger = logging.getLogger(__name__)
@@ -344,9 +343,9 @@ def encode_otp_transform_packet(
     # immutable bytes – at 60 Hz with N markers, repeated ``+=``
     # allocates and copies in O(N²); join is O(N). Same pattern as
     # ``openfollow/rttrpm/server.py``.
-    # One clock read for the whole packet so every point is aged against the
-    # same instant.
-    now_us = psn_timestamp_usec()
+    # One read from the markers' own clock, so every point in the packet ages
+    # against the same instant.
+    now_us = markers[0].clock_now_us if markers else 0
     point_pdu_parts: list[bytes] = []
     for marker in markers:
         x, y, z = marker.pos
@@ -356,10 +355,15 @@ def encode_otp_transform_packet(
         if sampled_timestamp_us is not None:
             sampled = sampled_timestamp_us
         else:
-            # Ages beyond the packet's own timestamp clamp at 0 rather than
-            # wrapping the unsigned field a Consumer reads.
+            # Clamped both ways: a Consumer reads ``transform - sampled`` on an
+            # unsigned field, so an age past the packet timestamp (or a negative
+            # one, from a write landing mid-build) would underflow it. An
+            # unknowable age is infinite, which ``int()`` refuses outright.
             age_us = marker_age_s(marker, now_us=now_us) * 1_000_000.0
-            sampled = 0 if age_us >= timestamp_us else timestamp_us - int(age_us)
+            if not math.isfinite(age_us):
+                sampled = 0
+            else:
+                sampled = min(timestamp_us, max(0, timestamp_us - int(age_us)))
         # OTP point numbers start at 1 (Section 9.5). Project convention
         # reserves marker_id 0 as "ignored", so marker_id 1 maps directly
         # to point 1 – no +1 offset needed any more.

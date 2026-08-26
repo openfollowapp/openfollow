@@ -185,7 +185,7 @@ class MouseHandler:
     def update(self) -> None:
         """Glide the controlled marker toward the cursor target.
 
-        Runs every frame (display tick) so smoothing advances independent of
+        Runs every frame (the frame clock) so smoothing advances independent of
         pointer-event rate and settles on the target when the cursor stops.
         ``mouse_smoothing`` is the per-frame smoothing amount (0 = instant,
         higher = smoother); the glide alpha is ``1 - mouse_smoothing``.

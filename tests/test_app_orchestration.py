@@ -144,7 +144,9 @@ def _make_fake_app(
         _refresh_iface_list=_recorder("refresh_iface_list"),
         _get_config_mtime=lambda: app._config_mtime,
         _frame_err_log=_RecordingErrorLog(),
+        _last_frame_completed=None,
     )
+    app._animate = lambda: orch.animate(app)
     app._run_frame = lambda: orch.run_frame(app)
     return app
 
@@ -583,15 +585,42 @@ class TestRunFrame:
     def test_raising_frame_is_logged_and_the_loop_survives(self, monkeypatch: pytest.MonkeyPatch) -> None:
         app = _make_fake_app()
 
-        def _boom(_app: object) -> None:
+        def _boom() -> None:
             raise RuntimeError("frame blew up")
 
-        monkeypatch.setattr(orch, "animate", _boom)
+        app._animate = _boom
         # Dropping the source here would freeze marker state for the rest of the
         # process while every output kept transmitting the last position.
         assert orch.run_frame(app) is True
         assert orch.run_frame(app) is True
         assert app._frame_err_log.calls == 2
+
+    def test_a_frame_that_raises_every_tick_reads_as_stalled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The stamp is taken on completion, not entry. Stamping on entry would
+        let a frame that raises on every tick advance the liveness clock while
+        no marker is ever written: the watchdog and the chip would both read
+        healthy, and the only symptom would be every output going quiet."""
+        app = _make_fake_app()
+        app._last_frame_completed = 500.0
+
+        def _boom() -> None:
+            raise RuntimeError("frame blew up")
+
+        app._animate = _boom
+        for _ in range(5):
+            assert orch.run_frame(app) is True
+        # Nothing completed, so the liveness stamp never moved.
+        assert app._last_frame_completed == 500.0
+
+        monkeypatch.setattr(orch.time, "perf_counter", lambda: 505.0)
+        orch.check_frame_loop_stall(app)
+        assert app._frame_stalled is True
+
+    def test_a_completed_frame_advances_the_liveness_stamp(self) -> None:
+        app = _make_fake_app()
+        assert app._last_frame_completed is None
+        orch.run_frame(app)
+        assert app._last_frame_completed is not None
 
     def test_drops_the_source_while_the_window_is_closing(self) -> None:
         app = _make_fake_app()
@@ -624,7 +653,7 @@ class TestCheckFrameLoopStall:
 
     def test_no_verdict_before_the_first_frame(self, monkeypatch: pytest.MonkeyPatch, caplog) -> None:  # noqa: ANN001
         app = _make_fake_app()
-        app._last_animate_time = None
+        app._last_frame_completed = None
         with caplog.at_level(logging.INFO, logger=orch.logger.name):
             self._run_at(app, monkeypatch, 500.0)
         assert app._frame_stalled is False
@@ -637,7 +666,7 @@ class TestCheckFrameLoopStall:
         elapsed: float,
     ) -> None:
         app = _make_fake_app()
-        app._last_animate_time = 100.0
+        app._last_frame_completed = 100.0
         self._run_at(app, monkeypatch, 100.0 + elapsed)
         assert app._frame_stalled is False
 
@@ -649,7 +678,7 @@ class TestCheckFrameLoopStall:
         elapsed: float,
     ) -> None:
         app = _make_fake_app()
-        app._last_animate_time = 100.0
+        app._last_frame_completed = 100.0
         with caplog.at_level(logging.WARNING, logger=orch.logger.name):
             self._run_at(app, monkeypatch, 100.0 + elapsed)
         assert app._frame_stalled is True
@@ -664,7 +693,7 @@ class TestCheckFrameLoopStall:
         caplog,  # noqa: ANN001
     ) -> None:
         app = _make_fake_app()
-        app._last_animate_time = 100.0
+        app._last_frame_completed = 100.0
         with caplog.at_level(logging.WARNING, logger=orch.logger.name):
             for tick in range(10):
                 self._run_at(app, monkeypatch, 102.0 + tick * 0.1)
@@ -672,23 +701,26 @@ class TestCheckFrameLoopStall:
         # keep going for as long as the station is wedged.
         assert len(caplog.records) == 1
 
-    def test_recovery_clears_the_flag_and_logs_the_outage(
+    def test_recovery_logs_the_whole_outage_not_the_time_since_detection(
         self,
         monkeypatch: pytest.MonkeyPatch,
         caplog,  # noqa: ANN001
     ) -> None:
+        """The loop stops at 100 and recovers at 108, so the outage is 8s. Timing
+        it from detection (105) reports 3s and leaves an operator to add two
+        journal lines together to find out how long the station was frozen."""
         app = _make_fake_app()
-        app._last_animate_time = 100.0
+        app._last_frame_completed = 100.0
         self._run_at(app, monkeypatch, 105.0)
         assert app._frame_stalled is True
 
-        app._last_animate_time = 108.0  # frames landing again
+        app._last_frame_completed = 108.0  # frames landing again
         caplog.clear()
         with caplog.at_level(logging.INFO, logger=orch.logger.name):
             self._run_at(app, monkeypatch, 108.0)
         assert app._frame_stalled is False
         assert len(caplog.records) == 1
-        assert "resumed after 3.0s" in caplog.records[0].getMessage()
+        assert "resumed after 8.0s" in caplog.records[0].getMessage()
 
     def test_a_second_episode_warns_again(
         self,
@@ -697,11 +729,11 @@ class TestCheckFrameLoopStall:
     ) -> None:
         app = _make_fake_app()
         with caplog.at_level(logging.WARNING, logger=orch.logger.name):
-            app._last_animate_time = 100.0
+            app._last_frame_completed = 100.0
             self._run_at(app, monkeypatch, 102.0)
-            app._last_animate_time = 103.0
+            app._last_frame_completed = 103.0
             self._run_at(app, monkeypatch, 103.0)
-            app._last_animate_time = 103.0
+            app._last_frame_completed = 103.0
             self._run_at(app, monkeypatch, 106.0)
         # A recovered-then-restalled station must not stay silent the second time.
         assert len(caplog.records) == 2

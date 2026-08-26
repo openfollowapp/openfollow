@@ -44,14 +44,31 @@ def test_before_the_first_frame_reads_as_starting() -> None:
     assert '<span class="stat-chip warn">Starting</span>' in body
 
 
+def test_a_growing_age_reads_as_stalled_even_when_the_watchdog_never_fired() -> None:
+    """The watchdog runs on the housekeeping timeout - the same main loop as the
+    frame clock - so a block inside one callback stops both, leaving ``stalled``
+    False forever. The age is computed on the web thread and keeps growing, and
+    rendering a green Running chip against it is exactly the false-healthy signal
+    this whole change exists to remove."""
+    body = _render({"stalled": False, "seconds_since_last_frame": 8.0})
+    assert '<span class="stat-chip off">Stalled 8 s</span>' in body
+
+
+@pytest.mark.parametrize("age", [0.0, 0.017, 0.9])
+def test_a_healthy_age_still_reads_running(age: float) -> None:
+    body = _render({"stalled": False, "seconds_since_last_frame": age})
+    assert '<span class="stat-chip ok">Running</span>' in body
+
+
 def test_missing_playback_section_does_not_break_the_panel() -> None:
     # A snapshot published by an older peer, or read before the first publish.
     body = template("partials/statistics", stats={})
     assert "Frame clock" in body
 
 
-@pytest.mark.parametrize("stalled", [True, False])
-def test_chip_colour_tracks_the_stall_flag(stalled: bool) -> None:
-    body = _render({"stalled": stalled, "seconds_since_last_frame": 1.0})
-    expected = "off" if stalled else "ok"
+@pytest.mark.parametrize(("stalled", "age", "expected"), [(True, 0.01, "off"), (False, 0.01, "ok")])
+def test_chip_colour_tracks_the_stall_flag(stalled: bool, age: float, expected: str) -> None:
+    # Age held healthy so this isolates the flag; the age path has its own tests
+    # above. A 1 s age is itself stalled, whatever the flag says.
+    body = _render({"stalled": stalled, "seconds_since_last_frame": age})
     assert f'<span class="stat-chip {expected}">' in body

@@ -16,6 +16,7 @@ from openfollow.configuration import (
     load_config,
     save_config,
 )
+from openfollow.psn.marker import MARKER_STALE_AFTER_S
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -26,26 +27,18 @@ logger = logging.getLogger(__name__)
 # at 10 Hz on its own GLib timeout.
 _HOUSEKEEPING_INTERVAL_MS = 100
 
-# The frame clock. Marker state, input, detection pinning, zone evaluation, and
-# every output are driven from this GLib timeout and NOT from the display's
-# ``add_tick_callback``: that tick is the compositor's frame clock, so it never
-# fires on a unit with no display attached. A station in that state would keep
-# transmitting a frozen position at full rate on PSN, OTP, RTTrPM, and OSC, which
-# is indistinguishable from a healthy stream. The display tick drives the HUD
-# redraw alone (``GtkNativeSinkWindow.start_hud_tick``).
+# A GLib timeout, deliberately not the display's ``add_tick_callback``: that
+# tick never fires with no display attached, and the outputs do not stop with it.
 _FRAME_INTERVAL_MS = 16
 
-# Frame integration step. The clock above is a timeout, not a vsync tick, so its
-# cadence drifts with main-loop load; velocity integrates against real elapsed
-# time rather than a fixed 1/60 so a WASD/gamepad nudge moves the marker at the
-# configured speed regardless.
+# A timeout's cadence drifts with main-loop load, so velocity integrates against
+# real elapsed time rather than a fixed 1/60.
 _DEFAULT_FRAME_DT = 1.0 / 60.0  # first-frame fallback before a real delta exists
 _MAX_FRAME_DT = 0.1  # clamp the step after a stall so a marker can't teleport
 
-# A frame clock that has not run for this long is stalled, not merely slow -
-# roughly 60 missed frames at the interval above. Wide enough that a GC pause, a
-# config reload, or a detection hiccup never trips it.
-_FRAME_STALL_AFTER_S = 1.0
+# Derived, not a second constant: the operator-facing indicator and what the
+# outputs put on the wire must agree on when a position stops counting.
+_FRAME_STALL_AFTER_S = MARKER_STALE_AFTER_S
 
 # Quiet window after the last per-marker speed edit before it's flushed to disk,
 # so a tap-streak / held bumper coalesces into a single write.
@@ -83,17 +76,15 @@ def run_native_loop(app: OpenFollowApp) -> None:
 def run_frame(app: OpenFollowApp) -> bool:
     """Frame-clock timeout callback. Returns True so the timeout re-arms.
 
-    Guarded for the same reason as :func:`housekeeping`: PyGObject does not
-    reliably keep a source whose callback raised, so an unguarded exception here
-    would silently kill the frame loop and freeze marker state exactly as a
-    missing display tick does. The throttle keeps a persistently-raising frame
-    from flooding the journal at 60 Hz.
+    Guarded because PyGObject does not reliably keep a source whose callback
+    raised: an unguarded exception would kill the frame loop and freeze marker
+    state exactly as a missing display tick does.
     """
     canvas = app._canvas
     if canvas is None or canvas.is_closing:
         return False  # tearing down; drop the source rather than run against it
     try:
-        animate(app)
+        app._animate()
     except Exception:
         app._frame_err_log.log()
     return True
@@ -129,15 +120,14 @@ def housekeeping(app: OpenFollowApp) -> bool:
 def check_frame_loop_stall(app: OpenFollowApp) -> None:
     """Watch the frame clock from the housekeeping timer and log both edges.
 
-    Polled here rather than from the frame loop for the obvious reason: a
-    stalled loop cannot report itself, and ``publish_runtime_stats`` is called
-    from ``animate`` so every telemetry figure freezes with it. The stamp is
-    taken at the *top* of ``animate``, so a frame that hangs part-way through
-    counts as a stall too.
+    Polled here because a stalled loop cannot report itself: ``publish_runtime_stats``
+    runs inside ``animate`` and freezes with it.
 
-    Edge-triggered: one line per episode, never one per poll.
+    Reads the *completion* stamp, so a frame that raises or hangs part-way counts
+    as a stall - it stops writing markers either way, which is what the outputs
+    react to. Edge-triggered: one line per episode, never one per poll.
     """
-    last = app._last_animate_time
+    last = app._last_frame_completed
     if last is None:
         return  # first frame hasn't landed yet; nothing to compare against
     now = time.perf_counter()
@@ -146,14 +136,14 @@ def check_frame_loop_stall(app: OpenFollowApp) -> None:
         return
     app._frame_stalled = stalled
     if stalled:
-        app._frame_stall_since = now
+        # The outage began at the last completed frame, not at detection.
+        app._frame_stall_since = last
         logger.warning(
             "Frame clock stalled %.1fs ago. Marker positions, input, and detection are frozen; "
             "PSN, OTP, RTTrPM, and OSC outputs are transmitting the last known state.",
             now - last,
         )
         return
-    # Only reachable after the branch above ran, so the stall start is set.
     logger.info("Frame clock resumed after %.1fs.", now - app._frame_stall_since)
 
 
@@ -198,6 +188,10 @@ def animate(app: OpenFollowApp) -> None:
     frame_time = time.perf_counter() - frame_start
     svc._frame_metrics.add_frame(frame_time)
     svc.publish_runtime_stats()
+
+    # Last line: a frame that raised never gets here, so the watchdog and the
+    # stats age both see the loop as stopped rather than merely slow.
+    app._last_frame_completed = time.perf_counter()
 
 
 def get_config_mtime(app: OpenFollowApp) -> float:

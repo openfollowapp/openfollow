@@ -1202,6 +1202,11 @@ class OscTransmitterManager:
         if marker is None:
             return None
         try:
+            # Explicit ``[x:N]`` and controller ``[x:cN]`` refs both land here,
+            # and neither sets ``needs_default_marker`` - so this is where a
+            # frozen position has to be withheld for them.
+            if is_marker_stale(marker):
+                return None
             return marker.pos
         except Exception:  # pragma: no cover - defensive
             return None
@@ -1306,11 +1311,8 @@ class OscTransmitterManager:
                 # it. Render proceeds; the gate is a no-op (a missing
                 # marker means "no signal to compare").
             elif needs_default and is_marker_stale(marker):
-                # The frame loop stopped writing this marker, so its position is
-                # frozen rather than merely still. Skip instead of streaming it
-                # at the row's rate; the ring buffer carries the reason so the
-                # row's diagnostics say why it went quiet. Rows that only use
-                # the marker as an on-change gate are unaffected.
+                # Frozen, not merely still: skip rather than stream it, with the
+                # reason in the row's ring buffer.
                 return _RenderResult(
                     address="",
                     args=(),

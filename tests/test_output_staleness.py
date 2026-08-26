@@ -16,6 +16,7 @@ lives with its harness in ``test_osc_transmitter.py``.
 
 from __future__ import annotations
 
+import logging
 import struct
 
 import pypsn
@@ -39,17 +40,20 @@ _OTP_TRANSFORM_TS = slice(84, 92)
 _OTP_FIRST_POINT_SAMPLED_TS = slice(108, 116)
 
 
-def _age(monkeypatch: pytest.MonkeyPatch, marker: Marker, seconds: float) -> None:
-    """Make *marker* read as written ``seconds`` ago.
+_NOW_US = 4_000_000_000
 
-    ``Marker`` binds its stamping clock at construction, so moving the process
-    clock ages the marker without disturbing the stamp already on it. Both
-    readers of that clock are moved together: the OTP encoder samples it once
-    per packet so all its points share one instant.
+
+def _aged_marker(marker_id: int, age_s: float, *, now_us: int = _NOW_US) -> Marker:
+    """A locally-driven marker written ``age_s`` ago, on its own clock.
+
+    A marker's age is measured against the clock it was built with, so the test
+    drives that clock rather than patching a module function.
     """
-    frozen = marker.timestamp + int(seconds * 1_000_000)
-    monkeypatch.setattr(marker_module, "psn_timestamp_usec", lambda: frozen)
-    monkeypatch.setattr(otp_server, "psn_timestamp_usec", lambda: frozen)
+    clock = _StepClock(now_us - int(age_s * 1_000_000))
+    marker = Marker(marker_id, f"T{marker_id}", clock=clock)
+    marker.set_pos(float(marker_id), 5.0, 6.0)
+    clock.now = now_us  # time moves on; the stamp does not
+    return marker
 
 
 # --------------------------------------------------------------------------- #
@@ -59,15 +63,15 @@ def _age(monkeypatch: pytest.MonkeyPatch, marker: Marker, seconds: float) -> Non
 
 class TestPsnStatus:
     def _emit(self, monkeypatch: pytest.MonkeyPatch, age_s: float) -> pypsn.PsnTracker:
-        server = PsnServer(mcast_ip=None)
+        clock = _StepClock(_NOW_US - int(age_s * 1_000_000))
+        server = PsnServer(mcast_ip=None, clock=clock)
         marker = server.add_marker(1, "T1")
         marker.set_pos(4.0, 5.0, 6.0)
+        clock.now = _NOW_US
         sent: list[bytes] = []
         monkeypatch.setattr(server, "_send", lambda data, stop_event=None: sent.append(data))
-        _age(monkeypatch, marker, age_s)
         server._send_data_packet()
-        packet = pypsn.parse_psn_packet(sent[0])
-        return packet.trackers[0]
+        return pypsn.parse_psn_packet(sent[0]).trackers[0]
 
     def test_a_live_marker_ships_a_valid_tracker(self, monkeypatch: pytest.MonkeyPatch) -> None:
         assert self._emit(monkeypatch, 0.0).status == 1.0
@@ -103,39 +107,25 @@ class TestOtpSampledTimestamp:
             struct.unpack("!Q", packet[_OTP_FIRST_POINT_SAMPLED_TS])[0],
         )
 
-    def _marker(self) -> Marker:
-        marker = Marker(1, "T1")
-        marker.set_pos(1.0, 2.0, 3.0)
-        return marker
-
-    def test_a_just_written_point_samples_at_the_packet_time(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        marker = self._marker()
-        _age(monkeypatch, marker, 0.0)
-        transform_ts, sampled_ts = self._encode(marker)
+    def test_a_just_written_point_samples_at_the_packet_time(self) -> None:
+        transform_ts, sampled_ts = self._encode(_aged_marker(1, 0.0))
         assert sampled_ts == transform_ts
 
     @pytest.mark.parametrize("age_s", [0.25, 2.0, 30.0])
-    def test_the_sampled_timestamp_trails_the_packet_by_the_marker_age(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        age_s: float,
-    ) -> None:
-        marker = self._marker()
-        _age(monkeypatch, marker, age_s)
-        transform_ts, sampled_ts = self._encode(marker)
+    def test_the_sampled_timestamp_trails_the_packet_by_the_marker_age(self, age_s: float) -> None:
+        transform_ts, sampled_ts = self._encode(_aged_marker(1, age_s))
         assert transform_ts - sampled_ts == int(age_s * 1_000_000)
 
-    def test_a_frozen_point_stops_ageing_while_the_packet_clock_runs_on(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_a_frozen_point_stops_ageing_while_the_packet_clock_runs_on(self) -> None:
         """The whole point of the field: two packets a second apart from a
         wedged station carry the same sampled timestamp, so a Consumer can see
         the point is not being re-read even though transforms keep arriving."""
-        marker = self._marker()
-        _age(monkeypatch, marker, 4.0)
+        clock = _StepClock(_NOW_US - 4_000_000)
+        marker = Marker(1, "T1", clock=clock)
+        marker.set_pos(1.0, 2.0, 3.0)
+        clock.now = _NOW_US
         _, first = self._encode(marker, timestamp_us=10_000_000)
-        _age(monkeypatch, marker, 5.0)
+        clock.now = _NOW_US + 1_000_000  # a second later, still unwritten
         _, second = self._encode(marker, timestamp_us=11_000_000)
         assert first == second
 
@@ -145,12 +135,19 @@ class TestOtpSampledTimestamp:
         _, sampled_ts = self._encode(Marker(1, "T1"))
         assert sampled_ts == 0
 
-    def test_an_explicit_sampled_timestamp_overrides_the_derivation(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        marker = self._marker()
-        _age(monkeypatch, marker, 9.0)
+    def test_a_write_landing_mid_build_cannot_push_the_sample_past_the_packet(self) -> None:
+        """A negative age (the marker written after the packet's clock read)
+        would make ``transform - sampled`` underflow the unsigned field a
+        Consumer reads, reporting a point ~584,000 years old."""
+        clock = _StepClock(_NOW_US)
+        marker = Marker(1, "T1", clock=clock)
+        marker.set_pos(1.0, 2.0, 3.0)
+        clock.now = _NOW_US - 500_000  # clock behind the stamp -> negative age
+        transform_ts, sampled_ts = self._encode(marker)
+        assert sampled_ts <= transform_ts
+
+    def test_an_explicit_sampled_timestamp_overrides_the_derivation(self) -> None:
+        marker = _aged_marker(1, 9.0)
         packet = encode_otp_transform_packet(
             cid=b"\x11" * 16,
             component_name="X",
@@ -169,19 +166,12 @@ class TestOtpSampledTimestamp:
 # --------------------------------------------------------------------------- #
 
 
-_NOW_US = 100_000_000
-
-
 class TestRttrpmWithholding:
     def _emit(self, monkeypatch: pytest.MonkeyPatch, ages_s: list[float]) -> list[bytes]:
         """Register one trackable per entry in *ages_s* and emit one packet."""
-        monkeypatch.setattr(marker_module, "psn_timestamp_usec", lambda: _NOW_US)
         server = RttrpmServer(host="127.0.0.1", port=24_002)
         for index, age_s in enumerate(ages_s, start=1):
-            stamp = _StepClock(_NOW_US - int(age_s * 1_000_000))
-            marker = Marker(index, f"T{index}", clock=stamp)
-            marker.set_pos(float(index), 0.0, 0.0)
-            server.register_marker(marker)
+            server.register_marker(_aged_marker(index, age_s))
         sent: list[bytes] = []
         monkeypatch.setattr(server, "_socket", object())
         monkeypatch.setattr(server, "_send", lambda data, stop_event=None: sent.append(data))
@@ -195,6 +185,45 @@ class TestRttrpmWithholding:
         """Streaming a frozen centroid at 60 Hz is worse than silence: the
         receiver's own trackable timeout is the protocol's way to say gone."""
         assert self._emit(monkeypatch, [5.0]) == []
+
+    def test_withholding_is_logged_once_per_episode(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Unlike the other three protocols this one removes the trackable
+        entirely, so without a log line a marker vanishes from the console with
+        no evidence anywhere. Once per episode, not once per 60 Hz packet."""
+        server = RttrpmServer(host="127.0.0.1", port=24_002)
+        server.register_marker(_aged_marker(1, 0.0))
+        stale = _aged_marker(2, 5.0)
+        server.register_marker(stale)
+        monkeypatch.setattr(server, "_socket", object())
+        monkeypatch.setattr(server, "_send", lambda data, stop_event=None: None)
+        with caplog.at_level(logging.WARNING, logger="openfollow.rttrpm.server"):
+            for _ in range(10):
+                server._send_packet()
+        assert len(caplog.records) == 1
+        assert "withholding 1 stale trackable" in caplog.records[0].getMessage()
+
+    def test_withhold_warning_rearms_after_recovery(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        server = RttrpmServer(host="127.0.0.1", port=24_002)
+        server.register_marker(_aged_marker(1, 5.0))
+        monkeypatch.setattr(server, "_socket", object())
+        monkeypatch.setattr(server, "_send", lambda data, stop_event=None: None)
+        with caplog.at_level(logging.WARNING, logger="openfollow.rttrpm.server"):
+            server._send_packet()
+            server._markers.clear()
+            server.register_marker(_aged_marker(1, 0.0))  # loop writing again
+            server._send_packet()
+            server._markers.clear()
+            server.register_marker(_aged_marker(1, 5.0))  # and stalls again
+            server._send_packet()
+        assert len(caplog.records) == 2
 
     def test_a_stale_trackable_is_dropped_without_taking_the_packet_with_it(
         self,

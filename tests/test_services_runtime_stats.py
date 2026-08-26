@@ -41,6 +41,7 @@ class _DummyApp:
         self._video_receiver = None
         self._input_manager = None
         self._last_animate_time: float | None = None
+        self._last_frame_completed: float | None = None
         self._frame_stalled = False
 
 
@@ -421,7 +422,7 @@ class TestPublishRuntimeStats:
 
         monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
 
-        services._app._last_animate_time = 500.0
+        services._app._last_frame_completed = 500.0
         monkeypatch.setattr(services_module.time, "perf_counter", lambda: 500.0)
         services.publish_runtime_stats(force=True)
 
@@ -453,7 +454,7 @@ class TestPublishRuntimeStats:
         monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
         services.publish_runtime_stats(force=True)
 
-        services._app._last_animate_time = None
+        services._app._last_frame_completed = None
         assert services.get_runtime_stats_snapshot()["playback"]["seconds_since_last_frame"] is None
 
     def test_snapshot_is_deep_copied_on_read(

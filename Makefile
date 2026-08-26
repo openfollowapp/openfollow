@@ -42,7 +42,11 @@ PYTEST_PARALLEL ?= -n $(PYTEST_WORKERS) --dist load
 PYTEST_THREAD_CAPS ?= OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
                       NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 
-ci: lint typecheck security test build
+# The e2e smoke test is part of the gate: it is the only step that wires the
+# real receivers to the real outputs, and a regression there passed twice
+# through a green `test` target before it was noticed on main. It skips itself
+# where the GStreamer runtime is absent.
+ci: lint typecheck security test test-smoke-e2e build
 
 # Pre-push gate. Runs `make ci` on a reachable testing Pi (the real
 # aarch64 / py3.13 / trixie target – catches wheel/typecheck gaps the Mac
@@ -96,9 +100,10 @@ test-integration:
 	$(PYTEST_THREAD_CAPS) poetry run pytest -m "integration or smoke" -q $(PYTEST_PARALLEL) --cov=openfollow --cov-append --cov-report=term-missing --cov-fail-under=$(COVERAGE_MIN)
 
 # End-to-end smoke test. Spins a real GStreamer pipeline and PSN packet
-# through OTP/RTTrPM output sockets. Opt-in, OUT of `make ci` (needs
-# GStreamer runtime). Per-main-push signal, not a PR gate. Skips if
-# GStreamer isn't installed.
+# through OTP/RTTrPM output sockets, and skips itself if GStreamer isn't
+# installed. Part of `make ci` – it is the only step that wires the real
+# receivers to the real outputs, so nothing else can catch a regression in
+# that seam.
 test-smoke-e2e:
 	$(PYTEST_THREAD_CAPS) poetry run pytest -m smoke_e2e -q
 

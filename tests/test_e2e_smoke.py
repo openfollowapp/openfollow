@@ -24,6 +24,7 @@ import pytest
 
 from openfollow.otp.server import OtpServer
 from openfollow.psn.receiver import PsnReceiver
+from openfollow.psn.server import PsnServer
 from openfollow.rttrpm.server import RttrpmServer, encode_rttrpm_centroid_module
 from openfollow.video.receiver import gst_runtime_available
 
@@ -120,13 +121,21 @@ def test_e2e_real_pipeline_and_psn_to_outputs() -> None:
     assert marker is not None
     assert marker.pos == _POS
 
+    # The outputs carry the markers this station drives, which is what
+    # ``init_otp`` / ``init_rttrpm`` register: ones minted by ``PsnServer``.
+    # A received marker holds its sender's clock, so its age is unknowable and
+    # RTTrPM withholds it by design - handing one to an output here would test
+    # a wiring the app does not have.
+    driven = PsnServer(mcast_ip=None).add_marker(_TID, "E2E")
+    driven.set_pos(*marker.pos)
+
     # 3a) OTP output (loopback unicast, micrometres) carries the exact position.
     otp_cap = _udp_capture_socket()
     try:
         otp = OtpServer(mcast_ip="", port=otp_cap.getsockname()[1], system_number=1)
         otp._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            otp.register_marker(marker)
+            otp.register_marker(driven)
             otp._send_transform_packet()
             otp_pkt, _ = otp_cap.recvfrom(2048)
         finally:
@@ -146,7 +155,7 @@ def test_e2e_real_pipeline_and_psn_to_outputs() -> None:
         rttrpm = RttrpmServer(host="127.0.0.1", port=rt_cap.getsockname()[1])
         rttrpm._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            rttrpm.register_marker(marker)
+            rttrpm.register_marker(driven)
             rttrpm._send_packet()
             rt_pkt, _ = rt_cap.recvfrom(4096)
         finally:

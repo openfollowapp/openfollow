@@ -6,7 +6,9 @@ Every marker-carrying output (PSN, OTP, RTTrPM) grows its datagram with the
 marker count, and each has its own on-the-wire mechanism for spreading one
 logical frame over several datagrams. What they share is the question of where
 to cut, which is what this module answers: pack items greedily into chunks whose
-encoded size stays inside ``MAX_DATAGRAM_BYTES``.
+encoded size stays inside ``MAX_DATAGRAM_BYTES`` wherever that is possible at
+all. An item too large to fit even alone is handed back in a chunk of its own,
+for the protocol layer to decide what an unsendable item means.
 
 Sizes are measured through the caller's real encoder rather than derived from a
 per-item constant, so a protocol field added later moves the split instead of

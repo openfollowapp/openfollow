@@ -132,8 +132,12 @@ OpenFollowApp (app.py)
 
 Camera calibration is web-only (the `/wizard` setup wizard) – there is no on-device calibration overlay. `scene/` holds just `camera.py` + `solver.py` (the DLT solver).
 
-**Frame loop:** `_animate()` runs on the display vsync tick (`Gtk.Widget.add_tick_callback`, ~60–120 Hz), so `dt` integrates against real elapsed time, not a fixed step; a separate `GLib.timeout_add` drives slow housekeeping.
+**Frame loop:** `_animate()` runs on a `GLib.timeout_add` at `_FRAME_INTERVAL_MS` (~60 Hz), so `dt` integrates against real elapsed time, not a fixed step.
 Order: `_process_input(dt)` → `svc.update_video()` → `svc.apply_detection_pin()` → `svc.update_zone_triggers()` → `svc.update_marker_visuals()`
+
+**Three independent clocks, none of them the display.** Marker state, input, detection pinning, zone evaluation, and every output run off the frame timeout; slow web-driven housekeeping runs off its own 100 ms timeout; the display vsync tick (`Gtk.Widget.add_tick_callback`, wired by `GtkNativeSinkWindow.start_hud_tick`) redraws the HUD and polls the macOS pointer, and **carries no app state**. That separation is load-bearing: a unit with no display attached gets no compositor frame clock, so anything on the vsync tick simply never runs, while `PsnServer` / `OtpServer` / `RttrpmServer` / `OscTransmitterManager` keep transmitting the last known marker state from their own threads at full rate. Do NOT move per-frame state back onto `start_hud_tick`, and do NOT give it a callback parameter.
+
+**Stall watchdog:** `check_frame_loop_stall` (on the housekeeping timeout, because a stalled loop can't report itself) flags `app._frame_stalled` after `_FRAME_STALL_AFTER_S` and logs one line per episode on each edge. `get_runtime_stats_snapshot` overlays `playback.stalled` + `playback.seconds_since_last_frame` at **read** time – `publish_runtime_stats` is called from `animate`, so a stalled loop freezes every other figure in the snapshot. Surfaced as the `Frame clock` chip in the Statistics → Device panel.
 
 ---
 

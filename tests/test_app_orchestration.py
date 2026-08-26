@@ -12,6 +12,7 @@ the filesystem, or a real GLib main loop.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -48,14 +49,21 @@ class _FakeInputManager:
 
 class _FakeCanvas:
     def __init__(self) -> None:
-        self.tick_started: list[object] = []
-        self.draw_requests: list[object] = []
+        self.hud_ticks_started = 0
+        self.is_closing = False
 
-    def start_tick_animation(self, callback) -> None:  # noqa: ANN001
-        self.tick_started.append(callback)
+    def start_hud_tick(self) -> None:
+        self.hud_ticks_started += 1
 
-    def request_draw(self, callback) -> None:  # noqa: ANN001
-        self.draw_requests.append(callback)
+
+class _RecordingErrorLog:
+    """Stand-in for the frame clock's ``ThrottledExceptionLogger``."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def log(self) -> None:
+        self.calls += 1
 
 
 class _RecordingServices:
@@ -128,11 +136,16 @@ def _make_fake_app(
         _check_pi_network_worker=_recorder("check_pi_network_worker"),
         _check_button_detection_request=_recorder("check_button_detection_request"),
         _check_marker_speeds_persist=_recorder("check_marker_speeds_persist"),
+        _check_frame_loop_stall=_recorder("check_frame_loop_stall"),
+        _frame_stalled=False,
+        _frame_stall_since=None,
         _check_video_disconnect_banner=_recorder("check_video_disconnect_banner"),
         _process_input=_recorder("process_input"),
         _refresh_iface_list=_recorder("refresh_iface_list"),
         _get_config_mtime=lambda: app._config_mtime,
+        _frame_err_log=_RecordingErrorLog(),
     )
+    app._run_frame = lambda: orch.run_frame(app)
     return app
 
 
@@ -160,11 +173,6 @@ class TestAnimate:
         orch.animate(app)
         orch.animate(app)
         assert app._runtime_services.runtime_stats_calls == 2
-
-    def test_requests_next_draw_on_canvas(self) -> None:
-        app = _make_fake_app()
-        orch.animate(app)
-        assert app._canvas.draw_requests == [app._animate]
 
     def test_records_frame_timing_sample(self) -> None:
         app = _make_fake_app()
@@ -251,8 +259,8 @@ class TestAnimate:
 
 class TestHousekeeping:
     def test_runs_web_driven_checks_and_rearms(self) -> None:
-        # Runs on a GLib timeout (not the vsync tick) so a headless device with no
-        # display still services web-triggered update/config/restart requests.
+        # Its own 10 Hz timeout, so these keep their cadence rather than running
+        # 60 times a second alongside the frame clock.
         app = _make_fake_app()
         result = orch.housekeeping(app)
         assert result is True  # truthy -> GLib re-arms the timeout
@@ -263,6 +271,9 @@ class TestHousekeeping:
             "check_pi_network_worker",
             "check_button_detection_request",
             "check_marker_speeds_persist",
+            # The stall watchdog belongs here and not on the frame clock: a
+            # stalled loop cannot report its own stall.
+            "check_frame_loop_stall",
         ]
 
     def test_swallows_check_exception_and_keeps_timer(self) -> None:
@@ -283,6 +294,7 @@ class TestHousekeeping:
             "check_pi_network_worker",
             "check_button_detection_request",
             "check_marker_speeds_persist",
+            "check_frame_loop_stall",
         ]
 
 
@@ -469,15 +481,15 @@ class TestRunNativeLoop:
             assert priority == glib.PRIORITY_HIGH
             assert handler == gtk.main_quit
 
-    def test_shuts_down_when_start_tick_animation_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_shuts_down_when_start_hud_tick_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         glib, gtk = _FakeGLib(), _FakeGtk()
         self._patch_gi(monkeypatch, glib, gtk)
         app = _make_fake_app()
 
-        def _boom(_cb: object) -> None:
+        def _boom() -> None:
             raise RuntimeError("canvas init failed")
 
-        app._canvas.start_tick_animation = _boom  # type: ignore[method-assign]
+        app._canvas.start_hud_tick = _boom  # type: ignore[method-assign]
 
         # A failure starting the tick must still run shutdown (the finally now
         # wraps it) and never reach Gtk.main.
@@ -486,20 +498,27 @@ class TestRunNativeLoop:
         assert app._runtime_services.shutdown_calls == 1
         assert gtk.main_called == 0
 
-    def test_starts_tick_animation_on_canvas(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_starts_a_hud_only_tick_on_canvas(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._patch_gi(monkeypatch, _FakeGLib(), _FakeGtk())
         app = _make_fake_app()
         orch.run_native_loop(app)
-        assert app._canvas.tick_started == [app._animate]
+        # The display tick redraws the HUD and takes no app callback: handing it
+        # the frame loop is what froze marker state on a headless unit.
+        assert app._canvas.hud_ticks_started == 1
 
-    def test_registers_display_independent_housekeeping_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_registers_display_independent_frame_and_housekeeping_timeouts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         glib = _FakeGLib()
         self._patch_gi(monkeypatch, glib, _FakeGtk())
         app = _make_fake_app()
         orch.run_native_loop(app)
-        # A GLib timeout drives the web-housekeeping checks so they survive a
-        # missing display tick.
-        assert glib.timeouts == [(orch._HOUSEKEEPING_INTERVAL_MS, app._run_housekeeping)]
+        # Both clocks are GLib timeouts, so neither depends on a display.
+        assert glib.timeouts == [
+            (orch._FRAME_INTERVAL_MS, app._run_frame),
+            (orch._HOUSEKEEPING_INTERVAL_MS, app._run_housekeeping),
+        ]
 
     def test_calls_gtk_main(self, monkeypatch: pytest.MonkeyPatch) -> None:
         glib, gtk = _FakeGLib(), _FakeGtk()
@@ -522,6 +541,171 @@ class TestRunNativeLoop:
         with pytest.raises(KeyboardInterrupt):
             orch.run_native_loop(app)
         assert app._runtime_services.shutdown_calls == 1
+
+
+# --------------------------------------------------------------------------- #
+# run_frame
+# --------------------------------------------------------------------------- #
+
+
+class TestRunFrame:
+    """The frame-clock timeout callback.
+
+    A unit with no display attached gets no compositor frame clock, so anything
+    driven by the display tick never runs. These pin that the frame loop is
+    reachable without one, and that it cannot silently stop.
+    """
+
+    def test_headless_unit_still_runs_the_frame_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        glib, gtk = _FakeGLib(), _FakeGtk()
+        import gi.repository as repo
+
+        monkeypatch.setattr(repo, "GLib", glib, raising=False)
+        monkeypatch.setattr(repo, "Gtk", gtk, raising=False)
+        app = _make_fake_app()
+        orch.run_native_loop(app)
+
+        # Nothing ever fires the canvas tick – exactly a unit with no HDMI
+        # attached. Drive only the registered GLib timeouts.
+        frame_cb = next(cb for interval, cb in glib.timeouts if interval == orch._FRAME_INTERVAL_MS)
+        for _ in range(3):
+            assert frame_cb() is True
+
+        # Marker state, detection pinning and zone evaluation all advanced.
+        assert app._runtime_services.calls.count("update_marker_visuals") == 3
+        assert app._runtime_services.calls.count("apply_detection_pin") == 3
+        assert app._calls.count("process_input") == 3
+
+    def test_returns_true_so_the_timeout_rearms(self) -> None:
+        app = _make_fake_app()
+        assert orch.run_frame(app) is True
+
+    def test_raising_frame_is_logged_and_the_loop_survives(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        app = _make_fake_app()
+
+        def _boom(_app: object) -> None:
+            raise RuntimeError("frame blew up")
+
+        monkeypatch.setattr(orch, "animate", _boom)
+        # Dropping the source here would freeze marker state for the rest of the
+        # process while every output kept transmitting the last position.
+        assert orch.run_frame(app) is True
+        assert orch.run_frame(app) is True
+        assert app._frame_err_log.calls == 2
+
+    def test_drops_the_source_while_the_window_is_closing(self) -> None:
+        app = _make_fake_app()
+        app._canvas.is_closing = True
+        assert orch.run_frame(app) is False
+        assert app._runtime_services.calls == []
+
+    def test_drops_the_source_when_the_canvas_is_gone(self) -> None:
+        app = _make_fake_app()
+        app._canvas = None
+        assert orch.run_frame(app) is False
+        assert app._runtime_services.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# check_frame_loop_stall
+# --------------------------------------------------------------------------- #
+
+
+class TestCheckFrameLoopStall:
+    """The watchdog that makes a dead frame loop loud instead of silent.
+
+    Every assertion drives an injected ``perf_counter`` – a real sleep here
+    would be a wall-clock flake, and the threshold is a full second.
+    """
+
+    def _run_at(self, app, monkeypatch: pytest.MonkeyPatch, now: float) -> None:  # noqa: ANN001
+        monkeypatch.setattr(orch.time, "perf_counter", lambda: now)
+        orch.check_frame_loop_stall(app)
+
+    def test_no_verdict_before_the_first_frame(self, monkeypatch: pytest.MonkeyPatch, caplog) -> None:  # noqa: ANN001
+        app = _make_fake_app()
+        app._last_animate_time = None
+        with caplog.at_level(logging.INFO, logger=orch.logger.name):
+            self._run_at(app, monkeypatch, 500.0)
+        assert app._frame_stalled is False
+        assert caplog.records == []
+
+    @pytest.mark.parametrize("elapsed", [0.0, 0.5, 0.999])
+    def test_a_merely_slow_frame_is_not_a_stall(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        elapsed: float,
+    ) -> None:
+        app = _make_fake_app()
+        app._last_animate_time = 100.0
+        self._run_at(app, monkeypatch, 100.0 + elapsed)
+        assert app._frame_stalled is False
+
+    @pytest.mark.parametrize("elapsed", [1.0, 4.0])
+    def test_flags_and_warns_once_the_threshold_is_crossed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog,  # noqa: ANN001
+        elapsed: float,
+    ) -> None:
+        app = _make_fake_app()
+        app._last_animate_time = 100.0
+        with caplog.at_level(logging.WARNING, logger=orch.logger.name):
+            self._run_at(app, monkeypatch, 100.0 + elapsed)
+        assert app._frame_stalled is True
+        assert len(caplog.records) == 1
+        # The operator-facing symptom, not the internal cause: a console sees a
+        # healthy stream whose coordinates never move.
+        assert "transmitting the last known state" in caplog.records[0].getMessage()
+
+    def test_warns_once_per_episode_not_once_per_poll(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog,  # noqa: ANN001
+    ) -> None:
+        app = _make_fake_app()
+        app._last_animate_time = 100.0
+        with caplog.at_level(logging.WARNING, logger=orch.logger.name):
+            for tick in range(10):
+                self._run_at(app, monkeypatch, 102.0 + tick * 0.1)
+        # At 10 Hz an un-deduplicated warning would be 10 lines here, and would
+        # keep going for as long as the station is wedged.
+        assert len(caplog.records) == 1
+
+    def test_recovery_clears_the_flag_and_logs_the_outage(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog,  # noqa: ANN001
+    ) -> None:
+        app = _make_fake_app()
+        app._last_animate_time = 100.0
+        self._run_at(app, monkeypatch, 105.0)
+        assert app._frame_stalled is True
+
+        app._last_animate_time = 108.0  # frames landing again
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger=orch.logger.name):
+            self._run_at(app, monkeypatch, 108.0)
+        assert app._frame_stalled is False
+        assert app._frame_stall_since is None
+        assert len(caplog.records) == 1
+        assert "resumed after 3.0s" in caplog.records[0].getMessage()
+
+    def test_a_second_episode_warns_again(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog,  # noqa: ANN001
+    ) -> None:
+        app = _make_fake_app()
+        with caplog.at_level(logging.WARNING, logger=orch.logger.name):
+            app._last_animate_time = 100.0
+            self._run_at(app, monkeypatch, 102.0)
+            app._last_animate_time = 103.0
+            self._run_at(app, monkeypatch, 103.0)
+            app._last_animate_time = 103.0
+            self._run_at(app, monkeypatch, 106.0)
+        # A recovered-then-restalled station must not stay silent the second time.
+        assert len(caplog.records) == 2
 
 
 # --------------------------------------------------------------------------- #

@@ -128,7 +128,6 @@ class GtkNativeSinkWindow:
 
         self._handlers: dict[str, list[Callable[[dict[str, Any]], None]]] = {}
         self._tick_callback_id: int | None = None
-        self._tick_fn: Callable[[], None] | None = None
         self._closing = False
         self._overlay_widget: Any = None  # Currently-mounted overlay widget
         self._base_pointer_visible: bool | None = None  # Pointer visibility when no overlay
@@ -161,13 +160,20 @@ class GtkNativeSinkWindow:
     ) -> None:
         self._handlers.setdefault(event_type, []).append(handler)
 
-    def request_draw(self, fn: Callable[[], None]) -> None:
-        pass  # animation driven by tick callback
-
     def close(self) -> None:
         self._closing = True
-        self.stop_tick_animation()
+        self.stop_hud_tick()
         self._Gtk.main_quit()
+
+    @property
+    def is_closing(self) -> bool:
+        """True once the window is tearing down, before ``Gtk.main()`` returns.
+
+        The frame-clock timeout is a GLib source that can still dispatch in that
+        window; it reads this to drop itself rather than run against a
+        half-torn-down app.
+        """
+        return self._closing
 
     # -- Extended API ---------------------------------------------------------
 
@@ -359,21 +365,25 @@ class GtkNativeSinkWindow:
         size = self._window.get_size()
         return int(size[0]), int(size[1])
 
-    # -- Tick-based animation -------------------------------------------------
+    # -- HUD redraw tick ------------------------------------------------------
 
-    def start_tick_animation(self, callback: Callable[[], None]) -> None:
-        """Start frame-synced animation using GTK tick callback."""
+    def start_hud_tick(self) -> None:
+        """Start the display-synced HUD redraw + pointer poll.
+
+        This is the display's frame clock, so it stops whenever the compositor
+        has no output to drive. Nothing that has to keep running without a
+        screen belongs on it - marker state, input, and every output run off
+        the frame-clock timeout in ``runtime.app_orchestration`` instead.
+        """
         if self._tick_callback_id is not None:
             return  # already running
-        self._tick_fn = callback
         self._tick_callback_id = self._window.add_tick_callback(self._on_tick, None)
 
-    def stop_tick_animation(self) -> None:
-        """Stop the tick-based animation loop."""
+    def stop_hud_tick(self) -> None:
+        """Stop the HUD redraw tick."""
         if self._tick_callback_id is not None:
             self._window.remove_tick_callback(self._tick_callback_id)
             self._tick_callback_id = None
-            self._tick_fn = None
 
     @staticmethod
     def _poll_pointer_events(
@@ -449,13 +459,6 @@ class GtkNativeSinkWindow:
             self.poll_pointer()
         except Exception:
             self._poll_err_log.log()
-        if self._tick_fn is not None:
-            try:
-                self._tick_fn()
-            except Exception:
-                import logging
-
-                logging.getLogger(__name__).exception("Unhandled exception in animation tick")
         # Redraw HUD independent of video buffer flow.
         if self._hud_draw_fn is not None:
             self._hud_drawing_area.queue_draw()
@@ -613,7 +616,7 @@ class GtkNativeSinkWindow:
 
     def _on_delete(self, widget: Any, event: Any) -> bool:
         self._closing = True
-        self.stop_tick_animation()
+        self.stop_hud_tick()
         self._emit("close")
         self._Gtk.main_quit()
         return True

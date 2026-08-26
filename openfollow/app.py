@@ -25,6 +25,7 @@ from openfollow.configuration import (
     load_config,
     save_config,
 )
+from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.marker_catalog import (
     MarkerCatalog,
     derive_station_name,
@@ -174,6 +175,9 @@ from openfollow.runtime.app_orchestration import (
     check_config_reload as runtime_check_config_reload,
 )
 from openfollow.runtime.app_orchestration import (
+    check_frame_loop_stall as runtime_check_frame_loop_stall,
+)
+from openfollow.runtime.app_orchestration import (
     check_marker_speeds_persist as runtime_check_marker_speeds_persist,
 )
 from openfollow.runtime.app_orchestration import (
@@ -181,6 +185,9 @@ from openfollow.runtime.app_orchestration import (
 )
 from openfollow.runtime.app_orchestration import (
     housekeeping as runtime_housekeeping,
+)
+from openfollow.runtime.app_orchestration import (
+    run_frame as runtime_run_frame,
 )
 from openfollow.runtime.app_orchestration import (
     run_native_loop as runtime_run_native_loop,
@@ -258,9 +265,14 @@ class OpenFollowApp:
         self._available_interfaces: list[str] = []
         self._selected_iface_index: int = 0
         self._last_iface_refresh: float = 0.0
-        # ``time.perf_counter()`` of the previous animate tick (monotonic, not
-        # wall clock); drives the real-elapsed frame dt.
+        # ``time.perf_counter()`` of the previous animate call (monotonic, not
+        # wall clock); drives the real-elapsed frame dt and the stall watchdog.
         self._last_animate_time: float | None = None
+        self._frame_err_log = ThrottledExceptionLogger(logger, "Unhandled exception in frame clock")
+        # Frame-clock liveness, maintained by the housekeeping watchdog and read
+        # by ``/api/stats``. The frame loop can't report its own stall.
+        self._frame_stalled: bool = False
+        self._frame_stall_since: float | None = None
 
         self._source_type_selection_active: bool = False
         self._available_source_types: list[tuple[str, str]] = []
@@ -466,6 +478,9 @@ class OpenFollowApp:
     def _run_native_loop(self) -> None:
         runtime_run_native_loop(self)
 
+    def _run_frame(self) -> bool:
+        return runtime_run_frame(self)
+
     def _animate(self) -> None:
         runtime_animate(self)
 
@@ -477,6 +492,9 @@ class OpenFollowApp:
 
     def _check_marker_speeds_persist(self) -> None:
         runtime_check_marker_speeds_persist(self)
+
+    def _check_frame_loop_stall(self) -> None:
+        runtime_check_frame_loop_stall(self)
 
     def _check_pi_network_worker(self) -> None:
         from openfollow.runtime.app_modes_network import drain_pi_network_worker

@@ -55,6 +55,12 @@ poetry run python scripts/hw_validation/osc_socket_options_probe.py
   the name advertisement splits 35 + 5, so **names 36-40 are the second paged
   stream's proof**. Everything below those numbers rides on page 0 and looks
   identical either way.
+
+  `--reverse-ids` registers markers highest id first. The OTP name
+  advertisement has to carry one ascending list per *folio* (Section 13.5) and
+  a page can only sort what it is handed, so an ascending marker list cannot
+  tell a correct split from one that sorts each page separately - this is the
+  flag that makes the difference visible on the wire.
 - **Output sizes** – every marker-carrying output splits a large set across
   datagrams rather than emitting one oversize datagram. The probe walks the
   marker counts that straddle each stream's boundary (PSN data 14, OTP transform

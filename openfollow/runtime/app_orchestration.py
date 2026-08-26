@@ -153,9 +153,8 @@ def check_frame_loop_stall(app: OpenFollowApp) -> None:
             now - last,
         )
         return
-    since = app._frame_stall_since
-    app._frame_stall_since = None
-    logger.info("Frame clock resumed after %.1fs.", now - since if since is not None else 0.0)
+    # Only reachable after the branch above ran, so the stall start is set.
+    logger.info("Frame clock resumed after %.1fs.", now - app._frame_stall_since)
 
 
 def animate(app: OpenFollowApp) -> None:

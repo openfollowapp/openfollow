@@ -272,7 +272,7 @@ class OpenFollowApp:
         # Frame-clock liveness, maintained by the housekeeping watchdog and read
         # by ``/api/stats``. The frame loop can't report its own stall.
         self._frame_stalled: bool = False
-        self._frame_stall_since: float | None = None
+        self._frame_stall_since: float = 0.0
 
         self._source_type_selection_active: bool = False
         self._available_source_types: list[tuple[str, str]] = []

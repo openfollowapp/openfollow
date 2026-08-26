@@ -138,7 +138,7 @@ def _make_fake_app(
         _check_marker_speeds_persist=_recorder("check_marker_speeds_persist"),
         _check_frame_loop_stall=_recorder("check_frame_loop_stall"),
         _frame_stalled=False,
-        _frame_stall_since=None,
+        _frame_stall_since=0.0,
         _check_video_disconnect_banner=_recorder("check_video_disconnect_banner"),
         _process_input=_recorder("process_input"),
         _refresh_iface_list=_recorder("refresh_iface_list"),
@@ -687,7 +687,6 @@ class TestCheckFrameLoopStall:
         with caplog.at_level(logging.INFO, logger=orch.logger.name):
             self._run_at(app, monkeypatch, 108.0)
         assert app._frame_stalled is False
-        assert app._frame_stall_since is None
         assert len(caplog.records) == 1
         assert "resumed after 3.0s" in caplog.records[0].getMessage()
 

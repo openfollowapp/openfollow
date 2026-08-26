@@ -2757,13 +2757,12 @@ class AppRuntimeServices:
         """
         with self._runtime_stats_lock:
             snapshot = copy.deepcopy(self._runtime_stats_snapshot)
-        playback = snapshot.get("playback")
-        if isinstance(playback, dict):
-            last_frame = self._app._last_animate_time
-            playback["seconds_since_last_frame"] = (
-                float(time.perf_counter() - last_frame) if last_frame is not None else None
-            )
-            playback["stalled"] = bool(self._app._frame_stalled)
+        playback = snapshot["playback"]
+        last_frame = self._app._last_animate_time
+        playback["seconds_since_last_frame"] = (
+            float(time.perf_counter() - last_frame) if last_frame is not None else None
+        )
+        playback["stalled"] = bool(self._app._frame_stalled)
         return snapshot
 
     def _safe_stop(self, name: str, fn: Callable[[], Any]) -> None:

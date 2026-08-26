@@ -150,6 +150,11 @@ def test_e2e_real_pipeline_and_psn_to_outputs() -> None:
 
     # 3b) RTTrPM output (unicast, metres) carries the exact position – assert the
     # real encoder's centroid module bytes appear verbatim in the emitted packet.
+    # Re-stamp immediately before the send. RTTrPM withholds a trackable that
+    # has gone unwritten for MARKER_STALE_AFTER_S (1 s), and the capture socket
+    # above is allowed to block for 2 s - so a loaded runner could otherwise
+    # spend the whole staleness window in the OTP leg and get an empty packet.
+    driven.set_pos(*marker.pos)
     rt_cap = _udp_capture_socket()
     try:
         rttrpm = RttrpmServer(host="127.0.0.1", port=rt_cap.getsockname()[1])

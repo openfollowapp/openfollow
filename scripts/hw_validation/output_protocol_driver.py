@@ -38,6 +38,7 @@ import struct
 import sys
 import threading
 import time
+from collections.abc import Callable
 from types import FrameType
 
 import pypsn
@@ -56,16 +57,6 @@ from openfollow.rttrpm.server import RttrpmServer
 
 FRAME_HZ = 60.0
 STATUS_INTERVAL_S = 5.0
-
-# Where each stream starts needing more than one datagram, at the operator
-# label lengths this driver generates.
-SPLIT_THRESHOLDS = {
-    "PSN data": 14,
-    "PSN info": 85,
-    "OTP transform": 32,
-    "OTP advertisement": 36,
-    "RTTrPM": 34,
-}
 
 
 def _classify(data: bytes) -> str | None:
@@ -109,6 +100,10 @@ class Wire:
         with self.lock:
             return {name: dict(row) for name, row in self.streams.items()}
 
+    def reset(self) -> None:
+        with self.lock:
+            self.streams.clear()
+
 
 def _count_sends(server: object, wire: Wire, dest_arg: bool) -> None:
     """Tally every datagram a server hands its socket, then send it as usual."""
@@ -139,19 +134,35 @@ def _positions(count: int, elapsed: float, radius: float, period_s: float) -> li
     return out
 
 
-def _report(wire: Wire, markers: int, elapsed: float) -> bool:
+def _probe_datagrams_per_frame(wire: Wire, send_one_frame: Callable[[], None]) -> dict[str, int]:
+    """Run one frame through the real send paths to count datagrams per stream.
+
+    The servers are not started yet, so ``_send`` drops the payload after the
+    tally sees it. Measuring beats a table of thresholds: the split point moves
+    with the marker names, and every one of these streams carries them.
+    """
+    before = {name: row["datagrams"] for name, row in wire.snapshot().items()}
+    send_one_frame()
+    return {
+        name: row["datagrams"] - before.get(name, 0)
+        for name, row in wire.snapshot().items()
+        if row["datagrams"] - before.get(name, 0) > 0
+    }
+
+
+def _report(wire: Wire, per_frame: dict[str, int], elapsed: float) -> bool:
     """Print the per-stream tally; return True if anything exceeded the MTU."""
     over = False
     for stream, row in sorted(wire.snapshot().items()):
-        threshold = SPLIT_THRESHOLDS.get(stream, 0)
-        state = "split" if markers >= threshold else "single"
+        count = per_frame.get(stream, 0)
+        state = "split" if count > 1 else "single"
         rate = row["datagrams"] / elapsed if elapsed > 0 else 0.0
         flag = ""
         if row["largest"] > MAX_DATAGRAM_BYTES:
             over = True
             flag = "  <- OVER MTU"
         print(
-            f"    {stream:<18} {state:>6}  largest={row['largest']:>5} B  "
+            f"    {stream:<18} {state:>6} {count}/frame  largest={row['largest']:>5} B  "
             f"{row['datagrams']:>7} dgram  {rate:6.1f}/s{flag}",
             flush=True,
         )
@@ -210,16 +221,26 @@ def main() -> int:
     if not servers:
         parser.error("every output disabled; nothing to drive")
 
+    def _one_frame() -> None:
+        for server in servers:
+            for path in (
+                "_send_data_packet",
+                "_send_info_packet",
+                "_send_transform_packet",
+                "_send_advertisement_packets",
+                "_send_packet",
+            ):
+                send = getattr(server, path, None)
+                if send is not None:
+                    send()
+
+    per_frame = _probe_datagrams_per_frame(wire, _one_frame)
+    wire.reset()
+
     print(f"Driving {args.markers} markers at {FRAME_HZ:.0f} Hz.\n", flush=True)
     print("  stream             at this marker count", flush=True)
-    for stream, threshold in SPLIT_THRESHOLDS.items():
-        if stream == "RTTrPM" and not args.rttrpm_host:
-            continue
-        if stream.startswith("PSN") and args.no_psn:
-            continue
-        if stream.startswith("OTP") and args.no_otp:
-            continue
-        note = "SPLITS across datagrams" if args.markers >= threshold else f"one datagram (splits at {threshold})"
+    for stream, count in sorted(per_frame.items()):
+        note = f"SPLITS across {count} datagrams" if count > 1 else "one datagram"
         print(f"  {stream:<18} {note}", flush=True)
     print(flush=True)
     if psn is not None:
@@ -268,7 +289,7 @@ def main() -> int:
             if now >= next_status:
                 next_status = now + STATUS_INTERVAL_S
                 print(f"[{elapsed:6.1f}s]", flush=True)
-                _report(wire, args.markers, elapsed)
+                _report(wire, per_frame, elapsed)
                 print(flush=True)
             stopping.wait(1.0 / FRAME_HZ)
     finally:
@@ -277,7 +298,7 @@ def main() -> int:
 
     elapsed = time.monotonic() - start
     print(f"\nStopped after {elapsed:.1f}s.", flush=True)
-    over = _report(wire, args.markers, elapsed)
+    over = _report(wire, per_frame, elapsed)
     if over:
         print(f"\nFAIL: a stream exceeded {MAX_DATAGRAM_BYTES} B.", flush=True)
         return 1

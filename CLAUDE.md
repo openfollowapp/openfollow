@@ -344,7 +344,7 @@ Every marker-carrying output grows its datagram with the marker count, and **147
 |---|---|---|
 | PSN data / info | Packets of one frame: one `frame_id` and one header timestamp repeated across them, `frame_packet_count` = the chunk count. Build the header **once per frame** – a per-packet id reassembles nothing. Capped at 255 packets (`frame_packet_count` is a uint8) | 14 / 85 markers |
 | OTP transform / name advertisement | Pages of one folio (E1.59 §6.7-6.9): shared Folio Number, `page` 0..`last_page`. Everything outside the split list repeats verbatim on every page, the Transform Layer's **Full Point Set** flag included – it describes the folio, so a page contradicting its siblings describes no coherent point set | 32 / 36 markers |
-| RTTrPM | Independent packets, each with its own `pkt_id`. RTTrPM groups nothing across packets, so no reassembly is involved | 34 markers |
+| RTTrPM | Independent packets, each with its own `pkt_id`. RTTrPM groups nothing across packets, so no reassembly is involved | 35 markers |
 
 `PsnReceiver` needs no reassembly buffer: it reads 65535 and applies each packet's trackers independently, so a peer's split frame accumulates naturally. The `MAX_OTP_MESSAGE_OCTETS` (§6.3.1) and RTTrPM `_MAX_MODULES` / `_MAX_PACKET_BYTES` checks stay as structural backstops behind the split – they guard what the wire format can *express*, which is a different question from what the network can carry.
 

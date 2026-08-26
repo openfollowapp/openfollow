@@ -53,7 +53,8 @@ import socket
 import struct
 import threading
 import time
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, NamedTuple
 
 from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.marker import is_marker_stale
@@ -163,9 +164,16 @@ def encode_rttrpm_trackable_module(name: str, centroid: bytes) -> bytes:
     return struct.pack("!BH", _PKT_TYPE_TRACKABLE, total) + body
 
 
+class _FrozenMarker(NamedTuple):
+    """One frame's view of a marker: what the encoder reads, read once."""
+
+    name: str
+    pos: tuple[float, float, float]
+
+
 def encode_rttrpm_packet(
     pkt_id: int,
-    markers: list[Marker],
+    markers: Sequence[Marker | _FrozenMarker],
     context: int = 0,
 ) -> bytes:
     """Encode a complete RTTrPM UDP payload.
@@ -354,8 +362,13 @@ class RttrpmServer:
             if self._socket is None:
                 # Still down: skip encoding a packet _send() would only drop.
                 return
+        # Freeze name and position before sizing anything. The trackable module
+        # is 34 octets plus the name, and the size the split budgets against is
+        # read separately from the size the datagram is encoded at - a rename
+        # landing between the two would put a chunk over the MTU.
+        frozen = [_FrozenMarker(marker.name, marker.pos) for marker in markers]
         pkt_id = self._next_pkt_id()
-        payload = encode_rttrpm_packet(pkt_id, markers, self._context)
+        payload = encode_rttrpm_packet(pkt_id, frozen, self._context)
         if len(payload) <= MAX_DATAGRAM_BYTES:
             self._warn_if_capped(len(markers), payload)
             self._send(payload, stop_event)
@@ -364,7 +377,7 @@ class RttrpmServer:
         # complete in the packet that carries it - so one oversize packet
         # becomes several independent ones rather than needing reassembly.
         chunks = chunk_to_datagrams(
-            markers,
+            frozen,
             lambda subset: len(encode_rttrpm_packet(pkt_id, list(subset), self._context)),
             MAX_DATAGRAM_BYTES,
         )

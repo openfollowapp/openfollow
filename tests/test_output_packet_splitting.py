@@ -39,6 +39,43 @@ pytestmark = pytest.mark.unit
 _LONG_NAME = "Followspot Operator Position {:02d}"
 
 
+class _SteppingClock:
+    """Microsecond clock that advances by ``step`` on every read."""
+
+    def __init__(self, now: int, step: int = 0) -> None:
+        self.now = now
+        self.step = step
+
+    def __call__(self) -> int:
+        value = self.now
+        self.now += self.step
+        return value
+
+
+class _RenamingMarker(Marker):
+    """A marker whose name grows on every read, as a live rename would.
+
+    ``set_name`` is called at runtime by the catalog sync and the web UI, and
+    an RTTrPM trackable module is 34 octets plus the name - so a name read once
+    to size a chunk and again to encode it is a datagram that can outgrow its
+    budget.
+    """
+
+    def __init__(self, marker_id: int, base: str) -> None:
+        super().__init__(marker_id, base)
+        self._base = base
+        self._reads = 0
+
+    @property  # type: ignore[override]
+    def name(self) -> str:
+        self._reads += 1
+        return self._base + "x" * (20 * self._reads)
+
+    @name.setter
+    def name(self, value: str) -> None:
+        self._base = value
+
+
 def _markers(count: int, name_template: str = "Marker {}") -> list[Marker]:
     markers = []
     for index in range(1, count + 1):
@@ -125,8 +162,36 @@ def _otp_transform_body(datagram: bytes) -> tuple[int, list[int]]:
     return options, points
 
 
+def _otp_sampled_timestamps(datagram: bytes) -> list[int]:
+    """Each Point Layer's Section 9.6 sampled timestamp from a transform page."""
+    inner = datagram[16:][63:]
+    length = struct.unpack("!H", inner[2:4])[0]
+    rest = inner[4 : 4 + length][14:]
+    stamps = []
+    while rest:
+        point_length = struct.unpack("!H", rest[2:4])[0]
+        body = rest[4 : 4 + point_length]
+        stamps.append(struct.unpack("!Q", body[7:15])[0])  # Priority(1)+Group(2)+Point(4)
+        rest = rest[4 + point_length :]
+    return stamps
+
+
 def _is_otp_name_advertisement(datagram: bytes) -> bool:
     return struct.unpack("!H", datagram[79:81])[0] == VECTOR_OTP_ADVERTISEMENT_NAME
+
+
+def _otp_name_points(datagram: bytes) -> list[int]:
+    """Point numbers from a name advertisement page's Address Point Descriptions."""
+    inner = datagram[16:][63:]
+    length = struct.unpack("!H", inner[2:4])[0]
+    advertisement = inner[4 : 4 + length][4:]  # past the Advertisement Layer's Reserved(4)
+    list_length = struct.unpack("!H", advertisement[2:4])[0]
+    entries = advertisement[4 : 4 + list_length][5:]  # past Options(1) + Reserved(4)
+    points = []
+    while len(entries) >= 39:  # System(1) + Group(2) + Point(4) + Name(32)
+        points.append(struct.unpack("!I", entries[3:7])[0])
+        entries = entries[39:]
+    return points
 
 
 def _rttrpm_module_count(datagram: bytes) -> int:
@@ -139,7 +204,7 @@ def _rttrpm_pkt_id(datagram: bytes) -> int:
 
 # --- the invariant every output shares ---------------------------------------
 
-_MARKER_COUNTS = [1, 13, 14, 15, 31, 32, 34, 36, 64, 100]
+_MARKER_COUNTS = [1, 13, 14, 15, 31, 32, 34, 35, 36, 64, 100]
 
 
 def _all_datagrams(count: int, name_template: str) -> dict[str, list[bytes]]:
@@ -159,8 +224,9 @@ def _all_datagrams(count: int, name_template: str) -> dict[str, list[bytes]]:
 def test_no_output_protocol_emits_a_datagram_past_the_mtu(count: int, name_template: str) -> None:
     """The whole point of the exercise, in one assertion per stream.
 
-    Before the split these crossed at 14 (PSN data), 32 (OTP transform), 34
-    (RTTrPM), 36 (OTP name advertisement) and 85 (PSN info) markers.
+    One datagram holds 13 PSN trackers, 31 OTP points, 34 RTTrPM trackables and
+    35 OTP names at these label lengths, so the counts below straddle every one
+    of those boundaries.
     """
     for stream, datagrams in _all_datagrams(count, name_template).items():
         assert datagrams, f"{stream} sent nothing"
@@ -334,8 +400,8 @@ class TestOtpFolioPaging:
 
     @pytest.mark.parametrize("count", [36, 64, 100])
     def test_the_name_advertisement_pages_too(self, count: int) -> None:
-        """It carries a 32-octet name per point and had no length check at all,
-        so it crossed the MTU silently at 36 markers."""
+        """It carries a fixed 32-octet name per point, so it needs a second page
+        from 36 markers - a different boundary from the transform's."""
         _, advertisement = _otp_datagrams(count)
         name_pages = [datagram for datagram in advertisement if _is_otp_name_advertisement(datagram)]
         assert len(name_pages) > 1
@@ -343,6 +409,91 @@ class TestOtpFolioPaging:
         assert len({folio for folio, _, _ in headers}) == 1
         assert [page for _, page, _ in headers] == list(range(len(name_pages)))
         assert {last for _, _, last in headers} == {len(name_pages) - 1}
+
+    def test_the_name_advertisement_stays_ascending_across_its_pages(self) -> None:
+        """Section 13.5 wants one ascending list per folio, and a page can only
+        sort what it is handed - so a marker set registered in the operator's
+        order, not id order, is the case that catches a per-page sort."""
+        server = OtpServer(system_number=1)
+        sent: list[bytes] = []
+        server._send = lambda data, dest_ip, stop_event=None: sent.append(data)  # type: ignore[method-assign]
+        for marker in reversed(_markers(60)):  # registration order 60..1
+            server.register_marker(marker)
+
+        server._send_advertisement_packets()
+        name_pages = [datagram for datagram in sent if _is_otp_name_advertisement(datagram)]
+        assert len(name_pages) > 1
+        points = [point for datagram in name_pages for point in _otp_name_points(datagram)]
+        assert points == sorted(points)
+        assert points == list(range(1, 61))
+
+    def test_a_folio_whose_pages_cannot_be_encoded_is_dropped_not_fatal(self, caplog) -> None:
+        """The transform loop calls this bare, so an escaping encode error ends
+        OTP output for the life of the process rather than one frame of it."""
+        server = OtpServer(system_number=1)
+        sent: list[bytes] = []
+        server._send = lambda data, dest_ip, stop_event=None: sent.append(data)  # type: ignore[method-assign]
+        for marker in _markers(4):
+            server.register_marker(marker)
+        server._cid = b"too short"  # rejected by the OTP Layer on every page
+
+        with caplog.at_level("ERROR", logger="openfollow.otp.server"):
+            server._send_transform_packet()
+
+        assert sent == []
+        assert server._oversize_drops == 1
+        assert any("folio dropped" in record.message for record in caplog.records)
+
+    def test_repeated_folio_drops_are_throttled_but_not_silenced(self, caplog) -> None:
+        """The condition needs operator action and recurs at the transform fps,
+        so it is logged like the send-error counter: the opening burst, then a
+        periodic reminder rather than silence for the rest of the process."""
+        server = OtpServer(system_number=1)
+        server._send = lambda data, dest_ip, stop_event=None: None  # type: ignore[method-assign]
+        for marker in _markers(4):
+            server.register_marker(marker)
+        server._cid = b"too short"
+
+        with caplog.at_level("ERROR", logger="openfollow.otp.server"):
+            for _ in range(20):
+                server._send_transform_packet()
+            burst = len([r for r in caplog.records if "folio dropped" in r.message])
+            server._oversize_drops = 99  # already past the opening burst
+            server._send_transform_packet()
+
+        assert burst == 5
+        assert server._oversize_drops == 100
+        assert len([r for r in caplog.records if "folio dropped" in r.message]) == 6
+
+    def test_every_point_in_a_folio_ages_against_one_instant(self) -> None:
+        """Section 9.6's sampled timestamp is read against the folio's own
+        Transform Layer timestamp, which the pages share. Ageing each page
+        against its own clock read reports identically-fresh points on a later
+        page as older, so the clock is driven here rather than left to run at
+        whatever speed the host happens to encode at.
+        """
+        clock = _SteppingClock(1_000_000)
+        markers = [Marker(index, f"Marker {index}", clock=clock) for index in range(1, 65)]
+        for marker in markers:
+            marker.set_pos(1.0, 2.0, 3.0)  # every marker stamped at the same instant
+        clock.step = 50_000  # 50 ms of apparent time per read from here on
+
+        server = OtpServer(system_number=1)
+        # A Transform Layer timestamp of a freshly-built server is a few
+        # microseconds, and the sampled stamp is clamped at zero - so every age
+        # would floor to the same 0 and hide the difference. Ten seconds of
+        # apparent uptime puts the arithmetic in the range a running one uses.
+        server._start_time_us -= 10_000_000
+        sent: list[bytes] = []
+        server._send = lambda data, dest_ip, stop_event=None: sent.append(data)  # type: ignore[method-assign]
+        for marker in markers:
+            server.register_marker(marker)
+        server._send_transform_packet()
+
+        assert len(sent) > 1
+        sampled = {stamp for datagram in sent for stamp in _otp_sampled_timestamps(datagram)}
+        assert sampled != {0}, "clamped flat - the test would pass either way"
+        assert len(sampled) == 1
 
     def test_a_transform_folio_advances_once_per_folio_not_once_per_page(self) -> None:
         server = OtpServer(system_number=1)
@@ -385,8 +536,27 @@ class TestRttrpmPacketSplitting:
         for datagram in _rttrpm_datagrams(count):
             assert struct.unpack("!H", datagram[11:13])[0] == len(datagram)
 
-    def test_a_large_set_is_no_longer_truncated(self) -> None:
-        """299 trackables used to hit the uint8 module cap and lose the tail
-        silently; they now ride across as many packets as they need."""
+    def test_a_rename_between_sizing_and_encoding_cannot_burst_the_mtu(self) -> None:
+        """The split budgets a chunk from one reading of each name and the
+        datagram is built from another; a rename landing between the two is
+        what turns a sized-to-fit chunk into the fragmenting datagram this
+        exists to prevent."""
+        server = RttrpmServer(host="127.0.0.1")
+        server._socket = MagicMock()
+        sent: list[bytes] = []
+        server._send = lambda data, stop_event=None: sent.append(data)  # type: ignore[method-assign]
+        for index in range(1, 41):
+            marker = _RenamingMarker(index, f"Marker {index}")
+            marker.set_pos(1.5, -2.5, 3.5)
+            server.register_marker(marker)
+
+        server._send_packet()
+
+        assert sent
+        assert max(len(datagram) for datagram in sent) <= MAX_DATAGRAM_BYTES
+
+    def test_a_set_larger_than_the_module_count_field_still_ships_whole(self) -> None:
+        """299 trackables exceed the uint8 ``numModules`` a single packet can
+        count, so they can only ship at all by riding across several."""
         datagrams = _rttrpm_datagrams(299)
         assert sum(_rttrpm_module_count(datagram) for datagram in datagrams) == 299

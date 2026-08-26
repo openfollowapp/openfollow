@@ -57,9 +57,9 @@ poetry run python scripts/hw_validation/osc_socket_options_probe.py
   identical either way.
 - **Output sizes** – every marker-carrying output splits a large set across
   datagrams rather than emitting one oversize datagram. The probe walks the
-  marker counts where each stream used to cross the line (PSN data 14, OTP
-  transform 32, RTTrPM 35, OTP name advertisement 36, PSN info 85) and reports
-  the largest datagram per stream.
+  marker counts that straddle each stream's boundary (PSN data 14, OTP transform
+  32, RTTrPM 35, OTP name advertisement 36, PSN info 85 with short labels) and
+  reports the largest datagram per stream.
 - **OSC** – a plain `SimpleUDPClient` to `255.255.255.255` raises `EACCES`; the
   probe confirms the deployed `_make_client` sets `SO_BROADCAST` (and reports the
   multicast TTL/loop) so broadcast/multicast rows actually transmit.

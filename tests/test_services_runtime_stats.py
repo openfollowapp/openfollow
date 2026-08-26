@@ -445,6 +445,20 @@ class TestPublishRuntimeStats:
         services._app._frame_stalled = True
         assert services.get_runtime_stats_snapshot()["playback"]["stalled"] is True
 
+    def test_the_stale_threshold_is_published_for_the_ui(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The UI compares the age against this rather than a literal, so the
+        chip and the four output protocols cannot drift apart on the threshold."""
+        from openfollow.psn import MARKER_STALE_AFTER_S
+
+        self._prime(services)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["playback"]["stale_after_s"] == MARKER_STALE_AFTER_S
+
     def test_frame_age_is_none_before_the_first_frame(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:

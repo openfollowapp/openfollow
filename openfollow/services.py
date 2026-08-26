@@ -28,7 +28,7 @@ from openfollow.configuration import (
 )
 from openfollow.input import InputManager
 from openfollow.otp import OtpServer
-from openfollow.psn import PsnReceiver, PsnServer
+from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
 from openfollow.runtime.overlay_state import OverlayState
@@ -2762,6 +2762,9 @@ class AppRuntimeServices:
             float(time.perf_counter() - last_frame) if last_frame is not None else None
         )
         playback["stalled"] = bool(self._app._frame_stalled)
+        # Published so the UI compares against the same threshold the outputs
+        # use, rather than a literal that drifts when the constant moves.
+        playback["stale_after_s"] = float(MARKER_STALE_AFTER_S)
         return snapshot
 
     def _safe_stop(self, name: str, fn: Callable[[], Any]) -> None:

@@ -140,7 +140,8 @@ def check_frame_loop_stall(app: OpenFollowApp) -> None:
         app._frame_stall_since = last
         logger.warning(
             "Frame clock stalled %.1fs ago. Marker positions, input, and detection are frozen; "
-            "PSN, OTP, RTTrPM, and OSC outputs are transmitting the last known state.",
+            "PSN is publishing trackers as invalid, OTP timestamps have stopped ageing, and "
+            "RTTrPM trackables and OSC marker rows are being withheld.",
             now - last,
         )
         return

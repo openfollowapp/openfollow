@@ -1202,14 +1202,25 @@ class OscTransmitterManager:
         if marker is None:
             return None
         try:
-            # Explicit ``[x:N]`` and controller ``[x:cN]`` refs both land here,
-            # and neither sets ``needs_default_marker`` - so this is where a
-            # frozen position has to be withheld for them.
-            if is_marker_stale(marker):
-                return None
             return marker.pos
         except Exception:  # pragma: no cover - defensive
             return None
+
+    def _explicit_marker_stale_resolver(self, marker_id: int) -> bool:
+        """Whether ``marker_id``'s position has gone stale.
+
+        Explicit ``[x:N]`` and controller ``[x:cN]`` refs never set
+        ``needs_default_marker``, so this is what withholds a frozen position
+        for them. Separate from :meth:`_explicit_marker_resolver` so the skip
+        reads as stale rather than as an unregistered marker.
+        """
+        marker = self._marker_provider(marker_id)
+        if marker is None:
+            return False  # unregistered: let the position lookup report that
+        try:
+            return is_marker_stale(marker)
+        except Exception:  # pragma: no cover - defensive
+            return False
 
     def _explicit_fader_resolver(self, fader_index: int) -> float | None:
         """Bridge from :class:`RenderContext.fader_resolver` to the
@@ -1367,6 +1378,7 @@ class OscTransmitterManager:
             # RenderError → ring-buffer skip) when no provider or the
             # controller drives no marker.
             controller_marker_resolver=self._explicit_controller_marker_resolver,
+            marker_stale_resolver=self._explicit_marker_stale_resolver,
             default_fader=plan.default_fader,
             event_value=plan.event_value,
             event_velocity=plan.event_velocity,

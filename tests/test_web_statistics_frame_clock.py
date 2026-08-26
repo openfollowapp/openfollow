@@ -44,6 +44,22 @@ def test_before_the_first_frame_reads_as_starting() -> None:
     assert '<span class="stat-chip warn">Starting</span>' in body
 
 
+def test_the_threshold_comes_from_the_payload_not_a_literal() -> None:
+    """The UI must judge staleness by the same threshold the outputs use. A
+    literal here drifts silently the day ``MARKER_STALE_AFTER_S`` moves, and the
+    chip would then contradict what PSN, OTP, RTTrPM and OSC are doing."""
+    body = _render({"stalled": False, "seconds_since_last_frame": 2.5, "stale_after_s": 5.0})
+    assert '<span class="stat-chip ok">Running</span>' in body
+    body = _render({"stalled": False, "seconds_since_last_frame": 6.0, "stale_after_s": 5.0})
+    assert '<span class="stat-chip off">Stalled 6 s</span>' in body
+
+
+def test_a_missing_threshold_falls_back_rather_than_breaking() -> None:
+    # A snapshot published before this field existed (an older peer).
+    body = _render({"stalled": False, "seconds_since_last_frame": 8.0})
+    assert '<span class="stat-chip off">Stalled 8 s</span>' in body
+
+
 def test_a_growing_age_reads_as_stalled_even_when_the_watchdog_never_fired() -> None:
     """The watchdog runs on the housekeeping timeout - the same main loop as the
     frame clock - so a block inside one callback stops both, leaving ``stalled``

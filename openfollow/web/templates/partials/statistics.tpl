@@ -37,7 +37,8 @@
 % # timeout, which is the same main loop the frame clock is on, so a block
 % # inside one callback stops both. The age is measured on the web thread and
 % # keeps growing, so it is what decides the chip.
-% frame_stalled = bool(playback.get("stalled")) or (frame_age is not None and frame_age >= 1.0)
+% stale_after = playback.get("stale_after_s") or 1.0
+% frame_stalled = bool(playback.get("stalled")) or (frame_age is not None and frame_age >= stale_after)
 % if frame_stalled:
 %     frame_clock_state = "Stalled %.0f s" % frame_age if frame_age is not None else "Stalled"
 % elif frame_age is None:

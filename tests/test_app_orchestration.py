@@ -685,7 +685,7 @@ class TestCheckFrameLoopStall:
         assert len(caplog.records) == 1
         # The operator-facing symptom, not the internal cause: a console sees a
         # healthy stream whose coordinates never move.
-        assert "transmitting the last known state" in caplog.records[0].getMessage()
+        assert "being withheld" in caplog.records[0].getMessage()
 
     def test_warns_once_per_episode_not_once_per_poll(
         self,

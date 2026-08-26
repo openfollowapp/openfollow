@@ -3685,6 +3685,28 @@ class TestStaleMarkerRows:
         manager._tick_once()
         assert [(c[0], c[1]) for c in svc.calls] == [("/m/1", [1.0]), ("/m/7", [7.0])]
 
+    def test_a_stale_explicit_ref_says_stale_not_unregistered(self) -> None:
+        """A stale marker and an unwired one both stop the row, and an operator
+        reading the row's diagnostics has to be able to tell which: one means
+        the frame loop died, the other means the row is misconfigured."""
+        manager, _svc = _manager(markers={5: _FakeMarker((1.0, 2.0, 3.0), stale=True)})
+        manager.restart(
+            OscTransmittersConfig(transmitters=[_row(marker_id=5, address="/m", args=["[x:5]"])]),
+        )
+        manager._tick_once()
+        stale_error = manager.ring_buffer_for("row-1")[-1].error
+
+        manager2, _svc2 = _manager(markers={})
+        manager2.restart(
+            OscTransmittersConfig(transmitters=[_row(marker_id=5, address="/m", args=["[x:5]"])]),
+        )
+        manager2._tick_once()
+        missing_error = manager2.ring_buffer_for("row-1")[-1].error
+
+        assert "stale" in stale_error
+        assert "stale" not in missing_error
+        assert stale_error != missing_error
+
     def test_an_explicit_marker_ref_row_is_skipped_when_stale(self) -> None:
         """``[x:5]`` reads a marker without setting ``needs_default_marker``, so
         it bypasses the default-marker branch entirely. Without a check on the

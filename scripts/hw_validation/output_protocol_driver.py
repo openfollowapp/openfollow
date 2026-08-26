@@ -180,6 +180,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rttrpm-port", type=int, default=36700, help="RTTrPM target port")
     parser.add_argument("--radius", type=float, default=3.0, help="orbit radius in metres")
     parser.add_argument("--period", type=float, default=12.0, help="seconds per orbit")
+    parser.add_argument(
+        "--reverse-ids",
+        action="store_true",
+        help="register markers highest id first, as an operator's marker list may order them",
+    )
     parser.add_argument("--no-psn", action="store_true", help="do not start the PSN server")
     parser.add_argument("--no-otp", action="store_true", help="do not start the OTP server")
     return parser
@@ -195,6 +200,10 @@ def main() -> int:
     servers: list[object] = []
     # OTP and RTTrPM read shared Marker objects; PSN owns its own registrations.
     shared = [Marker(index, f"Followspot Operator Position {index:02d}") for index in range(1, args.markers + 1)]
+    if args.reverse_ids:
+        # Registration order is the operator's, not the protocol's - the case
+        # that catches a list sorted per datagram rather than per folio.
+        shared.reverse()
     for marker in shared:
         marker.set_pos(0.0, 0.0, 1.2)
 

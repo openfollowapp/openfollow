@@ -192,6 +192,40 @@ class TestTrackerTimestampAndStatus:
         assert converted.status == 1.0
 
 
+class TestStaleTrackerStatus:
+    """PSN's send thread transmits at full rate whatever the frame loop does, so
+    STATUS is the only field that can say the position is no longer live."""
+
+    def test_stale_publishes_an_invalid_status(self) -> None:
+        t = Marker(marker_id=9, name="T9")
+        t.set_pos(1.0, 2.0, 3.0)
+        assert t.to_psn_marker(stale=True).status == 0.0
+
+    def test_stale_does_not_mutate_the_stored_status(self) -> None:
+        """Recovery has to restore the real validity on the next packet, and a
+        confidence-derived status must not be clobbered by a transient stall."""
+        t = Marker(marker_id=9, name="T9")
+        t.set_pos(1.0, 2.0, 3.0)
+        t.set_status(0.4)
+        t.to_psn_marker(stale=True)
+        assert t.status == pytest.approx(0.4)
+        assert t.to_psn_marker().status == pytest.approx(0.4)
+
+    def test_position_and_timestamp_still_ship_when_stale(self) -> None:
+        """Dropping the tracker entirely would look like a disconnect. The
+        frozen timestamp is what lets a receiver see it has stopped ageing."""
+        t = Marker(marker_id=9, name="T9", clock=_StepClock(4_242))
+        t.set_pos(1.0, 2.0, 3.0)
+        converted = t.to_psn_marker(stale=True)
+        assert (converted.pos.x, converted.pos.y, converted.pos.z) == (1.0, 2.0, 3.0)
+        assert converted.timestamp == 4_242
+
+    def test_fresh_is_the_default(self) -> None:
+        t = Marker(marker_id=9, name="T9")
+        t.set_pos(1.0, 2.0, 3.0)
+        assert t.to_psn_marker().status == 1.0
+
+
 class TestRemoteMarker:
     """A marker mirroring a sender reports what that sender published.
 

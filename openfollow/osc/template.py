@@ -203,6 +203,7 @@ MarkerFaderResolver = Callable[[int], float | None]
 # reference; ``None`` becomes a runtime skip (ring-buffer reason), never a
 # default-marker dependency.
 ControllerMarkerResolver = Callable[[int], int | None]
+MarkerStaleResolver = Callable[[int], bool]
 
 
 @dataclass(frozen=True)
@@ -221,6 +222,9 @@ class RenderContext:
     - ``controller_marker_resolver`` maps a 0-based controller index to
       the marker id it currently drives (resolves ``:cN``); ``None`` ->
       runtime skip.
+    - ``marker_stale_resolver`` reports whether a marker's position has
+      gone stale. Checked before ``marker_resolver`` so the skip reason
+      says so, rather than reading as an unregistered marker.
     - ``default_fader`` is the row's default fader index (1..8) or
       ``None``; a bare ``[fader]`` slot fired with ``None`` raises.
     - ``event_value`` / ``event_velocity`` / ``event_note`` carry the
@@ -240,6 +244,7 @@ class RenderContext:
     fader_resolver: FaderResolver | None = None
     marker_fader_resolver: MarkerFaderResolver | None = None
     controller_marker_resolver: ControllerMarkerResolver | None = None
+    marker_stale_resolver: MarkerStaleResolver | None = None
     default_fader: int | None = None
     event_value: int | None = None
     event_velocity: int | None = None
@@ -876,10 +881,14 @@ def _resolve_marker_position(
 
     Shared by the explicit ``[x:N]`` and controller ``[x:cN]`` paths.
     Raises :class:`RenderError` (carrying ``label``) when the resolver is
-    absent or the marker isn't registered.
+    absent, the marker isn't registered, or its position has gone stale -
+    the last carrying a hint, so the ring buffer can tell an operator
+    which of the three happened.
     """
     if ctx.marker_resolver is None:
         raise RenderError(label)
+    if ctx.marker_stale_resolver is not None and ctx.marker_stale_resolver(marker_id):
+        raise RenderError(label, hint="position is stale")
     pos = ctx.marker_resolver(marker_id)
     if pos is None:
         raise RenderError(label)

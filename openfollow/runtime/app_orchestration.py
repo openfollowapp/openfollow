@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Main GTK loop, per-frame animate tick, display-independent housekeeping
-timer, and config-file hot-reload polling for ``OpenFollowApp``."""
+"""Main GTK loop, the display-independent frame clock, housekeeping timer, and
+config-file hot-reload polling for ``OpenFollowApp``."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from openfollow.configuration import (
     load_config,
     save_config,
 )
+from openfollow.psn.marker import MARKER_STALE_AFTER_S
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -23,18 +24,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Web-driven housekeeping (update, config reload, restart, button-detection) polls
-# at 10 Hz on its own GLib timeout. It MUST NOT live on the frame tick: the tick is
-# the display vsync (``add_tick_callback``), so it stalls when no display is
-# attached, which would otherwise freeze update/restart/config-save handling on a
-# headless device.
+# at 10 Hz on its own GLib timeout.
 _HOUSEKEEPING_INTERVAL_MS = 100
 
-# Frame integration step. ``animate`` runs on the display vsync tick
-# (``add_tick_callback``, 60–120 Hz), so velocity must integrate against real
-# elapsed time, not a fixed 1/60 – otherwise a WASD/gamepad nudge moves the
-# marker at the wrong speed on non-60Hz displays (≈2× on a 120 Hz panel).
-_DEFAULT_FRAME_DT = 1.0 / 60.0  # first-tick fallback before a real delta exists
+# A GLib timeout, deliberately not the display's ``add_tick_callback``: that
+# tick never fires with no display attached, and the outputs do not stop with it.
+_FRAME_INTERVAL_MS = 16
+
+# A timeout's cadence drifts with main-loop load, so velocity integrates against
+# real elapsed time rather than a fixed 1/60.
+_DEFAULT_FRAME_DT = 1.0 / 60.0  # first-frame fallback before a real delta exists
 _MAX_FRAME_DT = 0.1  # clamp the step after a stall so a marker can't teleport
+
+# Derived, not a second constant: the operator-facing indicator and what the
+# outputs put on the wire must agree on when a position stops counting.
+_FRAME_STALL_AFTER_S = MARKER_STALE_AFTER_S
 
 # Quiet window after the last per-marker speed edit before it's flushed to disk,
 # so a tap-streak / held bumper coalesces into a single write.
@@ -57,29 +61,46 @@ def run_native_loop(app: OpenFollowApp) -> None:
     GLib.unix_signal_add(GLib.PRIORITY_HIGH, _signal.SIGTERM, Gtk.main_quit)
 
     assert app._canvas is not None
-    # start_tick_animation / timeout_add are inside the try so a failure there
-    # still runs shutdown() – the subsystems were already started by app.run()
-    # before this loop is entered.
+    # start_hud_tick / timeout_add are inside the try so a failure there still
+    # runs shutdown() – the subsystems were already started by app.run() before
+    # this loop is entered.
     try:
-        app._canvas.start_tick_animation(app._animate)
+        app._canvas.start_hud_tick()
+        GLib.timeout_add(_FRAME_INTERVAL_MS, app._run_frame)
         GLib.timeout_add(_HOUSEKEEPING_INTERVAL_MS, app._run_housekeeping)
         Gtk.main()
     finally:
         app._runtime_services.shutdown()
 
 
-def housekeeping(app: OpenFollowApp) -> bool:
-    """Display-independent polled checks (GLib timeout, not the vsync tick).
+def run_frame(app: OpenFollowApp) -> bool:
+    """Frame-clock timeout callback. Returns True so the timeout re-arms.
 
-    Returns True so the timeout re-arms. Kept separate from :func:`animate` so a
-    headless device (no display tick) still services web-triggered update, config
-    hot-reload, restart, and button-detection requests.
+    Guarded because PyGObject does not reliably keep a source whose callback
+    raised: an unguarded exception would kill the frame loop and freeze marker
+    state exactly as a missing display tick does.
+    """
+    canvas = app._canvas
+    if canvas is None or canvas.is_closing:
+        return False  # tearing down; drop the source rather than run against it
+    try:
+        app._animate()
+    except Exception:
+        app._frame_err_log.log()
+    return True
+
+
+def housekeeping(app: OpenFollowApp) -> bool:
+    """Slow polled checks on their own 10 Hz timeout.
+
+    Returns True so the timeout re-arms. Kept off the frame clock so web-driven
+    update, config hot-reload, restart, and button-detection handling run at
+    their own cadence rather than 60 times a second.
     """
     # Guard EACH check independently so one persistently-raising handler can't
     # tear down the GLib source (PyGObject does not reliably keep a source whose
     # callback raised) AND can't starve the checks after it – a broken restart
     # check must not block Pi-network draining / button-detection forever.
-    # Mirrors window.py ``_on_tick``.
     for check in (
         app._check_config_reload,
         app._check_update_request,
@@ -87,6 +108,7 @@ def housekeeping(app: OpenFollowApp) -> bool:
         app._check_pi_network_worker,
         app._check_button_detection_request,
         app._check_marker_speeds_persist,
+        app._check_frame_loop_stall,
     ):
         try:
             check()
@@ -95,10 +117,41 @@ def housekeeping(app: OpenFollowApp) -> bool:
     return True
 
 
+def check_frame_loop_stall(app: OpenFollowApp) -> None:
+    """Watch the frame clock from the housekeeping timer and log both edges.
+
+    Polled here because a stalled loop cannot report itself: ``publish_runtime_stats``
+    runs inside ``animate`` and freezes with it.
+
+    Reads the *completion* stamp, so a frame that raises or hangs part-way counts
+    as a stall - it stops writing markers either way, which is what the outputs
+    react to. Edge-triggered: one line per episode, never one per poll.
+    """
+    last = app._last_frame_completed
+    if last is None:
+        return  # first frame hasn't landed yet; nothing to compare against
+    now = time.perf_counter()
+    stalled = (now - last) >= _FRAME_STALL_AFTER_S
+    if stalled == app._frame_stalled:
+        return
+    app._frame_stalled = stalled
+    if stalled:
+        # The outage began at the last completed frame, not at detection.
+        app._frame_stall_since = last
+        logger.warning(
+            "Frame clock stalled %.1fs ago. Marker positions, input, and detection are frozen; "
+            "PSN is publishing trackers as invalid, OTP timestamps have stopped ageing, and "
+            "RTTrPM trackables and OSC marker rows are being withheld.",
+            now - last,
+        )
+        return
+    logger.info("Frame clock resumed after %.1fs.", now - app._frame_stall_since)
+
+
 def animate(app: OpenFollowApp) -> None:
     frame_start = time.perf_counter()
-    # Integrate against real elapsed time since the previous tick. Clamp the
-    # step so a stall (hidden/paused window, dropped frames) can't teleport the
+    # Integrate against real elapsed time since the previous frame. Clamp the
+    # step so a stall (blocked main loop, dropped frames) can't teleport the
     # marker on the catch-up frame.
     last = app._last_animate_time
     dt = (frame_start - last) if last is not None else _DEFAULT_FRAME_DT
@@ -115,8 +168,8 @@ def animate(app: OpenFollowApp) -> None:
         app._handle_key_press(key)
 
     # Update / config-reload / restart / button-detection run on the
-    # display-independent housekeeping timeout (see ``housekeeping``), not here –
-    # the frame tick stalls when no display is attached.
+    # housekeeping timeout (see ``housekeeping``) so they keep their own cadence
+    # rather than the frame rate.
     app._check_video_disconnect_banner()
     app._process_input(dt)
 
@@ -137,8 +190,9 @@ def animate(app: OpenFollowApp) -> None:
     svc._frame_metrics.add_frame(frame_time)
     svc.publish_runtime_stats()
 
-    assert app._canvas is not None
-    app._canvas.request_draw(app._animate)
+    # Last line: a frame that raised never gets here, so the watchdog and the
+    # stats age both see the loop as stopped rather than merely slow.
+    app._last_frame_completed = time.perf_counter()
 
 
 def get_config_mtime(app: OpenFollowApp) -> float:

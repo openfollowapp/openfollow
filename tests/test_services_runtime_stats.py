@@ -10,7 +10,8 @@ This covers:
   ``check_detection_dependencies``.
 * ``publish_runtime_stats`` – throttling, receiver-present / receiver-absent
   branches, and the controller + detection sub-sections.
-* ``get_runtime_stats_snapshot`` – defensive deep copy.
+* ``get_runtime_stats_snapshot`` – defensive deep copy + the frame-clock
+  liveness overlay.
 * ``update_window_title`` – the canvas title delegate.
 """
 
@@ -39,6 +40,9 @@ class _DummyApp:
         self._canvas = None
         self._video_receiver = None
         self._input_manager = None
+        self._last_animate_time: float | None = None
+        self._last_frame_completed: float | None = None
+        self._frame_stalled = False
 
 
 @dataclass
@@ -405,6 +409,67 @@ class TestPublishRuntimeStats:
         services.publish_runtime_stats(force=True)
         tracking = services.get_runtime_stats_snapshot()["tracking"]
         assert tracking["missing_deps"] == ["onnxruntime"]
+
+    def test_frame_liveness_is_read_live_not_taken_from_the_snapshot(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stalled frame loop freezes the published snapshot along with
+        everything else, so the age has to be measured when the caller reads
+        rather than when the loop last published. This is the one figure that
+        can tell a reader the rest of the payload is stale."""
+        self._prime(services)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services._app._last_frame_completed = 500.0
+        monkeypatch.setattr(services_module.time, "perf_counter", lambda: 500.0)
+        services.publish_runtime_stats(force=True)
+
+        # The loop is now wedged: no further publish happens, only wall time moves.
+        monkeypatch.setattr(services_module.time, "perf_counter", lambda: 512.0)
+        assert services.get_runtime_stats_snapshot()["playback"]["seconds_since_last_frame"] == 12.0
+        monkeypatch.setattr(services_module.time, "perf_counter", lambda: 530.0)
+        assert services.get_runtime_stats_snapshot()["playback"]["seconds_since_last_frame"] == 30.0
+
+    def test_stall_flag_mirrors_the_watchdog_verdict(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._prime(services)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        services.publish_runtime_stats(force=True)
+
+        assert services.get_runtime_stats_snapshot()["playback"]["stalled"] is False
+        services._app._frame_stalled = True
+        assert services.get_runtime_stats_snapshot()["playback"]["stalled"] is True
+
+    def test_the_stale_threshold_is_published_for_the_ui(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The UI compares the age against this rather than a literal, so the
+        chip and the four output protocols cannot drift apart on the threshold."""
+        from openfollow.psn import MARKER_STALE_AFTER_S
+
+        self._prime(services)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["playback"]["stale_after_s"] == MARKER_STALE_AFTER_S
+
+    def test_frame_age_is_none_before_the_first_frame(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._prime(services)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        services.publish_runtime_stats(force=True)
+
+        services._app._last_frame_completed = None
+        assert services.get_runtime_stats_snapshot()["playback"]["seconds_since_last_frame"] is None
 
     def test_snapshot_is_deep_copied_on_read(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

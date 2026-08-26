@@ -3,6 +3,7 @@
 % resolution = video.get("resolution", {})
 % controllers = stats.get("controllers", {})
 % tracking = stats.get("tracking", {})
+% playback = stats.get("playback", {})
 % temp_c = system.get("temperature_c")
 % tracked_people = tracking.get("tracked_people", 0)
 % video_connected = bool(video.get("connected"))
@@ -31,6 +32,21 @@
 %     tracking_chip_class = "off"
 % end
 % show_missing_banner = bool(tracking_missing) and tracking_enabled
+% frame_age = playback.get("seconds_since_last_frame")
+% # The watchdog flag alone is not enough: it is set from the housekeeping
+% # timeout, which is the same main loop the frame clock is on, so a block
+% # inside one callback stops both. The age is measured on the web thread and
+% # keeps growing, so it is what decides the chip.
+% stale_after = playback.get("stale_after_s") or 1.0
+% frame_stalled = bool(playback.get("stalled")) or (frame_age is not None and frame_age >= stale_after)
+% if frame_stalled:
+%     frame_clock_state = "Stalled %.0f s" % frame_age if frame_age is not None else "Stalled"
+% elif frame_age is None:
+%     frame_clock_state = "Starting"
+% else:
+%     frame_clock_state = "Running"
+% end
+% frame_clock_chip = "off" if frame_stalled else ("ok" if frame_age is not None else "warn")
 
 <p class="stat-help">Live indicators for operation and troubleshooting.</p>
 
@@ -92,6 +108,12 @@
             <div class="metric-row">
                 <dt class="metric-label">Temperature</dt>
                 <dd class="metric-value">{{'%.1f C' % temp_c if temp_c is not None else 'N/A'}}</dd>
+            </div>
+            <div class="metric-row">
+                <dt class="metric-label">Frame clock</dt>
+                <dd class="metric-value">
+                    <span class="stat-chip {{frame_clock_chip}}">{{frame_clock_state}}</span>
+                </dd>
             </div>
         </dl>
     </section>

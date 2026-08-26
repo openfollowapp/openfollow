@@ -28,7 +28,7 @@ from openfollow.configuration import (
 )
 from openfollow.input import InputManager
 from openfollow.otp import OtpServer
-from openfollow.psn import PsnReceiver, PsnServer
+from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
 from openfollow.runtime.overlay_state import OverlayState
@@ -2296,7 +2296,7 @@ class AppRuntimeServices:
 
         # GIL-atomic assignment (GStreamer thread reads this snapshot).
         # ``init_video`` assigns ``self._overlay_renderer`` before this path
-        # runs (frame tick is gated by canvas readiness), so the None arm is
+        # runs (the frame clock is gated by canvas readiness), so the None arm is
         # unreachable at runtime.
         if self._overlay_renderer is not None:  # pragma: no branch
             self._overlay_renderer.state = state
@@ -2748,9 +2748,24 @@ class AppRuntimeServices:
             self._runtime_stats_snapshot = snapshot
 
     def get_runtime_stats_snapshot(self) -> dict[str, Any]:
-        """Return a defensive copy of the latest runtime telemetry snapshot."""
+        """Return a defensive copy of the latest runtime telemetry snapshot.
+
+        Frame-clock liveness is overlaid at *read* time: the snapshot itself is
+        published from the frame loop, so a stalled loop freezes every other
+        figure in it.
+        """
         with self._runtime_stats_lock:
-            return copy.deepcopy(self._runtime_stats_snapshot)
+            snapshot = copy.deepcopy(self._runtime_stats_snapshot)
+        playback = snapshot["playback"]
+        last_frame = self._app._last_frame_completed
+        playback["seconds_since_last_frame"] = (
+            float(time.perf_counter() - last_frame) if last_frame is not None else None
+        )
+        playback["stalled"] = bool(self._app._frame_stalled)
+        # Published so the UI compares against the same threshold the outputs
+        # use, rather than a literal that drifts when the constant moves.
+        playback["stale_after_s"] = float(MARKER_STALE_AFTER_S)
+        return snapshot
 
     def _safe_stop(self, name: str, fn: Callable[[], Any]) -> None:
         """Run one teardown step, logging and swallowing any exception.

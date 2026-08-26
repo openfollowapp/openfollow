@@ -132,8 +132,12 @@ OpenFollowApp (app.py)
 
 Camera calibration is web-only (the `/wizard` setup wizard) – there is no on-device calibration overlay. `scene/` holds just `camera.py` + `solver.py` (the DLT solver).
 
-**Frame loop:** `_animate()` runs on the display vsync tick (`Gtk.Widget.add_tick_callback`, ~60–120 Hz), so `dt` integrates against real elapsed time, not a fixed step; a separate `GLib.timeout_add` drives slow housekeeping.
+**Frame loop:** `_animate()` runs on a `GLib.timeout_add` at `_FRAME_INTERVAL_MS` (~60 Hz), so `dt` integrates against real elapsed time, not a fixed step.
 Order: `_process_input(dt)` → `svc.update_video()` → `svc.apply_detection_pin()` → `svc.update_zone_triggers()` → `svc.update_marker_visuals()`
+
+**Three independent clocks, none of them the display.** Marker state, input, detection pinning, zone evaluation, and every output run off the frame timeout; slow web-driven housekeeping runs off its own 100 ms timeout; the display vsync tick (`Gtk.Widget.add_tick_callback`, wired by `GtkNativeSinkWindow.start_hud_tick`) redraws the HUD and polls the macOS pointer, and **carries no app state**. That separation is load-bearing: a unit with no display attached gets no compositor frame clock, so anything on the vsync tick simply never runs, while `PsnServer` / `OtpServer` / `RttrpmServer` / `OscTransmitterManager` keep transmitting the last known marker state from their own threads at full rate. Do NOT move per-frame state back onto `start_hud_tick`, and do NOT give it a callback parameter.
+
+**Stall watchdog:** `check_frame_loop_stall` (on the housekeeping timeout, because a stalled loop can't report itself) flags `app._frame_stalled` after `_FRAME_STALL_AFTER_S` (**derived from `MARKER_STALE_AFTER_S`** so the indicator and the wire can't disagree) and logs one line per episode on each edge, timed from the last completed frame so the figure is the whole outage. It reads `app._last_frame_completed`, stamped as the **last line of `animate`** – a frame that raises or hangs part-way must not advance the liveness clock, or a loop failing every tick reads as healthy while every output goes stale. `get_runtime_stats_snapshot` overlays `playback.stalled` + `playback.seconds_since_last_frame` at **read** time. The Statistics → Device `Frame clock` chip is driven by the **age**, not the flag alone: the watchdog shares the main loop with the frame clock, so a block inside one callback stops both and leaves the flag False. It compares against `playback.stale_after_s` (published from `MARKER_STALE_AFTER_S`), never a literal, so the chip can't disagree with what the outputs are doing.
 
 ---
 
@@ -314,6 +318,21 @@ The HUD is **not** in the GStreamer chain. The video sink (`gtksink`) is wrapped
 `grid.{x,y}_offset` is **display-positioning metadata** for the grid rectangle itself – used by the web setup wizard / `scene/solver.py` to build the four grid corners in world space, and by the web zone editor to centre its viewport on the grid origin. It is **never** added to or subtracted from `marker.pos`, a detection world-point, or a zone vertex.
 
 **Do not add offset arithmetic to any marker-position flow.** The historical bug sites all had the shape "subtract offset on write, add offset on read" as a hidden convention that worked only in the zero-offset case. The regression suite in `tests/test_coordinate_system_invariants.py` parametrises nine invariants across three offset configurations (zero, positive, mixed-sign) – any future attempt to reintroduce an offset at one of these sites fails loudly across every non-zero case.
+
+### Marker freshness (`is_marker_stale`, shared by every output)
+
+`build_marker_visual_state` rewrites every **controlled** marker each frame (an unconditional `set_speed`), and every `Marker` data write stamps `timestamp`. That stamp is therefore a per-marker "the frame loop ran" signal, which is what the four output protocols use to avoid transmitting a frozen position as if it were live – each runs its own send thread, so none of them stops when the frame loop does.
+
+`marker_age_s(marker, *, now_us=None)` / `is_marker_stale(marker, *, now_us=None)` / `MARKER_STALE_AFTER_S` (1.0 s ≈ 60 missed frames) live in [`psn/marker.py`](openfollow/psn/marker.py). A remote marker (sender's epoch) and a never-written one both report `inf`, so anything unaged fails safe as stale – and `inf` is not `int()`-able, which the OTP sampled-timestamp path has to handle. The reference is the **marker's own clock** (`Marker.clock_now_us`), never the module function: `PsnServer.add_marker` passes its `clock=` down, so a server on an injected clock would otherwise age every marker against an unrelated epoch and ship `status=0.0` for a freshly written position. Pass one `now_us` (from that same clock) when ageing several markers for one packet.
+
+| Output | What staleness does on the wire |
+|---|---|
+| PSN | `to_psn_marker(stale=True)` publishes `PSN_DATA_TRACKER_STATUS = 0.0` for that packet only. It does **not** mutate `Marker._status` – recovery must restore the real validity, and a confidence-derived status must not be clobbered |
+| OTP | The Point Layer's `sampled_timestamp_us` is `timestamp_us - marker_age_us` (E1.59 §9.6: when the Producer read *that Point*), clamped at 0. A frozen point stops ageing while the Transform Layer's timestamp runs on |
+| RTTrPM | No validity field exists, so absence is the idiom: stale trackables are filtered out of the packet, and an all-stale set sends nothing so the receiver's own timeout fires |
+| OSC transmitter | A stale marker skips with the reason in that row's ring buffer. Explicit `[x:N]` / controller `[x:cN]` refs go through `RenderContext.marker_stale_resolver` (neither sets `needs_default_marker`), which raises `RenderError(..., hint="position is stale")` so the skip is distinguishable from an unregistered marker. Constant / hotkey / MIDI rows are unaffected |
+
+**Do not gate the per-frame `set_speed` on movement.** A deliberately still marker would go stale and drop off the wire on all four protocols. `tests/test_output_staleness.py` pins the wire behaviour; `tests/test_marker_freshness.py` pins the rule.
 
 ### PsnServer (`psn/server.py`)
 - Sends PSN multicast every ~33ms

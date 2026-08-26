@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Mutable state wrapper for a single PSN marker."""
+"""Mutable state wrapper for a single PSN marker, and the shared freshness rule
+every output protocol maps onto its own idiom."""
 
 from __future__ import annotations
 
+import math
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -18,6 +20,10 @@ _ZERO: Vec3 = (0.0, 0.0, 0.0)
 # are actively driving is fully valid; 0.0 means "no data written yet".
 _VALID = 1.0
 _INVALID = 0.0
+
+# The per-frame write in ``build_marker_visual_state`` is what stamps a marker,
+# so its age doubles as a "the frame loop ran" signal. ~60 missed frames.
+MARKER_STALE_AFTER_S = 1.0
 
 
 def _clamped_status(status: Any) -> float:
@@ -146,6 +152,11 @@ class Marker:
         """True when this marker mirrors a sender on the network."""
         return self._remote
 
+    @property
+    def clock_now_us(self) -> int:
+        """Now, on the clock this marker's timestamps are stamped from."""
+        return self._clock()
+
     def set_pos(self, x: float, y: float, z: float) -> None:
         """Set the marker position in PSN coordinates."""
         with self._lock:
@@ -206,8 +217,14 @@ class Marker:
         if self._status == _INVALID:
             self._status = _VALID
 
-    def to_psn_marker(self) -> pypsn.PsnTracker:
-        """Convert to pypsn.PsnTracker with all fields under lock."""
+    def to_psn_marker(self, *, stale: bool = False) -> pypsn.PsnTracker:
+        """Convert to pypsn.PsnTracker with all fields under lock.
+
+        *stale* publishes STATUS as invalid for this packet only - the stored
+        status is left alone, so the marker reports its real validity again the
+        moment it is written. The caller decides staleness (see
+        :func:`is_marker_stale`): computing it here would re-enter ``_lock``.
+        """
         with self._lock:
             # pypsn uses tracker_id (wire protocol); we translate at boundary.
             return pypsn.PsnTracker(
@@ -217,7 +234,7 @@ class Marker:
                 ori=pypsn.PsnVector3(*self._ori),
                 accel=pypsn.PsnVector3(*self._accel),
                 trgtpos=pypsn.PsnVector3(*self._trgtpos),
-                status=self._status,
+                status=_INVALID if stale else self._status,
                 timestamp=self._timestamp,
             )
 
@@ -227,3 +244,36 @@ class Marker:
             tracker_id=self.marker_id,
             tracker_name=self.name,
         )
+
+
+def marker_age_s(marker: Marker, *, now_us: int | None = None) -> float:
+    """Seconds since *marker* was last written, or ``inf`` when unknowable.
+
+    Only meaningful for a marker this process drives. A received marker holds
+    its sender's timestamp, in that sender's epoch, which is not comparable to
+    ours - and one that has never been written has no stamp at all. Both report
+    ``inf`` so a caller that treats "old" as "do not publish" fails safe.
+
+    *now_us* pins the reference instant, and must come from the same clock the
+    marker was built with (:attr:`Marker.clock_now_us`). Pass one sample when
+    ageing several markers for one packet so they share a snapshot.
+    """
+    if marker.is_remote:
+        return math.inf
+    timestamp = marker.timestamp
+    if timestamp <= 0:
+        return math.inf
+    # The marker's own clock, not the module one: ``PsnServer`` passes its
+    # ``clock=`` down to every marker it creates, and mixing the two epochs
+    # ages a freshly-written marker against an unrelated origin.
+    reference = marker.clock_now_us if now_us is None else now_us
+    return (reference - timestamp) / 1_000_000.0
+
+
+def is_marker_stale(marker: Marker, *, now_us: int | None = None) -> bool:
+    """True when *marker* has gone unwritten long enough to stop trusting it.
+
+    The single rule behind every output protocol's staleness handling, so PSN,
+    OTP, RTTrPM, and OSC can't drift apart on when a position stops counting.
+    """
+    return marker_age_s(marker, now_us=now_us) >= MARKER_STALE_AFTER_S

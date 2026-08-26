@@ -55,6 +55,8 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
+from openfollow.psn.marker import is_marker_stale
+
 if TYPE_CHECKING:
     from openfollow.psn.marker import Marker
 
@@ -247,6 +249,7 @@ class RttrpmServer:
         self._send_errors: int = 0
         self._send_total: int = 0
         self._next_rebuild_at: float = 0.0
+        self._stale_warned = False
         # Warn-once-per-episode guard: True while a run of capped frames is
         # being suppressed; re-armed once frames stop capping so a later
         # misconfiguration surfaces again.
@@ -335,6 +338,11 @@ class RttrpmServer:
     def _send_packet(self, stop_event: threading.Event | None = None) -> None:
         with self._lock:
             markers = list(self._markers.values())
+        # No validity field exists, so absence is the only way to say a position
+        # is no longer live; the receiver's own timeout then drops it.
+        live = [m for m in markers if not is_marker_stale(m)]
+        self._warn_if_withheld(len(markers) - len(live))
+        markers = live
         if not markers:
             return
         # A prior socket rebuild that failed leaves _socket None; retry it
@@ -350,6 +358,25 @@ class RttrpmServer:
         payload = encode_rttrpm_packet(pkt_id, markers, self._context)
         self._warn_if_capped(len(markers), payload)
         self._send(payload, stop_event)
+
+    def _warn_if_withheld(self, withheld: int) -> None:
+        """Warn once per episode while trackables are being withheld as stale.
+
+        Withholding is silent on the wire by design, and unlike the other three
+        protocols it removes the trackable entirely - without this a partial
+        stall makes a marker vanish from the console with no evidence anywhere.
+        Re-arms once nothing is withheld, so a recurrence is surfaced again.
+        """
+        if withheld <= 0:
+            self._stale_warned = False
+            return
+        if self._stale_warned:
+            return
+        self._stale_warned = True
+        logger.warning(
+            "RTTrPM withholding %d stale trackable(s): the frame loop has stopped writing them.",
+            withheld,
+        )
 
     def _warn_if_capped(self, submitted: int, payload: bytes) -> None:
         """Warn once per cap episode when markers are dropped from a packet.

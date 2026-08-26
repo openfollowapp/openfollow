@@ -595,6 +595,26 @@ class TestSpeedDerivation:
         _build(app, pool)
         assert app._server._markers[1].set_speed_calls == [(2.0, 0.0, 0.0)]
 
+    def test_a_stationary_controlled_marker_is_still_rewritten_every_frame(
+        self,
+        pool: OverlayStatePool,
+    ) -> None:
+        """The write is the marker's freshness stamp, and every output protocol
+        reads that stamp to decide whether the position on the wire is still
+        live (see ``openfollow.psn.marker.is_marker_stale``). Gating it on
+        movement would make a deliberately still marker report as stale: PSN
+        would publish it invalid, RTTrPM would stop sending it, and OSC rows
+        would go quiet - all while the operator is holding it exactly where
+        they want it."""
+        app = _build_app(
+            controlled=[1],
+            viewer=[1],
+            server_markers={1: _FakeMarker(1)},
+        )
+        for _ in range(3):
+            _build(app, pool)
+        assert app._server._markers[1].set_speed_calls == [(2.0, 0.0, 0.0)] * 3
+
     def test_unregistered_controlled_marker_is_skipped(self, pool: OverlayStatePool) -> None:
         """A controlled id the server has not registered yet (mid hot-reload)
         must not raise on the frame path."""

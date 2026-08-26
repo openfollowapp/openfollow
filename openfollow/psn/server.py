@@ -12,11 +12,13 @@ import errno
 import logging
 import socket
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from typing import TypeVar
 
 import multicast_expert
 import pypsn
 
+from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.clock import psn_timestamp_usec
 from openfollow.psn.marker import Marker, is_marker_stale
 
@@ -28,6 +30,11 @@ DEFAULT_PORT = 56565
 _MAX_SOCKET_RETRIES = 3
 _SOCKET_RETRY_DELAY = 2.0  # seconds
 _FRAME_ID_WRAP = 256  # frame_id is a uint8 on the wire
+_MAX_FRAME_PACKETS = 255  # frame_packet_count is a uint8 on the wire
+
+# Data trackers and info trackers are distinct pypsn types; a frame is built the
+# same way for both.
+_TrackerT = TypeVar("_TrackerT", pypsn.PsnTracker, pypsn.PsnTrackerInfo)
 
 
 class _Unchanged:
@@ -90,6 +97,7 @@ class PsnServer:
         self._socket_thread: threading.Thread | None = None
         self._send_errors: int = 0
         self._send_total: int = 0
+        self._oversize_drops: int = 0
 
     def add_marker(self, marker_id: int, name: str) -> Marker:
         """Register new marker (marker_id must be >= 1)."""
@@ -351,29 +359,74 @@ class PsnServer:
             self._send_info_packet(stop)
             stop.wait(interval)
 
-    def _make_psn_info(self, frame_id: int) -> pypsn.PsnInfo:
-        """Build a ``PsnInfo`` header carrying ``frame_id``."""
+    def _make_psn_info(self, frame_id: int, timestamp: int, packet_count: int) -> pypsn.PsnInfo:
+        """Build the header shared by every packet of one frame."""
         return pypsn.PsnInfo(
-            timestamp=self._clock(),
+            timestamp=timestamp,
             version_high=2,
             version_low=0,
             frame_id=frame_id,
-            packet_count=1,
+            packet_count=packet_count,
         )
 
-    def _next_data_header(self) -> pypsn.PsnInfo:
-        """Build a data-packet header, advancing the data stream's frame counter."""
+    def _next_data_frame_id(self) -> int:
+        """Take the next data-stream frame id, advancing that stream's counter."""
         with self._lock:
             frame_id = self._data_frame_id
             self._data_frame_id = (self._data_frame_id + 1) % _FRAME_ID_WRAP
-        return self._make_psn_info(frame_id)
+        return frame_id
 
-    def _next_info_header(self) -> pypsn.PsnInfo:
-        """Build an info-packet header, advancing the info stream's frame counter."""
+    def _next_info_frame_id(self) -> int:
+        """Take the next info-stream frame id, advancing that stream's counter."""
         with self._lock:
             frame_id = self._info_frame_id
             self._info_frame_id = (self._info_frame_id + 1) % _FRAME_ID_WRAP
-        return self._make_psn_info(frame_id)
+        return frame_id
+
+    def _send_frame(
+        self,
+        frame_id: int,
+        trackers: Sequence[_TrackerT],
+        encode: Callable[[pypsn.PsnInfo, Sequence[_TrackerT]], bytes],
+        stop_event: threading.Event | None,
+    ) -> None:
+        """Send one frame, split across packets when it exceeds the MTU.
+
+        Every packet of a split frame repeats one frame id and one timestamp,
+        and declares the whole frame's packet count – that triple is what a
+        receiver buffers a frame's trackers on until it has them all.
+        """
+        timestamp = self._clock()
+        # Header fields are fixed-width, so this one also sizes the chunks below.
+        single_header = self._make_psn_info(frame_id, timestamp, 1)
+        single = encode(single_header, trackers)
+        if len(single) <= MAX_DATAGRAM_BYTES:
+            self._send(single, stop_event)
+            return
+        chunks = chunk_to_datagrams(
+            trackers,
+            lambda subset: len(encode(single_header, subset)),
+            MAX_DATAGRAM_BYTES,
+        )
+        if len(chunks) > _MAX_FRAME_PACKETS:
+            # packet_count is a uint8, so a frame past this many packets cannot
+            # describe itself and struct.pack would kill the send thread. Only
+            # reachable in the thousands of markers; drop the tail rather than
+            # the stream, and throttle like the send-error path.
+            with self._lock:
+                self._oversize_drops += 1
+                drops = self._oversize_drops
+            if drops <= 5 or drops % 100 == 0:
+                logger.warning(
+                    "PSN frame needs %d packets, capped at %d (%d drops) – markers beyond the cap are not sent",
+                    len(chunks),
+                    _MAX_FRAME_PACKETS,
+                    drops,
+                )
+            chunks = chunks[:_MAX_FRAME_PACKETS]
+        header = self._make_psn_info(frame_id, timestamp, len(chunks))
+        for chunk in chunks:
+            self._send(encode(header, chunk), stop_event)
 
     def _snapshot_markers(self) -> list[Marker]:
         """Return a consistent copy of the marker list under the lock."""
@@ -392,19 +445,26 @@ class PsnServer:
         # invalid: this thread keeps transmitting at full rate regardless, so
         # validity is the only field that can say the position is no longer live.
         trackers = [t.to_psn_marker(stale=is_marker_stale(t)) for t in markers]
-        packet = pypsn.PsnDataPacket(info=self._next_data_header(), trackers=trackers)
-        self._send(pypsn.prepare_psn_data_packet_bytes(packet), stop_event)
+
+        def encode(info: pypsn.PsnInfo, chunk: Sequence[pypsn.PsnTracker]) -> bytes:
+            payload: bytes = pypsn.prepare_psn_data_packet_bytes(pypsn.PsnDataPacket(info=info, trackers=list(chunk)))
+            return payload
+
+        self._send_frame(self._next_data_frame_id(), trackers, encode, stop_event)
 
     def _send_info_packet(self, stop_event: threading.Event | None = None) -> None:
         markers = self._snapshot_markers()
         if not markers:
             return
-        packet = pypsn.PsnInfoPacket(
-            info=self._next_info_header(),
-            name=self._system_name,
-            trackers=[t.to_psn_marker_info() for t in markers],
-        )
-        self._send(pypsn.prepare_psn_info_packet_bytes(packet), stop_event)
+        trackers = [t.to_psn_marker_info() for t in markers]
+        name = self._system_name
+
+        def encode(info: pypsn.PsnInfo, chunk: Sequence[pypsn.PsnTrackerInfo]) -> bytes:
+            packet = pypsn.PsnInfoPacket(info=info, name=name, trackers=list(chunk))
+            payload: bytes = pypsn.prepare_psn_info_packet_bytes(packet)
+            return payload
+
+        self._send_frame(self._next_info_frame_id(), trackers, encode, stop_event)
 
     def _send(self, data: bytes, stop_event: threading.Event | None = None) -> None:
         sock = self._socket

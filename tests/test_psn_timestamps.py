@@ -108,23 +108,38 @@ class TestTrackerFieldsReachTheWire:
 
 
 class TestHeaderSharesTheTrackerClock:
-    def test_header_reads_the_injected_clock(self) -> None:
-        clock = _StepClock(555_000)
-        server = PsnServer(clock=clock)
-        assert server._next_data_header().timestamp == 555_000
+    """Read off the wire rather than off the header builder: what a receiver
+    compares is what arrives, and the builder is free to be restructured."""
 
-    def test_header_and_tracker_stamps_share_one_time_base(self) -> None:
+    @staticmethod
+    def _sent_data_packets(server: PsnServer, monkeypatch: pytest.MonkeyPatch) -> list[bytes]:
+        sent: list[bytes] = []
+        monkeypatch.setattr(server, "_send", lambda data, stop_event=None: sent.append(data))
+        return sent
+
+    def _one_packet(self, server: PsnServer, monkeypatch: pytest.MonkeyPatch) -> pypsn.PsnDataPacket:
+        sent = self._sent_data_packets(server, monkeypatch)
+        server._send_data_packet()
+        packet = pypsn.parse_psn_packet(sent[0])
+        assert isinstance(packet, pypsn.PsnDataPacket)
+        return packet
+
+    def test_header_reads_the_injected_clock(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = _StepClock(555_000)
+        server = PsnServer(clock=clock, mcast_ip=None)
+        server.add_marker(301, "Marker 301").set_pos(1.0, 2.0, 3.0)
+        assert self._one_packet(server, monkeypatch).info.timestamp == 555_000
+
+    def test_header_and_tracker_stamps_share_one_time_base(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A receiver compares the two to judge tracker freshness, so they must
         come from the same clock - not one wall and one monotonic."""
         clock = _StepClock(1_000)
-        server = PsnServer(clock=clock)
-        marker = server.add_marker(301, "Marker 301")
-        marker.set_pos(1.0, 2.0, 3.0)
+        server = PsnServer(clock=clock, mcast_ip=None)
+        server.add_marker(301, "Marker 301").set_pos(1.0, 2.0, 3.0)
         clock.now = 4_000
-        info = server._next_data_header()
-        assert marker.to_psn_marker().timestamp == 1_000
-        assert info.timestamp == 4_000
-        assert info.timestamp - marker.timestamp == 3_000
+        packet = self._one_packet(server, monkeypatch)
+        assert packet.trackers[0].timestamp == 1_000
+        assert packet.info.timestamp == 4_000
 
     def test_a_write_during_the_snapshot_cannot_outrun_the_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The header and the trackers are read at different instants while the
@@ -136,26 +151,29 @@ class TestHeaderSharesTheTrackerClock:
         marker = server.add_marker(301, "Marker 301")
         marker.set_pos(1.0, 2.0, 3.0)
 
-        sent: list[bytes] = []
-        monkeypatch.setattr(server, "_send", lambda data, stop_event=None: sent.append(data))
-        real_make = server._next_data_header
+        sent = self._sent_data_packets(server, monkeypatch)
+        real_next_id = server._next_data_frame_id
 
-        def _make_then_write() -> pypsn.PsnInfo:
-            info = real_make()
+        def _take_id_then_write() -> int:
+            frame_id = real_next_id()
             clock.now += 5_000
             marker.set_pos(9.0, 9.0, 9.0)  # a write lands between the two reads
-            return info
+            return frame_id
 
-        monkeypatch.setattr(server, "_next_data_header", _make_then_write)
+        monkeypatch.setattr(server, "_next_data_frame_id", _take_id_then_write)
         server._send_data_packet()
 
         packet = pypsn.parse_psn_packet(sent[0])
         assert isinstance(packet, pypsn.PsnDataPacket)
         assert packet.trackers[0].timestamp <= packet.info.timestamp
 
-    def test_header_advances_between_packets(self) -> None:
+    def test_header_advances_between_packets(self, monkeypatch: pytest.MonkeyPatch) -> None:
         clock = _StepClock(1_000)
-        server = PsnServer(clock=clock)
-        first = server._next_data_header().timestamp
+        server = PsnServer(clock=clock, mcast_ip=None)
+        server.add_marker(301, "Marker 301").set_pos(1.0, 2.0, 3.0)
+        sent = self._sent_data_packets(server, monkeypatch)
+        server._send_data_packet()
         clock.now = 17_667
-        assert server._next_data_header().timestamp > first
+        server._send_data_packet()
+        stamps = [pypsn.parse_psn_packet(datagram).info.timestamp for datagram in sent]
+        assert stamps[1] > stamps[0]

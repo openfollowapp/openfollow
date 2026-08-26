@@ -1226,52 +1226,53 @@ class TestOtpRestartFailureRaises:
                 )
 
 
-class TestOtpSendOversizePacketSkipped:
-    def _server_with_oversize_load(self) -> OtpServer:
+class TestOtpFolioPageCap:
+    """A folio too long for its uint16 Last Page cannot describe itself, so the
+    tail is dropped rather than left to ``struct.pack``. Only reachable in the
+    millions of markers, so the cap is lowered here to reach the path at all."""
+
+    def _server_with_capped_load(self, monkeypatch: pytest.MonkeyPatch) -> OtpServer:
         srv = OtpServer(system_number=1)
         srv._socket = MagicMock()
-        # 70 markers blow the 1472-octet cap.
+        # 70 markers need 3 pages; a 2-page ceiling drops the third.
+        monkeypatch.setattr("openfollow.otp.server._MAX_FOLIO_LAST_PAGE", 1)
         for i in range(1, 71):
             srv.register_marker(_marker(i, name=f"T{i}"))
         return srv
 
-    def test_oversize_payload_drops_packet_with_warning(self, caplog) -> None:
+    def test_pages_past_the_cap_are_dropped_with_a_warning(self, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
         import logging as _logging
 
-        srv = self._server_with_oversize_load()
+        srv = self._server_with_capped_load(monkeypatch)
         with caplog.at_level(_logging.WARNING, logger="openfollow.otp.server"):
             srv._send_transform_packet()
-        srv._socket.sendto.assert_not_called()
-        assert any("transform packet skipped" in r.message for r in caplog.records)
+        assert srv._socket.sendto.call_count == 2
+        assert any("transform folio needs 3 pages" in r.message for r in caplog.records)
         assert srv._oversize_drops == 1
 
-    def test_oversize_log_throttles_after_5_drops(self, caplog) -> None:
-        """Length-cap drops are throttled with the same first-5-then-
-        every-100 pattern as ``_send``'s OSError counter, so a misconfigured
-        install pushing too many markers doesn't flood the log at the
+    def test_cap_log_throttles_after_5_drops(self, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
+        """Throttled with the same first-5-then-every-100 pattern as ``_send``'s
+        OSError counter, so a misconfigured install doesn't flood the log at the
         transform fps."""
         import logging as _logging
 
-        srv = self._server_with_oversize_load()
+        srv = self._server_with_capped_load(monkeypatch)
         with caplog.at_level(_logging.WARNING, logger="openfollow.otp.server"):
             for _ in range(20):
                 srv._send_transform_packet()
-        # 20 calls → first 5 log, then nothing until the 100th – so
-        # exactly 5 warnings hit the buffer.
-        warnings = [r for r in caplog.records if "transform packet skipped" in r.message]
+        warnings = [r for r in caplog.records if "transform folio needs" in r.message]
         assert len(warnings) == 5
         assert srv._oversize_drops == 20
 
-    def test_oversize_log_resumes_at_100th_drop(self, caplog) -> None:
+    def test_cap_log_resumes_at_100th_drop(self, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
         import logging as _logging
 
-        srv = self._server_with_oversize_load()
+        srv = self._server_with_capped_load(monkeypatch)
         # Simulate having already passed the first-5 burst.
         srv._oversize_drops = 99
         with caplog.at_level(_logging.WARNING, logger="openfollow.otp.server"):
             srv._send_transform_packet()
-        # Next drop is the 100th → must log.
-        assert any("transform packet skipped" in r.message for r in caplog.records)
+        assert any("transform folio needs" in r.message for r in caplog.records)
         assert srv._oversize_drops == 100
 
 

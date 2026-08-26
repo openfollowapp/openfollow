@@ -334,6 +334,22 @@ The HUD is **not** in the GStreamer chain. The video sink (`gtksink`) is wrapped
 
 **Do not gate the per-frame `set_speed` on movement.** A deliberately still marker would go stale and drop off the wire on all four protocols. `tests/test_output_staleness.py` pins the wire behaviour; `tests/test_marker_freshness.py` pins the rule.
 
+### Datagram size (`packet_chunking.MAX_DATAGRAM_BYTES`, shared by every output)
+
+Every marker-carrying output grows its datagram with the marker count, and **1472 bytes** (a 1500 B Ethernet MTU less the 20 B IPv4 and 8 B UDP headers) is the ceiling for all of them. That is the *fragmentation* threshold, which bites before any protocol's own packet limit and degrades silently – a quiet bench LAN reassembles the fragments, a loaded show network drops one and loses the whole datagram. Budget against 1472, never 1500.
+
+`chunk_to_datagrams(items, encoded_size, budget)` in [`packet_chunking.py`](openfollow/packet_chunking.py) is the one splitter: it measures through the caller's own encoder (so a protocol field added later moves the split instead of silently pushing the datagram over), keeps order, loses nothing, and emits an item that can never fit alone rather than dropping it or spinning. Each protocol then applies its own grouping mechanism:
+
+| Output | How one marker set spans datagrams | Crossed at |
+|---|---|---|
+| PSN data / info | Packets of one frame: one `frame_id` and one header timestamp repeated across them, `frame_packet_count` = the chunk count. Build the header **once per frame** – a per-packet id reassembles nothing. Capped at 255 packets (`frame_packet_count` is a uint8) | 14 / 85 markers |
+| OTP transform / name advertisement | Pages of one folio (E1.59 §6.7-6.9): shared Folio Number, `page` 0..`last_page`. Everything outside the split list repeats verbatim on every page, the Transform Layer's **Full Point Set** flag included – it describes the folio, so a page contradicting its siblings describes no coherent point set | 32 / 36 markers |
+| RTTrPM | Independent packets, each with its own `pkt_id`. RTTrPM groups nothing across packets, so no reassembly is involved | 34 markers |
+
+`PsnReceiver` needs no reassembly buffer: it reads 65535 and applies each packet's trackers independently, so a peer's split frame accumulates naturally. The `MAX_OTP_MESSAGE_OCTETS` (§6.3.1) and RTTrPM `_MAX_MODULES` / `_MAX_PACKET_BYTES` checks stay as structural backstops behind the split – they guard what the wire format can *express*, which is a different question from what the network can carry.
+
+`tests/test_output_packet_splitting.py` pins the cross-protocol invariant (no stream emits a datagram past 1472 at any marker count) plus each protocol's grouping; `scripts/hw_validation/output_datagram_size_probe.py` re-checks it on the DUT against the deployed send paths.
+
 ### PsnServer (`psn/server.py`)
 - Sends PSN multicast every ~33ms
 - `add_marker(id, name)` / `remove_marker(id)` / `get_marker(id)`

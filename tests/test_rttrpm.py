@@ -753,14 +753,19 @@ class TestRttrpmCapWarning:
     """Cap warning must surface a recurring/newly-introduced cap condition,
     not be suppressed once-ever for the whole process lifetime."""
 
-    def _capping_markers(self) -> list[Marker]:
-        return [_marker(i, name="T") for i in range(1, 300)]  # 299 > 255
+    # The byte split keeps a packet near 33 trackables, well under the uint8
+    # ``numModules`` ceiling, so the module cap is only reachable by lowering
+    # it - which is the point: it is a backstop behind the split, and this is
+    # what fires if the split ever stops holding.
+    def _cap_modules_at(self, monkeypatch: pytest.MonkeyPatch, limit: int) -> None:
+        monkeypatch.setattr("openfollow.rttrpm.server._MAX_MODULES", limit)
 
-    def test_warns_once_within_a_cap_episode(self, caplog) -> None:
+    def test_warns_once_within_a_cap_episode(self, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
+        self._cap_modules_at(monkeypatch, 2)
         srv = RttrpmServer(host="127.0.0.1")
         srv._socket = MagicMock()
-        for t in self._capping_markers():
-            srv.register_marker(t)
+        for i in range(1, 6):
+            srv.register_marker(_marker(i, name="T"))
 
         with caplog.at_level("WARNING", logger="openfollow.rttrpm.server"):
             srv._send_packet()
@@ -769,12 +774,13 @@ class TestRttrpmCapWarning:
         warns = [r for r in caplog.records if "RTTrPM packet capped" in r.message]
         assert len(warns) == 1  # one log line per episode, not every frame
 
-    def test_rearms_after_cap_clears_and_returns(self, caplog) -> None:
+    def test_rearms_after_cap_clears_and_returns(self, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
         # Cap, then drop back under the limit (re-arm), then cap again: the
         # second cap episode must log again rather than stay silent forever.
+        self._cap_modules_at(monkeypatch, 2)
         srv = RttrpmServer(host="127.0.0.1")
         srv._socket = MagicMock()
-        capping = self._capping_markers()
+        capping = [_marker(i, name="T") for i in range(1, 6)]
         for t in capping:
             srv.register_marker(t)
 

@@ -12,10 +12,12 @@ import socket
 import struct
 import threading
 import time
+from collections.abc import Callable, Sequence
 from uuid import uuid4
 
 import multicast_expert
 
+from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.marker import Marker, marker_age_s
 
 logger = logging.getLogger(__name__)
@@ -55,6 +57,9 @@ OTP_PORT = 5568
 COMPONENT_NAME_OCTETS = 32
 POINT_NAME_OCTETS = 32
 MAX_OTP_MESSAGE_OCTETS = 1472
+
+# Page and Last Page are uint16 (Sections 6.8, 6.9).
+_MAX_FOLIO_LAST_PAGE = 0xFFFF
 
 # Timing: advertisements every 10s; transforms governed by fps (20-1000 Hz).
 ADVERTISEMENT_INTERVAL_S = 10.0
@@ -313,6 +318,20 @@ def _build_system_advertisement_layer(
 # ---------------------------------------------------------------------------
 
 
+def _check_message_length(packet: bytes, what: str) -> None:
+    """Enforce the Section 6.3.1 message cap on one page.
+
+    Callers that can span a folio split their points across pages so this never
+    fires; it stays as the backstop for a single page that cannot be divided
+    further, which no realistic point or name reaches.
+    """
+    if len(packet) > MAX_OTP_MESSAGE_OCTETS:
+        raise ValueError(
+            f"OTP {what} packet of {len(packet)} octets exceeds spec maximum "
+            f"of {MAX_OTP_MESSAGE_OCTETS} for a single page.",
+        )
+
+
 def encode_otp_transform_packet(
     *,
     cid: bytes,
@@ -323,10 +342,12 @@ def encode_otp_transform_packet(
     markers: list[Marker],
     priority: int,
     group: int = 1,
+    page: int = 0,
+    last_page: int = 0,
     sampled_timestamp_us: int | None = None,
     full_point_set: bool = True,
 ) -> bytes:
-    """Build a complete OTP Transform Message UDP payload.
+    """Build one page of an OTP Transform Message UDP payload.
 
     Section 9.6 defines a Point's sampled timestamp as the moment the
     Producer read that Point's transform, so each point carries its own:
@@ -386,20 +407,12 @@ def encode_otp_transform_packet(
         vector=VECTOR_OTP_TRANSFORM_MESSAGE,
         cid=cid,
         folio=folio,
-        page=0,
-        last_page=0,
+        page=page,
+        last_page=last_page,
         component_name=component_name,
         inner_pdu=transform,
     )
-    if len(packet) > MAX_OTP_MESSAGE_OCTETS:
-        # Section 6.3.1 – hard cap. Page splitting is intentionally out of
-        # scope for the pragmatic compliance level; fail loud
-        # so we know to revisit if a real installation ever needs it.
-        raise ValueError(
-            f"OTP transform packet of {len(packet)} octets exceeds spec maximum "
-            f"of {MAX_OTP_MESSAGE_OCTETS}; reduce marker count or implement "
-            f"Page splitting (Section 6.8).",
-        )
+    _check_message_length(packet, "transform")
     return packet
 
 
@@ -443,8 +456,10 @@ def encode_otp_name_advertisement_packet(
     system_number: int,
     markers: list[Marker],
     group: int = 1,
+    page: int = 0,
+    last_page: int = 0,
 ) -> bytes:
-    """Build a complete OTP Name Advertisement Message UDP payload."""
+    """Build one page of an OTP Name Advertisement Message UDP payload."""
     apds = [(system_number, group, marker.marker_id, marker.name) for marker in markers]
     name_layer = _build_name_advertisement_layer(
         response=True,
@@ -454,15 +469,17 @@ def encode_otp_name_advertisement_packet(
         advertisement_vector=VECTOR_OTP_ADVERTISEMENT_NAME,
         inner_pdu=name_layer,
     )
-    return _build_otp_layer(
+    packet = _build_otp_layer(
         vector=VECTOR_OTP_ADVERTISEMENT_MESSAGE,
         cid=cid,
         folio=folio,
-        page=0,
-        last_page=0,
+        page=page,
+        last_page=last_page,
         component_name=component_name,
         inner_pdu=advertisement,
     )
+    _check_message_length(packet, "name advertisement")
+    return packet
 
 
 def encode_otp_system_advertisement_packet(
@@ -891,40 +908,67 @@ class OtpServer:
     def _current_timestamp(self) -> int:
         return int(time.monotonic() * 1_000_000) - self._start_time_us
 
-    def _send_transform_packet(self, stop_event: threading.Event | None = None) -> None:
-        markers = self._snapshot_markers()
-        if not markers:
-            return
-        try:
-            payload = encode_otp_transform_packet(
-                cid=self._cid,
-                component_name=self._system_name,
-                folio=self._next_folio("transform"),
-                system_number=self._system_number,
-                timestamp_us=self._current_timestamp(),
-                markers=markers,
-                priority=self._priority,
-            )
-        except ValueError as exc:
-            # Length-cap blew (Section 6.3.1, 1472-octet hard cap).
-            # This is a config-error path: oversize means too many
-            # markers in one folio – the condition won't fix itself
-            # without operator action, so we throttle to first-5-then-
-            # every-100th occurrence. At 60 fps that's ~1.7s between
-            # log lines after the initial burst, which is enough to
-            # diagnose without flooding. Drop the packet rather than
-            # killing the loop.
+    def _send_folio(
+        self,
+        markers: list[Marker],
+        encode: Callable[[Sequence[Marker], int, int], bytes],
+        dest_ip: str,
+        what: str,
+        stop_event: threading.Event | None,
+    ) -> None:
+        """Send one folio, spread over Pages when it exceeds the MTU.
+
+        Sections 6.7-6.9: pages of one folio share its Folio Number and each
+        names the folio's last page, which is what a Consumer collects them on.
+        Everything outside the split list is repeated verbatim on every page,
+        the Transform Layer's Full Point Set flag included – it describes the
+        folio, so a page that contradicted its siblings would describe no
+        coherent point set at all.
+        """
+        pages = chunk_to_datagrams(
+            markers,
+            lambda subset: len(encode(subset, 0, 0)),
+            MAX_DATAGRAM_BYTES,
+        )
+        last_page = len(pages) - 1
+        if last_page > _MAX_FOLIO_LAST_PAGE:
             with self._lock:
                 self._oversize_drops += 1
                 drops = self._oversize_drops
             if drops <= 5 or drops % 100 == 0:
                 logger.warning(
-                    "OTP transform packet skipped (%d drops): %s",
+                    "OTP %s folio needs %d pages, capped at %d (%d drops) – markers beyond the cap are not sent",
+                    what,
+                    len(pages),
+                    _MAX_FOLIO_LAST_PAGE + 1,
                     drops,
-                    exc,
                 )
+            pages = pages[: _MAX_FOLIO_LAST_PAGE + 1]
+            last_page = _MAX_FOLIO_LAST_PAGE
+        for page, page_markers in enumerate(pages):
+            self._send(encode(page_markers, page, last_page), dest_ip, stop_event)
+
+    def _send_transform_packet(self, stop_event: threading.Event | None = None) -> None:
+        markers = self._snapshot_markers()
+        if not markers:
             return
-        self._send(payload, self._transform_dest, stop_event)
+        folio = self._next_folio("transform")
+        timestamp_us = self._current_timestamp()
+
+        def encode(page_markers: Sequence[Marker], page: int, last_page: int) -> bytes:
+            return encode_otp_transform_packet(
+                cid=self._cid,
+                component_name=self._system_name,
+                folio=folio,
+                system_number=self._system_number,
+                timestamp_us=timestamp_us,
+                markers=list(page_markers),
+                priority=self._priority,
+                page=page,
+                last_page=last_page,
+            )
+
+        self._send_folio(markers, encode, self._transform_dest, "transform", stop_event)
 
     def _send_advertisement_packets(self, stop_event: threading.Event | None = None) -> None:
         """Send Module, Name, and System advertisement packets in sequence."""
@@ -940,17 +984,20 @@ class OtpServer:
                 self._advertisement_dest,
                 stop_event,
             )
-            self._send(
-                encode_otp_name_advertisement_packet(
+            name_folio = self._next_folio("name_adv")
+
+            def encode_names(page_markers: Sequence[Marker], page: int, last_page: int) -> bytes:
+                return encode_otp_name_advertisement_packet(
                     cid=self._cid,
                     component_name=self._system_name,
-                    folio=self._next_folio("name_adv"),
+                    folio=name_folio,
                     system_number=self._system_number,
-                    markers=markers,
-                ),
-                self._advertisement_dest,
-                stop_event,
-            )
+                    markers=list(page_markers),
+                    page=page,
+                    last_page=last_page,
+                )
+
+            self._send_folio(markers, encode_names, self._advertisement_dest, "name advertisement", stop_event)
 
         self._send(
             encode_otp_system_advertisement_packet(

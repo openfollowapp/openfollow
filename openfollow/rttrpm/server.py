@@ -55,6 +55,7 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
+from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.marker import is_marker_stale
 
 if TYPE_CHECKING:
@@ -353,11 +354,32 @@ class RttrpmServer:
             if self._socket is None:
                 # Still down: skip encoding a packet _send() would only drop.
                 return
+        pkt_id = self._next_pkt_id()
+        payload = encode_rttrpm_packet(pkt_id, markers, self._context)
+        if len(payload) <= MAX_DATAGRAM_BYTES:
+            self._warn_if_capped(len(markers), payload)
+            self._send(payload, stop_event)
+            return
+        # Over the MTU. RTTrPM groups nothing across packets - a trackable is
+        # complete in the packet that carries it - so one oversize packet
+        # becomes several independent ones rather than needing reassembly.
+        chunks = chunk_to_datagrams(
+            markers,
+            lambda subset: len(encode_rttrpm_packet(pkt_id, list(subset), self._context)),
+            MAX_DATAGRAM_BYTES,
+        )
+        for index, chunk in enumerate(chunks):
+            chunk_markers = list(chunk)
+            chunk_id = pkt_id if index == 0 else self._next_pkt_id()
+            payload = encode_rttrpm_packet(chunk_id, chunk_markers, self._context)
+            self._warn_if_capped(len(chunk_markers), payload)
+            self._send(payload, stop_event)
+
+    def _next_pkt_id(self) -> int:
+        """Take the next packet sequence number. Send-thread only, like ``_pkt_id``."""
         pkt_id = self._pkt_id
         self._pkt_id = (self._pkt_id + 1) & 0xFFFFFFFF
-        payload = encode_rttrpm_packet(pkt_id, markers, self._context)
-        self._warn_if_capped(len(markers), payload)
-        self._send(payload, stop_event)
+        return pkt_id
 
     def _warn_if_withheld(self, withheld: int) -> None:
         """Warn once per episode while trackables are being withheld as stale.

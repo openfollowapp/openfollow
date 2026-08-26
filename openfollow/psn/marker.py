@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Mutable state wrapper for a single PSN marker."""
+"""Mutable state wrapper for a single PSN marker, and the shared freshness rule
+every output protocol maps onto its own idiom."""
 
 from __future__ import annotations
 
+import math
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -18,6 +20,14 @@ _ZERO: Vec3 = (0.0, 0.0, 0.0)
 # are actively driving is fully valid; 0.0 means "no data written yet".
 _VALID = 1.0
 _INVALID = 0.0
+
+# A locally-driven marker is rewritten once per frame by
+# ``build_marker_visual_state``, so its timestamp doubles as a per-marker "the
+# frame loop ran" stamp. Older than this and the position on the wire is a lie,
+# not merely late - roughly 60 missed frames, wide enough that a GC pause or a
+# config reload never trips it. Deliberately not a config field: it is a safety
+# threshold, not a preference.
+MARKER_STALE_AFTER_S = 1.0
 
 
 def _clamped_status(status: Any) -> float:
@@ -206,8 +216,14 @@ class Marker:
         if self._status == _INVALID:
             self._status = _VALID
 
-    def to_psn_marker(self) -> pypsn.PsnTracker:
-        """Convert to pypsn.PsnTracker with all fields under lock."""
+    def to_psn_marker(self, *, stale: bool = False) -> pypsn.PsnTracker:
+        """Convert to pypsn.PsnTracker with all fields under lock.
+
+        *stale* publishes STATUS as invalid for this packet only - the stored
+        status is left alone, so the marker reports its real validity again the
+        moment it is written. The caller decides staleness (see
+        :func:`is_marker_stale`): computing it here would re-enter ``_lock``.
+        """
         with self._lock:
             # pypsn uses tracker_id (wire protocol); we translate at boundary.
             return pypsn.PsnTracker(
@@ -217,7 +233,7 @@ class Marker:
                 ori=pypsn.PsnVector3(*self._ori),
                 accel=pypsn.PsnVector3(*self._accel),
                 trgtpos=pypsn.PsnVector3(*self._trgtpos),
-                status=self._status,
+                status=_INVALID if stale else self._status,
                 timestamp=self._timestamp,
             )
 
@@ -227,3 +243,33 @@ class Marker:
             tracker_id=self.marker_id,
             tracker_name=self.name,
         )
+
+
+def marker_age_s(marker: Marker, *, now_us: int | None = None) -> float:
+    """Seconds since *marker* was last written, or ``inf`` when unknowable.
+
+    Only meaningful for a marker this process drives. A received marker holds
+    its sender's timestamp, in that sender's epoch, which is not comparable to
+    ours - and one that has never been written has no stamp at all. Both report
+    ``inf`` so a caller that treats "old" as "do not publish" fails safe.
+
+    *now_us* pins the reference instant. Pass one sample when ageing several
+    markers for the same packet so they share a coherent snapshot instead of
+    each being measured against a slightly later clock read.
+    """
+    if marker.is_remote:
+        return math.inf
+    timestamp = marker.timestamp
+    if timestamp <= 0:
+        return math.inf
+    reference = psn_timestamp_usec() if now_us is None else now_us
+    return (reference - timestamp) / 1_000_000.0
+
+
+def is_marker_stale(marker: Marker) -> bool:
+    """True when *marker* has gone unwritten long enough to stop trusting it.
+
+    The single rule behind every output protocol's staleness handling, so PSN,
+    OTP, RTTrPM, and OSC can't drift apart on when a position stops counting.
+    """
+    return marker_age_s(marker) >= MARKER_STALE_AFTER_S

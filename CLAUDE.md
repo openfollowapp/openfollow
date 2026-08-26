@@ -319,6 +319,21 @@ The HUD is **not** in the GStreamer chain. The video sink (`gtksink`) is wrapped
 
 **Do not add offset arithmetic to any marker-position flow.** The historical bug sites all had the shape "subtract offset on write, add offset on read" as a hidden convention that worked only in the zero-offset case. The regression suite in `tests/test_coordinate_system_invariants.py` parametrises nine invariants across three offset configurations (zero, positive, mixed-sign) – any future attempt to reintroduce an offset at one of these sites fails loudly across every non-zero case.
 
+### Marker freshness (`is_marker_stale`, shared by every output)
+
+`build_marker_visual_state` rewrites every **controlled** marker each frame (an unconditional `set_speed`), and every `Marker` data write stamps `timestamp`. That stamp is therefore a per-marker "the frame loop ran" signal, which is what the four output protocols use to avoid transmitting a frozen position as if it were live – each runs its own send thread, so none of them stops when the frame loop does.
+
+`marker_age_s(marker, *, now_us=None)` / `is_marker_stale(marker)` / `MARKER_STALE_AFTER_S` (1.0 s ≈ 60 missed frames) live in [`psn/marker.py`](openfollow/psn/marker.py). A remote marker (sender's epoch) and a never-written one both report `inf`, so anything unaged fails safe as stale. Pass one `now_us` when ageing several markers for the same packet.
+
+| Output | What staleness does on the wire |
+|---|---|
+| PSN | `to_psn_marker(stale=True)` publishes `PSN_DATA_TRACKER_STATUS = 0.0` for that packet only. It does **not** mutate `Marker._status` – recovery must restore the real validity, and a confidence-derived status must not be clobbered |
+| OTP | The Point Layer's `sampled_timestamp_us` is `timestamp_us - marker_age_us` (E1.59 §9.6: when the Producer read *that Point*), clamped at 0. A frozen point stops ageing while the Transform Layer's timestamp runs on |
+| RTTrPM | No validity field exists, so absence is the idiom: stale trackables are filtered out of the packet, and an all-stale set sends nothing so the receiver's own timeout fires |
+| OSC transmitter | A stale marker on a `needs_default_marker` row skips with the reason in that row's ring buffer. Constant / hotkey / MIDI rows are unaffected |
+
+**Do not gate the per-frame `set_speed` on movement.** A deliberately still marker would go stale and drop off the wire on all four protocols. `tests/test_output_staleness.py` pins the wire behaviour; `tests/test_marker_freshness.py` pins the rule.
+
 ### PsnServer (`psn/server.py`)
 - Sends PSN multicast every ~33ms
 - `add_marker(id, name)` / `remove_marker(id)` / `get_marker(id)`

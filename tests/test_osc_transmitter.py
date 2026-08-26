@@ -34,6 +34,7 @@ from openfollow.osc.transmitter import (
     OscTransmitter,
     OscTransmitterManager,
 )
+from openfollow.psn.clock import psn_timestamp_usec
 
 pytestmark = pytest.mark.unit
 
@@ -66,10 +67,20 @@ class _FakeOscService:
 
 
 class _FakeMarker:
-    """Stand-in for ``openfollow.psn.marker.Marker`` – only ``pos`` is read."""
+    """Stand-in for ``openfollow.psn.marker.Marker``.
 
-    def __init__(self, pos: tuple[float, float, float]) -> None:
+    Carries ``timestamp`` / ``is_remote`` alongside ``pos`` because the
+    transmitter withholds a marker the frame loop has stopped writing. Defaults
+    to freshly written; ``stale=True`` uses the never-written stamp, which the
+    shared rule reads as stale without depending on how long the test process
+    has been up. The age-based side of that rule is pinned against an injected
+    clock in ``test_marker_freshness.py``.
+    """
+
+    def __init__(self, pos: tuple[float, float, float], *, stale: bool = False) -> None:
         self.pos = pos
+        self.is_remote = False
+        self.timestamp = 0 if stale else psn_timestamp_usec()
 
 
 # Default destination every ``_row`` resolves to. Host/port match the
@@ -3603,6 +3614,73 @@ class TestResolverGuards:
         assert svc.calls == []
         entries = manager.ring_buffer_for("row-c") or []
         assert entries and entries[-1].status == "skipped"
+
+
+class TestStaleMarkerRows:
+    """A row streaming a marker the frame loop stopped writing.
+
+    The scheduler thread ticks regardless of the frame clock, so without this a
+    wedged station keeps emitting the same coordinates at the row's rate - the
+    same failure the PSN, OTP, and RTTrPM senders have, in OSC's own idiom.
+    Skipping (rather than sending) puts the reason in the row's ring buffer,
+    which is the surface the diagnostics UI already reads.
+    """
+
+    def test_a_stale_marker_row_is_skipped(self) -> None:
+        manager, svc = _manager(markers={1: _FakeMarker((1.0, 2.0, 3.0), stale=True)})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(marker_id=1)]))
+        manager._tick_once()
+        assert svc.calls == []
+
+    def test_the_skip_reason_names_the_stale_marker(self) -> None:
+        manager, _svc = _manager(markers={1: _FakeMarker((1.0, 2.0, 3.0), stale=True)})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(marker_id=1)]))
+        manager._tick_once()
+        entries = manager.ring_buffer_for("row-1")
+        assert entries and entries[-1].status == "skipped"
+        assert "stale" in entries[-1].error
+
+    def test_a_live_marker_row_still_sends(self) -> None:
+        manager, svc = _manager(markers={1: _FakeMarker((1.0, 2.0, 3.0))})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(marker_id=1)]))
+        manager._tick_once()
+        assert len(svc.calls) == 1
+
+    def test_only_the_stale_marker_drops_out_of_a_fan_out(self) -> None:
+        manager, svc = _manager(
+            markers={
+                1: _FakeMarker((1.0, 0.0, 0.0)),
+                3: _FakeMarker((3.0, 0.0, 0.0), stale=True),
+                7: _FakeMarker((7.0, 0.0, 0.0)),
+            },
+        )
+        manager.restart(
+            OscTransmittersConfig(
+                transmitters=[_row(markers=["7", "3", "1"], address="/m/[markerid]", args=["[x]"])],
+            )
+        )
+        manager._tick_once()
+        assert [(c[0], c[1]) for c in svc.calls] == [("/m/1", [1.0]), ("/m/7", [7.0])]
+
+    def test_a_constant_row_is_unaffected_by_a_stale_marker(self) -> None:
+        """The marker is only the on-change gate here, not part of the output,
+        so a hotkey or constant row must keep firing."""
+        manager, svc = _manager(markers={1: _FakeMarker((1.0, 2.0, 3.0), stale=True)})
+        manager.restart(
+            OscTransmittersConfig(transmitters=[_row(marker_id=1, address="/go", args=["1"])]),
+        )
+        manager._tick_once()
+        assert [(c[0], c[1]) for c in svc.calls] == [("/go", [1])]
+
+    def test_the_row_recovers_once_the_marker_is_written_again(self) -> None:
+        markers = {1: _FakeMarker((1.0, 2.0, 3.0), stale=True)}
+        manager, svc = _manager(markers=markers)
+        manager.restart(OscTransmittersConfig(transmitters=[_row(marker_id=1)]))
+        manager._tick_once()
+        assert svc.calls == []
+        markers[1] = _FakeMarker((1.0, 2.0, 3.0))  # frame loop writing again
+        manager._tick_once()
+        assert len(svc.calls) == 1
 
 
 class TestMultiMarkerFanOut:

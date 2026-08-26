@@ -55,6 +55,8 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
+from openfollow.psn.marker import is_marker_stale
+
 if TYPE_CHECKING:
     from openfollow.psn.marker import Marker
 
@@ -335,6 +337,11 @@ class RttrpmServer:
     def _send_packet(self, stop_event: threading.Event | None = None) -> None:
         with self._lock:
             markers = list(self._markers.values())
+        # RTTrPM has no validity field, so absence is its only way to say a
+        # position is no longer live. Withhold a trackable the frame loop has
+        # stopped writing and let the receiver's own timeout drop it, rather
+        # than streaming a frozen centroid at full rate.
+        markers = [m for m in markers if not is_marker_stale(m)]
         if not markers:
             return
         # A prior socket rebuild that failed leaves _socket None; retry it

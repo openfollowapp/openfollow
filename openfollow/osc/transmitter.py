@@ -62,6 +62,7 @@ from openfollow.osc.template import (
     render,
     requires_default_marker,
 )
+from openfollow.psn.marker import is_marker_stale
 
 if TYPE_CHECKING:
     from openfollow.configuration import (
@@ -1304,6 +1305,18 @@ class OscTransmitterManager:
                 # Marker is the gate signal but the templates don't use
                 # it. Render proceeds; the gate is a no-op (a missing
                 # marker means "no signal to compare").
+            elif needs_default and is_marker_stale(marker):
+                # The frame loop stopped writing this marker, so its position is
+                # frozen rather than merely still. Skip instead of streaming it
+                # at the row's rate; the ring buffer carries the reason so the
+                # row's diagnostics say why it went quiet. Rows that only use
+                # the marker as an on-change gate are unaffected.
+                return _RenderResult(
+                    address="",
+                    args=(),
+                    skipped=True,
+                    error=f"marker {plan.marker_id} position is stale",
+                )
             else:
                 try:
                     pos = marker.pos

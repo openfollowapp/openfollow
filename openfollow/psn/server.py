@@ -18,7 +18,7 @@ import multicast_expert
 import pypsn
 
 from openfollow.psn.clock import psn_timestamp_usec
-from openfollow.psn.marker import Marker
+from openfollow.psn.marker import Marker, is_marker_stale
 
 logger = logging.getLogger(__name__)
 
@@ -388,7 +388,10 @@ class PsnServer:
         # Snapshot the trackers before stamping the header: a marker written in
         # between would otherwise carry a timestamp ahead of the header it ships
         # in, which underflows a receiver computing age as unsigned.
-        trackers = [t.to_psn_marker() for t in markers]
+        # A marker the frame loop has stopped writing publishes STATUS as
+        # invalid: this thread keeps transmitting at full rate regardless, so
+        # validity is the only field that can say the position is no longer live.
+        trackers = [t.to_psn_marker(stale=is_marker_stale(t)) for t in markers]
         packet = pypsn.PsnDataPacket(info=self._next_data_header(), trackers=trackers)
         self._send(pypsn.prepare_psn_data_packet_bytes(packet), stop_event)
 

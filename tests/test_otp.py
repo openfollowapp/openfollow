@@ -459,10 +459,11 @@ class TestAppendixBLikeFixture:
             int(1.000_500 * 1_000_000),
             int(-0.010 * 1_000_000),
         )
-        # Note: encode_otp_transform_packet uses the same generation
-        # timestamp as the sampled timestamp when the latter is omitted
-        # (Section 9.6 – sampled is when the Producer read the Point;
-        # for a single-pass encoder there's no distinction).
+        # Side B pins ``sampled_timestamp_us`` so this stays a test of layer
+        # structure. Left to derive per point it would trail by however many
+        # microseconds ago the marker happened to be written, which is real
+        # elapsed time and not byte-comparable. The derivation has its own
+        # tests below.
         pt0 = _build_point_layer(
             priority=priority,
             group=1,
@@ -502,6 +503,7 @@ class TestAppendixBLikeFixture:
             timestamp_us=timestamp_us,
             markers=[t0, t1],
             priority=priority,
+            sampled_timestamp_us=timestamp_us,
         )
 
         assert actual == expected, (

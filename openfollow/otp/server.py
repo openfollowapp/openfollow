@@ -16,7 +16,8 @@ from uuid import uuid4
 
 import multicast_expert
 
-from openfollow.psn.marker import Marker
+from openfollow.psn.clock import psn_timestamp_usec
+from openfollow.psn.marker import Marker, marker_age_s
 
 logger = logging.getLogger(__name__)
 
@@ -328,22 +329,37 @@ def encode_otp_transform_packet(
 ) -> bytes:
     """Build a complete OTP Transform Message UDP payload.
 
-    ``sampled_timestamp_us`` defaults to the same value as ``timestamp_us``
-    – Section 9.6 says the sampled timestamp is the moment the Producer
-    read the Point's transform; for a single-pass encoder there's no
-    distinction.
+    Section 9.6 defines a Point's sampled timestamp as the moment the
+    Producer read that Point's transform, so each point carries its own:
+    ``timestamp_us`` less however long ago the marker was last written.
+    A marker the frame loop has stopped writing therefore stops ageing on
+    the wire while the Transform Layer's timestamp keeps advancing, which
+    is what lets a Consumer tell a live stream from a frozen one - this
+    thread transmits at full rate either way.
+
+    ``sampled_timestamp_us`` overrides that per-point derivation for every
+    point, for callers that have already sampled at a known instant.
     """
-    sampled = timestamp_us if sampled_timestamp_us is None else sampled_timestamp_us
     # Collect into a list and ``b"".join(...)`` instead of ``+=`` on
     # immutable bytes – at 60 Hz with N markers, repeated ``+=``
     # allocates and copies in O(N²); join is O(N). Same pattern as
     # ``openfollow/rttrpm/server.py``.
+    # One clock read for the whole packet so every point is aged against the
+    # same instant.
+    now_us = psn_timestamp_usec()
     point_pdu_parts: list[bytes] = []
     for marker in markers:
         x, y, z = marker.pos
         x_um = _metres_to_um_i32(x)
         y_um = _metres_to_um_i32(y)
         z_um = _metres_to_um_i32(z)
+        if sampled_timestamp_us is not None:
+            sampled = sampled_timestamp_us
+        else:
+            # Ages beyond the packet's own timestamp clamp at 0 rather than
+            # wrapping the unsigned field a Consumer reads.
+            age_us = marker_age_s(marker, now_us=now_us) * 1_000_000.0
+            sampled = 0 if age_us >= timestamp_us else timestamp_us - int(age_us)
         # OTP point numbers start at 1 (Section 9.5). Project convention
         # reserves marker_id 0 as "ignored", so marker_id 1 maps directly
         # to point 1 – no +1 offset needed any more.

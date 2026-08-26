@@ -70,17 +70,36 @@ class _FakeMarker:
     """Stand-in for ``openfollow.psn.marker.Marker``.
 
     Carries ``timestamp`` / ``is_remote`` alongside ``pos`` because the
-    transmitter withholds a marker the frame loop has stopped writing. Defaults
-    to freshly written; ``stale=True`` uses the never-written stamp, which the
-    shared rule reads as stale without depending on how long the test process
-    has been up. The age-based side of that rule is pinned against an injected
-    clock in ``test_marker_freshness.py``.
+    transmitter withholds a marker the frame loop has stopped writing.
+
+    ``timestamp`` is read live rather than snapshotted at construction, so a
+    fresh marker stays fresh no matter how long the test takes. Snapshotting it
+    would make every test in this file wall-clock dependent: real time passes
+    between building the fake and ticking the manager, and a runner slow enough
+    to cross ``MARKER_STALE_AFTER_S`` would silently skip the send and fail an
+    assertion that has nothing to do with staleness.
+
+    ``stale=True`` uses the never-written stamp, which the shared rule reads as
+    stale without consulting a clock at all. The age-based side of that rule is
+    pinned against an injected clock in ``test_marker_freshness.py``.
     """
 
     def __init__(self, pos: tuple[float, float, float], *, stale: bool = False) -> None:
         self.pos = pos
         self.is_remote = False
-        self.timestamp = 0 if stale else psn_timestamp_usec()
+        self._stale = stale
+
+    @property
+    def timestamp(self) -> int:
+        if self._stale:
+            return 0
+        # Read from the same source ``is_marker_stale`` compares against, so the
+        # age is 0 whatever the clock says. Several tests in this file patch
+        # ``time.monotonic`` globally (patching a module attribute reaches every
+        # importer), which can drive ``psn_timestamp_usec`` negative when the
+        # patched value predates the process epoch; the clamp keeps a fresh
+        # marker out of the never-written branch in that case.
+        return max(1, psn_timestamp_usec())
 
 
 # Default destination every ``_row`` resolves to. Host/port match the

@@ -52,7 +52,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 from openfollow.osc.parser import classify_osc_literal
 
@@ -145,6 +145,11 @@ _EDIT_TIME_SOURCES: frozenset[str] = _POSITION_SOURCES | frozenset({"markerid"})
 # set; the ``base.tpl`` client recogniser mirrors it with regexes, kept
 # honest by ``tests/test_web_osc_placeholder_recognition.py``.
 PLACEHOLDERS: frozenset[str] = _SOURCES
+
+# Why an edit-time placeholder can't resolve. The web layer words one
+# message per reason; inferring the cause from the token's shape instead
+# misreports a ``[z.frac]`` that only needs the grid height.
+UnresolvedReason = Literal["default_marker", "explicit_marker", "grid_height"]
 
 # ``int:min-max`` / ``scale:min-max`` range bounds – signed, optionally
 # decimal. ``min > max`` inverts the mapping naturally. Matched as a
@@ -370,19 +375,21 @@ def requires_default_fader(parts: CompiledTemplate) -> bool:
     return any(isinstance(p, _Slot) and p.ref_index is None and p.source == "fader" for p in parts)
 
 
-def unresolved_placeholders(
+def unresolved_placeholder_reasons(
     parts: CompiledTemplate,
     *,
     default_marker_id: int | None,
     registered_marker_ids: frozenset[int],
     grid_max_height: float = 0.0,
-) -> tuple[str, ...]:
-    """Return the bracketed placeholder tokens in ``parts`` that can't
-    be resolved given the current row + registry + grid state.
+) -> tuple[tuple[str, UnresolvedReason], ...]:
+    """Return ``(token, reason)`` for each placeholder in ``parts`` that
+    can't be resolved given the current row + registry + grid state.
 
-    Each entry is the operator-facing token (``"[x]"`` / ``"[y:5]"`` /
-    ``"[z.frac]"`` / ``"[markerid]"``), in stable order – the web UI pill
-    renderer compares each pill's textContent against this list.
+    ``token`` is the operator-facing form (``"[x]"`` / ``"[x:5]"`` /
+    ``"[z.frac]"``); ``reason`` names the actionable fix, so a caller can
+    word its message per cause instead of inferring one from the token's
+    shape. Inferring is what reported "needs a default marker" for a
+    ``[z.frac]`` blocked only on the grid height.
 
     Only position + ``markerid`` slots are surfaced
     (:data:`_EDIT_TIME_SOURCES`); fader / ``markerfader`` slots surface
@@ -392,52 +399,83 @@ def unresolved_placeholders(
     Resolution rules:
 
     - **Default slot** (``ref_index is None``): unresolved when
-      ``default_marker_id is None`` OR not in ``registered_marker_ids``.
+      ``default_marker_id is None`` OR not in ``registered_marker_ids``
+      (``"default_marker"``).
     - **Explicit slot** (``ref_index=N``): unresolved when ``N`` is not
-      registered – except ``[markerid:N]``, which substitutes ``N``
-      directly and so never misses.
+      registered (``"explicit_marker"``) - except ``[markerid:N]``,
+      which substitutes ``N`` directly and so never misses.
     - **``z`` carrying ``frac``**: additionally unresolved when
-      ``grid_max_height <= 0`` (no denominator – the renderer raises).
+      ``grid_max_height <= 0`` (no denominator, the renderer raises),
+      reported as ``"grid_height"``.
 
-    Duplicates collapse.
+    A token blocked by both its marker and the grid height reports the
+    marker cause; resolving that surfaces the grid one on the next pass,
+    so each message names a single next step.
+
+    Duplicates collapse on the token, which keeps the first reason seen.
     """
-    out: list[str] = []
+    out: list[tuple[str, UnresolvedReason]] = []
     seen: set[str] = set()
+
+    def _add(slot: _Slot, reason: UnresolvedReason) -> None:
+        token = _slot_token(slot)
+        if token not in seen:
+            out.append((token, reason))
+            seen.add(token)
+
     for p in parts:
         if not isinstance(p, _Slot):
             continue
         if p.source not in _EDIT_TIME_SOURCES:
             continue
         if p.controller_index is not None:
-            # ``:cN`` resolves live – runtime skip, never an edit-time pill.
+            # ``:cN`` resolves live - runtime skip, never an edit-time pill.
             continue
         is_z_frac = p.source == "z" and any(t.kind == "frac" for t in p.transforms)
+        grid_unresolved = is_z_frac and grid_max_height <= 0.0
         if p.ref_index is None:
-            marker_unresolved = default_marker_id is None or default_marker_id not in registered_marker_ids
-            grid_unresolved = is_z_frac and grid_max_height <= 0.0
-            if marker_unresolved or grid_unresolved:
-                token = _slot_token(p)
-                if token not in seen:
-                    out.append(token)
-                    seen.add(token)
+            if default_marker_id is None or default_marker_id not in registered_marker_ids:
+                _add(p, "default_marker")
+            elif grid_unresolved:
+                _add(p, "grid_height")
         else:
             # ``[markerid:N]`` substitutes the literal id ``N`` directly,
             # so it resolves regardless of whether marker ``N`` exists.
             if p.source == "markerid":
                 continue
             if p.ref_index not in registered_marker_ids:
-                token = _slot_token(p)
-                if token not in seen:
-                    out.append(token)
-                    seen.add(token)
-            elif is_z_frac and grid_max_height <= 0.0:
+                _add(p, "explicit_marker")
+            elif grid_unresolved:
                 # ``[z:N.frac]`` resolves the marker but still needs
                 # ``max_height`` to render.
-                token = _slot_token(p)
-                if token not in seen:
-                    out.append(token)
-                    seen.add(token)
+                _add(p, "grid_height")
     return tuple(out)
+
+
+def unresolved_placeholders(
+    parts: CompiledTemplate,
+    *,
+    default_marker_id: int | None,
+    registered_marker_ids: frozenset[int],
+    grid_max_height: float = 0.0,
+) -> tuple[str, ...]:
+    """Bracketed placeholder tokens in ``parts`` that can't be resolved,
+    in stable order - the web UI pill renderer compares each pill's
+    textContent against this list.
+
+    The token projection of :func:`unresolved_placeholder_reasons`; see
+    it for the resolution rules. Callers wording an operator-facing
+    message want that function instead, so the message names the cause.
+    """
+    return tuple(
+        token
+        for token, _ in unresolved_placeholder_reasons(
+            parts,
+            default_marker_id=default_marker_id,
+            registered_marker_ids=registered_marker_ids,
+            grid_max_height=grid_max_height,
+        )
+    )
 
 
 def token_has_explicit_index(token: str) -> bool:

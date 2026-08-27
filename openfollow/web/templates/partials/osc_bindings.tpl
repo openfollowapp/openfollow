@@ -304,7 +304,7 @@
  % # reference). Operators can also type any ``.transform``
  % # chain or a ``:cN`` reference by hand.
  <div class="row placeholder-buttons">
- % for ex in ('[x.frac]', '[y.frac]', '[fader.pct]', '[markerfader.pct]', '[markerid:c1]'):
+ % for ex in ('[x.frac]', '[y.frac]', '[z.frac]', '[fader.pct]', '[markerfader.pct]', '[markerid:c1]'):
  <button type="button"
  class="placeholder-chip"
  data-osc-placeholder="{{ex}}"

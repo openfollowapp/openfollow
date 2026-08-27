@@ -3832,9 +3832,10 @@
  if (helpSpan) {
  helpSpan.textContent = unresolved.length > 0
  ? 'Will save disabled: this row uses placeholder values'
- + ' that are not resolved yet (no default marker, or an'
+ + ' that are not resolved yet (no default marker, an'
  + ' explicit marker reference targets an unregistered'
- + ' marker).'
+ + ' marker, or a fractional height needs Grid →'
+ + ' Maximum Height set).'
  : '';
  }
  }

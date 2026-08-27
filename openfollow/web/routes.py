@@ -1961,45 +1961,44 @@ def _osc_binding_unresolved_blur_error(
     markers = _coerce_marker_tokens(query.get("markers", ""))
     marker_id = _effective_default_marker_id(markers, registered)
     from openfollow.osc.template import (
+        UnresolvedReason,
         compile_template,
-        token_has_explicit_index,
-        unresolved_placeholders,
+        unresolved_placeholder_reasons,
     )
 
     seen: set[str] = set()
-    unresolved: list[str] = []
+    by_reason: dict[UnresolvedReason, list[str]] = {}
     for tpl in (address, *args):
-        for token in unresolved_placeholders(
+        for token, reason in unresolved_placeholder_reasons(
             compile_template(tpl),
             default_marker_id=marker_id,
             registered_marker_ids=registered,
             grid_max_height=cfg.grid.max_height,
         ):
             if token not in seen:
-                unresolved.append(token)
+                by_reason.setdefault(reason, []).append(token)
                 seen.add(token)
-    if not unresolved:
+    if not seen:
         return None
-    # Split into "needs default" vs "explicit-target missing" so the
-    # message names the actionable fix per category. ``unresolved`` is
-    # already the operator-facing token form (``"[x]"`` / ``"[x:7]"``).
-    # Classify via the grammar, not a ``:`` sniff – a transform can carry
-    # a colon. Per-token validity (malformed / non-controlled entries) is
-    # surfaced by the field-level ``markers`` validator; this arm only flags
-    # the cross-field "you use [x] but name no usable default marker".
-    # Every unresolved token is either explicit-index or not, so the two
-    # lists partition the (non-empty) ``unresolved`` set: at least one is
-    # non-empty here, so ``parts`` below is never empty.
-    default_tokens = [t for t in unresolved if not token_has_explicit_index(t)]
-    explicit_tokens = [t for t in unresolved if token_has_explicit_index(t)]
-    parts: list[str] = []
-    if default_tokens:
-        parts.append(
-            f"{', '.join(default_tokens)} needs a default marker. Set 'Default markers' to a controlled id, "
-            "a controller alias (c1, c2, …), or 'all'."
-        )
-    if explicit_tokens:
-        parts.append(f"{', '.join(explicit_tokens)} references a marker that isn't registered.")
+    # One sentence per cause, so each names the fix it actually wants.
+    # The cause comes from the resolver, never from the token's shape: a
+    # grid-blocked ``[z.frac]`` carries no explicit index and a
+    # ``[z:2.frac]`` carries one, so classifying by shape sent both to a
+    # marker sentence that couldn't resolve them. Order is fixed rather
+    # than first-seen so the message reads the same however the operator
+    # ordered the arguments.
+    templates: tuple[tuple[UnresolvedReason, str], ...] = (
+        (
+            "default_marker",
+            "{tokens} needs a default marker. Set 'Default markers' to a controlled id, "
+            "a controller alias (c1, c2, …), or 'all'.",
+        ),
+        ("explicit_marker", "{tokens} references a marker that isn't registered."),
+        ("grid_height", "{tokens} needs Grid → Maximum Height set to a non-zero value."),
+    )
+    parts: list[str] = [
+        text.format(tokens=", ".join(by_reason[reason])) for reason, text in templates if reason in by_reason
+    ]
     return " ".join(parts)
 
 

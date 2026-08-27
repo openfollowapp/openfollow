@@ -40,6 +40,7 @@ from openfollow.web.routes import (
     _effective_default_marker_id,
     _midi_patches_for_form,
     _osc_binding_marker_display,
+    _osc_binding_unresolved_blur_error,
     _parse_osc_message,
     _parse_trigger_subtable,
     _row_unresolved_placeholders,
@@ -3424,3 +3425,94 @@ def test_test_send_pending_when_manager_attached_but_row_unserviced(tmp_path, mo
         assert json.loads(body) == {"available": False, "pending": True}
     finally:
         server.stop()
+
+
+# ---------------------------------------------------------------------------
+# Blur-error wording – one sentence per cause
+# ---------------------------------------------------------------------------
+
+
+def _blur_cfg(controlled, max_height):  # noqa: ANN001, ANN202
+    cfg = AppConfig()
+    cfg.controlled_marker_ids = list(controlled)
+    cfg.grid.max_height = max_height
+    return cfg
+
+
+def _blur(message, markers, controlled=(1,), max_height=8.0):  # noqa: ANN001, ANN202
+    return _osc_binding_unresolved_blur_error(
+        {"osc_message": message, "markers": markers},
+        _blur_cfg(controlled, max_height),
+    )
+
+
+_ADM_3D = "/adm/obj/[markerid]/xyz [x.frac] [y.frac] [z.frac]"
+
+
+@pytest.mark.unit
+def test_blur_error_names_grid_height_not_default_marker() -> None:
+    """With the default marker set and registered, ADM-OSC 3D's
+    ``[z.frac]`` is blocked only by the grid height. Naming the default
+    marker here pointed at a control the operator had already set, and
+    the token stayed flagged however they changed it."""
+    msg = _blur(_ADM_3D, "1", controlled=(1,), max_height=0.0)
+    assert msg == "[z.frac] needs Grid → Maximum Height set to a non-zero value."
+    assert "default marker" not in msg
+
+
+@pytest.mark.unit
+def test_blur_error_names_grid_height_for_explicit_registered_marker() -> None:
+    """``[z:2.frac]`` with marker 2 registered is a grid problem. The
+    explicit index previously routed it to "isn't registered", which
+    contradicted the registry."""
+    msg = _blur("/a [z:2.frac]", "1", controlled=(1, 2), max_height=0.0)
+    assert msg == "[z:2.frac] needs Grid → Maximum Height set to a non-zero value."
+    assert "registered" not in msg
+
+
+@pytest.mark.unit
+def test_blur_error_reports_default_marker_first_when_both_apply() -> None:
+    """No default marker and no grid height: every token wants the
+    marker, so the message names that one step. The grid cause surfaces
+    once the marker resolves (the test below)."""
+    msg = _blur(_ADM_3D, "", controlled=(), max_height=0.0)
+    assert msg == (
+        "[markerid], [x.frac], [y.frac], [z.frac] needs a default marker. "
+        "Set 'Default markers' to a controlled id, a controller alias (c1, c2, …), or 'all'."
+    )
+
+
+@pytest.mark.unit
+def test_blur_error_clears_once_marker_and_grid_are_both_set() -> None:
+    assert _blur(_ADM_3D, "1", controlled=(1,), max_height=8.0) is None
+
+
+@pytest.mark.unit
+def test_blur_error_separates_causes_into_one_sentence_each() -> None:
+    msg = _blur("/a [x:9] [z:2.frac]", "1", controlled=(1, 2), max_height=0.0)
+    assert msg == (
+        "[x:9] references a marker that isn't registered. "
+        "[z:2.frac] needs Grid → Maximum Height set to a non-zero value."
+    )
+
+
+@pytest.mark.unit
+def test_blur_error_none_for_literal_only_message() -> None:
+    assert _blur("/cue/go", "", controlled=(), max_height=0.0) is None
+
+
+def test_section_render_offers_a_z_frac_placeholder_chip(live_server) -> None:
+    """The curated transform chips are the one-click way to insert a
+    transform. ``[z.frac]`` was absent while ``[x.frac]`` / ``[y.frac]``
+    were present, so an operator who cleared ADM-OSC 3D's height
+    argument had no chip to put it back."""
+    _, base, cfg_path = live_server
+    cfg = load_config(cfg_path)
+    cfg.osc_transmitters.transmitters.append(
+        OscTransmitterConfig(id="r-chip", name="Chips", markers=["1"], address="/a", args=["[z.frac]"]),
+    )
+    save_config(cfg, cfg_path)
+    status, body = _get(base, "/section/osc_bindings")
+    assert status == 200
+    for token in ("[x.frac]", "[y.frac]", "[z.frac]"):
+        assert f'data-osc-placeholder="{token}"' in body, token

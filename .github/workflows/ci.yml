@@ -189,9 +189,12 @@ jobs:
             venv-${{ runner.os }}-py3.13-
 
       # ``-E detection`` so onnxruntime + opencv are in the audited closure;
-      # ``mido`` + ``python-rtmidi`` come in as base deps.
+      # ``mido`` + ``python-rtmidi`` come in as base deps. ``sync`` (not
+      # ``install``) because the export step below adds to this same venv and
+      # the cache is saved after it - without the prune, a cache hit would put
+      # the export toolchain inside the gating closure.
       - name: Install dependencies
-        run: poetry install --no-interaction -E detection
+        run: poetry sync --no-interaction -E detection
 
       # pip is installed inside the venv being audited, so a vulnerable pip
       # fails this job even when every project dependency is clean. Keep it
@@ -201,4 +204,19 @@ jobs:
         run: poetry run python -m pip install --upgrade pip
 
       - name: pip-audit (supply-chain)
+        run: make audit
+
+      # The export toolchain (ultralytics + torch) is workstation-only: the
+      # .deb build refuses to bundle it and no show device ever loads it, so a
+      # CVE there must not block a release. It must not be invisible either -
+      # an extra outside the audited closure drifts silently, with both
+      # pip-audit and Dependabot (which only bumps what pyproject names)
+      # reporting nothing. Audited last, reported, never gating.
+      - name: Install export toolchain
+        run: |
+          poetry install --no-interaction -E detection -E export
+          poetry run python -m pip install --upgrade pip
+
+      - name: pip-audit (export toolchain, report-only)
+        continue-on-error: true
         run: make audit

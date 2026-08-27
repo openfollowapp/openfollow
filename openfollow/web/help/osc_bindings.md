@@ -104,6 +104,21 @@ Positions (`[x]` `[y]` `[z]`) accept `.inv` / `.frac`. Faders (`[fader]` `[marke
 
 ## Diagnostics
 
+A red dot on a collapsed row means it can never fire, and the reason sits
+next to the name. Up to three are shown, separated by `·`; any beyond that
+are counted as `+N more errors`. Open the row to see them all.
+
+| Badge | Fix |
+|---|---|
+| `No destination` | Pick one under **Destination**, or add it in OSC Destinations |
+| `No controlled marker` | Name a marker this station controls under **Default markers** |
+| `No default marker` | The message uses `[x]`-style placeholders with no marker to resolve them |
+| `Marker 9 not registered` | That `:N` reference names a marker this station doesn't control |
+| `Grid Maximum Height not set` | `[z.frac]` divides by it – set **Grid → Maximum Height** |
+
+A row with no red dot can still fail at send time; the panels below are
+what show that.
+
 Read-only panels showing what the transmitter is doing right now.
 
 - **Live status** – connection state (UDP ready, or TCP connected / connecting / backing off), packets per second, and the last error. Click the refresh button to update.

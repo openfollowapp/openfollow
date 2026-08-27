@@ -43,6 +43,7 @@ import openfollow
 import openfollow.web._bottle_charset_fix  # noqa: F401
 
 if TYPE_CHECKING:
+    from openfollow.osc.template import UnresolvedPlaceholder
     from openfollow.video.inputs._base import VideoInputBase
     from openfollow.web.discovery import PeerInfo
     from openfollow.web.server import ConfigWebServer
@@ -1975,15 +1976,15 @@ def _osc_binding_unresolved_blur_error(
     seen: set[str] = set()
     by_reason: dict[UnresolvedReason, list[str]] = {}
     for tpl in (address, *args):
-        for token, reason in unresolved_placeholder_reasons(
+        for entry in unresolved_placeholder_reasons(
             compile_template(tpl),
             default_marker_id=marker_id,
             registered_marker_ids=registered,
             grid_max_height=cfg.grid.max_height,
         ):
-            if token not in seen:
-                by_reason.setdefault(reason, []).append(token)
-                seen.add(token)
+            if entry.token not in seen:
+                by_reason.setdefault(entry.reason, []).append(entry.token)
+                seen.add(entry.token)
     # One sentence per cause, each naming the control that fixes it.
     # Order is fixed rather than first-seen so the message reads the same
     # however the operator ordered the arguments.
@@ -2108,18 +2109,70 @@ def _render_midi_fader_capture_status(
     )
 
 
-def _row_unresolved_reasons(
+# Visible fault labels shown on a collapsed OSC binding row, in the order
+# an operator works through them. The three placeholder causes keep the
+# blur message's order so the row's badge and its inline message never
+# lead with different problems.
+_MAX_VISIBLE_FAULTS = 3
+
+
+def _row_fault_labels(
+    row: OscTransmitterConfig,
+    *,
+    destination_ids: frozenset[str],
+    markers_unusable: bool,
+    registered_marker_ids: frozenset[int],
+    grid_max_height: float = 0.0,
+) -> tuple[str, ...]:
+    """Every reason this row can never fire, worded for the operator.
+
+    Empty when the row is fine. Callers render the first
+    :data:`_MAX_VISIBLE_FAULTS` and summarise the rest, so the order is
+    the fix order rather than the order the faults were discovered.
+    Unregistered markers group into one entry because they are one fix.
+    """
+    faults: list[str] = []
+    if not row.destination_id or row.destination_id not in destination_ids:
+        faults.append("No destination")
+    if markers_unusable:
+        faults.append("No controlled marker")
+
+    entries = _row_unresolved_entries(row, registered_marker_ids, grid_max_height=grid_max_height)
+    causes = {e.reason for e in entries}
+    if "default_marker" in causes:
+        faults.append("No default marker")
+    if "explicit_marker" in causes:
+        missing = sorted({e.marker_id for e in entries if e.reason == "explicit_marker" and e.marker_id is not None})
+        ids = ", ".join(str(m) for m in missing)
+        faults.append(f"Marker{'s' if len(missing) > 1 else ''} {ids} not registered")
+    if "grid_height" in causes:
+        faults.append("Grid Maximum Height not set")
+    return tuple(faults)
+
+
+def _row_fault_summary(faults: Sequence[str]) -> tuple[tuple[str, ...], str]:
+    """Split ``faults`` into the visible ones and an overflow phrase.
+
+    The phrase is empty when everything fits.
+    """
+    visible = tuple(faults[:_MAX_VISIBLE_FAULTS])
+    hidden = len(faults) - len(visible)
+    if hidden <= 0:
+        return visible, ""
+    return visible, f"+{hidden} more error{'s' if hidden > 1 else ''}"
+
+
+def _row_unresolved_entries(
     row: OscTransmitterConfig,
     registered_marker_ids: frozenset[int],
     *,
     grid_max_height: float = 0.0,
-) -> dict[str, str]:
-    """Token -> cause for every placeholder in ``row``'s address + args
-    that can't resolve, in address-then-args appearance order.
+) -> tuple[UnresolvedPlaceholder, ...]:
+    """Every unresolved placeholder in ``row``'s address + args, in
+    address-then-args appearance order, first occurrence of each token.
 
-    The pill tooltip and the blur message word a remediation per cause,
-    so the cause travels with the token rather than being re-derived
-    from its shape at each surface.
+    The one scan behind the pill list, the tooltip's cause map, and the
+    row's fault labels.
     """
     from openfollow.osc.template import (
         compile_template,
@@ -2127,16 +2180,19 @@ def _row_unresolved_reasons(
     )
 
     effective_marker_id = _effective_default_marker_id(row.markers, registered_marker_ids)
-    out: dict[str, str] = {}
+    out: list[UnresolvedPlaceholder] = []
+    seen: set[str] = set()
     for tpl in (row.address, *row.args):
-        for token, reason in unresolved_placeholder_reasons(
+        for entry in unresolved_placeholder_reasons(
             compile_template(tpl),
             default_marker_id=effective_marker_id,
             registered_marker_ids=registered_marker_ids,
             grid_max_height=grid_max_height,
         ):
-            out.setdefault(token, reason)
-    return out
+            if entry.token not in seen:
+                out.append(entry)
+                seen.add(entry.token)
+    return tuple(out)
 
 
 def _row_unresolved_placeholders(
@@ -2158,9 +2214,9 @@ def _row_unresolved_placeholders(
       (it keys off ``aria-invalid``), keeping the "Save with enabled=False"
       workflow available.
 
-    The token half of :func:`_row_unresolved_reasons`.
+    The token half of :func:`_row_unresolved_entries`.
     """
-    return tuple(_row_unresolved_reasons(row, registered_marker_ids, grid_max_height=grid_max_height))
+    return tuple(e.token for e in _row_unresolved_entries(row, registered_marker_ids, grid_max_height=grid_max_height))
 
 
 def _apply_osc_binding_fields(
@@ -5597,15 +5653,33 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         only after the operator saves a row."""
         registered = frozenset(cfg.controlled_marker_ids)
         # Scan each row once; the token list is the reason map's keys.
-        reasons_by_row = {
-            row.id: _row_unresolved_reasons(row, registered, grid_max_height=cfg.grid.max_height)
+        entries_by_row = {
+            row.id: _row_unresolved_entries(row, registered, grid_max_height=cfg.grid.max_height)
+            for row in cfg.osc_transmitters.transmitters
+        }
+        marker_display = _osc_binding_marker_display(cfg, server.get_marker_catalog())
+        destination_ids = frozenset(d.id for d in cfg.osc_destinations.destinations)
+        faults_by_row = {
+            row.id: _row_fault_labels(
+                row,
+                destination_ids=destination_ids,
+                markers_unusable=marker_display.get(row.id, {}).get("markers_unusable", False),
+                registered_marker_ids=registered,
+                grid_max_height=cfg.grid.max_height,
+            )
             for row in cfg.osc_transmitters.transmitters
         }
         return {
             "registered_marker_ids": sorted(registered),
-            "unresolved_by_row": {row_id: tuple(reasons) for row_id, reasons in reasons_by_row.items()},
-            "unresolved_reasons_by_row": reasons_by_row,
-            "marker_display_by_row": _osc_binding_marker_display(cfg, server.get_marker_catalog()),
+            "unresolved_by_row": {
+                row_id: tuple(e.token for e in entries) for row_id, entries in entries_by_row.items()
+            },
+            "unresolved_reasons_by_row": {
+                row_id: {e.token: e.reason for e in entries} for row_id, entries in entries_by_row.items()
+            },
+            "marker_display_by_row": marker_display,
+            "faults_by_row": faults_by_row,
+            "fault_summary_by_row": {row_id: _row_fault_summary(faults) for row_id, faults in faults_by_row.items()},
         }
 
     def _render_osc_bindings_section(

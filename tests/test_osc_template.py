@@ -1198,52 +1198,76 @@ def _reasons(tpl: str, *, marker=None, registered=frozenset(), grid=0.0):  # noq
 
 
 def test_reason_default_marker_when_no_default_named() -> None:
-    assert _reasons("[x]", marker=None, registered=frozenset({0}), grid=4.0) == (("[x]", "default_marker"),)
+    assert _reasons("[x]", marker=None, registered=frozenset({0}), grid=4.0) == (("[x]", "default_marker", None),)
 
 
 def test_reason_explicit_marker_when_target_unregistered() -> None:
-    assert _reasons("[x:9]", marker=0, registered=frozenset({0}), grid=4.0) == (("[x:9]", "explicit_marker"),)
+    assert _reasons("[x:9]", marker=0, registered=frozenset({0}), grid=4.0) == (("[x:9]", "explicit_marker", 9),)
 
 
 @pytest.mark.parametrize("tpl", ["[z.frac]", "[z.frac.inv]"])
 def test_reason_grid_height_when_marker_resolves_but_height_unset(tpl: str) -> None:
     """With the default marker set and registered, a fractional-Z token
     is blocked only by the grid height."""
-    assert _reasons(tpl, marker=0, registered=frozenset({0}), grid=0.0) == ((tpl, "grid_height"),)
+    assert _reasons(tpl, marker=0, registered=frozenset({0}), grid=0.0) == ((tpl, "grid_height", None),)
 
 
 def test_reason_grid_height_for_explicit_slot_whose_marker_is_registered() -> None:
     """``[z:3.frac]`` with marker 3 registered is a grid problem; the
     explicit index says nothing about which cause applies."""
-    assert _reasons("[z:3.frac]", marker=None, registered=frozenset({3}), grid=0.0) == (("[z:3.frac]", "grid_height"),)
+    assert _reasons("[z:3.frac]", marker=None, registered=frozenset({3}), grid=0.0) == (
+        ("[z:3.frac]", "grid_height", None),
+    )
 
 
 def test_reason_marker_precedes_grid_on_default_slot() -> None:
     """Both causes apply; the marker one is reported so the message names
     one next step."""
-    assert _reasons("[z.frac]", marker=None, registered=frozenset({0}), grid=0.0) == (("[z.frac]", "default_marker"),)
+    assert _reasons("[z.frac]", marker=None, registered=frozenset({0}), grid=0.0) == (
+        ("[z.frac]", "default_marker", None),
+    )
 
 
 def test_reason_marker_precedes_grid_on_explicit_slot() -> None:
     assert _reasons("[z:9.frac]", marker=None, registered=frozenset({0, 1}), grid=0.0) == (
-        ("[z:9.frac]", "explicit_marker"),
+        ("[z:9.frac]", "explicit_marker", 9),
     )
 
 
 def test_reason_repeated_token_reported_once() -> None:
     assert _reasons("[z.frac]/[z.frac]", marker=0, registered=frozenset({0}), grid=0.0) == (
-        ("[z.frac]", "grid_height"),
+        ("[z.frac]", "grid_height", None),
     )
 
 
 def test_reasons_preserve_appearance_order_across_causes() -> None:
     out = _reasons("/p/[markerid]/[x:9]/[z.frac]", marker=None, registered=frozenset({0}), grid=0.0)
     assert out == (
-        ("[markerid]", "default_marker"),
-        ("[x:9]", "explicit_marker"),
-        ("[z.frac]", "default_marker"),
+        ("[markerid]", "default_marker", None),
+        ("[x:9]", "explicit_marker", 9),
+        ("[z.frac]", "default_marker", None),
     )
 
 
 def test_reasons_empty_when_everything_resolves() -> None:
     assert _reasons("[x] [z.frac] [markerid]", marker=0, registered=frozenset({0}), grid=4.0) == ()
+
+
+def test_reason_carries_the_explicit_marker_id() -> None:
+    """``marker_id`` comes from the compiled slot, so a caller can name
+    which marker is missing without re-parsing the token."""
+    (entry,) = _reasons("[x:12]", marker=0, registered=frozenset({0}), grid=4.0)
+    assert (entry.token, entry.reason, entry.marker_id) == ("[x:12]", "explicit_marker", 12)
+
+
+@pytest.mark.parametrize(
+    ("tpl", "marker", "registered", "grid"),
+    [
+        ("[x]", None, frozenset({0}), 4.0),
+        ("[z.frac]", 0, frozenset({0}), 0.0),
+        ("[z:3.frac]", None, frozenset({3}), 0.0),
+    ],
+)
+def test_reason_marker_id_is_none_for_non_explicit_causes(tpl, marker, registered, grid) -> None:  # noqa: ANN001
+    (entry,) = _reasons(tpl, marker=marker, registered=registered, grid=grid)
+    assert entry.marker_id is None

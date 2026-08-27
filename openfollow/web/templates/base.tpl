@@ -1425,7 +1425,7 @@
  border: 1px solid rgba(255, 140, 140, 0.3);
  font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
  }
- .osc-binding-fault-more { color: var(--muted); font-weight: 400; margin-left: 0.4rem; }
+ .osc-binding-fault-more { color: var(--muted); font-size: 0.7rem; flex: none; white-space: nowrap; }
  .osc-binding-target { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
  /* Secondary markers nested under a fanned-out transmitter row: read-only
  chips sharing the parent's destination / message / trigger. */

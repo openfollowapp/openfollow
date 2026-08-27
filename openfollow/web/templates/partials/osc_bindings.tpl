@@ -21,7 +21,6 @@
 % # round-trip to the server.
 % _unresolved_by_row = defined('unresolved_by_row') and unresolved_by_row or {}
 % _unresolved_reasons_by_row = defined('unresolved_reasons_by_row') and unresolved_reasons_by_row or {}
-% _faults_by_row = defined('faults_by_row') and faults_by_row or {}
 % _fault_summary_by_row = defined('fault_summary_by_row') and fault_summary_by_row or {}
 % _registered_marker_ids = defined('registered_marker_ids') and registered_marker_ids or []
 % # per-row marker display: {row_id: {"header": <single-marker label|None>,
@@ -58,18 +57,9 @@
  % _row_marker = _marker_display_by_row.get(row.id, {})
  % _marker_header = _row_marker.get('header')
  % _marker_nested = _row_marker.get('nested', [])
- % _markers_unusable = _row_marker.get('markers_unusable', False)
- % # The row's status dot is red when this transmitter can never fire: no
- % # destination (or a dangling one), no controlled marker among those it
- % # names, or an invalid address/arg (an unresolvable placeholder).
- % # Otherwise amber when enabled, grey when off. An uncontrolled *secondary*
- % # marker (with at least one controlled) reddens its own nested chip, not
- % # this dot.
- % _dest_missing = (not row.destination_id) or (row.destination_id not in _dest_by_id)
- % _faults = _faults_by_row.get(row.id, ())
- % _fault_visible, _fault_more = _fault_summary_by_row.get(row.id, ((), ''))
+ % # Red when the row can never fire; the badge beside the name says why.
+ % _fault_visible, _fault_more, _faults = _fault_summary_by_row.get(row.id, ((), '', ()))
  % _dot_broken = bool(_faults)
- % _dot_state = 'invalid' if _dot_broken else ('on' if row.enabled else 'off')
  <details class="osc-binding-row" data-row-id="{{row.id}}" data-trigger-kind="{{trigger_kind}}"
  data-reorder-url="/section/osc_bindings/reorder" data-reorder-target="osc-bindings-section" {{'open' if is_focus else ''}}>
  <summary class="osc-binding-summary">
@@ -93,15 +83,14 @@
  % if _dot_broken:
  <span class="osc-binding-enabled-dot invalid" aria-hidden="true"></span>
  % else:
- <span class="osc-binding-enabled-dot {{_dot_state}}" aria-label="{{'Enabled' if row.enabled else 'Disabled'}}"></span>
+ <span class="osc-binding-enabled-dot {{'on' if row.enabled else 'off'}}" aria-label="{{'Enabled' if row.enabled else 'Disabled'}}"></span>
  % end
  <span class="osc-binding-title">{{row.name or '(unnamed)'}}</span>
  % if _dot_broken:
- <span class="osc-binding-fault" aria-hidden="true">{{' · '.join(_fault_visible)}}\\
-% if _fault_more:
-<span class="osc-binding-fault-more">{{_fault_more}}</span>\\
-% end
-</span>
+ <span class="osc-binding-fault" aria-hidden="true">{{' · '.join(_fault_visible)}}</span>
+ % if _fault_more:
+ <span class="osc-binding-fault-more" aria-hidden="true">{{_fault_more}}</span>
+ % end
  <span class="visually-hidden">{{'. '.join(_faults)}}.</span>
  % end
  <span class="osc-binding-kind-badge">{{pretty_label(trigger_kind)}}</span>

@@ -106,7 +106,8 @@ Positions (`[x]` `[y]` `[z]`) accept `.inv` / `.frac`. Faders (`[fader]` `[marke
 
 A red dot on a collapsed row means it can never fire, and the reason sits
 next to the name. Up to three are shown, separated by `·`; any beyond that
-are counted as `+N more errors`. Open the row to see them all.
+are counted as `+N more errors`. Fix the ones named and the rest take their
+place.
 
 | Badge | Fix |
 |---|---|

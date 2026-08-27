@@ -1416,6 +1416,16 @@
  .osc-binding-enabled-dot.invalid { background: var(--danger); }
  .osc-binding-kind-badge, .osc-destination-proto-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
  .osc-binding-marker-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
+ /* Why a row can never fire, on its collapsed summary. Capped at three
+    entries by the renderer; the full list rides in a sibling
+    visually-hidden span so assistive tech never gets the truncation. */
+ .osc-binding-fault {
+ font-size: 0.7rem; padding: 0.1rem 0.45rem; border-radius: 0.4rem;
+ background: rgba(255, 140, 140, 0.14); color: var(--danger);
+ border: 1px solid rgba(255, 140, 140, 0.3);
+ font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+ }
+ .osc-binding-fault-more { color: var(--muted); font-size: 0.7rem; flex: none; white-space: nowrap; }
  .osc-binding-target { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
  /* Secondary markers nested under a fanned-out transmitter row: read-only
  chips sharing the parent's destination / message / trigger. */

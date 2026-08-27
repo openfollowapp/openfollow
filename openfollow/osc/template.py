@@ -52,7 +52,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from openfollow.osc.parser import classify_osc_literal
 
@@ -149,6 +149,20 @@ PLACEHOLDERS: frozenset[str] = _SOURCES
 # Why an edit-time placeholder can't resolve. Each surface words one
 # remediation per reason.
 UnresolvedReason = Literal["default_marker", "explicit_marker", "grid_height"]
+
+
+class UnresolvedPlaceholder(NamedTuple):
+    """One unresolved token, why, and which marker it named.
+
+    ``marker_id`` is the slot's explicit index, populated only for
+    ``explicit_marker`` so a caller can say *which* marker is missing.
+    It comes from the compiled slot, never from re-parsing ``token``.
+    """
+
+    token: str
+    reason: UnresolvedReason
+    marker_id: int | None = None
+
 
 # ``int:min-max`` / ``scale:min-max`` range bounds – signed, optionally
 # decimal. ``min > max`` inverts the mapping naturally. Matched as a
@@ -380,9 +394,10 @@ def unresolved_placeholder_reasons(
     default_marker_id: int | None,
     registered_marker_ids: frozenset[int],
     grid_max_height: float = 0.0,
-) -> tuple[tuple[str, UnresolvedReason], ...]:
-    """Return ``(token, reason)`` for each placeholder in ``parts`` that
-    can't be resolved given the current row + registry + grid state.
+) -> tuple[UnresolvedPlaceholder, ...]:
+    """Return an :class:`UnresolvedPlaceholder` for each placeholder in
+    ``parts`` that can't be resolved given the current row + registry +
+    grid state.
 
     ``token`` is the operator-facing form (``"[x]"`` / ``"[x:5]"`` /
     ``"[z.frac]"``); ``reason`` names the actionable fix, so a caller can
@@ -413,13 +428,14 @@ def unresolved_placeholder_reasons(
 
     Duplicates collapse on the token, which keeps the first reason seen.
     """
-    out: list[tuple[str, UnresolvedReason]] = []
+    out: list[UnresolvedPlaceholder] = []
     seen: set[str] = set()
 
     def _add(slot: _Slot, reason: UnresolvedReason) -> None:
         token = _slot_token(slot)
         if token not in seen:
-            out.append((token, reason))
+            marker_id = slot.ref_index if reason == "explicit_marker" else None
+            out.append(UnresolvedPlaceholder(token, reason, marker_id))
             seen.add(token)
 
     for p in parts:
@@ -467,8 +483,8 @@ def unresolved_placeholders(
     message want that function instead, so the message names the cause.
     """
     return tuple(
-        token
-        for token, _ in unresolved_placeholder_reasons(
+        entry.token
+        for entry in unresolved_placeholder_reasons(
             parts,
             default_marker_id=default_marker_id,
             registered_marker_ids=registered_marker_ids,

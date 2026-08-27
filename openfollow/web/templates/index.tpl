@@ -137,7 +137,9 @@
     %     placeholders=sorted(PLACEHOLDERS),
     %     registered_marker_ids=registered_marker_ids,
     %     unresolved_by_row=unresolved_by_row,
-    %     marker_display_by_row=marker_display_by_row)
+    %     marker_display_by_row=marker_display_by_row,
+    %     unresolved_reasons_by_row=unresolved_reasons_by_row,
+    %     fault_summary_by_row=fault_summary_by_row)
 </div>
 
 <!-- Person Detection -->

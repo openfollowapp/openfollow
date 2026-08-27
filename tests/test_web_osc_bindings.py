@@ -45,6 +45,9 @@ from openfollow.web.routes import (
     _osc_binding_unresolved_blur_error,
     _parse_osc_message,
     _parse_trigger_subtable,
+    _row_fault_labels,
+    _row_fault_summary,
+    _row_unresolved_entries,
     _row_unresolved_placeholders,
     _virtual_fader_names_for_form,
 )
@@ -3603,3 +3606,287 @@ def test_enabled_screen_reader_text_matches_between_server_and_client() -> None:
     rendered = served[start + 1 : served.index("'", start + 1)]
     assert js == rendered
     assert "Maximum Height" in js
+
+
+# ---------------------------------------------------------------------------
+# Row fault labels – what the collapsed row says is wrong
+# ---------------------------------------------------------------------------
+
+_DESTS = frozenset({"eos"})
+
+
+def _faults(row, *, markers_unusable=False, registered=frozenset({1}), grid=8.0):  # noqa: ANN001, ANN202, B008
+    return _row_fault_labels(
+        row,
+        entries=_row_unresolved_entries(row, registered, grid_max_height=grid),
+        destination_ids=_DESTS,
+        markers_unusable=markers_unusable,
+    )
+
+
+def _row(**kw):  # noqa: ANN003, ANN202
+    kw.setdefault("destination_id", "eos")
+    kw.setdefault("markers", ["1"])
+    kw.setdefault("address", "/a")
+    return OscTransmitterConfig(**kw)
+
+
+@pytest.mark.unit
+def test_fault_labels_empty_for_a_healthy_row() -> None:
+    assert _faults(_row(args=["[x]"])) == ()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("destination_id", ["", "gone"])
+def test_fault_labels_report_missing_or_dangling_destination(destination_id: str) -> None:
+    assert _faults(_row(destination_id=destination_id, args=["[x]"]))[0] == "No destination"
+
+
+@pytest.mark.unit
+def test_fault_labels_report_unusable_markers() -> None:
+    assert _faults(_row(args=["[x]"]), markers_unusable=True) == ("No controlled marker",)
+
+
+@pytest.mark.unit
+def test_fault_labels_do_not_repeat_one_fix_as_two_problems() -> None:
+    """An unusable marker list is *why* a bare ``[x]`` has no default, so
+    naming both spends one of three slots restating a single fix."""
+    out = _faults(_row(args=["[x]"]), markers_unusable=True, registered=frozenset())
+    assert out == ("No controlled marker",)
+    assert "No default marker" not in out
+
+
+@pytest.mark.unit
+def test_fault_labels_report_missing_default_marker() -> None:
+    assert _faults(_row(args=["[x]"]), registered=frozenset()) == ("No default marker",)
+
+
+@pytest.mark.unit
+def test_fault_labels_report_grid_height() -> None:
+    assert _faults(_row(args=["[z.frac]"]), grid=0.0) == ("Grid Maximum Height not set",)
+
+
+@pytest.mark.unit
+def test_fault_labels_name_a_single_unregistered_marker() -> None:
+    assert _faults(_row(args=["[x:9]"])) == ("Marker 9 not registered",)
+
+
+@pytest.mark.unit
+def test_fault_labels_group_unregistered_markers_sorted() -> None:
+    """One entry, because registering them is one fix. Sorted so the
+    label doesn't reorder with the arguments."""
+    assert _faults(_row(args=["[y:12]", "[x:9]", "[z:9]"])) == ("Markers 9, 12 not registered",)
+
+
+@pytest.mark.unit
+def test_fault_labels_use_a_fixed_order_independent_of_argument_order() -> None:
+    """Destination, markers, then the placeholder causes in the same
+    order the blur message uses, so the two never disagree about which
+    problem leads."""
+    forward = _faults(
+        _row(destination_id="", args=["[x]", "[y:9]", "[z:1.frac]"]),
+        markers_unusable=True,
+        registered=frozenset(),
+        grid=0.0,
+    )
+    reversed_args = _faults(
+        _row(destination_id="", args=["[z:1.frac]", "[y:9]", "[x]"]),
+        markers_unusable=True,
+        registered=frozenset(),
+        grid=0.0,
+    )
+    assert forward == reversed_args
+    assert forward[:2] == ("No destination", "No controlled marker")
+
+
+@pytest.mark.unit
+def test_fault_labels_can_report_both_a_marker_and_a_grid_cause() -> None:
+    """Marker 1 is registered but the row names no default, so bare
+    ``[x]`` wants a default marker while ``[z:1.frac]`` resolves its
+    marker and is blocked only by the height. Both surface at once."""
+    out = _faults(
+        _row(markers=[], args=["[x]", "[z:1.frac]"]),
+        registered=frozenset({1}),
+        grid=0.0,
+    )
+    assert out == ("No default marker", "Grid Maximum Height not set")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("count", "expected_more"),
+    [(1, ""), (3, ""), (4, "+1 more error"), (5, "+2 more errors")],
+)
+def test_fault_summary_caps_at_three_and_counts_the_rest(count: int, expected_more: str) -> None:
+    faults = tuple(f"problem {i}" for i in range(count))
+    visible, more, full = _row_fault_summary(faults)
+    assert visible == faults[:3]
+    assert more == expected_more
+    assert full == faults, "the untruncated list must survive for assistive tech"
+
+
+@pytest.mark.unit
+def test_fault_summary_of_no_faults_is_empty() -> None:
+    assert _row_fault_summary(()) == ((), "", ())
+
+
+def _seed_fault_rows(cfg_path):  # noqa: ANN001, ANN202
+    cfg = load_config(cfg_path)
+    cfg.controlled_marker_ids = [1]
+    cfg.grid.max_height = 0.0
+    cfg.osc_destinations.destinations = [
+        OscDestinationConfig(id="eos", name="eos", host="10.0.0.5", port=8000),
+    ]
+    cfg.osc_transmitters.transmitters = [
+        OscTransmitterConfig(
+            id="r-grid",
+            name="ADM-OSC 3D",
+            destination_id="eos",
+            markers=["1"],
+            address="/adm/obj/[markerid]/xyz",
+            args=["[x.frac]", "[y.frac]", "[z.frac]"],
+        ),
+        OscTransmitterConfig(
+            id="r-many",
+            name="Everything wrong",
+            destination_id="",
+            markers=[],
+            address="/a",
+            args=["[x]", "[y:9]", "[z:1.frac]"],
+        ),
+        OscTransmitterConfig(
+            id="r-ok",
+            name="Healthy",
+            destination_id="eos",
+            markers=["1"],
+            address="/a",
+            args=["[x]"],
+            enabled=True,
+        ),
+    ]
+    save_config(cfg, cfg_path)
+    return cfg
+
+
+def test_section_render_shows_the_fault_reason_on_the_collapsed_row(live_server) -> None:
+    """The reason is visible text, not only the dot's accessible name."""
+    _, base, cfg_path = live_server
+    _seed_fault_rows(cfg_path)
+    status, body = _get(base, "/section/osc_bindings")
+    assert status == 200
+    assert "Grid Maximum Height not set" in body
+    assert "No destination" in body
+    assert "Marker 9 not registered" in body
+
+
+def test_section_render_separates_faults_with_a_middle_dot(live_server) -> None:
+    _, base, cfg_path = live_server
+    _seed_fault_rows(cfg_path)
+    _, body = _get(base, "/section/osc_bindings")
+    assert "No destination · No default marker" in body
+
+
+def test_section_render_hides_the_dot_from_assistive_tech_when_a_fault_shows(live_server) -> None:
+    """The badge speaks for a broken row, so the dot must not repeat it.
+    A healthy row keeps its accessible name, or its state goes silent."""
+    _, base, cfg_path = live_server
+    _seed_fault_rows(cfg_path)
+    _, body = _get(base, "/section/osc_bindings")
+    assert '<span class="osc-binding-enabled-dot invalid" aria-hidden="true">' in body
+    assert 'aria-label="Enabled"' in body
+    assert 'aria-label="Invalid OSC message"' not in body
+
+
+def test_section_render_gives_assistive_tech_the_untruncated_fault_list(live_server) -> None:
+    """The badge caps at three; the hidden list must carry all of them so
+    a screen-reader user never gets the truncated set."""
+    _, base, cfg_path = live_server
+    cfg = load_config(cfg_path)
+    cfg.controlled_marker_ids = [1]
+    cfg.grid.max_height = 0.0
+    cfg.osc_destinations.destinations = []
+    cfg.osc_transmitters.transmitters = [
+        OscTransmitterConfig(
+            id="r-overflow",
+            name="Overflow",
+            destination_id="",
+            markers=["7"],
+            address="/a",
+            args=["[x]", "[y:9]", "[z:1.frac]"],
+        ),
+    ]
+    save_config(cfg, cfg_path)
+    _, body = _get(base, "/section/osc_bindings")
+    assert "+1 more error" in body
+    hidden = re.search(r'<span class="visually-hidden">([^<]*Grid Maximum Height not set[^<]*)</span>', body)
+    assert hidden is not None, "untruncated fault list missing"
+    for expected in (
+        "No destination",
+        "No controlled marker",
+        "Marker 9 not registered",
+        "Grid Maximum Height not set",
+    ):
+        assert expected in hidden.group(1), expected
+    assert "No default marker" not in hidden.group(1), "duplicate of 'No controlled marker'"
+
+
+@pytest.mark.unit
+def test_every_unresolved_reason_produces_a_fault_label() -> None:
+    """The row's red state is ``bool(faults)``. A cause with no label
+    would render a row that can never fire as healthy, so the label set
+    has to keep up with the alias."""
+    from openfollow.osc.template import UnresolvedPlaceholder, UnresolvedReason
+
+    row = _row(args=["[x]"])
+    for reason in get_args(UnresolvedReason):
+        marker_id = 9 if reason == "explicit_marker" else None
+        entry = UnresolvedPlaceholder("[x:9]" if marker_id else "[x]", reason, marker_id)
+        out = _row_fault_labels(
+            row,
+            entries=(entry,),
+            destination_ids=_DESTS,
+            markers_unusable=False,
+        )
+        assert out, f"{reason} produced no fault label"
+
+
+@pytest.mark.unit
+def test_badge_and_blur_message_share_one_cause_order() -> None:
+    """Both surfaces iterate ``_UNRESOLVED_CAUSE_ORDER``; if they drifted
+    the badge would lead with a different problem than the message
+    inside the row."""
+    from openfollow.osc.template import UnresolvedPlaceholder
+
+    entries = (
+        UnresolvedPlaceholder("[z.frac]", "grid_height", None),
+        UnresolvedPlaceholder("[y:9]", "explicit_marker", 9),
+        UnresolvedPlaceholder("[x]", "default_marker", None),
+    )
+    labels = _row_fault_labels(_row(args=["[x]"]), entries=entries, destination_ids=_DESTS, markers_unusable=False)
+    assert labels == (
+        "No default marker",
+        "Marker 9 not registered",
+        "Grid Maximum Height not set",
+    )
+    blur = _osc_binding_unresolved_blur_error(
+        {"osc_message": "/a [z:1.frac] [y:9] [x]", "markers": ""},
+        _blur_cfg((1,), 0.0),
+    )
+    assert blur is not None
+    order = [blur.index(p) for p in ("needs a default marker", "isn't registered", "Maximum Height")]
+    assert order == sorted(order), "blur message order diverged from the badge"
+
+
+@pytest.mark.unit
+def test_fault_label_for_an_explicit_marker_entry_without_its_id() -> None:
+    """A malformed entry must still name the fault rather than render a
+    blank id or, worse, no label at all."""
+    from openfollow.osc.template import UnresolvedPlaceholder
+
+    out = _row_fault_labels(
+        _row(args=["[x:9]"]),
+        entries=(UnresolvedPlaceholder("[x:9]", "explicit_marker", None),),
+        destination_ids=_DESTS,
+        markers_unusable=False,
+    )
+    assert out == ("Marker not registered",)

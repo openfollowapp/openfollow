@@ -321,7 +321,7 @@ The HUD is **not** in the GStreamer chain. The video sink (`gtksink`) is wrapped
 
 ### Marker freshness (`is_marker_stale`, shared by every output)
 
-`build_marker_visual_state` rewrites every **controlled** marker each frame (an unconditional `set_speed`), and every `Marker` data write stamps `timestamp`. That stamp is therefore a per-marker "the frame loop ran" signal, which is what the four output protocols use to avoid transmitting a frozen position as if it were live – each runs its own send thread, so none of them stops when the frame loop does.
+`build_marker_visual_state` rewrites every **controlled** marker each frame (an unconditional `set_speed` carrying the marker's velocity estimate, `(0, 0, 0)` when it is still), and every `Marker` data write stamps `timestamp`. That stamp is therefore a per-marker "the frame loop ran" signal, which is what the four output protocols use to avoid transmitting a frozen position as if it were live – each runs its own send thread, so none of them stops when the frame loop does.
 
 `marker_age_s(marker, *, now_us=None)` / `is_marker_stale(marker, *, now_us=None)` / `MARKER_STALE_AFTER_S` (1.0 s ≈ 60 missed frames) live in [`psn/marker.py`](openfollow/psn/marker.py). A remote marker (sender's epoch) and a never-written one both report `inf`, so anything unaged fails safe as stale – and `inf` is not `int()`-able, which the OTP sampled-timestamp path has to handle. The reference is the **marker's own clock** (`Marker.clock_now_us`), never the module function: `PsnServer.add_marker` passes its `clock=` down, so a server on an injected clock would otherwise age every marker against an unrelated epoch and ship `status=0.0` for a freshly written position. Pass one `now_us` (from that same clock) when ageing several markers for one packet.
 
@@ -332,7 +332,7 @@ The HUD is **not** in the GStreamer chain. The video sink (`gtksink`) is wrapped
 | RTTrPM | No validity field exists, so absence is the idiom: stale trackables are filtered out of the packet, and an all-stale set sends nothing so the receiver's own timeout fires |
 | OSC transmitter | A stale marker skips with the reason in that row's ring buffer. Explicit `[x:N]` / controller `[x:cN]` refs go through `RenderContext.marker_stale_resolver` (neither sets `needs_default_marker`), which raises `RenderError(..., hint="position is stale")` so the skip is distinguishable from an unregistered marker. Constant / hotkey / MIDI rows are unaffected |
 
-**Do not gate the per-frame `set_speed` on movement.** A deliberately still marker would go stale and drop off the wire on all four protocols. `tests/test_output_staleness.py` pins the wire behaviour; `tests/test_marker_freshness.py` pins the rule.
+**Do not gate the per-frame `set_speed` on movement.** The value may be zero; the write never skips. A deliberately still marker would otherwise go stale and drop off the wire on all four protocols. `tests/test_output_staleness.py` pins the wire behaviour; `tests/test_marker_freshness.py` pins the rule.
 
 ### Datagram size (`packet_chunking.MAX_DATAGRAM_BYTES`, shared by every output)
 
@@ -351,19 +351,21 @@ Every marker-carrying output grows its datagram with the marker count, and **147
 `tests/test_output_packet_splitting.py` pins the cross-protocol invariant (no stream emits a datagram past 1472 at any marker count) plus each protocol's grouping; `scripts/hw_validation/output_datagram_size_probe.py` re-checks it on the DUT against the deployed send paths.
 
 ### PsnServer (`psn/server.py`)
-- Sends PSN multicast every ~33ms
+- Sends PSN multicast at `data_fps` (default 60 Hz)
 - `add_marker(id, name)` / `remove_marker(id)` / `get_marker(id)`
 - `marker.set_pos(x, y, z)`, `marker.set_speed(vx, vy, vz)`
-- **Speed encoding:** every frame in `services.py`, each controlled marker sends its own effective speed magnitude. Controller-mapped markers use `move_speed × controller multiplier`; otherwise it falls back to configured `move_speed`.
+- **Speed encoding:** every frame in `build_marker_visual_state`, each controlled marker's speed is its estimated **velocity vector** in m/s, PSN-absolute frame ([`runtime/marker_velocity.py`](openfollow/runtime/marker_velocity.py): EMA-smoothed position delta, alpha 0.3 per nominal frame, frame-rate independent via `_ema_factor`; a jump faster than 20 m/s in one frame resets the estimate to zero). A still marker sends `(0, 0, 0)`. The HUD card of a controlled marker shows the configured move speed (what R / T and the bumpers adjust), not this vector; viewer cards show `‖speed‖` of the received marker.
 
 ### PsnReceiver (`psn/receiver.py`)
 - Receives PSN multicast in background thread
 - `ignore_ids`: controlled_marker_ids – prevents loopback overwriting own markers
 - `_last_seen[tid]`: monotonic timestamp of last received packet
 - `_last_pos[tid]`: previous position for speed derivation
+- `_wire_speed_ids`: trackers whose sender has published a non-zero speed (dropped on TTL eviction)
 - **Speed logic (per packet):**
-  1. If `t.speed` is non-zero vector: store as magnitude in the x component
-  2. If `t.speed` is zero or None: derive from `delta_pos/dt`, only when actually moving (preserves last known speed when stationary)
+  1. Any non-zero `t.speed` marks the tracker wire-trusted
+  2. Wire-trusted: store the vector verbatim, zeros included (the sender says it is still); a packet without speed keeps the previous vector
+  3. Otherwise derive from `delta_pos/dt` inside the `0.001 < dt < 1.0` window, only when actually moving (preserves last known speed when stationary)
 - **Received markers carry the sender's own `timestamp` / `status`.** Position, speed, and both fields land in one `Marker.apply_remote(...)` write, which never stamps the local clock – the wire values are the sender's, in *its* epoch, and are not comparable to `psn_timestamp_usec()` or to another sender's. Such a marker is built `remote=True` and reports `is_remote`; don't re-broadcast its timestamp as ours. Local freshness is `is_marker_online` (arrival), never the tracker timestamp
 - `is_marker_online(tid, timeout=2.0)`: returns True if packet received within 2s
 - `source_ip` parameter binds receive socket to a specific interface
@@ -887,9 +889,9 @@ This repo has two active development streams (Mac dev + Pi). Merge conflicts hap
 - `set_state(PLAYING)` returning ASYNC is normal for SRT caller mode
 
 ### PSN speed convention
-- Controlled markers broadcast `set_speed(move_speed, 0, 0)` so magnitude = configured speed
-- Receiver stores non-zero received speed as `set_speed(magnitude, 0, 0)` – scalar in x component
-- Position-based derivation only runs when protocol speed is zero (and only updates when moving)
+- Controlled markers broadcast their true velocity vector (m/s, PSN-absolute frame); a still marker sends `(0, 0, 0)` and the write still happens every frame (freshness stamp)
+- Viewer cards show `‖speed‖` of the received marker; controlled cards show the configured move speed, which never reaches the wire
+- Receiver stores wire vectors verbatim once a sender has published a non-zero speed for that tracker; position-based derivation only runs for trackers that have only ever sent zero (and only updates when moving)
 
 ### `psn_source_iface` propagation
 When set, the interface name is resolved to an IPv4 and flows to: PsnReceiver (`source_ip`), BeaconSender / Receiver (`iface_ip`), SystemStatsCollector (`preferred_ip`), PsnServer (`source_ip`). It is **live-applied** – the sockets rebind via `apply_psn_source_ip_change`, no restart needed.

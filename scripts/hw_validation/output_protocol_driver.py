@@ -123,14 +123,23 @@ def _count_sends(server: object, wire: Wire, dest_arg: bool) -> None:
     server._send = wrapped  # type: ignore[attr-defined]
 
 
-def _positions(count: int, elapsed: float, radius: float, period_s: float) -> list[tuple[float, float, float]]:
-    """Markers evenly spaced around one slow orbit, at staggered heights."""
+Vec3 = tuple[float, float, float]
+
+
+def _orbit(count: int, elapsed: float, radius: float, period_s: float) -> list[tuple[Vec3, Vec3]]:
+    """Markers evenly spaced around one slow orbit, at staggered heights, each
+    paired with the velocity of its own motion (the PSN speed field is a
+    velocity vector in the position's frame)."""
     out = []
+    omega = 2.0 * math.pi / period_s
+    bob = 2.0 * math.pi / 7.0
     for index in range(count):
         phase = index / count
         angle = (elapsed / period_s + phase) * 2.0 * math.pi
-        height = 1.2 + 0.8 * math.sin((elapsed / 7.0 + phase) * 2.0 * math.pi)
-        out.append((radius * math.cos(angle), radius * math.sin(angle), height))
+        lift = (elapsed / 7.0 + phase) * 2.0 * math.pi
+        position = (radius * math.cos(angle), radius * math.sin(angle), 1.2 + 0.8 * math.sin(lift))
+        velocity = (-radius * math.sin(angle) * omega, radius * math.cos(angle) * omega, 0.8 * math.cos(lift) * bob)
+        out.append((position, velocity))
     return out
 
 
@@ -276,7 +285,6 @@ def main() -> int:
 
     start = time.monotonic()
     next_status = start + STATUS_INTERVAL_S
-    speed = 2.0 * math.pi * args.radius / args.period
     try:
         while not stopping.is_set():
             now = time.monotonic()
@@ -285,16 +293,16 @@ def main() -> int:
                 break
             # Rewrite every marker every frame: one the loop stops writing ages
             # out and drops off the wire on all three protocols.
-            for marker, position in zip(
-                shared, _positions(args.markers, elapsed, args.radius, args.period), strict=True
+            for marker, (position, velocity) in zip(
+                shared, _orbit(args.markers, elapsed, args.radius, args.period), strict=True
             ):
                 marker.set_pos(*position)
-                marker.set_speed(speed, 0.0, 0.0)
+                marker.set_speed(*velocity)
                 if psn is not None:
                     live = psn.get_marker(marker.marker_id)
                     if live is not None:
                         live.set_pos(*position)
-                        live.set_speed(speed, 0.0, 0.0)
+                        live.set_speed(*velocity)
             if now >= next_status:
                 next_status = now + STATUS_INTERVAL_S
                 print(f"[{elapsed:6.1f}s]", flush=True)

@@ -3,8 +3,9 @@
 """Receives PSN marker data via multicast and maintains per-marker state.
 
 ``PsnReceiver`` runs a background thread (``_RobustReceiver``) that parses
-incoming PSN packets, ignoring locally-controlled marker IDs and deriving
-speed from position deltas when the protocol speed is zero.
+incoming PSN packets and ignores locally-controlled marker IDs. A tracker's
+speed is the sender's vector once that sender has published a non-zero one;
+until then it is derived from position deltas.
 """
 
 from __future__ import annotations
@@ -59,7 +60,7 @@ DEFAULT_PORT = 56565
 
 # Evict markers whose last packet aged well past the 2 s online window so an
 # enumerated / abandoned tracker_id (1–65535, untrusted wire data) can't keep a
-# Marker (+ its lock) and the three per-id dict entries alive for the whole
+# Marker (+ its lock) and its per-id bookkeeping entries alive for the whole
 # process lifetime. A returning marker is re-created on its next packet.
 _MARKER_TTL_S = 60.0
 _EVICT_SWEEP_INTERVAL_S = 5.0  # throttle the sweep so a packet flood can't make it hot
@@ -91,6 +92,9 @@ class PsnReceiver:
         self._markers: dict[int, Marker] = {}
         self._last_seen: dict[int, float] = {}
         self._last_pos: dict[int, tuple[float, float, float]] = {}
+        # Trackers whose sender has published a non-zero speed: from then on
+        # the wire vector is stored verbatim, zeros included.
+        self._wire_speed_ids: set[int] = set()
         self._last_evict_sweep: float = 0.0
         self._receiver: pypsn.Receiver | None = None
 
@@ -179,21 +183,20 @@ class PsnReceiver:
                         self._markers[t.tracker_id] = Marker(t.tracker_id, f"Marker {t.tracker_id}", remote=True)
                     tid = t.tracker_id
                     new_pos = (t.pos.x, t.pos.y, t.pos.z)
-                    # Use protocol speed only if non-zero; many servers (including
-                    # OpenFollow itself) always send speed=(0,0,0) even when
-                    # the marker is moving, so fall back to position derivation.
-                    proto_speed_nonzero = t.speed is not None and (
-                        t.speed.x != 0.0 or t.speed.y != 0.0 or t.speed.z != 0.0
-                    )
+                    wire = t.speed
+                    if wire is not None and (wire.x != 0.0 or wire.y != 0.0 or wire.z != 0.0):
+                        self._wire_speed_ids.add(tid)
                     speed: tuple[float, float, float] | None = None
-                    if proto_speed_nonzero:
-                        # Store as scalar magnitude in the x component so
-                        # services.py can read it without directional noise.
-                        mag = (t.speed.x**2 + t.speed.y**2 + t.speed.z**2) ** 0.5
-                        speed = (mag, 0.0, 0.0)
+                    if tid in self._wire_speed_ids:
+                        # A sender that publishes speed is trusted verbatim, exact
+                        # zeros included: a marker it holds still reports zero. A
+                        # packet without the field keeps the previous vector.
+                        if wire is not None:
+                            speed = (wire.x, wire.y, wire.z)
                     else:
-                        # Derive speed from position delta; only update when
-                        # actually moving so the last known speed stays visible.
+                        # A sender that has only ever published zero speed gets it
+                        # derived from the position delta; only when moving, so
+                        # the last known speed stays visible between bursts.
                         prev_pos = self._last_pos.get(tid)
                         prev_t = self._last_seen.get(tid)
                         if prev_pos is not None and prev_t is not None:
@@ -224,3 +227,4 @@ class PsnReceiver:
             self._markers.pop(tid, None)
             self._last_seen.pop(tid, None)
             self._last_pos.pop(tid, None)
+            self._wire_speed_ids.discard(tid)

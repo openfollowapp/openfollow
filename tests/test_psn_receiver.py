@@ -2,8 +2,8 @@
 # Copyright (C) 2026 OpenFollow Project
 """Integration tests for PsnReceiver packet handling.
 
-Drives ``_on_packet`` with fake packets: ignore-id filter, protocol-speed
-vs position-derived speed, and the ``is_marker_online`` timeout.
+Drives ``_on_packet`` with fake packets: ignore-id filter, wire speed vs
+position-derived speed, and the ``is_marker_online`` timeout.
 """
 
 from __future__ import annotations
@@ -55,7 +55,9 @@ class _FakeDataPacket:
         self.trackers = trackers
 
 
-def test_receiver_ignores_ids_and_uses_protocol_speed(monkeypatch) -> None:
+def test_receiver_ignores_ids_and_stores_the_wire_speed_vector(monkeypatch) -> None:
+    """The PSN speed field is a velocity in the position's frame; it lands on
+    the marker as sent, direction included."""
     monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
     monkeypatch.setattr(receiver_module.time, "monotonic", lambda: 10.0)
 
@@ -71,10 +73,7 @@ def test_receiver_ignores_ids_and_uses_protocol_speed(monkeypatch) -> None:
     assert receiver.get_marker(1) is None
     marker = receiver.get_marker(2)
     assert marker is not None
-    vx, vy, vz = marker.speed
-    assert vx == pytest.approx(5.0)
-    assert vy == 0.0
-    assert vz == 0.0
+    assert marker.speed == pytest.approx((3.0, 4.0, 0.0))
 
 
 def test_receiver_derives_speed_from_position_when_protocol_speed_is_zero(monkeypatch) -> None:
@@ -89,6 +88,84 @@ def test_receiver_derives_speed_from_position_when_protocol_speed_is_zero(monkey
     assert marker is not None
     vx, _, _ = marker.speed
     assert vx == pytest.approx(2.0)
+
+
+def test_wire_zero_after_a_nonzero_speed_is_stored_as_zero(monkeypatch) -> None:
+    """A sender that publishes speed is trusted when it says the marker stands
+    still: its zero is the velocity, not a cue to derive one from the position
+    delta. Otherwise a marker that stopped would keep its last speed on the
+    viewer's card."""
+    monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+    monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.5))
+
+    receiver = PsnReceiver()
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(5, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 2.0, 0.0))]))
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(5, _Vec(1.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+
+    marker = receiver.get_marker(5)
+    assert marker is not None
+    assert marker.speed == (0.0, 0.0, 0.0)
+
+
+def test_wire_speed_tracker_keeps_previous_vector_when_a_packet_omits_it(monkeypatch) -> None:
+    monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+    monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.5))
+
+    receiver = PsnReceiver()
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(5, _Vec(0.0, 0.0, 0.0), _Vec(1.0, 0.0, 0.0))]))
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(5, _Vec(1.0, 0.0, 0.0), None)]))
+
+    marker = receiver.get_marker(5)
+    assert marker is not None
+    assert marker.speed == (1.0, 0.0, 0.0)
+
+
+def test_wire_trust_is_per_tracker(monkeypatch) -> None:
+    """One sender filling the field does not switch off derivation for a
+    tracker whose sender never does."""
+    monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+    monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.5))
+
+    receiver = PsnReceiver()
+    for x in (0.0, 1.0):
+        receiver._on_packet(
+            _FakeDataPacket(
+                [
+                    _PacketTracker(1, _Vec(x, 0.0, 0.0), _Vec(0.0, 0.0, 3.0)),
+                    _PacketTracker(2, _Vec(x, 0.0, 0.0), _Vec(0.0, 0.0, 0.0)),
+                ]
+            )
+        )
+
+    trusted = receiver.get_marker(1)
+    derived = receiver.get_marker(2)
+    assert trusted is not None and derived is not None
+    assert trusted.speed == (0.0, 0.0, 3.0)
+    assert derived.speed == pytest.approx((2.0, 0.0, 0.0))
+
+
+def test_evicted_tracker_forgets_its_wire_speed_trust(monkeypatch) -> None:
+    """After TTL eviction a returning tracker id may belong to a different
+    sender; it starts over on the derive path until it publishes a speed."""
+    monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+    now = {"t": 0.0}
+    monkeypatch.setattr(receiver_module.time, "monotonic", lambda: now["t"])
+
+    receiver = PsnReceiver()
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 2.0, 0.0))]))
+    assert 1 in receiver._wire_speed_ids
+
+    now["t"] = 100.0  # past the TTL and the sweep interval
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(2, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+    assert receiver.get_marker(1) is None
+    assert 1 not in receiver._wire_speed_ids
+
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+    now["t"] = 100.5
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(1.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+    returned = receiver.get_marker(1)
+    assert returned is not None
+    assert returned.speed == pytest.approx((2.0, 0.0, 0.0))
 
 
 def test_receiver_carries_the_wire_timestamp_and_status(monkeypatch) -> None:
@@ -206,8 +283,9 @@ def test_receiver_skips_non_int_tracker_id_without_dropping_later_trackers(monke
 
 
 def test_receiver_evicts_stale_markers(monkeypatch) -> None:
-    """#540: markers silent past the TTL are dropped from all three dicts so an
-    enumerated tracker_id can't persist for the process lifetime."""
+    """#540: markers silent past the TTL are dropped from every per-id
+    structure so an enumerated tracker_id can't persist for the process
+    lifetime."""
     monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
     monkeypatch.setattr(
         receiver_module.time, "monotonic", _packet_clock(0.0, 100.0)
@@ -217,19 +295,21 @@ def test_receiver_evicts_stale_markers(monkeypatch) -> None:
     receiver._on_packet(
         _FakeDataPacket(
             [
-                _PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0)),
+                _PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(1.0, 0.0, 0.0)),
                 _PacketTracker(2, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0)),
                 _PacketTracker(3, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0)),
             ]
         )
     )
     assert set(receiver._markers) == {1, 2, 3}
+    assert receiver._wire_speed_ids == {1}
 
-    # A later packet for marker 2 sweeps the now-stale 1 and 3 out of every dict.
+    # A later packet for marker 2 sweeps the now-stale 1 and 3 out of every structure.
     receiver._on_packet(_FakeDataPacket([_PacketTracker(2, _Vec(1.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
     assert set(receiver._markers) == {2}
     assert set(receiver._last_seen) == {2}
     assert set(receiver._last_pos) == {2}
+    assert receiver._wire_speed_ids == set()
 
 
 def test_receiver_eviction_sweep_is_throttled(monkeypatch) -> None:

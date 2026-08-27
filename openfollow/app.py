@@ -207,6 +207,7 @@ if TYPE_CHECKING:
     from openfollow.otp import OtpServer
     from openfollow.psn import Marker, PsnReceiver, PsnServer
     from openfollow.rttrpm import RttrpmServer
+    from openfollow.runtime.marker_velocity import MarkerVelocityState
     from openfollow.runtime.services_detection_pin import DetectionPinState
     from openfollow.scene.camera import Camera
     from openfollow.video.receiver import GstNativeSinkReceiver
@@ -257,6 +258,10 @@ class OpenFollowApp:
         # drives the single resolved marker (one entry). Created lazily and
         # pruned when a marker leaves the driven set.
         self._detection_pin_states: dict[int, DetectionPinState] = {}
+        # Per-controlled-marker velocity estimate behind the PSN speed field.
+        # Created lazily by the frame loop and pruned when a marker leaves the
+        # controlled set.
+        self._marker_velocity_states: dict[int, MarkerVelocityState] = {}
         self._psn_receiver: PsnReceiver | None = None
         self._web_server: ConfigWebServer | None = None
         self._input_manager: InputManager | None = None

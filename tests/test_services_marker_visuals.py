@@ -936,6 +936,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
         _runtime_services=None,
         _assist_manual={},
         _detection_pin_states={},
+        _marker_velocity_states={},
     )
 
 

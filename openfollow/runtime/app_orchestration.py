@@ -184,7 +184,7 @@ def animate(app: OpenFollowApp) -> None:
     svc.update_video()
     svc.apply_detection_pin(dt)
     svc.update_zone_triggers()
-    svc.update_marker_visuals()
+    svc.update_marker_visuals(dt)
 
     frame_time = time.perf_counter() - frame_start
     svc._frame_metrics.add_frame(frame_time)

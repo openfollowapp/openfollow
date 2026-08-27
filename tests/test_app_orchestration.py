@@ -72,6 +72,7 @@ class _RecordingServices:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.frame_times: list[float] = []
+        self.marker_visual_dts: list[float] = []
         self.runtime_stats_calls = 0
         self._frame_metrics = SimpleNamespace(add_frame=self._record_frame_time)
         self.shutdown_calls = 0
@@ -88,8 +89,9 @@ class _RecordingServices:
     def update_zone_triggers(self) -> None:
         self.calls.append("update_zone_triggers")
 
-    def update_marker_visuals(self) -> None:
+    def update_marker_visuals(self, dt: float = 0.0) -> None:
         self.calls.append("update_marker_visuals")
+        self.marker_visual_dts.append(dt)
 
     def publish_runtime_stats(self) -> None:
         self.runtime_stats_calls += 1
@@ -201,6 +203,18 @@ class TestAnimate:
         app._last_animate_time -= 5.0  # simulate a 5 s stall since the last tick
         orch.animate(app)
         assert captured[-1] == pytest.approx(orch._MAX_FRAME_DT)
+
+    def test_frame_dt_reaches_update_marker_visuals(self) -> None:
+        """The velocity each controlled marker broadcasts integrates against
+        the same frame step the input path moved it by."""
+        app = _make_fake_app()
+        orch.animate(app)
+        app._last_animate_time -= 5.0
+        orch.animate(app)
+        assert app._runtime_services.marker_visual_dts == [
+            pytest.approx(orch._DEFAULT_FRAME_DT),
+            pytest.approx(orch._MAX_FRAME_DT),
+        ]
 
     def test_no_input_manager_skips_keyboard_poll(self) -> None:
         app = _make_fake_app(input_manager=None)

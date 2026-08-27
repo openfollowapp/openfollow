@@ -11,12 +11,14 @@ branches that survived mutation:
   The remote flag and the four ``apply_remote`` arguments are killed in
   ``test_psn_receiver.py`` instead, where the wire values they carry are
   the subject rather than the parse.
-* ``t.speed is not None`` vs ``is None`` – protocol-speed vs
-  position-derived dispatch.
-* ``t.speed.x != 0.0 or t.speed.y != 0.0 or t.speed.z != 0.0`` – the
-  disjunction that gates "protocol speed actually has magnitude".
-  Mutants swapping one ``or`` for ``and`` must fail against a packet
-  where exactly one component is non-zero.
+* ``wire is not None`` vs ``is None`` – whether a packet carries a
+  speed at all; ``None`` keeps the previous vector.
+* ``wire.x != 0.0 or wire.y != 0.0 or wire.z != 0.0`` – the disjunction
+  that promotes a tracker to wire-trusted. Mutants swapping one ``or``
+  for ``and`` must fail against a packet where exactly one component is
+  non-zero.
+* ``tid in self._wire_speed_ids`` – verbatim storage vs position
+  derivation, and the ``discard`` that revokes trust on eviction.
 * Position-derived speed delta arithmetic (``new_pos[0] - prev_pos[0]``)
   and the dt-window guard ``0.001 < dt < 1.0``.
 * ``self._last_seen[tid] = now`` – ``is_marker_online`` reads this
@@ -120,36 +122,36 @@ class TestMarkerIdAndNamePreserved:
 
 
 # --------------------------------------------------------------------------- #
-# Protocol-speed vs position-derived dispatch (mutmut_15, _17, _18)
+# Wire-speed trust dispatch
 # --------------------------------------------------------------------------- #
 
 
-class TestProtocolSpeedDispatch:
-    """Guards the ``proto_speed_nonzero`` disjunction against
-    ``or → and`` swaps and the outer ``is not None`` vs ``is None``.
+class TestWireSpeedDispatch:
+    """Guards the non-zero disjunction that promotes a tracker to
+    wire-trusted against ``or → and`` swaps, the ``in`` test that
+    dispatches verbatim storage vs derivation, the ``discard`` on
+    eviction, and the outer ``is not None`` vs ``is None``.
     """
 
     @pytest.mark.parametrize(
-        "speed_vec, expected_magnitude",
+        "speed_vec",
         [
             # Only X non-zero – ``or`` → ``and`` mutants would miss this
             # because ``0 != 0`` is False; an ``and`` chain needs all three
             # to be non-zero.
-            (_Vec(3.0, 0.0, 0.0), 3.0),
+            _Vec(3.0, 0.0, 0.0),
             # Only Y non-zero.
-            (_Vec(0.0, 4.0, 0.0), 4.0),
+            _Vec(0.0, 4.0, 0.0),
             # Only Z non-zero.
-            (_Vec(0.0, 0.0, 5.0), 5.0),
-            # Two-component magnitude (3-4-5 triangle) – guards the
-            # magnitude formula itself.
-            (_Vec(3.0, 4.0, 0.0), 5.0),
+            _Vec(0.0, 0.0, 5.0),
+            # Two components – kills an axis swap in the verbatim copy.
+            _Vec(3.0, 4.0, 0.0),
         ],
     )
-    def test_single_axis_protocol_speed_kept_as_magnitude(
+    def test_wire_speed_vector_is_stored_verbatim(
         self,
         monkeypatch: pytest.MonkeyPatch,
         speed_vec: _Vec,
-        expected_magnitude: float,
     ) -> None:
         monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
         monkeypatch.setattr(receiver_module.time, "monotonic", lambda: 10.0)
@@ -161,19 +163,44 @@ class TestProtocolSpeedDispatch:
                 ]
             )
         )
-        vx, vy, vz = recv.get_marker(1).speed
-        # Stored as scalar magnitude in x.
-        assert vx == pytest.approx(expected_magnitude)
-        assert vy == 0.0
-        assert vz == 0.0
+        assert recv.get_marker(1).speed == (speed_vec.x, speed_vec.y, speed_vec.z)
+
+    def test_zero_after_nonzero_is_stored_as_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Kills ``in`` → ``not in`` on the trust test: a trusted tracker's
+        zero is stored, never replaced by a value derived from the delta."""
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.5))
+        recv = PsnReceiver()
+        recv._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 2.0, 0.0))]))
+        recv._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(1.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+        assert recv.get_marker(1).speed == (0.0, 0.0, 0.0)
+
+    def test_zero_only_sender_still_derives(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Kills an unconditional ``add`` (trust granted on a zero vector)."""
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.5))
+        recv = PsnReceiver()
+        recv._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+        recv._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(1.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+        assert recv.get_marker(1).speed == pytest.approx((2.0, 0.0, 0.0))
+
+    def test_eviction_forgets_trust(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Kills removal of the ``discard`` on TTL eviction."""
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        now = {"t": 0.0}
+        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: now["t"])
+        recv = PsnReceiver()
+        recv._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 2.0, 0.0))]))
+        now["t"] = 100.0
+        recv._on_packet(_FakeDataPacket([_PacketTracker(2, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+        assert 1 not in recv._wire_speed_ids
 
     def test_speed_none_triggers_position_derivation_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Mutant ``t.speed is not None`` → ``is None`` inverts the
-        dispatch: with ``speed=None``, the original takes the
-        position-derivation branch; the mutant would take the
-        protocol-speed branch and call ``.x`` on None → AttributeError
-        → mutant dies.  This test pins the **correct** branch (derived
-        speed) fires.
+        """Mutant ``wire is not None`` → ``is None`` inverts the guard:
+        with ``speed=None``, the original skips the non-zero test and
+        derives from the position delta; the mutant would evaluate
+        ``.x`` on None → AttributeError → mutant dies.  This test pins
+        the **correct** branch (derived speed) fires.
         """
         monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
         monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.1))

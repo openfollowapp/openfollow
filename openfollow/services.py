@@ -2271,13 +2271,14 @@ class AppRuntimeServices:
     def update_video(self) -> None:
         update_video_helper(self._app, logger)
 
-    def update_marker_visuals(self) -> None:
+    def update_marker_visuals(self, dt: float = _NOMINAL_FRAME_DT) -> None:
         """Push current marker + camera state to the Cairo overlay renderer.
 
         Builds a complete new OverlayState and swaps it atomically so the
         GStreamer rendering thread never sees partially-updated state.
         Uses the object pool + pre-allocated camera-params buffer to
-        reduce allocation churn.
+        reduce allocation churn. ``dt`` (seconds since the previous animate
+        frame) feeds the velocity estimate each controlled marker broadcasts.
         """
         state = build_marker_visual_state(
             self._app,
@@ -2285,6 +2286,7 @@ class AppRuntimeServices:
             system_stats=self._system_stats,
             person_detector=self._person_detector,
             cam_params_buffer=self._cam_params_buffer,
+            dt=dt,
         )
 
         # Atomic swap: release old state back to pool

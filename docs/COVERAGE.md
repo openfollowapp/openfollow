@@ -246,9 +246,9 @@ Remaining survivors grouped by pattern:
 Run: 260 covered mutants, ~213 killed + 1 timeout, **32 survivors**
 after PR-F kill tests in `tests/test_psn_receiver_mutation.py` (down
 from 62 on the baseline). The 30 newly-killed mutants are in
-`_on_packet`:  marker-id / default-name preservation, protocol-speed
-vs position-derivation dispatch, axis-index correctness of the
-delta arithmetic, dt-window boundary, and the bookkeeping writes
+`_on_packet`:  marker-id / default-name preservation, wire-speed trust
+dispatch (promotion, verbatim storage, eviction), axis-index correctness
+of the delta arithmetic, dt-window boundary, and the bookkeeping writes
 that feed `is_marker_online`. Plus the default `timeout=2.0`
 kwarg and the default `source_ip=""` kwarg.
 

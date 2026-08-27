@@ -187,23 +187,6 @@ def test_overlong_digit_run_compiles_to_literal_not_crash() -> None:
         assert _is_literal(bad), bad
 
 
-def test_token_has_explicit_index() -> None:
-    """Classifies tokens as explicit ``[x:7]`` vs default-marker ``[x]``
-    without colon-sniffing, so a transform-borne colon (range bound)
-    can't fool it."""
-    from openfollow.osc.template import token_has_explicit_index
-
-    assert token_has_explicit_index("[x:7]") is True
-    assert token_has_explicit_index("[markerfader:3]") is True
-    assert token_has_explicit_index("[x]") is False
-    assert token_has_explicit_index("[z.frac]") is False
-    # A hypothetical colon-bearing transform must NOT read as an index.
-    assert token_has_explicit_index("[fader.int:0-100]") is False
-    # Bracket-stripping is defensive – a bare inner name works too.
-    assert token_has_explicit_index("x:7") is True
-    assert token_has_explicit_index("bogus") is False
-
-
 def test_render_unknown_placeholder_passes_through_as_literal() -> None:
     ct = compile_template("/cue/[unknown]/[markerid]")
     assert render(ct, _ctx(marker_id=3)) == "/cue/[unknown]/3"
@@ -564,12 +547,6 @@ class TestControllerReference:
             )
             == ()
         )
-
-    def test_token_has_explicit_index_true_for_controller_ref(self) -> None:
-        from openfollow.osc.template import token_has_explicit_index
-
-        assert token_has_explicit_index("[markerid:c1]") is True
-        assert token_has_explicit_index("[x:c2]") is True
 
     def test_slot_inner_round_trips_controller_ref(self) -> None:
         # The RenderError label (built from _slot_inner) names the cN form,

@@ -478,19 +478,6 @@ def unresolved_placeholders(
     )
 
 
-def token_has_explicit_index(token: str) -> bool:
-    """True when ``token`` – a bracketed form like ``"[x:7]"`` /
-    ``"[x:c1]"`` vs the default ``"[x]"`` – names an explicit target
-    (a marker index or a ``:cN`` controller reference) rather than the
-    row's default marker.
-
-    Parses via the grammar rather than sniffing for ``":"`` so a colon
-    carried by a transform can't be mistaken for the index separator."""
-    inner = token[1:-1] if len(token) >= 2 and token[0] == "[" and token[-1] == "]" else token
-    slot = _slot_from_name(inner)
-    return slot is not None and (slot.ref_index is not None or slot.controller_index is not None)
-
-
 # ---------------------------------------------------------------------------
 # Parser – [source(:index)(.transform)*]
 # ---------------------------------------------------------------------------

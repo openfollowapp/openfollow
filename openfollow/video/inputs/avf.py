@@ -14,6 +14,7 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+from openfollow.i18n import _, _l  # noqa: E402
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -115,7 +116,7 @@ class AvfInput(VideoInputBase):
     """USB camera / capture card input via AVFoundation (macOS)."""
 
     input_id = "avf"
-    display_name = "USB Camera (AVFoundation)"
+    display_name = _l("USB Camera (AVFoundation)")
 
     # -- Declarations ---------------------------------------------------
 
@@ -285,7 +286,7 @@ class AvfInput(VideoInputBase):
         return (
             '<div class="row ndi-row">'
             '    <div class="field wide">'
-            "        <label>Device</label>"
+            f"        <label>{_('Device')}</label>"
             '        <select name="avf_unique_id"'
             '                hx-get="/video-input/avf/devices"'
             '                hx-trigger="load, click from:'
@@ -306,20 +307,20 @@ class AvfInput(VideoInputBase):
             "</div>"
             '<div class="row">'
             '    <div class="field">'
-            "        <label>Width</label>"
+            f"        <label>{_('Width')}</label>"
             '        <input type="number"'
             f'               name="avf_width" value="{width}"'
             '                min="160" max="3840">'
             "    </div>"
             '    <div class="field">'
-            "        <label>Height</label>"
+            f"        <label>{_('Height')}</label>"
             '        <input type="number"'
             f'               name="avf_height"'
             f'               value="{height}"'
             '                min="120" max="2160">'
             "    </div>"
             '    <div class="field">'
-            "        <label>FPS</label>"
+            f"        <label>{_('FPS')}</label>"
             '        <input type="number"'
             f'               name="avf_framerate"'
             f'               value="{framerate}"'

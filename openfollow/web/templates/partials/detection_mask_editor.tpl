@@ -1,30 +1,30 @@
 <div id="detection-mask-editor" class="section" data-fold-key="detection_masks" data-help="detection_mask_editor">
     <div class="section-head">
-        <h2>Detection Masks <span class="badge-experimental">Experimental</span></h2>
-        <span class="section-note">Limit detection to regions you draw on the camera image.</span>
+        <h2>{{_('Detection Masks')}} <span class="badge-experimental">{{_('Experimental')}}</span></h2>
+        <span class="section-note">{{_('Limit detection to regions you draw on the camera image.')}}</span>
     </div>
 
     <div class="dme-master">
         <label class="dme-switch">
             <input type="checkbox" data-dme="enabled">
-            <span>Apply masks</span>
+            <span>{{_('Apply masks')}}</span>
         </label>
         <span class="dme-master-note" data-dme="enabledNote" aria-live="polite"></span>
     </div>
 
     <div class="dme-toolbar">
-        <button type="button" class="dme-btn" data-dme="new">+ New Mask</button>
-        <button type="button" class="dme-btn dme-hidden" data-dme="finish">Finish Polygon</button>
-        <button type="button" class="dme-btn dme-hidden" data-dme="cancel">Cancel</button>
-        <button type="button" class="dme-btn" data-dme="delete" disabled>Delete Selected</button>
-        <button type="button" class="dme-btn" data-dme="refresh">Refresh Image</button>
+        <button type="button" class="dme-btn" data-dme="new">{{_('+ New Mask')}}</button>
+        <button type="button" class="dme-btn dme-hidden" data-dme="finish">{{_('Finish Polygon')}}</button>
+        <button type="button" class="dme-btn dme-hidden" data-dme="cancel">{{_('Cancel')}}</button>
+        <button type="button" class="dme-btn" data-dme="delete" disabled>{{_('Delete Selected')}}</button>
+        <button type="button" class="dme-btn" data-dme="refresh">{{_('Refresh Image')}}</button>
     </div>
 
     <div class="dme-stage" data-dme="stage">
-        <img id="dme-img" alt="Camera snapshot">
+        <img id="dme-img" alt="{{_('Camera snapshot')}}">
         <svg id="dme-svg" viewBox="0 0 1280 720" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>
-    <div class="dme-no-feed" data-dme="nofeed" hidden>No video feed available. Configure a video source, then press <strong>Refresh Image</strong>.</div>
+    <div class="dme-no-feed" data-dme="nofeed" hidden>{{_('No video feed available. Configure a video source, then press')}} <strong>{{_('Refresh Image')}}</strong>.</div>
 
     <div class="dme-hint" data-dme="hint" aria-live="polite"></div>
     <ul class="dme-list" data-dme="list"></ul>

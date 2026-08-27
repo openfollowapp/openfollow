@@ -15,6 +15,8 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
+from typing import get_args
 
 import pytest
 
@@ -3452,9 +3454,8 @@ _ADM_3D = "/adm/obj/[markerid]/xyz [x.frac] [y.frac] [z.frac]"
 @pytest.mark.unit
 def test_blur_error_names_grid_height_not_default_marker() -> None:
     """With the default marker set and registered, ADM-OSC 3D's
-    ``[z.frac]`` is blocked only by the grid height. Naming the default
-    marker here pointed at a control the operator had already set, and
-    the token stayed flagged however they changed it."""
+    ``[z.frac]`` is blocked only by the grid height, so the message must
+    name the grid control."""
     msg = _blur(_ADM_3D, "1", controlled=(1,), max_height=0.0)
     assert msg == "[z.frac] needs Grid → Maximum Height set to a non-zero value."
     assert "default marker" not in msg
@@ -3462,9 +3463,8 @@ def test_blur_error_names_grid_height_not_default_marker() -> None:
 
 @pytest.mark.unit
 def test_blur_error_names_grid_height_for_explicit_registered_marker() -> None:
-    """``[z:2.frac]`` with marker 2 registered is a grid problem. The
-    explicit index previously routed it to "isn't registered", which
-    contradicted the registry."""
+    """``[z:2.frac]`` with marker 2 registered is a grid problem; the
+    message must not claim the marker is unregistered."""
     msg = _blur("/a [z:2.frac]", "1", controlled=(1, 2), max_height=0.0)
     assert msg == "[z:2.frac] needs Grid → Maximum Height set to a non-zero value."
     assert "registered" not in msg
@@ -3473,8 +3473,7 @@ def test_blur_error_names_grid_height_for_explicit_registered_marker() -> None:
 @pytest.mark.unit
 def test_blur_error_reports_default_marker_first_when_both_apply() -> None:
     """No default marker and no grid height: every token wants the
-    marker, so the message names that one step. The grid cause surfaces
-    once the marker resolves (the test below)."""
+    marker, so the message names that one step."""
     msg = _blur(_ADM_3D, "", controlled=(), max_height=0.0)
     assert msg == (
         "[markerid], [x.frac], [y.frac], [z.frac] needs a default marker. "
@@ -3503,9 +3502,7 @@ def test_blur_error_none_for_literal_only_message() -> None:
 
 def test_section_render_offers_a_z_frac_placeholder_chip(live_server) -> None:
     """The curated transform chips are the one-click way to insert a
-    transform. ``[z.frac]`` was absent while ``[x.frac]`` / ``[y.frac]``
-    were present, so an operator who cleared ADM-OSC 3D's height
-    argument had no chip to put it back."""
+    transform, so the fractional-height form needs one too."""
     _, base, cfg_path = live_server
     cfg = load_config(cfg_path)
     cfg.osc_transmitters.transmitters.append(
@@ -3516,3 +3513,93 @@ def test_section_render_offers_a_z_frac_placeholder_chip(live_server) -> None:
     assert status == 200
     for token in ("[x.frac]", "[y.frac]", "[z.frac]"):
         assert f'data-osc-placeholder="{token}"' in body, token
+
+
+@pytest.mark.unit
+def test_blur_error_omits_grid_cause_on_the_markers_field() -> None:
+    """The message is wired to the blurred field's error span. The
+    markers control cannot act on a grid-height cause, so that sentence
+    belongs only on the message field."""
+    assert _blur(_ADM_3D, "1", controlled=(1,), max_height=0.0) is not None
+    assert (
+        _osc_binding_unresolved_blur_error(
+            {"osc_message": _ADM_3D, "markers": "1"},
+            _blur_cfg((1,), 0.0),
+            field_name="markers",
+        )
+        is None
+    )
+
+
+@pytest.mark.unit
+def test_blur_error_keeps_marker_causes_on_the_markers_field() -> None:
+    msg = _osc_binding_unresolved_blur_error(
+        {"osc_message": "/a [x:9] [z:2.frac]", "markers": "1"},
+        _blur_cfg((1, 2), 0.0),
+        field_name="markers",
+    )
+    assert msg == "[x:9] references a marker that isn't registered."
+
+
+def test_section_render_carries_the_unresolved_cause_not_just_the_token(live_server) -> None:
+    """Pills render from the server's attributes before any client
+    recompute, so the cause has to travel with the token or the tooltip
+    has nothing to word its remediation from."""
+    _, base, cfg_path = live_server
+    cfg = load_config(cfg_path)
+    cfg.controlled_marker_ids = [1]
+    cfg.grid.max_height = 0.0
+    cfg.osc_transmitters.transmitters.append(
+        OscTransmitterConfig(id="r-why", name="Why", markers=["1"], address="/a", args=["[z.frac]"]),
+    )
+    save_config(cfg, cfg_path)
+    status, body = _get(base, "/section/osc_bindings")
+    assert status == 200
+    assert "grid_height" in body
+    assert "default_marker" not in body
+
+
+# ---------------------------------------------------------------------------
+# Server / client parity for the unresolved-cause surfaces
+# ---------------------------------------------------------------------------
+
+_TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "openfollow" / "web" / "templates"
+_BASE_TPL = _TEMPLATE_DIR / "base.tpl"
+_BINDINGS_TPL = _TEMPLATE_DIR / "partials" / "osc_bindings.tpl"
+
+
+def _js_concatenated_string(source: str, start_marker: str, end_marker: str) -> str:
+    """Join a run of single-quoted JS fragments into the string it builds."""
+    region = source[source.index(start_marker) : source.index(end_marker) + len(end_marker)]
+    return "".join(re.findall(r"'((?:[^'\\]|\\.)*)'", region)).replace("\\'", "'")
+
+
+@pytest.mark.unit
+def test_js_remediation_table_covers_every_unresolved_reason() -> None:
+    """The tooltip keys its remediation off the cause. A reason with no
+    entry falls back to generic text, so the table has to keep up with
+    the alias."""
+    from openfollow.osc.template import UnresolvedReason
+
+    table = _BASE_TPL.read_text(encoding="utf-8")
+    block = table[table.index("const OSC_UNRESOLVED_REMEDIATION") :]
+    block = block[: block.index("};")]
+    for reason in get_args(UnresolvedReason):
+        assert f"{reason}:" in block, reason
+
+
+@pytest.mark.unit
+def test_enabled_screen_reader_text_matches_between_server_and_client() -> None:
+    """The server renders this string at first paint and after every
+    HTMX swap; the JS rewrites it on edit. They must name the same
+    causes or the announcement changes meaning as the operator types."""
+    js = _js_concatenated_string(
+        _BASE_TPL.read_text(encoding="utf-8"),
+        "'Will save disabled:",
+        "Maximum Height set).'",
+    )
+    served = _BINDINGS_TPL.read_text(encoding="utf-8")
+    start = served.index("'Will save disabled:")
+    rendered = served[start + 1 : served.index("'", start + 1)]
+    assert js == rendered
+    assert "Maximum Height" in js

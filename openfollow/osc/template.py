@@ -146,9 +146,8 @@ _EDIT_TIME_SOURCES: frozenset[str] = _POSITION_SOURCES | frozenset({"markerid"})
 # honest by ``tests/test_web_osc_placeholder_recognition.py``.
 PLACEHOLDERS: frozenset[str] = _SOURCES
 
-# Why an edit-time placeholder can't resolve. The web layer words one
-# message per reason; inferring the cause from the token's shape instead
-# misreports a ``[z.frac]`` that only needs the grid height.
+# Why an edit-time placeholder can't resolve. Each surface words one
+# remediation per reason.
 UnresolvedReason = Literal["default_marker", "explicit_marker", "grid_height"]
 
 # ``int:min-max`` / ``scale:min-max`` range bounds – signed, optionally
@@ -388,8 +387,8 @@ def unresolved_placeholder_reasons(
     ``token`` is the operator-facing form (``"[x]"`` / ``"[x:5]"`` /
     ``"[z.frac]"``); ``reason`` names the actionable fix, so a caller can
     word its message per cause instead of inferring one from the token's
-    shape. Inferring is what reported "needs a default marker" for a
-    ``[z.frac]`` blocked only on the grid height.
+    shape: a grid-blocked ``[z.frac]`` and a marker-blocked one are
+    indistinguishable by shape.
 
     Only position + ``markerid`` slots are surfaced
     (:data:`_EDIT_TIME_SOURCES`); fader / ``markerfader`` slots surface
@@ -402,10 +401,10 @@ def unresolved_placeholder_reasons(
       ``default_marker_id is None`` OR not in ``registered_marker_ids``
       (``"default_marker"``).
     - **Explicit slot** (``ref_index=N``): unresolved when ``N`` is not
-      registered (``"explicit_marker"``) - except ``[markerid:N]``,
+      registered (``"explicit_marker"``) – except ``[markerid:N]``,
       which substitutes ``N`` directly and so never misses.
     - **``z`` carrying ``frac``**: additionally unresolved when
-      ``grid_max_height <= 0`` (no denominator, the renderer raises),
+      ``grid_max_height <= 0`` (no denominator – the renderer raises),
       reported as ``"grid_height"``.
 
     A token blocked by both its marker and the grid height reports the
@@ -429,7 +428,7 @@ def unresolved_placeholder_reasons(
         if p.source not in _EDIT_TIME_SOURCES:
             continue
         if p.controller_index is not None:
-            # ``:cN`` resolves live - runtime skip, never an edit-time pill.
+            # ``:cN`` resolves live – runtime skip, never an edit-time pill.
             continue
         is_z_frac = p.source == "z" and any(t.kind == "frac" for t in p.transforms)
         grid_unresolved = is_z_frac and grid_max_height <= 0.0
@@ -460,7 +459,7 @@ def unresolved_placeholders(
     grid_max_height: float = 0.0,
 ) -> tuple[str, ...]:
     """Bracketed placeholder tokens in ``parts`` that can't be resolved,
-    in stable order - the web UI pill renderer compares each pill's
+    in stable order – the web UI pill renderer compares each pill's
     textContent against this list.
 
     The token projection of :func:`unresolved_placeholder_reasons`; see

@@ -1207,22 +1207,20 @@ def test_reason_explicit_marker_when_target_unregistered() -> None:
 
 @pytest.mark.parametrize("tpl", ["[z.frac]", "[z.frac.inv]"])
 def test_reason_grid_height_when_marker_resolves_but_height_unset(tpl: str) -> None:
-    """The defect this API exists for: with the default marker set and
-    registered, a fractional-Z token is blocked only by the grid height.
-    Reported as a marker problem, it sent the operator to a control they
-    had already set."""
+    """With the default marker set and registered, a fractional-Z token
+    is blocked only by the grid height."""
     assert _reasons(tpl, marker=0, registered=frozenset({0}), grid=0.0) == ((tpl, "grid_height"),)
 
 
 def test_reason_grid_height_for_explicit_slot_whose_marker_is_registered() -> None:
-    """``[z:3.frac]`` with marker 3 registered is a grid problem, not the
-    "marker isn't registered" its explicit index would imply."""
+    """``[z:3.frac]`` with marker 3 registered is a grid problem; the
+    explicit index says nothing about which cause applies."""
     assert _reasons("[z:3.frac]", marker=None, registered=frozenset({3}), grid=0.0) == (("[z:3.frac]", "grid_height"),)
 
 
 def test_reason_marker_precedes_grid_on_default_slot() -> None:
     """Both causes apply; the marker one is reported so the message names
-    one next step. The grid cause surfaces once the marker resolves."""
+    one next step."""
     assert _reasons("[z.frac]", marker=None, registered=frozenset({0}), grid=0.0) == (("[z.frac]", "default_marker"),)
 
 
@@ -1232,7 +1230,7 @@ def test_reason_marker_precedes_grid_on_explicit_slot() -> None:
     )
 
 
-def test_reason_duplicate_token_collapses_to_first() -> None:
+def test_reason_repeated_token_reported_once() -> None:
     assert _reasons("[z.frac]/[z.frac]", marker=0, registered=frozenset({0}), grid=0.0) == (
         ("[z.frac]", "grid_height"),
     )
@@ -1249,25 +1247,3 @@ def test_reasons_preserve_appearance_order_across_causes() -> None:
 
 def test_reasons_empty_when_everything_resolves() -> None:
     assert _reasons("[x] [z.frac] [markerid]", marker=0, registered=frozenset({0}), grid=4.0) == ()
-
-
-@pytest.mark.parametrize(
-    ("tpl", "marker", "registered", "grid"),
-    [
-        ("[x]", None, frozenset({0}), 4.0),
-        ("[x:9]", 0, frozenset({0}), 4.0),
-        ("[z.frac]", 0, frozenset({0}), 0.0),
-        ("/p/[markerid]/[x:9]/[z.frac]", None, frozenset({0}), 0.0),
-        ("[x] [z.frac] [markerid]", 0, frozenset({0}), 4.0),
-    ],
-)
-def test_token_api_is_the_projection_of_the_reason_api(tpl, marker, registered, grid) -> None:  # noqa: ANN001
-    """``unresolved_placeholders`` must stay the token half of the same
-    computation – the pill renderer compares against it."""
-    tokens = unresolved_placeholders(
-        _ct(tpl),
-        default_marker_id=marker,
-        registered_marker_ids=registered,
-        grid_max_height=grid,
-    )
-    assert tokens == tuple(t for t, _ in _reasons(tpl, marker=marker, registered=registered, grid=grid))

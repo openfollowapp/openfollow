@@ -1935,9 +1935,15 @@ def _osc_binding_marker_display(
     return out
 
 
+# Causes the ``markers`` field can actually fix.
+_MARKER_BLUR_REASONS: frozenset[str] = frozenset({"default_marker", "explicit_marker"})
+
+
 def _osc_binding_unresolved_blur_error(
     query: Mapping[str, Any],
     cfg: AppConfig,
+    *,
+    field_name: str = "osc_message",
 ) -> str | None:
     """Surface inline blur errors for unresolved placeholders on the
     ``osc_binding`` form.
@@ -1978,15 +1984,9 @@ def _osc_binding_unresolved_blur_error(
             if token not in seen:
                 by_reason.setdefault(reason, []).append(token)
                 seen.add(token)
-    if not seen:
-        return None
-    # One sentence per cause, so each names the fix it actually wants.
-    # The cause comes from the resolver, never from the token's shape: a
-    # grid-blocked ``[z.frac]`` carries no explicit index and a
-    # ``[z:2.frac]`` carries one, so classifying by shape sent both to a
-    # marker sentence that couldn't resolve them. Order is fixed rather
-    # than first-seen so the message reads the same however the operator
-    # ordered the arguments.
+    # One sentence per cause, each naming the control that fixes it.
+    # Order is fixed rather than first-seen so the message reads the same
+    # however the operator ordered the arguments.
     templates: tuple[tuple[UnresolvedReason, str], ...] = (
         (
             "default_marker",
@@ -1996,9 +1996,18 @@ def _osc_binding_unresolved_blur_error(
         ("explicit_marker", "{tokens} references a marker that isn't registered."),
         ("grid_height", "{tokens} needs Grid → Maximum Height set to a non-zero value."),
     )
+    # The markers field can only act on the marker causes; a grid-height
+    # sentence there would describe a control it has no bearing on.
+    actionable = _MARKER_BLUR_REASONS if field_name == "markers" else None
     parts: list[str] = [
-        text.format(tokens=", ".join(by_reason[reason])) for reason, text in templates if reason in by_reason
+        text.format(tokens=", ".join(by_reason[reason]))
+        for reason, text in templates
+        if reason in by_reason and (actionable is None or reason in actionable)
     ]
+    # Guard the join, not the token set: a reason with no entry above
+    # would otherwise render an empty warning span.
+    if not parts:
+        return None
     return " ".join(parts)
 
 
@@ -2099,6 +2108,37 @@ def _render_midi_fader_capture_status(
     )
 
 
+def _row_unresolved_reasons(
+    row: OscTransmitterConfig,
+    registered_marker_ids: frozenset[int],
+    *,
+    grid_max_height: float = 0.0,
+) -> dict[str, str]:
+    """Token -> cause for every placeholder in ``row``'s address + args
+    that can't resolve, in address-then-args appearance order.
+
+    The pill tooltip and the blur message word a remediation per cause,
+    so the cause travels with the token rather than being re-derived
+    from its shape at each surface.
+    """
+    from openfollow.osc.template import (
+        compile_template,
+        unresolved_placeholder_reasons,
+    )
+
+    effective_marker_id = _effective_default_marker_id(row.markers, registered_marker_ids)
+    out: dict[str, str] = {}
+    for tpl in (row.address, *row.args):
+        for token, reason in unresolved_placeholder_reasons(
+            compile_template(tpl),
+            default_marker_id=effective_marker_id,
+            registered_marker_ids=registered_marker_ids,
+            grid_max_height=grid_max_height,
+        ):
+            out.setdefault(token, reason)
+    return out
+
+
 def _row_unresolved_placeholders(
     row: OscTransmitterConfig,
     registered_marker_ids: frozenset[int],
@@ -2118,28 +2158,9 @@ def _row_unresolved_placeholders(
       (it keys off ``aria-invalid``), keeping the "Save with enabled=False"
       workflow available.
 
-    Order is address-then-args appearance, duplicates collapsed across the
-    row; see :func:`openfollow.osc.template.unresolved_placeholders`.
+    The token half of :func:`_row_unresolved_reasons`.
     """
-    from openfollow.osc.template import (
-        compile_template,
-        unresolved_placeholders,
-    )
-
-    effective_marker_id = _effective_default_marker_id(row.markers, registered_marker_ids)
-    out: list[str] = []
-    seen: set[str] = set()
-    for tpl in (row.address, *row.args):
-        for token in unresolved_placeholders(
-            compile_template(tpl),
-            default_marker_id=effective_marker_id,
-            registered_marker_ids=registered_marker_ids,
-            grid_max_height=grid_max_height,
-        ):
-            if token not in seen:
-                out.append(token)
-                seen.add(token)
-    return tuple(out)
+    return tuple(_row_unresolved_reasons(row, registered_marker_ids, grid_max_height=grid_max_height))
 
 
 def _apply_osc_binding_fields(
@@ -5581,6 +5602,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 row.id: _row_unresolved_placeholders(row, registered, grid_max_height=cfg.grid.max_height)
                 for row in cfg.osc_transmitters.transmitters
             },
+            "unresolved_reasons_by_row": {
+                row.id: _row_unresolved_reasons(row, registered, grid_max_height=cfg.grid.max_height)
+                for row in cfg.osc_transmitters.transmitters
+            },
             "marker_display_by_row": _osc_binding_marker_display(cfg, server.get_marker_catalog()),
         }
 
@@ -6951,6 +6976,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             err_msg = _osc_binding_unresolved_blur_error(
                 request.query,
                 _request_scoped_config(),
+                field_name=field_name,
             )
             if err_msg is not None:
                 # Unresolved-placeholder rows are intentionally save-able (the

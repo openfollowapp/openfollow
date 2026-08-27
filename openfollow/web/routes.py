@@ -5596,16 +5596,15 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         chips, unresolved pills, and status dots appear at first paint, not
         only after the operator saves a row."""
         registered = frozenset(cfg.controlled_marker_ids)
+        # Scan each row once; the token list is the reason map's keys.
+        reasons_by_row = {
+            row.id: _row_unresolved_reasons(row, registered, grid_max_height=cfg.grid.max_height)
+            for row in cfg.osc_transmitters.transmitters
+        }
         return {
             "registered_marker_ids": sorted(registered),
-            "unresolved_by_row": {
-                row.id: _row_unresolved_placeholders(row, registered, grid_max_height=cfg.grid.max_height)
-                for row in cfg.osc_transmitters.transmitters
-            },
-            "unresolved_reasons_by_row": {
-                row.id: _row_unresolved_reasons(row, registered, grid_max_height=cfg.grid.max_height)
-                for row in cfg.osc_transmitters.transmitters
-            },
+            "unresolved_by_row": {row_id: tuple(reasons) for row_id, reasons in reasons_by_row.items()},
+            "unresolved_reasons_by_row": reasons_by_row,
             "marker_display_by_row": _osc_binding_marker_display(cfg, server.get_marker_catalog()),
         }
 

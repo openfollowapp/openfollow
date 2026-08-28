@@ -107,17 +107,54 @@ def test_wire_zero_after_a_nonzero_speed_is_stored_as_zero(monkeypatch) -> None:
     assert marker.speed == (0.0, 0.0, 0.0)
 
 
-def test_wire_speed_tracker_keeps_previous_vector_when_a_packet_omits_it(monkeypatch) -> None:
+def test_a_packet_without_a_speed_chunk_derives_instead_of_freezing(monkeypatch) -> None:
+    """The speed chunk is optional, so a sender may publish one and then stop.
+    The last vector it sent describes that moment only - holding it would report
+    a constant speed for a tracker that has since moved anywhere at all."""
     monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
-    monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.5))
+    now = {"t": 1.0}
+    monkeypatch.setattr(receiver_module.time, "monotonic", lambda: now["t"])
 
     receiver = PsnReceiver()
     receiver._on_packet(_FakeDataPacket([_PacketTracker(5, _Vec(0.0, 0.0, 0.0), _Vec(1.0, 0.0, 0.0))]))
+    now["t"] = 1.5
     receiver._on_packet(_FakeDataPacket([_PacketTracker(5, _Vec(1.0, 0.0, 0.0), None)]))
 
     marker = receiver.get_marker(5)
     assert marker is not None
-    assert marker.speed == (1.0, 0.0, 0.0)
+    assert marker.speed == pytest.approx((2.0, 0.0, 0.0))
+
+    # Still no speed chunk and no movement: the derived value is the last one
+    # known, not a stale wire vector reasserting itself.
+    now["t"] = 2.0
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(5, _Vec(1.0, 0.0, 0.0), None)]))
+    assert marker.speed == pytest.approx((2.0, 0.0, 0.0))
+
+
+def test_a_second_station_on_the_same_tracker_id_does_not_inherit_trust(monkeypatch) -> None:
+    """Several stations on one PSN group is normal - the protocol has no server
+    id, so nothing stops two of them publishing the same tracker id. A station
+    that only ever sends zeros must keep being derived even while another
+    station publishes real vectors for that id."""
+    monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+    now = {"t": 1.0}
+    monkeypatch.setattr(receiver_module.time, "monotonic", lambda: now["t"])
+
+    receiver = PsnReceiver()
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(7, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 3.0, 0.0))]), "10.0.0.1")
+    marker = receiver.get_marker(7)
+    assert marker is not None
+    assert marker.speed == (0.0, 3.0, 0.0)
+
+    # A different station, moving the same id while publishing zeros.
+    now["t"] = 1.5
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(7, _Vec(1.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]), "10.0.0.2")
+    assert marker.speed == pytest.approx((2.0, 0.0, 0.0))
+
+    # The trusted station is still trusted when it comes back.
+    now["t"] = 2.0
+    receiver._on_packet(_FakeDataPacket([_PacketTracker(7, _Vec(2.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]), "10.0.0.1")
+    assert marker.speed == (0.0, 0.0, 0.0)
 
 
 def test_wire_trust_is_per_tracker(monkeypatch) -> None:
@@ -153,12 +190,12 @@ def test_evicted_tracker_forgets_its_wire_speed_trust(monkeypatch) -> None:
 
     receiver = PsnReceiver()
     receiver._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 2.0, 0.0))]))
-    assert 1 in receiver._wire_speed_ids
+    assert 1 in receiver._wire_speed_sender
 
     now["t"] = 100.0  # past the TTL and the sweep interval
     receiver._on_packet(_FakeDataPacket([_PacketTracker(2, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
     assert receiver.get_marker(1) is None
-    assert 1 not in receiver._wire_speed_ids
+    assert 1 not in receiver._wire_speed_sender
 
     receiver._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
     now["t"] = 100.5
@@ -283,9 +320,8 @@ def test_receiver_skips_non_int_tracker_id_without_dropping_later_trackers(monke
 
 
 def test_receiver_evicts_stale_markers(monkeypatch) -> None:
-    """#540: markers silent past the TTL are dropped from every per-id
-    structure so an enumerated tracker_id can't persist for the process
-    lifetime."""
+    """Markers silent past the TTL are dropped from every per-id structure so
+    an enumerated tracker_id can't persist for the process lifetime."""
     monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
     monkeypatch.setattr(
         receiver_module.time, "monotonic", _packet_clock(0.0, 100.0)
@@ -302,18 +338,18 @@ def test_receiver_evicts_stale_markers(monkeypatch) -> None:
         )
     )
     assert set(receiver._markers) == {1, 2, 3}
-    assert receiver._wire_speed_ids == {1}
+    assert set(receiver._wire_speed_sender) == {1}
 
     # A later packet for marker 2 sweeps the now-stale 1 and 3 out of every structure.
     receiver._on_packet(_FakeDataPacket([_PacketTracker(2, _Vec(1.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
     assert set(receiver._markers) == {2}
     assert set(receiver._last_seen) == {2}
     assert set(receiver._last_pos) == {2}
-    assert receiver._wire_speed_ids == set()
+    assert receiver._wire_speed_sender == {}
 
 
 def test_receiver_eviction_sweep_is_throttled(monkeypatch) -> None:
-    """#540: the sweep runs at most every _EVICT_SWEEP_INTERVAL_S so a packet
+    """The sweep runs at most every _EVICT_SWEEP_INTERVAL_S so a packet
     flood can't make it hot – a stale entry survives until the next sweep."""
     monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
     monkeypatch.setattr(

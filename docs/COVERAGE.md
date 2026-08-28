@@ -243,21 +243,39 @@ Remaining survivors grouped by pattern:
 
 #### `openfollow/psn/receiver.py`
 
-Run: 260 covered mutants, ~213 killed + 1 timeout, **32 survivors**
-after PR-F kill tests in `tests/test_psn_receiver_mutation.py` (down
-from 62 on the baseline). The 30 newly-killed mutants are in
-`_on_packet`:  marker-id / default-name preservation, wire-speed trust
-dispatch (promotion, verbatim storage, eviction), axis-index correctness
-of the delta arithmetic, dt-window boundary, and the bookkeeping writes
-that feed `is_marker_online`. Plus the default `timeout=2.0`
-kwarg and the default `source_ip=""` kwarg.
+Run: 219 covered mutants, 183 killed + 3 timeouts, **33 survivors**.
+Reproduce with `only_mutate = ["openfollow/psn/receiver.py"]` (leaving
+`paths_to_mutate` at `openfollow/`, so the rest of the package is still
+copied for the mutants to import) and the whole receiver suite as the
+test selection, not just the mutation file – `tests_dir =
+["tests/test_psn_receiver_mutation.py", "tests/test_psn_receiver.py",
+"tests/test_psn_receiver_sockets.py", "tests/test_psn_edge_cases.py"]`
+with `pytest_add_cli_args = ["-x", "-q"]`. Dropping `-m unit` is what
+makes the numbers mean anything here: the packet-level suite is
+integration-marked and is where most of the kills live. Regenerate
+`.coverage` for the module first – `mutate_only_covered_lines` decides
+the mutant set from it, so a stale file changes the totals.
+
+Nothing survives on the wire-speed dispatch: the promotion of a sender
+to wire-trusted for a tracker, the sender comparison that chooses
+verbatim storage over derivation, and the drop on TTL eviction are all
+killed, as are the `Marker` construction args, the axis arithmetic of
+the position delta, and the bookkeeping writes that feed
+`is_marker_online`.
 
 | Pattern                                                        | Count | Justification                                                                                                                                                                                                                                                                                             |
 | -------------------------------------------------------------- | ----: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `logger.debug("...", exc_info=True)` → `exc_info=None` / `False` / positional-only | ~9    | `logger.debug` accepts all three forms with equivalent downstream behaviour (the exception object is only captured when the logger is actually emitting). Killing requires asserting on the log record's `exc_info` attribute, which is implementation-detail testing of the stdlib logger.           |
-| Log-message string mutants (``"XX...XX"`` / case-flipped)      | ~7    | Log text is not a spec – asserting on exact wording would lock the project into a specific log format.                                                                                                                                                                                                 |
-| `recvfrom(1500)` → `recvfrom(1501)` / `recvfrom(None)`         | 2     | PSN packets are well under the IPv4 MTU; any buffer size ≥ ~1400 admits the same packets. `None` matches the kernel default on most platforms.                                                                                                                                                       |
+| `logger.debug("...", exc_info=True)` → `exc_info=None` / `False` / positional-only | 12    | `logger.debug` accepts all three forms with equivalent downstream behaviour (the exception object is only captured when the logger is actually emitting). Killing requires asserting on the log record's `exc_info` attribute, which is implementation-detail testing of the stdlib logger.           |
+| Log-message string mutants (``"XX...XX"`` / case-flipped)      | 6     | Log text is not a spec – asserting on exact wording would lock the project into a specific log format. The `"XX...XX"` wrap survives even the existing substring assertions, since the original text is still contained in the mutated string.                                                          |
+| `start` bind-failure log args: `exc` → `None` / dropped        | 2     | Same rationale one argument further in: the `%s` operand of a `logger.error` on the path that has already disabled PSN input. The behaviour under test (`_receiver` stays `None`, `rebind` raises) is pinned in `tests/test_psn_edge_cases.py`.                                                          |
+| `recvfrom(65535)` → `recvfrom(65536)` / `recvfrom(None)`       | 2     | 65535 is the largest a UDP datagram can be, so no reachable packet is truncated differently by a bigger buffer. `None` matches the kernel default on most platforms.                                                                                                                                    |
 | `break` → `return` in the OSError-after-stop branch            | 1     | Both exit the `while self.running:` loop; no finally-block runs in between. Observationally identical.                                                                                                                                                                                                 |
+| `self._last_evict_sweep: float = 0.0` → `1.0`                  | 1     | The field is a "when did the sweep last run" floor compared against `time.monotonic()`, which starts at the host's uptime. Any small constant is equally far in the past, so the first packet sweeps either way.                                                                                        |
+| `def _on_packet(..., sender: str = "")` → `"XXXX"`             | 1     | The default only applies to a caller that supplies no source address, and the value is then compared only against itself in `_wire_speed_sender`. Any constant default behaves identically; the production caller (`_RobustReceiver.run`) always passes the real address, which is pinned by test.       |
+| Strict vs non-strict boundary flips: `>= _EVICT_SWEEP_INTERVAL_S` → `>`, `0.001 < dt` → `<=`, `> _MARKER_TTL_S` → `>=` | 3     | Each differs only when the elapsed time lands exactly on the threshold, to the float. The windows either side are already pinned (`tests/test_psn_receiver_mutation.py::TestDerivationGuards`, `::TestElapsedTimeIsADifference`); a kill would have to construct an exact-equality clock, which asserts the comparison operator rather than the behaviour. |
+| `prev_pos is not None and prev_t is not None` → `or`           | 1     | `_last_pos[tid]` and `_last_seen[tid]` are written together at the end of every accepted tracker, so no reachable state has one without the other and the two operators agree on every input.                                                                                                           |
+| `getattr(t, "timestamp", 0)` / `getattr(t, "status", _INVALID_STATUS)` → default `None` | 2     | The fallback fires only for a tracker whose parser emitted neither optional chunk, and `Marker.apply_remote` runs both through `_clamped_timestamp` / `_clamped_status`, which map `None` to the same `0` / `0.0` the literals supply. Equivalent for every input.                                       |
+| `self._last_seen.pop(tid, )` / `self._last_pos.pop(tid, )`     | 2     | The eviction list is built from `self._last_seen.items()`, and `_last_pos` is written in the same block as `_last_seen`, so both keys are always present and the default is unreachable. (The matching `self._markers.pop` mutant *is* killed – a `_last_seen` entry can outlive its marker.)             |
 
 #### `openfollow/configuration.py`
 

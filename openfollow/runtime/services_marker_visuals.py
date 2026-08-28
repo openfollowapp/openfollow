@@ -21,7 +21,8 @@ from openfollow.runtime.overlay_state import (
     OverlayState,
     VirtualFaderDisplayData,
 )
-from openfollow.runtime.services_detection_pin import _NOMINAL_FRAME_DT, is_assist_controlled
+from openfollow.runtime.services_detection_pin import is_assist_controlled
+from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.runtime_metrics import OverlayStatePool
 from openfollow.units import UnitSystem
 
@@ -346,12 +347,13 @@ def build_marker_visual_state(
     system_stats: Any,
     person_detector: Any,
     cam_params_buffer: npt.NDArray[Any],
-    dt: float = _NOMINAL_FRAME_DT,
+    dt: float,
 ) -> OverlayState:
     """Build a complete OverlayState snapshot for atomic renderer swap.
 
-    ``dt`` (seconds since the previous animate frame) feeds the velocity
-    estimate each controlled marker broadcasts.
+    ``dt`` is the real seconds elapsed since the previous animate frame - not
+    the clamped motion step - because it divides a displacement into a rate for
+    the velocity each controlled marker broadcasts.
     """
     controlled_set = set(app._controlled_ids)
     marker_speeds = app._input_manager.get_marker_gamepad_speeds() if app._input_manager is not None else {}
@@ -363,15 +365,12 @@ def build_marker_visual_state(
     # estimator state is pruned to the controlled set, so a marker that leaves
     # and returns restarts from its new position instead of a stale reference.
     velocity_states: dict[int, MarkerVelocityState] = app._marker_velocity_states
-    for stale_id in [mid for mid in velocity_states if mid not in controlled_set]:
-        del velocity_states[stale_id]
+    prune_to_keep(velocity_states, controlled_set)
     for tid in controlled_set:
         marker = app._server.get_marker(tid)
         if marker is None:
             continue
-        vstate = velocity_states.get(tid)
-        if vstate is None:
-            vstate = velocity_states[tid] = MarkerVelocityState()
+        vstate: MarkerVelocityState = get_or_create(velocity_states, tid, MarkerVelocityState)
         marker.set_speed(*estimate_marker_velocity(vstate, marker.pos, dt))
 
     # Fetch controller info once and build a reverse map so the per-marker

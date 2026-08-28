@@ -4,8 +4,8 @@
 
 ``PsnReceiver`` runs a background thread (``_RobustReceiver``) that parses
 incoming PSN packets and ignores locally-controlled marker IDs. A tracker's
-speed is the sender's vector once that sender has published a non-zero one;
-until then it is derived from position deltas.
+speed is the sender's vector while that sender is publishing one; otherwise it
+is derived from position deltas.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ class _RobustReceiver(pypsn.Receiver):  # type: ignore[misc]
                 # Max UDP payload: a PSN data packet exceeds 1500 B at ~15
                 # trackers, and a short read truncates the tail → struct.error →
                 # the whole frame is dropped. Size to the largest datagram.
-                data, _ = self.socket.recvfrom(65535)
+                data, addr = self.socket.recvfrom(65535)
             except TimeoutError:
                 continue  # no data within timeout – normal, keep looping
             except OSError:
@@ -51,7 +51,9 @@ class _RobustReceiver(pypsn.Receiver):  # type: ignore[misc]
 
             try:
                 psn_data = pypsn.parse_psn_packet(data)
-                self.callback(psn_data)
+                # The sender's address, so speed handling can tell two stations
+                # publishing the same tracker id apart.
+                self.callback(psn_data, addr[0])
             except Exception:
                 logger.debug("PSN parse/callback error", exc_info=True)
 
@@ -92,9 +94,9 @@ class PsnReceiver:
         self._markers: dict[int, Marker] = {}
         self._last_seen: dict[int, float] = {}
         self._last_pos: dict[int, tuple[float, float, float]] = {}
-        # Trackers whose sender has published a non-zero speed: from then on
-        # the wire vector is stored verbatim, zeros included.
-        self._wire_speed_ids: set[int] = set()
+        # Per tracker, the address of the sender last seen publishing a
+        # non-zero speed for it. Only that sender's vectors are stored verbatim.
+        self._wire_speed_sender: dict[int, str] = {}
         self._last_evict_sweep: float = 0.0
         self._receiver: pypsn.Receiver | None = None
 
@@ -148,8 +150,13 @@ class PsnReceiver:
         with self._lock:
             self._ignore_ids = set(ignore_ids)
 
-    def _on_packet(self, data: object) -> None:
-        """Callback invoked by pypsn on each received packet."""
+    def _on_packet(self, data: object, sender: str = "") -> None:
+        """Callback invoked by pypsn on each received packet.
+
+        *sender* is the source address of the datagram; it scopes the wire-speed
+        decision to one station so a second station publishing the same tracker
+        id cannot claim the first one's trust.
+        """
         try:
             if not isinstance(data, pypsn.PsnDataPacket):
                 return
@@ -185,18 +192,20 @@ class PsnReceiver:
                     new_pos = (t.pos.x, t.pos.y, t.pos.z)
                     wire = t.speed
                     if wire is not None and (wire.x != 0.0 or wire.y != 0.0 or wire.z != 0.0):
-                        self._wire_speed_ids.add(tid)
+                        self._wire_speed_sender[tid] = sender
                     speed: tuple[float, float, float] | None = None
-                    if tid in self._wire_speed_ids:
-                        # A sender that publishes speed is trusted verbatim, exact
-                        # zeros included: a marker it holds still reports zero. A
-                        # packet without the field keeps the previous vector.
-                        if wire is not None:
-                            speed = (wire.x, wire.y, wire.z)
+                    if wire is not None and self._wire_speed_sender.get(tid) == sender:
+                        # This sender publishes speed for this tracker, so its
+                        # vector is taken verbatim, exact zeros included: a marker
+                        # it holds still reports zero. Both conditions are per
+                        # packet - a frame that omits the speed chunk, or one from
+                        # a second station on the same tracker id, derives instead
+                        # of freezing on a vector nobody is refreshing.
+                        speed = (wire.x, wire.y, wire.z)
                     else:
-                        # A sender that has only ever published zero speed gets it
-                        # derived from the position delta; only when moving, so
-                        # the last known speed stays visible between bursts.
+                        # No speed to trust: derive it from the position delta,
+                        # only when moving, so the last known speed stays visible
+                        # between bursts.
                         prev_pos = self._last_pos.get(tid)
                         prev_t = self._last_seen.get(tid)
                         if prev_pos is not None and prev_t is not None:
@@ -227,4 +236,4 @@ class PsnReceiver:
             self._markers.pop(tid, None)
             self._last_seen.pop(tid, None)
             self._last_pos.pop(tid, None)
-            self._wire_speed_ids.discard(tid)
+            self._wire_speed_sender.pop(tid, None)

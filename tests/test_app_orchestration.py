@@ -204,17 +204,19 @@ class TestAnimate:
         orch.animate(app)
         assert captured[-1] == pytest.approx(orch._MAX_FRAME_DT)
 
-    def test_frame_dt_reaches_update_marker_visuals(self) -> None:
-        """The velocity each controlled marker broadcasts integrates against
-        the same frame step the input path moved it by."""
+    def test_real_elapsed_time_reaches_update_marker_visuals(self) -> None:
+        """The broadcast velocity divides a displacement by this step, so it
+        gets the time the frame actually took. The clamp that keeps relative
+        input from teleporting on a catch-up frame would make a stalled frame's
+        velocity read as many times too fast."""
         app = _make_fake_app()
         orch.animate(app)
         app._last_animate_time -= 5.0
         orch.animate(app)
-        assert app._runtime_services.marker_visual_dts == [
-            pytest.approx(orch._DEFAULT_FRAME_DT),
-            pytest.approx(orch._MAX_FRAME_DT),
-        ]
+        assert app._runtime_services.marker_visual_dts[0] == pytest.approx(orch._DEFAULT_FRAME_DT)
+        stalled = app._runtime_services.marker_visual_dts[1]
+        assert stalled > orch._MAX_FRAME_DT
+        assert stalled == pytest.approx(5.0, abs=0.5)
 
     def test_no_input_manager_skips_keyboard_poll(self) -> None:
         app = _make_fake_app(input_manager=None)

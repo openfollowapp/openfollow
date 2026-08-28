@@ -51,7 +51,7 @@ from openfollow.otp.server import (
     OtpServer,
 )
 from openfollow.packet_chunking import MAX_DATAGRAM_BYTES
-from openfollow.psn.marker import Marker
+from openfollow.psn.marker import Marker, Vec3
 from openfollow.psn.server import PsnServer
 from openfollow.rttrpm.server import RttrpmServer
 
@@ -121,9 +121,6 @@ def _count_sends(server: object, wire: Wire, dest_arg: bool) -> None:
             original(data, stop_event)
 
     server._send = wrapped  # type: ignore[attr-defined]
-
-
-Vec3 = tuple[float, float, float]
 
 
 def _orbit(count: int, elapsed: float, radius: float, period_s: float) -> list[tuple[Vec3, Vec3]]:

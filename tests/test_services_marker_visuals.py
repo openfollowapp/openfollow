@@ -953,6 +953,7 @@ class TestBuildMarkerVisualStateTornRead:
             system_stats=None,
             person_detector=None,
             cam_params_buffer=np.zeros(7),
+            dt=1.0 / 60.0,
         )
 
         assert len(state.markers) == 1
@@ -975,6 +976,7 @@ class TestBuildMarkerVisualStateTornRead:
             system_stats=None,
             person_detector=None,
             cam_params_buffer=np.zeros(7),
+            dt=1.0 / 60.0,
         )
 
         assert state.lens_k1 == -0.15

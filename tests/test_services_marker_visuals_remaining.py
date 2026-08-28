@@ -31,6 +31,7 @@ import pytest
 from openfollow.configuration import AppConfig
 from openfollow.psn.marker import Marker
 from openfollow.psn.receiver import PsnReceiver
+from openfollow.runtime.marker_velocity import _MAX_REPORTED_SPEED_MPS
 from openfollow.runtime.overlay_draw_hud import draw_marker_card
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 from openfollow.runtime.services_detection_pin import get_or_create_manual_marker
@@ -683,8 +684,11 @@ class TestSpeedDerivation:
 
     def test_first_frame_of_a_newly_controlled_marker_writes_zero(self, pool: OverlayStatePool) -> None:
         """No reference position yet: the seed frame reports zero rather than
-        treating the marker's position as a displacement from the origin."""
-        marker = _FakeMarker(1, pos=(7.0, 3.0, 1.0))
+        treating the marker's position as a displacement from the origin. The
+        marker starts one slow frame's travel from the origin, so a reference
+        that silently defaulted there would publish an ordinary velocity that
+        no clamp or deadband would flatten back to zero."""
+        marker = _FakeMarker(1, pos=(0.6 * _FRAME_DT, 0.0, 0.0))
         app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
         _build(app, pool)
         assert marker.set_speed_calls == [_ZERO]
@@ -707,15 +711,30 @@ class TestSpeedDerivation:
         _build(app, pool)
         assert m2.set_speed_calls[-1] == _ZERO
 
-    def test_teleported_marker_writes_zero_not_a_spike(self, pool: OverlayStatePool) -> None:
-        """A reset / OSC snap moves the marker metres in one frame. That is a
-        jump, not motion, and must not put hundreds of m/s on the wire."""
+    def test_repositioned_marker_writes_a_bounded_velocity_not_a_spike(self, pool: OverlayStatePool) -> None:
+        """A reset / OSC snap moves the marker metres in one frame. As a rate
+        that is hundreds of m/s, which a dead-reckoning console would
+        extrapolate; the wire never carries more than the ceiling."""
         marker = _FakeMarker(1)
         app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
         _build(app, pool)
         marker.set_pos(5.0, 0.0, 0.0)
         _build(app, pool)
-        assert marker.set_speed_calls[-1] == _ZERO
+        assert marker.set_speed_calls[-1][0] == pytest.approx(0.3 * _MAX_REPORTED_SPEED_MPS)
+
+    def test_a_drag_faster_than_the_ceiling_is_not_reported_as_standing_still(self, pool: OverlayStatePool) -> None:
+        """A grabbed marker follows the cursor with no glide by default, so an
+        ordinary flick moves it far faster than the ceiling. Publishing zero
+        there would be the same bug in the other direction: a marker the
+        operator can see moving, reported as parked."""
+        marker = _FakeMarker(1)
+        app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
+        _build(app, pool)
+        for _ in range(60):
+            x, y, z = marker.pos
+            marker.set_pos(x + 35.0 * _FRAME_DT, y, z)
+            _build(app, pool)
+        assert marker.set_speed_calls[-1][0] == pytest.approx(_MAX_REPORTED_SPEED_MPS, abs=1e-6)
 
     def test_frame_dt_reaches_the_estimate(self, pool: OverlayStatePool) -> None:
         """Half a second of the same motion sampled at 60 and at 30 fps lands on
@@ -863,6 +882,7 @@ class TestExternalStateSnapshots:
             system_stats=None,
             person_detector=None,
             cam_params_buffer=buf,
+            dt=_FRAME_DT,
         )
         buf[0] = 999.0  # mutate the scratch buffer
         assert state.camera_params[0] != 999.0

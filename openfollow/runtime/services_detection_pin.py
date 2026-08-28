@@ -10,43 +10,12 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import numpy.typing as npt
 
+from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT, dt_steps, ema_factor
+from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
 if TYPE_CHECKING:
     from openfollow.psn.marker import Marker
-
-
-# The pin filter (velocity EMA, lookahead, output EMA) and the assist outer glide
-# are tuned for the ~60fps animate tick. Re-deriving each per-frame factor for the
-# real elapsed dt keeps the time constants stable whether animate runs at 60fps
-# (Mac) or slower (Pi) and across stalls, so ``smoothing`` / ``prediction`` behave
-# the same regardless of frame rate. This is the animate-cadence clock; the
-# tracker's Kalman runs on its own detection-cadence clock (see ``video/detection``)
-# – two deliberately separate clocks for two loops at different rates.
-_NOMINAL_FRAME_DT = 1.0 / 60.0
-_MIN_SMOOTH_DT = 1.0 / 1000.0
-_MAX_SMOOTH_DT = 0.2
-
-
-def _dt_steps(dt: float) -> float:
-    """Elapsed time as a multiple of the nominal animate frame, clamped."""
-    return min(max(dt, _MIN_SMOOTH_DT), _MAX_SMOOTH_DT) / _NOMINAL_FRAME_DT
-
-
-def _ema_factor(per_frame_alpha: float, steps: float) -> float:
-    """Re-derive a per-nominal-frame EMA alpha for ``steps`` frames elapsed.
-
-    At ``steps == 1`` it returns the alpha unchanged (steady 60fps); otherwise it
-    compounds the retention so the time constant is frame-rate-independent.
-    """
-    if steps == 1.0:
-        return per_frame_alpha
-    base = 1.0 - per_frame_alpha
-    if base <= 0.0:
-        return 1.0
-    # ``base`` is > 0 here, so the power is real; float() keeps mypy from widening
-    # ``float ** float`` (which can be complex) to Any.
-    return 1.0 - float(base**steps)
 
 
 @dataclass
@@ -142,10 +111,7 @@ def _get_pin_state(app: Any, marker_id: int) -> DetectionPinState:
     smoothing / glide state for its whole driven lifetime, so the never-reset
     outer glide stays continuous across frames.
     """
-    state: DetectionPinState | None = app._detection_pin_states.get(marker_id)
-    if state is None:
-        state = DetectionPinState()
-        app._detection_pin_states[marker_id] = state
+    state: DetectionPinState = get_or_create(app._detection_pin_states, marker_id, DetectionPinState)
     return state
 
 
@@ -206,7 +172,7 @@ def _advance_smoothing(
     target_x: float,
     target_y: float,
     cfg: Any,
-    dt: float = _NOMINAL_FRAME_DT,
+    dt: float = NOMINAL_FRAME_DT,
 ) -> tuple[float, float]:
     """Velocity-EMA + prediction lookahead + EMA smoothing of a world target.
 
@@ -216,7 +182,7 @@ def _advance_smoothing(
     velocity is tracked per nominal frame and ``prediction`` keeps its scale, so
     the lookahead distance is the same at 60fps or 30fps and across stalls.
     """
-    return _advance_smoothing_steps(pin_state, target_x, target_y, cfg, _dt_steps(dt))
+    return _advance_smoothing_steps(pin_state, target_x, target_y, cfg, dt_steps(dt))
 
 
 def _advance_smoothing_steps(
@@ -229,7 +195,7 @@ def _advance_smoothing_steps(
     """``_advance_smoothing`` body keyed by precomputed ``steps`` (= dt ÷ nominal
     frame). Lets the assist path derive ``steps`` once and share it with the outer
     glide instead of clamping ``dt`` twice per frame."""
-    vel_alpha = _ema_factor(0.3, steps)
+    vel_alpha = ema_factor(0.3, steps)
     if pin_state.prev_target_x is not None and pin_state.prev_target_y is not None:
         # Per-nominal-frame displacement, so a slow frame / dropped detection
         # doesn't inflate the estimated velocity.
@@ -244,7 +210,7 @@ def _advance_smoothing_steps(
     predicted_x = target_x + pin_state.vel_x * prediction
     predicted_y = target_y + pin_state.vel_y * prediction
 
-    alpha = _ema_factor(cfg.detection.smoothing, steps)
+    alpha = ema_factor(cfg.detection.smoothing, steps)
     if pin_state.smooth_x is None or pin_state.smooth_y is None:
         pin_state.smooth_x = predicted_x
         pin_state.smooth_y = predicted_y
@@ -260,7 +226,7 @@ def apply_detection_pin(
     person_detector: Any,
     unproject_cam_buffer: npt.NDArray[Any],
     screen_point_buffer: npt.NDArray[Any],
-    dt: float = _NOMINAL_FRAME_DT,
+    dt: float = NOMINAL_FRAME_DT,
 ) -> None:
     """Drive controlled marker(s) from detection with EMA smoothing.
 
@@ -355,7 +321,7 @@ def _apply_assist_all(
     person_detector: Any,
     unproject_cam_buffer: npt.NDArray[Any],
     screen_point_buffer: npt.NDArray[Any],
-    dt: float = _NOMINAL_FRAME_DT,
+    dt: float = NOMINAL_FRAME_DT,
 ) -> None:
     """Assist every controlled marker toward the person nearest its own anchor.
 
@@ -380,7 +346,7 @@ def _apply_assist_all(
     if w <= 0 or h <= 0:
         return
 
-    steps = _dt_steps(dt)  # shared by the inner smoothing and the outer glide
+    steps = dt_steps(dt)  # shared by the inner smoothing and the outer glide
     use_bottom = cfg.detection.pin_point == "bottom"
     params = _load_camera_params(app, unproject_cam_buffer)
     screen_pt = screen_point_buffer
@@ -499,7 +465,7 @@ def _assist_one(
     # Outer glide: ease the AI marker toward this frame's target. Seeded once
     # from the registered marker's pos; never reset → the output never snaps. The
     # glide rate is frame-rate-independent (re-derived from the shared ``steps``).
-    glide = _ema_factor(cfg.detection.smoothing, steps)
+    glide = ema_factor(cfg.detection.smoothing, steps)
     if state.ai_smooth_x is None or state.ai_smooth_y is None:
         out_x, out_y, _ = out_marker.pos
         state.ai_smooth_x = out_x
@@ -522,9 +488,7 @@ def _prune_manual_markers(app: Any, *, keep: set[int]) -> None:
     is off). Any other ghost is discarded – when the operator changes the
     controlled set or turns assist off, the old anchors must not linger.
     """
-    stale = [mid for mid in app._assist_manual if mid not in keep]
-    for mid in stale:
-        del app._assist_manual[mid]
+    prune_to_keep(app._assist_manual, keep)
 
 
 def _prune_pin_states(app: Any, *, keep: set[int]) -> None:
@@ -534,6 +498,4 @@ def _prune_pin_states(app: Any, *, keep: set[int]) -> None:
     (controlled set shrinks, mode switch, detection off) sheds its smoothing /
     glide state so a later re-entry seeds fresh from the live marker position.
     """
-    stale = [mid for mid in app._detection_pin_states if mid not in keep]
-    for mid in stale:
-        del app._detection_pin_states[mid]
+    prune_to_keep(app._detection_pin_states, keep)

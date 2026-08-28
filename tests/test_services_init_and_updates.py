@@ -1129,7 +1129,7 @@ class TestUpdateDelegators:
         renderer = _FakeOverlayRenderer()
         services._overlay_renderer = renderer
 
-        services.update_marker_visuals()
+        services.update_marker_visuals(0.25)
         assert renderer.state is built
         assert swapped_old[0] is built
 

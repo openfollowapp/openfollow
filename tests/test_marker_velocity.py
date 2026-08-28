@@ -3,21 +3,25 @@
 """Tests for :mod:`openfollow.runtime.marker_velocity`.
 
 The estimator behind the PSN speed field: a per-frame position delta in m/s,
-EMA-smoothed with a frame-rate-independent alpha, zero on the seeding frame
-and after a jump.
+EMA-smoothed with a frame-rate-independent alpha, zero on the seeding frame,
+clamped to the wire ceiling, and settling to exactly zero at rest.
 """
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
+from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT, dt_steps, ema_factor
 from openfollow.runtime.marker_velocity import (
-    _TELEPORT_SPEED_MPS,
+    _MAX_REPORTED_SPEED_MPS,
+    _MIN_SAMPLE_DT,
+    _STILL_SPEED_MPS,
     _VELOCITY_ALPHA,
     MarkerVelocityState,
     estimate_marker_velocity,
 )
-from openfollow.runtime.services_detection_pin import _NOMINAL_FRAME_DT, _dt_steps, _ema_factor
 
 pytestmark = pytest.mark.unit
 
@@ -45,9 +49,15 @@ def _drive(
 
 
 def test_first_frame_seeds_and_reports_zero() -> None:
+    """The seed frame has no reference position, so it reports zero rather than
+    reading the marker's own coordinates as a displacement from the origin. The
+    start is one slow frame's travel from the origin, so a reference that
+    silently defaulted there would publish an ordinary 0.6 m/s - not a spike the
+    wire ceiling would have flattened anyway."""
     state = MarkerVelocityState()
-    assert estimate_marker_velocity(state, (5.0, 5.0, 1.0), _DT_60) == (0.0, 0.0, 0.0)
-    assert state.prev_pos == (5.0, 5.0, 1.0)
+    start = (0.6 * _DT_60, 0.0, 0.0)
+    assert estimate_marker_velocity(state, start, _DT_60) == (0.0, 0.0, 0.0)
+    assert state.prev_pos == start
 
 
 def test_stationary_marker_stays_exactly_zero() -> None:
@@ -60,7 +70,7 @@ def test_stationary_marker_stays_exactly_zero() -> None:
 def test_one_frame_of_motion_applies_the_per_frame_alpha() -> None:
     """At the nominal frame the rate is in m/s and the blend is exactly the alpha."""
     state = MarkerVelocityState()
-    out = _drive(state, (1.0, 0.0, 0.0), dt=_NOMINAL_FRAME_DT, frames=1)
+    out = _drive(state, (1.0, 0.0, 0.0), dt=NOMINAL_FRAME_DT, frames=1)
     assert out == pytest.approx((_VELOCITY_ALPHA, 0.0, 0.0))
 
 
@@ -87,39 +97,82 @@ def test_same_physical_motion_converges_identically_at_60_and_30_fps() -> None:
     assert 0.0 < fast[0] < 1.0
 
 
-def test_teleport_resets_velocity_and_reseeds() -> None:
+def test_a_drag_faster_than_the_ceiling_still_reports_motion() -> None:
+    """A grabbed marker follows the cursor with no glide by default, so an
+    ordinary flick crosses the stage far faster than the wire ceiling. It must
+    read as fast motion in the right direction - reporting zero would say the
+    marker is standing still while it visibly moves."""
     state = MarkerVelocityState()
-    _drive(state, (1.0, 0.0, 0.0), dt=_DT_60, frames=60)
-    assert state.prev_pos is not None
-    x, y, z = state.prev_pos
-    assert estimate_marker_velocity(state, (x + 5.0, y, z), _DT_60) == (0.0, 0.0, 0.0)
-    # The next normal step restarts from the new position, not from the jump.
-    out = estimate_marker_velocity(state, (x + 5.0 + 1.0 * _DT_60, y, z), _DT_60)
-    assert out == pytest.approx((_VELOCITY_ALPHA, 0.0, 0.0))
+    out = _drive(state, (-40.0, 0.0, 0.0), dt=_DT_60, frames=60)
+    assert out[0] == pytest.approx(-_MAX_REPORTED_SPEED_MPS, abs=1e-6)
+    assert out[1] == 0.0
+    assert out[2] == 0.0
 
 
-def test_teleport_threshold_is_exclusive() -> None:
-    at_cap = MarkerVelocityState()
-    estimate_marker_velocity(at_cap, (0.0, 0.0, 0.0), _NOMINAL_FRAME_DT)
-    out = estimate_marker_velocity(at_cap, (_TELEPORT_SPEED_MPS * _NOMINAL_FRAME_DT, 0.0, 0.0), _NOMINAL_FRAME_DT)
-    assert out[0] == pytest.approx(_VELOCITY_ALPHA * _TELEPORT_SPEED_MPS)
-
-    past_cap = MarkerVelocityState()
-    estimate_marker_velocity(past_cap, (0.0, 0.0, 0.0), _NOMINAL_FRAME_DT)
-    step = (_TELEPORT_SPEED_MPS + 1e-3) * _NOMINAL_FRAME_DT
-    assert estimate_marker_velocity(past_cap, (step, 0.0, 0.0), _NOMINAL_FRAME_DT) == (0.0, 0.0, 0.0)
+def test_the_ceiling_keeps_direction_across_axes() -> None:
+    """Clamping scales the whole vector, so a diagonal move stays diagonal."""
+    state = MarkerVelocityState()
+    out = _drive(state, (30.0, -40.0, 0.0), dt=_DT_60, frames=60)
+    assert math.hypot(*out) == pytest.approx(_MAX_REPORTED_SPEED_MPS, abs=1e-6)
+    assert out[0] / out[1] == pytest.approx(30.0 / -40.0)
 
 
-def test_zero_dt_uses_the_clamped_step() -> None:
-    """Two ticks in the same instant must not divide by zero; the rate is
-    taken over the clamp floor instead."""
+def test_a_reposition_is_bounded_not_extrapolated() -> None:
+    """A reset / OSC snap moves the marker metres in one frame. As a rate that
+    is hundreds of m/s, which a dead-reckoning console would extrapolate; the
+    wire never sees more than the ceiling."""
+    state = MarkerVelocityState()
+    estimate_marker_velocity(state, (0.0, 0.0, 0.0), _DT_60)
+    out = estimate_marker_velocity(state, (12.0, 0.0, 0.0), _DT_60)
+    assert out[0] == pytest.approx(_VELOCITY_ALPHA * _MAX_REPORTED_SPEED_MPS)
+
+
+def test_a_marker_that_stops_settles_to_exactly_zero() -> None:
+    """The EMA only decays toward zero, so without the rest deadband a marker
+    that stopped would keep a shrinking speed on the wire indefinitely."""
+    state = MarkerVelocityState()
+    moving = _drive(state, (1.5, 0.0, 0.0), dt=_DT_60, frames=60)
+    assert moving[0] == pytest.approx(1.5, abs=1e-6)
+
+    resting = state.prev_pos
+    assert resting is not None
+    settled = None
+    for frame in range(120):
+        out = estimate_marker_velocity(state, resting, _DT_60)
+        if out == (0.0, 0.0, 0.0):
+            settled = frame
+            break
+    assert settled is not None, "a stopped marker never reached exactly zero"
+    # Within a second of standing still, not a slow crawl toward it.
+    assert settled < 60
+    assert estimate_marker_velocity(state, resting, _DT_60) == (0.0, 0.0, 0.0)
+
+
+def test_motion_below_the_rest_deadband_reads_as_still() -> None:
+    """The deadband is well under any stage motion, so the only thing it can
+    swallow is drift."""
+    state = MarkerVelocityState()
+    creep = _STILL_SPEED_MPS / 2.0
+    assert _drive(state, (creep, 0.0, 0.0), dt=_DT_60, frames=200) == (0.0, 0.0, 0.0)
+
+
+def test_a_stalled_frame_reports_the_rate_it_actually_travelled() -> None:
+    """The velocity divides by real elapsed time. A frame that took 0.4 s moving
+    1 m is 2.5 m/s - clamping the divisor to the motion step would call it 10."""
+    state = MarkerVelocityState()
+    estimate_marker_velocity(state, (0.0, 0.0, 0.0), 0.4)
+    out = estimate_marker_velocity(state, (1.0, 0.0, 0.0), 0.4)
+    alpha = ema_factor(_VELOCITY_ALPHA, dt_steps(0.4))
+    assert out[0] == pytest.approx(alpha * 2.5)
+
+
+def test_zero_dt_divides_by_the_floor_instead() -> None:
+    """Two ticks in the same instant must not divide by zero."""
     state = MarkerVelocityState()
     estimate_marker_velocity(state, (0.0, 0.0, 0.0), 0.0)
     out = estimate_marker_velocity(state, (0.001, 0.0, 0.0), 0.0)
-    steps = _dt_steps(0.0)
-    expected = _ema_factor(_VELOCITY_ALPHA, steps) * (0.001 / (steps * _NOMINAL_FRAME_DT))
-    assert expected > 0.0
-    assert out == pytest.approx((expected, 0.0, 0.0))
+    alpha = ema_factor(_VELOCITY_ALPHA, dt_steps(0.0))
+    assert out == pytest.approx((alpha * (0.001 / _MIN_SAMPLE_DT), 0.0, 0.0))
 
 
 def test_returned_vector_matches_state() -> None:

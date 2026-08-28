@@ -475,6 +475,31 @@ def test_api_diagnostics_bundle_writer_failure_does_not_break_download(
     assert "openfollow diagnostics bundle" in body
 
 
+def test_api_diagnostics_bundle_downloads_when_the_budget_is_exhausted(
+    live_server,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """A truncated bundle is still a download – the operator gets the
+    header, the attachment name, and a named skip line per dropped
+    section, rather than a stalled request or a 500."""
+    _, base, _ = live_server
+    from openfollow.web import diagnostics
+
+    monkeypatch.setattr(
+        diagnostics,
+        "default_disk_root",
+        lambda: tmp_path / "bundles",
+    )
+    monkeypatch.setattr(diagnostics, "_BUNDLE_BUDGET_S", 0.0)
+    status, body, headers = _get(base, "/api/diagnostics/bundle")
+    assert status == 200
+    assert headers.get("Content-Type", "").startswith("text/plain")
+    assert "attachment" in headers.get("Content-Disposition", "")
+    assert "=== A. Service / port ===" in body
+    assert "bundle time budget (0s) exhausted" in body
+
+
 # ---------------------------------------------------------------------------
 # /api/diagnostics/log-tail
 # ---------------------------------------------------------------------------

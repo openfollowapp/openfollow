@@ -12,6 +12,7 @@ import logging
 import platform
 import subprocess
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -742,11 +743,11 @@ def test_collect_bundle_requests_2000_line_tail_and_wires_failure_extract(monkey
     failure extract into Section D."""
     seen: dict[str, Any] = {}
 
-    def fake_log_tail(ring, *, update_service_name=None, last_n=500):  # noqa: ARG001
+    def fake_log_tail(ring, *, update_service_name=None, last_n=500, timeout_s=0.0):  # noqa: ARG001
         seen["last_n"] = last_n
         return "journalctl", ["[INFO] x"]
 
-    def fake_failure(ring, *, update_service_name=None, since="-24h", last_n=1000):  # noqa: ARG001
+    def fake_failure(ring, *, update_service_name=None, since="-24h", last_n=1000, timeout_s=0.0):  # noqa: ARG001
         seen["failure_called"] = True
         return "journalctl", ["[ERROR] boom"]
 
@@ -1173,6 +1174,263 @@ def test_format_bundle_header_identifies_version_and_platform(monkeypatch) -> No
     assert header[0] == "openfollow diagnostics bundle"
     assert header[1] == "version: 9.9.9"
     assert header[2] == "platform: arm64 (aarch64)"
+
+
+# ---------------------------------------------------------------------------
+# Bundle assembly – outer wall-clock budget
+# ---------------------------------------------------------------------------
+
+
+class _FrozenClock:
+    """Stand-in for the module's ``time`` whose monotonic only moves when a
+    test moves it, so a budget assertion measures the budget and not how long
+    the real collectors happened to take on the runner.
+
+    Patched onto ``diag.time``, which rebinds only this module's reference –
+    patching ``time.monotonic`` itself would reach every other module in the
+    process."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+
+@pytest.fixture()
+def no_host_probes(monkeypatch):
+    """Keep the real host probes out of the budget tests.
+
+    They assert deadline arithmetic, so a collector's actual output buys
+    nothing - while a bundle that shells out for real adds wall-clock and, on a
+    probe that hits its cap, seconds of it. ``_run`` is the module's single
+    subprocess boundary, the same seam ``tests/test_web_diagnostics_routes.py``
+    stubs for the same reason."""
+    monkeypatch.setattr(
+        diag,
+        "_run",
+        lambda cmd, **_kw: (-1, f"[unavailable: {cmd[0] if cmd else '(empty)'} not found]"),
+    )
+
+
+def test_collect_bundle_skips_sections_reached_after_the_budget(monkeypatch, no_host_probes) -> None:
+    """One section eating the budget truncates the bundle rather than
+    stalling the download: the sections behind it are named as skipped."""
+    clock = _FrozenClock()
+    monkeypatch.setattr(diag, "time", clock)
+
+    def slow_service(_providers):
+        clock.advance(60.0)
+        return ["  ran"]
+
+    monkeypatch.setattr(diag, "collect_service", slow_service)
+    bundle = diag.collect_bundle(budget_s=20.0)
+    assert bundle.a_service == ["  ran"]
+    for header, attr in diag._BUNDLE_SECTIONS[1:]:
+        assert getattr(bundle, attr) == [f"  [skipped: {header} – bundle time budget (20s) exhausted]"]
+
+
+def test_collect_bundle_spent_budget_still_renders_a_whole_bundle(no_host_probes) -> None:
+    """A budget already gone when assembly starts yields a complete,
+    readable bundle – header, every section heading, all skipped."""
+    bundle = diag.collect_bundle(budget_s=0.0)
+    text = diag.format_bundle(bundle)
+    for header, attr in diag._BUNDLE_SECTIONS:
+        assert getattr(bundle, attr) == [f"  [skipped: {header} – bundle time budget (0s) exhausted]"]
+        assert f"=== {header} ===" in text
+    assert f"version: {openfollow.__version__}" in text
+
+
+def test_collect_bundle_reads_the_module_budget_at_call_time(monkeypatch, no_host_probes) -> None:
+    """``budget_s=None`` resolves ``_BUNDLE_BUDGET_S`` in the body. Bound as a
+    default argument it would freeze at import and ignore this patch."""
+    monkeypatch.setattr(diag, "_BUNDLE_BUDGET_S", 0.0)
+    bundle = diag.collect_bundle()
+    assert bundle.a_service == ["  [skipped: A. Service / port – bundle time budget (0s) exhausted]"]
+
+
+def test_collect_bundle_within_budget_skips_nothing(monkeypatch, no_host_probes) -> None:
+    """A budget the assembly never spends leaves every section intact. The
+    clock is frozen, so this asserts the deadline arithmetic rather than how
+    fast the host's collectors ran."""
+    monkeypatch.setattr(diag, "time", _FrozenClock())
+    bundle = diag.collect_bundle()
+    for _header, attr in diag._BUNDLE_SECTIONS:
+        assert not any("bundle time budget" in line for line in getattr(bundle, attr))
+
+
+def test_collect_bundle_clamps_the_log_tail_to_the_remaining_budget(monkeypatch, no_host_probes) -> None:
+    """Section D's tail runs before its extract, so leaving it on the 5 s
+    default would spend budget the deadline had already promised away."""
+    clock = _FrozenClock()
+    monkeypatch.setattr(diag, "time", clock)
+    seen: dict[str, float] = {}
+
+    def eat_budget(_providers):
+        clock.advance(17.0)
+        return ["  ran"]
+
+    def fake_tail(ring, *, update_service_name=None, last_n=500, timeout_s=0.0):  # noqa: ARG001
+        seen["timeout_s"] = timeout_s
+        return "journalctl", []
+
+    monkeypatch.setattr(diag, "collect_service", eat_budget)
+    monkeypatch.setattr(diag, "collect_log_tail", fake_tail)
+    diag.collect_bundle(log_ring=_seed_ring("r"), update_service_name="openfollow", budget_s=20.0)
+    assert seen["timeout_s"] == 3.0
+
+
+def test_collect_bundle_clamps_the_failure_extract_to_the_remaining_budget(monkeypatch, no_host_probes) -> None:
+    """Section D's 24h journalctl scan has a 12 s cap of its own, long
+    enough to overshoot a deadline with less than that left."""
+    clock = _FrozenClock()
+    monkeypatch.setattr(diag, "time", clock)
+    seen: dict[str, float] = {}
+
+    def eat_budget(_providers):
+        clock.advance(10.0)
+        return ["  ran"]
+
+    def fake_failure(ring, *, update_service_name=None, since="-24h", last_n=1000, timeout_s=0.0):  # noqa: ARG001
+        seen["timeout_s"] = timeout_s
+        return "journalctl", []
+
+    monkeypatch.setattr(diag, "collect_service", eat_budget)
+    monkeypatch.setattr(diag, "collect_failure_extract", fake_failure)
+    diag.collect_bundle(log_ring=_seed_ring("r"), update_service_name="openfollow", budget_s=20.0)
+    assert seen["timeout_s"] == 10.0 < diag._FAILURE_EXTRACT_TIMEOUT_S
+
+
+def test_collect_bundle_never_hands_a_section_a_negative_cap(monkeypatch, no_host_probes) -> None:
+    """Section D's log tail runs before its failure extract, so the deadline
+    can lapse between the check that admitted the section and the clamp. A
+    negative cap would reach the operator as ``timed out after -2.1s``."""
+    clock = _FrozenClock()
+    monkeypatch.setattr(diag, "time", clock)
+    seen: dict[str, float] = {}
+
+    def slow_tail(ring, *, update_service_name=None, last_n=500, timeout_s=0.0):  # noqa: ARG001
+        clock.advance(60.0)
+        return "journalctl", []
+
+    def fake_failure(ring, *, update_service_name=None, since="-24h", last_n=1000, timeout_s=-1.0):  # noqa: ARG001
+        seen["timeout_s"] = timeout_s
+        return "journalctl", []
+
+    monkeypatch.setattr(diag, "collect_log_tail", slow_tail)
+    monkeypatch.setattr(diag, "collect_failure_extract", fake_failure)
+    diag.collect_bundle(log_ring=_seed_ring("r"), update_service_name="openfollow", budget_s=20.0)
+    assert seen["timeout_s"] == 0.0
+
+
+def test_collect_bundle_clamps_the_runtime_section_to_the_remaining_budget(monkeypatch, no_host_probes) -> None:
+    """E1 issues up to five probes, so without a section budget its overshoot
+    past the deadline would be five caps rather than one."""
+    clock = _FrozenClock()
+    monkeypatch.setattr(diag, "time", clock)
+    seen: dict[str, float] = {}
+
+    def eat_budget(_providers):
+        clock.advance(14.0)
+        return ["  ran"]
+
+    def fake_runtime(repo_root=None, *, budget_s=0.0):  # noqa: ARG001
+        seen["budget_s"] = budget_s
+        return ["  x"]
+
+    monkeypatch.setattr(diag, "collect_service", eat_budget)
+    monkeypatch.setattr(diag, "collect_runtime_versions", fake_runtime)
+    diag.collect_bundle(budget_s=20.0)
+    assert seen["budget_s"] == 6.0 < diag._RUNTIME_SECTION_BUDGET_S
+
+
+def test_collect_bundle_clamps_the_storage_section_to_the_remaining_budget(monkeypatch, no_host_probes) -> None:
+    clock = _FrozenClock()
+    monkeypatch.setattr(diag, "time", clock)
+    seen: dict[str, float] = {}
+
+    def eat_budget(_providers):
+        clock.advance(12.0)
+        return ["  ran"]
+
+    def fake_storage(*, repo_root=None, extra_paths=None, budget_s=0.0):  # noqa: ARG001
+        seen["budget_s"] = budget_s
+        return ["  x"]
+
+    monkeypatch.setattr(diag, "collect_service", eat_budget)
+    monkeypatch.setattr(diag, "collect_storage_breakdown", fake_storage)
+    diag.collect_bundle(budget_s=20.0)
+    assert seen["budget_s"] == 8.0 < diag._STORAGE_SECTION_BUDGET_S
+
+
+def test_collect_storage_breakdown_reports_the_budget_it_ran_under(monkeypatch) -> None:
+    """The skipped-candidate line names the caller's budget, not the
+    module default – otherwise a clamped run misreports its own limit."""
+    monkeypatch.setattr(diag, "_storage_candidate_paths", lambda *_a: [("repo", Path("/tmp"))])
+    rows = diag.collect_storage_breakdown(budget_s=0.0)
+    assert any("storage-section time budget (0s) exhausted" in row for row in rows)
+
+
+def test_collect_storage_breakdown_budgets_the_mount_table_too(monkeypatch) -> None:
+    """A stale mount in the partition table is what this budget exists to
+    survive, and its stat probe blocks for the full cap – so the mount walk
+    has to sit inside the section deadline, not ahead of it."""
+    import psutil
+
+    monkeypatch.setattr(
+        psutil,
+        "disk_partitions",
+        lambda all=False: [SimpleNamespace(mountpoint="/stale", fstype="nfs", device="srv:/x")],  # noqa: A002
+    )
+    called: list[str] = []
+    monkeypatch.setattr(diag, "_partition_usage", lambda mp: called.append(mp) or "used")
+    rows = diag.collect_storage_breakdown(budget_s=0.0)
+    assert any("/stale" in row and "storage-section time budget (0s) exhausted" in row for row in rows)
+    assert called == []
+
+
+def test_collect_runtime_versions_stops_probing_when_its_budget_is_gone(monkeypatch) -> None:
+    """E1 fires up to five probes; a spent budget caps each at zero rather
+    than letting the section overshoot by five times the default."""
+    seen: list[float] = []
+
+    def fake_run(cmd, *, timeout_s=5.0, **_kw):  # noqa: ARG001
+        seen.append(timeout_s)
+        return -1, "[unavailable: x not found]"
+
+    monkeypatch.setattr(diag, "_run", fake_run)
+    diag.collect_runtime_versions(Path("/repo"), budget_s=0.0)
+    assert seen and all(cap == 0.0 for cap in seen)
+
+
+def test_collect_runtime_versions_default_budget_allows_the_full_cap(monkeypatch) -> None:
+    seen: list[float] = []
+
+    def fake_run(cmd, *, timeout_s=5.0, **_kw):  # noqa: ARG001
+        seen.append(timeout_s)
+        return 0, "ok"
+
+    monkeypatch.setattr(diag, "_run", fake_run)
+    diag.collect_runtime_versions(Path("/repo"))
+    assert seen and all(cap == diag._DEFAULT_SUBPROCESS_TIMEOUT_S for cap in seen)
+
+
+def test_collect_failure_extract_honours_a_timeout_override(monkeypatch) -> None:
+    seen: dict[str, float] = {}
+
+    def fake_run(cmd, *, timeout_s=5.0, **_kw):  # noqa: ARG001
+        seen["timeout_s"] = timeout_s
+        return 0, ""
+
+    monkeypatch.setattr(diag, "_run", fake_run)
+    diag.collect_failure_extract(None, update_service_name="openfollow", timeout_s=1.5)
+    assert seen["timeout_s"] == 1.5
 
 
 # ---------------------------------------------------------------------------
@@ -1709,22 +1967,29 @@ def test_collect_storage_breakdown_skips_when_du_missing(monkeypatch, tmp_path) 
 
 
 def test_collect_storage_breakdown_caps_total_du_time(monkeypatch, tmp_path) -> None:
-    """A shared deadline bounds the *total* du time: once it passes, the
-    remaining candidates are listed as budget-exhausted (du not invoked)
-    rather than each adding another bounded du to the synchronous bundle."""
-    calls = {"n": 0}
+    """A shared deadline bounds the *total* du time: once one candidate has
+    spent it, the remaining ones are listed as budget-exhausted rather than
+    each adding another bounded du to the synchronous bundle."""
+    import psutil
 
-    def fake_monotonic() -> float:
-        calls["n"] += 1
-        # First call sets the deadline; every later check is already past it.
-        return 1000.0 if calls["n"] == 1 else 1000.0 + diag._STORAGE_SECTION_BUDGET_S + 1.0
+    clock = _FrozenClock()
+    monkeypatch.setattr(diag, "time", clock)
+    monkeypatch.setattr(psutil, "disk_partitions", lambda all=False: [])  # noqa: A002
+    first, second = tmp_path / "a", tmp_path / "b"
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.setattr(diag, "_storage_candidate_paths", lambda *_a: [("first", first), ("second", second)])
+    sized: list[Path] = []
 
-    monkeypatch.setattr(diag.time, "monotonic", fake_monotonic)
-    # du must never run once the budget is blown.
-    monkeypatch.setattr(diag, "_du_kib", lambda *a, **kw: pytest.fail("du called after budget exhausted"))
-    rows = diag.collect_storage_breakdown(extra_paths=[tmp_path])
-    joined = "\n".join(rows)
-    assert str(tmp_path) in joined
+    def slow_du(path, *, timeout_s):  # noqa: ARG001
+        sized.append(path)
+        clock.advance(diag._STORAGE_SECTION_BUDGET_S + 1.0)
+        return 4096
+
+    monkeypatch.setattr(diag, "_du_kib", slow_du)
+    joined = "\n".join(diag.collect_storage_breakdown())
+    assert sized == [first]
+    assert "second" in joined
     assert "storage-section time budget" in joined
     assert "exhausted" in joined
 
@@ -1883,18 +2148,19 @@ def test_collect_memory_disk_skips_inode_when_disk_probe_times_out(monkeypatch) 
 
 
 def test_collect_storage_breakdown_budget_exhausted_after_exists(monkeypatch) -> None:
-    # #559: exists() succeeds but the budget is gone before sizing – the
-    # candidate is reported as budget-exhausted, du is not invoked.
-    monkeypatch.setattr(diag, "_bounded_probe", lambda fn, t, default: True)  # exists() succeeds
-    calls = {"n": 0}
+    """exists() succeeds but a stale mount ate the budget during that very
+    probe – the candidate is reported as budget-exhausted and du never runs."""
+    import psutil
 
-    def fake_monotonic() -> float:
-        calls["n"] += 1
-        # deadline + first budget check see 1000 (remaining > 0); the post-exists
-        # check sees a time past the deadline.
-        return 1000.0 if calls["n"] <= 2 else 1000.0 + diag._STORAGE_SECTION_BUDGET_S + 1.0
+    clock = _FrozenClock()
+    monkeypatch.setattr(diag, "time", clock)
+    monkeypatch.setattr(psutil, "disk_partitions", lambda all=False: [])  # noqa: A002
 
-    monkeypatch.setattr(diag.time, "monotonic", fake_monotonic)
+    def exists_but_spends_the_budget(fn, timeout_s, default):  # noqa: ARG001
+        clock.advance(diag._STORAGE_SECTION_BUDGET_S + 1.0)
+        return True
+
+    monkeypatch.setattr(diag, "_bounded_probe", exists_but_spends_the_budget)
     monkeypatch.setattr(diag, "_du_kib", lambda *a, **kw: pytest.fail("du must not run when budget is gone"))
     rows = diag.collect_storage_breakdown(extra_paths=[Path("/exists")])
     assert "exhausted" in "\n".join(rows)

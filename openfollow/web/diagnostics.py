@@ -56,8 +56,8 @@ def _bounded_probe(fn: Callable[[], _T], timeout_s: float, timeout_value: _T) ->
     """Run ``fn()`` on a daemon thread; return its result, or ``timeout_value``
     if it hasn't returned within ``timeout_s``.
 
-    The diagnostics bundle is assembled synchronously in the WSGI worker with no
-    outer deadline, so a single stat that hangs on a stale mount would wedge the
+    The bundle's outer deadline is checked between sections, so it cannot unwedge
+    a stat that hangs *inside* one: on a stale mount that would block the WSGI
     worker permanently and, under repeated requests, 503 the whole web UI. The
     request thread abandons the orphaned probe (a daemon thread that unblocks if
     the mount ever recovers) instead of blocking. ``fn`` handles its own
@@ -89,14 +89,8 @@ def _bounded_probe(fn: Callable[[], _T], timeout_s: float, timeout_value: _T) ->
     return box[0]
 
 
-# Default per-subprocess timeout. The bundle is assembled synchronously
-# in the request handler with no outer deadline, so the rough worst-case
-# wall-clock is the sum of the section caps: this default ×(quick probes)
-# + ``_PROFILER_TIMEOUT_S`` (macOS only) + ``_FAILURE_EXTRACT_TIMEOUT_S``
-# (the 24h journald --grep scan) + ``_STORAGE_SECTION_BUDGET_S`` (a shared
-# deadline across all ``du`` calls, not per-path × count). On the Pi
-# (no system_profiler) that lands around 25–30 s in the pathological case
-# and well under it normally. Individual callers override as needed.
+# Default per-subprocess timeout. Individual callers override as needed;
+# ``_BUNDLE_BUDGET_S`` bounds what their sum can cost one request.
 _DEFAULT_SUBPROCESS_TIMEOUT_S = 5.0
 
 # system_profiler is slow; use a longer timeout to allow it to complete.
@@ -107,6 +101,22 @@ _PROFILER_TIMEOUT_S = 8.0
 # 5 s default so a busy host's history isn't truncated to the in-process
 # ring (the whole point of the extract is the longer window).
 _FAILURE_EXTRACT_TIMEOUT_S = 12.0
+
+# E1 runs up to five probes on a source checkout (three ``git`` calls,
+# ``gst-launch-1.0``, ``pkg-config``), so it carries a section deadline of its
+# own. Without one its overshoot past any outer budget would be five times the
+# default cap rather than one probe's.
+_RUNTIME_SECTION_BUDGET_S = 10.0
+
+# Whole-assembly wall-clock budget. The caps above bound each probe, but an
+# operator's browser (or a reverse proxy in front of it) waits on their sum,
+# which no single cap constrains. ``collect_bundle`` checks this deadline
+# between sections and lists the ones it never reaches as skipped. Every
+# section that runs more than one probe – D, E1, E5b – takes the remaining
+# budget explicitly, so the section running when the deadline passes overshoots
+# by one probe's cap (+8 s where ``system_profiler`` runs, +5 s elsewhere) and
+# not by the sum of its probes.
+_BUNDLE_BUDGET_S = 20.0
 
 # Back-compat alias so any external caller importing the old name
 # keeps working. Same value, same semantics – default cap.
@@ -635,13 +645,14 @@ def collect_log_tail(
     *,
     update_service_name: str | None = None,
     last_n: int = 500,
+    timeout_s: float = _DEFAULT_SUBPROCESS_TIMEOUT_S,
 ) -> tuple[str, list[str]]:
     """Read up to ``last_n`` log lines, preferring journalctl and falling back to the ring.
 
     Returns ``(source_label, lines)`` where the label describes the source.
     """
     if update_service_name:
-        rc, out = _run(["journalctl", "-u", update_service_name, "-n", str(last_n)])
+        rc, out = _run(["journalctl", "-u", update_service_name, "-n", str(last_n)], timeout_s=timeout_s)
         if rc == 0 and out and not out.startswith("[unavailable:"):
             return "journalctl", out.splitlines()
         # Fall through to ring on non-zero exit / missing binary.
@@ -665,6 +676,7 @@ def collect_failure_extract(
     update_service_name: str | None = None,
     since: str = _FAILURE_EXTRACT_SINCE,
     last_n: int = _FAILURE_EXTRACT_LINES,
+    timeout_s: float = _FAILURE_EXTRACT_TIMEOUT_S,
 ) -> tuple[str, list[str]]:
     """Severity-filtered log extract; WARNING/ERROR lines only.
 
@@ -684,7 +696,7 @@ def collect_failure_extract(
                 "-n",
                 str(last_n),
             ],
-            timeout_s=_FAILURE_EXTRACT_TIMEOUT_S,
+            timeout_s=timeout_s,
         )
         # An empty result with rc 0 is legitimate: journalctl ran and the
         # window simply held no failures. Only fall through to the ring on
@@ -731,7 +743,7 @@ def _git_failure_detail(out: str) -> str:
     return out.splitlines()[0]
 
 
-def _gtk3_version() -> str:
+def _gtk3_version(timeout_s: float = _DEFAULT_SUBPROCESS_TIMEOUT_S) -> str:
     """Report the GTK 3 version the app actually uses at runtime.
 
     Probes the import path first (no dev package required), then falls
@@ -749,27 +761,37 @@ def _gtk3_version() -> str:
         # Runtime probe failed (PyGObject absent – e.g. macOS dev / CI –
         # or the GTK 3 typelib is missing). Fall back to the dev-package
         # metadata so we still report a version where it exists.
-        rc, out = _run(["pkg-config", "--modversion", "gtk+-3.0"])
+        rc, out = _run(["pkg-config", "--modversion", "gtk+-3.0"], timeout_s=timeout_s)
         return out if rc == 0 and out else "[unavailable]"
 
 
-def collect_runtime_versions(repo_root: Path | None = None) -> list[str]:
+def collect_runtime_versions(
+    repo_root: Path | None = None,
+    *,
+    budget_s: float = _RUNTIME_SECTION_BUDGET_S,
+) -> list[str]:
+    deadline = time.monotonic() + budget_s
+
+    def cap() -> float:
+        """Per-probe cap clamped to what's left of this section's budget."""
+        return max(0.0, min(_DEFAULT_SUBPROCESS_TIMEOUT_S, deadline - time.monotonic()))
+
     rows = [f"  Python                       {sys.version.split(chr(32), 1)[0]}"]
     if repo_root is not None:
-        rc, out = _run(["git", "-C", str(repo_root), "rev-parse", "HEAD"])
+        rc, out = _run(["git", "-C", str(repo_root), "rev-parse", "HEAD"], timeout_s=cap())
         rows.append(f"  OpenFollow git rev           {out if rc == 0 else _git_failure_detail(out)}")
-        rc, out = _run(["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "HEAD"])
+        rc, out = _run(["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "HEAD"], timeout_s=cap())
         rows.append(f"  Branch                       {out if rc == 0 else _git_failure_detail(out)}")
-        rc, out = _run(["git", "-C", str(repo_root), "status", "--porcelain"])
+        rc, out = _run(["git", "-C", str(repo_root), "status", "--porcelain"], timeout_s=cap())
         if rc == 0:
             rows.append(f"  Working tree                 {'dirty' if out.strip() else 'clean'}")
         else:
             rows.append(f"  Working tree                 {_git_failure_detail(out)}")
     for dist in ("bottle", "pygame", "psutil"):
         rows.append(f"  {dist:<29}{_safe_version(dist)}")
-    rc, out = _run(["gst-launch-1.0", "--version"])
+    rc, out = _run(["gst-launch-1.0", "--version"], timeout_s=cap())
     rows.append(f"  GStreamer                    {out.splitlines()[0] if rc == 0 and out else '[unavailable]'}")
-    rows.append(f"  GTK 3                        {_gtk3_version()}")
+    rows.append(f"  GTK 3                        {_gtk3_version(cap())}")
     ndi = "present" if importlib.util.find_spec("NDIlib") else "[not present]"
     rows.append(f"  libndi                       {ndi}")
     return rows
@@ -996,14 +1018,13 @@ def collect_memory_disk(extra_paths: list[Path] | None = None) -> list[str]:
 # obvious at a glance.
 
 # Per-path ``du`` is bounded so one pathological tree (e.g. a multi-GB
-# Poetry venv) can't stall the whole bundle. A shared
-# ``_STORAGE_SECTION_BUDGET_S`` deadline caps the *total* du time across all
-# candidates too, so the worst case is the budget – not the unbounded
-# ``len(candidates) * _STORAGE_DU_TIMEOUT_S`` (~48 s on a near-full disk,
-# exactly the case this section exists to diagnose, where a browser /
-# reverse-proxy read timeout could fire before the bundle returns).
-# Candidates reached after the deadline are listed as skipped, not silently
-# dropped.
+# Poetry venv) can't stall the whole bundle. A shared deadline caps the
+# *total* du time across all candidates too, so the worst case is the budget
+# – not the unbounded ``len(candidates) * _STORAGE_DU_TIMEOUT_S`` (~48 s on
+# a near-full disk, exactly the case this section exists to diagnose).
+# ``collect_bundle`` passes a smaller ``budget_s`` when its own deadline
+# leaves less than this. Candidates reached after the deadline are listed as
+# skipped, not silently dropped.
 _STORAGE_DU_TIMEOUT_S = 6.0
 _STORAGE_SECTION_BUDGET_S = 12.0
 
@@ -1069,10 +1090,15 @@ def collect_storage_breakdown(
     *,
     repo_root: Path | None = None,
     extra_paths: list[Path] | None = None,
+    budget_s: float = _STORAGE_SECTION_BUDGET_S,
 ) -> list[str]:
     import psutil  # noqa: PLC0415
 
     rows: list[str] = []
+    # Seeded before the mount table, not just the ``du`` walk: a stale mount in
+    # the partition table is exactly what this budget exists to survive, and its
+    # stat probe blocks for the full cap.
+    deadline = time.monotonic() + budget_s
 
     # 1. Mount table – reveals whether the NVMe drive is actually
     #    mounted (vs. detection models silently filling the SD card) and
@@ -1086,11 +1112,15 @@ def collect_storage_breakdown(
     for part in parts:
         # Bound per-mount disk_usage: a stale mount in the partition table hangs
         # the stat uninterruptibly otherwise.
-        usage = _bounded_probe(
-            partial(_partition_usage, part.mountpoint),
-            _STAT_PROBE_TIMEOUT_S,
-            "[unavailable: stat timed out (stale mount?)]",
-        )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            usage = f"[skipped: storage-section time budget ({budget_s:.0f}s) exhausted]"
+        else:
+            usage = _bounded_probe(
+                partial(_partition_usage, part.mountpoint),
+                min(_STAT_PROBE_TIMEOUT_S, remaining),
+                "[unavailable: stat timed out (stale mount?)]",
+            )
         rows.append(f"    {part.mountpoint:<18} {usage:<26} {part.fstype or '?':<8} {part.device}")
 
     # 2. Largest known directories – the "where did the space go" view.
@@ -1103,7 +1133,6 @@ def collect_storage_breakdown(
     skipped: list[str] = []
     over_budget: list[str] = []
     stat_timed_out: list[str] = []
-    deadline = time.monotonic() + _STORAGE_SECTION_BUDGET_S
     for label, path in _storage_candidate_paths(repo_root, extra_paths):
         # Check the budget BEFORE any stat – a candidate reached after the
         # budget is skipped without touching it. The hardcoded /mnt/nvme and the
@@ -1143,9 +1172,7 @@ def collect_storage_breakdown(
     for entry in stat_timed_out:
         rows.append(f"    [skipped: {entry} – stat timed out (stale mount?)]")
     for entry in over_budget:
-        rows.append(
-            f"    [skipped: {entry} – storage-section time budget ({_STORAGE_SECTION_BUDGET_S:.0f}s) exhausted]"
-        )
+        rows.append(f"    [skipped: {entry} – storage-section time budget ({budget_s:.0f}s) exhausted]")
     return rows
 
 
@@ -1723,68 +1750,9 @@ class DiagnosticsBundle:
     g_permissions: list[str] = field(default_factory=list)
 
 
-def collect_bundle(
-    providers: DiagnosticsProviders | None = None,
-    *,
-    log_ring: RingBufferLogHandler | None = None,
-    update_service_name: str | None = None,
-    repo_root: Path | None = None,
-    extra_storage_paths: list[Path] | None = None,
-) -> DiagnosticsBundle:
-    """Run every collector and pack the result into a
-    :class:`DiagnosticsBundle`. ``providers`` may be ``None`` for
-    test contexts that only want the host-side environment
-    sections; the runtime sections then degrade to ``[not
-    applicable: …]`` rather than crashing.
-
-    ``extra_storage_paths`` are extra directories / mount points to
-    size in the storage breakdown and report disk usage for – the
-    route layer passes the operator's configured detection
-    ``storage_path`` so its footprint shows up alongside the SD card."""
-    p = providers or DiagnosticsProviders()
-
-    def log_collector_fn() -> tuple[str, list[str]]:
-        return collect_log_tail(
-            log_ring,
-            update_service_name=update_service_name,
-            last_n=_BUNDLE_LOG_TAIL_LINES,
-        )
-
-    def failure_collector_fn() -> tuple[str, list[str]]:
-        return collect_failure_extract(log_ring, update_service_name=update_service_name)
-
-    return DiagnosticsBundle(
-        generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        app_version=openfollow.__version__,
-        platform_label=_platform_label(),
-        host_label=f"{platform.node()} ({platform.platform()})",
-        service_status=("running" if p.web_port_configured is not None else "NOT RUNNING (sample)"),
-        redactions_applied="web_pin=***, X-Auth-Signature stripped",
-        a_service=collect_service(p),
-        a2_osc_multicast=collect_osc_multicast(p),
-        b_discovery=collect_discovery(p),
-        c_config=collect_config(p),
-        d_failures=collect_recent_failures(p, log_collector_fn, failure_collector_fn),
-        e1_runtime=collect_runtime_versions(repo_root),
-        e2_detection=collect_detection_stack(),
-        e3_os=collect_os(),
-        e4_cpu=collect_cpu(),
-        e5_memdisk=collect_memory_disk(extra_paths=extra_storage_paths),
-        e5b_storage=collect_storage_breakdown(
-            repo_root=repo_root,
-            extra_paths=extra_storage_paths,
-        ),
-        e6_health=collect_system_health(),
-        e7_net=collect_network_interfaces(),
-        e8_usb=collect_usb(p),
-        e9_gamepad=collect_gamepad_runtime(p),
-        f_io=collect_recent_io(p),
-        g_permissions=collect_device_permissions(p),
-    )
-
-
-# Section header rendering – table laid out so :func:`format_bundle`
-# can iterate uniformly. Each entry is ``(header, attribute name)``.
+# Section table – the one order both :func:`collect_bundle` (assembly, and
+# therefore which sections an exhausted budget drops) and :func:`format_bundle`
+# (rendering) walk. Each entry is ``(header, attribute name)``.
 _BUNDLE_SECTIONS: tuple[tuple[str, str], ...] = (
     ("A. Service / port", "a_service"),
     ("A2. OSC multicast group status", "a2_osc_multicast"),
@@ -1804,6 +1772,99 @@ _BUNDLE_SECTIONS: tuple[tuple[str, str], ...] = (
     ("F. Recent I/O activity", "f_io"),
     ("G. Device permissions", "g_permissions"),
 )
+
+
+def collect_bundle(
+    providers: DiagnosticsProviders | None = None,
+    *,
+    log_ring: RingBufferLogHandler | None = None,
+    update_service_name: str | None = None,
+    repo_root: Path | None = None,
+    extra_storage_paths: list[Path] | None = None,
+    budget_s: float | None = None,
+) -> DiagnosticsBundle:
+    """Run every collector and pack the result into a
+    :class:`DiagnosticsBundle`. ``providers`` may be ``None`` for
+    test contexts that only want the host-side environment
+    sections; the runtime sections then degrade to ``[not
+    applicable: …]`` rather than crashing.
+
+    ``extra_storage_paths`` are extra directories / mount points to
+    size in the storage breakdown and report disk usage for – the
+    route layer passes the operator's configured detection
+    ``storage_path`` so its footprint shows up alongside the SD card.
+
+    ``budget_s`` is the whole-assembly wall-clock budget; sections not reached
+    before it expires are listed as skipped rather than run. ``None`` reads
+    ``_BUNDLE_BUDGET_S`` here rather than binding it as a default argument, so
+    the constant stays patchable."""
+    p = providers or DiagnosticsProviders()
+    budget = _BUNDLE_BUDGET_S if budget_s is None else budget_s
+    deadline = time.monotonic() + budget
+
+    def remaining(cap: float) -> float:
+        """Section cap clamped to what's left of the bundle budget, floored at
+        zero – the deadline can lapse *inside* a section, between the check
+        that admitted it and this call (section D's log tail runs first), and a
+        negative cap would reach the wire as ``timed out after -2.1s``."""
+        return max(0.0, min(cap, deadline - time.monotonic()))
+
+    def log_collector_fn() -> tuple[str, list[str]]:
+        return collect_log_tail(
+            log_ring,
+            update_service_name=update_service_name,
+            last_n=_BUNDLE_LOG_TAIL_LINES,
+            timeout_s=remaining(_DEFAULT_SUBPROCESS_TIMEOUT_S),
+        )
+
+    def failure_collector_fn() -> tuple[str, list[str]]:
+        return collect_failure_extract(
+            log_ring,
+            update_service_name=update_service_name,
+            timeout_s=remaining(_FAILURE_EXTRACT_TIMEOUT_S),
+        )
+
+    # Every section that runs more than one probe takes the remaining budget
+    # explicitly; the single-probe ones are bound by the deadline check alone.
+    collectors: dict[str, Callable[[], list[str]]] = {
+        "a_service": lambda: collect_service(p),
+        "a2_osc_multicast": lambda: collect_osc_multicast(p),
+        "b_discovery": lambda: collect_discovery(p),
+        "c_config": lambda: collect_config(p),
+        "d_failures": lambda: collect_recent_failures(p, log_collector_fn, failure_collector_fn),
+        "e1_runtime": lambda: collect_runtime_versions(repo_root, budget_s=remaining(_RUNTIME_SECTION_BUDGET_S)),
+        "e2_detection": collect_detection_stack,
+        "e3_os": collect_os,
+        "e4_cpu": collect_cpu,
+        "e5_memdisk": lambda: collect_memory_disk(extra_paths=extra_storage_paths),
+        "e5b_storage": lambda: collect_storage_breakdown(
+            repo_root=repo_root,
+            extra_paths=extra_storage_paths,
+            budget_s=remaining(_STORAGE_SECTION_BUDGET_S),
+        ),
+        "e6_health": collect_system_health,
+        "e7_net": collect_network_interfaces,
+        "e8_usb": lambda: collect_usb(p),
+        "e9_gamepad": lambda: collect_gamepad_runtime(p),
+        "f_io": lambda: collect_recent_io(p),
+        "g_permissions": lambda: collect_device_permissions(p),
+    }
+    bundle = DiagnosticsBundle(
+        generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        app_version=openfollow.__version__,
+        platform_label=_platform_label(),
+        host_label=f"{platform.node()} ({platform.platform()})",
+        service_status=("running" if p.web_port_configured is not None else "NOT RUNNING (sample)"),
+        redactions_applied="web_pin=***, X-Auth-Signature stripped",
+    )
+    # Walked in display order, so an exhausted budget drops the trailing
+    # sections – a truncated bundle still reads correctly from the top.
+    for header, attr in _BUNDLE_SECTIONS:
+        if time.monotonic() >= deadline:
+            setattr(bundle, attr, [f"  [skipped: {header} – bundle time budget ({budget:.0f}s) exhausted]"])
+            continue
+        setattr(bundle, attr, collectors[attr]())
+    return bundle
 
 
 def format_bundle(bundle: DiagnosticsBundle) -> str:

@@ -48,6 +48,27 @@ def _clear_probe_log_source_cache():
     diagnostics._probe_log_source_cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def _stub_host_subprocesses(monkeypatch):
+    """Stub the module's single subprocess boundary so no diagnostics
+    route shells out to the host.
+
+    The bundle spawns nine probes on macOS (``git``, ``system_profiler``,
+    ``du`` ...) whose caps sum to 50 s, and more on a Pi where
+    ``journalctl`` is real - against the 5 s client budget in ``_get``.
+    Collector behaviour is covered by ``tests/test_web_diagnostics.py``;
+    this file asserts on the wiring, so real host output buys nothing here
+    but a latency flake. A test needing a specific answer patches over
+    this one."""
+    from openfollow.web import diagnostics
+
+    monkeypatch.setattr(
+        diagnostics,
+        "_run",
+        lambda cmd, **_kw: (-1, f"[unavailable: {cmd[0] if cmd else '(empty)'} not found]"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Infrastructure
 # ---------------------------------------------------------------------------
@@ -454,29 +475,40 @@ def test_api_diagnostics_bundle_writer_failure_does_not_break_download(
     assert "openfollow diagnostics bundle" in body
 
 
+def test_api_diagnostics_bundle_downloads_when_the_budget_is_exhausted(
+    live_server,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """A truncated bundle is still a download – the operator gets the
+    header, the attachment name, and a named skip line per dropped
+    section, rather than a stalled request or a 500."""
+    _, base, _ = live_server
+    from openfollow.web import diagnostics
+
+    monkeypatch.setattr(
+        diagnostics,
+        "default_disk_root",
+        lambda: tmp_path / "bundles",
+    )
+    monkeypatch.setattr(diagnostics, "_BUNDLE_BUDGET_S", 0.0)
+    status, body, headers = _get(base, "/api/diagnostics/bundle")
+    assert status == 200
+    assert headers.get("Content-Type", "").startswith("text/plain")
+    assert "attachment" in headers.get("Content-Disposition", "")
+    assert "=== A. Service / port ===" in body
+    assert "bundle time budget (0s) exhausted" in body
+
+
 # ---------------------------------------------------------------------------
 # /api/diagnostics/log-tail
 # ---------------------------------------------------------------------------
 
 
-def test_api_diagnostics_log_tail_returns_ring_contents(
-    live_server,
-    monkeypatch,
-) -> None:
+def test_api_diagnostics_log_tail_returns_ring_contents(live_server) -> None:
     _, base, _ = live_server
-    # Default config has ``update_service_name = "openfollow"``; on a
-    # Linux CI host journalctl is on PATH and would short-circuit the
-    # ring read with empty output. Force the missing-binary fallback
-    # so the route reads from the ring (which is what this test cares
-    # about – the journalctl-success path is covered separately by
-    # ``tests/test_web_diagnostics::test_collect_log_tail_uses_journalctl_when_available``).
-    from openfollow.web import diagnostics
-
-    monkeypatch.setattr(
-        diagnostics,
-        "_run",
-        lambda *a, **kw: (-1, "[unavailable: journalctl not found]"),
-    )
+    # journalctl is stubbed unavailable, so the route reads the ring; the
+    # journalctl-success path is covered in ``tests/test_web_diagnostics``.
     # Write a log line and confirm the ring picks it up + the route
     # serves it. ``server.log_ring`` is the same handle ``setup_logging``
     # returned and the route reads from.
@@ -507,21 +539,8 @@ def test_api_diagnostics_log_tail_handles_invalid_n(live_server) -> None:
     assert status == 200
 
 
-def test_api_diagnostics_log_tail_redacts_signatures(
-    live_server,
-    monkeypatch,
-) -> None:
+def test_api_diagnostics_log_tail_redacts_signatures(live_server) -> None:
     _, base, _ = live_server
-    # Same journalctl short-circuit guard as the ring-contents test –
-    # force the ring read so the signature redaction has actual log
-    # content to scrub.
-    from openfollow.web import diagnostics
-
-    monkeypatch.setattr(
-        diagnostics,
-        "_run",
-        lambda *a, **kw: (-1, "[unavailable: journalctl not found]"),
-    )
     import logging
 
     logging.getLogger("openfollow.test.redact").info(
@@ -533,21 +552,11 @@ def test_api_diagnostics_log_tail_redacts_signatures(
     assert "X-Auth-Signature: ***" in body
 
 
-def test_api_diagnostics_log_tail_escapes_html_for_htmx_consumer(
-    live_server,
-    monkeypatch,
-) -> None:
+def test_api_diagnostics_log_tail_escapes_html_for_htmx_consumer(live_server) -> None:
     """The diagnostics partial swaps the log-tail response into a
     ``<pre>`` via ``hx-swap="innerHTML"``. Content must be HTML-escaped
     to prevent XSS from user-influenced log lines."""
     _, base, _ = live_server
-    from openfollow.web import diagnostics
-
-    monkeypatch.setattr(
-        diagnostics,
-        "_run",
-        lambda *a, **kw: (-1, "[unavailable: journalctl not found]"),
-    )
     import logging
 
     logging.getLogger("openfollow.test.xss").info(
@@ -561,18 +570,8 @@ def test_api_diagnostics_log_tail_escapes_html_for_htmx_consumer(
     assert "&lt;img src=x" in body
 
 
-def test_api_diagnostics_log_tail_returns_raw_text_for_curl(
-    live_server,
-    monkeypatch,
-) -> None:
+def test_api_diagnostics_log_tail_returns_raw_text_for_curl(live_server) -> None:
     _, base, _ = live_server
-    from openfollow.web import diagnostics
-
-    monkeypatch.setattr(
-        diagnostics,
-        "_run",
-        lambda *a, **kw: (-1, "[unavailable: journalctl not found]"),
-    )
     import logging
 
     logging.getLogger("openfollow.test.curl").info("plain <ok> message")
@@ -581,6 +580,42 @@ def test_api_diagnostics_log_tail_returns_raw_text_for_curl(
     assert headers.get("Content-Type", "").startswith("text/plain")
     assert "<ok>" in body
     assert "&lt;ok&gt;" not in body
+
+
+# ---------------------------------------------------------------------------
+# Hermetic contract – no diagnostics route shells out under test
+# ---------------------------------------------------------------------------
+
+
+def test_diagnostics_routes_spawn_no_subprocess(
+    live_server,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Every host probe in the collector goes through ``diagnostics._run``,
+    which the autouse stub replaces. This pins that: a collector added later
+    that reaches for ``subprocess`` directly re-couples these tests to host
+    latency, which is what made the bundle test flake against its 5 s client
+    budget."""
+    _, base, _ = live_server
+    from openfollow.web import diagnostics
+
+    monkeypatch.setattr(
+        diagnostics,
+        "default_disk_root",
+        lambda: tmp_path / "bundles",
+    )
+
+    class _Boom:
+        @staticmethod
+        def run(*args, **kwargs):
+            raise AssertionError(f"diagnostics route spawned a subprocess: {args!r}")
+
+    monkeypatch.setattr(diagnostics, "subprocess", _Boom)
+    for path in ("/api/diagnostics/bundle", "/api/diagnostics/log-tail?n=200"):
+        status, body, _ = _get(base, path)
+        assert status == 200, f"{path} returned {status}"
+        assert "spawned a subprocess" not in body
 
 
 # ---------------------------------------------------------------------------

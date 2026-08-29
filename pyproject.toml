@@ -84,7 +84,7 @@ include = [
 # producing a spurious reformat diff) on changes unrelated to the work at hand.
 # The ``ruff-pre-commit`` hook ``rev`` in ``.pre-commit-config.yaml`` is pinned
 # to the SAME version so the local hooks and CI never disagree. Bump together.
-ruff = "0.16.3"
+ruff = "0.16.4"
 pytest = "^9.1.1"
 pytest-cov = "^7.1"
 coverage = { extras = ["toml"], version = "^7.15" }
@@ -110,7 +110,7 @@ optional = true
 
 [tool.poetry.group.package-macos.dependencies]
 pyinstaller = ">=6.22.2"
-pyinstaller-hooks-contrib = ">=2024.9"
+pyinstaller-hooks-contrib = ">=2026.7"
 
 # Linting: ruff check/format (faster pyflakes/pycodestyle/isort/pyupgrade bundle).
 # line-length=120 matches old flake8 setting. target-version=py310 matches requires-python.

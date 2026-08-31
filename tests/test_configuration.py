@@ -2708,10 +2708,11 @@ def test_otp_output_config_rejects_non_string_source_iface() -> None:
     assert cfg.source_iface == ""
 
 
-def test_load_config_migrates_legacy_drop_line_keys(temp_config_path) -> None:
-    """A pre-rename config sets the marker's Z line under ``drop_line``. Both keys
-    carry over, so an operator who turned the line off or thickened it keeps that
-    instead of silently reverting to the default when ``_filter_known`` drops them."""
+def test_load_config_migrates_the_former_marker_key_names(temp_config_path) -> None:
+    """A pre-rename config carries the marker's Z-line settings under their former
+    names. Both carry over, so an operator who turned the line off or thickened it
+    keeps that instead of silently reverting to the default when ``_filter_known``
+    drops them."""
     temp_config_path.write_text("[marker]\ndrop_line = false\ndrop_line_thickness = 7\n", encoding="utf-8")
 
     cfg = load_config(str(temp_config_path))
@@ -2721,8 +2722,8 @@ def test_load_config_migrates_legacy_drop_line_keys(temp_config_path) -> None:
 
 
 def test_load_config_prefers_the_current_marker_key_over_the_legacy_one(temp_config_path) -> None:
-    """With both spellings present the current one wins, so a stale ``drop_line``
-    left behind in a hand-edited file cannot override a deliberate ``z_line``."""
+    """With both spellings present the current one wins, so a former name left
+    behind in a hand-edited file cannot override a deliberate ``z_line``."""
     temp_config_path.write_text(
         "[marker]\ndrop_line = false\nz_line = true\ndrop_line_thickness = 7\nz_line_thickness = 3\n",
         encoding="utf-8",

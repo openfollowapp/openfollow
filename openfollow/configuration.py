@@ -2577,12 +2577,10 @@ RENAMED_MARKER_KEYS: tuple[tuple[str, str], ...] = (
 def apply_renamed_marker_keys(marker_data: dict[str, Any]) -> None:
     """Read the marker's Z-line settings under their former names, in place.
 
-    The drop line became the Z line, which is what it draws: the distance the
-    operator set between the ground position and the ball. Every route into a
-    marker section goes through here - config file, JSON config API, peer
-    broadcast - so a station still sending the old names during a rolling
-    upgrade is understood rather than accepted and silently discarded. The
-    current name wins wherever both appear.
+    Every route into a marker section goes through here - config file, JSON
+    config API, peer broadcast - so a station still sending the former names
+    during a rolling upgrade is understood rather than accepted and silently
+    discarded. The current name wins wherever both appear.
     """
     for old, new in RENAMED_MARKER_KEYS:
         if old in marker_data and new not in marker_data:

@@ -6,7 +6,7 @@ when Eos ships a major version, or when a site reports positions landing wrong.
 
 Unit tests pin the wire bytes (`tests/test_osc_template.py`). They cannot catch a
 wrong **axis convention**: a template that sends `[x] [z] [y]` is byte-perfect and
-still puts the performer's height on the depth axis. Only a console can settle
+still puts the marker's Z on the depth axis. Only a console can settle
 that, which is what this procedure is for.
 
 **ETCnomad counts.** It is the same Eos software and every part of this path is

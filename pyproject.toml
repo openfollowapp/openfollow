@@ -23,7 +23,9 @@ dependencies = [
     "bottle>=0.12",
     "pygame>=2.5.0",
     "multicast-expert>=1.4",
-    "PyGObject>=3.58.0",
+    # Floor is what Debian Trixie's python3-gi ships: a packaged install runs the
+    # OS bindings, not the pip build (packaging/build-deb.sh drops the pip copy).
+    "PyGObject>=3.50",
     "psutil>=5.9",
     "python-osc>=1.10.2",
     # USB MIDI support. mido is pure Python; python-rtmidi is C++ extension

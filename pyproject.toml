@@ -23,7 +23,7 @@ dependencies = [
     "bottle>=0.12",
     "pygame>=2.5.0",
     "multicast-expert>=1.4",
-    "PyGObject>=3.56.3",
+    "PyGObject>=3.58.0",
     "psutil>=5.9",
     "python-osc>=1.10.2",
     # USB MIDI support. mido is pure Python; python-rtmidi is C++ extension
@@ -84,7 +84,7 @@ include = [
 # producing a spurious reformat diff) on changes unrelated to the work at hand.
 # The ``ruff-pre-commit`` hook ``rev`` in ``.pre-commit-config.yaml`` is pinned
 # to the SAME version so the local hooks and CI never disagree. Bump together.
-ruff = "0.16.4"
+ruff = "0.16.5"
 pytest = "^9.1.1"
 pytest-cov = "^7.1"
 coverage = { extras = ["toml"], version = "^7.15" }

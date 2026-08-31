@@ -152,10 +152,13 @@ def animate(app: OpenFollowApp) -> None:
     frame_start = time.perf_counter()
     # Integrate against real elapsed time since the previous frame. Clamp the
     # step so a stall (blocked main loop, dropped frames) can't teleport the
-    # marker on the catch-up frame.
+    # marker on the catch-up frame. The broadcast velocity gets the unclamped
+    # ``elapsed`` instead: it divides a displacement the absolute writers (OSC,
+    # mouse, detection pin) already placed in real time, so the clamp would put
+    # an inflated rate on the wire.
     last = app._last_animate_time
-    dt = (frame_start - last) if last is not None else _DEFAULT_FRAME_DT
-    dt = min(dt, _MAX_FRAME_DT)
+    elapsed = (frame_start - last) if last is not None else _DEFAULT_FRAME_DT
+    dt = min(elapsed, _MAX_FRAME_DT)
     app._last_animate_time = frame_start
 
     if app._input_manager is not None:
@@ -184,7 +187,7 @@ def animate(app: OpenFollowApp) -> None:
     svc.update_video()
     svc.apply_detection_pin(dt)
     svc.update_zone_triggers()
-    svc.update_marker_visuals()
+    svc.update_marker_visuals(elapsed)
 
     frame_time = time.perf_counter() - frame_start
     svc._frame_metrics.add_frame(frame_time)

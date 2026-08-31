@@ -9,7 +9,9 @@ The companion file ``test_services_marker_visuals.py`` already covers
 point, ``build_marker_visual_state``, which:
 
 * picks up controlled vs. viewer markers,
-* synthesises speed from the gamepad or falls back to PSN velocity,
+* shows the gamepad / move speed on controlled cards and the received
+  velocity norm on viewer cards, broadcasting each controlled marker's
+  estimated velocity,
 * reuses the pre-allocated marker pool up to its size and spills to
   freshly-allocated instances above it,
 * copies video-receiver state onto the overlay,
@@ -23,15 +25,24 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import pypsn
 import pytest
 
 from openfollow.configuration import AppConfig
+from openfollow.psn.marker import Marker
+from openfollow.psn.receiver import PsnReceiver
+from openfollow.runtime.marker_velocity import _MAX_REPORTED_SPEED_MPS
+from openfollow.runtime.overlay_draw_hud import draw_marker_card
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 from openfollow.runtime.services_detection_pin import get_or_create_manual_marker
 from openfollow.runtime.services_marker_visuals import build_marker_visual_state
 from openfollow.runtime_metrics import OverlayStatePool
+from tests._fake_cairo import FakeCairo, FakeRenderer
 
 pytestmark = pytest.mark.unit
+
+_FRAME_DT = 1.0 / 60.0
+_ZERO = (0.0, 0.0, 0.0)
 
 # --------------------------------------------------------------------------- #
 # Fakes
@@ -49,6 +60,9 @@ class _FakeMarker:
         self.pos = pos
         self.speed = speed
         self.set_speed_calls: list[tuple[float, float, float]] = []
+
+    def set_pos(self, x: float, y: float, z: float) -> None:
+        self.pos = (x, y, z)
 
     def set_speed(self, vx: float, vy: float, vz: float) -> None:
         self.set_speed_calls.append((vx, vy, vz))
@@ -197,6 +211,7 @@ def _build_app(
         _runtime_services=SimpleNamespace(_zone_engine=None),
         _assist_manual={},
         _detection_pin_states={},
+        _marker_velocity_states={},
     )
     # FakeApp mirrors get_marker_move_speed for per-marker speed reads.
     app.get_marker_move_speed = lambda mid: (
@@ -213,6 +228,7 @@ def _build(
     *,
     system_stats: Any = None,
     person_detector: Any = None,
+    dt: float = _FRAME_DT,
 ) -> OverlayState:
     # Controller badge is stamped from InputManager.get_controller_info.
     return build_marker_visual_state(
@@ -221,6 +237,7 @@ def _build(
         system_stats=system_stats,
         person_detector=person_detector,
         cam_params_buffer=np.zeros(7, dtype=np.float64),
+        dt=dt,
     )
 
 
@@ -542,11 +559,14 @@ class TestSpeedDerivation:
         )
         state = _build(app, pool)
         assert state.markers[0].speed == pytest.approx(7.5)
-        # Controlled markers get their broadcast speed pushed back on the
-        # marker object via ``set_speed``.
-        assert app._server._markers[1].set_speed_calls == [(7.5, 0.0, 0.0)]
+        # The gamepad-scaled setting is a card value only. The wire carries the
+        # marker's velocity, which is zero while it stands still.
+        assert app._server._markers[1].set_speed_calls == [_ZERO]
 
     def test_controlled_without_gamepad_speed_falls_back_to_move_speed(self, pool: OverlayStatePool) -> None:
+        """The card shows the move-speed setting; the wire must not. A still
+        marker publishing its setting reads as a constant +x velocity to any
+        receiver that dead-reckons between packets."""
         app = _build_app(
             controlled=[1],
             viewer=[1],
@@ -555,7 +575,7 @@ class TestSpeedDerivation:
         state = _build(app, pool)
         # default MarkerConfig.move_speed == 2.0
         assert state.markers[0].speed == pytest.approx(2.0)
-        assert app._server._markers[1].set_speed_calls == [(2.0, 0.0, 0.0)]
+        assert app._server._markers[1].set_speed_calls == [_ZERO]
 
     def test_controlled_without_gamepad_uses_per_marker_speed_when_set(self, pool: OverlayStatePool) -> None:
         """Per-marker speed override is used when no controller is attached."""
@@ -567,7 +587,7 @@ class TestSpeedDerivation:
         app._config.marker_move_speeds = {1: 5.5}
         state = _build(app, pool)
         assert state.markers[0].speed == pytest.approx(5.5)
-        assert app._server._markers[1].set_speed_calls == [(5.5, 0.0, 0.0)]
+        assert app._server._markers[1].set_speed_calls == [_ZERO]
 
     def test_controlled_marker_absent_from_viewer_ids_still_gets_its_speed_write(self, pool: OverlayStatePool) -> None:
         """``controlled_marker_ids`` and ``viewer_marker_ids`` are edited
@@ -582,7 +602,7 @@ class TestSpeedDerivation:
         state = _build(app, pool)
 
         assert state.markers == []  # not viewed: no card
-        assert app._server._markers[1].set_speed_calls == [(2.0, 0.0, 0.0)]
+        assert app._server._markers[1].set_speed_calls == [_ZERO]
 
     def test_speed_write_happens_once_per_frame_for_a_viewed_controlled_marker(self, pool: OverlayStatePool) -> None:
         """Moving the write out of the viewer loop must not double-stamp a
@@ -593,7 +613,7 @@ class TestSpeedDerivation:
             server_markers={1: _FakeMarker(1)},
         )
         _build(app, pool)
-        assert app._server._markers[1].set_speed_calls == [(2.0, 0.0, 0.0)]
+        assert app._server._markers[1].set_speed_calls == [_ZERO]
 
     def test_a_stationary_controlled_marker_is_still_rewritten_every_frame(
         self,
@@ -605,7 +625,7 @@ class TestSpeedDerivation:
         movement would make a deliberately still marker report as stale: PSN
         would publish it invalid, RTTrPM would stop sending it, and OSC rows
         would go quiet - all while the operator is holding it exactly where
-        they want it."""
+        they want it. The value is zero; the write is not skipped."""
         app = _build_app(
             controlled=[1],
             viewer=[1],
@@ -613,14 +633,14 @@ class TestSpeedDerivation:
         )
         for _ in range(3):
             _build(app, pool)
-        assert app._server._markers[1].set_speed_calls == [(2.0, 0.0, 0.0)] * 3
+        assert app._server._markers[1].set_speed_calls == [_ZERO] * 3
 
     def test_unregistered_controlled_marker_is_skipped(self, pool: OverlayStatePool) -> None:
         """A controlled id the server has not registered yet (mid hot-reload)
         must not raise on the frame path."""
         app = _build_app(controlled=[1, 2], viewer=[], server_markers={1: _FakeMarker(1)})
         _build(app, pool)
-        assert app._server._markers[1].set_speed_calls == [(2.0, 0.0, 0.0)]
+        assert app._server._markers[1].set_speed_calls == [_ZERO]
 
     def test_viewer_without_gamepad_speed_uses_marker_velocity_norm(self, pool: OverlayStatePool) -> None:
         # Velocity (3, 4, 0) → ‖v‖ = 5.
@@ -630,6 +650,152 @@ class TestSpeedDerivation:
         )
         state = _build(app, pool)
         assert state.markers[0].speed == pytest.approx(5.0)
+
+    @pytest.mark.parametrize("axis", [0, 1, 2])
+    @pytest.mark.parametrize("velocity", [1.5, -0.4])
+    def test_moving_controlled_marker_broadcasts_velocity_on_the_moved_axis(
+        self, pool: OverlayStatePool, axis: int, velocity: float
+    ) -> None:
+        """The wire carries how the marker actually moves: signed, on the axis
+        it moves along, zero on the others."""
+        marker = _FakeMarker(1)
+        app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
+        for _ in range(60):
+            pos = list(marker.pos)
+            pos[axis] += velocity * _FRAME_DT
+            marker.set_pos(pos[0], pos[1], pos[2])
+            _build(app, pool)
+        expected = [0.0, 0.0, 0.0]
+        expected[axis] = velocity
+        assert marker.set_speed_calls[-1] == pytest.approx(tuple(expected), abs=1e-6)
+
+    def test_controlled_card_keeps_the_move_speed_while_the_wire_carries_velocity(self, pool: OverlayStatePool) -> None:
+        """The card is the operator's speed-setting readout (what R / T and the
+        bumpers adjust); the wire is the marker's motion. They are different
+        quantities and stay that way."""
+        marker = _FakeMarker(1)
+        app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
+        for _ in range(60):
+            x, y, z = marker.pos
+            marker.set_pos(x + 0.4 * _FRAME_DT, y, z)
+            state = _build(app, pool)
+        assert state.markers[0].speed == pytest.approx(2.0)
+        assert marker.set_speed_calls[-1] == pytest.approx((0.4, 0.0, 0.0), abs=1e-6)
+
+    def test_first_frame_of_a_newly_controlled_marker_writes_zero(self, pool: OverlayStatePool) -> None:
+        """No reference position yet: the seed frame reports zero rather than
+        treating the marker's position as a displacement from the origin. The
+        marker starts one slow frame's travel from the origin, so a reference
+        that silently defaulted there would publish an ordinary velocity that
+        no clamp or deadband would flatten back to zero."""
+        marker = _FakeMarker(1, pos=(0.6 * _FRAME_DT, 0.0, 0.0))
+        app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
+        _build(app, pool)
+        assert marker.set_speed_calls == [_ZERO]
+
+    def test_velocity_state_is_pruned_when_a_marker_leaves_the_controlled_set(self, pool: OverlayStatePool) -> None:
+        m1, m2 = _FakeMarker(1), _FakeMarker(2)
+        app = _build_app(controlled=[1, 2], viewer=[], server_markers={1: m1, 2: m2})
+        _build(app, pool)
+        assert set(app._marker_velocity_states) == {1, 2}
+
+        app._controlled_ids = [1]
+        _build(app, pool)
+        assert set(app._marker_velocity_states) == {1}
+
+        # Re-added a little way from where it left: the estimate restarts at
+        # the new position (zero); it does not read the move as 6 m/s from the
+        # old reference.
+        m2.set_pos(0.1, 0.0, 0.0)
+        app._controlled_ids = [1, 2]
+        _build(app, pool)
+        assert m2.set_speed_calls[-1] == _ZERO
+
+    def test_repositioned_marker_writes_a_bounded_velocity_not_a_spike(self, pool: OverlayStatePool) -> None:
+        """A reset / OSC snap moves the marker metres in one frame. As a rate
+        that is hundreds of m/s, which a dead-reckoning console would
+        extrapolate; the wire never carries more than the ceiling."""
+        marker = _FakeMarker(1)
+        app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
+        _build(app, pool)
+        marker.set_pos(5.0, 0.0, 0.0)
+        _build(app, pool)
+        assert marker.set_speed_calls[-1][0] == pytest.approx(0.3 * _MAX_REPORTED_SPEED_MPS)
+
+    def test_a_drag_faster_than_the_ceiling_is_not_reported_as_standing_still(self, pool: OverlayStatePool) -> None:
+        """A grabbed marker follows the cursor with no glide by default, so an
+        ordinary flick moves it far faster than the ceiling. Publishing zero
+        there would be the same bug in the other direction: a marker the
+        operator can see moving, reported as parked."""
+        marker = _FakeMarker(1)
+        app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
+        _build(app, pool)
+        for _ in range(60):
+            x, y, z = marker.pos
+            marker.set_pos(x + 35.0 * _FRAME_DT, y, z)
+            _build(app, pool)
+        assert marker.set_speed_calls[-1][0] == pytest.approx(_MAX_REPORTED_SPEED_MPS, abs=1e-6)
+
+    def test_frame_dt_reaches_the_estimate(self, pool: OverlayStatePool) -> None:
+        """Half a second of the same motion sampled at 60 and at 30 fps lands on
+        the same wire velocity: fails if ``dt`` is not threaded through or the
+        alpha is not rescaled for it."""
+
+        def run(dt: float, frames: int) -> tuple[float, float, float]:
+            marker = _FakeMarker(1)
+            app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
+            _build(app, pool, dt=dt)
+            for _ in range(frames):
+                x, y, z = marker.pos
+                marker.set_pos(x, y + 1.0 * dt, z)
+                _build(app, pool, dt=dt)
+            return marker.set_speed_calls[-1]
+
+        fast = run(1.0 / 60.0, 30)
+        slow = run(1.0 / 30.0, 15)
+        assert fast == pytest.approx(slow, abs=1e-9)
+        assert 0.0 < fast[1] < 1.0
+
+
+class TestSpeedRoundTrip:
+    """Sender motion → real PSN wire format → real receiver → viewer card."""
+
+    def test_sender_motion_shows_as_that_speed_on_the_viewer_card(self, pool: OverlayStatePool) -> None:
+        # Sender: a real Marker this station controls, moving upstage at 1.5 m/s.
+        sender_marker = Marker(1, "S")
+        sender = _build_app(controlled=[1], viewer=[1], server_markers={1: sender_marker})
+        for _ in range(90):
+            x, y, z = sender_marker.pos
+            sender_marker.set_pos(x, y + 1.5 * _FRAME_DT, z)
+            _build(sender, pool)
+
+        # Wire: encode what PsnServer would send and parse it as a peer would.
+        info = pypsn.PsnInfo(timestamp=0, version_high=2, version_low=0, frame_id=0, packet_count=1)
+        packet = pypsn.PsnDataPacket(info=info, trackers=[sender_marker.to_psn_marker()])
+        parsed = pypsn.parse_psn_packet(pypsn.prepare_psn_data_packet_bytes(packet))
+        receiver = PsnReceiver()
+        receiver._on_packet(parsed)
+        received = receiver.get_marker(1)
+        assert received is not None
+        assert received.speed == pytest.approx((0.0, 1.5, 0.0), abs=1e-3)  # float32 wire
+
+        # Viewer: the card on the peer station reads the received velocity.
+        viewer = _build_app(viewer=[1], receiver_markers={1: received}, online={1: True})
+        state = _build(viewer, pool)
+        assert state.markers[0].speed == pytest.approx(1.5, abs=1e-3)
+        cr = FakeCairo()
+        draw_marker_card(
+            FakeRenderer(state=state),
+            cr,
+            x=0,
+            y=0,
+            w=180,
+            h=64,
+            t=state.markers[0],
+            selected=False,
+            state=state,
+        )
+        assert any("1.50 m/s" in text for text in cr.show_text_strings())
 
 
 # --------------------------------------------------------------------------- #
@@ -716,6 +882,7 @@ class TestExternalStateSnapshots:
             system_stats=None,
             person_detector=None,
             cam_params_buffer=buf,
+            dt=_FRAME_DT,
         )
         buf[0] = 999.0  # mutate the scratch buffer
         assert state.camera_params[0] != 999.0

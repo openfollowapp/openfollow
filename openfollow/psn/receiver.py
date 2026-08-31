@@ -3,8 +3,9 @@
 """Receives PSN marker data via multicast and maintains per-marker state.
 
 ``PsnReceiver`` runs a background thread (``_RobustReceiver``) that parses
-incoming PSN packets, ignoring locally-controlled marker IDs and deriving
-speed from position deltas when the protocol speed is zero.
+incoming PSN packets and ignores locally-controlled marker IDs. A tracker's
+speed is the sender's vector while that sender is publishing one; otherwise it
+is derived from position deltas.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ class _RobustReceiver(pypsn.Receiver):  # type: ignore[misc]
                 # Max UDP payload: a PSN data packet exceeds 1500 B at ~15
                 # trackers, and a short read truncates the tail → struct.error →
                 # the whole frame is dropped. Size to the largest datagram.
-                data, _ = self.socket.recvfrom(65535)
+                data, addr = self.socket.recvfrom(65535)
             except TimeoutError:
                 continue  # no data within timeout – normal, keep looping
             except OSError:
@@ -50,7 +51,9 @@ class _RobustReceiver(pypsn.Receiver):  # type: ignore[misc]
 
             try:
                 psn_data = pypsn.parse_psn_packet(data)
-                self.callback(psn_data)
+                # The sender's address, so speed handling can tell two stations
+                # publishing the same tracker id apart.
+                self.callback(psn_data, addr[0])
             except Exception:
                 logger.debug("PSN parse/callback error", exc_info=True)
 
@@ -59,7 +62,7 @@ DEFAULT_PORT = 56565
 
 # Evict markers whose last packet aged well past the 2 s online window so an
 # enumerated / abandoned tracker_id (1–65535, untrusted wire data) can't keep a
-# Marker (+ its lock) and the three per-id dict entries alive for the whole
+# Marker (+ its lock) and its per-id bookkeeping entries alive for the whole
 # process lifetime. A returning marker is re-created on its next packet.
 _MARKER_TTL_S = 60.0
 _EVICT_SWEEP_INTERVAL_S = 5.0  # throttle the sweep so a packet flood can't make it hot
@@ -91,6 +94,9 @@ class PsnReceiver:
         self._markers: dict[int, Marker] = {}
         self._last_seen: dict[int, float] = {}
         self._last_pos: dict[int, tuple[float, float, float]] = {}
+        # Per tracker, the address of the sender last seen publishing a
+        # non-zero speed for it. Only that sender's vectors are stored verbatim.
+        self._wire_speed_sender: dict[int, str] = {}
         self._last_evict_sweep: float = 0.0
         self._receiver: pypsn.Receiver | None = None
 
@@ -144,8 +150,13 @@ class PsnReceiver:
         with self._lock:
             self._ignore_ids = set(ignore_ids)
 
-    def _on_packet(self, data: object) -> None:
-        """Callback invoked by pypsn on each received packet."""
+    def _on_packet(self, data: object, sender: str = "") -> None:
+        """Callback invoked by pypsn on each received packet.
+
+        *sender* is the source address of the datagram; it scopes the wire-speed
+        decision to one station so a second station publishing the same tracker
+        id cannot claim the first one's trust.
+        """
         try:
             if not isinstance(data, pypsn.PsnDataPacket):
                 return
@@ -179,21 +190,22 @@ class PsnReceiver:
                         self._markers[t.tracker_id] = Marker(t.tracker_id, f"Marker {t.tracker_id}", remote=True)
                     tid = t.tracker_id
                     new_pos = (t.pos.x, t.pos.y, t.pos.z)
-                    # Use protocol speed only if non-zero; many servers (including
-                    # OpenFollow itself) always send speed=(0,0,0) even when
-                    # the marker is moving, so fall back to position derivation.
-                    proto_speed_nonzero = t.speed is not None and (
-                        t.speed.x != 0.0 or t.speed.y != 0.0 or t.speed.z != 0.0
-                    )
+                    wire = t.speed
+                    if wire is not None and (wire.x != 0.0 or wire.y != 0.0 or wire.z != 0.0):
+                        self._wire_speed_sender[tid] = sender
                     speed: tuple[float, float, float] | None = None
-                    if proto_speed_nonzero:
-                        # Store as scalar magnitude in the x component so
-                        # services.py can read it without directional noise.
-                        mag = (t.speed.x**2 + t.speed.y**2 + t.speed.z**2) ** 0.5
-                        speed = (mag, 0.0, 0.0)
+                    if wire is not None and self._wire_speed_sender.get(tid) == sender:
+                        # This sender publishes speed for this tracker, so its
+                        # vector is taken verbatim, exact zeros included: a marker
+                        # it holds still reports zero. Both conditions are per
+                        # packet - a frame that omits the speed chunk, or one from
+                        # a second station on the same tracker id, derives instead
+                        # of freezing on a vector nobody is refreshing.
+                        speed = (wire.x, wire.y, wire.z)
                     else:
-                        # Derive speed from position delta; only update when
-                        # actually moving so the last known speed stays visible.
+                        # No speed to trust: derive it from the position delta,
+                        # only when moving, so the last known speed stays visible
+                        # between bursts.
                         prev_pos = self._last_pos.get(tid)
                         prev_t = self._last_seen.get(tid)
                         if prev_pos is not None and prev_t is not None:
@@ -224,3 +236,4 @@ class PsnReceiver:
             self._markers.pop(tid, None)
             self._last_seen.pop(tid, None)
             self._last_pos.pop(tid, None)
+            self._wire_speed_sender.pop(tid, None)

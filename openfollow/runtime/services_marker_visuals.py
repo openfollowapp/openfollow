@@ -14,6 +14,7 @@ import numpy.typing as npt
 from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, GridConfig
 from openfollow.net_utils import list_iface_ipv4
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
+from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_marker_velocity
 from openfollow.runtime.overlay_state import (
     MarkerOverlayData,
     OperatorMessageView,
@@ -21,6 +22,7 @@ from openfollow.runtime.overlay_state import (
     VirtualFaderDisplayData,
 )
 from openfollow.runtime.services_detection_pin import is_assist_controlled
+from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.runtime_metrics import OverlayStatePool
 from openfollow.units import UnitSystem
 
@@ -338,16 +340,6 @@ def build_initial_overlay_state(cfg: Any) -> OverlayState:
     return state
 
 
-def _broadcast_speed(app: Any, marker_id: int, marker_speeds: dict[int, float]) -> float:
-    """Effective speed magnitude a controlled marker sends on PSN.
-
-    ``marker_speeds`` only carries markers with a connected controller; the
-    accessor is the per-marker source of truth for everything else.
-    """
-    speed = marker_speeds.get(marker_id)
-    return speed if speed is not None else app.get_marker_move_speed(marker_id)
-
-
 def build_marker_visual_state(
     app: Any,
     *,
@@ -355,20 +347,31 @@ def build_marker_visual_state(
     system_stats: Any,
     person_detector: Any,
     cam_params_buffer: npt.NDArray[Any],
+    dt: float,
 ) -> OverlayState:
-    """Build a complete OverlayState snapshot for atomic renderer swap."""
+    """Build a complete OverlayState snapshot for atomic renderer swap.
+
+    ``dt`` is the real seconds elapsed since the previous animate frame - not
+    the clamped motion step - because it divides a displacement into a rate for
+    the velocity each controlled marker broadcasts.
+    """
     controlled_set = set(app._controlled_ids)
     marker_speeds = app._input_manager.get_marker_gamepad_speeds() if app._input_manager is not None else {}
 
     # Every controlled marker is broadcast on PSN, so every controlled marker
-    # gets the outbound speed write - not only the ones this station also views.
-    # The write is what stamps the tracker's PSN timestamp, so driving it from
-    # ``viewer_marker_ids`` would let a controlled-but-not-viewed marker go stale
-    # on the wire while it is still being transmitted.
+    # gets the outbound speed write - not only the ones this station also views
+    # - and it happens every frame: the write is what stamps the tracker's PSN
+    # timestamp, so a still marker writes (0, 0, 0) rather than skipping. The
+    # estimator state is pruned to the controlled set, so a marker that leaves
+    # and returns restarts from its new position instead of a stale reference.
+    velocity_states: dict[int, MarkerVelocityState] = app._marker_velocity_states
+    prune_to_keep(velocity_states, controlled_set)
     for tid in controlled_set:
         marker = app._server.get_marker(tid)
-        if marker is not None:
-            marker.set_speed(_broadcast_speed(app, tid, marker_speeds), 0.0, 0.0)
+        if marker is None:
+            continue
+        vstate: MarkerVelocityState = get_or_create(velocity_states, tid, MarkerVelocityState)
+        marker.set_speed(*estimate_marker_velocity(vstate, marker.pos, dt))
 
     # Fetch controller info once and build a reverse map so the per-marker
     # loop can stamp each marker card with its bound controller without an

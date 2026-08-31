@@ -1129,9 +1129,26 @@ class TestUpdateDelegators:
         renderer = _FakeOverlayRenderer()
         services._overlay_renderer = renderer
 
-        services.update_marker_visuals()
+        services.update_marker_visuals(0.25)
         assert renderer.state is built
         assert swapped_old[0] is built
+
+    def test_update_marker_visuals_passes_dt_to_builder(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The frame step reaches the builder, which feeds it to the velocity
+        estimate each controlled marker broadcasts."""
+        captured: list[dict[str, object]] = []
+        built = object()
+        monkeypatch.setattr(
+            services_module,
+            "build_marker_visual_state",
+            lambda app, **kw: captured.append(kw) or built,
+        )
+        monkeypatch.setattr(services_module, "prepare_overlay_state_swap", lambda **kw: None)
+        services._overlay_renderer = _FakeOverlayRenderer()
+        services.update_marker_visuals(dt=0.5)
+        assert captured[0]["dt"] == 0.5
 
 
 # Note: Per-marker controller binding data flows through

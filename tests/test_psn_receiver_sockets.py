@@ -98,7 +98,7 @@ def _make_robust_receiver(
     instance = object.__new__(_RobustReceiver)
     instance.socket = socket_obj
     instance.running = True
-    instance.callback = callback or (lambda _data: None)
+    instance.callback = callback or (lambda _data, _sender: None)
     return instance
 
 
@@ -134,11 +134,29 @@ class TestRobustReceiverTimeoutContinues:
         )
         r = _make_robust_receiver(
             socket_obj=sock,
-            callback=lambda data: (calls.append(data), setattr(r, "running", False))[0],
+            callback=lambda data, _sender: (calls.append(data), setattr(r, "running", False))[0],
         )
         r.run()
         assert sock.recv_calls == 2
         assert calls == [b"\x00\x01\x02"]
+
+    def test_datagram_source_address_reaches_the_handler(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The speed handling has to tell two stations publishing the same
+        tracker id apart, and the source address is the only thing on a PSN
+        datagram that identifies its sender."""
+        senders: list[str] = []
+        monkeypatch.setattr(receiver_module.pypsn, "parse_psn_packet", lambda data: data)
+
+        sock = _ScriptedSocket([b"\x00"])
+        r = _make_robust_receiver(
+            socket_obj=sock,
+            callback=lambda _data, sender: (senders.append(sender), setattr(r, "running", False))[0],
+        )
+        r.run()
+        assert senders == ["127.0.0.1"]
 
 
 class TestRobustReceiverOSError:
@@ -159,7 +177,7 @@ class TestRobustReceiverOSError:
         )
         calls: list[Any] = []
         r = _make_robust_receiver(socket_obj=sock)
-        r.callback = lambda data: (calls.append(data), setattr(r, "running", False))[0]
+        r.callback = lambda data, _sender: (calls.append(data), setattr(r, "running", False))[0]
 
         with caplog.at_level("DEBUG", logger="openfollow.psn.receiver"):
             r.run()
@@ -217,7 +235,7 @@ class TestRobustReceiverUnexpectedException:
         )
         calls: list[Any] = []
         r = _make_robust_receiver(socket_obj=sock)
-        r.callback = lambda data: (calls.append(data), setattr(r, "running", False))[0]
+        r.callback = lambda data, _sender: (calls.append(data), setattr(r, "running", False))[0]
 
         with caplog.at_level("DEBUG", logger="openfollow.psn.receiver"):
             r.run()
@@ -234,7 +252,7 @@ class TestRobustReceiverParseAndCallbackErrors:
     ) -> None:
         callback_calls: list[Any] = []
 
-        def _record(data: Any) -> None:
+        def _record(data: Any, _sender: str) -> None:
             callback_calls.append(data)
 
         sock = _ScriptedSocket([b"\x00\x00", b"\x00\x01"])
@@ -264,7 +282,7 @@ class TestRobustReceiverParseAndCallbackErrors:
         monkeypatch.setattr(receiver_module.pypsn, "parse_psn_packet", lambda data: data)
         call_count = {"n": 0}
 
-        def _flaky(data: Any) -> None:
+        def _flaky(data: Any, _sender: str) -> None:
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise RuntimeError("downstream exploded")

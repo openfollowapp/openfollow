@@ -321,7 +321,7 @@ The HUD is **not** in the GStreamer chain. The video sink (`gtksink`) is wrapped
 
 ### Marker freshness (`is_marker_stale`, shared by every output)
 
-`build_marker_visual_state` rewrites every **controlled** marker each frame (an unconditional `set_speed`), and every `Marker` data write stamps `timestamp`. That stamp is therefore a per-marker "the frame loop ran" signal, which is what the four output protocols use to avoid transmitting a frozen position as if it were live – each runs its own send thread, so none of them stops when the frame loop does.
+`build_marker_visual_state` rewrites every **controlled** marker each frame (an unconditional `set_speed` carrying the marker's velocity estimate, `(0, 0, 0)` when it is at rest), and every `Marker` data write stamps `timestamp`. That stamp is therefore a per-marker "the frame loop ran" signal, which is what the four output protocols use to avoid transmitting a frozen position as if it were live – each runs its own send thread, so none of them stops when the frame loop does.
 
 `marker_age_s(marker, *, now_us=None)` / `is_marker_stale(marker, *, now_us=None)` / `MARKER_STALE_AFTER_S` (1.0 s ≈ 60 missed frames) live in [`psn/marker.py`](openfollow/psn/marker.py). A remote marker (sender's epoch) and a never-written one both report `inf`, so anything unaged fails safe as stale – and `inf` is not `int()`-able, which the OTP sampled-timestamp path has to handle. The reference is the **marker's own clock** (`Marker.clock_now_us`), never the module function: `PsnServer.add_marker` passes its `clock=` down, so a server on an injected clock would otherwise age every marker against an unrelated epoch and ship `status=0.0` for a freshly written position. Pass one `now_us` (from that same clock) when ageing several markers for one packet.
 
@@ -332,7 +332,7 @@ The HUD is **not** in the GStreamer chain. The video sink (`gtksink`) is wrapped
 | RTTrPM | No validity field exists, so absence is the idiom: stale trackables are filtered out of the packet, and an all-stale set sends nothing so the receiver's own timeout fires |
 | OSC transmitter | A stale marker skips with the reason in that row's ring buffer. Explicit `[x:N]` / controller `[x:cN]` refs go through `RenderContext.marker_stale_resolver` (neither sets `needs_default_marker`), which raises `RenderError(..., hint="position is stale")` so the skip is distinguishable from an unregistered marker. Constant / hotkey / MIDI rows are unaffected |
 
-**Do not gate the per-frame `set_speed` on movement.** A deliberately still marker would go stale and drop off the wire on all four protocols. `tests/test_output_staleness.py` pins the wire behaviour; `tests/test_marker_freshness.py` pins the rule.
+**Do not gate the per-frame `set_speed` on movement.** The value may be zero; the write never skips. A deliberately still marker would otherwise go stale and drop off the wire on all four protocols. `tests/test_output_staleness.py` pins the wire behaviour; `tests/test_marker_freshness.py` pins the rule.
 
 ### Datagram size (`packet_chunking.MAX_DATAGRAM_BYTES`, shared by every output)
 
@@ -351,19 +351,21 @@ Every marker-carrying output grows its datagram with the marker count, and **147
 `tests/test_output_packet_splitting.py` pins the cross-protocol invariant (no stream emits a datagram past 1472 at any marker count) plus each protocol's grouping; `scripts/hw_validation/output_datagram_size_probe.py` re-checks it on the DUT against the deployed send paths.
 
 ### PsnServer (`psn/server.py`)
-- Sends PSN multicast every ~33ms
+- Sends PSN multicast at `data_fps` (default 60 Hz)
 - `add_marker(id, name)` / `remove_marker(id)` / `get_marker(id)`
 - `marker.set_pos(x, y, z)`, `marker.set_speed(vx, vy, vz)`
-- **Speed encoding:** every frame in `services.py`, each controlled marker sends its own effective speed magnitude. Controller-mapped markers use `move_speed × controller multiplier`; otherwise it falls back to configured `move_speed`.
+- **Speed encoding:** every frame in `build_marker_visual_state`, each controlled marker's speed is its estimated **velocity vector** in m/s, PSN-absolute frame ([`runtime/marker_velocity.py`](openfollow/runtime/marker_velocity.py): position delta over the **real** elapsed seconds – `animate` hands `update_marker_visuals` the unclamped `elapsed`, not the clamped motion `dt`, because a clamped divisor inflates the rate of a slow frame – EMA-smoothed at alpha 0.3 per nominal frame, frame-rate independent via `ema_factor`). Two bounds, neither of which classifies motion: the sample rate is **clamped** to `_MAX_REPORTED_SPEED_MPS` (20 m/s), so a repositioning (reset, OSC snap) can't put an unbounded rate on the wire while a fast mouse drag still reports as moving; and the smoothed output snaps to exactly `(0, 0, 0)` below `_STILL_SPEED_MPS`, so a marker that comes to rest reads as stopped rather than asymptotically slow. The HUD card of a controlled marker shows the configured move speed (what R / T and the bumpers adjust), not this vector; viewer cards show `‖speed‖` of the received marker.
 
 ### PsnReceiver (`psn/receiver.py`)
 - Receives PSN multicast in background thread
 - `ignore_ids`: controlled_marker_ids – prevents loopback overwriting own markers
 - `_last_seen[tid]`: monotonic timestamp of last received packet
 - `_last_pos[tid]`: previous position for speed derivation
+- `_wire_speed_sender[tid]`: the source address last seen publishing a non-zero speed for that tracker (dropped on TTL eviction). PSN has no server id, so several stations on one group can send the same tracker id – keying the trust by id alone would let a zero-only station's packets be stored verbatim because a different station earned the trust
 - **Speed logic (per packet):**
-  1. If `t.speed` is non-zero vector: store as magnitude in the x component
-  2. If `t.speed` is zero or None: derive from `delta_pos/dt`, only when actually moving (preserves last known speed when stationary)
+  1. Any non-zero `t.speed` records this datagram's sender as the tracker's wire-speed source
+  2. The packet carries a speed **and** comes from that sender: store the vector verbatim, zeros included (the sender says it is still)
+  3. Otherwise – no speed chunk (it is optional, and holding the last one would freeze a stale vector forever), or a different sender – derive from `delta_pos/dt` inside the `0.001 < dt < 1.0` window, only when actually moving (preserves last known speed when stationary)
 - **Received markers carry the sender's own `timestamp` / `status`.** Position, speed, and both fields land in one `Marker.apply_remote(...)` write, which never stamps the local clock – the wire values are the sender's, in *its* epoch, and are not comparable to `psn_timestamp_usec()` or to another sender's. Such a marker is built `remote=True` and reports `is_remote`; don't re-broadcast its timestamp as ours. Local freshness is `is_marker_online` (arrival), never the tracker timestamp
 - `is_marker_online(tid, timeout=2.0)`: returns True if packet received within 2s
 - `source_ip` parameter binds receive socket to a specific interface
@@ -755,7 +757,7 @@ Default tuning:
 - Velocity estimation: EMA-smoothed (alpha=0.3) from target position deltas, normalised to a per-nominal-frame rate
 - Prediction: `predicted = target + velocity × prediction` – lookahead to compensate for detection lag on fast-moving persons
 - EMA smoothing applied **after** prediction: `smooth += alpha × (predicted - smooth)` – smooths the final output including lookahead
-- **Frame-rate-independent:** the filter is tuned for the ~60 FPS animate tick but `apply_detection_pin` receives the frame `dt`; the velocity rate and both EMA factors are re-derived for the real `dt` (`_dt_steps` / `_ema_factor` in `services_detection_pin.py`), so `smoothing` / `prediction` behave the same on a Mac at 60 FPS and a Pi running animate slower, and across stalls. `dt = _NOMINAL_FRAME_DT` reproduces the per-frame tuning exactly
+- **Frame-rate-independent:** the filter is tuned for the ~60 FPS animate tick but `apply_detection_pin` receives the frame `dt`; the velocity rate and both EMA factors are re-derived for the real `dt` (`dt_steps` / `ema_factor` in [`runtime/frame_timing.py`](openfollow/runtime/frame_timing.py), shared with the assist glide and the broadcast velocity estimate), so `smoothing` / `prediction` behave the same on a Mac at 60 FPS and a Pi running animate slower, and across stalls. `dt = NOMINAL_FRAME_DT` reproduces the per-frame tuning exactly
 - `smoothing`: 0.01–1.0 (lower = smoother/laggier, higher = more responsive)
 - `prediction`: multiplier on velocity vector (0 = disabled, ~2–5 typical range)
 
@@ -768,7 +770,7 @@ The web Tracking control is the only on/off: **Off** ⇒ `enabled=False`; **Full
 - **Manual anchor** – operator-steered, freely movable, rendered as the **solid carded marker** (the operator-facing one) at the anchor position. Stored per-marker-id in `app._assist_manual: dict[int, Marker]` (a real `Marker`, **never** registered with `PsnServer` → never broadcast, never in zones). Operator input reaches it because the input resolvers (`InputManager._get_marker`, `mouse.MouseHandler._get_selected_marker`) redirect to it when `is_assist_controlled(app, marker_id)` (assist active AND id in `controlled_marker_ids`). The pin **never writes the anchor**.
 - **AI-corrected output** – the existing registered/controlled marker (broadcast + zones, unchanged plumbing), rendered as the **dim ghost** crosshair + ground ring (`MarkerOverlayData.is_assist_ghost`, no card) – one ghost per assist-controlled marker. Each frame it **glides** (single EMA at `smoothing`, seeded once, never reset → never snaps) toward the detection nearest its anchor within `assist_radius_m` (eased by `assist_strength`, 1.0 = exactly on the person), or back toward the anchor when none is in range. Output Z follows the anchor's Z. The same detection may drive more than one marker (no claim dedup; collisions self-resolve as anchors diverge).
 - Per-frame efficiency: `_apply_assist_all` unprojects each detection **once per unproject plane** and memoises by plane Z, so N markers don't re-unproject M detections N times.
-- `DetectionPinState.ai_smooth_x/y` is the never-reset outer glide; `soft_release()` (lost detection) drops the lock + velocity but keeps the glide. `assist_active` / `is_assist_controlled` / `get_or_create_manual_marker` are the single source of truth for "which ids are assist-controlled" and lazy anchor seeding; `_prune_manual_markers(keep=set())` / `_prune_pin_states(keep=set())` discard stale ghosts + states when the controlled set changes or assist disengages.
+- `DetectionPinState.ai_smooth_x/y` is the never-reset outer glide; `soft_release()` (lost detection) drops the lock + velocity but keeps the glide. `assist_active` / `is_assist_controlled` / `get_or_create_manual_marker` are the single source of truth for "which ids are assist-controlled" and lazy anchor seeding; `_prune_manual_markers(keep=set())` / `_prune_pin_states(keep=set())` discard stale ghosts + states when the controlled set changes or assist disengages. Every per-marker state map (pin states, assist anchors, velocity estimates) shares one lazy-create / prune pair – `get_or_create` + `prune_to_keep` in [`runtime/state_maps.py`](openfollow/runtime/state_maps.py) – so a new one doesn't grow a fourth copy of the same three lines on the 60 Hz path.
 
 ### Pre-shipped detection models
 The five YOLO26 sizes ship as quality tiers (`_DETECTION_TIERS` in `web/routes.py`: n/s/m/l/x → Fastest/Fast/Balanced/Accurate/Most Accurate). They are built into each distribution and seeded into the storage `models/` folder on first run via `openfollow/model_seed.py` (`seed_bundled_models` + `bundled_models_dir`, called from `AppRuntimeServices._seed_bundled_detection_models` in `init_video`). macOS bundles all five (the launcher's `seed_user_data` copies them); the `.deb` ships n/s/m to `/usr/share/openfollow/models` (Large/XLarge are Advanced downloads on a Pi); the Pi image installs the `.deb` so the startup seed copies them onto the NVMe. Build-time export of the `.onnx` files needs the `export` extra + an uplink (build host only; runtime stays offline).
@@ -887,9 +889,9 @@ This repo has two active development streams (Mac dev + Pi). Merge conflicts hap
 - `set_state(PLAYING)` returning ASYNC is normal for SRT caller mode
 
 ### PSN speed convention
-- Controlled markers broadcast `set_speed(move_speed, 0, 0)` so magnitude = configured speed
-- Receiver stores non-zero received speed as `set_speed(magnitude, 0, 0)` – scalar in x component
-- Position-based derivation only runs when protocol speed is zero (and only updates when moving)
+- Controlled markers broadcast their true velocity vector (m/s, PSN-absolute frame), clamped to 20 m/s; a marker at rest sends `(0, 0, 0)` and the write still happens every frame (freshness stamp)
+- Viewer cards show `‖speed‖` of the received marker; controlled cards show the configured move speed, which never reaches the wire
+- Receiver stores a wire vector verbatim only when the datagram's sender is the one that published a non-zero speed for that tracker; anything else (no speed chunk, a second station on the same id) falls back to position-based derivation (and only updates when moving)
 
 ### `psn_source_iface` propagation
 When set, the interface name is resolved to an IPv4 and flows to: PsnReceiver (`source_ip`), BeaconSender / Receiver (`iface_ip`), SystemStatsCollector (`preferred_ip`), PsnServer (`source_ip`). It is **live-applied** – the sockets rebind via `apply_psn_source_ip_change`, no restart needed.

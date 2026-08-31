@@ -11,12 +11,14 @@ branches that survived mutation:
   The remote flag and the four ``apply_remote`` arguments are killed in
   ``test_psn_receiver.py`` instead, where the wire values they carry are
   the subject rather than the parse.
-* ``t.speed is not None`` vs ``is None`` – protocol-speed vs
-  position-derived dispatch.
-* ``t.speed.x != 0.0 or t.speed.y != 0.0 or t.speed.z != 0.0`` – the
-  disjunction that gates "protocol speed actually has magnitude".
-  Mutants swapping one ``or`` for ``and`` must fail against a packet
-  where exactly one component is non-zero.
+* ``wire is not None`` vs ``is None`` – whether a packet carries a
+  speed at all; ``None`` falls through to position derivation.
+* ``wire.x != 0.0 or wire.y != 0.0 or wire.z != 0.0`` – the disjunction
+  that promotes a sender to wire-trusted for a tracker. Mutants swapping
+  one ``or`` for ``and`` must fail against a packet where exactly one
+  component is non-zero.
+* ``self._wire_speed_sender.get(tid) == sender`` – verbatim storage vs
+  position derivation, and the drop that revokes trust on eviction.
 * Position-derived speed delta arithmetic (``new_pos[0] - prev_pos[0]``)
   and the dt-window guard ``0.001 < dt < 1.0``.
 * ``self._last_seen[tid] = now`` – ``is_marker_online`` reads this
@@ -120,36 +122,36 @@ class TestMarkerIdAndNamePreserved:
 
 
 # --------------------------------------------------------------------------- #
-# Protocol-speed vs position-derived dispatch (mutmut_15, _17, _18)
+# Wire-speed trust dispatch
 # --------------------------------------------------------------------------- #
 
 
-class TestProtocolSpeedDispatch:
-    """Guards the ``proto_speed_nonzero`` disjunction against
-    ``or → and`` swaps and the outer ``is not None`` vs ``is None``.
+class TestWireSpeedDispatch:
+    """Guards the non-zero disjunction that promotes a sender to
+    wire-trusted for a tracker against ``or → and`` swaps, the sender
+    comparison that dispatches verbatim storage vs derivation, the drop on
+    eviction, and the outer ``is not None`` vs ``is None``.
     """
 
     @pytest.mark.parametrize(
-        "speed_vec, expected_magnitude",
+        "speed_vec",
         [
             # Only X non-zero – ``or`` → ``and`` mutants would miss this
             # because ``0 != 0`` is False; an ``and`` chain needs all three
             # to be non-zero.
-            (_Vec(3.0, 0.0, 0.0), 3.0),
+            _Vec(3.0, 0.0, 0.0),
             # Only Y non-zero.
-            (_Vec(0.0, 4.0, 0.0), 4.0),
+            _Vec(0.0, 4.0, 0.0),
             # Only Z non-zero.
-            (_Vec(0.0, 0.0, 5.0), 5.0),
-            # Two-component magnitude (3-4-5 triangle) – guards the
-            # magnitude formula itself.
-            (_Vec(3.0, 4.0, 0.0), 5.0),
+            _Vec(0.0, 0.0, 5.0),
+            # Two components – kills an axis swap in the verbatim copy.
+            _Vec(3.0, 4.0, 0.0),
         ],
     )
-    def test_single_axis_protocol_speed_kept_as_magnitude(
+    def test_wire_speed_vector_is_stored_verbatim(
         self,
         monkeypatch: pytest.MonkeyPatch,
         speed_vec: _Vec,
-        expected_magnitude: float,
     ) -> None:
         monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
         monkeypatch.setattr(receiver_module.time, "monotonic", lambda: 10.0)
@@ -161,19 +163,44 @@ class TestProtocolSpeedDispatch:
                 ]
             )
         )
-        vx, vy, vz = recv.get_marker(1).speed
-        # Stored as scalar magnitude in x.
-        assert vx == pytest.approx(expected_magnitude)
-        assert vy == 0.0
-        assert vz == 0.0
+        assert recv.get_marker(1).speed == (speed_vec.x, speed_vec.y, speed_vec.z)
+
+    def test_zero_after_nonzero_is_stored_as_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Kills ``==`` → ``!=`` on the sender comparison: a trusted sender's
+        zero is stored, never replaced by a value derived from the delta."""
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.5))
+        recv = PsnReceiver()
+        recv._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 2.0, 0.0))]))
+        recv._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(1.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+        assert recv.get_marker(1).speed == (0.0, 0.0, 0.0)
+
+    def test_zero_only_sender_still_derives(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Kills an unconditional promotion (trust granted on a zero vector)."""
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.5))
+        recv = PsnReceiver()
+        recv._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+        recv._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(1.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+        assert recv.get_marker(1).speed == pytest.approx((2.0, 0.0, 0.0))
+
+    def test_eviction_forgets_trust(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Kills removal of the trust drop on TTL eviction."""
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        now = {"t": 0.0}
+        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: now["t"])
+        recv = PsnReceiver()
+        recv._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 2.0, 0.0))]))
+        now["t"] = 100.0
+        recv._on_packet(_FakeDataPacket([_PacketTracker(2, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+        assert 1 not in recv._wire_speed_sender
 
     def test_speed_none_triggers_position_derivation_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Mutant ``t.speed is not None`` → ``is None`` inverts the
-        dispatch: with ``speed=None``, the original takes the
-        position-derivation branch; the mutant would take the
-        protocol-speed branch and call ``.x`` on None → AttributeError
-        → mutant dies.  This test pins the **correct** branch (derived
-        speed) fires.
+        """Mutant ``wire is not None`` → ``is None`` inverts the guard:
+        with ``speed=None``, the original skips the non-zero test and
+        derives from the position delta; the mutant would evaluate
+        ``.x`` on None → AttributeError → mutant dies.  This test pins
+        the **correct** branch (derived speed) fires.
         """
         monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
         monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.1))
@@ -447,3 +474,132 @@ class TestDefaultKeywordArguments:
         monkeypatch.setattr(receiver_module.time, "monotonic", lambda: 12.0)
         # elapsed == 2.0, timeout == 2.0 → strict < fails → offline.
         assert recv.is_marker_online(1, timeout=2.0) is False
+
+
+# --------------------------------------------------------------------------- #
+# Elapsed-time arithmetic under a realistic monotonic clock
+# --------------------------------------------------------------------------- #
+
+
+class TestElapsedTimeIsADifference:
+    """``time.monotonic()`` on a box that has been up for a day reads in the
+    hundred-thousands, so ``now - seen`` and ``now + seen`` are indistinguishable
+    when a test starts its fake clock near zero: both are far past every
+    threshold. Drive the clock from a realistic uptime instead, where only the
+    difference stays small.
+    """
+
+    def test_a_marker_inside_the_ttl_survives_a_sweep(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        now = {"t": 100_000.0}
+        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: now["t"])
+        recv = PsnReceiver()
+        recv._on_packet(
+            _FakeDataPacket(
+                [
+                    _PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0)),
+                    _PacketTracker(2, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0)),
+                ]
+            )
+        )
+
+        # 30 s later: long enough for a sweep to run, half the marker TTL.
+        now["t"] = 100_030.0
+        recv._on_packet(_FakeDataPacket([_PacketTracker(2, _Vec(1.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+        assert recv.get_marker(1) is not None
+
+        now["t"] = 100_100.0  # marker 1 has now been silent for 100 s
+        recv._on_packet(_FakeDataPacket([_PacketTracker(2, _Vec(2.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+        assert recv.get_marker(1) is None
+
+    def test_the_sweep_stays_throttled_on_a_long_running_box(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        now = {"t": 100_000.0}
+        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: now["t"])
+        recv = PsnReceiver()
+        packet = _FakeDataPacket([_PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))])
+        recv._on_packet(packet)  # first packet sweeps; nothing is stale yet
+        recv._last_seen[99] = now["t"] - 1_000.0  # stale, but no sweep is due
+
+        now["t"] = 100_001.0  # 1 s after the last sweep
+        recv._on_packet(packet)
+        assert 99 in recv._last_seen
+
+        now["t"] = 100_010.0  # 10 s after the last sweep
+        recv._on_packet(packet)
+        assert 99 not in recv._last_seen
+
+
+# --------------------------------------------------------------------------- #
+# Position-derivation guards
+# --------------------------------------------------------------------------- #
+
+
+class TestDerivationGuards:
+    """The ``or`` chain over the three axis deltas and the dt window that gates
+    the derivation.
+    """
+
+    @pytest.mark.parametrize("axis", [0, 1, 2])
+    def test_movement_on_any_single_axis_derives(self, monkeypatch: pytest.MonkeyPatch, axis: int) -> None:
+        """Kills an ``or`` → ``and`` swap in ``dx != 0 or dy != 0 or dz != 0``:
+        a marker sliding along one axis moves, and the precedence of a single
+        swapped operator makes the other two axes read as still."""
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.5))
+        recv = PsnReceiver()
+        recv._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+        moved = [0.0, 0.0, 0.0]
+        moved[axis] = 1.0
+        recv._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(*moved), _Vec(0.0, 0.0, 0.0))]))
+        expected = [0.0, 0.0, 0.0]
+        expected[axis] = 2.0  # 1 m over the 0.5 s between the two packets
+        assert recv.get_marker(1).speed == pytest.approx(tuple(expected))
+
+    @pytest.mark.parametrize("dt", [0.001, 1.0, 1.5])
+    def test_a_gap_outside_the_window_does_not_derive(self, monkeypatch: pytest.MonkeyPatch, dt: float) -> None:
+        """``0.001 < dt < 1.0``, both bounds strict. Below the floor the divisor
+        is small enough to turn rounding into metres per second; at or past the
+        ceiling the two packets are too far apart to describe one motion, and
+        the last known speed stays on the card instead."""
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        monkeypatch.setattr(receiver_module.time, "monotonic", _packet_clock(1.0, 1.0 + dt))
+        recv = PsnReceiver()
+        recv._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(0.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+        recv._on_packet(_FakeDataPacket([_PacketTracker(1, _Vec(1.0, 0.0, 0.0), _Vec(0.0, 0.0, 0.0))]))
+        assert recv.get_marker(1).speed == (0.0, 0.0, 0.0)
+
+
+# --------------------------------------------------------------------------- #
+# start() wiring
+# --------------------------------------------------------------------------- #
+
+
+class TestStartWiresThePacketHandler:
+    def test_the_receive_thread_calls_back_into_packet_handling(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Kills ``callback=self._on_packet`` → ``callback=None``: the socket
+        binds and the thread starts either way, so nothing else in the class
+        notices that no received packet ever reaches a marker."""
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: 10.0)
+        captured: list[object] = []
+
+        class _StubRecvThread:
+            def __init__(self, *, callback: object, ip_addr: str, mcast_port: int) -> None:
+                captured.append(callback)
+                self.daemon = False
+
+            def start(self) -> None:
+                pass
+
+        monkeypatch.setattr(receiver_module, "_RobustReceiver", _StubRecvThread)
+
+        recv = PsnReceiver()
+        recv.start()
+
+        deliver = captured[0]
+        assert callable(deliver)
+        deliver(_FakeDataPacket([_PacketTracker(4, _Vec(1.0, 2.0, 3.0), _Vec(0.0, 0.0, 0.0))]), "10.0.0.5")
+        marker = recv.get_marker(4)
+        assert marker is not None
+        assert marker.pos == pytest.approx((1.0, 2.0, 3.0))

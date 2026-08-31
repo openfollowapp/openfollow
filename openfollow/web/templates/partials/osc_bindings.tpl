@@ -273,7 +273,7 @@
  contenteditable="true"
  spellcheck="false"
  data-osc-message-editor="{{row.id}}"
- data-osc-message-placeholder="/eos/chan/[markerid]/xyz [x] [y] [z]"
+ data-osc-message-placeholder="/eos/user/0/chan/[markerid]/xyz [x] [y] [z]"
  data-osc-unresolved-placeholders="{{json.dumps(list(row_unresolved))}}"
  data-osc-unresolved-reasons="{{json.dumps(row_unresolved_reasons)}}"
  data-osc-placeholder-names="{{json.dumps(list(placeholders))}}"

@@ -785,14 +785,14 @@ def test_render_default_slot_raises_when_marker_id_is_none(
 
 
 def test_builtin_etc_eos_wire_format() -> None:
-    """The marker id addresses the Eos channel; three float args carry
-    the position."""
+    """The marker id addresses the Eos channel under an explicit user;
+    three float args carry the position."""
     tpl = builtin_by_id("etc")
     assert tpl is not None
     addr_ct = compile_template(tpl.address)
     arg_cts = [compile_template(a) for a in tpl.args]
     rc = _ctx(pos=(1.0, 2.0, 3.0), marker_id=5)
-    assert render(addr_ct, rc) == "/eos/chan/5/xyz"
+    assert render(addr_ct, rc) == "/eos/user/0/chan/5/xyz"
     typed = [osc_arg_for(ct, rc) for ct in arg_cts]
     assert typed == [
         ("f", pytest.approx(1.0)),
@@ -802,8 +802,8 @@ def test_builtin_etc_eos_wire_format() -> None:
 
 
 def test_builtin_etc_eos_user_99_wire_format() -> None:
-    """Same channel address and three float args as the current-user
-    variant, prefixed with the explicit Eos user."""
+    """Same channel address and three float args as the default
+    variant, under a different Eos user."""
     tpl = builtin_by_id("etc-user99")
     assert tpl is not None
     addr_ct = compile_template(tpl.address)
@@ -818,14 +818,15 @@ def test_builtin_etc_eos_user_99_wire_format() -> None:
     ]
 
 
-def test_builtin_etc_eos_variants_differ_only_by_user_prefix() -> None:
-    """The user-scoped variant must stay in lockstep with the plain one:
-    same args, same channel suffix, differing only by the prefix."""
+def test_builtin_etc_eos_variants_differ_only_by_user_number() -> None:
+    """The two variants must stay in lockstep: same args, same channel
+    address, differing only in which Eos user the address names."""
     plain = builtin_by_id("etc")
     scoped = builtin_by_id("etc-user99")
     assert plain is not None and scoped is not None
     assert scoped.args == plain.args
-    assert scoped.address == plain.address.replace("/eos/", "/eos/user/99/", 1)
+    assert scoped.trigger == plain.trigger
+    assert scoped.address == plain.address.replace("/user/0/", "/user/99/", 1)
 
 
 def test_builtin_adm_osc_2d_uses_fractional_xy_zero_z() -> None:

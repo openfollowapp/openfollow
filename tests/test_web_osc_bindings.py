@@ -1498,7 +1498,7 @@ def test_add_with_builtin_template_populates_address_and_args(live_server) -> No
     cfg = load_config(cfg_path)
     row = cfg.osc_transmitters.transmitters[0]
     assert row.name == "ETC Eos"
-    assert row.address == "/eos/chan/[markerid]/xyz"
+    assert row.address == "/eos/user/0/chan/[markerid]/xyz"
     assert row.args == ["[x]", "[y]", "[z]"]
 
 
@@ -1981,7 +1981,7 @@ def test_preview_returns_provider_payload(tmp_path, monkeypatch) -> None:
         tmp_path,
         monkeypatch,
         osc_binding_preview_provider=lambda rid: {
-            "address": "/eos/chan/1/xyz",
+            "address": "/eos/user/0/chan/1/xyz",
             "args": [1.0, 2.0, 0.0],
             "skipped": False,
         },
@@ -1994,7 +1994,7 @@ def test_preview_returns_provider_payload(tmp_path, monkeypatch) -> None:
         assert status == 200
         payload = json.loads(body)
         assert payload["available"] is True
-        assert payload["address"] == "/eos/chan/1/xyz"
+        assert payload["address"] == "/eos/user/0/chan/1/xyz"
         assert payload["args"] == [1.0, 2.0, 0.0]
     finally:
         server.stop()

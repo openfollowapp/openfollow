@@ -109,12 +109,12 @@ class _RecordingOsc:
 SQUARE_CORNERS = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]
 
 
-def _marker(tid: int, x: float, y: float):
-    return (("marker", tid), x, y)
+def _marker(marker_id: int, x: float, y: float):
+    return (("marker", marker_id), x, y)
 
 
-def _detection(tid: int, x: float, y: float):
-    return (("detection", tid), x, y)
+def _detection(track_id: int, x: float, y: float):
+    return (("detection", track_id), x, y)
 
 
 def _zone(**kwargs) -> _ZoneCfg:

@@ -3033,9 +3033,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         # ``bool`` is excluded explicitly (``True >= 1`` since ``bool`` is an
         # ``int`` subclass).
         filtered_controlled = [
-            tid
-            for tid in new_config.controlled_marker_ids
-            if isinstance(tid, int) and not isinstance(tid, bool) and tid >= 1
+            marker_id
+            for marker_id in new_config.controlled_marker_ids
+            if isinstance(marker_id, int) and not isinstance(marker_id, bool) and marker_id >= 1
         ]
         if app._server is not None and app._psn_receiver is not None:
             # Bind narrowed non-None locals so the closures below keep the
@@ -3048,7 +3048,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             to_add = sorted(new_ids - old_ids)
             # Capture old names up front so a rollback re-registers removed
             # markers with their original label.
-            old_names = {tid: _marker_name_for_runtime(app, tid) for tid in to_remove}
+            old_names = {marker_id: _marker_name_for_runtime(app, marker_id) for marker_id in to_remove}
             # Seed the same default position startup registration uses: an
             # unseeded marker broadcasts (0, 0, 0) and, having never taken a
             # data write, reports itself invalid on the PSN wire.
@@ -3056,28 +3056,28 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             default_pos = (_mk.default_pos_x, _mk.default_pos_y, _mk.default_pos_z)
 
             def _apply_controlled() -> None:
-                for tid in to_remove:
-                    server.remove_marker(tid)
-                for tid in to_add:
-                    server.add_marker(tid, _marker_name_for_runtime(app, tid)).set_pos(*default_pos)
+                for marker_id in to_remove:
+                    server.remove_marker(marker_id)
+                for marker_id in to_add:
+                    server.add_marker(marker_id, _marker_name_for_runtime(app, marker_id)).set_pos(*default_pos)
 
                 # Mirror marker changes to OTP output if active
                 if app._otp_server is not None:
-                    for tid in to_remove:
-                        app._otp_server.unregister_marker(tid)
-                    for tid in to_add:
-                        marker = server.get_marker(tid)
-                        # pragma: no branch – tid was just added to the
+                    for marker_id in to_remove:
+                        app._otp_server.unregister_marker(marker_id)
+                    for marker_id in to_add:
+                        marker = server.get_marker(marker_id)
+                        # pragma: no branch – marker_id was just added to the
                         # server above, so ``get_marker`` always returns it.
                         if marker is not None:  # pragma: no branch
                             app._otp_server.register_marker(marker)
 
                 # Mirror marker changes to RTTrPM output if active
                 if app._rttrpm_server is not None:
-                    for tid in to_remove:
-                        app._rttrpm_server.unregister_marker(tid)
-                    for tid in to_add:
-                        marker = server.get_marker(tid)
+                    for marker_id in to_remove:
+                        app._rttrpm_server.unregister_marker(marker_id)
+                    for marker_id in to_add:
+                        marker = server.get_marker(marker_id)
                         # pragma: no branch – same reasoning as the OTP mirror.
                         if marker is not None:  # pragma: no branch
                             app._rttrpm_server.register_marker(marker)
@@ -3102,10 +3102,10 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 # controlled ids / config; the next pass recomputes the same
                 # diff (and re-mirrors OTP/RTTrPM). Best-effort –
                 # ``_apply_with_fallback`` logs if this itself raises.
-                for tid in to_add:
-                    server.remove_marker(tid)
-                for tid in to_remove:
-                    server.add_marker(tid, old_names[tid]).set_pos(*default_pos)
+                for marker_id in to_add:
+                    server.remove_marker(marker_id)
+                for marker_id in to_remove:
+                    server.add_marker(marker_id, old_names[marker_id]).set_pos(*default_pos)
 
             _apply("controlled_marker_ids", _apply_controlled, on_failure=_restore_controlled)
         else:
@@ -3123,9 +3123,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         # (including the explicit ``bool`` rejection – ``True >= 1``
         # would otherwise sneak past).
         filtered_viewer = [
-            tid
-            for tid in new_config.viewer_marker_ids
-            if isinstance(tid, int) and not isinstance(tid, bool) and tid >= 1
+            marker_id
+            for marker_id in new_config.viewer_marker_ids
+            if isinstance(marker_id, int) and not isinstance(marker_id, bool) and marker_id >= 1
         ]
         app._viewer_ids = list(filtered_viewer)
         app._config.viewer_marker_ids = filtered_viewer

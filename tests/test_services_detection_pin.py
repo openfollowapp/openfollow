@@ -106,8 +106,8 @@ class _MultiMarkerServer:
     def __init__(self, by_id: dict[int, object]) -> None:
         self._by_id = by_id
 
-    def get_marker(self, tid: int):  # noqa: ANN202
-        return self._by_id.get(tid)
+    def get_marker(self, marker_id: int):  # noqa: ANN202
+        return self._by_id.get(marker_id)
 
 
 class _StubVideoReceiver:
@@ -389,16 +389,16 @@ def test_velocity_prediction_extrapolates_target(monkeypatch) -> None:
 
 
 class _RecordingServer:
-    """Records every ``get_marker(tid)`` call so tests can verify which marker
+    """Records every ``get_marker(marker_id)`` call so tests can verify which marker
     the pin path queried."""
 
     def __init__(self, by_id: dict[int, _StubMarker]) -> None:
         self._by_id = by_id
         self.lookups: list[int] = []
 
-    def get_marker(self, tid: int) -> _StubMarker | None:
-        self.lookups.append(tid)
-        return self._by_id.get(tid)
+    def get_marker(self, marker_id: int) -> _StubMarker | None:
+        self.lookups.append(marker_id)
+        return self._by_id.get(marker_id)
 
 
 def test_pin_marker_id_default_minus_one_follows_selected(monkeypatch) -> None:

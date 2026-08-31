@@ -229,10 +229,10 @@ class MouseHandler:
         Returns True (consumed) only when a marker is grabbed; a click on empty
         space is a no-op so it can't snap a marker to the cursor.
         """
-        tid = self._hit_test(x, y)
-        if tid is None:
+        marker_id = self._hit_test(x, y)
+        if marker_id is None:
             return False
-        self._app._selected_id = tid
+        self._app._selected_id = marker_id
         self._active = True
         self._anchor_screen = (x, y)
         # No target until the first move, so the grab itself never yanks the
@@ -243,7 +243,7 @@ class MouseHandler:
         # A fresh grab disarms any pending double-right-click: the reset window
         # must not straddle two separate grab/release cycles.
         self._last_rclick = None
-        logger.info("Mouse grabbed marker %s", tid)
+        logger.info("Mouse grabbed marker %s", marker_id)
         return True
 
     def _handle_right_click(self, x: float, y: float) -> bool:
@@ -379,10 +379,10 @@ class MouseHandler:
         # warp (identity when no lens is configured) or the clickable region
         # would drift from what the operator sees.
         k1, k2 = cfg.camera.lens_k1, cfg.camera.lens_k2
-        best_tid: int | None = None
+        best_marker_id: int | None = None
         best_dist = float("inf")
-        for tid in app._controlled_ids:
-            marker = app._server.get_marker(tid)
+        for marker_id in app._controlled_ids:
+            marker = app._server.get_marker(marker_id)
             if marker is None:
                 continue
             mx, my, _ = marker.pos
@@ -415,5 +415,5 @@ class MouseHandler:
                 hit = True
             if hit and dist < best_dist:
                 best_dist = dist
-                best_tid = tid
-        return best_tid
+                best_marker_id = marker_id
+        return best_marker_id

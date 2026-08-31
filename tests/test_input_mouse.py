@@ -30,13 +30,13 @@ class _DummyServer:
     def __init__(self) -> None:
         self.markers: dict[int, Marker] = {}
 
-    def add_marker(self, tid: int) -> Marker:
-        t = Marker(tid, f"Marker {tid}")
-        self.markers[tid] = t
+    def add_marker(self, marker_id: int) -> Marker:
+        t = Marker(marker_id, f"Marker {marker_id}")
+        self.markers[marker_id] = t
         return t
 
-    def get_marker(self, tid: int) -> Marker | None:
-        return self.markers.get(tid)
+    def get_marker(self, marker_id: int) -> Marker | None:
+        return self.markers.get(marker_id)
 
 
 class _DummyCamera:
@@ -107,9 +107,9 @@ def _canvas_size(app: _DummyApp) -> tuple[int, int]:
     return app._config.window_width, app._config.window_height
 
 
-def _ground_center(app: _DummyApp, tid: int) -> tuple[float, float]:
-    """Screen pixel where marker *tid*'s ground-circle centre projects."""
-    m = app._server.get_marker(tid)
+def _ground_center(app: _DummyApp, marker_id: int) -> tuple[float, float]:
+    """Screen pixel where marker *marker_id*'s ground-circle centre projects."""
+    m = app._server.get_marker(marker_id)
     z_off = app._config.grid.z_offset
     w, h = _canvas_size(app)
     scr = project_points(
@@ -134,8 +134,8 @@ def _world_at(app: _DummyApp, x: float, y: float) -> tuple[float, float]:
     return float(out[0, 0]), float(out[0, 1])
 
 
-def _grab(handler: MouseHandler, app: _DummyApp, tid: int = 1) -> bool:
-    cx, cy = _ground_center(app, tid)
+def _grab(handler: MouseHandler, app: _DummyApp, marker_id: int = 1) -> bool:
+    cx, cy = _ground_center(app, marker_id)
     return handler.on_pointer_down(cx, cy, 1)
 
 
@@ -178,7 +178,7 @@ class TestGrab:
         app._controlled_ids = [1, 2]
         app._selected_id = 1
         handler = MouseHandler(app)
-        assert _grab(handler, app, tid=2) is True
+        assert _grab(handler, app, marker_id=2) is True
         assert app._selected_id == 2
 
     def test_grab_with_no_prior_selection(self) -> None:
@@ -821,7 +821,7 @@ class TestEdges:
         app = _DummyApp()
         app._controlled_ids = [1, 99]  # 99 not registered
         handler = MouseHandler(app)
-        assert _grab(handler, app, tid=1) is True
+        assert _grab(handler, app, marker_id=1) is True
         assert app._selected_id == 1
 
     def test_skips_marker_behind_camera(self) -> None:
@@ -831,7 +831,7 @@ class TestEdges:
         app._server.add_marker(2).set_pos(0.0, -50.0, 0.0)
         app._controlled_ids = [1, 2]
         handler = MouseHandler(app)
-        assert _grab(handler, app, tid=1) is True
+        assert _grab(handler, app, marker_id=1) is True
         assert app._selected_id == 1
 
     def test_grab_with_server_none(self) -> None:

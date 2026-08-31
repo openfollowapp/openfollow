@@ -157,7 +157,7 @@ def pytest_collection_modifyitems(
 class PsnStepClock:
     """Deterministic stand-in for the monotonic PSN clock (microseconds).
 
-    Shared by the PSN marker / timestamp suites so the tracker-stamp contract
+    Shared by the PSN marker / timestamp suites so the marker-stamp contract
     is expressed in one place.
     """
 

@@ -208,8 +208,8 @@ class _DummyApp:
         self._web_server = _DummyWebServer()
         self._web_commands = _DummyWebCommands()
         self._server = _DummyPsnServer()
-        for tid in config.controlled_marker_ids:
-            self._server.add_marker(tid, f"Marker {tid}")
+        for marker_id in config.controlled_marker_ids:
+            self._server.add_marker(marker_id, f"Marker {marker_id}")
         self._controlled_ids = list(config.controlled_marker_ids)
         self._viewer_ids = list(config.viewer_marker_ids)
         self._selected_id = self._controlled_ids[0] if self._controlled_ids else None
@@ -1666,10 +1666,10 @@ def test_apply_runtime_seeds_a_marker_restored_by_a_rolled_back_add() -> None:
     app = _app_with(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2])
     orig_add = app._server.add_marker
 
-    def _failing_add(tid, name):  # noqa: ANN001
-        if tid == 3:
+    def _failing_add(marker_id, name):  # noqa: ANN001
+        if marker_id == 3:
             raise RuntimeError("PSN add failed")
-        return orig_add(tid, name)
+        return orig_add(marker_id, name)
 
     app._server.add_marker = _failing_add  # type: ignore[method-assign]
     new_config = AppConfig(controlled_marker_ids=[1, 3], viewer_marker_ids=[1, 3])
@@ -1684,15 +1684,15 @@ def test_apply_runtime_filters_non_int_and_bool_marker_ids() -> None:
     """Two defence layers in the hot-reload filter:
 
     - ``bool`` is an ``int`` subclass, so ``True >= 1`` is ``True``;
-      a bare ``tid >= 1`` filter lets ``True`` through and then
+      a bare ``marker_id >= 1`` filter lets ``True`` through and then
       crashes on the bool-rejecting ``Marker.__init__``.
     - A non-int value (string from an in-memory mutation / test
       fixture / hand-built ``AppConfig``) raises ``TypeError`` on the
       ``>=`` comparison – the orchestrator crashes mid-reload rather
       than the operator seeing a clean fallback.
 
-    Filter therefore requires ``isinstance(tid, int)`` AND
-    ``not isinstance(tid, bool)`` AND ``tid >= 1``."""
+    Filter therefore requires ``isinstance(marker_id, int)`` AND
+    ``not isinstance(marker_id, bool)`` AND ``marker_id >= 1``."""
     app = _DummyApp(AppConfig(controlled_marker_ids=[1], viewer_marker_ids=[1]))
     new_config = AppConfig(
         controlled_marker_ids=[True, "spot-1", 2.5, 2],  # type: ignore[list-item]
@@ -3419,8 +3419,8 @@ class _DummyOtpServer:
     def register_marker(self, marker) -> None:
         self.registered.append(marker.marker_id)
 
-    def unregister_marker(self, tid: int) -> None:
-        self.unregistered.append(tid)
+    def unregister_marker(self, marker_id: int) -> None:
+        self.unregistered.append(marker_id)
 
 
 class _DummyRttrpmServer(_DummyOtpServer):
@@ -3431,7 +3431,7 @@ def _app_with(**overrides) -> _DummyApp:
     """Build a _DummyApp with an initial AppConfig; overrides feed AppConfig."""
     app = _DummyApp(AppConfig(**overrides))
     # get_marker is used by the OTP/RTTrPM mirror loops – add it here.
-    app._server.get_marker = lambda tid: app._server.markers.get(tid)  # type: ignore[attr-defined]
+    app._server.get_marker = lambda marker_id: app._server.markers.get(marker_id)  # type: ignore[attr-defined]
     return app
 
 
@@ -4332,10 +4332,10 @@ def test_apply_runtime_controlled_change_rolls_back_on_server_failure() -> None:
     app = _app_with(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2])
     orig_add = app._server.add_marker
 
-    def _failing_add(tid, name):  # noqa: ANN001
-        if tid == 3:
+    def _failing_add(marker_id, name):  # noqa: ANN001
+        if marker_id == 3:
             raise RuntimeError("PSN add failed")
-        return orig_add(tid, name)
+        return orig_add(marker_id, name)
 
     app._server.add_marker = _failing_add  # type: ignore[method-assign]
 
@@ -4426,7 +4426,7 @@ def test_apply_runtime_marker_rewire_mirrors_otp_and_rttrpm_servers() -> None:
         controlled_marker_ids=[0, 1],
         viewer_marker_ids=[0, 1],
     )
-    app._server.get_marker = lambda tid: app._server.markers.get(tid)  # type: ignore[attr-defined]
+    app._server.get_marker = lambda marker_id: app._server.markers.get(marker_id)  # type: ignore[attr-defined]
     app._otp_server = _DummyOtpServer()
     app._rttrpm_server = _DummyRttrpmServer()
     new_config = AppConfig(

@@ -1946,8 +1946,8 @@ def test_detection_section_renders_pin_marker_id_dropdown(live_server) -> None:
     assert 'name="pin_marker_id"' in body
     assert 'value="-1"' in body  # the "Currently selected" sentinel
     # Each controlled marker shows up as an explicit option.
-    for tid in (1, 3, 7):
-        assert f'value="{tid}"' in body
+    for marker_id in (1, 3, 7):
+        assert f'value="{marker_id}"' in body
 
 
 def test_detection_section_surfaces_pin_marker_id_when_not_in_controlled_ids(
@@ -1966,7 +1966,7 @@ def test_detection_section_surfaces_pin_marker_id_when_not_in_controlled_ids(
     status, body = _get(base, "/section/detection")
     assert status == 200
     # Narrow to the pin_marker_id select to avoid matching the
-    # ``Marker {{tid}}`` strings in other sections.
+    # ``Marker {{marker_id}}`` strings in other sections.
     select_start = body.index('<select name="pin_marker_id">')
     select_end = body.index("</select>", select_start)
     select_html = body[select_start:select_end]

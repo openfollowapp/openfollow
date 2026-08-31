@@ -7523,7 +7523,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "y_offset": cfg.grid.y_offset,
                 },
                 "zones": zones_out,
-                "markers": [{"id": tid, "x": x, "y": y} for tid, x, y in server.get_marker_positions()],
+                "markers": [{"id": marker_id, "x": x, "y": y} for marker_id, x, y in server.get_marker_positions()],
                 # Shared destinations travel with the poll so the editor's
                 # dropdown follows add/rename/delete without a full reload.
                 "destinations": osc_destinations_client_list(cfg),

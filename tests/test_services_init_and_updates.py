@@ -43,8 +43,8 @@ pytestmark = pytest.mark.unit
 
 
 class _FakeMarker:
-    def __init__(self, tid: int = 1) -> None:
-        self.tid = tid
+    def __init__(self, marker_id: int = 1) -> None:
+        self.marker_id = marker_id
         self.pos_calls: list[tuple[float, float, float]] = []
 
     def set_pos(self, x: float, y: float, z: float) -> None:
@@ -69,13 +69,13 @@ class _FakePsnServer:
         # transactional-rollback capture.
         self._mcast_ip: str | None = None
 
-    def add_marker(self, tid: int, name: str) -> _FakeMarker:  # noqa: ARG002
-        t = _FakeMarker(tid)
-        self._markers[tid] = t
+    def add_marker(self, marker_id: int, name: str) -> _FakeMarker:  # noqa: ARG002
+        t = _FakeMarker(marker_id)
+        self._markers[marker_id] = t
         return t
 
-    def get_marker(self, tid: int) -> _FakeMarker | None:
-        return self._markers.get(tid)
+    def get_marker(self, marker_id: int) -> _FakeMarker | None:
+        return self._markers.get(marker_id)
 
     def start(self) -> None:
         self.start_called = True
@@ -432,8 +432,8 @@ class TestInitMarkers:
         assert services._app._controlled_ids == [1, 2]
         assert services._app._viewer_ids == [1, 2, 3]
         assert services._app._selected_id == 1
-        for tid in (1, 2):
-            t = services._app._server.get_marker(tid)
+        for marker_id in (1, 2):
+            t = services._app._server.get_marker(marker_id)
             assert t is not None
             assert t.pos_calls == [(1.5, 2.5, 0.75)]
 
@@ -453,8 +453,8 @@ class TestInitMarkers:
           ``>=`` comparison, crashing startup before any marker
           registers.
 
-        Filter combines ``isinstance(tid, int)`` AND
-        ``not isinstance(tid, bool)`` AND ``tid >= 1`` so a
+        Filter combines ``isinstance(marker_id, int)`` AND
+        ``not isinstance(marker_id, bool)`` AND ``marker_id >= 1`` so a
         programmatically-constructed AppConfig (test fixture,
         in-place mutation that bypassed ``load_config``) can't smuggle
         either through to ``add_marker``."""
@@ -689,7 +689,7 @@ class TestInitOtp:
     def test_enabled_with_unregistered_controlled_marker_skips(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The per-tid lookup falls through when a controlled marker isn't
+        """The per-marker_id lookup falls through when a controlled marker isn't
         registered on the PSN server yet (defensive path)."""
         cfg = replace(
             services._app._config,

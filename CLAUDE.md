@@ -553,9 +553,9 @@ Viewer-only markers (in `viewer_marker_ids` but NOT in
 `controlled_marker_ids`) render at reduced alpha (≈0.6 via a Cairo group
 wrap) and skip the speed bar – the bar is a control-context affordance.
 Marker-card borders use each marker's own colour from the shared marker
-catalog (`MarkerCatalog.get(tid).color` via
+catalog (`MarkerCatalog.get(marker_id).color` via
 `services_marker_visuals._resolve_marker_color`, with a
-`DEFAULT_MARKER_COLORS[tid % len(...)]` palette fallback for the
+`DEFAULT_MARKER_COLORS[marker_id % len(...)]` palette fallback for the
 transient race where a controlled id has no catalog entry yet) instead
 of the global golden accent, so each card is identifiable at a glance.
 

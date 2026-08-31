@@ -1612,8 +1612,8 @@ class TestDefaultMarkerLookupGated:
         """
         calls: list[int] = []
 
-        def _provider(tid: int) -> _FakeMarker | None:
-            calls.append(tid)
+        def _provider(marker_id: int) -> _FakeMarker | None:
+            calls.append(marker_id)
             return None
 
         service = _FakeOscService()
@@ -1674,8 +1674,8 @@ class TestMarkerIdNoneSkip:
         safety net – so ``marker_provider(None)`` never reaches the provider."""
         calls: list[int | None] = []
 
-        def _provider(tid: int) -> _FakeMarker | None:
-            calls.append(tid)
+        def _provider(marker_id: int) -> _FakeMarker | None:
+            calls.append(marker_id)
             return None
 
         service = _FakeOscService()

@@ -208,8 +208,8 @@ class _DummyApp:
         self._web_server = _DummyWebServer()
         self._web_commands = _DummyWebCommands()
         self._server = _DummyPsnServer()
-        for tid in config.controlled_marker_ids:
-            self._server.add_marker(tid, f"Marker {tid}")
+        for marker_id in config.controlled_marker_ids:
+            self._server.add_marker(marker_id, f"Marker {marker_id}")
         self._controlled_ids = list(config.controlled_marker_ids)
         self._viewer_ids = list(config.viewer_marker_ids)
         self._selected_id = self._controlled_ids[0] if self._controlled_ids else None
@@ -1666,10 +1666,10 @@ def test_apply_runtime_seeds_a_marker_restored_by_a_rolled_back_add() -> None:
     app = _app_with(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2])
     orig_add = app._server.add_marker
 
-    def _failing_add(tid, name):  # noqa: ANN001
-        if tid == 3:
+    def _failing_add(marker_id, name):  # noqa: ANN001
+        if marker_id == 3:
             raise RuntimeError("PSN add failed")
-        return orig_add(tid, name)
+        return orig_add(marker_id, name)
 
     app._server.add_marker = _failing_add  # type: ignore[method-assign]
     new_config = AppConfig(controlled_marker_ids=[1, 3], viewer_marker_ids=[1, 3])
@@ -1684,15 +1684,15 @@ def test_apply_runtime_filters_non_int_and_bool_marker_ids() -> None:
     """Two defence layers in the hot-reload filter:
 
     - ``bool`` is an ``int`` subclass, so ``True >= 1`` is ``True``;
-      a bare ``tid >= 1`` filter lets ``True`` through and then
+      a bare ``marker_id >= 1`` filter lets ``True`` through and then
       crashes on the bool-rejecting ``Marker.__init__``.
     - A non-int value (string from an in-memory mutation / test
       fixture / hand-built ``AppConfig``) raises ``TypeError`` on the
       ``>=`` comparison – the orchestrator crashes mid-reload rather
       than the operator seeing a clean fallback.
 
-    Filter therefore requires ``isinstance(tid, int)`` AND
-    ``not isinstance(tid, bool)`` AND ``tid >= 1``."""
+    Filter therefore requires ``isinstance(marker_id, int)`` AND
+    ``not isinstance(marker_id, bool)`` AND ``marker_id >= 1``."""
     app = _DummyApp(AppConfig(controlled_marker_ids=[1], viewer_marker_ids=[1]))
     new_config = AppConfig(
         controlled_marker_ids=[True, "spot-1", 2.5, 2],  # type: ignore[list-item]
@@ -2380,7 +2380,7 @@ def test_marker_config_coerces_all_boolean_flags() -> None:
     cfg = MarkerConfig(
         ball_visible="false",  # type: ignore[arg-type]
         crosshair_visible="off",  # type: ignore[arg-type]
-        drop_line="no",  # type: ignore[arg-type]
+        z_line="no",  # type: ignore[arg-type]
         ground_circle="true",  # type: ignore[arg-type]
         ground_circle_filled="false",  # type: ignore[arg-type]
         z_display_from_stage="yes",  # type: ignore[arg-type]
@@ -2388,7 +2388,7 @@ def test_marker_config_coerces_all_boolean_flags() -> None:
     )
     assert cfg.ball_visible is False
     assert cfg.crosshair_visible is False
-    assert cfg.drop_line is False
+    assert cfg.z_line is False
     assert cfg.ground_circle is True
     assert cfg.ground_circle_filled is False
     assert cfg.z_display_from_stage is True
@@ -2470,7 +2470,7 @@ def test_marker_config_shipped_defaults() -> None:
     cfg = MarkerConfig()
     assert cfg.default_pos_z == 1.6
     assert cfg.transparency == 0.3
-    assert cfg.drop_line_thickness == 2
+    assert cfg.z_line_thickness == 2
     assert cfg.ground_circle is True
     assert cfg.ground_circle_filled is False
     assert cfg.z_display_from_stage is True
@@ -2484,9 +2484,9 @@ def test_marker_config_rejects_invalid_crosshair_color(bad_color: object) -> Non
 
 @pytest.mark.parametrize("bad_thickness", [0, -1, "x", None, True])
 def test_marker_config_clamps_thicknesses(bad_thickness: object) -> None:
-    cfg = MarkerConfig(crosshair_thickness=bad_thickness, drop_line_thickness=bad_thickness)  # type: ignore[arg-type]
+    cfg = MarkerConfig(crosshair_thickness=bad_thickness, z_line_thickness=bad_thickness)  # type: ignore[arg-type]
     assert cfg.crosshair_thickness >= 1
-    assert cfg.drop_line_thickness >= 1
+    assert cfg.z_line_thickness >= 1
 
 
 # --- DetectionConfig ------------------------------------------------------
@@ -2706,6 +2706,54 @@ def test_otp_output_config_rejects_non_string_source_iface() -> None:
     back to empty rather than raising inside ``.strip()``."""
     cfg = OtpOutputConfig(source_iface=42)  # type: ignore[arg-type]
     assert cfg.source_iface == ""
+
+
+def test_load_config_migrates_the_former_marker_key_names(temp_config_path) -> None:
+    """A pre-rename config carries the marker's Z-line settings under their former
+    names. Both carry over, so an operator who turned the line off or thickened it
+    keeps that instead of silently reverting to the default when ``_filter_known``
+    drops them."""
+    temp_config_path.write_text("[marker]\ndrop_line = false\ndrop_line_thickness = 7\n", encoding="utf-8")
+
+    cfg = load_config(str(temp_config_path))
+
+    assert cfg.marker.z_line is False
+    assert cfg.marker.z_line_thickness == 7
+
+
+def test_load_config_prefers_the_current_marker_key_over_the_legacy_one(temp_config_path) -> None:
+    """With both spellings present the current one wins, so a former name left
+    behind in a hand-edited file cannot override a deliberate ``z_line``."""
+    temp_config_path.write_text(
+        "[marker]\ndrop_line = false\nz_line = true\ndrop_line_thickness = 7\nz_line_thickness = 3\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(str(temp_config_path))
+
+    assert cfg.marker.z_line is True
+    assert cfg.marker.z_line_thickness == 3
+
+
+def test_load_config_warns_once_per_legacy_marker_key(temp_config_path, caplog, monkeypatch) -> None:
+    """``load_config`` runs on every hot-reload, so the rename warning is emitted
+    once per key rather than once per reload.
+
+    ``monkeypatch`` both isolates the shared warn-once set and restores it, so this
+    test cannot leave the keys suppressed for whatever runs next in the process.
+    """
+    import openfollow.configuration as configuration
+
+    monkeypatch.setattr(configuration, "_DEPRECATED_WARNED", set())
+    temp_config_path.write_text("[marker]\ndrop_line = false\ndrop_line_thickness = 7\n", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        load_config(str(temp_config_path))
+        load_config(str(temp_config_path))
+
+    renamed = [r for r in caplog.records if "has been renamed" in r.getMessage()]
+    assert len(renamed) == 2
+    assert {"drop_line", "drop_line_thickness"} == {r.args[0] for r in renamed}
 
 
 def test_load_config_migrates_legacy_otp_source_ip_to_iface(temp_config_path, monkeypatch) -> None:
@@ -3419,8 +3467,8 @@ class _DummyOtpServer:
     def register_marker(self, marker) -> None:
         self.registered.append(marker.marker_id)
 
-    def unregister_marker(self, tid: int) -> None:
-        self.unregistered.append(tid)
+    def unregister_marker(self, marker_id: int) -> None:
+        self.unregistered.append(marker_id)
 
 
 class _DummyRttrpmServer(_DummyOtpServer):
@@ -3431,7 +3479,7 @@ def _app_with(**overrides) -> _DummyApp:
     """Build a _DummyApp with an initial AppConfig; overrides feed AppConfig."""
     app = _DummyApp(AppConfig(**overrides))
     # get_marker is used by the OTP/RTTrPM mirror loops – add it here.
-    app._server.get_marker = lambda tid: app._server.markers.get(tid)  # type: ignore[attr-defined]
+    app._server.get_marker = lambda marker_id: app._server.markers.get(marker_id)  # type: ignore[attr-defined]
     return app
 
 
@@ -4332,10 +4380,10 @@ def test_apply_runtime_controlled_change_rolls_back_on_server_failure() -> None:
     app = _app_with(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2])
     orig_add = app._server.add_marker
 
-    def _failing_add(tid, name):  # noqa: ANN001
-        if tid == 3:
+    def _failing_add(marker_id, name):  # noqa: ANN001
+        if marker_id == 3:
             raise RuntimeError("PSN add failed")
-        return orig_add(tid, name)
+        return orig_add(marker_id, name)
 
     app._server.add_marker = _failing_add  # type: ignore[method-assign]
 
@@ -4426,7 +4474,7 @@ def test_apply_runtime_marker_rewire_mirrors_otp_and_rttrpm_servers() -> None:
         controlled_marker_ids=[0, 1],
         viewer_marker_ids=[0, 1],
     )
-    app._server.get_marker = lambda tid: app._server.markers.get(tid)  # type: ignore[attr-defined]
+    app._server.get_marker = lambda marker_id: app._server.markers.get(marker_id)  # type: ignore[attr-defined]
     app._otp_server = _DummyOtpServer()
     app._rttrpm_server = _DummyRttrpmServer()
     new_config = AppConfig(

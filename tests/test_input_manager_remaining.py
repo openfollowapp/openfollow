@@ -149,7 +149,7 @@ class _FakeOscHandler:
         # each flush drains the pending state. Without the clear, a
         # second ``InputManager.update()`` in the same test would
         # silently re-apply the same OSC packet.
-        snapshot = {tid: dict(axes) for tid, axes in _FakeOscHandler.next_updates.items()}
+        snapshot = {marker_id: dict(axes) for marker_id, axes in _FakeOscHandler.next_updates.items()}
         _FakeOscHandler.next_updates = {}
         return snapshot
 

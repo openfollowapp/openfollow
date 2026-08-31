@@ -1,8 +1,8 @@
 % # Discovered-peer rows fragment – see partials/overview.tpl for why only this
-% # region polls. Threaded context: ``local`` (this server's PeerInfo) + ``peers``.
+% # region polls. Threaded context: ``local`` (this station's PeerInfo) + ``peers``.
 <div class="peer-item local">
     <span class="peer-status">●</span>
-    <span class="peer-name">{{local.name}} <em>(this server)</em></span>
+    <span class="peer-name">{{local.name}} <em>(this station)</em></span>
     <span class="peer-address">{{local.ip}}:{{local.web_port}}</span>
 </div>
 
@@ -15,5 +15,5 @@
 % end
 
 % if not peers:
-<div class="no-peers">No other servers discovered yet. Make sure other OpenFollow instances are running on this network.</div>
+<div class="no-peers">No other stations discovered yet. Make sure other OpenFollow instances are running on this network.</div>
 % end

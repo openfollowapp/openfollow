@@ -108,7 +108,7 @@ OpenFollow is a Raspberry Pi (or macOS) application that:
 - Receives a video signal (NDI or SRT) and displays it fullscreen via GStreamer
 - Overlays a Cairo-based HUD on top of the video (marker positions, speed, grid, crosshair)
 - Sends PSN (PosiStageNet) marker coordinates via multicast UDP to stage systems (e.g. grandMA3)
-- Receives PSN data from other servers and displays viewer markers
+- Receives PSN data from other stations and displays viewer markers
 - Has a Bottle-based web config UI accessible from any browser on the network
 - Runs on Raspberry Pi as a systemd service; also runs on macOS for development
 
@@ -125,7 +125,7 @@ OpenFollowApp (app.py)
 ├── CairoOverlayRenderer (video/overlay.py)   – HUD drawn on Gtk.DrawingArea above gtksink (display-tick driven)
 ├── PersonDetector (video/detection.py)       – optional YOLO person detection (bg thread)
 ├── PsnServer (psn/server.py)                 – sends PSN multicast UDP
-├── PsnReceiver (psn/receiver.py)             – receives PSN from other servers
+├── PsnReceiver (psn/receiver.py)             – receives PSN from other stations
 ├── InputManager (input/input_manager.py)     – keyboard + gamepad + mouse + OSC
 └── ConfigWebServer (web/server.py)           – Bottle web UI + mDNS beacon
 ```
@@ -169,7 +169,7 @@ All config lives in `config.toml` (auto-reloaded when file changes on disk).
 ### Sub-configs
 - **CameraConfig:** pos_x/y/z, pitch/yaw/roll, fov
 - **GridConfig:** visible, width, depth, spacing, x_offset, y_offset, z_offset, origin_visible, origin_length, origin_thickness
-- **MarkerConfig:** min_speed, max_speed, move_speed, default_pos_x/y/z, `invert_control_direction` (flips X **and** Y together for *relative* input – keyboard, gamepad, 3D mouse – so an upstage camera's picture matches the controls; applied once in `InputManager.update` via `_oriented`, never on Z, and never on the absolute paths: 2D mouse unprojection and OSC writes), ball_visible, ball_size, transparency, crosshair_visible, crosshair_size, crosshair_color, crosshair_thickness, drop_line, drop_line_thickness, ground_circle, ground_circle_size, ground_circle_filled, z_display_from_stage
+- **MarkerConfig:** min_speed, max_speed, move_speed, default_pos_x/y/z, `invert_control_direction` (flips X **and** Y together for *relative* input – keyboard, gamepad, 3D mouse – so an upstage camera's picture matches the controls; applied once in `InputManager.update` via `_oriented`, never on Z, and never on the absolute paths: 2D mouse unprojection and OSC writes), ball_visible, ball_size, transparency, crosshair_visible, crosshair_size, crosshair_color, crosshair_thickness, z_line, z_line_thickness, ground_circle, ground_circle_size, ground_circle_filled, z_display_from_stage
 - **ControllerConfig:** enabled, keyboard_enabled, mouse_enabled, mouse_hysteresis_px, mouse_smoothing, mouse_max_y, mouse_wheel_z_enabled, mouse_wheel_invert, mouse_wheel_z_step, mouse_double_click_reset, deadzone, invert_y, curve, the gamepad button map (`btn_reset`, `btn_source_select`, `btn_speed_up/down`, `btn_move_z_up/down`, `btn_settings`, `btn_next/prev_marker`, …), the keyboard binding map (`key_move_layout`, `key_reset`, `key_speed_up/down`, `key_toggle_help`, `key_toggle_zones`, `key_settings`, …), `move_xy_stick` (no LED fields)
 - **DetectionConfig:** enabled (the **only** detection on/off – the web Tracking control writes it; `True` ⇒ detection runs and drives markers per `pin_mode`), model (default `yolo26n.onnx`; the web Models picker abstracts the five YOLO26 sizes as quality tiers Fastest/Fast/Balanced/Accurate/Most Accurate, pre-shipped with each distribution – see "Pre-shipped detection models"), storage_path (not exposed in the UI; device-local – stripped from config export and preserved-across-import so a path never crosses machines; blank auto-resolves to `/mnt/nvme/openfollow/yolo` when `/mnt/nvme` is a mountpoint, else a `yolo` folder under the working dir – via `resolve_detection_storage_path` in [`video/detection.py`](openfollow/video/detection.py), used by `_prepare_model_path` + the web model-discover/export helpers; set an absolute path in `config.toml` to override), inference_size (hidden in the UI; auto-detected from the model's export), confidence, interval_ms, show_boxes, show_labels, box_color, box_thickness, max_persons, pin_marker_id (`-1` = follow selected marker; used by `replace` mode only), pin_point (`top`|`bottom`), smoothing, prediction, grace_period_ms, pin_mode (`replace`|`assist`, default `assist`; `replace` = Fully Automatic auto-pins one marker, `assist` = AI-Assisted refines **all** controlled markers), assist_radius_m, assist_strength, masks_enabled (master switch for region-of-interest masking, default `False` ⇒ masks inactive even when drawn; `True` ⇒ detection confined to the enabled masks; live-applied via the `/api/detection/masks/enabled` route + staged-config drain), masks (`list[DetectionMaskConfig]`: region-of-interest polygons in normalised 0–1 frame coords; detection confined to the union of enabled masks only when `masks_enabled`, empty = unrestricted; live-applied, no restart). CLAHE preprocessing is always on (no config field). There is no `pin_marker` boolean – `enabled` gates the whole subsystem.
 - **OscConfig:** enabled, port (default 8765), allowed_sender_ips (default `[]` = allow-all + startup WARNING; normalised to `list[str]` by `__post_init__` to survive malformed TOML)
@@ -553,9 +553,9 @@ Viewer-only markers (in `viewer_marker_ids` but NOT in
 `controlled_marker_ids`) render at reduced alpha (≈0.6 via a Cairo group
 wrap) and skip the speed bar – the bar is a control-context affordance.
 Marker-card borders use each marker's own colour from the shared marker
-catalog (`MarkerCatalog.get(tid).color` via
+catalog (`MarkerCatalog.get(marker_id).color` via
 `services_marker_visuals._resolve_marker_color`, with a
-`DEFAULT_MARKER_COLORS[tid % len(...)]` palette fallback for the
+`DEFAULT_MARKER_COLORS[marker_id % len(...)]` palette fallback for the
 transient race where a controlled id has no catalog entry yet) instead
 of the global golden accent, so each card is identifiable at a glance.
 
@@ -592,7 +592,7 @@ and "manage X under Y" pointers – goes in that section's **help drawer markdow
 | Route | Method | Description |
 |---|---|---|
 | `/` | GET | Main config page |
-| `/section/overview` | GET | Server list partial (HTMX-polled every 5s) |
+| `/section/overview` | GET | Station list partial (HTMX-polled every 5s) |
 | `/section/<name>` | GET | Config section partial |
 | `/section/movement` | POST | Save movement settings (speed limits + default position) |
 | `/section/general` | POST | Save + apply general settings |

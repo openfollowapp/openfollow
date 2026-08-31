@@ -60,6 +60,7 @@ from openfollow.configuration import (
     OscTransmitterConfig,
     TriggerZoneConfig,
     _coerce_marker_tokens,
+    apply_renamed_marker_keys,
     config_write_lock,
     load_config,
     save_config,
@@ -1058,6 +1059,11 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
         tz.__post_init__()
         return True
 
+    if section == "marker":
+        marker_data = dict(data)
+        apply_renamed_marker_keys(marker_data)
+        data = marker_data
+
     parser_map = _SECTION_FIELD_PARSERS.get(section)
     # pragma: no cover – defensively unreachable: every section in
     # ``_SECTION_CONFIG_ATTRS`` either returns early above (zones) or has
@@ -1476,8 +1482,8 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "crosshair_size": _as_float,
         "crosshair_color": _as_str,
         "crosshair_thickness": _as_int,
-        "drop_line": _as_bool,
-        "drop_line_thickness": _as_int,
+        "z_line": _as_bool,
+        "z_line_thickness": _as_int,
         "ground_circle": _as_bool,
         "ground_circle_size": _as_float,
         "ground_circle_filled": _as_bool,
@@ -2818,7 +2824,7 @@ def _build_diagnostics_cards(
         # cards so the operator isn't promised a fallback that doesn't exist.
         log_chip = "off"
         log_unavailable_warning = (
-            "No log source is available on this server. "
+            "No log source is available on this station. "
             "journalctl is unreachable and the in-memory ring "
             "wasn't initialised – diagnostics bundles will not "
             "include a log tail. Wire ``setup_logging``'s "
@@ -4029,8 +4035,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         extra_fields: dict[str, Any] | None = None,
     ) -> AppConfig:
         form_data = dict(request.forms)
+        if section == "marker":
+            apply_renamed_marker_keys(form_data)
+        # Test ``form_data``, not ``request.forms``: a checkbox translated from
+        # its former name above is present here and nowhere else, and would
+        # otherwise be synthesised straight back to False.
         for field_name in bool_fields:
-            form_data[field_name] = field_name in request.forms
+            form_data[field_name] = field_name in form_data
         if extra_fields:
             form_data.update(extra_fields)
         with _config_write_lock:
@@ -4231,7 +4242,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/overview")
     def get_overview() -> Any:
-        """Get the server network overview partial.
+        """Get the station network overview partial.
 
         Overview is strictly read-only peer discovery; the network-interface
         block lives on the General tab.
@@ -4964,7 +4975,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             bool_fields=(
                 "ball_visible",
                 "crosshair_visible",
-                "drop_line",
+                "z_line",
                 "ground_circle",
                 "ground_circle_filled",
                 "z_display_from_stage",
@@ -7523,7 +7534,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "y_offset": cfg.grid.y_offset,
                 },
                 "zones": zones_out,
-                "markers": [{"id": tid, "x": x, "y": y} for tid, x, y in server.get_marker_positions()],
+                "markers": [{"id": marker_id, "x": x, "y": y} for marker_id, x, y in server.get_marker_positions()],
                 # Shared destinations travel with the poll so the editor's
                 # dropdown follows add/rename/delete without a full reload.
                 "destinations": osc_destinations_client_list(cfg),

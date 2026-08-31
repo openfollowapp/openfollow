@@ -767,15 +767,15 @@ class OpenFollowApp:
             catalog = self._marker_catalog
             controlled = set(self._controlled_ids)
             tombstoned: list[int] = []
-            for tid in changed_ids:
-                entry = catalog.get(tid)
+            for marker_id in changed_ids:
+                entry = catalog.get(marker_id)
                 if entry is None:
                     # get() hides tombstones; None means peer deleted it.
-                    if catalog.get_any(tid) is not None:
-                        tombstoned.append(tid)
+                    if catalog.get_any(marker_id) is not None:
+                        tombstoned.append(marker_id)
                     continue
-                if tid in controlled and entry.name:
-                    server.update_marker_name(tid, entry.name)
+                if marker_id in controlled and entry.name:
+                    server.update_marker_name(marker_id, entry.name)
             # Persist remote changes.
             try:
                 save_catalog(self._marker_catalog, self._marker_catalog_path())
@@ -813,16 +813,16 @@ class OpenFollowApp:
         seeded = False
         controlled = list(self._config.controlled_marker_ids)
         viewer = list(self._config.viewer_marker_ids)
-        for tid in controlled + viewer:
-            if tid < 1:
+        for marker_id in controlled + viewer:
+            if marker_id < 1:
                 continue
             # Use get_any to skip tombstoned entries
-            if catalog.get_any(tid) is not None:
+            if catalog.get_any(marker_id) is not None:
                 continue
             catalog.upsert(
-                tid,
-                f"Marker {tid}",
-                _PALETTE_AUTO_PICK_ORDER[tid % len(_PALETTE_AUTO_PICK_ORDER)],
+                marker_id,
+                f"Marker {marker_id}",
+                _PALETTE_AUTO_PICK_ORDER[marker_id % len(_PALETTE_AUTO_PICK_ORDER)],
                 origin=self._config.station_id,
             )
             seeded = True
@@ -833,8 +833,8 @@ class OpenFollowApp:
                 logger.exception("Failed to persist seeded catalog to %s", path)
 
         # Prune selection for deleted markers (persisted to avoid re-seeding).
-        def _is_tombstoned(tid: int) -> bool:
-            return catalog.get_any(tid) is not None and catalog.get(tid) is None
+        def _is_tombstoned(marker_id: int) -> bool:
+            return catalog.get_any(marker_id) is not None and catalog.get(marker_id) is None
 
         new_controlled = [t for t in controlled if not _is_tombstoned(t)]
         new_viewer = [t for t in viewer if not _is_tombstoned(t)]

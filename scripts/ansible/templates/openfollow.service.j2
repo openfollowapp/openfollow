@@ -2,7 +2,7 @@
 # Copyright (C) 2026 OpenFollow Project
 # systemd unit template: run the OpenFollow kiosk under Cage after a real network address is up.
 [Unit]
-Description=OpenFollow (NDI + 3D tracker overlay)
+Description=OpenFollow (live video stage-tracking + 3D overlay)
 {# network-online.target (not bare network.target) so the app starts only
    once an interface actually has an address – otherwise the local IP, the
    discovery beacon, and PSN binding latch onto loopback on a fresh boot. #}

@@ -8,7 +8,7 @@
 # account, update User=, WorkingDirectory=, ExecStart=, and /run/user/<uid> refs.
 
 [Unit]
-Description=OpenFollow (NDI + 3D marker overlay)
+Description=OpenFollow (live video stage-tracking + 3D overlay)
 After=network.target seatd.service user@1000.service systemd-udev-settle.service
 Wants=network.target user@1000.service systemd-udev-settle.service
 

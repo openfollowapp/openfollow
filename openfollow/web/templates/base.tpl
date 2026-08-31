@@ -3301,8 +3301,8 @@
  }).then((res) => res.json()).then((result) => {
  const failed = result.peer_results.filter((peer) => !peer.success);
  showToast(failed.length === 0
- ? `Saved and applied to ${result.peer_results.length} server(s)`
- : `Saved and applied to ${result.peer_results.length - failed.length}/${result.peer_results.length} servers`);
+ ? `Saved and applied to ${result.peer_results.length} station(s)`
+ : `Saved and applied to ${result.peer_results.length - failed.length}/${result.peer_results.length} stations`);
  }).catch(() => showToast('Broadcast failed'));
  }
  // Disable Save/Broadcast buttons when form has aria-invalid inputs.

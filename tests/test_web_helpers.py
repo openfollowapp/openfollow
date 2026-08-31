@@ -105,6 +105,34 @@ def test_as_int_list_parses_csv_and_falls_back() -> None:
 # helpers shouldn't break these.
 
 
+def test_apply_section_data_marker_accepts_the_former_z_line_names() -> None:
+    """A peer or API client still on the pre-rename names must not be accepted and
+    then ignored. ``apply_section_data`` returns True either way, so a silent drop
+    would look exactly like a successful broadcast during a rolling upgrade."""
+    config = AppConfig()
+
+    ok = apply_section_data(config, "marker", {"drop_line": False, "drop_line_thickness": 9})
+
+    assert ok is True
+    assert config.marker.z_line is False
+    assert config.marker.z_line_thickness == 9
+
+
+def test_apply_section_data_marker_prefers_the_current_z_line_names() -> None:
+    """With both spellings present the current one wins, matching the config-file
+    path, so a stale key from an older sender cannot override a deliberate value."""
+    config = AppConfig()
+
+    apply_section_data(
+        config,
+        "marker",
+        {"drop_line": False, "z_line": True, "drop_line_thickness": 9, "z_line_thickness": 4},
+    )
+
+    assert config.marker.z_line is True
+    assert config.marker.z_line_thickness == 4
+
+
 def test_apply_section_data_camera_lens_distortion_roundtrips() -> None:
     config = AppConfig()
     ok = apply_section_data(config, "camera", {"lens_k1": "-0.15", "lens_k2": "0.03"})

@@ -39,8 +39,8 @@ def _make_marker_config() -> SimpleNamespace:
         crosshair_color="#ff0000",
         crosshair_thickness=3.0,
         transparency=0.8,
-        drop_line=False,
-        drop_line_thickness=2.0,
+        z_line=False,
+        z_line_thickness=2.0,
         ground_circle=True,
         ground_circle_size=0.6,
         ground_circle_filled=False,
@@ -82,8 +82,8 @@ class TestSyncMarkerConfig:
         assert state.crosshair_color == "#ff0000"
         assert state.crosshair_thickness == 3
         assert state.transparency == 0.8
-        assert state.show_drop_line is False
-        assert state.drop_line_thickness == 2
+        assert state.show_z_line is False
+        assert state.z_line_thickness == 2
         assert state.show_ground_circle is True
         assert state.ground_circle_size == 0.6
         assert state.ground_circle_filled is False

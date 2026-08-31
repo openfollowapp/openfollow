@@ -63,7 +63,7 @@ def _ctx(
 def _resolver_factory(by_id: dict[int, tuple[float, float, float]]):  # noqa: ANN202
     """marker_resolver returning a stored position by id, or None for
     unmapped ids."""
-    return lambda tid: by_id.get(tid)
+    return lambda marker_id: by_id.get(marker_id)
 
 
 def _is_literal(s: str) -> bool:

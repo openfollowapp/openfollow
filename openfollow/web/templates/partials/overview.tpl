@@ -1,6 +1,6 @@
 <div class="section" id="overview-section" data-fold-key="overview" data-help="overview">
     <div class="section-head">
-        <h2>Server Network</h2>
+        <h2>Station Network</h2>
         <span class="section-note">Detected OpenFollow web peers</span>
     </div>
     %# Only the peer rows poll/swap (innerHTML) – the section shell stays put so

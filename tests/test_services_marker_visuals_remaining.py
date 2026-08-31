@@ -52,11 +52,11 @@ _ZERO = (0.0, 0.0, 0.0)
 class _FakeMarker:
     def __init__(
         self,
-        tid: int,
+        marker_id: int,
         pos: tuple[float, float, float] = (0.0, 0.0, 0.0),
         speed: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> None:
-        self.tid = tid
+        self.marker_id = marker_id
         self.pos = pos
         self.speed = speed
         self.set_speed_calls: list[tuple[float, float, float]] = []
@@ -72,8 +72,8 @@ class _FakePsnServer:
     def __init__(self, markers: dict[int, _FakeMarker]) -> None:
         self._markers = markers
 
-    def get_marker(self, tid: int) -> _FakeMarker | None:
-        return self._markers.get(tid)
+    def get_marker(self, marker_id: int) -> _FakeMarker | None:
+        return self._markers.get(marker_id)
 
 
 class _FakePsnReceiver:
@@ -81,11 +81,11 @@ class _FakePsnReceiver:
         self._markers = markers
         self._online = online or {}
 
-    def get_marker(self, tid: int) -> _FakeMarker | None:
-        return self._markers.get(tid)
+    def get_marker(self, marker_id: int) -> _FakeMarker | None:
+        return self._markers.get(marker_id)
 
-    def is_marker_online(self, tid: int) -> bool:
-        return bool(self._online.get(tid, True))
+    def is_marker_online(self, marker_id: int) -> bool:
+        return bool(self._online.get(marker_id, True))
 
 
 class _FakeInputManager:

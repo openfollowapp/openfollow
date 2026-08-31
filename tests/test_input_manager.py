@@ -366,7 +366,7 @@ def test_multi_gamepad_preserves_fixed_slot_assignment(monkeypatch) -> None:
     """With 2+ gamepads connected, each controller keeps its dedicated
     marker slot (controlled_ids[controller_idx]) regardless of the shared
     _selected_id. This preserves multi-operator setups where each physical
-    gamepad belongs to a specific tracker."""
+    gamepad belongs to a specific marker."""
     monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
     monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
 

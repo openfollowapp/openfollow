@@ -462,7 +462,7 @@ def test_overview_poll_returns_peer_rows_without_section_shell(live_server) -> N
     status, body = _get(base, "/section/overview")
     assert status == 200
     assert "peer-item" in body  # the local-server row is always present
-    assert "Server Network" not in body
+    assert "Station Network" not in body
     assert "data-fold-key" not in body
     assert 'class="section"' not in body
 
@@ -1946,8 +1946,8 @@ def test_detection_section_renders_pin_marker_id_dropdown(live_server) -> None:
     assert 'name="pin_marker_id"' in body
     assert 'value="-1"' in body  # the "Currently selected" sentinel
     # Each controlled marker shows up as an explicit option.
-    for tid in (1, 3, 7):
-        assert f'value="{tid}"' in body
+    for marker_id in (1, 3, 7):
+        assert f'value="{marker_id}"' in body
 
 
 def test_detection_section_surfaces_pin_marker_id_when_not_in_controlled_ids(
@@ -1966,7 +1966,7 @@ def test_detection_section_surfaces_pin_marker_id_when_not_in_controlled_ids(
     status, body = _get(base, "/section/detection")
     assert status == 200
     # Narrow to the pin_marker_id select to avoid matching the
-    # ``Marker {{tid}}`` strings in other sections.
+    # ``Marker {{marker_id}}`` strings in other sections.
     select_start = body.index('<select name="pin_marker_id">')
     select_end = body.index("</select>", select_start)
     select_html = body[select_start:select_end]
@@ -4982,7 +4982,7 @@ def test_update_marker_post_persists_visual_booleans(live_server) -> None:
         {
             "ball_visible": "on",
             "crosshair_visible": "on",
-            # drop_line + ground_circle + ground_circle_filled +
+            # z_line + ground_circle + ground_circle_filled +
             # z_display_from_stage all omitted -> coerced to False.
         },
     )
@@ -4991,8 +4991,30 @@ def test_update_marker_post_persists_visual_booleans(live_server) -> None:
     saved = load_config(server.config_path)
     assert saved.marker.ball_visible is True
     assert saved.marker.crosshair_visible is True
-    assert saved.marker.drop_line is False
+    assert saved.marker.z_line is False
     assert saved.marker.ground_circle is False
+
+
+def test_marker_form_accepts_the_former_z_line_checkbox_name(live_server) -> None:
+    """A page rendered before the rename posts the checkbox under its former name.
+
+    The bool fields are synthesised from what the form did *not* send, so without
+    translating first the synthesised ``False`` would win over the ticked box and
+    silently switch the line off - while the thickness beside it, not being a
+    bool, would translate and carry over. The two halves of one rename must not
+    disagree on the same POST.
+    """
+    server, base = live_server
+    status, _ = _post_form(
+        base,
+        "/section/marker",
+        {"drop_line": "on", "drop_line_thickness": "7"},
+    )
+    assert status == 200
+
+    saved = load_config(server.config_path)
+    assert saved.marker.z_line is True
+    assert saved.marker.z_line_thickness == 7
 
 
 def test_marker_save_preserves_invert_control_direction(live_server) -> None:

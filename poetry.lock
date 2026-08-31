@@ -4047,4 +4047,4 @@ export = ["ultralytics"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.14"
-content-hash = "d9c495991c3c3c8aaa9cc631a98f4f2cc9d728497b1bcfe45fcc287cb7a21023"
+content-hash = "361bee61c3b0fe429c2a3f94d737c177a43002ef4a9d0babbd840789fe8e26ac"

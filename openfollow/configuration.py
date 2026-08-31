@@ -2529,19 +2529,11 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
             if _old in _ctrl and _new not in _ctrl:
                 _ctrl[_new] = _ctrl[_old]
 
-    # Back-compat: the marker's drop line is now the Z line, which is what it
-    # draws - the distance the operator set between the ground position and the
-    # ball. Map the old keys on (only when the new one is absent) BEFORE
-    # ``_filter_known`` drops them, so an existing config keeps its settings.
+    # Back-compat: read the marker's Z-line settings under their former names
+    # BEFORE ``_filter_known`` drops them, so an existing config keeps them.
     _marker = data.get("marker")
     if isinstance(_marker, dict):
-        for _old, _new in (
-            ("drop_line", "z_line"),
-            ("drop_line_thickness", "z_line_thickness"),
-        ):
-            if _old in _marker and _new not in _marker:
-                _marker[_new] = _marker[_old]
-                _warn_renamed_marker_key(_old, _new)
+        apply_renamed_marker_keys(_marker)
 
     # Back-compat: OTP output used to pin a raw ``source_ip``; it now pins the
     # interface by name (``source_iface``), like PSN. Convert an existing IP to
@@ -2576,6 +2568,28 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
 _DEPRECATED_WARNED: set[str] = set()
 
 
+RENAMED_MARKER_KEYS: tuple[tuple[str, str], ...] = (
+    ("drop_line", "z_line"),
+    ("drop_line_thickness", "z_line_thickness"),
+)
+
+
+def apply_renamed_marker_keys(marker_data: dict[str, Any]) -> None:
+    """Read the marker's Z-line settings under their former names, in place.
+
+    The drop line became the Z line, which is what it draws: the distance the
+    operator set between the ground position and the ball. Every route into a
+    marker section goes through here - config file, JSON config API, peer
+    broadcast - so a station still sending the old names during a rolling
+    upgrade is understood rather than accepted and silently discarded. The
+    current name wins wherever both appear.
+    """
+    for old, new in RENAMED_MARKER_KEYS:
+        if old in marker_data and new not in marker_data:
+            marker_data[new] = marker_data[old]
+            _warn_renamed_marker_key(old, new)
+
+
 def _warn_renamed_marker_key(old: str, new: str) -> None:
     """Tell the operator a marker key was read under its former name.
 
@@ -2588,8 +2602,8 @@ def _warn_renamed_marker_key(old: str, new: str) -> None:
         return
     _DEPRECATED_WARNED.add(old)
     logger.warning(
-        "config.toml uses [marker] %s, which has been renamed to %s. The value was applied. "
-        "Rename the key to keep it once the old name is no longer read.",
+        "[marker] %s has been renamed to %s. The value was applied. Update the sender "
+        "(config.toml, a config API client, or an older peer) before the old name stops being read.",
         old,
         new,
     )

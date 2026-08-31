@@ -60,6 +60,7 @@ from openfollow.configuration import (
     OscTransmitterConfig,
     TriggerZoneConfig,
     _coerce_marker_tokens,
+    apply_renamed_marker_keys,
     config_write_lock,
     load_config,
     save_config,
@@ -1057,6 +1058,11 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
         _apply_parsed_updates(tz, data, _TRIGGER_ZONES_FIELD_PARSERS)
         tz.__post_init__()
         return True
+
+    if section == "marker":
+        marker_data = dict(data)
+        apply_renamed_marker_keys(marker_data)
+        data = marker_data
 
     parser_map = _SECTION_FIELD_PARSERS.get(section)
     # pragma: no cover – defensively unreachable: every section in

@@ -29,7 +29,7 @@ A 2D cross pinned to the marker's projected screen position – the precise aimi
 
 ## Z Line
 
-The line between the ground position and the ball. It draws the Z value you have set: longer as you raise the marker, absent at Z 0.
+The line between the ground position and the ball. It draws the Z value you have set: longer as you raise the marker, and gone when the marker sits on the stage plane.
 
 - **Z Line** – enable or disable the Z line.
 - **Z Line Thickness (px)** – line weight in pixels (1–20). Default: `2`.

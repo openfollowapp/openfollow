@@ -4982,7 +4982,7 @@ def test_update_marker_post_persists_visual_booleans(live_server) -> None:
         {
             "ball_visible": "on",
             "crosshair_visible": "on",
-            # drop_line + ground_circle + ground_circle_filled +
+            # z_line + ground_circle + ground_circle_filled +
             # z_display_from_stage all omitted -> coerced to False.
         },
     )
@@ -4991,7 +4991,7 @@ def test_update_marker_post_persists_visual_booleans(live_server) -> None:
     saved = load_config(server.config_path)
     assert saved.marker.ball_visible is True
     assert saved.marker.crosshair_visible is True
-    assert saved.marker.drop_line is False
+    assert saved.marker.z_line is False
     assert saved.marker.ground_circle is False
 
 

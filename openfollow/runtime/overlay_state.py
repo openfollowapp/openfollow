@@ -158,8 +158,8 @@ class OverlayState:
     crosshair_color: str = "#ffffff"
     crosshair_thickness: int = 2
     transparency: float = 0.5
-    show_drop_line: bool = True
-    drop_line_thickness: int = 1
+    show_z_line: bool = True
+    z_line_thickness: int = 1
     show_ground_circle: bool = False
     ground_circle_size: float = 0.3
     ground_circle_filled: bool = True
@@ -297,8 +297,8 @@ class OverlayState:
         self.crosshair_color = "#ffffff"
         self.crosshair_thickness = 2
         self.transparency = 0.5
-        self.show_drop_line = True
-        self.drop_line_thickness = 1
+        self.show_z_line = True
+        self.z_line_thickness = 1
         self.show_ground_circle = False
         self.ground_circle_size = 0.3
         self.ground_circle_filled = True

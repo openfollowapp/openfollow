@@ -2380,7 +2380,7 @@ def test_marker_config_coerces_all_boolean_flags() -> None:
     cfg = MarkerConfig(
         ball_visible="false",  # type: ignore[arg-type]
         crosshair_visible="off",  # type: ignore[arg-type]
-        drop_line="no",  # type: ignore[arg-type]
+        z_line="no",  # type: ignore[arg-type]
         ground_circle="true",  # type: ignore[arg-type]
         ground_circle_filled="false",  # type: ignore[arg-type]
         z_display_from_stage="yes",  # type: ignore[arg-type]
@@ -2388,7 +2388,7 @@ def test_marker_config_coerces_all_boolean_flags() -> None:
     )
     assert cfg.ball_visible is False
     assert cfg.crosshair_visible is False
-    assert cfg.drop_line is False
+    assert cfg.z_line is False
     assert cfg.ground_circle is True
     assert cfg.ground_circle_filled is False
     assert cfg.z_display_from_stage is True
@@ -2470,7 +2470,7 @@ def test_marker_config_shipped_defaults() -> None:
     cfg = MarkerConfig()
     assert cfg.default_pos_z == 1.6
     assert cfg.transparency == 0.3
-    assert cfg.drop_line_thickness == 2
+    assert cfg.z_line_thickness == 2
     assert cfg.ground_circle is True
     assert cfg.ground_circle_filled is False
     assert cfg.z_display_from_stage is True
@@ -2484,9 +2484,9 @@ def test_marker_config_rejects_invalid_crosshair_color(bad_color: object) -> Non
 
 @pytest.mark.parametrize("bad_thickness", [0, -1, "x", None, True])
 def test_marker_config_clamps_thicknesses(bad_thickness: object) -> None:
-    cfg = MarkerConfig(crosshair_thickness=bad_thickness, drop_line_thickness=bad_thickness)  # type: ignore[arg-type]
+    cfg = MarkerConfig(crosshair_thickness=bad_thickness, z_line_thickness=bad_thickness)  # type: ignore[arg-type]
     assert cfg.crosshair_thickness >= 1
-    assert cfg.drop_line_thickness >= 1
+    assert cfg.z_line_thickness >= 1
 
 
 # --- DetectionConfig ------------------------------------------------------
@@ -2706,6 +2706,50 @@ def test_otp_output_config_rejects_non_string_source_iface() -> None:
     back to empty rather than raising inside ``.strip()``."""
     cfg = OtpOutputConfig(source_iface=42)  # type: ignore[arg-type]
     assert cfg.source_iface == ""
+
+
+def test_load_config_migrates_legacy_drop_line_keys(temp_config_path) -> None:
+    """A pre-rename config sets the marker's Z line under ``drop_line``. Both keys
+    carry over, so an operator who turned the line off or thickened it keeps that
+    instead of silently reverting to the default when ``_filter_known`` drops them."""
+    temp_config_path.write_text("[marker]\ndrop_line = false\ndrop_line_thickness = 7\n", encoding="utf-8")
+
+    cfg = load_config(str(temp_config_path))
+
+    assert cfg.marker.z_line is False
+    assert cfg.marker.z_line_thickness == 7
+
+
+def test_load_config_prefers_the_current_marker_key_over_the_legacy_one(temp_config_path) -> None:
+    """With both spellings present the current one wins, so a stale ``drop_line``
+    left behind in a hand-edited file cannot override a deliberate ``z_line``."""
+    temp_config_path.write_text(
+        "[marker]\ndrop_line = false\nz_line = true\ndrop_line_thickness = 7\nz_line_thickness = 3\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(str(temp_config_path))
+
+    assert cfg.marker.z_line is True
+    assert cfg.marker.z_line_thickness == 3
+
+
+def test_load_config_warns_once_per_legacy_marker_key(temp_config_path, caplog) -> None:
+    """``load_config`` runs on every hot-reload, so the rename warning is emitted
+    once per key rather than once per reload."""
+    import openfollow.configuration as configuration
+
+    configuration._DEPRECATED_WARNED.discard("drop_line")
+    configuration._DEPRECATED_WARNED.discard("drop_line_thickness")
+    temp_config_path.write_text("[marker]\ndrop_line = false\ndrop_line_thickness = 7\n", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        load_config(str(temp_config_path))
+        load_config(str(temp_config_path))
+
+    renamed = [r for r in caplog.records if "has been renamed" in r.getMessage()]
+    assert len(renamed) == 2
+    assert {"drop_line", "drop_line_thickness"} == {r.args[0] for r in renamed}
 
 
 def test_load_config_migrates_legacy_otp_source_ip_to_iface(temp_config_path, monkeypatch) -> None:

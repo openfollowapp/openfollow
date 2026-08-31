@@ -14,7 +14,7 @@ neighbouring movement.tpl / trigger_zones.tpl on this tab:
   API calls, so there's no Save button. The standalone ``/markers``
   page has been retired in favour of this inline UI.
 - ``Marker Visuals``: ``<form id="marker-section">`` with body /
-  crosshair / Z display / drop line / ground circle / color palette –
+  crosshair / Z display / Z line / ground circle / color palette –
   Marker dataclass fields, submitted by the form's Save button.
 
 Each section folds independently. Earlier iterations bundled both

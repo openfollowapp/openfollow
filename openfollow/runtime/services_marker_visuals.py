@@ -181,8 +181,8 @@ def sync_marker_config(state: OverlayState, cfg: Any) -> None:
     state.crosshair_color = tc.crosshair_color
     state.crosshair_thickness = int(tc.crosshair_thickness)
     state.transparency = tc.transparency
-    state.show_drop_line = tc.drop_line
-    state.drop_line_thickness = int(tc.drop_line_thickness)
+    state.show_z_line = tc.z_line
+    state.z_line_thickness = int(tc.z_line_thickness)
     state.show_ground_circle = tc.ground_circle
     state.ground_circle_size = tc.ground_circle_size
     state.ground_circle_filled = tc.ground_circle_filled

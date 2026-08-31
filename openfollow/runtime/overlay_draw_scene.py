@@ -227,7 +227,7 @@ def _draw_assist_ghost(
 ) -> None:
     """Draw the assist AI-corrected output: dim crosshair + ground ring, marker colour.
 
-    No filled ball, no drop line, no speed bar – it's a secondary indicator of
+    No filled ball, no Z line, no speed bar – it's a secondary indicator of
     where the broadcast output sits, not the marker the operator steers.
     Crosshair and ring always render (not gated on the marker's show-flags) so
     the output footprint is always visible.
@@ -314,10 +314,10 @@ def draw_marker(cr: Any, state: OverlayState, t: MarkerOverlayData, w: int, h: i
         _draw_world_lines(cr, cam, axis_segments, w, h, state.lens_k1, state.lens_k2)
         cr.stroke()
 
-    if state.show_drop_line and state.grid_config:
+    if state.show_z_line and state.grid_config:
         z_off = state.grid_config[5]
         cr.set_source_rgba(r, g, b, 0.8)
-        cr.set_line_width(state.drop_line_thickness)
+        cr.set_line_width(state.z_line_thickness)
         if _draw_world_lines(cr, cam, [((tx, ty, tz), (tx, ty, z_off))], w, h, state.lens_k1, state.lens_k2):
             cr.stroke()
 

@@ -4,10 +4,12 @@ Controls how each marker appears on the Operator Screen – size, transparency, 
 
 ## Body
 
-The ball is the primary visual: a semi-transparent sphere drawn at the marker's 3D position in the scene.
+You drive the marker in 2D: a **ground position** on the stage plane. The ball is drawn above that point, at the distance set by the Z control, and Z holds whatever you set until you change it.
 
-- **Show Ball** – enable or disable the ball. When unchecked the ball is hidden; all other elements (crosshair, drop line, ground circle) remain active independently.
-- **Ball Size** – radius of the ball in metres. Because it is sized in world units, `0.15` m appears roughly head-sized at a performer's head height. Default: `0.15`.
+The ball is the primary visual: a semi-transparent sphere at the marker's 3D position.
+
+- **Show Ball** – enable or disable the ball. When unchecked the ball is hidden; all other elements (crosshair, Z line, ground circle) remain active independently.
+- **Ball Size** – radius of the ball in metres. Because it is sized in world units it scales with perspective, like a real object on stage. Default: `0.15`.
 - **Opacity (0–1)** – `0` is fully transparent; `1` is fully opaque; in-between values let the stage image show through. Default: `0.3`.
 
 ## Crosshair
@@ -23,18 +25,18 @@ A 2D cross pinned to the marker's projected screen position – the precise aimi
 
 ## Z Display
 
-**Z from Stage Level** – when checked, the height readout shown near the marker displays Z relative to the stage plane rather than absolute world Z. Most operators prefer this: a performer standing on the floor reads roughly 1.7 m rather than the absolute coordinate from the Reference Point.
+**Z from Stage Level** – when checked, the Z readout shown near the marker displays Z relative to the stage plane rather than absolute world Z. Most operators prefer this.
 
-## Drop Line
+## Z Line
 
-A thin vertical line from the marker straight down to the stage plane. Useful when the marker is elevated – it keeps the plan-view position readable at height.
+The line between the ground position and the ball. It draws the Z value you have set: longer as you raise the marker, absent at Z 0.
 
-- **Drop Line** – enable or disable the drop line.
-- **Drop Line Thickness (px)** – line weight in pixels (1–20). Default: `2`.
+- **Z Line** – enable or disable the Z line.
+- **Z Line Thickness (px)** – line weight in pixels (1–20). Default: `2`.
 
 ## Ground Circle
 
-A circle drawn on the stage plane directly beneath the marker, giving an additional floor-projection cue.
+A circle on the stage plane at the marker's ground position – the point you are steering.
 
 - **Ground Circle** – enable or disable the ground circle.
 - **Circle Size** – radius of the circle in metres. Default: `0.3`.

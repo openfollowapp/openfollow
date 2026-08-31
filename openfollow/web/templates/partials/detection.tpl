@@ -108,7 +108,6 @@
                         <option value="top" {{'selected' if det.pin_point == 'top' else ''}}>Head (top of person)</option>
                         <option value="bottom" {{'selected' if det.pin_point == 'bottom' else ''}}>Feet (floor position)</option>
                     </select>
-                    <span class="field-note">Which part of the person sets the marker.</span>
                 </div>
             </div>
             <details class="inline-advanced">

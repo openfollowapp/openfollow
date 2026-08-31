@@ -166,8 +166,9 @@ eyes, which is still the way to answer questions about feel rather than values.
 | **ETC Eos (User 99)** | `/eos/user/99/chan/[markerid]/xyz` | `[x] [y] [z]` -> `,fff` |
 
 Both carry position in **decimal metres** on the same axes OpenFollow uses, and
-differ only in which Eos user the address names. Naming the user explicitly
-keeps a continuous stream off the operator's command line.
+differ only in which Eos user the address names. User 0 is the Eos user for
+things that run in the background; naming a user explicitly keeps a continuous
+stream off the operator's command line.
 
 Height is the one value that needs thought: `[z]` is measured from the OpenFollow
 origin and Augment3d from its own. A non-zero **Grid** *Z offset* wants a matching

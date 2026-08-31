@@ -1197,8 +1197,8 @@ class BuiltinTemplate:
 # ``MappingProxyType`` instance – sharing is safe since it's immutable.
 BUILTIN_TEMPLATES: tuple[BuiltinTemplate, ...] = (
     # Augment3d shares our stage frame (X lateral, Y depth, Z height) and
-    # metres, so the marker position maps across 1:1. The address names an
-    # explicit Eos user, which keeps the stream off the command line.
+    # metres, so the marker position maps across 1:1. User 0 is the Eos user
+    # for background work, which keeps the stream off the command line.
     BuiltinTemplate(
         id="etc",
         name="ETC Eos",

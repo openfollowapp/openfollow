@@ -8,6 +8,9 @@ on:
     branches:
       - main
   pull_request:
+  # The audit jobs below are PR-skipped, so an edit to them lands on ``main``
+  # untested. This makes a manual run of the branch possible beforehand.
+  workflow_dispatch:
   schedule:
     # Weekly supply-chain audit (Mondays 06:00 UTC) – drives the `audit` job so
     # a newly-disclosed CVE is surfaced even when no code has changed.
@@ -15,9 +18,12 @@ on:
 
 # Cancel in-progress run when a newer commit is pushed to same ref.
 # Latest commit is the only one that matters; superseded runs just burn runner
-# minutes. ``main`` pushes are serialized per ref.
+# minutes. ``main`` pushes are serialized per ref. The event name is part of the
+# key because a ``schedule`` run and a ``main`` push both resolve ``github.ref``
+# to ``refs/heads/main`` – without it, any Monday-morning merge cancels the
+# week's supply-chain audit and leaves no CVE report at all.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -65,9 +71,15 @@ jobs:
             gstreamer1.0-plugins-bad \
             libasound2-dev
 
+      # Pinned to the version stamped in ``poetry.lock``'s header. Unpinned,
+      # ``snok/install-poetry@v1`` installs whatever resolves as latest at run
+      # time, and the audit job's ``poetry sync`` does not exist before 2.0 – a
+      # drift off that line breaks one job, on ``main``, where the PR that
+      # caused it ran no audit at all. Bump with the lock.
       - name: Install Poetry
         uses: snok/install-poetry@v1
         with:
+          version: "2.4.1"
           virtualenvs-create: true
           virtualenvs-in-project: true
           installer-parallel: true
@@ -176,22 +188,32 @@ jobs:
       - name: Install Poetry
         uses: snok/install-poetry@v1
         with:
+          version: "2.4.1"
           virtualenvs-create: true
           virtualenvs-in-project: true
           installer-parallel: true
 
+      # Own key prefix. Both jobs cache ``.venv``, and on a ``poetry.lock``
+      # change both miss and both save concurrently – with one shared key
+      # whichever post-step wins the race decides what the other job starts
+      # from, and ``test`` installs with ``poetry install``, which computes no
+      # uninstalls and would carry the surplus forward on every later run.
       - name: Cache Poetry virtualenv
         uses: actions/cache@v6
         with:
           path: .venv
-          key: venv-${{ runner.os }}-py3.13-${{ hashFiles('poetry.lock') }}
+          key: venv-audit-${{ runner.os }}-py3.13-${{ hashFiles('poetry.lock') }}
           restore-keys: |
-            venv-${{ runner.os }}-py3.13-
+            venv-audit-${{ runner.os }}-py3.13-
 
       # ``-E detection`` so onnxruntime + opencv are in the audited closure;
-      # ``mido`` + ``python-rtmidi`` come in as base deps.
+      # ``mido`` + ``python-rtmidi`` come in as base deps. ``sync`` (not
+      # ``install``) so a fuzzy restore-key hit can only ever shrink back to the
+      # lock's closure. The ``dev`` group is deliberately inside that closure:
+      # ruff, pytest and bandit run inside this pipeline, so a CVE there is in
+      # scope for the gate in a way one in the export toolchain is not.
       - name: Install dependencies
-        run: poetry install --no-interaction -E detection
+        run: poetry sync --no-interaction -E detection
 
       # pip is installed inside the venv being audited, so a vulnerable pip
       # fails this job even when every project dependency is clean. Keep it
@@ -202,3 +224,80 @@ jobs:
 
       - name: pip-audit (supply-chain)
         run: make audit
+
+  # The export toolchain (ultralytics + torch) is workstation-only: the .deb
+  # build refuses to bundle it and no show device ever loads it, so a CVE there
+  # must not block a release. It must not be invisible either – an extra outside
+  # the audited closure drifts silently, with both pip-audit and Dependabot
+  # reporting nothing. Hence its own job with its own throwaway venv: ~6 GB of
+  # torch + CUDA wheels must never reach the `.venv` cache the gating jobs
+  # restore from, and caching it here would put a ~3 GB entry in a 10 GB
+  # per-repository budget and evict every other job's venv by LRU.
+  audit-export:
+    if: github.event_name != 'pull_request'
+    # Report-only down to the install: a PyPI hiccup, a hash mismatch or a full
+    # disk while unpacking the CUDA wheels must not make the supply-chain audit
+    # read red for a reason that is not a CVE.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-gi \
+            python3-gi-cairo \
+            gir1.2-gstreamer-1.0 \
+            gir1.2-gst-plugins-base-1.0 \
+            gir1.2-gtk-3.0 \
+            gir1.2-rsvg-2.0 \
+            libgirepository-2.0-dev \
+            libcairo2-dev \
+            libgstreamer1.0-0 \
+            gstreamer1.0-tools \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            libasound2-dev
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "2.4.1"
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          installer-parallel: true
+
+      # Deliberately uncached – see the job comment. pip lives inside the venv
+      # being audited, so it is upgraded here too rather than reported on.
+      - name: Install export toolchain
+        run: |
+          poetry sync --no-interaction -E detection -E export
+          poetry run python -m pip install --upgrade pip
+
+      # The report goes to the step summary instead of being left to an exit
+      # code. This closure carries known advisories today, so a pass/fail signal
+      # here would be permanently red, and the next genuinely new finding would
+      # read exactly like the noise it was buried in. The listing is the signal:
+      # a row that was not there last week is the drift this job exists to show.
+      - name: pip-audit (export toolchain, report-only)
+        run: |
+          set +e
+          report="$(make audit 2>&1)"
+          set -e
+          {
+            echo "## Export toolchain audit (report-only, non-gating)"
+            echo
+            echo '```'
+            echo "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

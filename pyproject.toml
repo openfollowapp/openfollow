@@ -100,6 +100,10 @@ hypothesis = "^6"
 bandit = {extras = ["toml"], version = "^1.9.4"}
 pip-audit = "^2.10.1"
 
+# Used by the workflow-guard tests. Declared because it is otherwise only a
+# transitive dep of pre-commit/bandit - losing that edge fails collection.
+pyyaml = "^6.0"
+
 # Build-only tooling for the macOS .app / .dmg (packaging/macos/). Optional and
 # off by default; ``make dmg`` pulls it in with ``--with package-macos``. Kept
 # out of the runtime deps so the offline Pi / .deb build never carries

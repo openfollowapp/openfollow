@@ -8,9 +8,14 @@ and nothing else in the tree notices. That is not hypothetical: it is how this
 file came to exist.
 
 *Which* audit sees an extra matters as much as whether one does. The gating
-audit blocks a release, so it must cover everything a show device installs and
-nothing that only ever runs on a build workstation: a CVE in the export
-toolchain holding up a Pi release is what gets an audit ignored or deleted.
+audit blocks a release, so it must cover every extra a show device installs.
+
+It deliberately does not stop there: the ``dev`` group is in that closure too,
+because ruff, pytest and bandit execute inside the release pipeline itself, so a
+compromise there reaches what ships. The line is drawn at code that neither runs
+on a device nor takes part in producing the artifact - today that is the
+``export`` extra, several GB of ML tooling the .deb build never installs. A CVE
+in *that* holding up a Pi release is what gets an audit ignored or deleted.
 """
 
 from __future__ import annotations
@@ -92,12 +97,23 @@ def _extras_installed(run: str) -> set[str]:
     return extras
 
 
+def _install_flags(run: str) -> set[str]:
+    """Option flags passed to a poetry install/sync, ``--opt=value`` normalised."""
+    flags: set[str] = set()
+    for command in _shell_commands(run):
+        if _poetry_verb(command) not in {"install", "sync"}:
+            continue
+        flags |= {token.split("=", 1)[0] for token in command if token.startswith("-")}
+    return flags
+
+
 @dataclass(frozen=True)
 class _AuditJob:
     name: str
     gating: bool
     extras: frozenset[str]
     caches_venv: bool
+    install_flags: frozenset[str]
 
 
 def _audit_jobs() -> list[_AuditJob]:
@@ -110,8 +126,10 @@ def _audit_jobs() -> list[_AuditJob]:
         if not any(_AUDIT_COMMAND.search(run) for run in runs):
             continue
         extras: set[str] = set()
+        flags: set[str] = set()
         for run in runs:
             extras |= _extras_installed(run)
+            flags |= _install_flags(run)
         caches_venv = any(
             str(step.get("uses", "")).startswith("actions/cache")
             and ".venv" in str((step.get("with") or {}).get("path", ""))
@@ -123,6 +141,7 @@ def _audit_jobs() -> list[_AuditJob]:
                 gating=not bool(job.get("continue-on-error", False)),
                 extras=frozenset(extras),
                 caches_venv=caches_venv,
+                install_flags=frozenset(flags),
             )
         )
     assert jobs, "ci.yml has no job that runs pip-audit"
@@ -191,4 +210,24 @@ def test_the_workstation_closure_is_never_saved_into_a_venv_cache() -> None:
             "caches '.venv'. The export closure is multiple GB: it would evict every "
             "other job's cache by LRU, and any job restoring it installs with a poetry "
             "'install' that computes no uninstalls, carrying the surplus forward."
+        )
+
+
+def test_the_gating_audit_keeps_the_build_toolchain_in_its_closure() -> None:
+    """Poetry's ``dev`` group is non-optional, so the gate covers it. Keep it that way.
+
+    ruff, pytest, mypy and bandit run inside the release pipeline, so a CVE in one
+    of them is a CVE in what produces the artifact. Narrowing the gating install
+    to the runtime closure would read as tightening the boundary this file draws,
+    while actually dropping that coverage.
+    """
+    narrowing = {"--only", "--without", "--no-dev"}
+    for job in _audit_jobs():
+        if not job.gating:
+            continue
+        used = narrowing & job.install_flags
+        assert not used, (
+            f"the gating audit job '{job.name}' installs with {sorted(used)}, which drops "
+            "Poetry groups from the audited closure. The 'dev' group is meant to be in it: "
+            "its tooling runs in the pipeline that builds the release."
         )

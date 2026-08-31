@@ -209,8 +209,9 @@ jobs:
       # ``-E detection`` so onnxruntime + opencv are in the audited closure;
       # ``mido`` + ``python-rtmidi`` come in as base deps. ``sync`` (not
       # ``install``) so a fuzzy restore-key hit can only ever shrink back to the
-      # lock's closure: this audit gates a release, so it must fail on the CVEs
-      # a release actually ships and on nothing else.
+      # lock's closure. The ``dev`` group is deliberately inside that closure:
+      # ruff, pytest and bandit run inside this pipeline, so a CVE there is in
+      # scope for the gate in a way one in the export toolchain is not.
       - name: Install dependencies
         run: poetry sync --no-interaction -E detection
 

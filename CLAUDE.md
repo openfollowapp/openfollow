@@ -108,7 +108,7 @@ OpenFollow is a Raspberry Pi (or macOS) application that:
 - Receives a video signal (NDI or SRT) and displays it fullscreen via GStreamer
 - Overlays a Cairo-based HUD on top of the video (marker positions, speed, grid, crosshair)
 - Sends PSN (PosiStageNet) marker coordinates via multicast UDP to stage systems (e.g. grandMA3)
-- Receives PSN data from other servers and displays viewer markers
+- Receives PSN data from other stations and displays viewer markers
 - Has a Bottle-based web config UI accessible from any browser on the network
 - Runs on Raspberry Pi as a systemd service; also runs on macOS for development
 
@@ -125,7 +125,7 @@ OpenFollowApp (app.py)
 ├── CairoOverlayRenderer (video/overlay.py)   – HUD drawn on Gtk.DrawingArea above gtksink (display-tick driven)
 ├── PersonDetector (video/detection.py)       – optional YOLO person detection (bg thread)
 ├── PsnServer (psn/server.py)                 – sends PSN multicast UDP
-├── PsnReceiver (psn/receiver.py)             – receives PSN from other servers
+├── PsnReceiver (psn/receiver.py)             – receives PSN from other stations
 ├── InputManager (input/input_manager.py)     – keyboard + gamepad + mouse + OSC
 └── ConfigWebServer (web/server.py)           – Bottle web UI + mDNS beacon
 ```
@@ -592,7 +592,7 @@ and "manage X under Y" pointers – goes in that section's **help drawer markdow
 | Route | Method | Description |
 |---|---|---|
 | `/` | GET | Main config page |
-| `/section/overview` | GET | Server list partial (HTMX-polled every 5s) |
+| `/section/overview` | GET | Station list partial (HTMX-polled every 5s) |
 | `/section/<name>` | GET | Config section partial |
 | `/section/movement` | POST | Save movement settings (speed limits + default position) |
 | `/section/general` | POST | Save + apply general settings |

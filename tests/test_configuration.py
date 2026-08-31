@@ -2735,13 +2735,16 @@ def test_load_config_prefers_the_current_marker_key_over_the_legacy_one(temp_con
     assert cfg.marker.z_line_thickness == 3
 
 
-def test_load_config_warns_once_per_legacy_marker_key(temp_config_path, caplog) -> None:
+def test_load_config_warns_once_per_legacy_marker_key(temp_config_path, caplog, monkeypatch) -> None:
     """``load_config`` runs on every hot-reload, so the rename warning is emitted
-    once per key rather than once per reload."""
+    once per key rather than once per reload.
+
+    ``monkeypatch`` both isolates the shared warn-once set and restores it, so this
+    test cannot leave the keys suppressed for whatever runs next in the process.
+    """
     import openfollow.configuration as configuration
 
-    configuration._DEPRECATED_WARNED.discard("drop_line")
-    configuration._DEPRECATED_WARNED.discard("drop_line_thickness")
+    monkeypatch.setattr(configuration, "_DEPRECATED_WARNED", set())
     temp_config_path.write_text("[marker]\ndrop_line = false\ndrop_line_thickness = 7\n", encoding="utf-8")
 
     with caplog.at_level("WARNING"):

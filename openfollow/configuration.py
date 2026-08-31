@@ -2568,7 +2568,7 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
 _DEPRECATED_WARNED: set[str] = set()
 
 
-RENAMED_MARKER_KEYS: tuple[tuple[str, str], ...] = (
+_RENAMED_MARKER_KEYS: tuple[tuple[str, str], ...] = (
     ("drop_line", "z_line"),
     ("drop_line_thickness", "z_line_thickness"),
 )
@@ -2582,7 +2582,7 @@ def apply_renamed_marker_keys(marker_data: dict[str, Any]) -> None:
     during a rolling upgrade is understood rather than accepted and silently
     discarded. The current name wins wherever both appear.
     """
-    for old, new in RENAMED_MARKER_KEYS:
+    for old, new in _RENAMED_MARKER_KEYS:
         if old in marker_data and new not in marker_data:
             marker_data[new] = marker_data[old]
             _warn_renamed_marker_key(old, new)

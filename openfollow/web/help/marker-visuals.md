@@ -4,7 +4,7 @@ Controls how each marker appears on the Operator Screen – size, transparency, 
 
 ## Body
 
-You drive the marker in 2D: a **ground position** on the stage plane. The ball is drawn above that point, at the distance set by the Z control, and Z holds whatever you set until you change it.
+You drive the marker in 2D: a **ground position** on the stage plane. The ball is drawn above that point at the Z the Z control sets, and Z holds whatever you set until you change it. Whether the readout beside the marker shows Z against the stage plane or as absolute world Z is set under **Z Display** below.
 
 The ball is the primary visual: a semi-transparent sphere at the marker's 3D position.
 

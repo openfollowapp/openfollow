@@ -18,7 +18,7 @@ The position a marker jumps to when the operator presses the Reset key or button
 
 - **Default X** – stage left is positive, stage right negative. `0` is on the centre line.
 - **Default Y** – upstage is positive, downstage (towards the audience) negative.
-- **Default Z** – how far above the stage floor the marker is drawn. `0` places it on the floor.
+- **Default Z** – the marker's Z in world coordinates, the frame the Reference Point defines. The stage floor sits at the grid's **Z Offset**, so `0` puts the marker on the floor only when that offset is `0`.
 
 X and Y default to `0.0` (the Reference Point itself); Z defaults to `1.6`.
 

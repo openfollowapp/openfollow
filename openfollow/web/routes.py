@@ -4035,8 +4035,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         extra_fields: dict[str, Any] | None = None,
     ) -> AppConfig:
         form_data = dict(request.forms)
+        if section == "marker":
+            apply_renamed_marker_keys(form_data)
+        # Test ``form_data``, not ``request.forms``: a checkbox translated from
+        # its former name above is present here and nowhere else, and would
+        # otherwise be synthesised straight back to False.
         for field_name in bool_fields:
-            form_data[field_name] = field_name in request.forms
+            form_data[field_name] = field_name in form_data
         if extra_fields:
             form_data.update(extra_fields)
         with _config_write_lock:

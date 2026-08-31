@@ -462,7 +462,7 @@ def test_overview_poll_returns_peer_rows_without_section_shell(live_server) -> N
     status, body = _get(base, "/section/overview")
     assert status == 200
     assert "peer-item" in body  # the local-server row is always present
-    assert "Server Network" not in body
+    assert "Station Network" not in body
     assert "data-fold-key" not in body
     assert 'class="section"' not in body
 

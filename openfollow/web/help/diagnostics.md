@@ -47,4 +47,4 @@ Four actions sit below the cards.
 
 - **Show recent log tail (last 100 lines)** – pulls the last 100 lines from the live log source and displays them inline. The first line identifies the source. Auth signatures are redacted before display.
 
-- **Restart application** – restarts the OpenFollow process (not the operating system). A confirmation prompt appears first; the page reloads automatically once the server comes back. Use this after changing a setting that requires a restart, such as the web port or Person Detection engine.
+- **Restart application** – restarts the OpenFollow process (not the operating system). A confirmation prompt appears first; the page reloads automatically once the station comes back. Use this after changing a setting that requires a restart, such as the web port or Person Detection engine.

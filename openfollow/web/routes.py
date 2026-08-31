@@ -2818,7 +2818,7 @@ def _build_diagnostics_cards(
         # cards so the operator isn't promised a fallback that doesn't exist.
         log_chip = "off"
         log_unavailable_warning = (
-            "No log source is available on this server. "
+            "No log source is available on this station. "
             "journalctl is unreachable and the in-memory ring "
             "wasn't initialised – diagnostics bundles will not "
             "include a log tail. Wire ``setup_logging``'s "
@@ -4231,7 +4231,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/overview")
     def get_overview() -> Any:
-        """Get the server network overview partial.
+        """Get the station network overview partial.
 
         Overview is strictly read-only peer discovery; the network-interface
         block lives on the General tab.

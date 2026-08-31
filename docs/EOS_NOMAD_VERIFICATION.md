@@ -55,7 +55,7 @@ Same page. This is what lets the console report back, turning the check from
 
 Either works, and testing both is worth the two minutes:
 
-| Target | Patch as | What `/eos/chan/N/xyz` does |
+| Target | Patch as | What `/eos/user/0/chan/N/xyz` does |
 |---|---|---|
 | **Scenic Element Movable** | `ETC Fixtures > Scenic Element > Scenic Element Movable` | Sets the object's position |
 | **Moving light** | any automated fixture | Sets its focus XYZ |
@@ -85,9 +85,9 @@ the app sends, not a re-implementation. Exits `0` (pass) / `1` (fail).
 ```
   link OK  : console answered /eos/ping
 
---- etc  (/eos/chan/[markerid]/xyz)
+--- etc  (/eos/user/0/chan/[markerid]/xyz)
     before  X=-2.25  Y=6.5  Z=3.25
-    sent    /eos/chan/401/xyz  [-5.5, 4.25, 2.75]  ,fff
+    sent    /eos/user/0/chan/401/xyz  [-5.5, 4.25, 2.75]  ,fff
     after   X=-5.5  Y=4.25  Z=2.75
     PASS    1:1 in metres  (X->X Focus  Y->Y Focus  Z->Z Focus)
 ```
@@ -162,12 +162,13 @@ eyes, which is still the way to answer questions about feel rather than values.
 
 | Template | Address | Args |
 |---|---|---|
-| **ETC Eos** | `/eos/chan/[markerid]/xyz` | `[x] [y] [z]` -> `,fff` |
+| **ETC Eos** | `/eos/user/0/chan/[markerid]/xyz` | `[x] [y] [z]` -> `,fff` |
 | **ETC Eos (User 99)** | `/eos/user/99/chan/[markerid]/xyz` | `[x] [y] [z]` -> `,fff` |
 
-Both carry position in **decimal metres** on the same axes OpenFollow uses. The
-user-scoped variant addresses Eos user 99 rather than whichever user is current,
-which keeps a continuous stream off the operator's command line.
+Both carry position in **decimal metres** on the same axes OpenFollow uses, and
+differ only in which Eos user the address names. User 0 is the Eos user for
+things that run in the background; naming a user explicitly keeps a continuous
+stream off the operator's command line.
 
 Height is the one value that needs thought: `[z]` is measured from the OpenFollow
 origin and Augment3d from its own. A non-zero **Grid** *Z offset* wants a matching

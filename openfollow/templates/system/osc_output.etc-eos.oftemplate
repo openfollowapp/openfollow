@@ -5,7 +5,7 @@
   "name": "ETC Eos",
   "is_system": true,
   "payload": {
-    "address": "/eos/chan/[markerid]/xyz",
+    "address": "/eos/user/0/chan/[markerid]/xyz",
     "args": ["[x]", "[y]", "[z]"],
     "trigger": {"kind": "stream", "rate_hz": 30}
   }

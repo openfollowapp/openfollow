@@ -1197,16 +1197,16 @@ class BuiltinTemplate:
 # ``MappingProxyType`` instance – sharing is safe since it's immutable.
 BUILTIN_TEMPLATES: tuple[BuiltinTemplate, ...] = (
     # Augment3d shares our stage frame (X lateral, Y depth, Z height) and
-    # metres, so the marker position maps across 1:1.
+    # metres, so the marker position maps across 1:1. User 0 is the Eos user
+    # for background work, which keeps the stream off the command line.
     BuiltinTemplate(
         id="etc",
         name="ETC Eos",
-        address="/eos/chan/[markerid]/xyz",
+        address="/eos/user/0/chan/[markerid]/xyz",
         args=("[x]", "[y]", "[z]"),
         trigger=_DEFAULT_STREAM_30HZ_TRIGGER,
     ),
-    # Same message addressed to a specific Eos user rather than whichever
-    # one is current, so a 30 Hz stream can't disturb the operator's prompt.
+    # The same message pinned to user 99 instead.
     BuiltinTemplate(
         id="etc-user99",
         name="ETC Eos (User 99)",

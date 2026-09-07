@@ -563,17 +563,69 @@ class TestRebindMcastIp:
         srv.stop()
 
 
+class _NameReadProbe(PsnServer):
+    """Counts reads of ``_system_name``, split by whether ``_lock`` was held.
+
+    The getter consults the lock but the setter does not: ``__init__``
+    assigns the attribute before ``_lock`` exists.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.locked_reads = 0
+        self.unlocked_reads = 0
+        super().__init__(*args, **kwargs)
+
+    @property
+    def _system_name(self) -> str:
+        if self._lock.locked():
+            self.locked_reads += 1
+        else:
+            self.unlocked_reads += 1
+        return self._name_value
+
+    @_system_name.setter
+    def _system_name(self, value: str) -> None:
+        self._name_value = value
+
+
 class TestUpdateSystemName:
     def test_in_place_mutation_no_socket_recycle(self) -> None:
-        """``update_system_name`` is a lock-protected attribute write –
-        no socket / thread recycle. The next info packet picks up the
-        new name from ``_system_name``."""
+        """``update_system_name`` writes the attribute under the lock –
+        no socket / thread recycle."""
         srv = PsnServer(system_name="Old")
-        # No start() – we only assert the attribute mutation, not
-        # packet emission. The latter is covered by the integration
-        # suite reading ``_send_info_packet`` with a bound sink.
         srv.update_system_name("New")
         assert srv._system_name == "New"
+
+    def test_rename_reaches_the_next_info_packet(self) -> None:
+        """Through the real property, not a probe: a rename has to land on
+        the wire, not just on the attribute."""
+        srv = PsnServer(system_name="Alpha", mcast_ip="236.10.10.10")
+        srv._exit_stack = contextlib.ExitStack()
+        assert srv._try_open_multicast_socket_once(attempt=1) is True
+        srv.add_marker(1, "M1")
+
+        srv.update_system_name("Bravo")
+        srv._send_info_packet()
+
+        payload = srv._socket.sendto_calls[-1][0]  # type: ignore[union-attr]
+        assert b"Bravo" in payload
+        assert b"Alpha" not in payload
+
+    def test_info_packet_reads_the_name_under_the_lock(self) -> None:
+        """The write side takes ``_lock``; the read side has to as well,
+        or the lock orders nothing and a field added alongside the name
+        later would tear without any sign that it could."""
+        srv = _NameReadProbe(system_name="Old")
+        srv.add_marker(1, "M1")
+        # Unstarted: ``_socket`` is None, so ``_send`` returns before
+        # touching the network. Encoding still reads the name.
+        srv._send_info_packet()
+
+        # Both halves: reading it under the lock, and reading it at all –
+        # a packet that stopped carrying the name would satisfy the
+        # unlocked count on its own.
+        assert srv.locked_reads >= 1
+        assert srv.unlocked_reads == 0
 
 
 # --------------------------------------------------------------------------- #

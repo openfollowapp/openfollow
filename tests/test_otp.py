@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import struct
 import threading
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -67,6 +68,25 @@ def _marker(
     t = Marker(marker_id, name)
     t.set_pos(x, y, z)
     return t
+
+
+# Component Name sits at a fixed offset in the OTP Layer (Table 6-3): packet
+# identifier(12) + vector/length(4) + footer options/length(2) + CID(16) +
+# folio(4) + page/last page(4) + options(1) + reserved(4). The field-layout
+# tests below spell the offset out literally on purpose – one derived from
+# this constant could not catch the constant being wrong.
+_COMPONENT_NAME_START = 47
+_COMPONENT_NAME_END = _COMPONENT_NAME_START + COMPONENT_NAME_OCTETS
+
+
+def _component_name_of(payload: bytes) -> str:
+    """Read the Component Name a packet actually carries on the wire."""
+    return payload[_COMPONENT_NAME_START:_COMPONENT_NAME_END].rstrip(b"\x00").decode("utf-8")
+
+
+def _system_number_of(transform_payload: bytes) -> int:
+    """Read the Transform Layer's System Number (Section 8.3)."""
+    return transform_payload[_COMPONENT_NAME_END + 4]
 
 
 # ===========================================================================
@@ -999,11 +1019,88 @@ class TestOtpOverrideMcastIp:
         assert "239.159.2.1" in groups
 
 
+class _DriftingIdentityServer(OtpServer):
+    """Changes its identity on every read of ``_system_name`` / ``_system_number``.
+
+    Stands in for a ``restart`` landing mid-send. Any send path that reads
+    an identity field more than once per call encodes two identities, which
+    is what these tests look for.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self._name_reads = 0
+        self._number_reads = 0
+        super().__init__(*args, **kwargs)
+
+    @property
+    def _system_name(self) -> str:
+        self._name_reads += 1
+        return f"Name{self._name_reads}"
+
+    @_system_name.setter
+    def _system_name(self, value: str) -> None:
+        self._name_value = value
+
+    @property
+    def _system_number(self) -> int:
+        self._number_reads += 1
+        return self._number_reads
+
+    @_system_number.setter
+    def _system_number(self, value: int) -> None:
+        self._number_value = value
+
+
 class TestOtpUpdateSystemName:
     def test_updates_system_name_under_lock(self) -> None:
         srv = OtpServer(system_name="Old")
         srv.update_system_name("New")
         assert srv._system_name == "New"
+
+    def test_rename_reaches_the_next_packets(self) -> None:
+        """Through the real property, not a probe: a rename has to land on
+        the wire, not just on the attribute."""
+        srv = OtpServer(system_number=1, system_name="Alpha")
+        srv._socket = MagicMock()
+        srv.register_marker(_marker(1))
+
+        srv.update_system_name("Bravo")
+        srv._send_transform_packet()
+        srv._send_advertisement_packets()
+
+        sent = [call[0][0] for call in srv._socket.sendto.call_args_list]
+        assert sent
+        assert {_component_name_of(p) for p in sent} == {"Bravo"}
+
+    def test_advertisement_burst_carries_one_component_name(self) -> None:
+        """Module, Name and System advertisements describe one Component,
+        so a rename mid-burst must not split them across two identities."""
+        srv = _DriftingIdentityServer(system_number=1)
+        srv._socket = MagicMock()
+        srv.register_marker(_marker(1))
+
+        srv._send_advertisement_packets()
+
+        sent = [call[0][0] for call in srv._socket.sendto.call_args_list]
+        assert len(sent) == 3
+        assert len({_component_name_of(p) for p in sent}) == 1
+
+    def test_transform_folio_pages_carry_one_component_name(self) -> None:
+        """Section 6.7-6.9: everything outside the split point list repeats
+        verbatim on every page of a folio. A page disagreeing with its
+        siblings about who sent it describes no coherent point set."""
+        srv = _DriftingIdentityServer(system_number=1)
+        srv._socket = MagicMock()
+        for marker_id in range(1, 61):
+            srv.register_marker(_marker(marker_id))
+
+        srv._send_transform_packet()
+
+        pages = [call[0][0] for call in srv._socket.sendto.call_args_list]
+        # Guard the premise: a single-page folio could not show the defect.
+        assert len(pages) > 1
+        assert len({_component_name_of(p) for p in pages}) == 1
+        assert len({_system_number_of(p) for p in pages}) == 1
 
 
 class TestOtpStartFailsAndSpawnsRetryThread:

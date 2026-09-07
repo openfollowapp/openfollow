@@ -13,6 +13,7 @@ import struct
 import threading
 import time
 from collections.abc import Callable, Sequence
+from typing import NamedTuple
 from uuid import uuid4
 
 import multicast_expert
@@ -520,6 +521,14 @@ def encode_otp_system_advertisement_packet(
 # ---------------------------------------------------------------------------
 
 
+class _ComponentIdentity(NamedTuple):
+    """Who a folio says it came from – constant across its pages."""
+
+    name: str
+    system_number: int
+    priority: int
+
+
 class OtpServer:
     """Sends ANSI E1.59 OTP marker position data via multicast UDP.
 
@@ -718,15 +727,18 @@ class OtpServer:
         stale config.
         """
         self.stop()
-        self._system_name = system_name
-        self._system_number = system_number
-        self._port = port
-        self._source_ip = source_ip.strip()
-        self._priority = priority
-        # Recompute destinations for the new system_number.
-        self._transform_dest, self._advertisement_dest = self._resolve_destinations()
-        if self._mcast_ip_override is None:
-            self._mcast_ip = self._transform_dest
+        # Locked because stop() logs and continues past a send thread that
+        # outlived its join, and that survivor reads the identity under it.
+        with self._lock:
+            self._system_name = system_name
+            self._system_number = system_number
+            self._port = port
+            self._source_ip = source_ip.strip()
+            self._priority = priority
+            # Recompute destinations for the new system_number.
+            self._transform_dest, self._advertisement_dest = self._resolve_destinations()
+            if self._mcast_ip_override is None:
+                self._mcast_ip = self._transform_dest
         self.start()
         if self._is_multicast_mode() and self._socket is None:
             self.stop()
@@ -898,9 +910,18 @@ class OtpServer:
             self._send_advertisement_packets(stop)
             stop.wait(ADVERTISEMENT_INTERVAL_S)
 
-    def _snapshot_markers(self) -> list[Marker]:
+    def _snapshot_identity(self) -> tuple[_ComponentIdentity, list[Marker]]:
+        """Return the Component identity and the marker list from one lock hold.
+
+        Every identity field sits outside the split point list, so Sections
+        6.7-6.9 have it repeat verbatim on every page. Callers must bind the
+        result to locals and encode from those: reading an attribute inside a
+        per-page closure is what lets ``restart`` split one folio across two
+        identities.
+        """
         with self._lock:
-            return list(self._markers.values())
+            identity = _ComponentIdentity(self._system_name, self._system_number, self._priority)
+            return identity, list(self._markers.values())
 
     def _next_folio(self, name: str) -> int:
         attr = f"_{name}_folio"
@@ -981,7 +1002,9 @@ class OtpServer:
             return self._oversize_drops
 
     def _send_transform_packet(self, stop_event: threading.Event | None = None) -> None:
-        markers = self._snapshot_markers()
+        # Bound to locals, never re-read per page: the identity describes the
+        # folio, so a page contradicting its siblings describes no point set.
+        identity, markers = self._snapshot_identity()
         if not markers:
             return
         folio = self._next_folio("transform")
@@ -994,12 +1017,12 @@ class OtpServer:
         def encode(page_markers: Sequence[Marker], page: int, last_page: int) -> bytes:
             return encode_otp_transform_packet(
                 cid=self._cid,
-                component_name=self._system_name,
+                component_name=identity.name,
                 folio=folio,
-                system_number=self._system_number,
+                system_number=identity.system_number,
                 timestamp_us=timestamp_us,
                 markers=list(page_markers),
-                priority=self._priority,
+                priority=identity.priority,
                 page=page,
                 last_page=last_page,
                 now_us=now_us,
@@ -1009,13 +1032,13 @@ class OtpServer:
 
     def _send_advertisement_packets(self, stop_event: threading.Event | None = None) -> None:
         """Send Module, Name, and System advertisement packets in sequence."""
-        markers = self._snapshot_markers()
+        identity, markers = self._snapshot_identity()
 
         if markers:
             self._send(
                 encode_otp_module_advertisement_packet(
                     cid=self._cid,
-                    component_name=self._system_name,
+                    component_name=identity.name,
                     folio=self._next_folio("module_adv"),
                 ),
                 self._advertisement_dest,
@@ -1030,9 +1053,9 @@ class OtpServer:
             def encode_names(page_markers: Sequence[Marker], page: int, last_page: int) -> bytes:
                 return encode_otp_name_advertisement_packet(
                     cid=self._cid,
-                    component_name=self._system_name,
+                    component_name=identity.name,
                     folio=name_folio,
-                    system_number=self._system_number,
+                    system_number=identity.system_number,
                     markers=list(page_markers),
                     page=page,
                     last_page=last_page,
@@ -1043,15 +1066,17 @@ class OtpServer:
         self._send(
             encode_otp_system_advertisement_packet(
                 cid=self._cid,
-                component_name=self._system_name,
+                component_name=identity.name,
                 folio=self._next_folio("system_adv"),
-                system_number=self._system_number,
+                system_number=identity.system_number,
             ),
             self._advertisement_dest,
             stop_event,
         )
 
     def _send(self, data: bytes, dest_ip: str, stop_event: threading.Event | None = None) -> None:
+        # Deliberately unlocked: locking would serialise every datagram behind
+        # the socket hand-over. A send racing teardown sends, returns, or fails.
         sock = self._socket
         if sock is None:
             return

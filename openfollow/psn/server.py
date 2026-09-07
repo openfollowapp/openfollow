@@ -433,6 +433,11 @@ class PsnServer:
         with self._lock:
             return list(self._markers.values())
 
+    def _snapshot_info(self) -> tuple[str, list[Marker]]:
+        """Return the announced name and the marker list from one lock hold."""
+        with self._lock:
+            return self._system_name, list(self._markers.values())
+
     def _send_data_packet(self, stop_event: threading.Event | None = None) -> None:
         markers = self._snapshot_markers()
         if not markers:
@@ -453,11 +458,10 @@ class PsnServer:
         self._send_frame(self._next_data_frame_id(), trackers, encode, stop_event)
 
     def _send_info_packet(self, stop_event: threading.Event | None = None) -> None:
-        markers = self._snapshot_markers()
+        name, markers = self._snapshot_info()
         if not markers:
             return
         trackers = [t.to_psn_marker_info() for t in markers]
-        name = self._system_name
 
         def encode(info: pypsn.PsnInfo, chunk: Sequence[pypsn.PsnTrackerInfo]) -> bytes:
             packet = pypsn.PsnInfoPacket(info=info, name=name, trackers=list(chunk))
@@ -467,6 +471,10 @@ class PsnServer:
         self._send_frame(self._next_info_frame_id(), trackers, encode, stop_event)
 
     def _send(self, data: bytes, stop_event: threading.Event | None = None) -> None:
+        # Read unlocked on purpose: a plain atomic reference captured to a local,
+        # with no ordering against the handover in stop() / _open_multicast_socket.
+        # A send racing teardown either uses the old socket or returns; taking the
+        # lock here would serialise every datagram behind that hand-over instead.
         sock = self._socket
         if sock is None:
             return

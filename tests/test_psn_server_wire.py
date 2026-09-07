@@ -563,9 +563,31 @@ class TestRebindMcastIp:
         srv.stop()
 
 
+class _UnlockedNameReadProbe(PsnServer):
+    """Counts reads of ``_system_name`` taken while ``_lock`` is not held.
+
+    The getter consults the lock but the setter does not: ``__init__``
+    assigns the attribute before ``_lock`` exists.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.unlocked_reads = 0
+        super().__init__(*args, **kwargs)
+
+    @property
+    def _system_name(self) -> str:
+        if not self._lock.locked():
+            self.unlocked_reads += 1
+        return self._name_value
+
+    @_system_name.setter
+    def _system_name(self, value: str) -> None:
+        self._name_value = value
+
+
 class TestUpdateSystemName:
     def test_in_place_mutation_no_socket_recycle(self) -> None:
-        """``update_system_name`` is a lock-protected attribute write –
+        """``update_system_name`` writes the attribute under the lock –
         no socket / thread recycle. The next info packet picks up the
         new name from ``_system_name``."""
         srv = PsnServer(system_name="Old")
@@ -574,6 +596,18 @@ class TestUpdateSystemName:
         # suite reading ``_send_info_packet`` with a bound sink.
         srv.update_system_name("New")
         assert srv._system_name == "New"
+
+    def test_info_packet_reads_the_name_under_the_lock(self) -> None:
+        """The write side takes ``_lock``; the read side has to as well,
+        or the lock orders nothing and a field added alongside the name
+        later would tear without any sign that it could."""
+        srv = _UnlockedNameReadProbe(system_name="Old")
+        srv.add_marker(1, "M1")
+        # Unstarted: ``_socket`` is None, so ``_send`` returns before
+        # touching the network. Encoding still reads the name.
+        srv._send_info_packet()
+
+        assert srv.unlocked_reads == 0
 
 
 # --------------------------------------------------------------------------- #

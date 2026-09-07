@@ -898,9 +898,10 @@ class OtpServer:
             self._send_advertisement_packets(stop)
             stop.wait(ADVERTISEMENT_INTERVAL_S)
 
-    def _snapshot_markers(self) -> list[Marker]:
+    def _snapshot_component(self) -> tuple[str, list[Marker]]:
+        """Return the Component Name and the marker list from one lock hold."""
         with self._lock:
-            return list(self._markers.values())
+            return self._system_name, list(self._markers.values())
 
     def _next_folio(self, name: str) -> int:
         attr = f"_{name}_folio"
@@ -981,7 +982,9 @@ class OtpServer:
             return self._oversize_drops
 
     def _send_transform_packet(self, stop_event: threading.Event | None = None) -> None:
-        markers = self._snapshot_markers()
+        # Name and markers from one hold, and the name bound to a local: a rename
+        # between pages would otherwise put two Component Names in one folio.
+        name, markers = self._snapshot_component()
         if not markers:
             return
         folio = self._next_folio("transform")
@@ -994,7 +997,7 @@ class OtpServer:
         def encode(page_markers: Sequence[Marker], page: int, last_page: int) -> bytes:
             return encode_otp_transform_packet(
                 cid=self._cid,
-                component_name=self._system_name,
+                component_name=name,
                 folio=folio,
                 system_number=self._system_number,
                 timestamp_us=timestamp_us,
@@ -1009,13 +1012,16 @@ class OtpServer:
 
     def _send_advertisement_packets(self, stop_event: threading.Event | None = None) -> None:
         """Send Module, Name, and System advertisement packets in sequence."""
-        markers = self._snapshot_markers()
+        # One name for the whole burst, for the same reason the transform folio
+        # binds one: a rename landing mid-burst would advertise this Component
+        # under two names in a single cycle.
+        name, markers = self._snapshot_component()
 
         if markers:
             self._send(
                 encode_otp_module_advertisement_packet(
                     cid=self._cid,
-                    component_name=self._system_name,
+                    component_name=name,
                     folio=self._next_folio("module_adv"),
                 ),
                 self._advertisement_dest,
@@ -1030,7 +1036,7 @@ class OtpServer:
             def encode_names(page_markers: Sequence[Marker], page: int, last_page: int) -> bytes:
                 return encode_otp_name_advertisement_packet(
                     cid=self._cid,
-                    component_name=self._system_name,
+                    component_name=name,
                     folio=name_folio,
                     system_number=self._system_number,
                     markers=list(page_markers),
@@ -1043,7 +1049,7 @@ class OtpServer:
         self._send(
             encode_otp_system_advertisement_packet(
                 cid=self._cid,
-                component_name=self._system_name,
+                component_name=name,
                 folio=self._next_folio("system_adv"),
                 system_number=self._system_number,
             ),

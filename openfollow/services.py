@@ -1590,9 +1590,8 @@ class AppRuntimeServices:
         Touches:
 
         - ``PsnServer._system_name`` (info packet name field)
-        - ``OtpServer._system_name`` (held for parity; encoders don't
-          read it today, but keeping it in sync prevents drift if a
-          future advertisement PDU gains a name field)
+        - ``OtpServer._system_name`` (the Component Name field every
+          transform and advertisement packet carries, Section 6.12)
         - ``ConfigWebServer.update_system_name`` (web beacon)
         - the GTK window title via ``_apply_window_title``
 

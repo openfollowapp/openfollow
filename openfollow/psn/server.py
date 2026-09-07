@@ -471,10 +471,8 @@ class PsnServer:
         self._send_frame(self._next_info_frame_id(), trackers, encode, stop_event)
 
     def _send(self, data: bytes, stop_event: threading.Event | None = None) -> None:
-        # Read unlocked on purpose: a plain atomic reference captured to a local,
-        # with no ordering against the handover in stop() / _open_multicast_socket.
-        # A send racing teardown either uses the old socket or returns; taking the
-        # lock here would serialise every datagram behind that hand-over instead.
+        # Deliberately unlocked: locking would serialise every datagram behind
+        # the socket hand-over. A send racing teardown sends, returns, or fails.
         sock = self._socket
         if sock is None:
             return

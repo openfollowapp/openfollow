@@ -4,6 +4,7 @@
 %# address keeps its last known good value (the UI is usually still reachable
 %# there), so the row says the identity behind it is down rather than showing a
 %# number whose meaning changed with nothing to mark it.
+% station_down = get('station_down', False)
 <div class="peer-item local {{'offline' if station_down else ''}}">
     <span class="peer-status">{{'○' if station_down else '●'}}</span>
     <span class="peer-name">{{local.name}} <em>(this station)</em></span>

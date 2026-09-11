@@ -34,8 +34,8 @@ def _render_overview():
 class TestOverviewNoLongerRendersNetworkBlock:
     def test_no_network_heading(self) -> None:
         body = _render_overview()
-        # The Pi network block is gone; only the Server Network heading remains.
-        assert "Server Network" in body
+        # The Pi network block is gone; only the Station Network heading remains.
+        assert "Station Network" in body
         assert "<h2>Network</h2>" not in body
 
     def test_no_subnet_or_interface_fields_rendered(self) -> None:

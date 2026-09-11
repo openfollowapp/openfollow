@@ -1524,6 +1524,16 @@
  .osc-binding-enabled-dot.invalid { background: var(--danger); }
  .osc-binding-kind-badge, .osc-destination-proto-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
  .osc-binding-marker-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
+ /* Why a row can never fire, on its collapsed summary. Capped at three
+    entries by the renderer; the full list rides in a sibling
+    visually-hidden span so assistive tech never gets the truncation. */
+ .osc-binding-fault {
+ font-size: 0.7rem; padding: 0.1rem 0.45rem; border-radius: 0.4rem;
+ background: rgba(255, 140, 140, 0.14); color: var(--danger);
+ border: 1px solid rgba(255, 140, 140, 0.3);
+ font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+ }
+ .osc-binding-fault-more { color: var(--muted); font-size: 0.7rem; flex: none; white-space: nowrap; }
  .osc-binding-target { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
  /* Secondary markers nested under a fanned-out transmitter row: read-only
  chips sharing the parent's destination / message / trigger. */
@@ -3399,8 +3409,8 @@
  }).then((res) => res.json()).then((result) => {
  const failed = result.peer_results.filter((peer) => !peer.success);
  showToast(failed.length === 0
- ? `Saved and applied to ${result.peer_results.length} server(s)`
- : `Saved and applied to ${result.peer_results.length - failed.length}/${result.peer_results.length} servers`);
+ ? `Saved and applied to ${result.peer_results.length} station(s)`
+ : `Saved and applied to ${result.peer_results.length - failed.length}/${result.peer_results.length} stations`);
  }).catch(() => showToast('Broadcast failed'));
  }
  // Disable Save/Broadcast buttons when form has aria-invalid inputs.
@@ -3688,6 +3698,16 @@
  // Parse editor's data attributes to get "unresolved-placeholders" set for pill rendering.
  // Source: server-supplied attr at first render, then derived from marker IDs + editor text.
  // JSON failures degrade gracefully to prevent wedging the editor.
+ function oscEditorParseJsonMapAttr(editor, attr) {
+ const raw = editor.dataset[attr];
+ if (!raw) return {};
+ try {
+ const v = JSON.parse(raw);
+ return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
+ } catch (_e) {
+ return {};
+ }
+ }
  function oscEditorParseJsonAttr(editor, attr, fallback) {
  const raw = editor.dataset[attr];
  if (!raw) return fallback;
@@ -3698,6 +3718,12 @@
  return fallback;
  }
  }
+ // Keyed by ``UnresolvedReason`` (openfollow/osc/template.py).
+ const OSC_UNRESOLVED_REMEDIATION = {
+ default_marker: "set the row's Default marker to a registered id",
+ explicit_marker: 'register that marker or change :N to a registered id',
+ grid_height: 'set Grid \u2192 Maximum Height to a non-zero value',
+ };
  function oscEditorUnresolvedSet(editor) {
  return new Set(
  oscEditorParseJsonAttr(editor, 'oscUnresolvedPlaceholders', []),
@@ -3764,21 +3790,12 @@
  }
  if (unresolved.has(match[0])) {
  pill.dataset.unresolved = 'true';
- // ): the tooltip used to suggest both
- // remediations every time, but only one applies per token.
- // ``[x]`` (default-marker slot) is fixed by setting the
- // row's Default marker; ``[x:N]`` (explicit-marker
- // slot) is fixed by registering marker N (or pointing the
- // reference at a registered id). Match an index ``:N`` that
- // sits immediately after the source name (before any
- // ``.transform``) – not a bare ``/:\d/``, which would also
- // fire on a transform range bound like ``.scale:0-1`` (mirrors
- // the server's ``ref_index is not None``).
- const isExplicit = /^\[[a-z]+:\d/.test(match[0]);
- const remediation = isExplicit
- ? 'register that marker or change :N to a'
- + ' registered id'
- : 'set the row\'s Default marker to a registered id';
+ // One remediation per cause, keyed by the cause the server or
+ // the client mirror resolved. A token's shape cannot tell a
+ // grid-blocked ``[z.frac]`` from a marker-blocked one.
+ const reasons = oscEditorParseJsonMapAttr(editor, 'oscUnresolvedReasons');
+ const remediation = OSC_UNRESOLVED_REMEDIATION[reasons[match[0]]]
+ || 'resolve its dependency';
  pill.title = 'Unresolved: ' + match[0]
  + ' – ' + remediation + '. Click to edit.';
  } else if (isRecognised) {
@@ -3892,26 +3909,32 @@
  const index = parsed[2]; // undefined when bare
  const chain = parsed[3] || '';
  const isZFrac = source === 'z' && chain.indexOf('.frac') !== -1;
- let unresolved = false;
+ // Mirrors ``unresolved_placeholder_reasons``: marker cause before
+ // grid cause, so each pill names a single next step.
+ let reason = null;
  if (index === undefined) {
- unresolved = !hasDefaultMarker;
- if (!unresolved && isZFrac && gridUnset) {
- unresolved = true;
+ if (!hasDefaultMarker) {
+ reason = 'default_marker';
+ } else if (isZFrac && gridUnset) {
+ reason = 'grid_height';
  }
  } else if (source !== 'markerid') {
  // ``[markerid:N]`` substitutes ``N`` directly – never a miss.
- const id = Number(index);
- unresolved = !registered.has(id);
- if (!unresolved && isZFrac && gridUnset) {
- unresolved = true;
+ if (!registered.has(Number(index))) {
+ reason = 'explicit_marker';
+ } else if (isZFrac && gridUnset) {
+ reason = 'grid_height';
  }
  }
- if (unresolved) {
- out.push(token);
+ if (reason !== null) {
+ out.push({token: token, reason: reason});
  seen.add(token);
  }
  }
- editor.dataset.oscUnresolvedPlaceholders = JSON.stringify(out);
+ editor.dataset.oscUnresolvedPlaceholders = JSON.stringify(out.map(e => e.token));
+ editor.dataset.oscUnresolvedReasons = JSON.stringify(
+ Object.fromEntries(out.map(e => [e.token, e.reason])),
+ );
  }
  // Update the row's Enabled-checkbox unresolved-flag to match
  // the just-recomputed unresolved set. Mirrors the server-side
@@ -3951,9 +3974,10 @@
  if (helpSpan) {
  helpSpan.textContent = unresolved.length > 0
  ? 'Will save disabled: this row uses placeholder values'
- + ' that are not resolved yet (no default marker, or an'
+ + ' that are not resolved yet (no default marker, an'
  + ' explicit marker reference targets an unregistered'
- + ' marker).'
+ + ' marker, or a fractional height needs Grid →'
+ + ' Maximum Height set).'
  : '';
  }
  }

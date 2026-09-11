@@ -622,6 +622,8 @@ class TestDelegators:
             ("_restart_app", "runtime_restart_app", ()),
             ("_check_config_reload", "runtime_check_config_reload", ()),
             ("_check_marker_speeds_persist", "runtime_check_marker_speeds_persist", ()),
+            ("_check_frame_loop_stall", "runtime_check_frame_loop_stall", ()),
+            ("_run_frame", "runtime_run_frame", ()),
         ],
     )
     def test_no_arg_delegators(
@@ -653,6 +655,23 @@ class TestDelegators:
         app._runtime_services.observe_network_planes = lambda: hits.append(1)
         app._observe_network_planes()
         assert hits == [1]
+
+    @pytest.mark.parametrize("verdict", [True, False])
+    def test_run_frame_forwards_the_helpers_verdict(
+        self,
+        patched_ctor,  # noqa: ANN001
+        monkeypatch: pytest.MonkeyPatch,
+        verdict: bool,
+    ) -> None:
+        """GLib reads this return value to decide whether to keep the frame
+        clock armed. A delegator that dropped the ``return`` would hand back
+        None, the source would be removed, and marker state would freeze with
+        every output still transmitting - the failure the frame clock exists to
+        prevent, reintroduced one keyword away."""
+        monkeypatch.setattr(app_module, "runtime_run_frame", lambda _app: verdict)
+
+        app = OpenFollowApp(config_path=patched_ctor.cfg_path)
+        assert app._run_frame() is verdict
 
     @pytest.mark.parametrize(
         ("method_name", "helper_name", "payload"),

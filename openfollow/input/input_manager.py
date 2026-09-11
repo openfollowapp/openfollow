@@ -91,7 +91,7 @@ class InputManager:
         )
         self.mouse_handler = MouseHandler(app)
         # The mouse glide runs every frame; a persistent failure must not flood
-        # the log at the display tick rate.
+        # the log at the frame rate.
         self._mouse_update_err_log = ThrottledExceptionLogger(logger, "Mouse update failed this tick.")
         # 3D Mouse (6DOF). One handler per connected puck, enumerated like
         # gamepads; movement application is gated on ``mouse3d.enabled`` in

@@ -18,9 +18,9 @@ The position a marker jumps to when the operator presses the Reset key or button
 
 - **Default X** – stage left is positive, stage right negative. `0` is on the centre line.
 - **Default Y** – upstage is positive, downstage (towards the audience) negative.
-- **Default Z** – height above the stage floor. A typical standing performer head height is around `1.6`–`1.8`. `0` places the marker on the floor.
+- **Default Z** – the marker's Z in world coordinates, the frame the Reference Point defines. The stage floor sits at the grid's **Z Offset**, so `0` puts the marker on the floor only when that offset is `0`.
 
-X and Y default to `0.0` (the Reference Point itself); Z defaults to `1.6` – roughly performer head height above the floor.
+X and Y default to `0.0` (the Reference Point itself); Z defaults to `1.6`.
 
 ## Control direction
 

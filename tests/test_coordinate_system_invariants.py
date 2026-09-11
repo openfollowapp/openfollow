@@ -87,29 +87,29 @@ class _StubServer:
     def __init__(self) -> None:
         self._markers: dict[int, Marker] = {}
 
-    def add_marker(self, tid: int) -> Marker:
-        t = Marker(tid, f"Marker {tid}")
-        self._markers[tid] = t
+    def add_marker(self, marker_id: int) -> Marker:
+        t = Marker(marker_id, f"Marker {marker_id}")
+        self._markers[marker_id] = t
         return t
 
-    def get_marker(self, tid: int) -> Marker | None:
-        return self._markers.get(tid)
+    def get_marker(self, marker_id: int) -> Marker | None:
+        return self._markers.get(marker_id)
 
 
 class _StubPsnReceiver:
     def __init__(self) -> None:
         self._markers: dict[int, Marker] = {}
 
-    def add_marker(self, tid: int) -> Marker:
-        t = Marker(tid, f"Remote {tid}")
-        self._markers[tid] = t
+    def add_marker(self, marker_id: int) -> Marker:
+        t = Marker(marker_id, f"Remote {marker_id}")
+        self._markers[marker_id] = t
         return t
 
-    def get_marker(self, tid: int) -> Marker | None:
-        return self._markers.get(tid)
+    def get_marker(self, marker_id: int) -> Marker | None:
+        return self._markers.get(marker_id)
 
-    def is_marker_online(self, tid: int, timeout: float = 2.0) -> bool:
-        return tid in self._markers
+    def is_marker_online(self, marker_id: int, timeout: float = 2.0) -> bool:
+        return marker_id in self._markers
 
 
 class _StubCamera:
@@ -177,12 +177,13 @@ def test_psn_received_marker_pos_is_psn_absolute(offsets) -> None:
     """PSN receiver stores raw PSN coords; no grid-offset translation applied.
 
     This is the *definition* the rest of the system is aligned to:
-    ``set_pos`` is documented as "in PSN coordinates" and must remain so
+    ``apply_remote`` - the write ``PsnReceiver._on_packet`` makes for every
+    received tracker - is documented as "in PSN coordinates" and must remain so
     regardless of any grid offsets configured downstream.
     """
     ox, oy, oz = offsets
-    marker = Marker(7, "remote")
-    marker.set_pos(4.0, 5.0, 6.0)
+    marker = Marker(7, "remote", remote=True)
+    marker.apply_remote((4.0, 5.0, 6.0), timestamp=1, status=1.0)
 
     assert marker.pos == (4.0, 5.0, 6.0)
     # Outgoing PSN packet carries marker.pos verbatim – independent of
@@ -217,7 +218,7 @@ def test_collect_marker_positions_is_offset_independent(offsets) -> None:
     app._viewer_ids = [1, 2]
 
     svc = _services_for(app)
-    result = {(kind, tid): (x, y) for (kind, tid), x, y in svc._collect_marker_positions()}
+    result = {(kind, marker_id): (x, y) for (kind, marker_id), x, y in svc._collect_marker_positions()}
 
     assert result[("marker", 1)] == pytest.approx((2.0, 3.0))
     assert result[("marker", 2)] == pytest.approx((7.0, -4.0))

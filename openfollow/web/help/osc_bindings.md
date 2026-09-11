@@ -104,6 +104,22 @@ Positions (`[x]` `[y]` `[z]`) accept `.inv` / `.frac`. Faders (`[fader]` `[marke
 
 ## Diagnostics
 
+A red dot on a collapsed row means it can never fire, and the reason sits
+next to the name. Up to three are shown, separated by `·`; any beyond that
+are counted as `+N more errors`. Fix the ones named and the rest take their
+place.
+
+| Badge | Fix |
+|---|---|
+| `No destination` | Pick one under **Destination**, or add it in OSC Destinations |
+| `No controlled marker` | Name a marker this station controls under **Default markers** |
+| `No default marker` | The message uses `[x]`-style placeholders with no marker to resolve them |
+| `Marker 9 not registered` | That `:N` reference names a marker this station doesn't control |
+| `Grid Maximum Height not set` | `[z.frac]` divides by it – set **Grid → Maximum Height** |
+
+A row with no red dot can still fail at send time; the panels below are
+what show that.
+
 Read-only panels showing what the transmitter is doing right now.
 
 - **Live status** – connection state (UDP ready, or TCP connected / connecting / backing off), packets per second, and the last error. Click the refresh button to update.
@@ -114,7 +130,7 @@ Read-only panels showing what the transmitter is doing right now.
 
 **Template** dropdown + **+ New transmitter** – choose a template and click the button to add a transmitter pre-filled with its address and arguments. Leave the dropdown on *empty* to start with a blank transmitter. Drag the ⋮⋮ handle on the left of a collapsed transmitter to reorder – order is cosmetic, transmitters evaluate independently.
 
-The two ETC templates send the same message and differ only in which Eos user receives it. **ETC Eos** addresses whichever user is current on the console; **ETC Eos (User 99)** addresses user 99 explicitly, which keeps a continuous stream off the operator's command line. Both move a Scenic Element Movable in Live, so the position is a channel parameter the console can record into a cue, and both also set a moving light's focus if the marker ID names one. The marker ID must match the Eos channel number, and both send metres along Augment3d's own axes, so X and Y need no conversion. Height does: `[z]` is measured from the PSN origin, while Augment3d measures from its own origin. If your **Grid** section sets a non-zero *Z offset*, put the Augment3d origin at the same height, or the element floats by that difference.
+The two ETC templates send the same message and differ only in which Eos user receives it. **ETC Eos** addresses user 0, the Eos user for things that run in the background; **ETC Eos (User 99)** addresses user 99 instead. Naming the user explicitly keeps a continuous stream off the operator's command line. Both move a Scenic Element Movable in Live, so the position is a channel parameter the console can record into a cue, and both also set a moving light's focus if the marker ID names one. The marker ID must match the Eos channel number, and both send metres along Augment3d's own axes, so X and Y need no conversion. Height does: `[z]` is measured from the PSN origin, while Augment3d measures from its own origin. If your **Grid** section sets a non-zero *Z offset*, put the Augment3d origin at the same height, or the element floats by that difference.
 
 ## Saving & sharing
 

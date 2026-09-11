@@ -62,6 +62,7 @@ from openfollow.osc.template import (
     render,
     requires_default_marker,
 )
+from openfollow.psn.marker import is_marker_stale
 
 if TYPE_CHECKING:
     from openfollow.configuration import (
@@ -1205,6 +1206,22 @@ class OscTransmitterManager:
         except Exception:  # pragma: no cover - defensive
             return None
 
+    def _explicit_marker_stale_resolver(self, marker_id: int) -> bool:
+        """Whether ``marker_id``'s position has gone stale.
+
+        Explicit ``[x:N]`` and controller ``[x:cN]`` refs never set
+        ``needs_default_marker``, so this is what withholds a frozen position
+        for them. Separate from :meth:`_explicit_marker_resolver` so the skip
+        reads as stale rather than as an unregistered marker.
+        """
+        marker = self._marker_provider(marker_id)
+        if marker is None:
+            return False  # unregistered: let the position lookup report that
+        try:
+            return is_marker_stale(marker)
+        except Exception:  # pragma: no cover - defensive
+            return False
+
     def _explicit_fader_resolver(self, fader_index: int) -> float | None:
         """Bridge from :class:`RenderContext.fader_resolver` to the
         :class:`FaderProvider`. Returns the fader's current 0..1 value,
@@ -1304,6 +1321,15 @@ class OscTransmitterManager:
                 # Marker is the gate signal but the templates don't use
                 # it. Render proceeds; the gate is a no-op (a missing
                 # marker means "no signal to compare").
+            elif needs_default and is_marker_stale(marker):
+                # Frozen, not merely still: skip rather than stream it, with the
+                # reason in the row's ring buffer.
+                return _RenderResult(
+                    address="",
+                    args=(),
+                    skipped=True,
+                    error=f"marker {plan.marker_id} position is stale",
+                )
             else:
                 try:
                     pos = marker.pos
@@ -1352,6 +1378,7 @@ class OscTransmitterManager:
             # RenderError → ring-buffer skip) when no provider or the
             # controller drives no marker.
             controller_marker_resolver=self._explicit_controller_marker_resolver,
+            marker_stale_resolver=self._explicit_marker_stale_resolver,
             default_fader=plan.default_fader,
             event_value=plan.event_value,
             event_velocity=plan.event_velocity,

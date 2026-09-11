@@ -435,7 +435,7 @@ class CairoOverlayRenderer:
         draw_detections_pass(self, cr, state, w, h)
 
     # ------------------------------------------------------------------
-    # Marker (circle + crosshair + drop line)
+    # Marker (circle + crosshair + Z line)
     # ------------------------------------------------------------------
 
     def _draw_marker(self, cr: Any, state: OverlayState, t: MarkerOverlayData, w: int, h: int) -> None:

@@ -29,8 +29,8 @@ from openfollow.osc.service import (
     _PYTHONOSC_AVAILABLE,
     ClientStats,
     OscService,
-    find_free_udp_port,
 )
+from tests._ports import bind_free_udp_port
 
 pytestmark = pytest.mark.unit
 
@@ -723,14 +723,13 @@ def test_listener_starts_and_subscribers_receive() -> None:
     Proves the unified service preserves both sides of the existing OSC
     behaviour without a regression."""
     svc = OscService()
-    port = find_free_udp_port()
     received: list[tuple[str, tuple[Any, ...]]] = []
 
     def _handler(address: str, *args: Any) -> None:
         received.append((address, args))
 
     svc.subscribe("/marker/*", _handler)
-    svc.start_listener(port, allowed_ips=())
+    port = bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=()))
 
     try:
         svc.send("/marker/0", [1.0, 2.0, 3.0], host="127.0.0.1", port=port)
@@ -749,8 +748,7 @@ def test_listener_starts_and_subscribers_receive() -> None:
 @pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
 def test_listener_idempotent_on_same_params() -> None:
     svc = OscService()
-    port = find_free_udp_port()
-    svc.start_listener(port, allowed_ips=())
+    port = bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=()))
     listener = svc._listener
     svc.start_listener(port, allowed_ips=())
     # Same listener instance – the second call short-circuited.
@@ -762,11 +760,9 @@ def test_listener_idempotent_on_same_params() -> None:
 @pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
 def test_listener_restart_on_changed_params() -> None:
     svc = OscService()
-    port_a = find_free_udp_port()
-    svc.start_listener(port_a, allowed_ips=())
+    bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=()))
     first = svc._listener
-    port_b = find_free_udp_port()
-    svc.start_listener(port_b, allowed_ips=())
+    port_b = bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=()))
     assert svc._listener is not first
     assert svc.listener_port == port_b
     svc.shutdown()
@@ -812,9 +808,8 @@ def test_listener_with_allowlist_logs_info(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     svc = OscService()
-    port = find_free_udp_port()
     with caplog.at_level(logging.INFO):
-        svc.start_listener(port, allowed_ips=["127.0.0.1"])
+        bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=["127.0.0.1"]))
     info_records = [r for r in caplog.records if "accepting packets only" in r.message]
     assert len(info_records) == 1
     svc.shutdown()
@@ -826,9 +821,8 @@ def test_listener_without_allowlist_warns_about_exposure(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     svc = OscService()
-    port = find_free_udp_port()
     with caplog.at_level(logging.WARNING):
-        svc.start_listener(port, allowed_ips=())
+        bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=()))
     warnings = [r for r in caplog.records if "no sender allowlist" in r.message]
     assert len(warnings) == 1
     svc.shutdown()
@@ -846,8 +840,7 @@ class TestFilteredOSCUDPServerVerifyRequest:
 
     def _server(self, allowed: frozenset[str]) -> Any:
         svc = OscService()
-        port = find_free_udp_port()
-        svc.start_listener(port, allowed_ips=allowed)
+        bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=allowed))
         srv = svc._listener
         try:
             yield srv
@@ -1001,9 +994,8 @@ def test_restart_listener_joins_multicast_group(
         "_join_multicast_group",
         lambda sock, group, port: calls.append((group, port)) or True,
     )
-    port = find_free_udp_port()
     with caplog.at_level(logging.WARNING):
-        svc.restart_listener(port=port, allowed_ips=(), multicast_group="239.1.2.3")
+        port = bind_free_udp_port(lambda p: svc.restart_listener(port=p, allowed_ips=(), multicast_group="239.1.2.3"))
     try:
         assert calls == [("239.1.2.3", port)]
         assert svc._listener_multicast_group == "239.1.2.3"
@@ -1030,9 +1022,8 @@ def test_restart_listener_failed_join_omits_joined_log(
     """A failed multicast join must not produce a misleading 'joined' log."""
     svc = OscService()
     monkeypatch.setattr(service_module, "_join_multicast_group", lambda *a: False)
-    port = find_free_udp_port()
     with caplog.at_level(logging.WARNING):
-        svc.restart_listener(port=port, allowed_ips=(), multicast_group="239.1.2.3")
+        bind_free_udp_port(lambda p: svc.restart_listener(port=p, allowed_ips=(), multicast_group="239.1.2.3"))
     try:
         assert not any("joined multicast group" in r.message for r in caplog.records)
         # Group requested but join failed → status distinguishes the two.
@@ -1051,9 +1042,8 @@ def test_listener_with_allowlist_and_group_logs_info(
 ) -> None:
     svc = OscService()
     monkeypatch.setattr(service_module, "_join_multicast_group", lambda *a: True)
-    port = find_free_udp_port()
     with caplog.at_level(logging.INFO):
-        svc.start_listener(port, allowed_ips=["127.0.0.1"], multicast_group="239.4.5.6")
+        bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=["127.0.0.1"], multicast_group="239.4.5.6"))
     try:
         assert any("joined multicast group 239.4.5.6" in r.message for r in caplog.records)
     finally:
@@ -1065,8 +1055,7 @@ def test_listener_with_allowlist_and_group_logs_info(
 def test_start_listener_idempotent_with_same_group(monkeypatch: pytest.MonkeyPatch) -> None:
     svc = OscService()
     monkeypatch.setattr(service_module, "_join_multicast_group", lambda *a: None)
-    port = find_free_udp_port()
-    svc.start_listener(port, allowed_ips=(), multicast_group="239.1.2.3")
+    port = bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=(), multicast_group="239.1.2.3"))
     first = svc._listener
     svc.start_listener(port, allowed_ips=(), multicast_group="239.1.2.3")
     assert svc._listener is first  # same params → no rebind
@@ -1078,8 +1067,7 @@ def test_start_listener_idempotent_with_same_group(monkeypatch: pytest.MonkeyPat
 def test_start_listener_rebinds_on_group_change(monkeypatch: pytest.MonkeyPatch) -> None:
     svc = OscService()
     monkeypatch.setattr(service_module, "_join_multicast_group", lambda *a: None)
-    port = find_free_udp_port()
-    svc.start_listener(port, allowed_ips=(), multicast_group="239.1.2.3")
+    port = bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=(), multicast_group="239.1.2.3"))
     first = svc._listener
     svc.start_listener(port, allowed_ips=(), multicast_group="239.9.9.9")
     assert svc._listener is not first  # group change → rebind
@@ -1238,7 +1226,6 @@ def test_restart_listener_resets_state_when_thread_start_fails(monkeypatch: pyte
     """If the serve thread can't start, the bound listener is torn down and the
     listener fields reset, so a later stop_listener has nothing half-installed."""
     svc = OscService()
-    port = find_free_udp_port()
 
     class _BadThread:
         def __init__(self, *a: Any, **k: Any) -> None: ...
@@ -1248,7 +1235,7 @@ def test_restart_listener_resets_state_when_thread_start_fails(monkeypatch: pyte
 
     monkeypatch.setattr(service_module.threading, "Thread", _BadThread)
     with pytest.raises(RuntimeError, match="can't start new thread"):
-        svc.restart_listener(port=port, allowed_ips=())
+        bind_free_udp_port(lambda p: svc.restart_listener(port=p, allowed_ips=()))
     assert svc._listener is None
     assert svc._listener_thread is None
     svc.stop_listener()  # clean no-op – nothing half-installed

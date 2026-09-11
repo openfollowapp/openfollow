@@ -106,7 +106,7 @@ class OscMarkerAdapter:
         position before applying.
         """
         with self._lock:
-            updates = {tid: dict(axes) for tid, axes in self._pending.items()}
+            updates = {marker_id: dict(axes) for marker_id, axes in self._pending.items()}
             self._pending.clear()
         return updates
 

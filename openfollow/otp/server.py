@@ -12,11 +12,14 @@ import socket
 import struct
 import threading
 import time
+from collections.abc import Callable, Sequence
+from typing import NamedTuple
 from uuid import uuid4
 
 import multicast_expert
 
-from openfollow.psn.marker import Marker
+from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
+from openfollow.psn.marker import Marker, marker_age_s
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +57,13 @@ MODULE_NUMBER_POSITION = 0x0001
 OTP_PORT = 5568
 COMPONENT_NAME_OCTETS = 32
 POINT_NAME_OCTETS = 32
+# Section 6.3.1. Equal to ``packet_chunking.MAX_DATAGRAM_BYTES`` because it is
+# the same rule reached from the other side: the standard caps a message at the
+# UDP payload an Ethernet MTU carries, so a legal message never fragments.
 MAX_OTP_MESSAGE_OCTETS = 1472
+
+# Page and Last Page are uint16 (Sections 6.8, 6.9).
+_MAX_FOLIO_LAST_PAGE = 0xFFFF
 
 # Timing: advertisements every 10s; transforms governed by fps (20-1000 Hz).
 ADVERTISEMENT_INTERVAL_S = 10.0
@@ -313,6 +322,20 @@ def _build_system_advertisement_layer(
 # ---------------------------------------------------------------------------
 
 
+def _check_message_length(packet: bytes, what: str) -> None:
+    """Enforce the Section 6.3.1 message cap on one page.
+
+    Callers that can span a folio split their points across pages so this never
+    fires; it stays as the backstop for a single page that cannot be divided
+    further, which no realistic point or name reaches.
+    """
+    if len(packet) > MAX_OTP_MESSAGE_OCTETS:
+        raise ValueError(
+            f"OTP {what} packet of {len(packet)} octets exceeds spec maximum "
+            f"of {MAX_OTP_MESSAGE_OCTETS} for a single page.",
+        )
+
+
 def encode_otp_transform_packet(
     *,
     cid: bytes,
@@ -323,27 +346,52 @@ def encode_otp_transform_packet(
     markers: list[Marker],
     priority: int,
     group: int = 1,
+    page: int = 0,
+    last_page: int = 0,
+    now_us: int | None = None,
     sampled_timestamp_us: int | None = None,
     full_point_set: bool = True,
 ) -> bytes:
-    """Build a complete OTP Transform Message UDP payload.
+    """Build one page of an OTP Transform Message UDP payload.
 
-    ``sampled_timestamp_us`` defaults to the same value as ``timestamp_us``
-    – Section 9.6 says the sampled timestamp is the moment the Producer
-    read the Point's transform; for a single-pass encoder there's no
-    distinction.
+    Section 9.6 defines a Point's sampled timestamp as the moment the
+    Producer read that Point's transform, so each point carries its own:
+    ``timestamp_us`` less however long ago the marker was last written.
+    A marker the frame loop has stopped writing therefore stops ageing on
+    the wire while the Transform Layer's timestamp keeps advancing, which
+    is what lets a Consumer tell a live stream from a frozen one - this
+    thread transmits at full rate either way.
+
+    ``sampled_timestamp_us`` overrides that per-point derivation for every
+    point, for callers that have already sampled at a known instant.
     """
-    sampled = timestamp_us if sampled_timestamp_us is None else sampled_timestamp_us
     # Collect into a list and ``b"".join(...)`` instead of ``+=`` on
     # immutable bytes – at 60 Hz with N markers, repeated ``+=``
     # allocates and copies in O(N²); join is O(N). Same pattern as
     # ``openfollow/rttrpm/server.py``.
+    # One instant for every point, so they age against the same reference. A
+    # caller spanning several pages passes the folio's, since the pages share a
+    # Transform Layer timestamp.
+    if now_us is None:
+        now_us = markers[0].clock_now_us if markers else 0
     point_pdu_parts: list[bytes] = []
     for marker in markers:
         x, y, z = marker.pos
         x_um = _metres_to_um_i32(x)
         y_um = _metres_to_um_i32(y)
         z_um = _metres_to_um_i32(z)
+        if sampled_timestamp_us is not None:
+            sampled = sampled_timestamp_us
+        else:
+            # Clamped both ways: a Consumer reads ``transform - sampled`` on an
+            # unsigned field, so an age past the packet timestamp (or a negative
+            # one, from a write landing mid-build) would underflow it. An
+            # unknowable age is infinite, which ``int()`` refuses outright.
+            age_us = marker_age_s(marker, now_us=now_us) * 1_000_000.0
+            if not math.isfinite(age_us):
+                sampled = 0
+            else:
+                sampled = min(timestamp_us, max(0, timestamp_us - int(age_us)))
         # OTP point numbers start at 1 (Section 9.5). Project convention
         # reserves marker_id 0 as "ignored", so marker_id 1 maps directly
         # to point 1 – no +1 offset needed any more.
@@ -366,20 +414,12 @@ def encode_otp_transform_packet(
         vector=VECTOR_OTP_TRANSFORM_MESSAGE,
         cid=cid,
         folio=folio,
-        page=0,
-        last_page=0,
+        page=page,
+        last_page=last_page,
         component_name=component_name,
         inner_pdu=transform,
     )
-    if len(packet) > MAX_OTP_MESSAGE_OCTETS:
-        # Section 6.3.1 – hard cap. Page splitting is intentionally out of
-        # scope for the pragmatic compliance level; fail loud
-        # so we know to revisit if a real installation ever needs it.
-        raise ValueError(
-            f"OTP transform packet of {len(packet)} octets exceeds spec maximum "
-            f"of {MAX_OTP_MESSAGE_OCTETS}; reduce marker count or implement "
-            f"Page splitting (Section 6.8).",
-        )
+    _check_message_length(packet, "transform")
     return packet
 
 
@@ -423,8 +463,10 @@ def encode_otp_name_advertisement_packet(
     system_number: int,
     markers: list[Marker],
     group: int = 1,
+    page: int = 0,
+    last_page: int = 0,
 ) -> bytes:
-    """Build a complete OTP Name Advertisement Message UDP payload."""
+    """Build one page of an OTP Name Advertisement Message UDP payload."""
     apds = [(system_number, group, marker.marker_id, marker.name) for marker in markers]
     name_layer = _build_name_advertisement_layer(
         response=True,
@@ -434,15 +476,17 @@ def encode_otp_name_advertisement_packet(
         advertisement_vector=VECTOR_OTP_ADVERTISEMENT_NAME,
         inner_pdu=name_layer,
     )
-    return _build_otp_layer(
+    packet = _build_otp_layer(
         vector=VECTOR_OTP_ADVERTISEMENT_MESSAGE,
         cid=cid,
         folio=folio,
-        page=0,
-        last_page=0,
+        page=page,
+        last_page=last_page,
         component_name=component_name,
         inner_pdu=advertisement,
     )
+    _check_message_length(packet, "name advertisement")
+    return packet
 
 
 def encode_otp_system_advertisement_packet(
@@ -475,6 +519,14 @@ def encode_otp_system_advertisement_packet(
 # ---------------------------------------------------------------------------
 # OtpServer
 # ---------------------------------------------------------------------------
+
+
+class _ComponentIdentity(NamedTuple):
+    """Who a folio says it came from – constant across its pages."""
+
+    name: str
+    system_number: int
+    priority: int
 
 
 class OtpServer:
@@ -554,10 +606,10 @@ class OtpServer:
         self._socket_thread: threading.Thread | None = None
         self._send_errors: int = 0
         self._send_total: int = 0
-        # Counter for oversized-packet drops. The length-cap (Section
-        # 6.3.1) only fires on misconfigured installs (~70+ markers in
-        # one folio); without throttling we'd flood logs at the
-        # transform fps. Same first-5-then-every-100 pattern ``_send``
+        # Counter for dropped folios: one needing more pages than Last Page
+        # can number, or one whose pages will not encode. Neither is reachable
+        # by configuration, but without throttling either would flood the log
+        # at the transform fps. Same first-5-then-every-100 pattern ``_send``
         # uses for OSError logging.
         self._oversize_drops: int = 0
 
@@ -593,23 +645,34 @@ class OtpServer:
 
     def start(self) -> None:
         """Open the network socket and start transform + advertisement threads."""
-        self._stop_event.clear()
+        # One stop signal per generation – see ``PsnServer.start()``.
+        stop_event = threading.Event()
+        self._stop_event = stop_event
         self._exit_stack = contextlib.ExitStack()
         if self._is_multicast_mode():
             if not self._try_open_multicast_socket_once(attempt=1):
                 self._socket_thread = threading.Thread(
                     target=self._retry_multicast_socket_background,
+                    args=(stop_event,),
                     daemon=True,
                     name="OTP-SocketRetry",
                 )
                 self._socket_thread.start()
         else:
             self._socket = self._exit_stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-        self._adv_thread = threading.Thread(target=self._advertisement_loop, daemon=True, name="OTP-Advertisement")
-        self._transform_thread = threading.Thread(target=self._transform_loop, daemon=True, name="OTP-Transform")
+        self._adv_thread = threading.Thread(
+            target=self._advertisement_loop, args=(stop_event,), daemon=True, name="OTP-Advertisement"
+        )
+        self._transform_thread = threading.Thread(
+            target=self._transform_loop, args=(stop_event,), daemon=True, name="OTP-Transform"
+        )
         # Start advertisement first so receivers see module info before data.
         self._adv_thread.start()
         self._transform_thread.start()
+
+    def _resolve_stop(self, stop_event: threading.Event | None) -> threading.Event:
+        """The caller's generation event; the live one for direct calls."""
+        return self._stop_event if stop_event is None else stop_event
 
     def _is_multicast_mode(self) -> bool:
         """True unless the test-only unicast/loopback branch is active."""
@@ -639,8 +702,13 @@ class OtpServer:
             if self._adv_thread.is_alive():
                 logger.warning("OTP advertisement thread did not stop within timeout")
             self._adv_thread = None
-        self._socket = None
-        self._exit_stack.close()
+        # Null the socket and take the stack under the lock so a socket thread
+        # can't adopt a socket into a stack that teardown is closing. Close it
+        # outside the lock to avoid stalling a send loop on the FD close.
+        with self._lock:
+            self._socket = None
+            stack = self._exit_stack
+        stack.close()
 
     def restart(
         self,
@@ -665,15 +733,18 @@ class OtpServer:
         stale config.
         """
         self.stop()
-        self._system_name = system_name
-        self._system_number = system_number
-        self._port = port
-        self._source_ip = source_ip.strip()
-        self._priority = priority
-        # Recompute destinations for the new system_number.
-        self._transform_dest, self._advertisement_dest = self._resolve_destinations()
-        if self._mcast_ip_override is None:
-            self._mcast_ip = self._transform_dest
+        # Locked because stop() logs and continues past a send thread that
+        # outlived its join, and that survivor reads the identity under it.
+        with self._lock:
+            self._system_name = system_name
+            self._system_number = system_number
+            self._port = port
+            self._source_ip = source_ip.strip()
+            self._priority = priority
+            # Recompute destinations for the new system_number.
+            self._transform_dest, self._advertisement_dest = self._resolve_destinations()
+            if self._mcast_ip_override is None:
+                self._mcast_ip = self._transform_dest
         self.start()
         if self._is_multicast_mode() and self._socket is None:
             self.stop()
@@ -716,8 +787,9 @@ class OtpServer:
             return [override]
         return [self._transform_dest, self._advertisement_dest]
 
-    def _try_open_multicast_socket_once(self, attempt: int) -> bool:
+    def _try_open_multicast_socket_once(self, attempt: int, stop_event: threading.Event | None = None) -> bool:
         """Attempt to create the multicast TX socket once. Returns True on success."""
+        staging = contextlib.ExitStack()
         try:
             groups = self._multicast_groups()
             if self._source_ip:
@@ -733,8 +805,7 @@ class OtpServer:
                     mcast_ips=groups,
                     enable_external_loopback=True,
                 )
-            self._socket = self._exit_stack.enter_context(sock)
-            return True
+            opened = staging.enter_context(sock)
         except Exception as exc:
             logger.warning(
                 "OTP multicast socket failed (attempt %d/%d): %s",
@@ -743,14 +814,24 @@ class OtpServer:
                 exc,
             )
             return False
+        # Locked hand-over only, off-lock open. See PsnServer for the rationale.
+        with self._lock:
+            if not self._resolve_stop(stop_event).is_set():
+                self._socket = opened
+                self._exit_stack.push(staging.pop_all())
+                return True
+            stale = staging.pop_all()
+        stale.close()
+        return False
 
-    def _retry_multicast_socket_background(self) -> None:
+    def _retry_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
         """Retry multicast socket creation in the background (bounded)."""
+        stop = self._resolve_stop(stop_event)
         for attempt in range(2, _MAX_SOCKET_RETRIES + 1):
-            self._stop_event.wait(_SOCKET_RETRY_DELAY)
-            if self._stop_event.is_set():
+            stop.wait(_SOCKET_RETRY_DELAY)
+            if stop.is_set():
                 return
-            if self._try_open_multicast_socket_once(attempt=attempt):
+            if self._try_open_multicast_socket_once(attempt=attempt, stop_event=stop):
                 logger.info(
                     "OTP multicast socket connected on retry %d/%d.",
                     attempt,
@@ -762,29 +843,32 @@ class OtpServer:
             _MAX_SOCKET_RETRIES,
         )
 
-    def _recover_multicast_socket_background(self) -> None:
+    def _recover_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
         """Re-open the multicast socket indefinitely after a transient
         send failure. See ``PsnServer._recover_multicast_socket_background``
         for the same rationale.
         """
+        stop = self._resolve_stop(stop_event)
         attempt = 0
-        while not self._stop_event.is_set():
+        while not stop.is_set():
             attempt += 1
-            self._stop_event.wait(_SOCKET_RETRY_DELAY)
-            if self._stop_event.is_set():
+            stop.wait(_SOCKET_RETRY_DELAY)
+            if stop.is_set():
                 return
-            if self._try_open_multicast_socket_once(attempt=attempt):
+            if self._try_open_multicast_socket_once(attempt=attempt, stop_event=stop):
                 logger.info("OTP multicast socket recovered on attempt %d.", attempt)
                 return
 
-    def _handle_send_error(self, exc: OSError) -> None:
+    def _handle_send_error(self, exc: OSError, stop_event: threading.Event | None = None) -> None:
         """On a transient interface-change error, rebuild the socket in the background."""
-        # Once stopping, teardown owns the socket/exit-stack lifecycle. A recovery
+        # Once stopping, teardown owns the socket/exit-stack lifecycle: a recovery
         # thread spawned here is orphaned (stop() may already have passed the
-        # socket-thread join) and, after restart()'s start() clears the stop
-        # event, could open a SECOND multicast socket racing the fresh server –
-        # clobbering self._socket and leaking the FD. Mirrors PsnServer.
-        if self._stop_event.is_set():
+        # socket-thread join) and could open a SECOND multicast socket racing the
+        # fresh server – clobbering self._socket and leaking the FD. The caller's
+        # own generation decides, so a send failing on a superseded one can't tear
+        # down the live socket. Mirrors PsnServer.
+        stop = self._resolve_stop(stop_event)
+        if stop.is_set():
             return
         if exc.errno not in _TRANSIENT_SEND_ERRNOS:
             return
@@ -795,6 +879,11 @@ class OtpServer:
         if not self._is_multicast_mode():
             return
         with self._lock:
+            # Re-check under the lock: stop() sets the event before tearing the
+            # socket/exit-stack down, so spawn and teardown observe one consistent
+            # stop state rather than a stale pre-lock read.
+            if stop.is_set():
+                return
             if self._socket_thread is not None and self._socket_thread.is_alive():
                 return
             old_stack = self._exit_stack
@@ -802,6 +891,7 @@ class OtpServer:
             self._exit_stack = contextlib.ExitStack()
             self._socket_thread = threading.Thread(
                 target=self._recover_multicast_socket_background,
+                args=(stop,),
                 daemon=True,
                 name="OTP-SocketRecover",
             )
@@ -813,20 +903,31 @@ class OtpServer:
 
     # -- Send loops -----------------------------------------------------------
 
-    def _transform_loop(self) -> None:
+    def _transform_loop(self, stop_event: threading.Event | None = None) -> None:
+        stop = self._resolve_stop(stop_event)
         interval = 1.0 / self._fps
-        while not self._stop_event.is_set():
-            self._send_transform_packet()
-            self._stop_event.wait(interval)
+        while not stop.is_set():
+            self._send_transform_packet(stop)
+            stop.wait(interval)
 
-    def _advertisement_loop(self) -> None:
-        while not self._stop_event.is_set():
-            self._send_advertisement_packets()
-            self._stop_event.wait(ADVERTISEMENT_INTERVAL_S)
+    def _advertisement_loop(self, stop_event: threading.Event | None = None) -> None:
+        stop = self._resolve_stop(stop_event)
+        while not stop.is_set():
+            self._send_advertisement_packets(stop)
+            stop.wait(ADVERTISEMENT_INTERVAL_S)
 
-    def _snapshot_markers(self) -> list[Marker]:
+    def _snapshot_identity(self) -> tuple[_ComponentIdentity, list[Marker]]:
+        """Return the Component identity and the marker list from one lock hold.
+
+        Every identity field sits outside the split point list, so Sections
+        6.7-6.9 have it repeat verbatim on every page. Callers must bind the
+        result to locals and encode from those: reading an attribute inside a
+        per-page closure is what lets ``restart`` split one folio across two
+        identities.
+        """
         with self._lock:
-            return list(self._markers.values())
+            identity = _ComponentIdentity(self._system_name, self._system_number, self._priority)
+            return identity, list(self._markers.values())
 
     def _next_folio(self, name: str) -> int:
         attr = f"_{name}_folio"
@@ -840,76 +941,148 @@ class OtpServer:
     def _current_timestamp(self) -> int:
         return int(time.monotonic() * 1_000_000) - self._start_time_us
 
-    def _send_transform_packet(self) -> None:
-        markers = self._snapshot_markers()
-        if not markers:
-            return
+    def _send_folio(
+        self,
+        markers: list[Marker],
+        encode: Callable[[Sequence[Marker], int, int], bytes],
+        dest_ip: str,
+        what: str,
+        stop_event: threading.Event | None,
+    ) -> None:
+        """Send one folio, spread over Pages when it exceeds the MTU.
+
+        Sections 6.7-6.9: pages of one folio share its Folio Number and each
+        names the folio's last page, which is what a Consumer collects them on.
+        Everything outside the split list is repeated verbatim on every page,
+        the Transform Layer's Full Point Set flag included – it describes the
+        folio, so a page that contradicted its siblings would describe no
+        coherent point set at all.
+
+        Every page is encoded before any is sent: a folio that half-arrives
+        leaves a Consumer waiting on pages that will never come, which is worse
+        than the frame simply not being there.
+        """
         try:
-            payload = encode_otp_transform_packet(
-                cid=self._cid,
-                component_name=self._system_name,
-                folio=self._next_folio("transform"),
-                system_number=self._system_number,
-                timestamp_us=self._current_timestamp(),
-                markers=markers,
-                priority=self._priority,
-            )
-        except ValueError as exc:
-            # Length-cap blew (Section 6.3.1, 1472-octet hard cap).
-            # This is a config-error path: oversize means too many
-            # markers in one folio – the condition won't fix itself
-            # without operator action, so we throttle to first-5-then-
-            # every-100th occurrence. At 60 fps that's ~1.7s between
-            # log lines after the initial burst, which is enough to
-            # diagnose without flooding. Drop the packet rather than
-            # killing the loop.
-            with self._lock:
-                self._oversize_drops += 1
-                drops = self._oversize_drops
+            payloads = self._encode_folio(markers, encode, what)
+        except ValueError:
+            # Section 6.3.1 rejects a page that cannot be made legal. Unhandled,
+            # that propagates out of the send thread and ends this output for
+            # the life of the process; drop the folio and keep transmitting.
+            drops = self._note_folio_drop()
+            if drops <= 5 or drops % 100 == 0:
+                logger.exception("OTP %s folio dropped (%d drops): page could not be encoded", what, drops)
+            return
+        for payload in payloads:
+            self._send(payload, dest_ip, stop_event)
+
+    def _encode_folio(
+        self,
+        markers: list[Marker],
+        encode: Callable[[Sequence[Marker], int, int], bytes],
+        what: str,
+    ) -> list[bytes]:
+        """Encode a folio as one page, or as the pages it needs."""
+        try:
+            return [encode(markers, 0, 0)]
+        except ValueError:
+            pass  # Over the Section 6.3.1 page cap – it needs paging.
+        pages = chunk_to_datagrams(markers, lambda subset: len(encode(subset, 0, 0)), MAX_DATAGRAM_BYTES)
+        if len(pages) - 1 > _MAX_FOLIO_LAST_PAGE:
+            drops = self._note_folio_drop()
             if drops <= 5 or drops % 100 == 0:
                 logger.warning(
-                    "OTP transform packet skipped (%d drops): %s",
+                    "OTP %s folio needs %d pages, capped at %d (%d drops) – markers beyond the cap are not sent",
+                    what,
+                    len(pages),
+                    _MAX_FOLIO_LAST_PAGE + 1,
                     drops,
-                    exc,
                 )
-            return
-        self._send(payload, self._transform_dest)
+            pages = pages[: _MAX_FOLIO_LAST_PAGE + 1]
+        last_page = len(pages) - 1
+        return [encode(page_markers, page, last_page) for page, page_markers in enumerate(pages)]
 
-    def _send_advertisement_packets(self) -> None:
+    def _note_folio_drop(self) -> int:
+        """Count a dropped folio and return the running total."""
+        with self._lock:
+            self._oversize_drops += 1
+            return self._oversize_drops
+
+    def _send_transform_packet(self, stop_event: threading.Event | None = None) -> None:
+        # Bound to locals, never re-read per page: the identity describes the
+        # folio, so a page contradicting its siblings describes no point set.
+        identity, markers = self._snapshot_identity()
+        if not markers:
+            return
+        folio = self._next_folio("transform")
+        timestamp_us = self._current_timestamp()
+        # Read once for the folio, not once per page: the pages share a
+        # Transform Layer timestamp, so ageing them against different instants
+        # would report identically-fresh points as different ages.
+        now_us = markers[0].clock_now_us
+
+        def encode(page_markers: Sequence[Marker], page: int, last_page: int) -> bytes:
+            return encode_otp_transform_packet(
+                cid=self._cid,
+                component_name=identity.name,
+                folio=folio,
+                system_number=identity.system_number,
+                timestamp_us=timestamp_us,
+                markers=list(page_markers),
+                priority=identity.priority,
+                page=page,
+                last_page=last_page,
+                now_us=now_us,
+            )
+
+        self._send_folio(markers, encode, self._transform_dest, "transform", stop_event)
+
+    def _send_advertisement_packets(self, stop_event: threading.Event | None = None) -> None:
         """Send Module, Name, and System advertisement packets in sequence."""
-        markers = self._snapshot_markers()
+        identity, markers = self._snapshot_identity()
 
         if markers:
             self._send(
                 encode_otp_module_advertisement_packet(
                     cid=self._cid,
-                    component_name=self._system_name,
+                    component_name=identity.name,
                     folio=self._next_folio("module_adv"),
                 ),
                 self._advertisement_dest,
+                stop_event,
             )
-            self._send(
-                encode_otp_name_advertisement_packet(
+            name_folio = self._next_folio("name_adv")
+            # Section 13.5 wants one ascending list across the folio. Each page
+            # sorts what it is given, so the split has to cut an already-sorted
+            # list - registration order is the operator's, not ascending.
+            by_point = sorted(markers, key=lambda marker: marker.marker_id)
+
+            def encode_names(page_markers: Sequence[Marker], page: int, last_page: int) -> bytes:
+                return encode_otp_name_advertisement_packet(
                     cid=self._cid,
-                    component_name=self._system_name,
-                    folio=self._next_folio("name_adv"),
-                    system_number=self._system_number,
-                    markers=markers,
-                ),
-                self._advertisement_dest,
-            )
+                    component_name=identity.name,
+                    folio=name_folio,
+                    system_number=identity.system_number,
+                    markers=list(page_markers),
+                    page=page,
+                    last_page=last_page,
+                )
+
+            self._send_folio(by_point, encode_names, self._advertisement_dest, "name advertisement", stop_event)
 
         self._send(
             encode_otp_system_advertisement_packet(
                 cid=self._cid,
-                component_name=self._system_name,
+                component_name=identity.name,
                 folio=self._next_folio("system_adv"),
-                system_number=self._system_number,
+                system_number=identity.system_number,
             ),
             self._advertisement_dest,
+            stop_event,
         )
 
-    def _send(self, data: bytes, dest_ip: str) -> None:
+    def _send(self, data: bytes, dest_ip: str, stop_event: threading.Event | None = None) -> None:
+        # Deliberately unlocked: locking would serialise every datagram behind
+        # the socket hand-over. A send racing teardown sends, returns, or fails.
         sock = self._socket
         if sock is None:
             return
@@ -929,4 +1102,4 @@ class OtpServer:
                     total,
                     exc,
                 )
-            self._handle_send_error(exc)
+            self._handle_send_error(exc, stop_event)

@@ -52,7 +52,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal, NamedTuple
 
 from openfollow.osc.parser import classify_osc_literal
 
@@ -146,6 +146,24 @@ _EDIT_TIME_SOURCES: frozenset[str] = _POSITION_SOURCES | frozenset({"markerid"})
 # honest by ``tests/test_web_osc_placeholder_recognition.py``.
 PLACEHOLDERS: frozenset[str] = _SOURCES
 
+# Why an edit-time placeholder can't resolve. Each surface words one
+# remediation per reason.
+UnresolvedReason = Literal["default_marker", "explicit_marker", "grid_height"]
+
+
+class UnresolvedPlaceholder(NamedTuple):
+    """One unresolved token, why, and which marker it named.
+
+    ``marker_id`` is the slot's explicit index, populated only for
+    ``explicit_marker`` so a caller can say *which* marker is missing.
+    It comes from the compiled slot, never from re-parsing ``token``.
+    """
+
+    token: str
+    reason: UnresolvedReason
+    marker_id: int | None = None
+
+
 # ``int:min-max`` / ``scale:min-max`` range bounds – signed, optionally
 # decimal. ``min > max`` inverts the mapping naturally. Matched as a
 # prefix (no ``$``) so a trailing ``.transform`` separator isn't
@@ -203,6 +221,7 @@ MarkerFaderResolver = Callable[[int], float | None]
 # reference; ``None`` becomes a runtime skip (ring-buffer reason), never a
 # default-marker dependency.
 ControllerMarkerResolver = Callable[[int], int | None]
+MarkerStaleResolver = Callable[[int], bool]
 
 
 @dataclass(frozen=True)
@@ -221,6 +240,9 @@ class RenderContext:
     - ``controller_marker_resolver`` maps a 0-based controller index to
       the marker id it currently drives (resolves ``:cN``); ``None`` ->
       runtime skip.
+    - ``marker_stale_resolver`` reports whether a marker's position has
+      gone stale. Checked before ``marker_resolver`` so the skip reason
+      says so, rather than reading as an unregistered marker.
     - ``default_fader`` is the row's default fader index (1..8) or
       ``None``; a bare ``[fader]`` slot fired with ``None`` raises.
     - ``event_value`` / ``event_velocity`` / ``event_note`` carry the
@@ -240,6 +262,7 @@ class RenderContext:
     fader_resolver: FaderResolver | None = None
     marker_fader_resolver: MarkerFaderResolver | None = None
     controller_marker_resolver: ControllerMarkerResolver | None = None
+    marker_stale_resolver: MarkerStaleResolver | None = None
     default_fader: int | None = None
     event_value: int | None = None
     event_velocity: int | None = None
@@ -365,19 +388,22 @@ def requires_default_fader(parts: CompiledTemplate) -> bool:
     return any(isinstance(p, _Slot) and p.ref_index is None and p.source == "fader" for p in parts)
 
 
-def unresolved_placeholders(
+def unresolved_placeholder_reasons(
     parts: CompiledTemplate,
     *,
     default_marker_id: int | None,
     registered_marker_ids: frozenset[int],
     grid_max_height: float = 0.0,
-) -> tuple[str, ...]:
-    """Return the bracketed placeholder tokens in ``parts`` that can't
-    be resolved given the current row + registry + grid state.
+) -> tuple[UnresolvedPlaceholder, ...]:
+    """Return an :class:`UnresolvedPlaceholder` for each placeholder in
+    ``parts`` that can't be resolved given the current row + registry +
+    grid state.
 
-    Each entry is the operator-facing token (``"[x]"`` / ``"[y:5]"`` /
-    ``"[z.frac]"`` / ``"[markerid]"``), in stable order – the web UI pill
-    renderer compares each pill's textContent against this list.
+    ``token`` is the operator-facing form (``"[x]"`` / ``"[x:5]"`` /
+    ``"[z.frac]"``); ``reason`` names the actionable fix, so a caller can
+    word its message per cause instead of inferring one from the token's
+    shape: a grid-blocked ``[z.frac]`` and a marker-blocked one are
+    indistinguishable by shape.
 
     Only position + ``markerid`` slots are surfaced
     (:data:`_EDIT_TIME_SOURCES`); fader / ``markerfader`` slots surface
@@ -387,17 +413,31 @@ def unresolved_placeholders(
     Resolution rules:
 
     - **Default slot** (``ref_index is None``): unresolved when
-      ``default_marker_id is None`` OR not in ``registered_marker_ids``.
+      ``default_marker_id is None`` OR not in ``registered_marker_ids``
+      (``"default_marker"``).
     - **Explicit slot** (``ref_index=N``): unresolved when ``N`` is not
-      registered – except ``[markerid:N]``, which substitutes ``N``
-      directly and so never misses.
+      registered (``"explicit_marker"``) – except ``[markerid:N]``,
+      which substitutes ``N`` directly and so never misses.
     - **``z`` carrying ``frac``**: additionally unresolved when
-      ``grid_max_height <= 0`` (no denominator – the renderer raises).
+      ``grid_max_height <= 0`` (no denominator – the renderer raises),
+      reported as ``"grid_height"``.
 
-    Duplicates collapse.
+    A token blocked by both its marker and the grid height reports the
+    marker cause; resolving that surfaces the grid one on the next pass,
+    so each message names a single next step.
+
+    Duplicates collapse on the token, which keeps the first reason seen.
     """
-    out: list[str] = []
+    out: list[UnresolvedPlaceholder] = []
     seen: set[str] = set()
+
+    def _add(slot: _Slot, reason: UnresolvedReason) -> None:
+        token = _slot_token(slot)
+        if token not in seen:
+            marker_id = slot.ref_index if reason == "explicit_marker" else None
+            out.append(UnresolvedPlaceholder(token, reason, marker_id))
+            seen.add(token)
+
     for p in parts:
         if not isinstance(p, _Slot):
             continue
@@ -407,45 +447,50 @@ def unresolved_placeholders(
             # ``:cN`` resolves live – runtime skip, never an edit-time pill.
             continue
         is_z_frac = p.source == "z" and any(t.kind == "frac" for t in p.transforms)
+        grid_unresolved = is_z_frac and grid_max_height <= 0.0
         if p.ref_index is None:
-            marker_unresolved = default_marker_id is None or default_marker_id not in registered_marker_ids
-            grid_unresolved = is_z_frac and grid_max_height <= 0.0
-            if marker_unresolved or grid_unresolved:
-                token = _slot_token(p)
-                if token not in seen:
-                    out.append(token)
-                    seen.add(token)
+            if default_marker_id is None or default_marker_id not in registered_marker_ids:
+                _add(p, "default_marker")
+            elif grid_unresolved:
+                _add(p, "grid_height")
         else:
             # ``[markerid:N]`` substitutes the literal id ``N`` directly,
             # so it resolves regardless of whether marker ``N`` exists.
             if p.source == "markerid":
                 continue
             if p.ref_index not in registered_marker_ids:
-                token = _slot_token(p)
-                if token not in seen:
-                    out.append(token)
-                    seen.add(token)
-            elif is_z_frac and grid_max_height <= 0.0:
+                _add(p, "explicit_marker")
+            elif grid_unresolved:
                 # ``[z:N.frac]`` resolves the marker but still needs
                 # ``max_height`` to render.
-                token = _slot_token(p)
-                if token not in seen:
-                    out.append(token)
-                    seen.add(token)
+                _add(p, "grid_height")
     return tuple(out)
 
 
-def token_has_explicit_index(token: str) -> bool:
-    """True when ``token`` – a bracketed form like ``"[x:7]"`` /
-    ``"[x:c1]"`` vs the default ``"[x]"`` – names an explicit target
-    (a marker index or a ``:cN`` controller reference) rather than the
-    row's default marker.
+def unresolved_placeholders(
+    parts: CompiledTemplate,
+    *,
+    default_marker_id: int | None,
+    registered_marker_ids: frozenset[int],
+    grid_max_height: float = 0.0,
+) -> tuple[str, ...]:
+    """Bracketed placeholder tokens in ``parts`` that can't be resolved,
+    in stable order – the web UI pill renderer compares each pill's
+    textContent against this list.
 
-    Parses via the grammar rather than sniffing for ``":"`` so a colon
-    carried by a transform can't be mistaken for the index separator."""
-    inner = token[1:-1] if len(token) >= 2 and token[0] == "[" and token[-1] == "]" else token
-    slot = _slot_from_name(inner)
-    return slot is not None and (slot.ref_index is not None or slot.controller_index is not None)
+    The token projection of :func:`unresolved_placeholder_reasons`; see
+    it for the resolution rules. Callers wording an operator-facing
+    message want that function instead, so the message names the cause.
+    """
+    return tuple(
+        entry.token
+        for entry in unresolved_placeholder_reasons(
+            parts,
+            default_marker_id=default_marker_id,
+            registered_marker_ids=registered_marker_ids,
+            grid_max_height=grid_max_height,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -876,10 +921,14 @@ def _resolve_marker_position(
 
     Shared by the explicit ``[x:N]`` and controller ``[x:cN]`` paths.
     Raises :class:`RenderError` (carrying ``label``) when the resolver is
-    absent or the marker isn't registered.
+    absent, the marker isn't registered, or its position has gone stale -
+    the last carrying a hint, so the ring buffer can tell an operator
+    which of the three happened.
     """
     if ctx.marker_resolver is None:
         raise RenderError(label)
+    if ctx.marker_stale_resolver is not None and ctx.marker_stale_resolver(marker_id):
+        raise RenderError(label, hint="position is stale")
     pos = ctx.marker_resolver(marker_id)
     if pos is None:
         raise RenderError(label)
@@ -1148,16 +1197,16 @@ class BuiltinTemplate:
 # ``MappingProxyType`` instance – sharing is safe since it's immutable.
 BUILTIN_TEMPLATES: tuple[BuiltinTemplate, ...] = (
     # Augment3d shares our stage frame (X lateral, Y depth, Z height) and
-    # metres, so the marker position maps across 1:1.
+    # metres, so the marker position maps across 1:1. User 0 is the Eos user
+    # for background work, which keeps the stream off the command line.
     BuiltinTemplate(
         id="etc",
         name="ETC Eos",
-        address="/eos/chan/[markerid]/xyz",
+        address="/eos/user/0/chan/[markerid]/xyz",
         args=("[x]", "[y]", "[z]"),
         trigger=_DEFAULT_STREAM_30HZ_TRIGGER,
     ),
-    # Same message addressed to a specific Eos user rather than whichever
-    # one is current, so a 30 Hz stream can't disturb the operator's prompt.
+    # The same message pinned to user 99 instead.
     BuiltinTemplate(
         id="etc-user99",
         name="ETC Eos (User 99)",

@@ -43,8 +43,8 @@ class _FakePsnServer:
     def __init__(self, markers: dict[int, _FakeMarker] | None = None) -> None:
         self._markers = markers or {}
 
-    def get_marker(self, tid: int) -> _FakeMarker | None:
-        return self._markers.get(tid)
+    def get_marker(self, marker_id: int) -> _FakeMarker | None:
+        return self._markers.get(marker_id)
 
 
 class _FakePsnReceiver:
@@ -56,11 +56,11 @@ class _FakePsnReceiver:
         self._markers = markers or {}
         self._online = online or {}
 
-    def get_marker(self, tid: int) -> _FakeMarker | None:
-        return self._markers.get(tid)
+    def get_marker(self, marker_id: int) -> _FakeMarker | None:
+        return self._markers.get(marker_id)
 
-    def is_marker_online(self, tid: int) -> bool:
-        return bool(self._online.get(tid, True))
+    def is_marker_online(self, marker_id: int) -> bool:
+        return bool(self._online.get(marker_id, True))
 
 
 @dataclass

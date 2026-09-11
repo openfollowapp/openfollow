@@ -79,7 +79,7 @@ _FIELD_POOL = [
     "ball_size",
     "crosshair_size",
     "crosshair_color",
-    "drop_line_thickness",
+    "z_line_thickness",
     "enabled",
     "deadzone",
     "host",

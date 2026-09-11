@@ -25,6 +25,7 @@ from openfollow.configuration import (
     load_config,
     save_config,
 )
+from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.marker_catalog import (
     MarkerCatalog,
     derive_station_name,
@@ -174,6 +175,9 @@ from openfollow.runtime.app_orchestration import (
     check_config_reload as runtime_check_config_reload,
 )
 from openfollow.runtime.app_orchestration import (
+    check_frame_loop_stall as runtime_check_frame_loop_stall,
+)
+from openfollow.runtime.app_orchestration import (
     check_marker_speeds_persist as runtime_check_marker_speeds_persist,
 )
 from openfollow.runtime.app_orchestration import (
@@ -181,6 +185,9 @@ from openfollow.runtime.app_orchestration import (
 )
 from openfollow.runtime.app_orchestration import (
     housekeeping as runtime_housekeeping,
+)
+from openfollow.runtime.app_orchestration import (
+    run_frame as runtime_run_frame,
 )
 from openfollow.runtime.app_orchestration import (
     run_native_loop as runtime_run_native_loop,
@@ -200,6 +207,7 @@ if TYPE_CHECKING:
     from openfollow.otp import OtpServer
     from openfollow.psn import Marker, PsnReceiver, PsnServer
     from openfollow.rttrpm import RttrpmServer
+    from openfollow.runtime.marker_velocity import MarkerVelocityState
     from openfollow.runtime.services_detection_pin import DetectionPinState
     from openfollow.scene.camera import Camera
     from openfollow.video.receiver import GstNativeSinkReceiver
@@ -250,6 +258,10 @@ class OpenFollowApp:
         # drives the single resolved marker (one entry). Created lazily and
         # pruned when a marker leaves the driven set.
         self._detection_pin_states: dict[int, DetectionPinState] = {}
+        # Per-controlled-marker velocity estimate behind the PSN speed field.
+        # Created lazily by the frame loop and pruned when a marker leaves the
+        # controlled set.
+        self._marker_velocity_states: dict[int, MarkerVelocityState] = {}
         self._psn_receiver: PsnReceiver | None = None
         self._web_server: ConfigWebServer | None = None
         self._input_manager: InputManager | None = None
@@ -258,9 +270,17 @@ class OpenFollowApp:
         self._available_interfaces: list[str] = []
         self._selected_iface_index: int = 0
         self._last_iface_refresh: float = 0.0
-        # ``time.perf_counter()`` of the previous animate tick (monotonic, not
-        # wall clock); drives the real-elapsed frame dt.
+        # ``time.perf_counter()`` of the previous animate call (monotonic, not
+        # wall clock); drives the real-elapsed frame dt and the stall watchdog.
         self._last_animate_time: float | None = None
+        self._frame_err_log = ThrottledExceptionLogger(logger, "Unhandled exception in frame clock")
+        # Frame-clock liveness, maintained by the housekeeping watchdog and read
+        # by ``/api/stats``. The frame loop can't report its own stall.
+        # Stamped only by a frame that ran to completion, so a raising or hung
+        # frame reads as stopped rather than healthy.
+        self._last_frame_completed: float | None = None
+        self._frame_stalled: bool = False
+        self._frame_stall_since: float = 0.0
 
         self._source_type_selection_active: bool = False
         self._available_source_types: list[tuple[str, str]] = []
@@ -466,6 +486,9 @@ class OpenFollowApp:
     def _run_native_loop(self) -> None:
         runtime_run_native_loop(self)
 
+    def _run_frame(self) -> bool:
+        return runtime_run_frame(self)
+
     def _animate(self) -> None:
         runtime_animate(self)
 
@@ -481,6 +504,9 @@ class OpenFollowApp:
 
     def _check_marker_speeds_persist(self) -> None:
         runtime_check_marker_speeds_persist(self)
+
+    def _check_frame_loop_stall(self) -> None:
+        runtime_check_frame_loop_stall(self)
 
     def _check_pi_network_worker(self) -> None:
         from openfollow.runtime.app_modes_network import drain_pi_network_worker
@@ -745,15 +771,15 @@ class OpenFollowApp:
             catalog = self._marker_catalog
             controlled = set(self._controlled_ids)
             tombstoned: list[int] = []
-            for tid in changed_ids:
-                entry = catalog.get(tid)
+            for marker_id in changed_ids:
+                entry = catalog.get(marker_id)
                 if entry is None:
                     # get() hides tombstones; None means peer deleted it.
-                    if catalog.get_any(tid) is not None:
-                        tombstoned.append(tid)
+                    if catalog.get_any(marker_id) is not None:
+                        tombstoned.append(marker_id)
                     continue
-                if tid in controlled and entry.name:
-                    server.update_marker_name(tid, entry.name)
+                if marker_id in controlled and entry.name:
+                    server.update_marker_name(marker_id, entry.name)
             # Persist remote changes.
             try:
                 save_catalog(self._marker_catalog, self._marker_catalog_path())
@@ -797,16 +823,16 @@ class OpenFollowApp:
         seeded = False
         controlled = list(self._config.controlled_marker_ids)
         viewer = list(self._config.viewer_marker_ids)
-        for tid in controlled + viewer:
-            if tid < 1:
+        for marker_id in controlled + viewer:
+            if marker_id < 1:
                 continue
             # Use get_any to skip tombstoned entries
-            if catalog.get_any(tid) is not None:
+            if catalog.get_any(marker_id) is not None:
                 continue
             catalog.upsert(
-                tid,
-                f"Marker {tid}",
-                _PALETTE_AUTO_PICK_ORDER[tid % len(_PALETTE_AUTO_PICK_ORDER)],
+                marker_id,
+                f"Marker {marker_id}",
+                _PALETTE_AUTO_PICK_ORDER[marker_id % len(_PALETTE_AUTO_PICK_ORDER)],
                 origin=self._config.station_id,
             )
             seeded = True
@@ -817,8 +843,8 @@ class OpenFollowApp:
                 logger.exception("Failed to persist seeded catalog to %s", path)
 
         # Prune selection for deleted markers (persisted to avoid re-seeding).
-        def _is_tombstoned(tid: int) -> bool:
-            return catalog.get_any(tid) is not None and catalog.get(tid) is None
+        def _is_tombstoned(marker_id: int) -> bool:
+            return catalog.get_any(marker_id) is not None and catalog.get(marker_id) is None
 
         new_controlled = [t for t in controlled if not _is_tombstoned(t)]
         new_viewer = [t for t in viewer if not _is_tombstoned(t)]

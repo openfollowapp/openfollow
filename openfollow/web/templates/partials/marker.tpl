@@ -17,7 +17,7 @@
 %#      structure shifts again.
 %#
 %#   2. Marker Visuals – <form id="marker-section"> with the Body /
-%#      Crosshair / Z Display / Drop Line / Ground Circle / Color
+%#      Crosshair / Z Display / Z Line / Ground Circle / Color
 %#      Palette groups. Saves through /section/marker like every
 %#      other dataclass-driven section.
 
@@ -129,19 +129,19 @@
     </div>
 
     <div class="group">
-        <h3 class="group-title">Drop Line</h3>
+        <h3 class="group-title">Z Line</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
-                <label>Drop Line</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="drop_line" {{'checked' if config.marker.drop_line else ''}}></div>
+                <label>Z Line</label>
+                <div class="checkbox-wrap"><input type="checkbox" name="z_line" {{'checked' if config.marker.z_line else ''}}></div>
             </div>
             <div class="field">
-                <label>Drop Line Thickness (px)</label>
-                <input id="marker-drop-line-thickness" type="number" name="drop_line_thickness" value="{{config.marker.drop_line_thickness}}" min="1" max="20"
-                       hx-get="/api/validate/marker/drop_line_thickness" hx-trigger="blur changed delay:200ms"
-                       hx-target="#marker-drop-line-thickness-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="marker-drop-line-thickness-error" aria-invalid="false">
-                <span id="marker-drop-line-thickness-error" class="field-error"></span>
+                <label>Z Line Thickness (px)</label>
+                <input id="marker-z-line-thickness" type="number" name="z_line_thickness" value="{{config.marker.z_line_thickness}}" min="1" max="20"
+                       hx-get="/api/validate/marker/z_line_thickness" hx-trigger="blur changed delay:200ms"
+                       hx-target="#marker-z-line-thickness-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="marker-z-line-thickness-error" aria-invalid="false">
+                <span id="marker-z-line-thickness-error" class="field-error"></span>
             </div>
         </div>
     </div>

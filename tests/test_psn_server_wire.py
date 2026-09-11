@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import socket
+import threading
 from typing import Any
 
 import pytest
@@ -62,6 +63,7 @@ class _FakeMcastSocket:
                 raise failure
         self.kwargs = kwargs
         self.sendto_calls: list[tuple[bytes, tuple[str, int]]] = []
+        self.entered = False
         self.closed = False
         _FakeMcastSocket.instances.append(self)
 
@@ -71,6 +73,7 @@ class _FakeMcastSocket:
             raise _FakeMcastSocket.sendto_raises
 
     def __enter__(self) -> _FakeMcastSocket:
+        self.entered = True
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -279,10 +282,12 @@ class _DummyThread:
         self,
         *,
         target: Any,
+        args: tuple[Any, ...] = (),
         daemon: bool = False,
         name: str = "",
     ) -> None:
         self.target = target
+        self.args = args
         self.daemon = daemon
         self.name = name
         self.started = False
@@ -558,14 +563,254 @@ class TestRebindMcastIp:
         srv.stop()
 
 
+class _NameReadProbe(PsnServer):
+    """Counts reads of ``_system_name``, split by whether ``_lock`` was held.
+
+    The getter consults the lock but the setter does not: ``__init__``
+    assigns the attribute before ``_lock`` exists.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.locked_reads = 0
+        self.unlocked_reads = 0
+        super().__init__(*args, **kwargs)
+
+    @property
+    def _system_name(self) -> str:
+        if self._lock.locked():
+            self.locked_reads += 1
+        else:
+            self.unlocked_reads += 1
+        return self._name_value
+
+    @_system_name.setter
+    def _system_name(self, value: str) -> None:
+        self._name_value = value
+
+
 class TestUpdateSystemName:
     def test_in_place_mutation_no_socket_recycle(self) -> None:
-        """``update_system_name`` is a lock-protected attribute write –
-        no socket / thread recycle. The next info packet picks up the
-        new name from ``_system_name``."""
+        """``update_system_name`` writes the attribute under the lock –
+        no socket / thread recycle."""
         srv = PsnServer(system_name="Old")
-        # No start() – we only assert the attribute mutation, not
-        # packet emission. The latter is covered by the integration
-        # suite reading ``_send_info_packet`` with a bound sink.
         srv.update_system_name("New")
         assert srv._system_name == "New"
+
+    def test_rename_reaches_the_next_info_packet(self) -> None:
+        """Through the real property, not a probe: a rename has to land on
+        the wire, not just on the attribute."""
+        srv = PsnServer(system_name="Alpha", mcast_ip="236.10.10.10")
+        srv._exit_stack = contextlib.ExitStack()
+        assert srv._try_open_multicast_socket_once(attempt=1) is True
+        srv.add_marker(1, "M1")
+
+        srv.update_system_name("Bravo")
+        srv._send_info_packet()
+
+        payload = srv._socket.sendto_calls[-1][0]  # type: ignore[union-attr]
+        assert b"Bravo" in payload
+        assert b"Alpha" not in payload
+
+    def test_info_packet_reads_the_name_under_the_lock(self) -> None:
+        """The write side takes ``_lock``; the read side has to as well,
+        or the lock orders nothing and a field added alongside the name
+        later would tear without any sign that it could."""
+        srv = _NameReadProbe(system_name="Old")
+        srv.add_marker(1, "M1")
+        # Unstarted: ``_socket`` is None, so ``_send`` returns before
+        # touching the network. Encoding still reads the name.
+        srv._send_info_packet()
+
+        # Both halves: reading it under the lock, and reading it at all –
+        # a packet that stopped carrying the name would satisfy the
+        # unlocked count on its own.
+        assert srv.locked_reads >= 1
+        assert srv.unlocked_reads == 0
+
+
+# --------------------------------------------------------------------------- #
+# Thread generations – a survivor of stop() must not be revived by start()
+# --------------------------------------------------------------------------- #
+
+_JOIN_BUDGET_S = 5.0
+
+
+class TestThreadGenerations:
+    def test_start_does_not_resurrect_a_send_thread_that_outlived_stop(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A data thread still stuck in a send when stop()'s join expires must
+        not be put back to work by the next start() – ``rebind()`` is stop()
+        then start(), so the survivor would stream alongside the fresh thread.
+        """
+        srv = PsnServer(mcast_ip=None)
+        in_send = threading.Event()
+        release = threading.Event()
+        sends: dict[int, int] = {}
+
+        def blocking_send(stop_event: threading.Event | None = None) -> None:
+            ident = threading.get_ident()
+            sends[ident] = sends.get(ident, 0) + 1
+            in_send.set()
+            release.wait(_JOIN_BUDGET_S)
+
+        monkeypatch.setattr(srv, "_send_data_packet", blocking_send)
+        monkeypatch.setattr(srv, "_send_info_packet", lambda stop_event=None: None)
+
+        srv.start()
+        assert in_send.wait(_JOIN_BUDGET_S)
+        survivor = srv._data_thread
+        assert survivor is not None
+
+        srv.stop()  # the join expires – the thread is wedged in the send
+        assert survivor.is_alive()
+
+        srv.start()  # a fresh generation, as rebind() would
+        try:
+            release.set()
+            survivor.join(timeout=_JOIN_BUDGET_S)
+            assert not survivor.is_alive(), "the survivor was revived by start()"
+            assert sends[survivor.ident] == 1, "the survivor sent again after stop()"
+        finally:
+            release.set()
+            srv.stop()
+
+    def test_a_stale_generation_send_error_leaves_the_live_socket_alone(self) -> None:
+        """What wedges a sender is a send that won't return – the same condition
+        an operator answers by repointing PSN at another interface. The dying
+        survivor's error must not tear down the socket the new generation
+        streams on.
+        """
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        _FakeMcastSocket.sendto_raises = OSError(errno.ENETUNREACH, "iface gone")
+        assert srv._try_open_multicast_socket_once(attempt=1) is True
+        live_socket = srv._socket
+        stale = threading.Event()
+        stale.set()
+
+        srv._send(b"\x00", stale)
+
+        assert srv._socket is live_socket
+        assert srv._socket_thread is None
+
+    def test_a_stale_generation_does_not_adopt_a_socket(self) -> None:
+        """A retry thread mid-open when its generation stopped must not hand the
+        live one a socket bound to the interface it just left.
+        """
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        stale = threading.Event()
+        stale.set()
+
+        assert srv._try_open_multicast_socket_once(attempt=1, stop_event=stale) is False
+
+        assert srv._socket is None
+        # Opened off the lock, so the discarded socket has to be closed here.
+        assert _FakeMcastSocket.instances[-1].closed is True
+
+    @pytest.mark.parametrize(
+        ("thread_name", "send_method"),
+        [("PSN-Data", "_send_data_packet"), ("PSN-Info", "_send_info_packet")],
+    )
+    def test_a_send_loop_obeys_the_generation_that_spawned_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        thread_name: str,
+        send_method: str,
+    ) -> None:
+        """Each loop is handed its generation instead of reading the live one when
+        it first gets scheduled – a thread that starts late would otherwise take
+        orders from a generation it does not belong to.
+        """
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        srv = PsnServer(mcast_ip=None)
+        srv.start()
+        spawned = next(t for t in _DummyThread.instances if t.name == thread_name)
+        srv.stop()
+        srv.start()  # a second generation is live; the first thread never ran
+
+        sends: list[object] = []
+
+        def stub(stop_event: threading.Event | None = None) -> None:
+            sends.append(stop_event)
+            srv._stop_event.set()  # bound the loop if it wrongly took the live one
+
+        monkeypatch.setattr(srv, send_method, stub)
+        spawned.target(*spawned.args)
+
+        assert sends == [], "the superseded loop ran under the live generation"
+        srv.stop()
+
+    def test_a_send_loop_hands_its_generation_to_the_send(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Whatever judges the loop must judge its sends too, or the survivor's
+        failing send is weighed against the live generation.
+        """
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        srv = PsnServer(mcast_ip=None)
+        srv.start()
+        generation = srv._stop_event
+        loops = {t.name: t for t in _DummyThread.instances}
+        seen: list[object] = []
+
+        def stub(stop_event: threading.Event | None = None) -> None:
+            seen.append(stop_event)
+            generation.set()  # one pass per loop
+
+        monkeypatch.setattr(srv, "_send_data_packet", stub)
+        monkeypatch.setattr(srv, "_send_info_packet", stub)
+
+        loops["PSN-Data"].target(*loops["PSN-Data"].args)
+        generation.clear()
+        loops["PSN-Info"].target(*loops["PSN-Info"].args)
+
+        assert seen == [generation, generation]
+        srv.stop()
+
+    def test_the_recovery_thread_is_handed_the_failing_generation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv._socket = object()  # type: ignore[assignment]
+
+        srv._handle_send_error(OSError(errno.ENETUNREACH, "iface gone"))
+
+        recover = next(t for t in _DummyThread.instances if t.name == "PSN-SocketRecover")
+        assert recover.args == (srv._stop_event,)
+
+    def test_the_socket_loops_forward_their_generation_to_the_open(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        generation = threading.Event()
+        seen: list[object] = []
+
+        def fake_open(*, attempt: int, stop_event: threading.Event | None = None) -> bool:
+            seen.append(stop_event)
+            return True
+
+        monkeypatch.setattr(srv, "_try_open_multicast_socket_once", fake_open)
+        monkeypatch.setattr(generation, "wait", lambda timeout=None: False)
+
+        srv._retry_multicast_socket_background(generation)
+        srv._recover_multicast_socket_background(generation)
+
+        assert seen == [generation, generation]
+
+    def test_the_socket_retry_thread_is_handed_its_generation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        _FakeMcastSocket.script = [OSError(99, "boom")]
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.start()
+
+        retry = next(t for t in _DummyThread.instances if t.name == "PSN-SocketRetry")
+        assert retry.args == (srv._stop_event,)
+        srv.stop()

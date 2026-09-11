@@ -29,12 +29,12 @@ from openfollow.configuration import (
 from openfollow.input import InputManager
 from openfollow.net_utils import ResolveStatus
 from openfollow.otp import OtpServer
-from openfollow.psn import PsnReceiver, PsnServer
+from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
+from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT
 from openfollow.runtime.network_observer import NetworkPlaneObserver, Plane
 from openfollow.runtime.overlay_state import OverlayState
-from openfollow.runtime.services_detection_pin import _NOMINAL_FRAME_DT
 from openfollow.runtime.services_detection_pin import (
     apply_detection_pin as apply_detection_pin_helper,
 )
@@ -1100,7 +1100,7 @@ class AppRuntimeServices:
         # ``Marker.__init__`` and raise at startup.
         #
         # ``bool`` rejected explicitly: ``bool`` is an ``int`` subclass,
-        # so ``controlled_marker_ids = [True]`` would pass ``tid >= 1``
+        # so ``controlled_marker_ids = [True]`` would pass ``marker_id >= 1``
         # (``True >= 1``) and then crash ``Marker.__init__``.
         #
         # Dedup preserving first-seen order, matching the ``load_config``
@@ -1110,13 +1110,13 @@ class AppRuntimeServices:
         def _normalise(ids: list[Any]) -> list[int]:
             seen: set[int] = set()
             out: list[int] = []
-            for tid in ids:
-                if not (isinstance(tid, int) and not isinstance(tid, bool) and tid >= 1):
+            for marker_id in ids:
+                if not (isinstance(marker_id, int) and not isinstance(marker_id, bool) and marker_id >= 1):
                     continue
-                if tid in seen:
+                if marker_id in seen:
                     continue
-                seen.add(tid)
-                out.append(tid)
+                seen.add(marker_id)
+                out.append(marker_id)
             return out
 
         self._app._controlled_ids = _normalise(self._app._config.controlled_marker_ids)
@@ -1128,10 +1128,10 @@ class AppRuntimeServices:
         server = self._app._server
         assert server is not None, "init_psn must run before init_markers"
         catalog = getattr(self._app, "_marker_catalog", None)
-        for tid in self._app._controlled_ids:
-            entry = catalog.get(tid) if catalog is not None else None
-            name = entry.name if (entry is not None and entry.name) else f"Marker {tid}"
-            marker = server.add_marker(tid, name)
+        for marker_id in self._app._controlled_ids:
+            entry = catalog.get(marker_id) if catalog is not None else None
+            name = entry.name if (entry is not None and entry.name) else f"Marker {marker_id}"
+            marker = server.add_marker(marker_id, name)
             marker.set_pos(*default_pos)
         self._app._selected_id = self._app._controlled_ids[0] if self._app._controlled_ids else None
 
@@ -1187,8 +1187,8 @@ class AppRuntimeServices:
         # ``init_psn`` runs before ``init_otp``, so the None arm is
         # unreachable; the guard exists only for the strict checker.
         if server is not None:  # pragma: no branch
-            for tid in self._app._controlled_ids:
-                marker = server.get_marker(tid)
+            for marker_id in self._app._controlled_ids:
+                marker = server.get_marker(marker_id)
                 if marker is not None:
                     self._app._otp_server.register_marker(marker)
         self._app._otp_server.start()
@@ -1206,8 +1206,8 @@ class AppRuntimeServices:
         server = self._app._server
         # Same lifecycle guarantee as ``init_otp``; ``init_psn`` runs first.
         if server is not None:  # pragma: no branch
-            for tid in self._app._controlled_ids:
-                marker = server.get_marker(tid)
+            for marker_id in self._app._controlled_ids:
+                marker = server.get_marker(marker_id)
                 if marker is not None:
                     self._app._rttrpm_server.register_marker(marker)
         self._app._rttrpm_server.start()
@@ -1825,9 +1825,8 @@ class AppRuntimeServices:
         Touches:
 
         - ``PsnServer._system_name`` (info packet name field)
-        - ``OtpServer._system_name`` (held for parity; encoders don't
-          read it today, but keeping it in sync prevents drift if a
-          future advertisement PDU gains a name field)
+        - ``OtpServer._system_name`` (the Component Name field every
+          transform and advertisement packet carries, Section 6.12)
         - ``ConfigWebServer.update_system_name`` (web beacon)
         - the GTK window title via ``_apply_window_title``
 
@@ -2598,13 +2597,16 @@ class AppRuntimeServices:
     def update_video(self) -> None:
         update_video_helper(self._app, logger)
 
-    def update_marker_visuals(self) -> None:
+    def update_marker_visuals(self, dt: float) -> None:
         """Push current marker + camera state to the Cairo overlay renderer.
 
         Builds a complete new OverlayState and swaps it atomically so the
         GStreamer rendering thread never sees partially-updated state.
         Uses the object pool + pre-allocated camera-params buffer to
-        reduce allocation churn.
+        reduce allocation churn. ``dt`` is the real seconds since the previous
+        animate frame; it feeds the velocity estimate each controlled marker
+        broadcasts, so it carries no default - a wrong step silently rescales
+        every velocity on the wire.
         """
         state = build_marker_visual_state(
             self._app,
@@ -2612,6 +2614,7 @@ class AppRuntimeServices:
             system_stats=self._system_stats,
             person_detector=self._person_detector,
             cam_params_buffer=self._cam_params_buffer,
+            dt=dt,
             network_alerts=self.network_alerts(),
         )
 
@@ -2624,12 +2627,12 @@ class AppRuntimeServices:
 
         # GIL-atomic assignment (GStreamer thread reads this snapshot).
         # ``init_video`` assigns ``self._overlay_renderer`` before this path
-        # runs (frame tick is gated by canvas readiness), so the None arm is
+        # runs (the frame clock is gated by canvas readiness), so the None arm is
         # unreachable at runtime.
         if self._overlay_renderer is not None:  # pragma: no branch
             self._overlay_renderer.state = state
 
-    def apply_detection_pin(self, dt: float = _NOMINAL_FRAME_DT) -> None:
+    def apply_detection_pin(self, dt: float = NOMINAL_FRAME_DT) -> None:
         """Drive controlled marker(s) from detection with EMA smoothing.
 
         ``dt`` (seconds since the previous animate frame) keeps the smoothing /
@@ -2684,20 +2687,20 @@ class AppRuntimeServices:
         app = self._app
         controlled = set(app._controlled_ids)
         result: list[tuple[tuple[str, int], float, float]] = []
-        for tid in app._viewer_ids:
-            if tid in controlled:
-                marker = app._server.get_marker(tid) if app._server is not None else None
+        for marker_id in app._viewer_ids:
+            if marker_id in controlled:
+                marker = app._server.get_marker(marker_id) if app._server is not None else None
             else:
-                marker = app._psn_receiver.get_marker(tid) if app._psn_receiver is not None else None
+                marker = app._psn_receiver.get_marker(marker_id) if app._psn_receiver is not None else None
             if marker is None:
                 continue
-            if tid not in controlled and app._psn_receiver is not None:
-                if not app._psn_receiver.is_marker_online(tid):
+            if marker_id not in controlled and app._psn_receiver is not None:
+                if not app._psn_receiver.is_marker_online(marker_id):
                     continue
             pos = marker.pos
             result.append(
                 (
-                    ("marker", int(tid)),
+                    ("marker", int(marker_id)),
                     float(pos[0]),
                     float(pos[1]),
                 )
@@ -2763,8 +2766,8 @@ class AppRuntimeServices:
             # ("detection", -1) entity in the engine's occupant set. Do not
             # "fix" this by generating synthetic per-box IDs – that would
             # make every frame look like a full enter/exit cycle.
-            tid = int(det.track_id) if det.track_id >= 0 else -1
-            result.append((("detection", tid), wx, wy))
+            track_id = int(det.track_id) if det.track_id >= 0 else -1
+            result.append((("detection", track_id), wx, wy))
         return result
 
     def _get_zone_states_snapshot(self) -> list[tuple[int, bool, int]]:
@@ -2844,7 +2847,7 @@ class AppRuntimeServices:
             positions = self._collect_marker_positions()
         except Exception:  # noqa: BLE001
             return []
-        return [(tid, x, y) for (_kind, tid), x, y in positions]
+        return [(marker_id, x, y) for (_kind, marker_id), x, y in positions]
 
     def _mouse3d_latest_button(self) -> int | None:
         """Watch briefly for a 3D Mouse button press, for the web bind helper.
@@ -3076,9 +3079,24 @@ class AppRuntimeServices:
             self._runtime_stats_snapshot = snapshot
 
     def get_runtime_stats_snapshot(self) -> dict[str, Any]:
-        """Return a defensive copy of the latest runtime telemetry snapshot."""
+        """Return a defensive copy of the latest runtime telemetry snapshot.
+
+        Frame-clock liveness is overlaid at *read* time: the snapshot itself is
+        published from the frame loop, so a stalled loop freezes every other
+        figure in it.
+        """
         with self._runtime_stats_lock:
-            return copy.deepcopy(self._runtime_stats_snapshot)
+            snapshot = copy.deepcopy(self._runtime_stats_snapshot)
+        playback = snapshot["playback"]
+        last_frame = self._app._last_frame_completed
+        playback["seconds_since_last_frame"] = (
+            float(time.perf_counter() - last_frame) if last_frame is not None else None
+        )
+        playback["stalled"] = bool(self._app._frame_stalled)
+        # Published so the UI compares against the same threshold the outputs
+        # use, rather than a literal that drifts when the constant moves.
+        playback["stale_after_s"] = float(MARKER_STALE_AFTER_S)
+        return snapshot
 
     def _safe_stop(self, name: str, fn: Callable[[], Any]) -> None:
         """Run one teardown step, logging and swallowing any exception.

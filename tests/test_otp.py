@@ -13,6 +13,8 @@ thread warnings, and the live-apply ``restart()`` path.
 from __future__ import annotations
 
 import struct
+import threading
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -66,6 +68,25 @@ def _marker(
     t = Marker(marker_id, name)
     t.set_pos(x, y, z)
     return t
+
+
+# Component Name sits at a fixed offset in the OTP Layer (Table 6-3): packet
+# identifier(12) + vector/length(4) + footer options/length(2) + CID(16) +
+# folio(4) + page/last page(4) + options(1) + reserved(4). The field-layout
+# tests below spell the offset out literally on purpose – one derived from
+# this constant could not catch the constant being wrong.
+_COMPONENT_NAME_START = 47
+_COMPONENT_NAME_END = _COMPONENT_NAME_START + COMPONENT_NAME_OCTETS
+
+
+def _component_name_of(payload: bytes) -> str:
+    """Read the Component Name a packet actually carries on the wire."""
+    return payload[_COMPONENT_NAME_START:_COMPONENT_NAME_END].rstrip(b"\x00").decode("utf-8")
+
+
+def _system_number_of(transform_payload: bytes) -> int:
+    """Read the Transform Layer's System Number (Section 8.3)."""
+    return transform_payload[_COMPONENT_NAME_END + 4]
 
 
 # ===========================================================================
@@ -458,10 +479,11 @@ class TestAppendixBLikeFixture:
             int(1.000_500 * 1_000_000),
             int(-0.010 * 1_000_000),
         )
-        # Note: encode_otp_transform_packet uses the same generation
-        # timestamp as the sampled timestamp when the latter is omitted
-        # (Section 9.6 – sampled is when the Producer read the Point;
-        # for a single-pass encoder there's no distinction).
+        # Side B pins ``sampled_timestamp_us`` so this stays a test of layer
+        # structure. Left to derive per point it would trail by however many
+        # microseconds ago the marker happened to be written, which is real
+        # elapsed time and not byte-comparable. The derivation has its own
+        # tests below.
         pt0 = _build_point_layer(
             priority=priority,
             group=1,
@@ -501,6 +523,7 @@ class TestAppendixBLikeFixture:
             timestamp_us=timestamp_us,
             markers=[t0, t1],
             priority=priority,
+            sampled_timestamp_us=timestamp_us,
         )
 
         assert actual == expected, (
@@ -996,11 +1019,88 @@ class TestOtpOverrideMcastIp:
         assert "239.159.2.1" in groups
 
 
+class _DriftingIdentityServer(OtpServer):
+    """Changes its identity on every read of ``_system_name`` / ``_system_number``.
+
+    Stands in for a ``restart`` landing mid-send. Any send path that reads
+    an identity field more than once per call encodes two identities, which
+    is what these tests look for.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self._name_reads = 0
+        self._number_reads = 0
+        super().__init__(*args, **kwargs)
+
+    @property
+    def _system_name(self) -> str:
+        self._name_reads += 1
+        return f"Name{self._name_reads}"
+
+    @_system_name.setter
+    def _system_name(self, value: str) -> None:
+        self._name_value = value
+
+    @property
+    def _system_number(self) -> int:
+        self._number_reads += 1
+        return self._number_reads
+
+    @_system_number.setter
+    def _system_number(self, value: int) -> None:
+        self._number_value = value
+
+
 class TestOtpUpdateSystemName:
     def test_updates_system_name_under_lock(self) -> None:
         srv = OtpServer(system_name="Old")
         srv.update_system_name("New")
         assert srv._system_name == "New"
+
+    def test_rename_reaches_the_next_packets(self) -> None:
+        """Through the real property, not a probe: a rename has to land on
+        the wire, not just on the attribute."""
+        srv = OtpServer(system_number=1, system_name="Alpha")
+        srv._socket = MagicMock()
+        srv.register_marker(_marker(1))
+
+        srv.update_system_name("Bravo")
+        srv._send_transform_packet()
+        srv._send_advertisement_packets()
+
+        sent = [call[0][0] for call in srv._socket.sendto.call_args_list]
+        assert sent
+        assert {_component_name_of(p) for p in sent} == {"Bravo"}
+
+    def test_advertisement_burst_carries_one_component_name(self) -> None:
+        """Module, Name and System advertisements describe one Component,
+        so a rename mid-burst must not split them across two identities."""
+        srv = _DriftingIdentityServer(system_number=1)
+        srv._socket = MagicMock()
+        srv.register_marker(_marker(1))
+
+        srv._send_advertisement_packets()
+
+        sent = [call[0][0] for call in srv._socket.sendto.call_args_list]
+        assert len(sent) == 3
+        assert len({_component_name_of(p) for p in sent}) == 1
+
+    def test_transform_folio_pages_carry_one_component_name(self) -> None:
+        """Section 6.7-6.9: everything outside the split point list repeats
+        verbatim on every page of a folio. A page disagreeing with its
+        siblings about who sent it describes no coherent point set."""
+        srv = _DriftingIdentityServer(system_number=1)
+        srv._socket = MagicMock()
+        for marker_id in range(1, 61):
+            srv.register_marker(_marker(marker_id))
+
+        srv._send_transform_packet()
+
+        pages = [call[0][0] for call in srv._socket.sendto.call_args_list]
+        # Guard the premise: a single-page folio could not show the defect.
+        assert len(pages) > 1
+        assert len({_component_name_of(p) for p in pages}) == 1
+        assert len({_system_number_of(p) for p in pages}) == 1
 
 
 class TestOtpStartFailsAndSpawnsRetryThread:
@@ -1045,8 +1145,11 @@ class TestOtpRetryMulticastBackground:
         # retry budget (_MAX_SOCKET_RETRIES = 3).
         attempts: list[int] = []
 
-        def fake_open(*, attempt: int) -> bool:
+        handed: list[object] = []
+
+        def fake_open(*, attempt: int, stop_event: object = None) -> bool:
             attempts.append(attempt)
+            handed.append(stop_event)
             return attempt == 2
 
         srv._try_open_multicast_socket_once = fake_open  # type: ignore[assignment]
@@ -1055,6 +1158,7 @@ class TestOtpRetryMulticastBackground:
         with caplog.at_level(_logging.INFO, logger="openfollow.otp.server"):
             srv._retry_multicast_socket_background()
         assert attempts == [2]
+        assert handed == [srv._stop_event]
         assert any("connected on retry" in r.message for r in caplog.records)
 
     def test_retry_exhausts_logs_error(self, caplog) -> None:
@@ -1080,14 +1184,18 @@ class TestOtpRecoverMulticastBackground:
         srv = OtpServer(system_number=1)
         attempts: list[int] = []
 
-        def fake_open(*, attempt: int) -> bool:
+        handed: list[object] = []
+
+        def fake_open(*, attempt: int, stop_event: object = None) -> bool:
             attempts.append(attempt)
+            handed.append(stop_event)
             return attempt == 3
 
         srv._try_open_multicast_socket_once = fake_open  # type: ignore[assignment]
         srv._stop_event.wait = lambda timeout=None: False  # type: ignore[assignment]
         srv._recover_multicast_socket_background()
         assert attempts == [1, 2, 3]
+        assert handed == [srv._stop_event] * 3
 
     def test_recovery_aborts_when_stop_set_between_iterations(self) -> None:
         srv = OtpServer(system_number=1)
@@ -1215,52 +1323,53 @@ class TestOtpRestartFailureRaises:
                 )
 
 
-class TestOtpSendOversizePacketSkipped:
-    def _server_with_oversize_load(self) -> OtpServer:
+class TestOtpFolioPageCap:
+    """A folio too long for its uint16 Last Page cannot describe itself, so the
+    tail is dropped rather than left to ``struct.pack``. Only reachable in the
+    millions of markers, so the cap is lowered here to reach the path at all."""
+
+    def _server_with_capped_load(self, monkeypatch: pytest.MonkeyPatch) -> OtpServer:
         srv = OtpServer(system_number=1)
         srv._socket = MagicMock()
-        # 70 markers blow the 1472-octet cap.
+        # 70 markers need 3 pages; a 2-page ceiling drops the third.
+        monkeypatch.setattr("openfollow.otp.server._MAX_FOLIO_LAST_PAGE", 1)
         for i in range(1, 71):
             srv.register_marker(_marker(i, name=f"T{i}"))
         return srv
 
-    def test_oversize_payload_drops_packet_with_warning(self, caplog) -> None:
+    def test_pages_past_the_cap_are_dropped_with_a_warning(self, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
         import logging as _logging
 
-        srv = self._server_with_oversize_load()
+        srv = self._server_with_capped_load(monkeypatch)
         with caplog.at_level(_logging.WARNING, logger="openfollow.otp.server"):
             srv._send_transform_packet()
-        srv._socket.sendto.assert_not_called()
-        assert any("transform packet skipped" in r.message for r in caplog.records)
+        assert srv._socket.sendto.call_count == 2
+        assert any("transform folio needs 3 pages" in r.message for r in caplog.records)
         assert srv._oversize_drops == 1
 
-    def test_oversize_log_throttles_after_5_drops(self, caplog) -> None:
-        """Length-cap drops are throttled with the same first-5-then-
-        every-100 pattern as ``_send``'s OSError counter, so a misconfigured
-        install pushing too many markers doesn't flood the log at the
+    def test_cap_log_throttles_after_5_drops(self, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
+        """Throttled with the same first-5-then-every-100 pattern as ``_send``'s
+        OSError counter, so a misconfigured install doesn't flood the log at the
         transform fps."""
         import logging as _logging
 
-        srv = self._server_with_oversize_load()
+        srv = self._server_with_capped_load(monkeypatch)
         with caplog.at_level(_logging.WARNING, logger="openfollow.otp.server"):
             for _ in range(20):
                 srv._send_transform_packet()
-        # 20 calls → first 5 log, then nothing until the 100th – so
-        # exactly 5 warnings hit the buffer.
-        warnings = [r for r in caplog.records if "transform packet skipped" in r.message]
+        warnings = [r for r in caplog.records if "transform folio needs" in r.message]
         assert len(warnings) == 5
         assert srv._oversize_drops == 20
 
-    def test_oversize_log_resumes_at_100th_drop(self, caplog) -> None:
+    def test_cap_log_resumes_at_100th_drop(self, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
         import logging as _logging
 
-        srv = self._server_with_oversize_load()
+        srv = self._server_with_capped_load(monkeypatch)
         # Simulate having already passed the first-5 burst.
         srv._oversize_drops = 99
         with caplog.at_level(_logging.WARNING, logger="openfollow.otp.server"):
             srv._send_transform_packet()
-        # Next drop is the 100th → must log.
-        assert any("transform packet skipped" in r.message for r in caplog.records)
+        assert any("transform folio needs" in r.message for r in caplog.records)
         assert srv._oversize_drops == 100
 
 
@@ -1353,3 +1462,165 @@ class TestOtpBoundSourceIp:
         srv._transform_thread = object()
         srv._stop_event.set()
         assert srv.bound_source_ip() is None
+
+
+class TestOtpThreadGenerations:
+    """A thread that outlived stop()'s join must not be revived by start().
+
+    ``restart()`` is stop() then start() – the live-apply path for every
+    ``otp_output.*`` edit – so a survivor would stream alongside the fresh
+    thread and interleave its folio numbers with it.
+    """
+
+    def test_start_does_not_resurrect_a_transform_thread_that_outlived_stop(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        srv = OtpServer(system_number=1, mcast_ip="")  # unicast: plain UDP socket
+        in_send = threading.Event()
+        release = threading.Event()
+        sends: dict[int, int] = {}
+
+        def blocking_send(stop_event: threading.Event | None = None) -> None:
+            ident = threading.get_ident()
+            sends[ident] = sends.get(ident, 0) + 1
+            in_send.set()
+            release.wait(5.0)
+
+        monkeypatch.setattr(srv, "_send_transform_packet", blocking_send)
+        monkeypatch.setattr(srv, "_send_advertisement_packets", lambda stop_event=None: None)
+
+        srv.start()
+        assert in_send.wait(5.0)
+        survivor = srv._transform_thread
+        assert survivor is not None
+
+        srv.stop()  # the join expires – the thread is wedged in the send
+        assert survivor.is_alive()
+
+        srv.start()
+        try:
+            release.set()
+            survivor.join(timeout=5.0)
+            assert not survivor.is_alive(), "the survivor was revived by start()"
+            assert sends[survivor.ident] == 1, "the survivor sent again after stop()"
+        finally:
+            release.set()
+            srv.stop()
+
+    def test_a_stale_generation_send_error_leaves_the_live_socket_alone(self) -> None:
+        import errno as _e
+
+        srv = OtpServer(system_number=1)
+        live_socket = MagicMock()
+        live_socket.sendto.side_effect = OSError(_e.ENETUNREACH, "iface gone")
+        srv._socket = live_socket
+        stale = threading.Event()
+        stale.set()
+
+        srv._send(b"\x00", "239.159.1.1", stale)
+
+        assert srv._socket is live_socket
+        assert srv._socket_thread is None
+
+    def test_a_stale_generation_does_not_adopt_a_socket(self) -> None:
+        """A socket thread mid-open when its generation stopped must not hand
+        the live one a socket bound to the interface it just left.
+        """
+        with patch("openfollow.otp.server.multicast_expert.McastTxSocket") as mcls:
+            sock = MagicMock()
+            mcls.return_value = sock
+            srv = OtpServer(system_number=1)
+            stale = threading.Event()
+            stale.set()
+
+            assert srv._try_open_multicast_socket_once(attempt=1, stop_event=stale) is False
+
+        assert srv._socket is None
+        # Opened off the lock, so the discarded socket has to be closed here.
+        sock.__exit__.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ("thread_name", "send_method"),
+        [
+            ("OTP-Transform", "_send_transform_packet"),
+            ("OTP-Advertisement", "_send_advertisement_packets"),
+        ],
+    )
+    def test_a_transform_loop_obeys_the_generation_that_spawned_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        thread_name: str,
+        send_method: str,
+    ) -> None:
+        """See ``PsnServer`` for the rationale: a late-scheduled thread must not
+        take orders from a generation it does not belong to.
+        """
+        with patch("openfollow.otp.server.threading.Thread") as tcls:
+            srv = OtpServer(system_number=1, mcast_ip="")
+            srv.start()
+            spawned = {c.kwargs["name"]: c.kwargs for c in tcls.call_args_list}
+            srv.stop()
+            srv.start()  # a second generation is live; the first thread never ran
+
+            sends: list[object] = []
+
+            def stub(stop_event: threading.Event | None = None) -> None:
+                sends.append(stop_event)
+                srv._stop_event.set()
+
+            monkeypatch.setattr(srv, send_method, stub)
+            spawned[thread_name]["target"](*spawned[thread_name]["args"])
+
+            assert sends == [], "the superseded loop ran under the live generation"
+            srv.stop()
+
+    def test_a_transform_loop_hands_its_generation_to_the_send(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with patch("openfollow.otp.server.threading.Thread") as tcls:
+            srv = OtpServer(system_number=1, mcast_ip="")
+            srv.start()
+            generation = srv._stop_event
+            spawned = {c.kwargs["name"]: c.kwargs for c in tcls.call_args_list}
+            seen: list[object] = []
+
+            def stub(stop_event: threading.Event | None = None) -> None:
+                seen.append(stop_event)
+                generation.set()  # one pass per loop
+
+            monkeypatch.setattr(srv, "_send_transform_packet", stub)
+            monkeypatch.setattr(srv, "_send_advertisement_packets", stub)
+
+            spawned["OTP-Transform"]["target"](*spawned["OTP-Transform"]["args"])
+            generation.clear()
+            spawned["OTP-Advertisement"]["target"](*spawned["OTP-Advertisement"]["args"])
+
+            assert seen == [generation, generation]
+            srv.stop()
+
+    def test_handle_send_error_rechecks_the_stop_signal_under_the_lock(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """stop() sets the event before tearing the socket down, so a pre-lock
+        read that went stale must not spawn a recovery thread teardown will never
+        join.
+        """
+        import errno as _e
+
+        srv = OtpServer(system_number=1)
+        sentinel_socket = MagicMock()
+        srv._socket = sentinel_socket
+        calls = {"n": 0}
+
+        def fake_is_set() -> bool:
+            calls["n"] += 1
+            return calls["n"] >= 2  # False pre-lock, True under the lock
+
+        monkeypatch.setattr(srv._stop_event, "is_set", fake_is_set)
+        srv._handle_send_error(OSError(_e.ENETUNREACH, "transient"))
+
+        assert srv._socket_thread is None
+        assert srv._socket is sentinel_socket

@@ -43,6 +43,7 @@ import openfollow
 import openfollow.web._bottle_charset_fix  # noqa: F401
 
 if TYPE_CHECKING:
+    from openfollow.osc.template import UnresolvedPlaceholder, UnresolvedReason
     from openfollow.video.inputs._base import VideoInputBase
     from openfollow.web.discovery import PeerInfo
     from openfollow.web.server import ConfigWebServer
@@ -59,6 +60,7 @@ from openfollow.configuration import (
     OscTransmitterConfig,
     TriggerZoneConfig,
     _coerce_marker_tokens,
+    apply_renamed_marker_keys,
     config_write_lock,
     load_config,
     save_config,
@@ -1229,6 +1231,11 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
         tz.__post_init__()
         return True
 
+    if section == "marker":
+        marker_data = dict(data)
+        apply_renamed_marker_keys(marker_data)
+        data = marker_data
+
     parser_map = _SECTION_FIELD_PARSERS.get(section)
     # pragma: no cover – defensively unreachable: every section in
     # ``_SECTION_CONFIG_ATTRS`` either returns early above (zones) or has
@@ -1647,8 +1654,8 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "crosshair_size": _as_float,
         "crosshair_color": _as_str,
         "crosshair_thickness": _as_int,
-        "drop_line": _as_bool,
-        "drop_line_thickness": _as_int,
+        "z_line": _as_bool,
+        "z_line_thickness": _as_int,
         "ground_circle": _as_bool,
         "ground_circle_size": _as_float,
         "ground_circle_filled": _as_bool,
@@ -2107,9 +2114,15 @@ def _osc_binding_marker_display(
     return out
 
 
+# Causes the ``markers`` field can actually fix.
+_MARKER_BLUR_REASONS: frozenset[str] = frozenset({"default_marker", "explicit_marker"})
+
+
 def _osc_binding_unresolved_blur_error(
     query: Mapping[str, Any],
     cfg: AppConfig,
+    *,
+    field_name: str = "osc_message",
 ) -> str | None:
     """Surface inline blur errors for unresolved placeholders on the
     ``osc_binding`` form.
@@ -2134,44 +2147,44 @@ def _osc_binding_unresolved_blur_error(
     marker_id = _effective_default_marker_id(markers, registered)
     from openfollow.osc.template import (
         compile_template,
-        token_has_explicit_index,
-        unresolved_placeholders,
+        unresolved_placeholder_reasons,
     )
 
     seen: set[str] = set()
-    unresolved: list[str] = []
+    by_reason: dict[UnresolvedReason, list[str]] = {}
     for tpl in (address, *args):
-        for token in unresolved_placeholders(
+        for entry in unresolved_placeholder_reasons(
             compile_template(tpl),
             default_marker_id=marker_id,
             registered_marker_ids=registered,
             grid_max_height=cfg.grid.max_height,
         ):
-            if token not in seen:
-                unresolved.append(token)
-                seen.add(token)
-    if not unresolved:
-        return None
-    # Split into "needs default" vs "explicit-target missing" so the
-    # message names the actionable fix per category. ``unresolved`` is
-    # already the operator-facing token form (``"[x]"`` / ``"[x:7]"``).
-    # Classify via the grammar, not a ``:`` sniff – a transform can carry
-    # a colon. Per-token validity (malformed / non-controlled entries) is
-    # surfaced by the field-level ``markers`` validator; this arm only flags
-    # the cross-field "you use [x] but name no usable default marker".
-    # Every unresolved token is either explicit-index or not, so the two
-    # lists partition the (non-empty) ``unresolved`` set: at least one is
-    # non-empty here, so ``parts`` below is never empty.
-    default_tokens = [t for t in unresolved if not token_has_explicit_index(t)]
-    explicit_tokens = [t for t in unresolved if token_has_explicit_index(t)]
-    parts: list[str] = []
-    if default_tokens:
-        parts.append(
-            f"{', '.join(default_tokens)} needs a default marker. Set 'Default markers' to a controlled id, "
+            if entry.token not in seen:
+                by_reason.setdefault(entry.reason, []).append(entry.token)
+                seen.add(entry.token)
+    # One sentence per cause, each naming the control that fixes it.
+    # Order is fixed rather than first-seen so the message reads the same
+    # however the operator ordered the arguments.
+    templates: dict[UnresolvedReason, str] = {
+        "default_marker": (
+            "{tokens} needs a default marker. Set 'Default markers' to a controlled id, "
             "a controller alias (c1, c2, …), or 'all'."
-        )
-    if explicit_tokens:
-        parts.append(f"{', '.join(explicit_tokens)} references a marker that isn't registered.")
+        ),
+        "explicit_marker": "{tokens} references a marker that isn't registered.",
+        "grid_height": "{tokens} needs Grid → Maximum Height set to a non-zero value.",
+    }
+    # The markers field can only act on the marker causes; a grid-height
+    # sentence there would describe a control it has no bearing on.
+    actionable = _MARKER_BLUR_REASONS if field_name == "markers" else None
+    parts: list[str] = [
+        templates[reason].format(tokens=", ".join(by_reason[reason]))
+        for reason in _UNRESOLVED_CAUSE_ORDER
+        if reason in by_reason and (actionable is None or reason in actionable)
+    ]
+    # Guard the join, not the token set: a reason with no entry above
+    # would otherwise render an empty warning span.
+    if not parts:
+        return None
     return " ".join(parts)
 
 
@@ -2272,6 +2285,109 @@ def _render_midi_fader_capture_status(
     )
 
 
+# The order an operator works through placeholder causes. The badge and
+# the blur message both follow it, so they never lead with different
+# problems.
+_UNRESOLVED_CAUSE_ORDER: tuple[UnresolvedReason, ...] = (
+    "default_marker",
+    "explicit_marker",
+    "grid_height",
+)
+
+# Faults shown on a collapsed row before the rest are counted.
+_MAX_VISIBLE_FAULTS = 3
+
+
+def _row_fault_labels(
+    row: OscTransmitterConfig,
+    *,
+    entries: Sequence[UnresolvedPlaceholder],
+    destination_ids: frozenset[str],
+    markers_unusable: bool,
+) -> tuple[str, ...]:
+    """Every reason this row can never fire, worded for the operator.
+
+    Empty when the row is fine. ``entries`` is the row's already-scanned
+    unresolved set, so the caller pays for one scan. Callers render the
+    first :data:`_MAX_VISIBLE_FAULTS` and count the rest, so the order is
+    the fix order rather than the order the faults were found.
+    """
+    faults: list[str] = []
+    if not row.destination_id or row.destination_id not in destination_ids:
+        faults.append("No destination")
+    if markers_unusable:
+        faults.append("No controlled marker")
+
+    causes = {e.reason for e in entries}
+    for cause in _UNRESOLVED_CAUSE_ORDER:
+        if cause not in causes:
+            continue
+        if cause == "default_marker":
+            # An unusable marker list is why the default won't resolve;
+            # naming both spends a slot on one fix.
+            if not markers_unusable:
+                faults.append("No default marker")
+        elif cause == "explicit_marker":
+            missing = sorted({e.marker_id for e in entries if e.reason == cause and e.marker_id is not None})
+            # Every cause must yield a label, or the row reads as healthy
+            # while it can never fire. An entry without its id still says so.
+            if missing:
+                ids = ", ".join(str(m) for m in missing)
+                faults.append(f"Marker{'s' if len(missing) > 1 else ''} {ids} not registered")
+            else:
+                faults.append("Marker not registered")
+        else:
+            faults.append("Grid Maximum Height not set")
+    return tuple(faults)
+
+
+def _row_fault_summary(faults: Sequence[str]) -> tuple[tuple[str, ...], str, tuple[str, ...]]:
+    """``(visible, overflow_phrase, all)`` for one row.
+
+    The phrase is empty when everything fits. ``all`` rides along for the
+    assistive-tech list, which is never truncated.
+    """
+    full = tuple(faults)
+    visible = full[:_MAX_VISIBLE_FAULTS]
+    hidden = len(full) - len(visible)
+    if hidden <= 0:
+        return visible, "", full
+    return visible, f"+{hidden} more error{'s' if hidden > 1 else ''}", full
+
+
+def _row_unresolved_entries(
+    row: OscTransmitterConfig,
+    registered_marker_ids: frozenset[int],
+    *,
+    grid_max_height: float = 0.0,
+) -> tuple[UnresolvedPlaceholder, ...]:
+    """Every unresolved placeholder in ``row``'s address + args, in
+    address-then-args appearance order, first occurrence of each token.
+
+    The one scan behind the pill list, the tooltip's cause map, and the
+    row's fault labels.
+    """
+    from openfollow.osc.template import (
+        compile_template,
+        unresolved_placeholder_reasons,
+    )
+
+    effective_marker_id = _effective_default_marker_id(row.markers, registered_marker_ids)
+    out: list[UnresolvedPlaceholder] = []
+    seen: set[str] = set()
+    for tpl in (row.address, *row.args):
+        for entry in unresolved_placeholder_reasons(
+            compile_template(tpl),
+            default_marker_id=effective_marker_id,
+            registered_marker_ids=registered_marker_ids,
+            grid_max_height=grid_max_height,
+        ):
+            if entry.token not in seen:
+                out.append(entry)
+                seen.add(entry.token)
+    return tuple(out)
+
+
 def _row_unresolved_placeholders(
     row: OscTransmitterConfig,
     registered_marker_ids: frozenset[int],
@@ -2291,28 +2407,9 @@ def _row_unresolved_placeholders(
       (it keys off ``aria-invalid``), keeping the "Save with enabled=False"
       workflow available.
 
-    Order is address-then-args appearance, duplicates collapsed across the
-    row; see :func:`openfollow.osc.template.unresolved_placeholders`.
+    The token half of :func:`_row_unresolved_entries`.
     """
-    from openfollow.osc.template import (
-        compile_template,
-        unresolved_placeholders,
-    )
-
-    effective_marker_id = _effective_default_marker_id(row.markers, registered_marker_ids)
-    out: list[str] = []
-    seen: set[str] = set()
-    for tpl in (row.address, *row.args):
-        for token in unresolved_placeholders(
-            compile_template(tpl),
-            default_marker_id=effective_marker_id,
-            registered_marker_ids=registered_marker_ids,
-            grid_max_height=grid_max_height,
-        ):
-            if token not in seen:
-                out.append(token)
-                seen.add(token)
-    return tuple(out)
+    return tuple(e.token for e in _row_unresolved_entries(row, registered_marker_ids, grid_max_height=grid_max_height))
 
 
 def _apply_osc_binding_fields(
@@ -2901,12 +2998,11 @@ def _build_diagnostics_cards(
         # cards so the operator isn't promised a fallback that doesn't exist.
         log_chip = "off"
         log_unavailable_warning = (
-            "No log source is available on this server. "
+            "No log source is available on this station. "
             "journalctl is unreachable and the in-memory ring "
             "wasn't initialised – diagnostics bundles will not "
             "include a log tail. Wire ``setup_logging``'s "
-            "``RingBufferLogHandler`` into ``ConfigWebServer`` "
-            "(see issue #179)."
+            "``RingBufferLogHandler`` into ``ConfigWebServer``."
         )
         log_source_note = "No log source."
     elif "no journald" in log_source_label:
@@ -4113,8 +4209,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         extra_fields: dict[str, Any] | None = None,
     ) -> AppConfig:
         form_data = dict(request.forms)
+        if section == "marker":
+            apply_renamed_marker_keys(form_data)
+        # Test ``form_data``, not ``request.forms``: a checkbox translated from
+        # its former name above is present here and nowhere else, and would
+        # otherwise be synthesised straight back to False.
         for field_name in bool_fields:
-            form_data[field_name] = field_name in request.forms
+            form_data[field_name] = field_name in form_data
         if extra_fields:
             form_data.update(extra_fields)
         with _config_write_lock:
@@ -4315,7 +4416,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/overview")
     def get_overview() -> Any:
-        """Get the server network overview partial.
+        """Get the station network overview partial.
 
         Overview is strictly read-only peer discovery; the network-interface
         block lives on the General tab.
@@ -5258,7 +5359,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             bool_fields=(
                 "ball_visible",
                 "crosshair_visible",
-                "drop_line",
+                "z_line",
                 "ground_circle",
                 "ground_circle_filled",
                 "z_display_from_stage",
@@ -5961,13 +6062,34 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         chips, unresolved pills, and status dots appear at first paint, not
         only after the operator saves a row."""
         registered = frozenset(cfg.controlled_marker_ids)
+        marker_display = _osc_binding_marker_display(cfg, server.get_marker_catalog())
+        destination_ids = frozenset(d.id for d in cfg.osc_destinations.destinations)
+        # One scan per row feeds the pills, the tooltip's cause map and
+        # the fault labels.
+        entries_by_row = {
+            row.id: _row_unresolved_entries(row, registered, grid_max_height=cfg.grid.max_height)
+            for row in cfg.osc_transmitters.transmitters
+        }
         return {
             "registered_marker_ids": sorted(registered),
             "unresolved_by_row": {
-                row.id: _row_unresolved_placeholders(row, registered, grid_max_height=cfg.grid.max_height)
+                row_id: tuple(e.token for e in entries) for row_id, entries in entries_by_row.items()
+            },
+            "unresolved_reasons_by_row": {
+                row_id: {e.token: e.reason for e in entries} for row_id, entries in entries_by_row.items()
+            },
+            "marker_display_by_row": marker_display,
+            "fault_summary_by_row": {
+                row.id: _row_fault_summary(
+                    _row_fault_labels(
+                        row,
+                        entries=entries_by_row[row.id],
+                        destination_ids=destination_ids,
+                        markers_unusable=marker_display.get(row.id, {}).get("markers_unusable", False),
+                    )
+                )
                 for row in cfg.osc_transmitters.transmitters
             },
-            "marker_display_by_row": _osc_binding_marker_display(cfg, server.get_marker_catalog()),
         }
 
     def _render_osc_bindings_section(
@@ -7337,6 +7459,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             err_msg = _osc_binding_unresolved_blur_error(
                 request.query,
                 _request_scoped_config(),
+                field_name=field_name,
             )
             if err_msg is not None:
                 # Unresolved-placeholder rows are intentionally save-able (the
@@ -7803,7 +7926,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "y_offset": cfg.grid.y_offset,
                 },
                 "zones": zones_out,
-                "markers": [{"id": tid, "x": x, "y": y} for tid, x, y in server.get_marker_positions()],
+                "markers": [{"id": marker_id, "x": x, "y": y} for marker_id, x, y in server.get_marker_positions()],
                 # Shared destinations travel with the poll so the editor's
                 # dropdown follows add/rename/delete without a full reload.
                 "destinations": osc_destinations_client_list(cfg),

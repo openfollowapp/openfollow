@@ -40,6 +40,8 @@ class _PacketTracker:
     tracker_id: int
     pos: _Vec | None
     speed: _Vec | None
+    timestamp: int = 0
+    status: float = 0.0
 
 
 class _FakeDataPacket:
@@ -264,15 +266,6 @@ def test_server_send_info_packet_is_noop_with_no_markers(monkeypatch) -> None:
     )
     server._send_info_packet()
     assert prepared == []
-
-
-def test_server_make_psn_info_advances_frame_id() -> None:
-    server = PsnServer(mcast_ip=None)
-    info1 = server._make_psn_info()
-    info2 = server._make_psn_info()
-    # The info object snapshots the *previous* frame_id before incrementing.
-    assert info1.frame_id != info2.frame_id
-    assert server._frame_id == 2
 
 
 def test_server_send_counts_errors_and_suppresses_spam(monkeypatch) -> None:

@@ -15,6 +15,7 @@ from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, GridCo
 from openfollow.net_utils import list_iface_ipv4
 from openfollow.network.validate import is_link_local
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
+from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_marker_velocity
 from openfollow.runtime.overlay_state import (
     MarkerOverlayData,
     OperatorMessageView,
@@ -22,6 +23,7 @@ from openfollow.runtime.overlay_state import (
     VirtualFaderDisplayData,
 )
 from openfollow.runtime.services_detection_pin import is_assist_controlled
+from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.runtime_metrics import OverlayStatePool
 from openfollow.units import UnitSystem
 
@@ -206,8 +208,8 @@ def sync_marker_config(state: OverlayState, cfg: Any) -> None:
     state.crosshair_color = tc.crosshair_color
     state.crosshair_thickness = int(tc.crosshair_thickness)
     state.transparency = tc.transparency
-    state.show_drop_line = tc.drop_line
-    state.drop_line_thickness = int(tc.drop_line_thickness)
+    state.show_z_line = tc.z_line
+    state.z_line_thickness = int(tc.z_line_thickness)
     state.show_ground_circle = tc.ground_circle
     state.ground_circle_size = tc.ground_circle_size
     state.ground_circle_filled = tc.ground_circle_filled
@@ -365,16 +367,6 @@ def build_initial_overlay_state(cfg: Any) -> OverlayState:
     return state
 
 
-def _broadcast_speed(app: Any, marker_id: int, marker_speeds: dict[int, float]) -> float:
-    """Effective speed magnitude a controlled marker sends on PSN.
-
-    ``marker_speeds`` only carries markers with a connected controller; the
-    accessor is the per-marker source of truth for everything else.
-    """
-    speed = marker_speeds.get(marker_id)
-    return speed if speed is not None else app.get_marker_move_speed(marker_id)
-
-
 def build_marker_visual_state(
     app: Any,
     *,
@@ -382,21 +374,32 @@ def build_marker_visual_state(
     system_stats: Any,
     person_detector: Any,
     cam_params_buffer: npt.NDArray[Any],
+    dt: float,
     network_alerts: list[str] | None = None,
 ) -> OverlayState:
-    """Build a complete OverlayState snapshot for atomic renderer swap."""
+    """Build a complete OverlayState snapshot for atomic renderer swap.
+
+    ``dt`` is the real seconds elapsed since the previous animate frame - not
+    the clamped motion step - because it divides a displacement into a rate for
+    the velocity each controlled marker broadcasts.
+    """
     controlled_set = set(app._controlled_ids)
     marker_speeds = app._input_manager.get_marker_gamepad_speeds() if app._input_manager is not None else {}
 
     # Every controlled marker is broadcast on PSN, so every controlled marker
-    # gets the outbound speed write - not only the ones this station also views.
-    # The write is what stamps the tracker's PSN timestamp, so driving it from
-    # ``viewer_marker_ids`` would let a controlled-but-not-viewed marker go stale
-    # on the wire while it is still being transmitted.
-    for tid in controlled_set:
-        marker = app._server.get_marker(tid)
-        if marker is not None:
-            marker.set_speed(_broadcast_speed(app, tid, marker_speeds), 0.0, 0.0)
+    # gets the outbound speed write - not only the ones this station also views
+    # - and it happens every frame: the write is what stamps the marker's PSN
+    # timestamp, so a still marker writes (0, 0, 0) rather than skipping. The
+    # estimator state is pruned to the controlled set, so a marker that leaves
+    # and returns restarts from its new position instead of a stale reference.
+    velocity_states: dict[int, MarkerVelocityState] = app._marker_velocity_states
+    prune_to_keep(velocity_states, controlled_set)
+    for marker_id in controlled_set:
+        marker = app._server.get_marker(marker_id)
+        if marker is None:
+            continue
+        vstate: MarkerVelocityState = get_or_create(velocity_states, marker_id, MarkerVelocityState)
+        marker.set_speed(*estimate_marker_velocity(vstate, marker.pos, dt))
 
     # Fetch controller info once and build a reverse map so the per-marker
     # loop can stamp each marker card with its bound controller without an
@@ -545,11 +548,11 @@ def build_marker_visual_state(
     # so one ghost is built per assist-controlled marker while iterating and they
     # are appended after the loop.
     ghost_entries: list[MarkerOverlayData] = []
-    for tid in app._viewer_ids:
-        if tid in controlled_set:
-            marker = app._server.get_marker(tid)
+    for marker_id in app._viewer_ids:
+        if marker_id in controlled_set:
+            marker = app._server.get_marker(marker_id)
         else:
-            marker = app._psn_receiver.get_marker(tid)
+            marker = app._psn_receiver.get_marker(marker_id)
         if marker is None:
             continue
 
@@ -559,28 +562,28 @@ def build_marker_visual_state(
         # override) reads the per-marker value via the accessor so the
         # speed card stays consistent with what bumper / R / T edits
         # actually wrote.
-        speed = marker_speeds.get(tid)
-        if speed is None and tid in controlled_set:
-            speed = app.get_marker_move_speed(tid)
-        if speed is None and tid not in controlled_set:
+        speed = marker_speeds.get(marker_id)
+        if speed is None and marker_id in controlled_set:
+            speed = app.get_marker_move_speed(marker_id)
+        if speed is None and marker_id not in controlled_set:
             vx, vy, vz = marker.speed
             speed = (vx * vx + vy * vy + vz * vz) ** 0.5
 
-        if tid in controlled_set:
+        if marker_id in controlled_set:
             online = True
         else:
-            online = app._psn_receiver.is_marker_online(tid)
+            online = app._psn_receiver.is_marker_online(marker_id)
 
-        color = _resolve_marker_color(app, tid)
-        name = _resolve_marker_name(app, tid)
-        ctrl_binding = controller_by_marker.get(tid)
+        color = _resolve_marker_color(app, marker_id)
+        name = _resolve_marker_name(app, marker_id)
+        ctrl_binding = controller_by_marker.get(marker_id)
         ctrl_idx = ctrl_binding[0] if ctrl_binding is not None else None
         ctrl_conn = ctrl_binding[1] if ctrl_binding is not None else False
-        is_controlled = tid in controlled_set
-        marker_fader = _fader_bus.marker_fader_value(tid) if _fader_bus is not None else None
+        is_controlled = marker_id in controlled_set
+        marker_fader = _fader_bus.marker_fader_value(marker_id) if _fader_bus is not None else None
 
         # Read the position tuple once so x/y/z come from a single locked
-        # snapshot. The receiver thread can call ``set_pos`` between separate
+        # snapshot. The receiver thread can call ``apply_remote`` between separate
         # ``marker.pos`` accesses, which would tear X/Y/Z across two packets.
         px, py, pz = marker.pos
 
@@ -588,10 +591,10 @@ def build_marker_visual_state(
         # anchor, not the broadcast position. Capture the registered (AI-
         # corrected) position as a dim ghost, then move the carded marker to the
         # anchor. Until the anchor is seeded the two coincide.
-        if is_assist_controlled(app, tid):
+        if is_assist_controlled(app, marker_id):
             ghost_entries.append(
                 MarkerOverlayData(
-                    marker_id=tid,
+                    marker_id=marker_id,
                     x=px,
                     y=py,
                     z=pz,
@@ -604,13 +607,13 @@ def build_marker_visual_state(
                     is_assist_ghost=True,
                 )
             )
-            anchor = app._assist_manual.get(tid)
+            anchor = app._assist_manual.get(marker_id)
             if anchor is not None:
                 px, py, pz = anchor.pos
 
         if marker_idx < len(pool):
             td = pool[marker_idx]
-            td.marker_id = tid
+            td.marker_id = marker_id
             td.x = px
             td.y = py
             td.z = pz
@@ -625,7 +628,7 @@ def build_marker_visual_state(
             td.marker_fader = marker_fader
         else:
             td = MarkerOverlayData(
-                marker_id=tid,
+                marker_id=marker_id,
                 x=px,
                 y=py,
                 z=pz,

@@ -39,7 +39,7 @@ def _state_with_grid_offset(x_off: float, y_off: float, z_off: float) -> Overlay
     state.grid_config = (10.0, 6.0, 1.0, x_off, y_off, z_off)
     state.show_ball = True
     state.show_crosshair = False
-    state.show_drop_line = False
+    state.show_z_line = False
     state.show_ground_circle = False
     state.show_origin = True
     state.origin_length = 1.0
@@ -223,7 +223,7 @@ def _marker_state(k1: float = 0.0, k2: float = 0.0) -> OverlayState:
     state.grid_config = (10.0, 6.0, 1.0, 0.0, 0.0, 0.0)
     state.show_ball = True
     state.show_crosshair = True
-    state.show_drop_line = True
+    state.show_z_line = True
     state.show_ground_circle = True
     state.crosshair_size = 0.5
     state.ground_circle_size = 0.5
@@ -271,7 +271,7 @@ class TestLensDistortionWarp:
 
     def test_crosshair_subdivides(self) -> None:
         marker = MarkerOverlayData(marker_id=1, x=2.0, y=1.0, z=1.0, color="#33ff99")
-        # Isolate the straight lines (crosshair + drop line) from the
+        # Isolate the straight lines (crosshair + Z line) from the
         # already-segmented ground ring, which is not further subdivided.
         off_state = _marker_state()
         off_state.show_ground_circle = False
@@ -281,7 +281,7 @@ class TestLensDistortionWarp:
         on_state.show_ground_circle = False
         on = FakeCairo()
         draw_marker(on, on_state, marker, 1920, 1080)
-        # 3 crosshair axes + 1 drop line each subdivide 12x when distortion is on;
+        # 3 crosshair axes + 1 Z line each subdivide 12x when distortion is on;
         # the ball arc count is unchanged.
         assert len(on.line_tos) > len(off.line_tos) * 5
         assert len(on.arcs) == len(off.arcs)
@@ -302,12 +302,12 @@ class TestLensDistortionWarp:
         marker = MarkerOverlayData(marker_id=1, x=2.0, y=1.0, z=1.0, color="#33ff99")
         state_off = _marker_state()
         state_off.show_crosshair = False
-        state_off.show_drop_line = False
+        state_off.show_z_line = False
         off = FakeCairo()
         draw_marker(off, state_off, marker, 1920, 1080)
         state_on = _marker_state(k1=-0.2, k2=0.0)
         state_on.show_crosshair = False
-        state_on.show_drop_line = False
+        state_on.show_z_line = False
         on = FakeCairo()
         draw_marker(on, state_on, marker, 1920, 1080)
         # 24-segment ring: vertex count is unchanged (no extra subdivision)...

@@ -996,7 +996,7 @@ class PersonDetector:
         # so the Kalman extrapolation stays correct when frames drop or the
         # cadence jitters (1.0 = on-time, ~2.0 = one dropped frame). This is the
         # detection-cadence clock; the pin filter runs on a separate animate-cadence
-        # clock (``_NOMINAL_FRAME_DT`` in ``runtime/services_detection_pin``).
+        # clock (``NOMINAL_FRAME_DT`` in ``runtime/frame_timing``).
         nominal_s = max(self._config.interval_ms / 1000.0, 1e-3)
         if self._last_track_t is None:
             dt_rel = 1.0

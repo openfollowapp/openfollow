@@ -569,7 +569,7 @@ class TestChunkEntries:
 
 
 class TestChunkedBeacons:
-    """#80: a catalog larger than one datagram must still reach peers."""
+    """A catalog larger than one datagram must still reach peers."""
 
     def _sync(self, **kwargs):
         return MarkerCatalogSync(
@@ -580,8 +580,8 @@ class TestChunkedBeacons:
         )
 
     def test_eight_entries_still_reach_peers(self) -> None:
-        """The exact reproduction from the issue: eight entries overflow a
-        single beacon, and used to be replaced by an empty-entries fallback."""
+        """Eight entries overflow a single beacon: they must be chunked across
+        datagrams, not replaced by an empty-entries fallback."""
         sync = self._sync()
         sock = MagicMock()
         sync._send_packet(sock, kind="heartbeat", entries=_catalog_entries(8))
@@ -681,9 +681,9 @@ class TestChunkedBeacons:
         assert all(len(call[0][0]) <= _MAX_TX_PACKET for call in sock.sendto.call_args_list)
 
     def test_a_large_selection_does_not_drop_the_beacon(self) -> None:
-        """Regression: a station viewing every marker on the LAN serialises
-        hundreds of ids. That used to push the empty-entries envelope past the
-        cap and drop the beacon outright - the same silent failure as #80."""
+        """A station viewing every marker on the LAN serialises hundreds of
+        ids. The empty-entries envelope must stay under the cap, or the beacon
+        is dropped outright and the failure is silent."""
         sync = self._sync(selection_provider=lambda: (list(range(1, 151)), list(range(1, 151))))
         sock = MagicMock()
         sync._send_packet(sock, kind="heartbeat", entries=_catalog_entries(10))

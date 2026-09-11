@@ -34,6 +34,7 @@ from openfollow.osc.transmitter import (
     OscTransmitter,
     OscTransmitterManager,
 )
+from openfollow.psn.clock import psn_timestamp_usec
 
 pytestmark = pytest.mark.unit
 
@@ -66,10 +67,43 @@ class _FakeOscService:
 
 
 class _FakeMarker:
-    """Stand-in for ``openfollow.psn.marker.Marker`` – only ``pos`` is read."""
+    """Stand-in for ``openfollow.psn.marker.Marker``.
 
-    def __init__(self, pos: tuple[float, float, float]) -> None:
+    Carries ``timestamp`` / ``is_remote`` alongside ``pos`` because the
+    transmitter withholds a marker the frame loop has stopped writing.
+
+    ``timestamp`` is read live rather than snapshotted at construction, so a
+    fresh marker stays fresh no matter how long the test takes. Snapshotting it
+    would make every test in this file wall-clock dependent: real time passes
+    between building the fake and ticking the manager, and a runner slow enough
+    to cross ``MARKER_STALE_AFTER_S`` would silently skip the send and fail an
+    assertion that has nothing to do with staleness.
+
+    ``stale=True`` uses the never-written stamp, which the shared rule reads as
+    stale without consulting a clock at all. The age-based side of that rule is
+    pinned against an injected clock in ``test_marker_freshness.py``.
+    """
+
+    def __init__(self, pos: tuple[float, float, float], *, stale: bool = False) -> None:
         self.pos = pos
+        self.is_remote = False
+        self._stale = stale
+
+    @property
+    def clock_now_us(self) -> int:
+        return max(1, psn_timestamp_usec())
+
+    @property
+    def timestamp(self) -> int:
+        if self._stale:
+            return 0
+        # Read from the same source ``is_marker_stale`` compares against, so the
+        # age is 0 whatever the clock says. Several tests in this file patch
+        # ``time.monotonic`` globally (patching a module attribute reaches every
+        # importer), which can drive ``psn_timestamp_usec`` negative when the
+        # patched value predates the process epoch; the clamp keeps a fresh
+        # marker out of the never-written branch in that case.
+        return max(1, psn_timestamp_usec())
 
 
 # Default destination every ``_row`` resolves to. Host/port match the
@@ -1578,8 +1612,8 @@ class TestDefaultMarkerLookupGated:
         """
         calls: list[int] = []
 
-        def _provider(tid: int) -> _FakeMarker | None:
-            calls.append(tid)
+        def _provider(marker_id: int) -> _FakeMarker | None:
+            calls.append(marker_id)
             return None
 
         service = _FakeOscService()
@@ -1640,8 +1674,8 @@ class TestMarkerIdNoneSkip:
         safety net – so ``marker_provider(None)`` never reaches the provider."""
         calls: list[int | None] = []
 
-        def _provider(tid: int) -> _FakeMarker | None:
-            calls.append(tid)
+        def _provider(marker_id: int) -> _FakeMarker | None:
+            calls.append(marker_id)
             return None
 
         service = _FakeOscService()
@@ -2962,11 +2996,10 @@ class TestFaderOnChangeDispatch:
         manager.process_pending_events()
         assert svc.calls == []
 
-    def test_throttle_drops_burst(self) -> None:
-        """Two events in quick succession at rate_hz=60 (~16.67 ms
-        spacing) – the second one falls inside the throttle window
-        and is dropped. The third one, after enough wall-clock
-        time, fires."""
+    def test_throttle_drops_burst(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """At rate_hz=60 (~16.67 ms) the second event falls inside the
+        throttle window and is dropped; a third past the window fires.
+        Drives the time source so the test is hermetic."""
         manager, svc = _manager(fader_values={1: 0.5})
         manager.restart(
             OscTransmittersConfig(
@@ -2975,15 +3008,19 @@ class TestFaderOnChangeDispatch:
                 ]
             )
         )
+        clock_holder = [1000.0]
+        monkeypatch.setattr(
+            "openfollow.osc.transmitter.time.monotonic",
+            lambda: clock_holder[0],
+        )
         manager._handle_fader_change(1, 0.4)
         manager.process_pending_events()
         assert len(svc.calls) == 1
-        # Same instant – throttle drops the second event.
+        clock_holder[0] += 0.01  # inside the window – dropped
         manager._handle_fader_change(1, 0.6)
         manager.process_pending_events()
         assert len(svc.calls) == 1
-        # Sleep past the throttle window.
-        time.sleep(0.02)
+        clock_holder[0] += 0.02  # past the window – fires
         manager._handle_fader_change(1, 0.7)
         manager.process_pending_events()
         assert len(svc.calls) == 2
@@ -3155,7 +3192,8 @@ class TestMarkerFaderOnChangeDispatch:
         manager.process_pending_events()
         assert svc.calls == []
 
-    def test_throttle_drops_burst(self) -> None:
+    def test_throttle_drops_burst(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Same window contract as the fader-index path, on its own counter."""
         manager, svc = _manager(
             markers={4: _FakeMarker((1.0, 2.0, 3.0))},
             marker_fader_values={4: 0.4},
@@ -3167,14 +3205,19 @@ class TestMarkerFaderOnChangeDispatch:
                 ]
             )
         )
+        clock_holder = [1000.0]
+        monkeypatch.setattr(
+            "openfollow.osc.transmitter.time.monotonic",
+            lambda: clock_holder[0],
+        )
         manager._handle_marker_fader_change(4, 0.4)
         manager.process_pending_events()
         assert len(svc.calls) == 1
-        # Same instant – throttle drops the second event.
+        clock_holder[0] += 0.01  # inside the window – dropped
         manager._handle_marker_fader_change(4, 0.6)
         manager.process_pending_events()
         assert len(svc.calls) == 1
-        time.sleep(0.02)
+        clock_holder[0] += 0.02  # past the window – fires
         manager._handle_marker_fader_change(4, 0.7)
         manager.process_pending_events()
         assert len(svc.calls) == 2
@@ -3594,6 +3637,139 @@ class TestResolverGuards:
         assert svc.calls == []
         entries = manager.ring_buffer_for("row-c") or []
         assert entries and entries[-1].status == "skipped"
+
+
+class TestStaleMarkerRows:
+    """A row streaming a marker the frame loop stopped writing.
+
+    The scheduler thread ticks regardless of the frame clock, so without this a
+    wedged station keeps emitting the same coordinates at the row's rate - the
+    same failure the PSN, OTP, and RTTrPM senders have, in OSC's own idiom.
+    Skipping (rather than sending) puts the reason in the row's ring buffer,
+    which is the surface the diagnostics UI already reads.
+    """
+
+    def test_a_stale_marker_row_is_skipped(self) -> None:
+        manager, svc = _manager(markers={1: _FakeMarker((1.0, 2.0, 3.0), stale=True)})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(marker_id=1)]))
+        manager._tick_once()
+        assert svc.calls == []
+
+    def test_the_skip_reason_names_the_stale_marker(self) -> None:
+        manager, _svc = _manager(markers={1: _FakeMarker((1.0, 2.0, 3.0), stale=True)})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(marker_id=1)]))
+        manager._tick_once()
+        entries = manager.ring_buffer_for("row-1")
+        assert entries and entries[-1].status == "skipped"
+        assert "stale" in entries[-1].error
+
+    def test_a_live_marker_row_still_sends(self) -> None:
+        manager, svc = _manager(markers={1: _FakeMarker((1.0, 2.0, 3.0))})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(marker_id=1)]))
+        manager._tick_once()
+        assert len(svc.calls) == 1
+
+    def test_only_the_stale_marker_drops_out_of_a_fan_out(self) -> None:
+        manager, svc = _manager(
+            markers={
+                1: _FakeMarker((1.0, 0.0, 0.0)),
+                3: _FakeMarker((3.0, 0.0, 0.0), stale=True),
+                7: _FakeMarker((7.0, 0.0, 0.0)),
+            },
+        )
+        manager.restart(
+            OscTransmittersConfig(
+                transmitters=[_row(markers=["7", "3", "1"], address="/m/[markerid]", args=["[x]"])],
+            )
+        )
+        manager._tick_once()
+        assert [(c[0], c[1]) for c in svc.calls] == [("/m/1", [1.0]), ("/m/7", [7.0])]
+
+    def test_a_stale_explicit_ref_says_stale_not_unregistered(self) -> None:
+        """A stale marker and an unwired one both stop the row, and an operator
+        reading the row's diagnostics has to be able to tell which: one means
+        the frame loop died, the other means the row is misconfigured."""
+        manager, _svc = _manager(markers={5: _FakeMarker((1.0, 2.0, 3.0), stale=True)})
+        manager.restart(
+            OscTransmittersConfig(transmitters=[_row(marker_id=5, address="/m", args=["[x:5]"])]),
+        )
+        manager._tick_once()
+        stale_error = manager.ring_buffer_for("row-1")[-1].error
+
+        manager2, _svc2 = _manager(markers={})
+        manager2.restart(
+            OscTransmittersConfig(transmitters=[_row(marker_id=5, address="/m", args=["[x:5]"])]),
+        )
+        manager2._tick_once()
+        missing_error = manager2.ring_buffer_for("row-1")[-1].error
+
+        assert "stale" in stale_error
+        assert "stale" not in missing_error
+        assert stale_error != missing_error
+
+    def test_an_explicit_marker_ref_row_is_skipped_when_stale(self) -> None:
+        """``[x:5]`` reads a marker without setting ``needs_default_marker``, so
+        it bypasses the default-marker branch entirely. Without a check on the
+        explicit resolver these rows keep streaming a frozen coordinate at full
+        rate while an otherwise identical ``[x]`` row correctly goes quiet."""
+        manager, svc = _manager(markers={5: _FakeMarker((1.0, 2.0, 3.0), stale=True)})
+        manager.restart(
+            OscTransmittersConfig(transmitters=[_row(marker_id=5, address="/m", args=["[x:5]"])]),
+        )
+        manager._tick_once()
+        assert svc.calls == []
+
+    def test_an_explicit_marker_ref_row_still_sends_when_fresh(self) -> None:
+        manager, svc = _manager(markers={5: _FakeMarker((1.0, 2.0, 3.0))})
+        manager.restart(
+            OscTransmittersConfig(transmitters=[_row(marker_id=5, address="/m", args=["[x:5]"])]),
+        )
+        manager._tick_once()
+        assert [(c[0], c[1]) for c in svc.calls] == [("/m", [1.0])]
+
+    def test_a_controller_ref_row_is_skipped_when_its_marker_is_stale(self) -> None:
+        """``:cN`` resolves its own marker at render time and likewise never
+        sets ``needs_default_marker``."""
+        manager, svc = _manager(
+            markers={7: _FakeMarker((1.0, 2.0, 3.0), stale=True)},
+            controller_markers={0: 7},
+        )
+        manager.restart(
+            OscTransmittersConfig(transmitters=[_row(marker_id=7, address="/m", args=["[x:c1]"])]),
+        )
+        manager._tick_once()
+        assert svc.calls == []
+
+    def test_a_controller_ref_row_still_sends_when_fresh(self) -> None:
+        manager, svc = _manager(
+            markers={7: _FakeMarker((1.0, 2.0, 3.0))},
+            controller_markers={0: 7},
+        )
+        manager.restart(
+            OscTransmittersConfig(transmitters=[_row(marker_id=7, address="/m", args=["[x:c1]"])]),
+        )
+        manager._tick_once()
+        assert [(c[0], c[1]) for c in svc.calls] == [("/m", [1.0])]
+
+    def test_a_constant_row_is_unaffected_by_a_stale_marker(self) -> None:
+        """The marker is only the on-change gate here, not part of the output,
+        so a hotkey or constant row must keep firing."""
+        manager, svc = _manager(markers={1: _FakeMarker((1.0, 2.0, 3.0), stale=True)})
+        manager.restart(
+            OscTransmittersConfig(transmitters=[_row(marker_id=1, address="/go", args=["1"])]),
+        )
+        manager._tick_once()
+        assert [(c[0], c[1]) for c in svc.calls] == [("/go", [1])]
+
+    def test_the_row_recovers_once_the_marker_is_written_again(self) -> None:
+        markers = {1: _FakeMarker((1.0, 2.0, 3.0), stale=True)}
+        manager, svc = _manager(markers=markers)
+        manager.restart(OscTransmittersConfig(transmitters=[_row(marker_id=1)]))
+        manager._tick_once()
+        assert svc.calls == []
+        markers[1] = _FakeMarker((1.0, 2.0, 3.0))  # frame loop writing again
+        manager._tick_once()
+        assert len(svc.calls) == 1
 
 
 class TestMultiMarkerFanOut:

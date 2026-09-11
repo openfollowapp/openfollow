@@ -12,13 +12,15 @@ import errno
 import logging
 import socket
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from typing import TypeVar
 
 import multicast_expert
 import pypsn
 
+from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.clock import psn_timestamp_usec
-from openfollow.psn.marker import Marker
+from openfollow.psn.marker import Marker, is_marker_stale
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,12 @@ DEFAULT_PORT = 56565
 
 _MAX_SOCKET_RETRIES = 3
 _SOCKET_RETRY_DELAY = 2.0  # seconds
+_FRAME_ID_WRAP = 256  # frame_id is a uint8 on the wire
+_MAX_FRAME_PACKETS = 255  # frame_packet_count is a uint8 on the wire
+
+# Data trackers and info trackers are distinct pypsn types; a frame is built the
+# same way for both.
+_TrackerT = TypeVar("_TrackerT", pypsn.PsnTracker, pypsn.PsnTrackerInfo)
 
 
 class _Unchanged:
@@ -78,7 +86,10 @@ class PsnServer:
         self._markers: dict[int, Marker] = {}
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
-        self._frame_id: int = 0
+        # A receiver reads a gap in a stream's frame ids as a dropped frame, so
+        # the two streams must not draw from one sequence.
+        self._data_frame_id: int = 0
+        self._info_frame_id: int = 0
         self._socket: multicast_expert.McastTxSocket | socket.socket | None = None
         self._exit_stack: contextlib.ExitStack = contextlib.ExitStack()
         self._data_thread: threading.Thread | None = None
@@ -86,6 +97,7 @@ class PsnServer:
         self._socket_thread: threading.Thread | None = None
         self._send_errors: int = 0
         self._send_total: int = 0
+        self._oversize_drops: int = 0
 
     def add_marker(self, marker_id: int, name: str) -> Marker:
         """Register new marker (marker_id must be >= 1)."""
@@ -115,20 +127,25 @@ class PsnServer:
 
     def start(self) -> None:
         """Open the network socket and start send threads."""
-        self._stop_event.clear()
+        # One stop signal per generation. A thread that outlived its join in
+        # stop() keeps the previous, permanently-set one and exits on its next
+        # check, rather than being revived by a shared event being cleared here.
+        stop_event = threading.Event()
+        self._stop_event = stop_event
         self._exit_stack = contextlib.ExitStack()
         if self._mcast_ip:
             if not self._try_open_multicast_socket_once(attempt=1):
                 self._socket_thread = threading.Thread(
                     target=self._retry_multicast_socket_background,
+                    args=(stop_event,),
                     daemon=True,
                     name="PSN-SocketRetry",
                 )
                 self._socket_thread.start()
         else:
             self._socket = self._exit_stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-        self._data_thread = threading.Thread(target=self._data_loop, daemon=True, name="PSN-Data")
-        self._info_thread = threading.Thread(target=self._info_loop, daemon=True, name="PSN-Info")
+        self._data_thread = threading.Thread(target=self._data_loop, args=(stop_event,), daemon=True, name="PSN-Data")
+        self._info_thread = threading.Thread(target=self._info_loop, args=(stop_event,), daemon=True, name="PSN-Info")
         self._data_thread.start()
         self._info_thread.start()
 
@@ -212,9 +229,13 @@ class PsnServer:
     def __exit__(self, *args: object) -> None:
         self.stop()
 
+    def _resolve_stop(self, stop_event: threading.Event | None) -> threading.Event:
+        """The caller's generation event; the live one for direct calls."""
+        return self._stop_event if stop_event is None else stop_event
+
     # -- Socket helpers -------------------------------------------------------
 
-    def _try_open_multicast_socket_once(self, attempt: int) -> bool:
+    def _try_open_multicast_socket_once(self, attempt: int, stop_event: threading.Event | None = None) -> bool:
         """Attempt to create the multicast TX socket once. Returns True on success."""
         mcast_ip = self._mcast_ip
         if not mcast_ip:  # pragma: no cover
@@ -223,6 +244,7 @@ class PsnServer:
         from openfollow.net_utils import resolve_iface_ip
 
         iface_ip = resolve_iface_ip(self._source_ip)
+        staging = contextlib.ExitStack()
         try:
             if iface_ip:
                 sock = multicast_expert.McastTxSocket(
@@ -237,8 +259,7 @@ class PsnServer:
                     mcast_ips=[mcast_ip],
                     enable_external_loopback=True,
                 )
-            self._socket = self._exit_stack.enter_context(sock)
-            return True
+            opened = staging.enter_context(sock)
         except Exception as exc:
             logger.warning(
                 "PSN multicast socket failed (attempt %d/%d): %s",
@@ -247,14 +268,27 @@ class PsnServer:
                 exc,
             )
             return False
+        # The open runs off the lock so a retry on a flapping NIC can't stall the
+        # send loops or stop(); only the hand-over is locked, which is what pairs
+        # with stop()'s teardown. A socket thread from a superseded generation
+        # must not hand the live one a socket bound to the interface it just left.
+        with self._lock:
+            if not self._resolve_stop(stop_event).is_set():
+                self._socket = opened
+                self._exit_stack.push(staging.pop_all())
+                return True
+            stale = staging.pop_all()
+        stale.close()
+        return False
 
-    def _retry_multicast_socket_background(self) -> None:
+    def _retry_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
         """Retry multicast socket creation bounded by _MAX_SOCKET_RETRIES."""
+        stop = self._resolve_stop(stop_event)
         for attempt in range(2, _MAX_SOCKET_RETRIES + 1):
-            self._stop_event.wait(_SOCKET_RETRY_DELAY)
-            if self._stop_event.is_set():
+            stop.wait(_SOCKET_RETRY_DELAY)
+            if stop.is_set():
                 return
-            if self._try_open_multicast_socket_once(attempt=attempt):
+            if self._try_open_multicast_socket_once(attempt=attempt, stop_event=stop):
                 logger.info(
                     "PSN multicast socket connected on retry %d/%d.",
                     attempt,
@@ -266,24 +300,28 @@ class PsnServer:
             _MAX_SOCKET_RETRIES,
         )
 
-    def _recover_multicast_socket_background(self) -> None:
+    def _recover_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
         """Recover multicast socket after transient send failure (unbounded until stop_event)."""
+        stop = self._resolve_stop(stop_event)
         attempt = 0
-        while not self._stop_event.is_set():
+        while not stop.is_set():
             attempt += 1
-            self._stop_event.wait(_SOCKET_RETRY_DELAY)
-            if self._stop_event.is_set():
+            stop.wait(_SOCKET_RETRY_DELAY)
+            if stop.is_set():
                 return
-            if self._try_open_multicast_socket_once(attempt=attempt):
+            if self._try_open_multicast_socket_once(attempt=attempt, stop_event=stop):
                 logger.info("PSN multicast socket recovered on attempt %d.", attempt)
                 return
 
-    def _handle_send_error(self, exc: OSError) -> None:
+    def _handle_send_error(self, exc: OSError, stop_event: threading.Event | None = None) -> None:
         """On transient interface error, rebuild socket in background."""
         # Once stopping, teardown owns the socket/exit-stack lifecycle: a recovery
         # thread spawned here would be orphaned (stop() already joined+nulled the
         # socket thread) and could leak an FD racing stop()'s stack close.
-        if self._stop_event.is_set():
+        # A send that fails on a superseded generation is judged by its own
+        # event, so a dying survivor can't tear down the live socket.
+        stop = self._resolve_stop(stop_event)
+        if stop.is_set():
             return
         if exc.errno not in _TRANSIENT_SEND_ERRNOS:
             return
@@ -296,7 +334,7 @@ class PsnServer:
             # socket/exit-stack down, so once it's set no recovery thread is
             # spawned – spawn and teardown observe one consistent stop state
             # rather than relying on the recovery loop's own stop-check.
-            if self._stop_event.is_set():
+            if stop.is_set():
                 return
             if self._socket_thread is not None and self._socket_thread.is_alive():
                 return
@@ -306,6 +344,7 @@ class PsnServer:
             self._exit_stack = contextlib.ExitStack()
             self._socket_thread = threading.Thread(
                 target=self._recover_multicast_socket_background,
+                args=(stop,),
                 daemon=True,
                 name="PSN-SocketRecover",
             )
@@ -318,38 +357,100 @@ class PsnServer:
 
     # -- Send loops -----------------------------------------------------------
 
-    def _data_loop(self) -> None:
+    def _data_loop(self, stop_event: threading.Event | None = None) -> None:
+        stop = self._resolve_stop(stop_event)
         interval = 1.0 / self._data_fps
-        while not self._stop_event.is_set():
-            self._send_data_packet()
-            self._stop_event.wait(interval)
+        while not stop.is_set():
+            self._send_data_packet(stop)
+            stop.wait(interval)
 
-    def _info_loop(self) -> None:
+    def _info_loop(self, stop_event: threading.Event | None = None) -> None:
+        stop = self._resolve_stop(stop_event)
         interval = 1.0 / self._info_fps
-        while not self._stop_event.is_set():
-            self._send_info_packet()
-            self._stop_event.wait(interval)
+        while not stop.is_set():
+            self._send_info_packet(stop)
+            stop.wait(interval)
 
-    def _make_psn_info(self) -> pypsn.PsnInfo:
-        """Build a ``PsnInfo`` header and advance the frame counter."""
-        with self._lock:
-            frame_id = self._frame_id
-            self._frame_id = (self._frame_id + 1) % 256
-        info = pypsn.PsnInfo(
-            timestamp=self._clock(),
+    def _make_psn_info(self, frame_id: int, timestamp: int, packet_count: int) -> pypsn.PsnInfo:
+        """Build the header shared by every packet of one frame."""
+        return pypsn.PsnInfo(
+            timestamp=timestamp,
             version_high=2,
             version_low=0,
             frame_id=frame_id,
-            packet_count=1,
+            packet_count=packet_count,
         )
-        return info
+
+    def _next_data_frame_id(self) -> int:
+        """Take the next data-stream frame id, advancing that stream's counter."""
+        with self._lock:
+            frame_id = self._data_frame_id
+            self._data_frame_id = (self._data_frame_id + 1) % _FRAME_ID_WRAP
+        return frame_id
+
+    def _next_info_frame_id(self) -> int:
+        """Take the next info-stream frame id, advancing that stream's counter."""
+        with self._lock:
+            frame_id = self._info_frame_id
+            self._info_frame_id = (self._info_frame_id + 1) % _FRAME_ID_WRAP
+        return frame_id
+
+    def _send_frame(
+        self,
+        frame_id: int,
+        trackers: Sequence[_TrackerT],
+        encode: Callable[[pypsn.PsnInfo, Sequence[_TrackerT]], bytes],
+        stop_event: threading.Event | None,
+    ) -> None:
+        """Send one frame, split across packets when it exceeds the MTU.
+
+        Every packet of a split frame repeats one frame id and one timestamp,
+        and declares the whole frame's packet count – that triple is what a
+        receiver buffers a frame's trackers on until it has them all.
+        """
+        timestamp = self._clock()
+        # Header fields are fixed-width, so this one also sizes the chunks below.
+        single_header = self._make_psn_info(frame_id, timestamp, 1)
+        single = encode(single_header, trackers)
+        if len(single) <= MAX_DATAGRAM_BYTES:
+            self._send(single, stop_event)
+            return
+        chunks = chunk_to_datagrams(
+            trackers,
+            lambda subset: len(encode(single_header, subset)),
+            MAX_DATAGRAM_BYTES,
+        )
+        if len(chunks) > _MAX_FRAME_PACKETS:
+            # packet_count is a uint8, so a frame past this many packets cannot
+            # describe itself and struct.pack would kill the send thread. Only
+            # reachable in the thousands of markers; drop the tail rather than
+            # the stream, and throttle like the send-error path.
+            with self._lock:
+                self._oversize_drops += 1
+                drops = self._oversize_drops
+            if drops <= 5 or drops % 100 == 0:
+                logger.warning(
+                    "PSN frame needs %d packets, capped at %d (%d drops) – markers beyond the cap are not sent",
+                    len(chunks),
+                    _MAX_FRAME_PACKETS,
+                    drops,
+                )
+            chunks = chunks[:_MAX_FRAME_PACKETS]
+        header = self._make_psn_info(frame_id, timestamp, len(chunks))
+        for chunk in chunks:
+            self._send(encode(header, chunk), stop_event)
 
     def _snapshot_markers(self) -> list[Marker]:
         """Return a consistent copy of the marker list under the lock."""
         with self._lock:
             return list(self._markers.values())
 
-    def _send_data_packet(self) -> None:
+    def _snapshot_info(self) -> tuple[str, list[Marker]]:
+        """Return the announced name and the marker list from one lock hold."""
+        with self._lock:
+            return self._system_name, list(self._markers.values())
+
+    def _send_data_packet(self, stop_event: threading.Event | None = None) -> None:
         markers = self._snapshot_markers()
         if not markers:
             return
@@ -357,22 +458,33 @@ class PsnServer:
         # Snapshot the trackers before stamping the header: a marker written in
         # between would otherwise carry a timestamp ahead of the header it ships
         # in, which underflows a receiver computing age as unsigned.
-        trackers = [t.to_psn_marker() for t in markers]
-        packet = pypsn.PsnDataPacket(info=self._make_psn_info(), trackers=trackers)
-        self._send(pypsn.prepare_psn_data_packet_bytes(packet))
+        # A marker the frame loop has stopped writing publishes STATUS as
+        # invalid: this thread keeps transmitting at full rate regardless, so
+        # validity is the only field that can say the position is no longer live.
+        trackers = [t.to_psn_marker(stale=is_marker_stale(t)) for t in markers]
 
-    def _send_info_packet(self) -> None:
-        markers = self._snapshot_markers()
+        def encode(info: pypsn.PsnInfo, chunk: Sequence[pypsn.PsnTracker]) -> bytes:
+            payload: bytes = pypsn.prepare_psn_data_packet_bytes(pypsn.PsnDataPacket(info=info, trackers=list(chunk)))
+            return payload
+
+        self._send_frame(self._next_data_frame_id(), trackers, encode, stop_event)
+
+    def _send_info_packet(self, stop_event: threading.Event | None = None) -> None:
+        name, markers = self._snapshot_info()
         if not markers:
             return
-        packet = pypsn.PsnInfoPacket(
-            info=self._make_psn_info(),
-            name=self._system_name,
-            trackers=[t.to_psn_marker_info() for t in markers],
-        )
-        self._send(pypsn.prepare_psn_info_packet_bytes(packet))
+        trackers = [t.to_psn_marker_info() for t in markers]
 
-    def _send(self, data: bytes) -> None:
+        def encode(info: pypsn.PsnInfo, chunk: Sequence[pypsn.PsnTrackerInfo]) -> bytes:
+            packet = pypsn.PsnInfoPacket(info=info, name=name, trackers=list(chunk))
+            payload: bytes = pypsn.prepare_psn_info_packet_bytes(packet)
+            return payload
+
+        self._send_frame(self._next_info_frame_id(), trackers, encode, stop_event)
+
+    def _send(self, data: bytes, stop_event: threading.Event | None = None) -> None:
+        # Deliberately unlocked: locking would serialise every datagram behind
+        # the socket hand-over. A send racing teardown sends, returns, or fails.
         sock = self._socket
         if sock is None:
             return
@@ -394,4 +506,4 @@ class PsnServer:
                     exc,
                 )
             # Rebuild socket on transient interface errors.
-            self._handle_send_error(exc)
+            self._handle_send_error(exc, stop_event)

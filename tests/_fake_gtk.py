@@ -56,20 +56,18 @@ class FakeCanvas:
         self.aspect_ratio: tuple[int, int] | None = None
         self.fullscreen_called: bool = False
         self.close_called: bool = False
-        self.tick_callback: Callable[..., Any] | None = None
-        self.tick_started: bool = False
-        self.tick_stopped: bool = False
+        self.hud_tick_started: bool = False
+        self.hud_tick_stopped: bool = False
+        self.is_closing: bool = False
 
     # -- RenderCanvas-compatible API ----------------------------------------
 
     def add_event_handler(self, handler: Callable[..., Any], event_type: str) -> None:
         self.handlers.setdefault(event_type, []).append(handler)
 
-    def request_draw(self, _fn: Callable[..., Any]) -> None:
-        return None
-
     def close(self) -> None:
         self.close_called = True
+        self.is_closing = True
 
     # -- Extended API (used by init_video / update_video) -------------------
 
@@ -91,14 +89,13 @@ class FakeCanvas:
     def get_canvas_size(self) -> tuple[int, int]:
         return (self._width, self._height)
 
-    # -- Tick animation -----------------------------------------------------
+    # -- HUD redraw tick ----------------------------------------------------
 
-    def start_tick_animation(self, callback: Callable[..., Any]) -> None:
-        self.tick_callback = callback
-        self.tick_started = True
+    def start_hud_tick(self) -> None:
+        self.hud_tick_started = True
 
-    def stop_tick_animation(self) -> None:
-        self.tick_stopped = True
+    def stop_hud_tick(self) -> None:
+        self.hud_tick_stopped = True
 
 
 # ---------------------------------------------------------------------------

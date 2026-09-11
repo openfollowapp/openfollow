@@ -97,11 +97,10 @@
 %     if saved_pin_id >= 0 and not pin_id_in_list:
                         <option value="{{saved_pin_id}}" selected disabled>Marker {{saved_pin_id}} (unavailable)</option>
 %     end
-% for tid in config.controlled_marker_ids:
-                        <option value="{{tid}}" {{'selected' if saved_pin_id == tid else ''}}>Marker {{tid}}</option>
+% for marker_id in config.controlled_marker_ids:
+                        <option value="{{marker_id}}" {{'selected' if saved_pin_id == marker_id else ''}}>Marker {{marker_id}}</option>
 % end
                     </select>
-                    <span class="field-note">Which marker the automatic tracker drives.</span>
                 </div>
                 <div class="field">
                     <label>Track</label>
@@ -109,7 +108,6 @@
                         <option value="top" {{'selected' if det.pin_point == 'top' else ''}}>Head (top of person)</option>
                         <option value="bottom" {{'selected' if det.pin_point == 'bottom' else ''}}>Feet (floor position)</option>
                     </select>
-                    <span class="field-note">Which part of the person sets the marker.</span>
                 </div>
             </div>
             <details class="inline-advanced">

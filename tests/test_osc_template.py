@@ -27,6 +27,7 @@ from openfollow.osc.template import (
     osc_arg_for,
     render,
     requires_default_marker,
+    unresolved_placeholder_reasons,
     unresolved_placeholders,
 )
 
@@ -62,7 +63,7 @@ def _ctx(
 def _resolver_factory(by_id: dict[int, tuple[float, float, float]]):  # noqa: ANN202
     """marker_resolver returning a stored position by id, or None for
     unmapped ids."""
-    return lambda tid: by_id.get(tid)
+    return lambda marker_id: by_id.get(marker_id)
 
 
 def _is_literal(s: str) -> bool:
@@ -184,23 +185,6 @@ def test_overlong_digit_run_compiles_to_literal_not_crash() -> None:
         f"[fader.scale:-{run}-1]",  # negative range bound
     ):
         assert _is_literal(bad), bad
-
-
-def test_token_has_explicit_index() -> None:
-    """Classifies tokens as explicit ``[x:7]`` vs default-marker ``[x]``
-    without colon-sniffing, so a transform-borne colon (range bound)
-    can't fool it."""
-    from openfollow.osc.template import token_has_explicit_index
-
-    assert token_has_explicit_index("[x:7]") is True
-    assert token_has_explicit_index("[markerfader:3]") is True
-    assert token_has_explicit_index("[x]") is False
-    assert token_has_explicit_index("[z.frac]") is False
-    # A hypothetical colon-bearing transform must NOT read as an index.
-    assert token_has_explicit_index("[fader.int:0-100]") is False
-    # Bracket-stripping is defensive – a bare inner name works too.
-    assert token_has_explicit_index("x:7") is True
-    assert token_has_explicit_index("bogus") is False
 
 
 def test_render_unknown_placeholder_passes_through_as_literal() -> None:
@@ -564,12 +548,6 @@ class TestControllerReference:
             == ()
         )
 
-    def test_token_has_explicit_index_true_for_controller_ref(self) -> None:
-        from openfollow.osc.template import token_has_explicit_index
-
-        assert token_has_explicit_index("[markerid:c1]") is True
-        assert token_has_explicit_index("[x:c2]") is True
-
     def test_slot_inner_round_trips_controller_ref(self) -> None:
         # The RenderError label (built from _slot_inner) names the cN form,
         # and re-compiling it yields the same slot.
@@ -807,14 +785,14 @@ def test_render_default_slot_raises_when_marker_id_is_none(
 
 
 def test_builtin_etc_eos_wire_format() -> None:
-    """The marker id addresses the Eos channel; three float args carry
-    the position."""
+    """The marker id addresses the Eos channel under an explicit user;
+    three float args carry the position."""
     tpl = builtin_by_id("etc")
     assert tpl is not None
     addr_ct = compile_template(tpl.address)
     arg_cts = [compile_template(a) for a in tpl.args]
     rc = _ctx(pos=(1.0, 2.0, 3.0), marker_id=5)
-    assert render(addr_ct, rc) == "/eos/chan/5/xyz"
+    assert render(addr_ct, rc) == "/eos/user/0/chan/5/xyz"
     typed = [osc_arg_for(ct, rc) for ct in arg_cts]
     assert typed == [
         ("f", pytest.approx(1.0)),
@@ -824,8 +802,8 @@ def test_builtin_etc_eos_wire_format() -> None:
 
 
 def test_builtin_etc_eos_user_99_wire_format() -> None:
-    """Same channel address and three float args as the current-user
-    variant, prefixed with the explicit Eos user."""
+    """Same channel address and three float args as the default
+    variant, under a different Eos user."""
     tpl = builtin_by_id("etc-user99")
     assert tpl is not None
     addr_ct = compile_template(tpl.address)
@@ -840,14 +818,15 @@ def test_builtin_etc_eos_user_99_wire_format() -> None:
     ]
 
 
-def test_builtin_etc_eos_variants_differ_only_by_user_prefix() -> None:
-    """The user-scoped variant must stay in lockstep with the plain one:
-    same args, same channel suffix, differing only by the prefix."""
+def test_builtin_etc_eos_variants_differ_only_by_user_number() -> None:
+    """The two variants must stay in lockstep: same args, same channel
+    address, differing only in which Eos user the address names."""
     plain = builtin_by_id("etc")
     scoped = builtin_by_id("etc-user99")
     assert plain is not None and scoped is not None
     assert scoped.args == plain.args
-    assert scoped.address == plain.address.replace("/eos/", "/eos/user/99/", 1)
+    assert scoped.trigger == plain.trigger
+    assert scoped.address == plain.address.replace("/user/0/", "/user/99/", 1)
 
 
 def test_builtin_adm_osc_2d_uses_fractional_xy_zero_z() -> None:
@@ -1203,3 +1182,93 @@ def test_unresolved_explicit_z_frac_unregistered_marker_takes_precedence() -> No
         grid_max_height=0.0,
     )
     assert out == ("[z:9.frac]",)
+
+
+# ---------------------------------------------------------------------------
+# unresolved_placeholder_reasons – the cause behind each unresolved token
+# ---------------------------------------------------------------------------
+
+
+def _reasons(tpl: str, *, marker=None, registered=frozenset(), grid=0.0):  # noqa: ANN001, ANN202, B008
+    return unresolved_placeholder_reasons(
+        _ct(tpl),
+        default_marker_id=marker,
+        registered_marker_ids=registered,
+        grid_max_height=grid,
+    )
+
+
+def test_reason_default_marker_when_no_default_named() -> None:
+    assert _reasons("[x]", marker=None, registered=frozenset({0}), grid=4.0) == (("[x]", "default_marker", None),)
+
+
+def test_reason_explicit_marker_when_target_unregistered() -> None:
+    assert _reasons("[x:9]", marker=0, registered=frozenset({0}), grid=4.0) == (("[x:9]", "explicit_marker", 9),)
+
+
+@pytest.mark.parametrize("tpl", ["[z.frac]", "[z.frac.inv]"])
+def test_reason_grid_height_when_marker_resolves_but_height_unset(tpl: str) -> None:
+    """With the default marker set and registered, a fractional-Z token
+    is blocked only by the grid height."""
+    assert _reasons(tpl, marker=0, registered=frozenset({0}), grid=0.0) == ((tpl, "grid_height", None),)
+
+
+def test_reason_grid_height_for_explicit_slot_whose_marker_is_registered() -> None:
+    """``[z:3.frac]`` with marker 3 registered is a grid problem; the
+    explicit index says nothing about which cause applies."""
+    assert _reasons("[z:3.frac]", marker=None, registered=frozenset({3}), grid=0.0) == (
+        ("[z:3.frac]", "grid_height", None),
+    )
+
+
+def test_reason_marker_precedes_grid_on_default_slot() -> None:
+    """Both causes apply; the marker one is reported so the message names
+    one next step."""
+    assert _reasons("[z.frac]", marker=None, registered=frozenset({0}), grid=0.0) == (
+        ("[z.frac]", "default_marker", None),
+    )
+
+
+def test_reason_marker_precedes_grid_on_explicit_slot() -> None:
+    assert _reasons("[z:9.frac]", marker=None, registered=frozenset({0, 1}), grid=0.0) == (
+        ("[z:9.frac]", "explicit_marker", 9),
+    )
+
+
+def test_reason_repeated_token_reported_once() -> None:
+    assert _reasons("[z.frac]/[z.frac]", marker=0, registered=frozenset({0}), grid=0.0) == (
+        ("[z.frac]", "grid_height", None),
+    )
+
+
+def test_reasons_preserve_appearance_order_across_causes() -> None:
+    out = _reasons("/p/[markerid]/[x:9]/[z.frac]", marker=None, registered=frozenset({0}), grid=0.0)
+    assert out == (
+        ("[markerid]", "default_marker", None),
+        ("[x:9]", "explicit_marker", 9),
+        ("[z.frac]", "default_marker", None),
+    )
+
+
+def test_reasons_empty_when_everything_resolves() -> None:
+    assert _reasons("[x] [z.frac] [markerid]", marker=0, registered=frozenset({0}), grid=4.0) == ()
+
+
+def test_reason_carries_the_explicit_marker_id() -> None:
+    """``marker_id`` comes from the compiled slot, so a caller can name
+    which marker is missing without re-parsing the token."""
+    (entry,) = _reasons("[x:12]", marker=0, registered=frozenset({0}), grid=4.0)
+    assert (entry.token, entry.reason, entry.marker_id) == ("[x:12]", "explicit_marker", 12)
+
+
+@pytest.mark.parametrize(
+    ("tpl", "marker", "registered", "grid"),
+    [
+        ("[x]", None, frozenset({0}), 4.0),
+        ("[z.frac]", 0, frozenset({0}), 0.0),
+        ("[z:3.frac]", None, frozenset({3}), 0.0),
+    ],
+)
+def test_reason_marker_id_is_none_for_non_explicit_causes(tpl, marker, registered, grid) -> None:  # noqa: ANN001
+    (entry,) = _reasons(tpl, marker=marker, registered=registered, grid=grid)
+    assert entry.marker_id is None

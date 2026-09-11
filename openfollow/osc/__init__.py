@@ -7,7 +7,6 @@ from openfollow.osc.service import (
     _PYTHONOSC_AVAILABLE,
     ClientStats,
     OscService,
-    find_free_udp_port,
 )
 from openfollow.osc.template import (
     BUILTIN_TEMPLATES,
@@ -45,7 +44,6 @@ __all__ = [
     "_PYTHONOSC_AVAILABLE",
     "builtin_by_id",
     "compile_template",
-    "find_free_udp_port",
     "osc_arg_for",
     "render",
 ]

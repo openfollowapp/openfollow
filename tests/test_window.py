@@ -527,11 +527,8 @@ class TestPublicApi:
         # No subscribers → must not raise.
         window._emit("nonexistent_event", foo=1)
 
-    def test_request_draw_is_noop(self, window) -> None:
-        window.request_draw(lambda *_a: None)
-
     def test_close_stops_tick_and_quits_gtk(self, window) -> None:
-        window.start_tick_animation(lambda: None)
+        window.start_hud_tick()
         assert window._tick_callback_id is not None
 
         window.close()
@@ -1148,58 +1145,59 @@ class TestHudDraw:
 
 
 # --------------------------------------------------------------------------- #
-# Tick animation
+# HUD redraw tick
 # --------------------------------------------------------------------------- #
 
 
-class TestTickAnimation:
+class TestHudTick:
+    """The display tick is the HUD's clock and nothing else's.
+
+    It stops whenever the compositor has no output to drive, so it must not be
+    able to carry app state: that is what froze marker positions on a unit with
+    no display attached.
+    """
+
     def test_start_registers_tick_callback_on_window(self, window) -> None:
-        window.start_tick_animation(lambda: None)
+        window.start_hud_tick()
         assert window._tick_callback_id is not None
 
     def test_start_is_idempotent(self, window) -> None:
-        window.start_tick_animation(lambda: None)
+        window.start_hud_tick()
         first = window._tick_callback_id
-        window.start_tick_animation(lambda: None)
+        window.start_hud_tick()
         assert window._tick_callback_id == first
 
     def test_stop_is_idempotent(self, window) -> None:
-        window.stop_tick_animation()  # no raise when not running
-        window.start_tick_animation(lambda: None)
-        window.stop_tick_animation()
+        window.stop_hud_tick()  # no raise when not running
+        window.start_hud_tick()
+        window.stop_hud_tick()
         assert window._tick_callback_id is None
-        window.stop_tick_animation()  # second call noop
+        window.stop_hud_tick()  # second call noop
         assert window._tick_callback_id is None
 
-    def test_tick_invokes_registered_fn_and_returns_true(self, window) -> None:
-        called = []
-        window.start_tick_animation(lambda: called.append(1))
-        assert window._window.tick() is True
-        assert called == [1]
+    def test_tick_takes_no_app_callback(self, window) -> None:
+        import inspect
+
+        # The frame loop must be unreachable from here – a callback parameter is
+        # all it takes to put marker state back on the display's frame clock.
+        assert not [
+            name
+            for name, param in inspect.signature(window.start_hud_tick).parameters.items()
+            if param.kind is not param.VAR_KEYWORD
+        ]
 
     def test_tick_returns_false_during_shutdown(self, window) -> None:
         """Once ``close()`` has flipped ``_closing``, the tick callback
         returns False so GTK drops it – otherwise a late tick could run
         after we've already torn down the HUD."""
-        window.start_tick_animation(lambda: None)
+        window.start_hud_tick()
         window._closing = True
         assert window._window.tick() is False
-
-    def test_tick_exception_does_not_stop_loop(self, window, caplog) -> None:
-        def boom() -> None:
-            raise RuntimeError("frame blew up")
-
-        window.start_tick_animation(boom)
-        import logging
-
-        with caplog.at_level(logging.ERROR):
-            assert window._window.tick() is True
-        assert any("animation tick" in rec.message for rec in caplog.records)
 
     def test_tick_redraws_hud_when_attached(self, window) -> None:
         window.attach_hud(lambda *_a: None)
         before = window._hud_drawing_area.queue_draw_calls
-        window.start_tick_animation(lambda: None)
+        window.start_hud_tick()
         window._window.tick()
         # attach_hud queued one draw, the tick queued another.
         assert window._hud_drawing_area.queue_draw_calls >= before + 1
@@ -1209,19 +1207,17 @@ class TestTickAnimation:
         the tick callback defensively regrabs it so keyboard events
         keep being delivered here once it refocuses."""
         window._window.toplevel_focus = False
-        window.start_tick_animation(lambda: None)
+        window.start_hud_tick()
         before = window._window.grab_focus_calls
         window._window.tick()
         assert window._window.grab_focus_calls == before + 1
 
-    def test_tick_without_registered_fn_still_redraws_hud(self, window) -> None:
-        window.start_tick_animation(lambda: None)
-        # Manually clear the fn to simulate the transient state.
-        window._tick_fn = None
-        window.attach_hud(lambda *_a: None)
-        before = window._hud_drawing_area.queue_draw_calls
-        assert window._window.tick() is True
-        assert window._hud_drawing_area.queue_draw_calls > before
+    def test_is_closing_tracks_teardown(self, window) -> None:
+        # The frame-clock timeout reads this to drop itself in the window
+        # between main_quit() and Gtk.main() returning.
+        assert window.is_closing is False
+        window.close()
+        assert window.is_closing is True
 
 
 # --------------------------------------------------------------------------- #
@@ -1781,7 +1777,7 @@ class TestPointerPoll:
         window._pointer_poll = True
         window._pointer_device = object()
         window._window._gdk_window = _Raising()
-        window.start_tick_animation(lambda: None)
+        window.start_hud_tick()
         import logging
 
         with caplog.at_level(logging.ERROR):

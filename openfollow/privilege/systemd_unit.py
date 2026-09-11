@@ -91,7 +91,7 @@ def render_service_unit(
     # template to keep the ExecStart line within the line-length limit.
     cage_session = f'kanshi & {poetry_bin} run python -m openfollow.main; rc=$?; kill "$!" 2>/dev/null; exit $rc'
     return f"""[Unit]
-Description=OpenFollow (NDI + 3D tracker overlay)
+Description=OpenFollow (live video stage-tracking + 3D overlay)
 After=network.target seatd.service user@{uid}.service systemd-udev-settle.service
 Wants=network.target user@{uid}.service systemd-udev-settle.service
 

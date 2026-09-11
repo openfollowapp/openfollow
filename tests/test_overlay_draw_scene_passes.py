@@ -10,7 +10,7 @@ branch of the remaining draw entry points:
 * :func:`draw_grid`  – grid buffer resize, spacing gate, offset handling.
 * :func:`draw_origin` – gated draw + three coloured axes.
 * :func:`draw_detections` – rectangles + optional label chips.
-* :func:`draw_marker` – ball / crosshair / drop-line / ground-circle
+* :func:`draw_marker` – ball / crosshair / Z-line / ground-circle
   gates and fallbacks (finite-projection guards, selected-scale bump).
 """
 
@@ -49,7 +49,7 @@ def _scene_state(**overrides: object) -> OverlayState:
     state.grid_config = (10.0, 6.0, 1.0, 0.0, 0.0, 0.0)
     state.show_ball = False
     state.show_crosshair = False
-    state.show_drop_line = False
+    state.show_z_line = False
     state.show_ground_circle = False
     state.show_origin = False
     for k, v in overrides.items():
@@ -431,18 +431,18 @@ class TestDrawMarkerBranches:
         assert cr.move_tos == []
         assert cr.line_tos == []
 
-    def test_drop_line_requires_grid_config(self) -> None:
-        state = _scene_state(show_drop_line=True, grid_config=None)
+    def test_z_line_requires_grid_config(self) -> None:
+        state = _scene_state(show_z_line=True, grid_config=None)
         cr = FakeCairo()
         draw_marker(cr, state, self._marker(), 1920, 1080)
         assert cr.move_tos == []
         assert cr.line_tos == []
 
-    def test_drop_line_emitted_when_grid_and_flag_set(self) -> None:
+    def test_z_line_emitted_when_grid_and_flag_set(self) -> None:
         state = _scene_state(
-            show_drop_line=True,
+            show_z_line=True,
             grid_config=(10.0, 6.0, 1.0, 0.0, 0.0, 0.0),
-            drop_line_thickness=2,
+            z_line_thickness=2,
         )
         cr = FakeCairo()
         draw_marker(cr, state, self._marker(x=0.5, y=0.5, z=2.0), 1920, 1080)
@@ -451,7 +451,7 @@ class TestDrawMarkerBranches:
         assert len(cr.line_tos) == 1
         assert cr.strokes == 1
 
-    def test_drop_line_skipped_when_projection_nonfinite(self) -> None:
+    def test_z_line_skipped_when_projection_nonfinite(self) -> None:
         from openfollow.runtime import overlay_draw_scene as mod
 
         call = [0]
@@ -462,11 +462,11 @@ class TestDrawMarkerBranches:
             # First call (center radius pair) – return finite.
             if call[0] == 1:
                 return np.array([[500.0, 400.0], [510.0, 400.0]], dtype=np.float64)
-            # Drop line call – NaN.
+            # Z line call – NaN.
             return np.full((len(arr), 2), np.nan, dtype=np.float64)
 
         state = _scene_state(
-            show_drop_line=True,
+            show_z_line=True,
             grid_config=(10.0, 6.0, 1.0, 0.0, 0.0, 0.0),
         )
         state.show_ball = False

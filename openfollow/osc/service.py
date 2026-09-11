@@ -669,10 +669,3 @@ def _join_multicast_group(sock: Any, group: str, port: int) -> bool:
         )
         return False
     return True
-
-
-def find_free_udp_port() -> int:  # pragma: no cover - test helper
-    """Bind a transient socket to ``(*, 0)`` and return the kernel-assigned port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        s.bind(("", 0))
-        return int(s.getsockname()[1])

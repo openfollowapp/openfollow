@@ -20,6 +20,8 @@
 % # JS re-evaluate dependencies as the operator edits without a
 % # round-trip to the server.
 % _unresolved_by_row = defined('unresolved_by_row') and unresolved_by_row or {}
+% _unresolved_reasons_by_row = defined('unresolved_reasons_by_row') and unresolved_reasons_by_row or {}
+% _fault_summary_by_row = defined('fault_summary_by_row') and fault_summary_by_row or {}
 % _registered_marker_ids = defined('registered_marker_ids') and registered_marker_ids or []
 % # per-row marker display: {row_id: {"header": <single-marker label|None>,
 % #   "nested": [<chip>...], "markers_unusable": <bool>}}. Built server-side
@@ -50,21 +52,14 @@
  % is_focus = (defined('focus_id') and focus_id == row.id)
  % trigger_kind = getattr(row.trigger, 'kind', 'stream')
  % row_unresolved = _unresolved_by_row.get(row.id, ())
+ % row_unresolved_reasons = _unresolved_reasons_by_row.get(row.id, {})
  % has_unresolved = bool(row_unresolved)
  % _row_marker = _marker_display_by_row.get(row.id, {})
  % _marker_header = _row_marker.get('header')
  % _marker_nested = _row_marker.get('nested', [])
- % _markers_unusable = _row_marker.get('markers_unusable', False)
- % # The row's status dot is red when this transmitter can never fire: no
- % # destination (or a dangling one), no controlled marker among those it
- % # names, or an invalid address/arg (an unresolvable placeholder).
- % # Otherwise amber when enabled, grey when off. An uncontrolled *secondary*
- % # marker (with at least one controlled) reddens its own nested chip, not
- % # this dot.
- % _dest_missing = (not row.destination_id) or (row.destination_id not in _dest_by_id)
- % _dot_broken = _dest_missing or _markers_unusable or has_unresolved
- % _dot_state = 'invalid' if _dot_broken else ('on' if row.enabled else 'off')
- % _dot_label = 'No destination' if _dest_missing else ('No controlled marker' if _markers_unusable else ('Invalid OSC message' if has_unresolved else ('Enabled' if row.enabled else 'Disabled')))
+ % # Red when the row can never fire; the badge beside the name says why.
+ % _fault_visible, _fault_more, _faults = _fault_summary_by_row.get(row.id, ((), '', ()))
+ % _dot_broken = bool(_faults)
  <details class="osc-binding-row" data-row-id="{{row.id}}" data-trigger-kind="{{trigger_kind}}"
  data-reorder-url="/section/osc_bindings/reorder" data-reorder-target="osc-bindings-section" {{'open' if is_focus else ''}}>
  <summary class="osc-binding-summary">
@@ -85,8 +80,19 @@
  title="Drag to reorder"
  onpointerdown="event.stopPropagation()"
  onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
- <span class="osc-binding-enabled-dot {{_dot_state}}" aria-label="{{_dot_label}}"></span>
+ % if _dot_broken:
+ <span class="osc-binding-enabled-dot invalid" aria-hidden="true"></span>
+ % else:
+ <span class="osc-binding-enabled-dot {{'on' if row.enabled else 'off'}}" aria-label="{{'Enabled' if row.enabled else 'Disabled'}}"></span>
+ % end
  <span class="osc-binding-title">{{row.name or '(unnamed)'}}</span>
+ % if _dot_broken:
+ <span class="osc-binding-fault" aria-hidden="true">{{' · '.join(_fault_visible)}}</span>
+ % if _fault_more:
+ <span class="osc-binding-fault-more" aria-hidden="true">{{_fault_more}}</span>
+ % end
+ <span class="visually-hidden">{{'. '.join(_faults)}}.</span>
+ % end
  <span class="osc-binding-kind-badge">{{pretty_label(trigger_kind)}}</span>
  % if _marker_header:
  <span class="osc-binding-marker-badge">{{_marker_header}}</span>
@@ -132,7 +138,7 @@
  % # (visual-only) + aria-describedby to hidden span
  % # for a11y. oscEditorSyncEnabledUnresolved keeps
  % # span in sync; aria-live="polite" announces changes.
- <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if row.enabled else ''}} {{!'data-osc-unresolved="true"' if has_unresolved else ''}} aria-describedby="enabled-{{row.id}}-unresolved-help"><span id="enabled-{{row.id}}-unresolved-help" class="visually-hidden" aria-live="polite">{{'Will save disabled: this row uses placeholder values that are not resolved yet (no default marker, or an explicit marker reference targets an unregistered marker).' if has_unresolved else ''}}</span></div>
+ <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if row.enabled else ''}} {{!'data-osc-unresolved="true"' if has_unresolved else ''}} aria-describedby="enabled-{{row.id}}-unresolved-help"><span id="enabled-{{row.id}}-unresolved-help" class="visually-hidden" aria-live="polite">{{'Will save disabled: this row uses placeholder values that are not resolved yet (no default marker, an explicit marker reference targets an unregistered marker, or a fractional height needs Grid → Maximum Height set).' if has_unresolved else ''}}</span></div>
  </div>
  <div class="field">
  <label>Name</label>
@@ -267,8 +273,9 @@
  contenteditable="true"
  spellcheck="false"
  data-osc-message-editor="{{row.id}}"
- data-osc-message-placeholder="/eos/chan/[markerid]/xyz [x] [y] [z]"
+ data-osc-message-placeholder="/eos/user/0/chan/[markerid]/xyz [x] [y] [z]"
  data-osc-unresolved-placeholders="{{json.dumps(list(row_unresolved))}}"
+ data-osc-unresolved-reasons="{{json.dumps(row_unresolved_reasons)}}"
  data-osc-placeholder-names="{{json.dumps(list(placeholders))}}"
  data-osc-registered-marker-ids="{{json.dumps(list(_registered_marker_ids))}}"
  data-osc-row-markers="{{', '.join(row.markers)}}"
@@ -304,7 +311,7 @@
  % # reference). Operators can also type any ``.transform``
  % # chain or a ``:cN`` reference by hand.
  <div class="row placeholder-buttons">
- % for ex in ('[x.frac]', '[y.frac]', '[fader.pct]', '[markerfader.pct]', '[markerid:c1]'):
+ % for ex in ('[x.frac]', '[y.frac]', '[z.frac]', '[fader.pct]', '[markerfader.pct]', '[markerid:c1]'):
  <button type="button"
  class="placeholder-chip"
  data-osc-placeholder="{{ex}}"

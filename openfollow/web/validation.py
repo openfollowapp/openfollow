@@ -431,9 +431,9 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "crosshair_thickness": FieldRule(
             _as_int, lo=1, hi=10, human_error="Crosshair thickness must be between 1 and 10 px."
         ),
-        "drop_line": FieldRule(_as_bool),
-        "drop_line_thickness": FieldRule(
-            _as_int, lo=1, hi=20, human_error="Drop-line thickness must be between 1 and 20 px."
+        "z_line": FieldRule(_as_bool),
+        "z_line_thickness": FieldRule(
+            _as_int, lo=1, hi=20, human_error="Z-line thickness must be between 1 and 20 px."
         ),
         "ground_circle": FieldRule(_as_bool),
         "ground_circle_size": FieldRule(_as_float, lo=0.0, human_error="Ground circle size must be ≥ 0."),

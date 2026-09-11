@@ -10,8 +10,6 @@ contract surfaced through the server's provider/handler callbacks.
 
 from __future__ import annotations
 
-import socket
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,6 +20,7 @@ import openfollow.web.discovery as discovery_module
 from openfollow.network.adapter import ApplyResult, Ipv4Method
 from openfollow.web.routes import _port_suffix
 from openfollow.web.server import ConfigWebServer
+from tests._ports import free_tcp_port, live_on_free_port
 
 pytestmark = pytest.mark.integration
 
@@ -147,22 +146,6 @@ class FakeNetwork:
         return self.vlan_delete_result
 
 
-def _find_free_tcp_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _wait_for_port(port: int, timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(("127.0.0.1", port)) == 0:
-                return True
-        time.sleep(0.02)
-    return False
-
-
 def _get(base: str, path: str) -> tuple[int, str]:
     try:
         with urllib.request.urlopen(f"{base}{path}", timeout=5) as r:
@@ -207,26 +190,24 @@ def net_server(tmp_path, monkeypatch):
         monkeypatch.setattr(getattr(discovery_module, attr), "start", lambda self: None)
         monkeypatch.setattr(getattr(discovery_module, attr), "stop", lambda self: None)
     fake = FakeNetwork()
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
     config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-        network_config_provider=fake.config_provider,
-        network_interfaces_provider=fake.interfaces_provider,
-        network_apply_handler=fake.apply_handler,
-        network_renew_handler=fake.renew_handler,
-        network_vlan_provider=fake.vlan_provider,
-        network_vlan_create_handler=fake.vlan_create_handler,
-        network_vlan_delete_handler=fake.vlan_delete_handler,
-    )
-    server.start()
-    assert _wait_for_port(port)
-    yield fake, f"http://127.0.0.1:{port}"
-    server.stop()
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            network_config_provider=fake.config_provider,
+            network_interfaces_provider=fake.interfaces_provider,
+            network_apply_handler=fake.apply_handler,
+            network_renew_handler=fake.renew_handler,
+            network_vlan_provider=fake.vlan_provider,
+            network_vlan_create_handler=fake.vlan_create_handler,
+            network_vlan_delete_handler=fake.vlan_delete_handler,
+        )
+    ) as (_server, base):
+        yield fake, base
 
 
 # --------------------------------------------------------------------------- #
@@ -608,24 +589,22 @@ def test_no_provider_renders_unavailable(tmp_path, monkeypatch) -> None:
     for attr in ("BeaconSender", "BeaconReceiver"):
         monkeypatch.setattr(getattr(discovery_module, attr), "start", lambda self: None)
         monkeypatch.setattr(getattr(discovery_module, attr), "stop", lambda self: None)
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
     config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-    )
-    server.start()
-    assert _wait_for_port(port)
-    try:
-        status, body = _get(f"http://127.0.0.1:{port}", "/section/network/status")
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+        )
+    ) as (_server, base):
+        status, body = _get(base, "/section/network/status")
         assert status == 200
         assert "unavailable" in body
         # apply with no handler returns the not-available banner, not a 500.
         status, body = _post(
-            f"http://127.0.0.1:{port}",
+            base,
             "/section/network/apply",
             {
                 "iface": "eth0",
@@ -636,7 +615,7 @@ def test_no_provider_renders_unavailable(tmp_path, monkeypatch) -> None:
         assert "not available" in body
         # renew with no handler is likewise the not-available banner, not a 500.
         status, body = _post(
-            f"http://127.0.0.1:{port}",
+            base,
             "/section/network/renew",
             {
                 "iface": "eth0",
@@ -644,8 +623,6 @@ def test_no_provider_renders_unavailable(tmp_path, monkeypatch) -> None:
         )
         assert status == 200
         assert "not available" in body
-    finally:
-        server.stop()
 
 
 # --------------------------------------------------------------------------- #
@@ -659,7 +636,7 @@ def _make_server(tmp_path, **kwargs) -> ConfigWebServer:
     return ConfigWebServer(
         config_path=str(config_path),
         host="127.0.0.1",
-        port=_find_free_tcp_port(),
+        port=free_tcp_port(),
         system_name="T",
         **kwargs,
     )
@@ -772,24 +749,20 @@ def test_no_interfaces_renders_empty_list_not_a_crash(tmp_path, monkeypatch) -> 
         monkeypatch.setattr(getattr(discovery_module, attr), "start", lambda self: None)
         monkeypatch.setattr(getattr(discovery_module, attr), "stop", lambda self: None)
     fake = FakeNetwork(interfaces=())
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
     config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-        network_config_provider=fake.config_provider,
-    )
-    server.start()
-    try:
-        assert _wait_for_port(port)
-        status, body = _get(f"http://127.0.0.1:{port}", "/section/network/status")
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            network_config_provider=fake.config_provider,
+        )
+    ) as (_server, base):
+        status, body = _get(base, "/section/network/status")
         assert status == 200
         assert "unavailable" in body
-    finally:
-        server.stop()
 
 
 def test_interface_list_uses_the_richer_provider_when_wired(tmp_path, monkeypatch) -> None:
@@ -808,21 +781,18 @@ def test_interface_list_uses_the_richer_provider_when_wired(tmp_path, monkeypatc
             {"name": "wlan0", "address": "172.16.4.20", "prefix": 24, "method": "static", "is_up": True},
         ]
 
-    port = _find_free_tcp_port()
     config_path = tmp_path / "config.toml"
     config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
-    server = ConfigWebServer(
-        config_path=str(config_path),
-        host="127.0.0.1",
-        port=port,
-        system_name="TestSystem",
-        network_config_provider=fake.config_provider,
-        network_interfaces_provider=_interfaces,
-    )
-    server.start()
-    try:
-        assert _wait_for_port(port)
-        base = f"http://127.0.0.1:{port}"
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            network_config_provider=fake.config_provider,
+            network_interfaces_provider=_interfaces,
+        )
+    ) as (_server, base):
         _status, body = _get(base, "/section/network/status")
         # wlan0 is not the active interface, yet its own address is shown.
         assert "172.16.4.20" in body
@@ -835,8 +805,6 @@ def test_interface_list_uses_the_richer_provider_when_wired(tmp_path, monkeypatc
         # Scan bypasses the cache so a freshly plugged NIC appears at once.
         _get(base, "/section/network/status?scan=1")
         assert len(calls) == before + 1
-    finally:
-        server.stop()
 
 
 # --------------------------------------------------------------------------- #

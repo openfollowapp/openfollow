@@ -17,12 +17,15 @@ is Pi-only).
 > **GObject-Introspection stack is the OS's, not bundled.** The venv is created
 > with `--system-site-packages` and the pip-built `PyGObject`/`pycairo` are
 > removed, so `gi` / GStreamer come from the distro packages (`python3-gi`,
-> `python3-gi-cairo`, the `gir1.2-*` typelibs). Reason: pip
-> resolves `PyGObject>=3.56` (the new **girepository-2.0** ABI), which Debian
+> `python3-gi-cairo`, the `gir1.2-*` typelibs). Reason: pip resolves the newest
+> `PyGObject` (the **girepository-2.0** ABI), which Debian
 > Trixie (`python3-gi 3.50` on `libgirepository-1.0-1`) cannot load –
 > `ImportError: libgirepository-2.0.so.0`. Using the OS bindings keeps the
 > bindings, the typelibs and `libgirepository` coherent. Everything else (numpy,
 > pygame, bottle, mido, the openfollow package, …) is still bundled in the venv.
+> The `PyGObject` floor in `pyproject.toml` therefore tracks what `python3-gi`
+> ships, not what pip would pick: a higher floor would declare the configuration
+> shipped here unsupported. `tests/test_system_dependencies.py` guards it.
 >
 > **Do not add `python3-gst-1.0` to `Depends`.** Its `gi/overrides/Gst.py`
 > makes `Gst.Caps.get_structure()` return a `StructureWrapper` that lacks

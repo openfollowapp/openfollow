@@ -681,8 +681,6 @@ def _field_digit_state(app: OpenFollowApp) -> tuple[str, int]:
     _expand_prefix_for_grid(app)
     digits = ipv4_digit_grid.to_grid(getattr(app, "_pi_network_field_value", ""))
     index = getattr(app, "_pi_network_field_digit_index", 0)
-    if not isinstance(index, int):
-        index = 0
     return digits, max(0, min(ipv4_digit_grid.DIGIT_SLOTS - 1, index))
 
 

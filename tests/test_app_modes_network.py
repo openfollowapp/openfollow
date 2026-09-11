@@ -503,6 +503,63 @@ class TestGamepadFieldEditCancel:
         assert "9.9.9.9" in app._pi_network_pending_config.dns
 
 
+class TestDpadEntryThroughTheGamepadPoll:
+    """Driven through the poll rather than the helpers it calls.
+
+    The poll is the only thing a gamepad actually reaches; testing the cursor
+    and digit helpers directly leaves the wiring between the two untested, which
+    is where a missing button or a swapped direction would live.
+    """
+
+    def _editing(self, value: str = "192.168.1.5"):
+        from types import SimpleNamespace as NS
+
+        from openfollow.input.gamepad import SettingsMenuInput
+
+        app = _make_app()
+        anm.enter_pi_network(app)
+        anm.enter_pi_network_field_edit(app, "address")
+        app._pi_network_field_value = value
+
+        def press(**pressed: bool) -> None:
+            inp = SettingsMenuInput(**{f"{k}_pressed": v for k, v in pressed.items()})
+            app._input_manager = NS(gamepad_handler=NS(read_settings_menu_input=lambda: inp))
+            anm.process_pi_network_field_edit_input(app)
+
+        return app, press
+
+    def test_up_raises_the_digit_under_the_cursor(self) -> None:
+        app, press = self._editing()
+        press(up=True)
+        assert app._pi_network_field_value == "292.168.001.005"
+
+    def test_down_lowers_it(self) -> None:
+        app, press = self._editing()
+        press(down=True)
+        assert app._pi_network_field_value == "092.168.001.005"
+
+    def test_right_then_up_moves_to_the_next_digit(self) -> None:
+        app, press = self._editing()
+        press(right=True)
+        press(up=True)
+        assert app._pi_network_field_value == "102.168.001.005"
+
+    def test_left_walks_back(self) -> None:
+        app, press = self._editing()
+        press(right=True)
+        press(right=True)
+        press(left=True)
+        press(up=True)
+        assert app._pi_network_field_value == "102.168.001.005"
+
+    def test_the_cursor_stops_at_the_first_digit(self) -> None:
+        """Wrapping to the far end would read as the value jumping."""
+        app, press = self._editing()
+        press(left=True)
+        press(up=True)
+        assert app._pi_network_field_value == "292.168.001.005"
+
+
 class TestGamepadEntryOnTheSubnetField:
     """The Subnet field accepts a bare prefix length as well as a mask.
 

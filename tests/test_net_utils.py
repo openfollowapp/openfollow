@@ -782,6 +782,27 @@ class TestPrimaryAddressPrefersARealLease:
         assert get_primary_local_ipv4() == first
 
 
+class TestAddressPreferenceOrdering:
+    """The tie-break that decides which address the station reports when
+    nothing is pinned and the outbound probe fails - i.e. on an offline LAN."""
+
+    def test_a_real_lease_outranks_a_link_local(self) -> None:
+        """A station that took a 169.254 address while DHCP was failing must
+        stop advertising it once a real lease arrives."""
+        addresses = ["169.254.8.31", "192.168.1.50"]
+        assert min(addresses, key=net_utils_module._address_preference) == "192.168.1.50"
+
+    def test_ordering_is_numeric_rather_than_lexicographic(self) -> None:
+        addresses = ["10.0.0.10", "10.0.0.9"]
+        assert min(addresses, key=net_utils_module._address_preference) == "10.0.0.9"
+
+    def test_a_non_numeric_address_sorts_without_raising(self) -> None:
+        """psutil yields dotted quads, so this is defence rather than a path
+        with a caller - but the sort must not take the process down if that
+        ever stops being true."""
+        assert net_utils_module._address_preference("fe80::1") == (0, ())
+
+
 class TestMulticastIfacePinning:
     """The three-state pin rule shared by the discovery beacon and catalog sync.
 

@@ -61,7 +61,7 @@ def _address_preference(ip: str) -> tuple[int, tuple[int, ...]]:
     """
     try:
         octets = tuple(int(part) for part in ip.split("."))
-    except ValueError:  # pragma: no cover - psutil only yields dotted quads
+    except ValueError:
         octets = ()
     return (1 if ip.startswith("169.254.") else 0, octets)
 

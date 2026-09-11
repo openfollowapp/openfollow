@@ -4,7 +4,6 @@
       hx-post="/section/mouse3d" hx-target="#mouse3d-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>3D Mouse Input</h2>
-        <span class="section-note">Steer the selected marker with a connected 6DOF 3D Mouse</span>
     </div>
 
     <div class="group">

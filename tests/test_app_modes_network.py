@@ -121,8 +121,6 @@ def _make_app(adapter: _FakeAdapter | None = None) -> SimpleNamespace:
     app._enter_iface_selection = _enter_iface_selection
     app._enter_settings_menu = _enter_settings_menu
     app._get_config_mtime = _get_config_mtime
-    # Stub ``_apply_as_bind_iface`` refresh to no-op; real logic is
-    # covered by lifecycle/config tests with deterministic psutil mocks.
     app._advisory_refreshes = 0
 
     def _refresh_psn_source_advisory() -> str:
@@ -250,19 +248,6 @@ class TestPiNetworkScreen:
         anm.enter_pi_network(app)
         names = [i.name for i in app._pi_network_interfaces]
         assert "loop1" not in names
-
-    def test_apply_as_bind_iface_bails_on_loopback_state(self) -> None:
-        app = _make_app()
-        app._pi_network_state_cache = NetworkState(
-            interface=NetworkInterface(name="lo", mac=None, kind="loopback", is_up=True),
-            ipv4=Ipv4Config(method=Ipv4Method.DHCP, address="127.0.0.1"),
-            lease=None,
-        )
-        app._config.psn_source_iface = "wlan0"
-        anm._apply_as_bind_iface(app, "lo")
-        # Iface untouched – no retargeting to loopback.
-        assert app._config.psn_source_iface == "wlan0"
-        assert app._apply_calls == []
 
 
 class TestMethodPicker:
@@ -518,88 +503,50 @@ class TestGamepadFieldEditCancel:
         assert "9.9.9.9" in app._pi_network_pending_config.dns
 
 
-class TestMergeWithBindIface:
-    """Changing Network-screen iface rebinds OpenFollow's listeners."""
+class TestTheScreenDoesNotAssignInterfaces:
+    """No on-screen path writes ``psn_source_iface``.
 
-    def test_iface_change_writes_psn_source_iface(self) -> None:
-        """Picker stores stable iface name (eth0/wlan0) as
-        ``psn_source_iface``; runtime apply uses current IP for immediate
-        socket rebind to the right interface."""
+    Picking an interface here used to rebind the whole PSN plane and persist the
+    choice, so configuring a NIC's *address* silently repointed where stage data
+    left the station. Assignment is a web-UI decision; this screen only says
+    what address an interface has, and how to reach the web UI.
+
+    Asserted across every action the screen offers rather than against the one
+    function that used to do it, because the guarantee is about the screen, not
+    about a since-deleted helper.
+    """
+
+    def _actions(self, app):
+        """Every on-screen path that could plausibly touch config."""
+        anm.enter_pi_network_iface_picker(app)
+        anm._pi_network_iface_picker_confirm(app)
+        anm.enter_pi_network_method_picker(app)
+        anm._pi_network_method_picker_confirm(app)
+        anm.enter_pi_network_field_edit(app, "address")
+        app._pi_network_field_value = "192.168.1.77"
+        anm.confirm_pi_network_field_edit(app)
+        anm._pi_network_confirm(app)
+
+    def test_no_action_repoints_the_psn_plane(self) -> None:
+        app = _make_app()
+        app._config.psn_source_iface = "wlan0"
+        anm.enter_pi_network(app)
+
+        self._actions(app)
+
+        assert app._config.psn_source_iface == "wlan0", "the network screen reassigned the PSN interface"
+        assert app._apply_calls == [], "the network screen rebound the PSN sockets"
+
+    def test_picking_an_interface_still_changes_what_the_screen_shows(self) -> None:
+        """The picker keeps its real job; only the side effect is gone."""
         app = _make_app()
         anm.enter_pi_network(app)
         anm.enter_pi_network_iface_picker(app)
-        # The fixture's _FakeAdapter returns address 192.168.1.50 for both
-        # interfaces; the merge logic should ship that IP through the
-        # legacy apply path while persisting the iface name.
+        app._pi_network_iface_picker_index = 1
         anm._pi_network_iface_picker_confirm(app)
-        assert app._apply_calls == ["192.168.1.50"]
-        assert app._config.psn_source_iface == "eth0"
 
-    def test_no_apply_when_state_missing(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        app._pi_network_state_cache = None
-        anm._apply_as_bind_iface(app, "eth0")
-        assert app._apply_calls == []
-
-    def test_no_apply_when_state_address_is_empty_string(self) -> None:
-        """Cached ipv4.address could be empty string if refresh raced
-        interface flap. Treat same as missing – don't feed empty string
-        to apply_psn_source_ip_change (would bind to all addresses)."""
-        app = _make_app()
-        anm.enter_pi_network(app)
-        # Swap the whole (frozen) NetworkState so ipv4.address is "" –
-        # preserves the iface so the loopback guard doesn't catch us
-        # first.
-        from openfollow.network.adapter import (
-            Ipv4Config,
-            Ipv4Method,
-            NetworkInterface,
-            NetworkState,
-        )
-
-        app._pi_network_state_cache = NetworkState(
-            interface=NetworkInterface(name="eth0", mac="aa:bb", kind="ethernet", is_up=True),
-            ipv4=Ipv4Config(method=Ipv4Method.DHCP, address=""),
-            lease=None,
-        )
-        anm._apply_as_bind_iface(app, "eth0")
-        assert app._apply_calls == []
-
-    def test_rollback_on_apply_failure_restores_iface(self) -> None:
-        """``psn_source_iface`` rolls back on apply failure to keep
-        stored config in sync with runtime state."""
-        app = _make_app()
-        anm.enter_pi_network(app)
-
-        def boom(_ip):
-            raise RuntimeError("rebind failed")
-
-        app._runtime_services.apply_psn_source_ip_change = boom
-        app._config.psn_source_iface = "wlan0"
-        anm._apply_as_bind_iface(app, "eth0")
-        # On failure the iface restores to its pre-call value.
-        assert app._config.psn_source_iface == "wlan0"
-
-    def test_no_apply_when_iface_already_pinned(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        app._config.psn_source_iface = "eth0"
-        anm._apply_as_bind_iface(app, "eth0")
-        assert app._apply_calls == []
-
-    def test_save_config_failure_is_logged_but_not_fatal(self, monkeypatch) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-
-        def boom(_cfg, _path):
-            raise RuntimeError("save failed")
-
-        monkeypatch.setattr(anm, "save_config", boom)
-        anm._apply_as_bind_iface(app, "eth0")
-        # Still applied at runtime.
-        assert app._apply_calls == ["192.168.1.50"]
-        assert app._config.psn_source_iface == "eth0"
+        assert app._pi_network_active_iface == app._pi_network_interfaces[1].name
+        assert app._config.psn_source_iface == ""
 
 
 class TestRefreshPiNetworkEdgeCases:
@@ -1648,24 +1595,6 @@ class TestRemainingMethodPickerPaths:
 
         assert app._pi_network_method_picker_active is False
         assert app._pi_network_pending_config.method == Ipv4Method.STATIC
-
-
-class TestApplyAsBindIfaceSuccessPath:
-    def test_full_success_updates_mtime(self, monkeypatch) -> None:
-        """Save + mtime fetch both succeed – covers line 376."""
-        app = _make_app()
-        anm.enter_pi_network(app)
-        monkeypatch.setattr(anm, "save_config", lambda _cfg, _path: None)
-        captured: list[float] = []
-
-        def fake_mtime() -> float:
-            captured.append(1234.0)
-            return 1234.0
-
-        app._get_config_mtime = fake_mtime
-        anm._apply_as_bind_iface(app, "eth0")
-        assert app._config_mtime == 1234.0
-        assert captured == [1234.0]
 
 
 class TestMethodPickerFallback:

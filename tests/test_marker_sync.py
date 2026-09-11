@@ -1322,10 +1322,13 @@ class TestRecvLoopOneIteration:
         with patch.object(_socket, "socket", return_value=sock):
             assert sync._open_rx_socket() is sock
 
-    def test_fallback_join_on_iface_failure(self) -> None:
-        """When IP_ADD_MEMBERSHIP fails on the bound iface (e.g. iface
-        IP not present), the loop retries with the wildcard. Both
-        failing also short-circuits the loop and closes the socket."""
+    def test_no_wildcard_join_when_the_iface_is_unavailable(self) -> None:
+        """A failed join on the pinned interface must not retry on 0.0.0.0.
+
+        Subscribing on every interface puts marker names and colours - this
+        station's identity - on a network the operator excluded, at the moment
+        the observer is stopping PSN for that same reason.
+        """
         sync = MarkerCatalogSync(
             MarkerCatalog(),
             station_id="station-A",
@@ -1344,8 +1347,9 @@ class TestRecvLoopOneIteration:
         sock.setsockopt.side_effect = setsockopt
         with patch.object(_socket, "socket", return_value=sock):
             assert sync._open_rx_socket() is None
-        # Two IP_ADD_MEMBERSHIP attempts (iface, then 0.0.0.0 fallback).
-        assert len(membership_calls) == 2
+        # Exactly one attempt, on the pinned interface - never a wildcard retry.
+        assert len(membership_calls) == 1
+        assert membership_calls[0].endswith(_socket.inet_aton("10.0.0.5"))
         sock.close.assert_called_once()
 
     def test_recv_timeout_continues_until_stop(self) -> None:
@@ -1560,7 +1564,12 @@ class TestStartStop:
 
 
 class TestOpenTxSocket:
-    def test_iface_ip_failure_logs_and_still_returns_socket(self) -> None:
+    def test_iface_ip_failure_refuses_the_socket_instead_of_roaming(self) -> None:
+        """A TX socket that could not be pinned must not reach the send loop:
+        unpinned multicast follows the routing table, not "all interfaces".
+        """
+        from openfollow.net_utils import InterfaceUnavailable
+
         sync = MarkerCatalogSync(
             MarkerCatalog(),
             station_id="station-A",
@@ -1575,11 +1584,9 @@ class TestOpenTxSocket:
                 raise OSError("iface gone")
 
         sock.setsockopt.side_effect = setsockopt
-        with patch.object(_socket, "socket", return_value=sock):
-            result = sync._open_tx_socket()
-        # Open returns the socket even though IP_MULTICAST_IF failed –
-        # send loop falls back to all-interfaces routing.
-        assert result is sock
+        with patch.object(_socket, "socket", return_value=sock), pytest.raises(InterfaceUnavailable):
+            sync._open_tx_socket()
+        sock.close.assert_called_once()
 
 
 class TestPeerExpiry:

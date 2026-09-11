@@ -32,6 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from openfollow.marker_catalog.catalog import MarkerCatalog, MarkerEntry, _sanitize_text
+from openfollow.net_utils import bind_multicast_send_iface, join_multicast_group_on_iface
 
 logger = logging.getLogger(__name__)
 
@@ -462,19 +463,11 @@ class MarkerCatalogSync:
     def _open_tx_socket(self) -> socket.socket:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-        if self._iface_ip:
-            try:
-                sock.setsockopt(
-                    socket.IPPROTO_IP,
-                    socket.IP_MULTICAST_IF,
-                    socket.inet_aton(self._iface_ip),
-                )
-            except OSError as exc:
-                logger.warning(
-                    "MarkerCatalogSync: iface IP %s not available (%s); sending on all interfaces.",
-                    self._iface_ip,
-                    exc,
-                )
+        try:
+            bind_multicast_send_iface(sock, self._iface_ip, label="MarkerCatalogSync")
+        except OSError:
+            sock.close()
+            raise
         return sock
 
     def _send_loop(self) -> None:
@@ -678,23 +671,12 @@ class MarkerCatalogSync:
             sock.close()
             return None
 
-        iface_addr = socket.inet_aton(self._iface_ip) if self._iface_ip else socket.inet_aton("0.0.0.0")
-        mreq = socket.inet_aton(CATALOG_MCAST_GROUP) + iface_addr
         try:
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            join_multicast_group_on_iface(sock, CATALOG_MCAST_GROUP, self._iface_ip, label="MarkerCatalogSync")
         except OSError as exc:
-            logger.warning(
-                "MarkerCatalogSync: iface IP %s not available (%s); joining on all interfaces.",
-                self._iface_ip or "0.0.0.0",
-                exc,
-            )
-            try:
-                mreq = socket.inet_aton(CATALOG_MCAST_GROUP) + socket.inet_aton("0.0.0.0")
-                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-            except OSError as exc2:
-                logger.error("MarkerCatalogSync: fallback join failed: %s", exc2)
-                sock.close()
-                return None
+            logger.error("MarkerCatalogSync: join failed: %s", exc)
+            sock.close()
+            return None
         sock.settimeout(1.0)
         return sock
 

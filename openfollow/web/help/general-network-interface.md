@@ -1,10 +1,12 @@
 # Network Settings
 
-The station's IPv4 configuration – the same settings the on-device **Settings → Network** screen writes.
+The station's IPv4 configuration.
+
+This is where addressing is set. The station's own **Settings → Network** screen is the fallback for getting *back* here when this page is unreachable: it lists the address that reaches the web UI on each adapter, and offers a short list of fixes (DHCP, a static address, renew a lease, and serving the web UI on every interface again). Everything else – DNS, VLANs, and which network each protocol uses – is set here.
 
 **Interfaces on this station** – every network adapter the station can see, with its address, subnet method, and whether it currently holds an address. **Configure** opens that adapter's settings underneath its own row; opening a different row moves the form there.
 
-A **This session** marker means your browser reached the station over that adapter. Changing its address will drop the page you are reading – the station stays reachable by the name shown on its own screen (`Web address`, e.g. `openfollow-noble-bear.local`) and from the on-screen **Settings → Network** menu, but you will need to reconnect. The marker only appears when the station can tell which adapter you arrived on; with some setups it can't, so its absence is not a guarantee.
+A **This session** marker means your browser reached the station over that adapter. Changing its address will drop the page you are reading – the station's own **Settings → Network** screen then lists the address that reaches it, and the name shown on the HUD (`Web address`, e.g. `openfollow-noble-bear.local`) keeps working whatever address it ends up with, but you will need to reconnect. The marker only appears when the station can tell which adapter you arrived on; with some setups it can't, so its absence is not a guarantee.
 
 **Scan** re-reads the adapter list. Use it after plugging in a USB Ethernet adapter so it appears without waiting.
 
@@ -55,7 +57,7 @@ The parent keeps its own untagged address; adding VLANs does not take it away. E
 
 VLAN creation needs NetworkManager. On a station using another network backend the controls are not shown.
 
-**Modes:** the form opens in **View mode** – fields are locked so settings can't change by mistake. Use **Switch to edit view** to unlock them; **Edit mode** then shows Apply / Renew / Cancel. On a station whose network backend is read-only, the form shows a **Read only** badge instead – configure from the on-screen **Settings → Network** menu, or see openfollow.app for troubleshooting and how to enable web editing.
+**Modes:** the form opens in **View mode** – fields are locked so settings can't change by mistake. Use **Switch to edit view** to unlock them; **Edit mode** then shows Apply / Renew / Cancel. On a station whose network backend is read-only, the form shows a **Read only** badge instead, and so does the station's own screen – see openfollow.app for troubleshooting and how to enable web editing.
 
 **Buttons:**
 

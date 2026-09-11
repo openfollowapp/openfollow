@@ -80,8 +80,9 @@ def _make_app(adapter: _FakeAdapter | None = None) -> SimpleNamespace:
         network_adapter=adapter,
         apply_psn_source_ip_change=lambda ip: apply_calls.append(ip),
     )
-    # Network picker reads/writes ``psn_source_iface``.
-    config = SimpleNamespace(psn_source_iface="")
+    # The screen reads ``psn_source_iface`` only to prove it never writes it;
+    # ``web_bind_iface`` is the one config field it does own.
+    config = SimpleNamespace(psn_source_iface="", web_bind_iface="", web_port=80)
     app = SimpleNamespace(
         _runtime_services=services,
         _input_manager=None,
@@ -94,10 +95,7 @@ def _make_app(adapter: _FakeAdapter | None = None) -> SimpleNamespace:
         _pi_network_active_iface="",
         _pi_network_state_cache=None,
         _pi_network_pending_config=None,
-        _pi_network_iface_picker_active=False,
-        _pi_network_iface_picker_index=0,
-        _pi_network_method_picker_active=False,
-        _pi_network_method_picker_index=0,
+        _pi_network_static_edit=False,
         _pi_network_field_edit_active=False,
         _pi_network_field_name="",
         _pi_network_field_value="",
@@ -117,6 +115,10 @@ def _make_app(adapter: _FakeAdapter | None = None) -> SimpleNamespace:
 
     app._enter_settings_menu = _enter_settings_menu
     app._get_config_mtime = _get_config_mtime
+    app._restart_requests = 0
+    app._web_commands = SimpleNamespace(
+        request_restart=lambda: setattr(app, "_restart_requests", app._restart_requests + 1)
+    )
     app._advisory_refreshes = 0
 
     def _refresh_psn_source_advisory() -> str:
@@ -127,6 +129,18 @@ def _make_app(adapter: _FakeAdapter | None = None) -> SimpleNamespace:
     app._enter_settings_called = False
     app._apply_calls = apply_calls
     return app
+
+
+def _confirm_key(app: SimpleNamespace, key: str) -> None:
+    """Put the cursor on the row carrying ``key`` and confirm it.
+
+    Going through the rendered rows (rather than calling the action helper
+    directly) is what keeps these tests honest about the row actually being
+    reachable, which is the thing a reframe can silently break.
+    """
+    rows = anm.build_pi_network_rows(app)
+    app._pi_network_index = next(i for i, r in enumerate(rows) if r.get("key") == key)
+    anm._pi_network_confirm(app)
 
 
 class TestPiNetworkScreen:
@@ -145,7 +159,7 @@ class TestPiNetworkScreen:
         kinds = [r.get("kind") for r in rows]
         keys = [r.get("key") for r in rows if r.get("key")]
         assert "header" in kinds
-        assert "apply" in keys
+        assert "dhcp" in keys
         assert "back" in keys
 
     def test_back_returns_to_settings(self) -> None:
@@ -160,31 +174,18 @@ class TestPiNetworkScreen:
         assert app._pi_network_active is False
         assert app._enter_settings_called is True
 
-    def test_dhcp_method_hides_editable_address(self) -> None:
+    def test_static_action_reveals_the_editable_fields(self) -> None:
+        """The fields appear only after the operator asks for a static
+        address, so the screen opens on the URL list it exists to show."""
         app = _make_app()
         anm.enter_pi_network(app)
-        rows = anm.build_pi_network_rows(app)
-        addr = next(r for r in rows if r.get("key") == "address")
-        assert addr["kind"] == "display"  # not "text"
+        assert [r for r in anm.build_pi_network_rows(app) if r.get("key") == "address"] == []
 
-    def test_static_method_promotes_address_to_editable(self) -> None:
-        from openfollow.network.adapter import Ipv4Config, Ipv4Method
-
-        app = _make_app()
-        anm.enter_pi_network(app)
-        app._pi_network_pending_config = Ipv4Config(
-            method=Ipv4Method.STATIC,
-            address="10.0.0.5",
-            prefix=24,
-            router="10.0.0.1",
-        )
+        _confirm_key(app, "static")
         rows = anm.build_pi_network_rows(app)
-        addr = next(r for r in rows if r.get("key") == "address")
-        prefix = next(r for r in rows if r.get("key") == "prefix")
-        router = next(r for r in rows if r.get("key") == "router")
-        assert addr["kind"] == "text"
-        assert prefix["kind"] == "text"
-        assert router["kind"] == "text"
+        assert next(r for r in rows if r.get("key") == "address")["kind"] == "text"
+        assert next(r for r in rows if r.get("key") == "prefix")["kind"] == "text"
+        assert next(r for r in rows if r.get("key") == "router")["kind"] == "text"
 
     def test_readonly_adapter_omits_apply_and_renew(self) -> None:
         adapter = _FakeAdapter(writable=False)
@@ -245,87 +246,6 @@ class TestPiNetworkScreen:
         assert "loop1" not in names
 
 
-class TestMethodPicker:
-    def test_change_to_static(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_method_picker(app)
-        # _METHOD_PICKER_ITEMS order: DHCP, DHCP+manual, STATIC
-        app._pi_network_method_picker_index = 2
-        anm.handle_pi_network_method_picker_key(app, "Enter")
-        assert app._pi_network_method_picker_active is False
-        assert app._pi_network_pending_config.method == Ipv4Method.STATIC
-
-    def test_switch_static_to_dhcp_clears_static_fields(self) -> None:
-        from openfollow.network.adapter import Ipv4Config, Ipv4Method
-
-        app = _make_app()
-        anm.enter_pi_network(app)
-        app._pi_network_pending_config = Ipv4Config(
-            method=Ipv4Method.STATIC,
-            address="192.168.1.50",
-            prefix=24,
-            router="192.168.1.1",
-            dns=("9.9.9.9",),
-        )
-        anm.enter_pi_network_method_picker(app)
-        app._pi_network_method_picker_index = 0  # DHCP
-        anm.handle_pi_network_method_picker_key(app, "Enter")
-        cfg = app._pi_network_pending_config
-        assert cfg.method == Ipv4Method.DHCP
-        assert cfg.address is None
-        assert cfg.prefix is None
-        assert cfg.router is None
-        # DNS override survives – it's editable across all methods.
-        assert cfg.dns == ("9.9.9.9",)
-
-    def test_switch_static_to_dhcp_manual_clears_prefix_and_router(self) -> None:
-        """Static → DHCP+manual: operator keeps the typed address but
-        prefix/router come from the lease, not from the prior static config."""
-        from openfollow.network.adapter import Ipv4Config, Ipv4Method
-
-        app = _make_app()
-        anm.enter_pi_network(app)
-        app._pi_network_pending_config = Ipv4Config(
-            method=Ipv4Method.STATIC,
-            address="192.168.1.50",
-            prefix=24,
-            router="192.168.1.1",
-        )
-        anm.enter_pi_network_method_picker(app)
-        app._pi_network_method_picker_index = 1  # DHCP+manual
-        anm.handle_pi_network_method_picker_key(app, "Enter")
-        cfg = app._pi_network_pending_config
-        assert cfg.method == Ipv4Method.DHCP_WITH_MANUAL_ADDRESS
-        # Address survives (operator-typed manual IP).
-        assert cfg.address == "192.168.1.50"
-        # Prefix + router cleared – lease drives them.
-        assert cfg.prefix is None
-        assert cfg.router is None
-
-    def test_static_to_static_preserves_all_fields(self) -> None:
-        from openfollow.network.adapter import Ipv4Config, Ipv4Method
-
-        app = _make_app()
-        anm.enter_pi_network(app)
-        app._pi_network_pending_config = Ipv4Config(
-            method=Ipv4Method.STATIC,
-            address="10.0.0.5",
-            prefix=24,
-            router="10.0.0.1",
-            dns=("8.8.8.8",),
-        )
-        anm.enter_pi_network_method_picker(app)
-        app._pi_network_method_picker_index = 2  # STATIC
-        anm.handle_pi_network_method_picker_key(app, "Enter")
-        cfg = app._pi_network_pending_config
-        assert cfg.method == Ipv4Method.STATIC
-        assert cfg.address == "10.0.0.5"
-        assert cfg.prefix == 24
-        assert cfg.router == "10.0.0.1"
-        assert cfg.dns == ("8.8.8.8",)
-
-
 class TestFieldEdit:
     def test_enter_field_seeds_value_from_pending(self) -> None:
         app = _make_app()
@@ -375,13 +295,12 @@ class TestApplyAndRenew:
         adapter = _FakeAdapter()
         app = _make_app(adapter)
         anm.enter_pi_network(app)
-        # Switch to STATIC so validate doesn't reject DHCP for missing fields.
+        _confirm_key(app, "static")
         app._pi_network_pending_config = Ipv4Config(
             method=Ipv4Method.STATIC,
             address="192.168.1.50",
             prefix=24,
             router="192.168.1.1",
-            dns=("8.8.8.8",),
         )
         rows = anm.build_pi_network_rows(app)
         idx = next(i for i, r in enumerate(rows) if r.get("key") == "apply")
@@ -475,7 +394,7 @@ class TestGamepadFieldEditCancel:
     def test_cancel_exits_editor(self) -> None:
         app = _make_app()
         anm.enter_pi_network(app)
-        anm.enter_pi_network_field_edit(app, "dns_1")
+        anm.enter_pi_network_field_edit(app, "router")
         # Wire a fake gamepad poll to return a Cancel-pressed event.
         from types import SimpleNamespace as NS
 
@@ -487,7 +406,7 @@ class TestGamepadFieldEditCancel:
     def test_confirm_commits(self) -> None:
         app = _make_app()
         anm.enter_pi_network(app)
-        anm.enter_pi_network_field_edit(app, "dns_1")
+        anm.enter_pi_network_field_edit(app, "router")
         app._pi_network_field_value = "9.9.9.9"
         from types import SimpleNamespace as NS
 
@@ -495,7 +414,7 @@ class TestGamepadFieldEditCancel:
         app._input_manager = NS(gamepad_handler=gp)
         anm.process_pi_network_field_edit_input(app)
         assert app._pi_network_field_edit_active is False
-        assert "9.9.9.9" in app._pi_network_pending_config.dns
+        assert app._pi_network_pending_config.router == "9.9.9.9"
 
 
 class TestDpadEntryThroughTheGamepadPoll:
@@ -626,15 +545,26 @@ class TestTheScreenDoesNotAssignInterfaces:
     """
 
     def _actions(self, app):
-        """Every on-screen path that could plausibly touch config."""
-        anm.enter_pi_network_iface_picker(app)
-        anm._pi_network_iface_picker_confirm(app)
-        anm.enter_pi_network_method_picker(app)
-        anm._pi_network_method_picker_confirm(app)
-        anm.enter_pi_network_field_edit(app, "address")
-        app._pi_network_field_value = "192.168.1.77"
-        anm.confirm_pi_network_field_edit(app)
-        anm._pi_network_confirm(app)
+        """Every selectable row the screen offers, confirmed in turn.
+
+        Driven off the rendered rows so a row added later is covered without
+        anyone remembering to extend this list.
+        """
+        seen: set[str] = set()
+        while True:
+            keys = [
+                str(r["key"])
+                for r in anm.build_pi_network_rows(app)
+                if r.get("kind") in {"choice", "text", "action"} and str(r.get("key", "")) not in seen | {"back"}
+            ]
+            if not keys:
+                return
+            key = keys[0]
+            seen.add(key)
+            _confirm_key(app, key)
+            if app._pi_network_field_edit_active:
+                app._pi_network_field_value = "192.168.1.77"
+                anm.confirm_pi_network_field_edit(app)
 
     def test_no_action_repoints_the_psn_plane(self) -> None:
         app = _make_app()
@@ -647,14 +577,14 @@ class TestTheScreenDoesNotAssignInterfaces:
         assert app._apply_calls == [], "the network screen rebound the PSN sockets"
 
     def test_picking_an_interface_still_changes_what_the_screen_shows(self) -> None:
-        """The picker keeps its real job; only the side effect is gone."""
+        """Selecting an interface row keeps its real job - naming the one the
+        Fix-reachability actions act on - without the side effect."""
         app = _make_app()
         anm.enter_pi_network(app)
-        anm.enter_pi_network_iface_picker(app)
-        app._pi_network_iface_picker_index = 1
-        anm._pi_network_iface_picker_confirm(app)
+        second = app._pi_network_interfaces[1].name
+        _confirm_key(app, f"iface:{second}")
 
-        assert app._pi_network_active_iface == app._pi_network_interfaces[1].name
+        assert app._pi_network_active_iface == second
         assert app._config.psn_source_iface == ""
 
 
@@ -795,94 +725,6 @@ class TestPiNetworkInputDispatchers:
         )
         anm.process_pi_network_input(app)  # no crash
 
-    def test_process_iface_picker_input(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_iface_picker(app)
-        self._attach_gamepad(app, self._fake_input(down=True))
-        anm.process_pi_network_iface_picker_input(app)
-        self._attach_gamepad(app, self._fake_input(up=True))
-        anm.process_pi_network_iface_picker_input(app)
-        self._attach_gamepad(app, self._fake_input(cancel=True))
-        anm.process_pi_network_iface_picker_input(app)
-        assert app._pi_network_iface_picker_active is False
-
-    def test_process_iface_picker_input_no_manager(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_iface_picker(app)
-        app._input_manager = None
-        anm.process_pi_network_iface_picker_input(app)
-
-    def test_process_iface_picker_input_exception(self) -> None:
-        from types import SimpleNamespace
-
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_iface_picker(app)
-        app._input_manager = SimpleNamespace(
-            gamepad_handler=SimpleNamespace(
-                read_settings_menu_input=lambda: (_ for _ in ()).throw(RuntimeError("x")),
-            ),
-        )
-        anm.process_pi_network_iface_picker_input(app)
-
-    def test_process_iface_picker_confirm(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_iface_picker(app)
-        self._attach_gamepad(app, self._fake_input(confirm=True))
-        anm.process_pi_network_iface_picker_input(app)
-        assert app._pi_network_iface_picker_active is False
-
-    def test_iface_picker_no_interfaces_exits(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_iface_picker(app)
-        app._pi_network_interfaces = []
-        anm._pi_network_iface_picker_confirm(app)
-        assert app._pi_network_iface_picker_active is False
-
-    def test_process_method_picker_input(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_method_picker(app)
-        self._attach_gamepad(app, self._fake_input(down=True))
-        anm.process_pi_network_method_picker_input(app)
-        self._attach_gamepad(app, self._fake_input(up=True))
-        anm.process_pi_network_method_picker_input(app)
-        self._attach_gamepad(app, self._fake_input(cancel=True))
-        anm.process_pi_network_method_picker_input(app)
-        assert app._pi_network_method_picker_active is False
-
-    def test_process_method_picker_input_no_manager(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_method_picker(app)
-        app._input_manager = None
-        anm.process_pi_network_method_picker_input(app)
-
-    def test_process_method_picker_input_exception(self) -> None:
-        from types import SimpleNamespace
-
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_method_picker(app)
-        app._input_manager = SimpleNamespace(
-            gamepad_handler=SimpleNamespace(
-                read_settings_menu_input=lambda: (_ for _ in ()).throw(RuntimeError("x")),
-            ),
-        )
-        anm.process_pi_network_method_picker_input(app)
-
-    def test_method_picker_confirm_out_of_range_exits(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_method_picker(app)
-        app._pi_network_method_picker_index = 999
-        anm._pi_network_method_picker_confirm(app)
-        assert app._pi_network_method_picker_active is False
-
     def test_process_field_edit_input_no_manager(self) -> None:
         app = _make_app()
         anm.enter_pi_network(app)
@@ -952,6 +794,7 @@ class TestFieldEditAllFields:
 
         app = _make_app()
         anm.enter_pi_network(app)
+        _confirm_key(app, "static")
         # prefix=99 → prefix_to_mask returns None → row should show "–".
         app._pi_network_pending_config = Ipv4Config(
             method=Ipv4Method.STATIC,
@@ -1009,29 +852,6 @@ class TestFieldEditAllFields:
         app._pi_network_field_value = "not-an-ip"
         anm.confirm_pi_network_field_edit(app)
         assert "router" in app._pi_network_banner.lower()
-
-    def test_invalid_dns_sets_banner(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_field_edit(app, "dns_1")
-        app._pi_network_field_value = "garbage"
-        anm.confirm_pi_network_field_edit(app)
-        assert "DNS" in app._pi_network_banner
-
-    def test_clearing_dns_removes_entry(self) -> None:
-        from openfollow.network.adapter import Ipv4Config, Ipv4Method
-
-        app = _make_app()
-        anm.enter_pi_network(app)
-        app._pi_network_pending_config = Ipv4Config(
-            method=Ipv4Method.DHCP,
-            dns=("8.8.8.8", "1.1.1.1"),
-        )
-        anm.enter_pi_network_field_edit(app, "dns_1")
-        app._pi_network_field_value = ""  # clear
-        anm.confirm_pi_network_field_edit(app)
-        # Empty dns_1 removes the entry → tuple shrinks.
-        assert "8.8.8.8" not in app._pi_network_pending_config.dns
 
     def test_clearing_address_sets_none(self) -> None:
         from openfollow.network.adapter import Ipv4Config, Ipv4Method
@@ -1184,13 +1004,12 @@ class TestBusyShortCircuit:
         app = _make_app()
         anm.enter_pi_network(app)
         rows = anm.build_pi_network_rows(app)
-        # Land on the Interface row (a selectable choice that would
-        # normally open the iface picker).
-        iface_idx = next(i for i, r in enumerate(rows) if r.get("key") == "interface")
-        app._pi_network_index = iface_idx
+        # Land on the Set-to-static row, which would normally reveal the
+        # address fields.
+        app._pi_network_index = next(i for i, r in enumerate(rows) if r.get("key") == "static")
         app._pi_network_busy = True
         anm._pi_network_confirm(app)
-        assert app._pi_network_iface_picker_active is False
+        assert app._pi_network_static_edit is False
         # Back stays live so the operator can leave a hung screen.
         back_idx = next(i for i, r in enumerate(rows) if r.get("key") == "back")
         app._pi_network_index = back_idx
@@ -1288,81 +1107,6 @@ class TestExits:
         assert app._pi_network_active is False
         assert app._pi_network_banner == ""
 
-    def test_exit_iface_picker(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_iface_picker(app)
-        anm.exit_pi_network_iface_picker(app)
-        assert app._pi_network_iface_picker_active is False
-
-    def test_exit_method_picker(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_method_picker(app)
-        anm.exit_pi_network_method_picker(app)
-        assert app._pi_network_method_picker_active is False
-
-    def test_iface_picker_handle_key_arrows_and_enter(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_iface_picker(app)
-        anm.handle_pi_network_iface_picker_key(app, "ArrowDown")
-        anm.handle_pi_network_iface_picker_key(app, "ArrowUp")
-        anm.handle_pi_network_iface_picker_key(app, "Enter")
-        assert app._pi_network_iface_picker_active is False
-
-    def test_iface_picker_handle_key_escape(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_iface_picker(app)
-        anm.handle_pi_network_iface_picker_key(app, "Escape")
-        assert app._pi_network_iface_picker_active is False
-
-    def test_method_picker_handle_key_navigation(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_method_picker(app)
-        anm.handle_pi_network_method_picker_key(app, "ArrowDown")
-        anm.handle_pi_network_method_picker_key(app, "ArrowUp")
-        anm.handle_pi_network_method_picker_key(app, "Enter")
-        assert app._pi_network_method_picker_active is False
-
-    def test_method_picker_handle_key_escape(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_method_picker(app)
-        anm.handle_pi_network_method_picker_key(app, "Escape")
-        assert app._pi_network_method_picker_active is False
-
-    def test_iface_picker_no_interfaces_move_noop(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_iface_picker(app)
-        app._pi_network_interfaces = []
-        anm._pi_network_iface_picker_move(app, +1)  # should silently no-op
-
-    def test_method_picker_seeds_current_method(self) -> None:
-        from openfollow.network.adapter import Ipv4Config, Ipv4Method
-
-        app = _make_app()
-        anm.enter_pi_network(app)
-        app._pi_network_pending_config = Ipv4Config(method=Ipv4Method.STATIC)
-        anm.enter_pi_network_method_picker(app)
-        from openfollow.runtime.app_modes_network import method_picker_items
-
-        methods = method_picker_items()
-        # Index should match Static position.
-        static_idx = next(i for i, (m, _) in enumerate(methods) if m == Ipv4Method.STATIC)
-        assert app._pi_network_method_picker_index == static_idx
-
-    def test_method_picker_seeds_default_when_pending_missing(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        app._pi_network_pending_config = None
-        anm.enter_pi_network_method_picker(app)
-        # Defaults to DHCP (first item).
-        assert app._pi_network_method_picker_index == 0
-
 
 class TestConfirmDispatchEachRow:
     """Cover the per-key branches inside _pi_network_confirm."""
@@ -1373,32 +1117,12 @@ class TestConfirmDispatchEachRow:
         app._pi_network_index = idx
         anm._pi_network_confirm(app)
 
-    def test_enter_on_interface_opens_iface_picker(self) -> None:
-        # Need >1 interface for the row to be selectable (kind="choice").
-        adapter = _FakeAdapter()
-        from openfollow.network.adapter import NetworkInterface
-
-        adapter._interfaces = [
-            NetworkInterface("eth0", "aa", "ethernet", True),
-            NetworkInterface("wlan0", "bb", "wifi", False),
-        ]
-        app = _make_app(adapter)
-        anm.enter_pi_network(app)
-        self._confirm_row_by_key(app, "interface")
-        assert app._pi_network_iface_picker_active is True
-
-    def test_enter_on_method_opens_method_picker(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        self._confirm_row_by_key(app, "method")
-        assert app._pi_network_method_picker_active is True
-
     def test_enter_on_address_opens_field_editor(self) -> None:
         from openfollow.network.adapter import Ipv4Config, Ipv4Method
 
         app = _make_app()
         anm.enter_pi_network(app)
-        # Switch to STATIC so address becomes a text row (selectable).
+        _confirm_key(app, "static")
         app._pi_network_pending_config = Ipv4Config(
             method=Ipv4Method.STATIC,
             address="10.0.0.5",
@@ -1415,6 +1139,7 @@ class TestConfirmDispatchEachRow:
         adapter = _FakeAdapter()
         app = _make_app(adapter)
         anm.enter_pi_network(app)
+        _confirm_key(app, "static")
         app._pi_network_pending_config = Ipv4Config(
             method=Ipv4Method.STATIC,
             address="10.0.0.5",
@@ -1450,62 +1175,23 @@ class TestKeyboardEscape:
 
 class TestRowCoverageEdges:
     def test_addr_helper_with_no_pending_returns_dash(self) -> None:
-        """When pending is None, _addr returns the em-dash (line 147)."""
+        """A missing pending config renders a dash rather than crashing the
+        screen an operator opened because nothing else was reachable."""
         app = _make_app()
         anm.enter_pi_network(app)
-        # Force STATIC method via pending, then null out pending after
-        # method is captured to drive _addr's None branch through display.
+        _confirm_key(app, "static")
         app._pi_network_pending_config = None
         app._pi_network_state_cache = None
         rows = anm.build_pi_network_rows(app)
-        # Address row must render "–" rather than crashing.
-        addr = next(r for r in rows if r.get("key") == "address")
-        assert addr["value"] == "–"
+        assert next(r for r in rows if r.get("key") == "address")["value"] == "\u2013"
 
     def test_prefix_value_em_dash_when_no_pending(self) -> None:
         app = _make_app()
         anm.enter_pi_network(app)
+        _confirm_key(app, "static")
         app._pi_network_pending_config = None
         rows = anm.build_pi_network_rows(app)
-        prefix = next(r for r in rows if r.get("key") == "prefix")
-        assert prefix["value"] == "–"
-
-    def test_dhcp_with_manual_writable_path(self) -> None:
-        """Covers the elif Ipv4Method.DHCP_WITH_MANUAL_ADDRESS branch
-        (lines 186-188): address is text, prefix/router are display."""
-        from openfollow.network.adapter import Ipv4Config, Ipv4Method
-
-        app = _make_app()
-        anm.enter_pi_network(app)
-        app._pi_network_pending_config = Ipv4Config(
-            method=Ipv4Method.DHCP_WITH_MANUAL_ADDRESS,
-            address="10.0.0.5",
-        )
-        rows = anm.build_pi_network_rows(app)
-        addr = next(r for r in rows if r.get("key") == "address")
-        prefix = next(r for r in rows if r.get("key") == "prefix")
-        router = next(r for r in rows if r.get("key") == "router")
-        assert addr["kind"] == "text"
-        assert prefix["kind"] == "display"
-        assert router["kind"] == "display"
-
-    def test_method_picker_iface_picker_move_with_no_interfaces(self) -> None:
-        """Covers line 376: _pi_network_iface_picker_move early return."""
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_iface_picker(app)
-        app._pi_network_interfaces = []
-        anm._pi_network_iface_picker_move(app, +1)
-        anm._pi_network_iface_picker_move(app, -1)
-        # No crash, no index change.
-
-    def test_iface_picker_confirm_bad_index(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_iface_picker(app)
-        app._pi_network_iface_picker_index = 999
-        anm._pi_network_iface_picker_confirm(app)
-        assert app._pi_network_iface_picker_active is False
+        assert next(r for r in rows if r.get("key") == "prefix")["value"] == "\u2013"
 
 
 class TestRouterAndDnsFieldEdit:
@@ -1519,21 +1205,6 @@ class TestRouterAndDnsFieldEdit:
         app._pi_network_field_value = "10.0.0.1"
         anm.confirm_pi_network_field_edit(app)
         assert app._pi_network_pending_config.router == "10.0.0.1"
-
-    def test_dns_2_extends_existing_list(self) -> None:
-        from openfollow.network.adapter import Ipv4Config, Ipv4Method
-
-        app = _make_app()
-        anm.enter_pi_network(app)
-        # Pre-existing dns_1; dns_2 padding covers the `while` loop.
-        app._pi_network_pending_config = Ipv4Config(
-            method=Ipv4Method.DHCP,
-            dns=("8.8.8.8",),
-        )
-        anm.enter_pi_network_field_edit(app, "dns_2")
-        app._pi_network_field_value = "1.1.1.1"
-        anm.confirm_pi_network_field_edit(app)
-        assert app._pi_network_pending_config.dns == ("8.8.8.8", "1.1.1.1")
 
 
 class TestNetworkAdapterHelperGuards:
@@ -1578,36 +1249,6 @@ class TestProcessInputConfirmsAndCancels:
         assert app._pi_network_active is False
         assert app._enter_settings_called is True
 
-    def test_iface_picker_no_action_when_no_buttons(self) -> None:
-        """Cover the exit branches where no button is pressed."""
-        from types import SimpleNamespace
-
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_iface_picker(app)
-        app._input_manager = SimpleNamespace(
-            gamepad_handler=SimpleNamespace(
-                read_settings_menu_input=lambda: self._fake_input(),
-            ),
-        )
-        anm.process_pi_network_iface_picker_input(app)
-        # Still active – no button was pressed.
-        assert app._pi_network_iface_picker_active is True
-
-    def test_method_picker_no_action_when_no_buttons(self) -> None:
-        from types import SimpleNamespace
-
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_method_picker(app)
-        app._input_manager = SimpleNamespace(
-            gamepad_handler=SimpleNamespace(
-                read_settings_menu_input=lambda: self._fake_input(),
-            ),
-        )
-        anm.process_pi_network_method_picker_input(app)
-        assert app._pi_network_method_picker_active is True
-
     def test_field_edit_no_action_when_no_buttons(self) -> None:
         from types import SimpleNamespace
 
@@ -1634,20 +1275,6 @@ class TestKeyboardFallthroughs:
         # No state change.
         assert app._pi_network_active is True
 
-    def test_iface_picker_key_unrecognised(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_iface_picker(app)
-        anm.handle_pi_network_iface_picker_key(app, "Tab")
-        assert app._pi_network_iface_picker_active is True
-
-    def test_method_picker_key_unrecognised(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_method_picker(app)
-        anm.handle_pi_network_method_picker_key(app, "Tab")
-        assert app._pi_network_method_picker_active is True
-
     def test_field_edit_key_escape_via_handler(self) -> None:
         app = _make_app()
         anm.enter_pi_network(app)
@@ -1658,11 +1285,11 @@ class TestKeyboardFallthroughs:
     def test_field_edit_key_enter_via_handler(self) -> None:
         app = _make_app()
         anm.enter_pi_network(app)
-        anm.enter_pi_network_field_edit(app, "dns_1")
+        anm.enter_pi_network_field_edit(app, "router")
         app._pi_network_field_value = "9.9.9.9"
         anm.handle_pi_network_field_edit_key(app, "Enter")
         assert app._pi_network_field_edit_active is False
-        assert "9.9.9.9" in app._pi_network_pending_config.dns
+        assert app._pi_network_pending_config.router == "9.9.9.9"
 
 
 class TestConfirmFieldEditUnknownField:
@@ -1678,55 +1305,6 @@ class TestConfirmFieldEditUnknownField:
         anm.confirm_pi_network_field_edit(app)
         # Exits the editor without mutating pending config.
         assert app._pi_network_field_edit_active is False
-
-
-class TestRemainingMethodPickerPaths:
-    def test_process_method_picker_input_confirm(self) -> None:
-        from types import SimpleNamespace
-
-        app = _make_app()
-        anm.enter_pi_network(app)
-        anm.enter_pi_network_method_picker(app)
-        # Pick STATIC (index 2 in _METHOD_PICKER_ITEMS).
-        app._pi_network_method_picker_index = 2
-        app._input_manager = SimpleNamespace(
-            gamepad_handler=SimpleNamespace(
-                read_settings_menu_input=lambda: SimpleNamespace(
-                    up_pressed=False,
-                    down_pressed=False,
-                    confirm_pressed=True,
-                    cancel_pressed=False,
-                ),
-            ),
-        )
-        anm.process_pi_network_method_picker_input(app)
-        from openfollow.network.adapter import Ipv4Method
-
-        assert app._pi_network_method_picker_active is False
-        assert app._pi_network_pending_config.method == Ipv4Method.STATIC
-
-
-class TestMethodPickerFallback:
-    def test_enter_method_picker_falls_back_to_zero_on_unknown_method(self) -> None:
-        """Covers line 435: when pending.method isn't in the picker list,
-        the index resets to 0."""
-        from types import SimpleNamespace
-
-        from openfollow.network.adapter import Ipv4Config
-
-        app = _make_app()
-        anm.enter_pi_network(app)
-        # Build a pending config whose method isn't in _METHOD_PICKER_ITEMS.
-        fake_method = SimpleNamespace(value="unknown")
-        cfg = Ipv4Config.__new__(Ipv4Config)
-        object.__setattr__(cfg, "method", fake_method)
-        object.__setattr__(cfg, "address", None)
-        object.__setattr__(cfg, "prefix", None)
-        object.__setattr__(cfg, "router", None)
-        object.__setattr__(cfg, "dns", ())
-        app._pi_network_pending_config = cfg
-        anm.enter_pi_network_method_picker(app)
-        assert app._pi_network_method_picker_index == 0
 
 
 class TestMoveAndConfirmDefensiveBranches:
@@ -1763,59 +1341,6 @@ class TestMoveAndConfirmDefensiveBranches:
         assert app._pi_network_active is True
 
 
-class TestDnsPositionalClear:
-    def test_clear_trailing_dns_pops_blank(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        app._pi_network_pending_config = Ipv4Config(
-            method=Ipv4Method.STATIC,
-            address="10.0.0.5",
-            prefix=24,
-            router="10.0.0.1",
-            dns=("1.1.1.1",),
-        )
-        anm.enter_pi_network_field_edit(app, "dns_2")
-        app._pi_network_field_value = ""
-        anm.confirm_pi_network_field_edit(app)
-        assert app._pi_network_pending_config.dns == ("1.1.1.1",)
-
-    def test_clear_middle_dns_preserves_position(self) -> None:
-        app = _make_app()
-        anm.enter_pi_network(app)
-        app._pi_network_pending_config = Ipv4Config(
-            method=Ipv4Method.STATIC,
-            address="10.0.0.5",
-            prefix=24,
-            router="10.0.0.1",
-            dns=("1.1.1.1", "2.2.2.2", "3.3.3.3"),
-        )
-        anm.enter_pi_network_field_edit(app, "dns_2")
-        app._pi_network_field_value = ""
-        anm.confirm_pi_network_field_edit(app)
-        # Slot 2 blanked in place; slot 3 keeps its position.
-        assert app._pi_network_pending_config.dns == ("1.1.1.1", "", "3.3.3.3")
-
-    def test_apply_compacts_blank_dns_slot(self) -> None:
-        adapter = _FakeAdapter()
-        app = _make_app(adapter)
-        anm.enter_pi_network(app)
-        app._pi_network_pending_config = Ipv4Config(
-            method=Ipv4Method.STATIC,
-            address="10.0.0.5",
-            prefix=24,
-            router="10.0.0.1",
-            dns=("1.1.1.1", "", "3.3.3.3"),
-        )
-        anm._apply_pi_network(app)
-        worker = app._pi_network_worker
-        assert worker is not None
-        worker.join(timeout=2.0)
-        anm.drain_pi_network_worker(app)
-        # Blank middle slot dropped before reaching the adapter.
-        applied = adapter.apply_calls[0][1]
-        assert applied.dns == ("1.1.1.1", "3.3.3.3")
-
-
 class TestNetworkWorkerDrain:
     def test_bounded_refresh_times_out_keeps_querying_banner(self, monkeypatch: pytest.MonkeyPatch) -> None:
         app = _make_app()
@@ -1840,3 +1365,287 @@ class TestNetworkWorkerDrain:
         app._pi_network_banner = "untouched"
         anm.drain_pi_network_worker(app)
         assert app._pi_network_banner == "untouched"
+
+
+def _patch_ifaces(monkeypatch, ifaces: dict[str, str]) -> None:
+    import socket as _socket
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {n: [SimpleNamespace(family=_socket.AF_INET, address=a)] for n, a in ifaces.items()},
+    )
+
+
+def _rows_by_kind(app, kind: str) -> list[dict]:
+    return [r for r in anm.build_pi_network_rows(app) if r.get("kind") == kind]
+
+
+def _labels(app) -> list[str]:
+    return [str(r.get("label", "")) for r in anm.build_pi_network_rows(app)]
+
+
+class TestTheScreenAnswersHowToReachTheWebUi:
+    """The screen exists to hand the operator an address that works.
+
+    Everything here is about that one job: the URLs it lists, and refusing to
+    show one that would not answer.
+    """
+
+    def test_each_interface_gets_the_url_that_reaches_it(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5", "wlan0": "172.16.4.20"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        assert "http://192.168.1.5" in _labels(app)
+        assert "http://172.16.4.20" in _labels(app)
+
+    def test_a_non_default_port_is_part_of_the_url(self, monkeypatch) -> None:
+        """An operator types what is on the screen; a URL missing the port
+        would send them to a port nothing is listening on."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._config.web_port = 8080
+        anm.enter_pi_network(app)
+        assert "http://192.168.1.5:8080" in _labels(app)
+
+    def test_an_interface_with_no_address_says_so_instead_of_a_url(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        wlan = next(r for r in anm.build_pi_network_rows(app) if r.get("value") == "wlan0")
+        assert wlan["label"] == "-- no address --"
+
+    def test_a_pinned_web_ui_shows_a_url_only_where_it_answers(self, monkeypatch) -> None:
+        """Listing every address while the UI answers on one is how an
+        operator concludes the station is dead when it is merely pinned."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5", "wlan0": "172.16.4.20"})
+        app = _make_app()
+        app._config.web_bind_iface = "wlan0"
+        anm.enter_pi_network(app)
+        rows = {str(r.get("value")): str(r.get("label")) for r in anm.build_pi_network_rows(app)}
+        assert rows["wlan0"] == "http://172.16.4.20"
+        assert rows["eth0"] == "-- web UI not served here --"
+
+    def test_the_mdns_name_leads_and_is_not_selectable(self, monkeypatch) -> None:
+        """It reaches the station on any interface and is the line an operator
+        can read out over comms, so it goes first - but it names no interface,
+        so there is no action it could drive."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        monkeypatch.setattr("openfollow.privilege.device_repair.current_hostname", lambda: "openfollow-noble-bear")
+        app = _make_app()
+        anm.enter_pi_network(app)
+        rows = anm.build_pi_network_rows(app)
+        mdns = next(r for r in rows if r.get("key") == "mdns")
+        assert mdns["label"] == "http://openfollow-noble-bear.local"
+        assert mdns["kind"] not in {"choice", "text", "action"}
+        assert rows.index(mdns) < min(i for i, r in enumerate(rows) if r.get("kind") == "choice")
+
+    def test_an_unusable_hostname_is_omitted_rather_than_guessed(self, monkeypatch) -> None:
+        """A station that never got renamed answers to ``localhost.local``
+        nowhere; showing it would be an address that cannot work."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        monkeypatch.setattr("openfollow.privilege.device_repair.current_hostname", lambda: "localhost")
+        app = _make_app()
+        anm.enter_pi_network(app)
+        assert [r for r in anm.build_pi_network_rows(app) if r.get("key") == "mdns"] == []
+
+    def test_a_failing_hostname_lookup_does_not_blank_the_screen(self, monkeypatch) -> None:
+        """This screen is the last surface an operator has; a hostname lookup
+        raising must cost the one line, not the page."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+
+        def _boom() -> str:
+            raise OSError("no hostname")
+
+        monkeypatch.setattr("openfollow.privilege.device_repair.current_hostname", _boom)
+        app = _make_app()
+        anm.enter_pi_network(app)
+        assert "http://192.168.1.5" in _labels(app)
+
+
+class TestTheScreenCallsOutWhatBreaksReachability:
+    def test_a_link_local_address_is_flagged_as_a_dhcp_failure(self, monkeypatch) -> None:
+        """169.254.x reads like a working lease to anyone who does not know
+        the prefix, which is most people reading this screen at 2am."""
+        _patch_ifaces(monkeypatch, {"eth0": "169.254.8.31"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        notices = [str(r["label"]) for r in _rows_by_kind(app, "notice")]
+        assert any("DHCP unavailable" in n and "169.254.8.31" in n for n in notices)
+
+    def test_a_routable_address_raises_no_notice(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        assert _rows_by_kind(app, "notice") == []
+
+    def test_a_pinned_web_ui_is_called_out(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._config.web_bind_iface = "eth0"
+        anm.enter_pi_network(app)
+        notices = [str(r["label"]) for r in _rows_by_kind(app, "notice")]
+        assert any("pinned to eth0" in n for n in notices)
+
+    def test_notices_are_not_selectable(self, monkeypatch) -> None:
+        """They carry no action, so landing on one would be a dead stop for a
+        gamepad operator working down the list."""
+        _patch_ifaces(monkeypatch, {"eth0": "169.254.8.31"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        assert all(r["kind"] not in {"choice", "text", "action"} for r in _rows_by_kind(app, "notice"))
+
+
+class TestServeOnAllInterfacesIsTheLockoutEscape:
+    def test_it_clears_the_pin_and_asks_for_a_restart(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        saved: list[object] = []
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: saved.append(app) or True)
+        app = _make_app()
+        app._config.web_bind_iface = "eth0"
+        anm.enter_pi_network(app)
+
+        _confirm_key(app, "web_unpin")
+
+        assert app._config.web_bind_iface == ""
+        assert saved, "the cleared pin was never written to disk"
+        assert app._restart_requests == 1
+
+    def test_it_is_offered_only_while_the_ui_is_pinned(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        assert "web_unpin" not in [r.get("key") for r in anm.build_pi_network_rows(app)]
+
+    def test_it_survives_a_read_only_network_backend(self, monkeypatch) -> None:
+        """The escape writes config, not the network stack. A host whose
+        addressing this build cannot manage is exactly where a lockout would
+        otherwise be permanent."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: True)
+        app = _make_app(_FakeAdapter(writable=False))
+        app._config.web_bind_iface = "eth0"
+        anm.enter_pi_network(app)
+
+        assert "web_unpin" in [r.get("key") for r in anm.build_pi_network_rows(app)]
+        _confirm_key(app, "web_unpin")
+        assert app._config.web_bind_iface == ""
+
+    def test_a_failed_save_keeps_the_pin_and_asks_for_no_restart(self, monkeypatch) -> None:
+        """Restarting on an unwritten change would reboot the station into the
+        same lockout and look like the escape simply did not work."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: False)
+        app = _make_app()
+        app._config.web_bind_iface = "eth0"
+        anm.enter_pi_network(app)
+
+        _confirm_key(app, "web_unpin")
+
+        assert app._config.web_bind_iface == "eth0"
+        assert app._restart_requests == 0
+        assert "still pinned" in app._pi_network_banner
+
+
+class TestFixReachabilityActions:
+    def test_dhcp_applies_without_a_form(self, monkeypatch) -> None:
+        """A venue that just needs the lease back should not have to type an
+        address on a d-pad to get it."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        adapter = _FakeAdapter()
+        app = _make_app(adapter)
+        anm.enter_pi_network(app)
+
+        _confirm_key(app, "dhcp")
+        worker = app._pi_network_worker
+        assert worker is not None
+        worker.join(timeout=2.0)
+
+        assert [iface for iface, _cfg in adapter.apply_calls] == ["eth0"]
+        assert adapter.apply_calls[0][1].method is Ipv4Method.DHCP
+
+    def test_the_actions_name_the_selected_interface(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5", "wlan0": "172.16.4.20"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        assert any(label == "Set eth0 to DHCP" for label in _labels(app))
+
+        _confirm_key(app, "iface:wlan0")
+        assert any(label == "Set wlan0 to DHCP" for label in _labels(app))
+
+    def test_switching_interface_drops_a_half_typed_address(self, monkeypatch) -> None:
+        """The typed values belong to the interface they were started on;
+        carrying them across would apply one venue's address to another NIC."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5", "wlan0": "172.16.4.20"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _confirm_key(app, "static")
+        assert app._pi_network_static_edit is True
+
+        _confirm_key(app, "iface:wlan0")
+        assert app._pi_network_static_edit is False
+
+    def test_reselecting_the_same_interface_keeps_the_editor(self, monkeypatch) -> None:
+        """Confirming the row already selected is a no-op, not a reset - it is
+        the easiest thing to hit by accident while navigating."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _confirm_key(app, "static")
+
+        _confirm_key(app, "iface:eth0")
+        assert app._pi_network_static_edit is True
+
+    def test_cancel_leaves_the_static_editor(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _confirm_key(app, "static")
+
+        _confirm_key(app, "cancel_static")
+
+        assert app._pi_network_static_edit is False
+        assert [r for r in anm.build_pi_network_rows(app) if r.get("key") == "address"] == []
+
+    def test_the_static_editor_is_seeded_from_the_live_address(self, monkeypatch) -> None:
+        """Correcting one octet should be one digit on a d-pad, not a whole
+        address typed from scratch."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+
+        _confirm_key(app, "static")
+
+        assert app._pi_network_pending_config.address == "192.168.1.50"
+        assert app._pi_network_pending_config.method is Ipv4Method.STATIC
+
+    def test_a_read_only_host_offers_no_addressing_actions(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app(_FakeAdapter(writable=False))
+        anm.enter_pi_network(app)
+        keys = [r.get("key") for r in anm.build_pi_network_rows(app)]
+        assert "dhcp" not in keys
+        assert "static" not in keys
+        assert "renew" not in keys
+        assert "back" in keys
+
+
+class TestTheScreenNoLongerEditsRouterAndDns:
+    def test_no_dns_rows_are_offered(self, monkeypatch) -> None:
+        """Neither is needed to reach a station on the same LAN, and both are
+        the fiddliest things to type on a gamepad. They stay in the web UI."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _confirm_key(app, "static")
+        keys = [str(r.get("key", "")) for r in anm.build_pi_network_rows(app)]
+        assert not any(k.startswith("dns") for k in keys)
+
+    def test_the_router_stays_because_a_static_venue_needs_a_gateway(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _confirm_key(app, "static")
+        assert "router" in [r.get("key") for r in anm.build_pi_network_rows(app)]

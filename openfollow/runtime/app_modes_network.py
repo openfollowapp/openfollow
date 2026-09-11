@@ -657,8 +657,28 @@ def handle_pi_network_field_edit_key(app: OpenFollowApp, key: str) -> None:
         app._pi_network_field_value += key
 
 
+def _expand_prefix_for_grid(app: OpenFollowApp) -> None:
+    """Put the Subnet field in its mask form before the grid touches it.
+
+    That field also accepts a bare prefix length, and ``24`` has no digit grid:
+    read as one it means ``24.0.0.0``, which is not a contiguous mask, so the
+    operator's value would be rewritten under them into one the parser then
+    rejects. ``255.255.255.0`` is the same subnet in the form the grid can edit.
+    """
+    if getattr(app, "_pi_network_field_name", "") != "prefix":
+        return
+    value = getattr(app, "_pi_network_field_value", "").strip()
+    if not value or "." in value:
+        return
+    prefix = parse_prefix(value)
+    mask = prefix_to_mask(prefix) if prefix is not None else None
+    if mask:
+        app._pi_network_field_value = mask
+
+
 def _field_digit_state(app: OpenFollowApp) -> tuple[str, int]:
     """Current buffer as grid digits, plus the cursor, both bounds-checked."""
+    _expand_prefix_for_grid(app)
     digits = ipv4_digit_grid.to_grid(getattr(app, "_pi_network_field_value", ""))
     index = getattr(app, "_pi_network_field_digit_index", 0)
     if not isinstance(index, int):

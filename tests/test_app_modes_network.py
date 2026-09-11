@@ -503,6 +503,63 @@ class TestGamepadFieldEditCancel:
         assert "9.9.9.9" in app._pi_network_pending_config.dns
 
 
+class TestGamepadEntryOnTheSubnetField:
+    """The Subnet field accepts a bare prefix length as well as a mask.
+
+    A bare ``24`` has no digit grid: read as one it means ``24.0.0.0``, which
+    is not a contiguous mask, so a single d-pad press would rewrite the
+    operator's value into one the parser then rejects - with no way back to
+    ``24`` but retyping it.
+    """
+
+    def _editing_prefix(self, value: str):
+        app = _make_app()
+        anm.enter_pi_network(app)
+        anm.enter_pi_network_field_edit(app, "prefix")
+        app._pi_network_field_value = value
+        return app
+
+    def test_a_bare_prefix_becomes_the_mask_it_means(self) -> None:
+        app = self._editing_prefix("24")
+        anm._bump_field_digit(app, 0)
+        assert app._pi_network_field_value == "255.255.255.000"
+
+    def test_and_still_commits_as_the_same_subnet(self) -> None:
+        from openfollow.network.validate import parse_prefix
+
+        app = self._editing_prefix("24")
+        anm._bump_field_digit(app, 0)
+        anm.confirm_pi_network_field_edit(app)
+        assert app._pi_network_pending_config.prefix == 24
+        assert parse_prefix(app._pi_network_field_value or "255.255.255.0") is not None
+
+    def test_moving_the_cursor_expands_it_too(self) -> None:
+        """The cursor is meaningless against a value the grid cannot address."""
+        app = self._editing_prefix("24")
+        anm._move_field_digit_cursor(app, 1)
+        assert app._pi_network_field_value == "255.255.255.0"
+
+    def test_a_mask_is_left_alone(self) -> None:
+        app = self._editing_prefix("255.255.255.0")
+        anm._move_field_digit_cursor(app, 1)
+        assert app._pi_network_field_value == "255.255.255.0"
+
+    def test_an_unparseable_prefix_is_not_invented_into_one(self) -> None:
+        app = self._editing_prefix("99")
+        anm._bump_field_digit(app, 0)
+        assert app._pi_network_field_value != "255.255.255.000"
+
+    def test_an_address_field_is_not_treated_as_a_prefix(self) -> None:
+        """Only Subnet accepts the bare form; ``24`` in Address is a partial
+        address, not a /24."""
+        app = _make_app()
+        anm.enter_pi_network(app)
+        anm.enter_pi_network_field_edit(app, "address")
+        app._pi_network_field_value = "24"
+        anm._bump_field_digit(app, 0)
+        assert app._pi_network_field_value == "024.000.000.000"
+
+
 class TestTheScreenDoesNotAssignInterfaces:
     """No on-screen path writes ``psn_source_iface``.
 

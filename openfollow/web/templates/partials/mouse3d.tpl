@@ -4,7 +4,6 @@
       hx-post="/section/mouse3d" hx-target="#mouse3d-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>3D Mouse Input</h2>
-        <span class="section-note">Steer the selected marker with a connected 6DOF 3D Mouse</span>
     </div>
 
     <div class="group">
@@ -56,7 +55,6 @@
 
     <div class="group">
         <h3 class="group-title">Buttons</h3>
-        <span class="section-note">Click Detect, then press a button. Blank = unbound.</span>
         % for i in range(0, len(MOUSE3D_BUTTON_FORM_LABELS), 2):
         <div class="row">
             % for field, label in MOUSE3D_BUTTON_FORM_LABELS[i:i + 2]:

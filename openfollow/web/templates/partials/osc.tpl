@@ -2,7 +2,6 @@
       hx-post="/section/osc" hx-target="#osc-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>OSC Input</h2>
-        <span class="section-note">Receive marker positions via OSC</span>
     </div>
 
     <div class="group">

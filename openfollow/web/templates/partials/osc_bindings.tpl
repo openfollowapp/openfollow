@@ -41,7 +41,7 @@
 <div id="osc-bindings-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="osc_bindings" data-help="osc_bindings">
  <div class="section-head">
  <h2>OSC Transmitters</h2>
- <span class="section-note">Outbound OSC messages – Stream / Hotkey / Controller-button triggers</span>
+ <span class="section-note">Message templates with a trigger, each sending to a destination</span>
  </div>
 
  <div class="osc-bindings-list">

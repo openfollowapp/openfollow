@@ -28,9 +28,6 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_hud as draw_hud_pass,
 )
 from openfollow.runtime.overlay_draw_hud import (
-    draw_iface_selection_overlay as draw_iface_selection_overlay_pass,
-)
-from openfollow.runtime.overlay_draw_hud import (
     draw_media_export_overlay as draw_media_export_overlay_pass,
 )
 from openfollow.runtime.overlay_draw_hud import (
@@ -320,11 +317,6 @@ class CairoOverlayRenderer:
                 self._draw_pi_network_screen_overlay(cr, state, width, height)
                 return
 
-            # Interface selection takes priority – must work in any state
-            if state.iface_selection_active:
-                self._draw_iface_selection_overlay(cr, state, width, height)
-                return
-
             # Source-type selection – same modal-priority slot as iface
             # selection so it isn't masked by a "No Signal" frame when
             # the prior plugin failed to start.
@@ -460,9 +452,6 @@ class CairoOverlayRenderer:
 
     def _draw_source_selection_overlay(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
         draw_source_selection_overlay_pass(self, cr, state, w, h)
-
-    def _draw_iface_selection_overlay(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
-        draw_iface_selection_overlay_pass(self, cr, state, w, h)
 
     def _draw_source_type_selection_overlay(
         self,

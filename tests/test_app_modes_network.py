@@ -109,16 +109,12 @@ def _make_app(adapter: _FakeAdapter | None = None) -> SimpleNamespace:
         _pi_network_pending_result=None,
     )
 
-    def _enter_iface_selection() -> None:
-        app._enter_iface_called = True
-
     def _enter_settings_menu(*, banner: str = "") -> None:  # noqa: ARG001
         app._enter_settings_called = True
 
     def _get_config_mtime() -> float:
         return 0.0
 
-    app._enter_iface_selection = _enter_iface_selection
     app._enter_settings_menu = _enter_settings_menu
     app._get_config_mtime = _get_config_mtime
     app._advisory_refreshes = 0
@@ -128,7 +124,6 @@ def _make_app(adapter: _FakeAdapter | None = None) -> SimpleNamespace:
         return ""
 
     app._refresh_psn_source_advisory = _refresh_psn_source_advisory
-    app._enter_iface_called = False
     app._enter_settings_called = False
     app._apply_calls = apply_calls
     return app

@@ -12,7 +12,6 @@ from typing import Any
 import numpy.typing as npt
 
 from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, GridConfig
-from openfollow.net_utils import list_iface_ipv4
 from openfollow.network.validate import is_link_local
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
 from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_marker_velocity
@@ -355,9 +354,6 @@ def build_initial_overlay_state(cfg: Any) -> OverlayState:
     state.source_selection_title = "SELECT SOURCE"
     state.discovered_sources = []
     state.selected_source_index = 0
-    state.iface_selection_active = False
-    state.available_interfaces = []
-    state.selected_iface_index = 0
     state.settings_menu_active = False
     state.settings_items = []
     state.settings_items_enabled = []
@@ -472,26 +468,6 @@ def build_marker_visual_state(
     state.discovered_sources = video_receiver.discovered_sources
     state.selected_source_index = video_receiver.selected_source_index
     state.source_selection_title = video_receiver.source_selection_title
-    state.iface_selection_active = app._iface_selection_active
-    # Render each picker row as ``"eth0 (192.168.178.61)"`` so on a
-    # multi-homed host the operator can tell which network each interface
-    # is on without leaving the menu. ``app._available_interfaces`` stays
-    # as the iface-name list (the value used by the picker / dispatcher);
-    # the parallel labels here are display-only. ``""`` (auto-detect)
-    # passes through unformatted so the renderer can label it itself.
-    #
-    # Only the iface picker overlay reads ``state.available_interfaces``,
-    # so gate the ``psutil.net_if_addrs()`` snapshot behind the picker
-    # being open – otherwise every overlay frame (~60 Hz) would walk
-    # every NIC for labels nothing reads.
-    if app._iface_selection_active:
-        iface_ips = dict(list_iface_ipv4())
-        state.available_interfaces = [
-            f"{name} ({iface_ips[name]})" if name and name in iface_ips else name for name in app._available_interfaces
-        ]
-    else:
-        state.available_interfaces = list(app._available_interfaces)
-    state.selected_iface_index = app._selected_iface_index
     state.source_type_selection_active = app._source_type_selection_active
     state.available_source_types = list(app._available_source_types)
     state.selected_source_type_index = app._selected_source_type_index

@@ -450,9 +450,6 @@ class TestBuildInitialOverlayState:
         assert state.source_selection_title == "SELECT SOURCE"
         assert state.discovered_sources == []
         assert state.selected_source_index == 0
-        assert state.iface_selection_active is False
-        assert state.available_interfaces == []
-        assert state.selected_iface_index == 0
 
     def test_grid_config_is_applied(self) -> None:
         cfg = SimpleNamespace(
@@ -917,9 +914,6 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
         _viewer_ids=[1],
         _input_manager=None,
         _video_receiver=video_receiver,
-        _iface_selection_active=False,
-        _available_interfaces=[],
-        _selected_iface_index=0,
         _source_type_selection_active=False,
         _available_source_types=[],
         _selected_source_type_index=0,

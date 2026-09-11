@@ -618,18 +618,6 @@ def test_build_help_sections_source_type_selection_controller_lists_dpad() -> No
     assert any("Cancel source type menu" in line for line in controller)
 
 
-def test_build_help_sections_iface_selection_controller_lists_dpad_navigation() -> None:
-    """Iface-selection mode controller branch."""
-    sections = build_help_sections(
-        mode="iface-selection",
-        keyboard_connected=False,
-        controller_connected=True,
-    )
-    controller = next(lines for title, lines in sections if title == "Controller")
-    assert any("D-Pad Up/Down" in line for line in controller)
-    assert any("Apply interface" in line for line in controller)
-
-
 def test_build_help_sections_button_detection_keyboard_only_lists_escape() -> None:
     """Button-detection mode keyboard branch."""
     sections = build_help_sections(
@@ -667,7 +655,6 @@ def test_build_help_sections_unknown_mode_returns_empty() -> None:
     "mode,expected_substring",
     [
         ("source-selection", "Confirm source"),
-        ("iface-selection", "Apply interface"),
         ("settings", "Confirm"),
     ],
 )

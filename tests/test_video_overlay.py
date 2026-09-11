@@ -88,7 +88,6 @@ def patched_passes(monkeypatch):
         "draw_about_overlay_pass",
         "draw_button_detection_overlay_pass",
         "draw_hud_pass",
-        "draw_iface_selection_overlay_pass",
         "draw_settings_overlay_pass",
         "draw_source_selection_overlay_pass",
         "draw_source_type_selection_overlay_pass",
@@ -132,12 +131,6 @@ class TestDrawDispatch:
         renderer.state.about_active = True
         renderer.draw(FakeCairo(), 1280, 720)
         assert patched_passes == ["draw_about_overlay_pass"]
-
-    def test_iface_selection_dispatches_iface_overlay(self, patched_passes) -> None:
-        renderer = CairoOverlayRenderer()
-        renderer.state.iface_selection_active = True
-        renderer.draw(FakeCairo(), 1280, 720)
-        assert patched_passes == ["draw_iface_selection_overlay_pass"]
 
     def test_source_type_selection_dispatches_source_type_overlay(self, patched_passes) -> None:
         """Source-type picker renders when source_type_selection_active is set."""

@@ -30,8 +30,6 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_field_choice_picker_overlay,
     draw_help_block,
     draw_hud,
-    draw_iface_selection,
-    draw_iface_selection_overlay,
     draw_marker_card,
     draw_modal_scrim,
     draw_modal_shell,
@@ -450,23 +448,6 @@ class TestSelectionMenus:
         cr = FakeCairo()
         draw_source_selection_overlay(FakeRenderer(state=state), cr, state, 1600, 900)
         # Scrim draws one full-frame rectangle.
-        frame_rects = [r for r in cr.rects if r[:2] == (0, 0) and r[2:] == (1600, 900)]
-        assert len(frame_rects) == 1
-
-    def test_iface_selection_maps_empty_to_auto_detect(self) -> None:
-        state = _base_state()
-        state.available_interfaces = ["en0", ""]  # second is "auto"
-        state.selected_iface_index = 1
-        cr = FakeCairo()
-        draw_iface_selection(FakeRenderer(state=state), cr, state, 1600, 900)
-        texts = cr.show_text_strings()
-        assert "en0" in texts
-        assert "Auto-detect" in texts
-
-    def test_iface_selection_overlay_adds_scrim(self) -> None:
-        state = _base_state(available_interfaces=["en0"], selected_iface_index=0)
-        cr = FakeCairo()
-        draw_iface_selection_overlay(FakeRenderer(state=state), cr, state, 1600, 900)
         frame_rects = [r for r in cr.rects if r[:2] == (0, 0) and r[2:] == (1600, 900)]
         assert len(frame_rects) == 1
 

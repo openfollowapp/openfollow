@@ -325,28 +325,6 @@ def draw_source_selection_overlay(renderer: Any, cr: Any, state: OverlayState, w
     draw_source_selection(renderer, cr, state, w, h)
 
 
-def draw_iface_selection(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    formatted_ifaces = [iface if iface else "Auto-detect" for iface in state.available_interfaces]
-    draw_selection_menu(
-        renderer,
-        cr,
-        state,
-        w,
-        h,
-        title="SELECT NETWORK INTERFACE",
-        subtitle="Choose the interface used for PSN, mDNS, and receiver binding.",
-        mode="iface-selection",
-        items=formatted_ifaces,
-        selected_idx=state.selected_iface_index,
-        empty_message="No interfaces detected.",
-    )
-
-
-def draw_iface_selection_overlay(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    draw_modal_scrim(cr, w, h, alpha=0.56)
-    draw_iface_selection(renderer, cr, state, w, h)
-
-
 def draw_source_type_selection(
     renderer: Any,
     cr: Any,

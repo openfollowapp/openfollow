@@ -6,13 +6,12 @@
 and legacy shortcut regression guards. This file fills in:
 
 - ``cycle_marker`` edge cases (empty list, current==None, wrap-around)
-- ``enter_iface_selection`` + ``confirm_iface_selection`` + ``refresh_iface_list``
 - ``enter_source_selection`` gating on ``has_source_selection``
 - ``enter_button_detection`` refusal paths + ``process_button_detection``
 - ``on_key_down`` digit shortcuts and Ctrl/Meta+S save flow
 - ``process_input`` guard paths (button-detection, settings menu, source,
-  iface, key_settings edge gating)
-- ``process_source_selection_input`` / ``process_iface_selection_input``
+  key_settings edge gating)
+- ``process_source_selection_input``
 """
 
 from __future__ import annotations
@@ -62,239 +61,6 @@ def test_cycle_marker_selects_last_when_current_missing_backward() -> None:
     app_modes.cycle_marker(app, -1)
     # idx = 0 (else branch), step = -1 → index -1 → 6
     assert app._selected_id == 6
-
-
-# ---------------------------------------------------------------------------
-# Interface selection: enter / confirm / refresh
-# ---------------------------------------------------------------------------
-
-
-def test_enter_iface_selection_lists_interfaces(monkeypatch) -> None:
-    """Picker lists interface names with auto-detect option first."""
-    from openfollow.configuration import AppConfig
-
-    monkeypatch.setattr(
-        "openfollow.net_utils.list_iface_ipv4",
-        lambda: [("en0", "10.0.0.3"), ("eth0", "192.168.1.5")],
-    )
-    app = SimpleNamespace(
-        _config=AppConfig(),
-        _available_interfaces=[],
-        _selected_iface_index=0,
-        _iface_selection_active=False,
-        _source_type_selection_active=False,
-        _url_editor_active=False,
-        _field_choice_active=False,
-        _browser_active=False,
-    )
-    app_modes.enter_iface_selection(app)
-    # "" (auto) + the iface names from ``list_iface_ipv4``.
-    assert app._available_interfaces[0] == ""
-    assert "eth0" in app._available_interfaces
-    assert "en0" in app._available_interfaces
-    assert app._iface_selection_active is True
-    # Unconfigured psn_source_iface → "" matches index 0.
-    assert app._selected_iface_index == 0
-
-
-def test_enter_iface_selection_preserves_selection(monkeypatch) -> None:
-    """Seeded to the currently-pinned iface so the menu doesn't
-    visually reset on every reopen."""
-    from openfollow.configuration import AppConfig
-
-    monkeypatch.setattr(
-        "openfollow.net_utils.list_iface_ipv4",
-        lambda: [("en0", "10.0.0.3"), ("eth0", "192.168.1.5")],
-    )
-    cfg = AppConfig()
-    cfg.psn_source_iface = "en0"
-    app = SimpleNamespace(
-        _config=cfg,
-        _available_interfaces=[],
-        _selected_iface_index=0,
-        _iface_selection_active=False,
-        _source_type_selection_active=False,
-        _url_editor_active=False,
-        _field_choice_active=False,
-        _browser_active=False,
-    )
-    app_modes.enter_iface_selection(app)
-    assert app._available_interfaces[app._selected_iface_index] == "en0"
-
-
-def _make_iface_confirm_app(
-    tmp_path,
-    monkeypatch,
-    *,
-    current_iface: str = "",
-) -> SimpleNamespace:
-    """Build SimpleNamespace app with confirm_iface_selection slots for testing without full OpenFollowApp."""
-    import socket as _socket
-    from types import SimpleNamespace as _SN
-
-    from openfollow.configuration import AppConfig
-
-    monkeypatch.setattr(
-        "openfollow.net_utils.psutil.net_if_addrs",
-        lambda: {
-            "en0": [_SN(family=_socket.AF_INET, address="10.0.0.3")],
-            "eth0": [_SN(family=_socket.AF_INET, address="192.168.1.5")],
-        },
-    )
-
-    cfg = AppConfig()
-    cfg.psn_source_iface = current_iface
-    cfg_path = tmp_path / "c.toml"
-    cfg_path.write_text("")  # mtime read needs the file to exist
-
-    apply_calls: list[str] = []
-
-    class _Services:
-        def apply_psn_source_ip_change(self, new_ip: str) -> None:  # noqa: ARG002
-            apply_calls.append(new_ip)
-
-    app = SimpleNamespace(
-        _config=cfg,
-        _config_path=str(cfg_path),
-        _config_mtime=0.0,
-        _runtime_services=_Services(),
-        _available_interfaces=["", "en0", "eth0"],
-        _selected_iface_index=1,  # en0
-        _iface_selection_active=True,
-        _restart_called=False,
-        _apply_calls=apply_calls,
-    )
-    app._restart_app = lambda: setattr(app, "_restart_called", True)
-    app._get_config_mtime = lambda: 1234.5
-    # Bind production helper to exercise the refresh path.
-    from types import MethodType
-
-    from openfollow.app import OpenFollowApp
-
-    app._psn_source_resolved_ip = ""
-    app._psn_source_status = ""
-    app._psn_source_banner = ""
-    app._refresh_psn_source_advisory = MethodType(
-        OpenFollowApp._refresh_psn_source_advisory,
-        app,
-    )
-    return app
-
-
-def test_confirm_iface_selection_live_applies_without_restart(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    saves: list = []
-    monkeypatch.setattr(
-        app_modes,
-        "save_config",
-        lambda cfg, path: saves.append((cfg.psn_source_iface, path)),
-    )
-    app = _make_iface_confirm_app(tmp_path, monkeypatch, current_iface="")
-    # Seed stale advisory; live apply must clear it.
-    app._psn_source_banner = "Pinned network interface 'ghost0' is not available."
-    app._psn_source_status = "primary"
-    app_modes.confirm_iface_selection(app)
-    assert app._config.psn_source_iface == "en0"
-    # Resolver translates en0 → 10.0.0.3, which is what the orchestrator sees.
-    assert app._apply_calls == ["10.0.0.3"]
-    assert saves == [("en0", app._config_path)]
-    assert app._iface_selection_active is False
-    assert app._restart_called is False
-    assert app._config_mtime == 1234.5
-    # Advisory re-synced to the now-honoured pin.
-    assert app._psn_source_status == "iface"
-    assert app._psn_source_banner == ""
-
-
-def test_confirm_iface_selection_no_op_when_pick_matches_current(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    """Selecting the iface already in use closes the picker without
-    rebinding anything – pointless socket churn would interrupt PSN
-    streaming for no operator-visible benefit."""
-    monkeypatch.setattr(
-        app_modes,
-        "save_config",
-        lambda *a, **kw: pytest.fail("must not save on no-op pick"),
-    )
-    app = _make_iface_confirm_app(tmp_path, monkeypatch, current_iface="en0")
-    app_modes.confirm_iface_selection(app)
-    assert app._apply_calls == []
-    assert app._iface_selection_active is False
-
-
-def test_confirm_iface_selection_rolls_back_on_apply_failure(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    """If the live-apply rebind fails (e.g. the new iface goes down by
-    the time we try to bind to it), the stored config reverts and the
-    iface picker stays open so the operator can pick a working one."""
-    monkeypatch.setattr(
-        app_modes,
-        "save_config",
-        lambda *a, **kw: pytest.fail("must not save on apply failure"),
-    )
-    app = _make_iface_confirm_app(tmp_path, monkeypatch, current_iface="eth0")
-
-    def _boom(_new_ip: str) -> None:
-        raise OSError("bind failed")
-
-    app._runtime_services.apply_psn_source_ip_change = _boom
-    # Seed a stale advisory; after rollback the refresh must recompute it
-    # against the restored (prior) iface rather than leaving it stale.
-    app._psn_source_banner = "leftover"
-    app._psn_source_status = "leftover"
-    app_modes.confirm_iface_selection(app)
-    # Stored config reverted to the prior iface.
-    assert app._config.psn_source_iface == "eth0"
-    # Picker stays open so operator can re-pick.
-    assert app._iface_selection_active is True
-    assert app._restart_called is False
-    # Advisory recomputed for the restored iface (eth0 is live → 192.168.1.5).
-    assert app._psn_source_status == "iface"
-    assert app._psn_source_banner == ""
-
-
-def test_confirm_iface_selection_bails_when_list_empty() -> None:
-    app = SimpleNamespace(
-        _available_interfaces=[],
-        _selected_iface_index=0,
-        _iface_selection_active=True,
-    )
-    app._restart_app = lambda: pytest.fail("Must not restart with no ifaces")
-    app_modes.confirm_iface_selection(app)
-    assert app._iface_selection_active is False
-
-
-def test_refresh_iface_list_keeps_valid_selection(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "openfollow.net_utils.list_iface_ipv4",
-        lambda: [("en0", "10.0.0.3"), ("eth0", "192.168.1.5")],
-    )
-    app = SimpleNamespace(
-        _available_interfaces=["", "en0"],
-        _selected_iface_index=1,
-    )
-    app_modes.refresh_iface_list(app)
-    assert app._available_interfaces[app._selected_iface_index] == "en0"
-
-
-def test_refresh_iface_list_clamps_selection_when_lost(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "openfollow.net_utils.list_iface_ipv4",
-        lambda: [("eth9", "10.0.0.9")],
-    )
-    app = SimpleNamespace(
-        _available_interfaces=["", "10.0.0.3"],
-        _selected_iface_index=1,
-    )
-    app_modes.refresh_iface_list(app)
-    assert app._available_interfaces == ["", "eth9"]
-    assert app._selected_iface_index <= len(app._available_interfaces) - 1
 
 
 # ---------------------------------------------------------------------------
@@ -783,7 +549,7 @@ def test_on_pointer_down_skipped_while_modal_active() -> None:
         def on_pointer_down(self, x, y, b) -> None:  # noqa: ANN001
             pytest.fail("pointer-down must be gated while a modal owns the screen")
 
-    app = _mouse_app(_MouseHandler(), _iface_selection_active=True)
+    app = _mouse_app(_MouseHandler(), _settings_menu_active=True)
     app_modes.on_pointer_down(app, {"x": 1, "y": 2, "button": 1})
 
 
@@ -868,7 +634,6 @@ def test_process_input_button_detection_takes_exclusive_control() -> None:
         _button_detection=object(),
         _settings_menu_active=False,
         _video_receiver=None,
-        _iface_selection_active=False,
         _source_type_selection_active=False,
         _url_editor_active=False,
         _field_choice_active=False,
@@ -893,7 +658,6 @@ def test_process_input_delegates_to_settings_menu_when_active() -> None:
         _button_detection=None,
         _settings_menu_active=True,
         _video_receiver=None,
-        _iface_selection_active=False,
         _source_type_selection_active=False,
         _url_editor_active=False,
         _field_choice_active=False,
@@ -921,37 +685,12 @@ def test_process_input_routes_to_source_selection_when_active() -> None:
         _button_detection=None,
         _settings_menu_active=False,
         _video_receiver=_Receiver(),
-        _iface_selection_active=False,
         _source_type_selection_active=False,
         _url_editor_active=False,
         _field_choice_active=False,
         _browser_active=False,
     )
     app._process_source_selection_input = lambda: called.append(True)
-    app_modes.process_input(app, 0.01)
-    assert called == [True]
-
-
-def test_process_input_routes_to_iface_selection_when_active() -> None:
-    called: list[bool] = []
-
-    class _Receiver:
-        source_selection_active = False
-
-    class _KeyboardHandler:
-        keys: set[str] = set()
-
-    class _InputManager:
-        keyboard_handler = _KeyboardHandler()
-
-    app = SimpleNamespace(
-        _input_manager=_InputManager(),
-        _button_detection=None,
-        _settings_menu_active=False,
-        _video_receiver=_Receiver(),
-        _iface_selection_active=True,
-    )
-    app._process_iface_selection_input = lambda: called.append(True)
     app_modes.process_input(app, 0.01)
     assert called == [True]
 
@@ -977,7 +716,6 @@ def test_process_input_routes_to_field_choice_picker_when_active() -> None:
         _button_detection=None,
         _settings_menu_active=False,
         _video_receiver=_Receiver(),
-        _iface_selection_active=False,
         _source_type_selection_active=False,
         _field_choice_active=True,
     )
@@ -1006,7 +744,6 @@ def test_process_input_routes_to_browser_input_when_active() -> None:
         _button_detection=None,
         _settings_menu_active=False,
         _video_receiver=_Receiver(),
-        _iface_selection_active=False,
         _source_type_selection_active=False,
         _field_choice_active=False,
         _url_editor_active=False,
@@ -1039,7 +776,6 @@ def test_process_input_dispatches_input_manager_result_actions() -> None:
         _button_detection=None,
         _settings_menu_active=False,
         _video_receiver=None,
-        _iface_selection_active=False,
         _source_type_selection_active=False,
         _url_editor_active=False,
         _field_choice_active=False,
@@ -1056,7 +792,7 @@ def test_process_input_dispatches_input_manager_result_actions() -> None:
 
 
 # ---------------------------------------------------------------------------
-# process_source_selection_input / process_iface_selection_input
+# process_source_selection_input
 # ---------------------------------------------------------------------------
 
 
@@ -1112,62 +848,6 @@ def test_process_source_selection_input_forwards_all_buttons() -> None:
     assert calls == ["up", "down", "confirm", "cancel"]
 
 
-def test_process_iface_selection_up_and_down_clamp_at_bounds() -> None:
-    class _Gamepad:
-        def read_source_selection_input(self):  # noqa: ANN201
-            return _SrcInput(up=True)
-
-    class _IM:
-        gamepad_handler = _Gamepad()
-
-    app = SimpleNamespace(
-        _input_manager=_IM(),
-        _available_interfaces=["", "a", "b"],
-        _selected_iface_index=0,
-        _iface_selection_active=True,
-    )
-    app._confirm_iface_selection = lambda: pytest.fail("must not confirm on up-only")
-    app_modes.process_iface_selection_input(app)
-    assert app._selected_iface_index == 0  # Clamped at 0, not negative.
-
-
-def test_process_iface_selection_noop_when_empty() -> None:
-    class _Gamepad:
-        def read_source_selection_input(self):  # noqa: ANN201
-            return _SrcInput(confirm=True)
-
-    class _IM:
-        gamepad_handler = _Gamepad()
-
-    app = SimpleNamespace(
-        _input_manager=_IM(),
-        _available_interfaces=[],
-        _selected_iface_index=0,
-        _iface_selection_active=True,
-    )
-    app._confirm_iface_selection = lambda: pytest.fail("must not confirm with empty list")
-    app_modes.process_iface_selection_input(app)
-
-
-def test_process_iface_selection_cancel_exits() -> None:
-    class _Gamepad:
-        def read_source_selection_input(self):  # noqa: ANN201
-            return _SrcInput(cancel=True)
-
-    class _IM:
-        gamepad_handler = _Gamepad()
-
-    app = SimpleNamespace(
-        _input_manager=_IM(),
-        _available_interfaces=["", "a"],
-        _selected_iface_index=0,
-        _iface_selection_active=True,
-    )
-    app._confirm_iface_selection = lambda: pytest.fail("must not confirm on cancel")
-    app_modes.process_iface_selection_input(app)
-    assert app._iface_selection_active is False
-
-
 # ---------------------------------------------------------------------------
 # get_default_marker_position
 # ---------------------------------------------------------------------------
@@ -1218,7 +898,6 @@ def _make_process_input_app(
         _button_detection=None,
         _settings_menu_active=settings_menu_active,
         _video_receiver=None,
-        _iface_selection_active=False,
         _source_type_selection_active=False,
         _url_editor_active=False,
         _field_choice_active=False,
@@ -1304,7 +983,6 @@ def test_process_input_toggle_zones_pressed_flips_overlay(tmp_path) -> None:
         _button_detection=None,
         _settings_menu_active=False,
         _video_receiver=None,
-        _iface_selection_active=False,
         _source_type_selection_active=False,
         _url_editor_active=False,
         _field_choice_active=False,
@@ -1358,43 +1036,6 @@ def test_process_source_selection_input_logs_on_exception(caplog) -> None:
     with caplog.at_level(_logging.WARNING, logger="openfollow.runtime.app_modes"):
         app_modes.process_source_selection_input(app)
     assert any("Source selection input error" in rec.message for rec in caplog.records)
-
-
-def test_process_iface_selection_logs_on_exception(caplog) -> None:
-    import logging as _logging
-
-    class _Gamepad:
-        def read_source_selection_input(self):
-            raise RuntimeError("boom")
-
-    class _IM:
-        gamepad_handler = _Gamepad()
-
-    app = SimpleNamespace(_input_manager=_IM(), _available_interfaces=["a"], _selected_iface_index=0)
-    with caplog.at_level(_logging.WARNING, logger="openfollow.runtime.app_modes"):
-        app_modes.process_iface_selection_input(app)
-    assert any("Interface selection input error" in rec.message for rec in caplog.records)
-
-
-def test_process_iface_selection_confirm_invokes_app_callback() -> None:
-    confirms: list[bool] = []
-
-    class _Gamepad:
-        def read_source_selection_input(self):
-            return _SrcInput(confirm=True)
-
-    class _IM:
-        gamepad_handler = _Gamepad()
-
-    app = SimpleNamespace(
-        _input_manager=_IM(),
-        _available_interfaces=["", "1.2.3.4"],
-        _selected_iface_index=1,
-        _iface_selection_active=True,
-    )
-    app._confirm_iface_selection = lambda: confirms.append(True)
-    app_modes.process_iface_selection_input(app)
-    assert confirms == [True]
 
 
 # ---------------------------------------------------------------------------
@@ -1598,7 +1239,6 @@ def test_settings_menu_confirm_dispatches_to_correct_app_callback(
     # the real app; the dispatcher invokes it with no args from the
     # menu, but the lambda captures whatever's passed via ``**kw``.
     for name in (
-        "_enter_iface_selection",
         "_enter_source_type_selection",
         "_enter_button_detection",
         "_enter_browser",
@@ -1684,7 +1324,6 @@ def _make_minimal_app_for_dispatch() -> SimpleNamespace:
         _button_detection=None,
         _settings_menu_active=False,
         _video_receiver=None,
-        _iface_selection_active=False,
         _source_type_selection_active=False,
         _field_choice_active=False,
         _url_editor_active=False,
@@ -1824,7 +1463,6 @@ def test_settings_menu_confirm_index_0_opens_network_screen(
     app._pi_network_busy = False
     app._runtime_services = SimpleNamespace(network_adapter=None)
     for name in (
-        "_enter_iface_selection",
         "_enter_source_type_selection",
         "_enter_button_detection",
         "_enter_browser",
@@ -2167,73 +1805,6 @@ def test_handle_key_press_source_selection_enter_skips_set_source_when_confirm_s
     assert log == ["confirm"]
 
 
-def test_handle_key_press_iface_selection_arrows_clamp_at_bounds() -> None:
-    from openfollow.configuration import AppConfig
-
-    app = SimpleNamespace(
-        _config=AppConfig(),
-        _button_detection=None,
-        _settings_menu_active=False,
-        _video_receiver=None,
-        _iface_selection_active=True,
-        _available_interfaces=["", "1.2.3.4", "5.6.7.8"],
-        _selected_iface_index=0,
-    )
-    app._confirm_iface_selection = lambda: pytest.fail("not on arrows")
-
-    app_modes.handle_key_press(app, "ArrowUp")
-    assert app._selected_iface_index == 0  # already at top
-    app_modes.handle_key_press(app, "ArrowDown")
-    assert app._selected_iface_index == 1
-    app_modes.handle_key_press(app, "ArrowDown")
-    app_modes.handle_key_press(app, "ArrowDown")  # would exceed len-1
-    assert app._selected_iface_index == 2
-
-
-def test_handle_key_press_iface_selection_enter_confirms_and_escape_exits() -> None:
-    from openfollow.configuration import AppConfig
-
-    confirms: list[bool] = []
-    back_calls: list[bool] = []
-
-    app = SimpleNamespace(
-        _config=AppConfig(),
-        _button_detection=None,
-        _settings_menu_active=False,
-        _video_receiver=None,
-        _iface_selection_active=True,
-        _available_interfaces=["", "10.0.0.1"],
-        _selected_iface_index=1,
-    )
-    app._confirm_iface_selection = lambda: confirms.append(True)
-    app._enter_settings_menu = lambda *, banner="": back_calls.append(True)
-
-    app_modes.handle_key_press(app, "Enter")
-    assert confirms == [True]
-
-    app_modes.handle_key_press(app, "Escape")
-    assert app._iface_selection_active is False
-    # Esc returns to Settings menu, not normal mode.
-    assert back_calls == [True]
-
-
-def test_handle_key_press_iface_selection_no_op_when_empty() -> None:
-    """An empty interface list means there's nothing to navigate – the
-    early return prevents IndexError on the bounds clamp arithmetic."""
-    from openfollow.configuration import AppConfig
-
-    app = SimpleNamespace(
-        _config=AppConfig(),
-        _button_detection=None,
-        _settings_menu_active=False,
-        _video_receiver=None,
-        _iface_selection_active=True,
-        _available_interfaces=[],
-        _selected_iface_index=0,
-    )
-    app_modes.handle_key_press(app, "ArrowUp")  # must not raise
-
-
 def test_handle_key_press_main_mode_action_keys_dispatch_correctly() -> None:
     """In normal mode (no overlays / wizards open) action keys map to:
     cycle_marker(+/-), reset, toggle help, toggle zones, speed up/down."""
@@ -2268,7 +1839,6 @@ def test_handle_key_press_main_mode_action_keys_dispatch_correctly() -> None:
         _button_detection=None,
         _settings_menu_active=False,
         _video_receiver=None,
-        _iface_selection_active=False,
         _source_type_selection_active=False,
         _url_editor_active=False,
         _field_choice_active=False,
@@ -2317,7 +1887,6 @@ def test_handle_key_press_main_mode_reset_no_op_without_selected_id() -> None:
         _button_detection=None,
         _settings_menu_active=False,
         _video_receiver=None,
-        _iface_selection_active=False,
         _source_type_selection_active=False,
         _url_editor_active=False,
         _field_choice_active=False,
@@ -2498,19 +2067,8 @@ def test_on_pointer_up_skipped_while_browser_active() -> None:
 
 
 # ---------------------------------------------------------------------------
-# confirm_iface_selection + button-detection completion paths
+# button-detection completion paths
 # ---------------------------------------------------------------------------
-
-
-def test_confirm_iface_selection_with_empty_list_clears_active_flag() -> None:
-    app = SimpleNamespace(
-        _available_interfaces=[],
-        _selected_iface_index=0,
-        _iface_selection_active=True,
-    )
-    app._restart_app = lambda: pytest.fail("must not restart with empty list")
-    app_modes.confirm_iface_selection(app)
-    assert app._iface_selection_active is False
 
 
 def test_enter_button_detection_sets_web_server_active_flag(monkeypatch) -> None:
@@ -2732,32 +2290,6 @@ def test_enter_settings_menu_when_not_active_opens_at_index_zero() -> None:
     assert app._settings_menu_index == 0
 
 
-def test_enter_iface_selection_falls_back_to_zero_when_current_not_in_list(monkeypatch) -> None:
-    """When persisted iface is unavailable, cursor defaults to auto-detect entry."""
-    from openfollow.configuration import AppConfig
-
-    monkeypatch.setattr(
-        "openfollow.net_utils.list_iface_ipv4",
-        lambda: [("en0", "10.0.0.5"), ("eth0", "10.0.0.6")],
-    )
-    cfg = AppConfig()
-    cfg.psn_source_iface = "ghost0"  # not in the list above
-    app = SimpleNamespace(
-        _config=cfg,
-        _available_interfaces=[],
-        _selected_iface_index=99,
-        _iface_selection_active=False,
-        _source_type_selection_active=False,
-        _url_editor_active=False,
-        _field_choice_active=False,
-        _browser_active=False,
-    )
-    app_modes.enter_iface_selection(app)
-    assert app._available_interfaces == ["", "en0", "eth0"]
-    assert app._selected_iface_index == 0
-    assert app._iface_selection_active is True
-
-
 def test_normalize_key_passes_multi_char_keys_through_unchanged() -> None:
     """Single-char alpha keys are lower-cased for consistent layout-aware
     lookup; named keys (Enter, ArrowUp, etc.) are preserved verbatim."""
@@ -2765,26 +2297,6 @@ def test_normalize_key_passes_multi_char_keys_through_unchanged() -> None:
     assert app_modes.normalize_key("A") == "a"
     assert app_modes.normalize_key("Enter") == "Enter"
     assert app_modes.normalize_key("ArrowUp") == "ArrowUp"
-
-
-def test_process_iface_selection_down_pressed_clamps_at_last_index() -> None:
-
-    class _Gamepad:
-        def read_source_selection_input(self):
-            return _SrcInput(down=True)
-
-    class _IM:
-        gamepad_handler = _Gamepad()
-
-    app = SimpleNamespace(
-        _input_manager=_IM(),
-        _available_interfaces=["", "a", "b"],
-        _selected_iface_index=2,  # already at last
-        _iface_selection_active=True,
-    )
-    app._confirm_iface_selection = lambda: pytest.fail("must not confirm on down-only")
-    app_modes.process_iface_selection_input(app)
-    assert app._selected_iface_index == 2  # clamped, not 3
 
 
 def test_handle_key_press_main_mode_toggle_zones_persists_overlay(tmp_path) -> None:
@@ -2812,7 +2324,6 @@ def test_handle_key_press_main_mode_toggle_zones_persists_overlay(tmp_path) -> N
         _button_detection=None,
         _settings_menu_active=False,
         _video_receiver=None,
-        _iface_selection_active=False,
         _source_type_selection_active=False,
         _url_editor_active=False,
         _field_choice_active=False,
@@ -2914,11 +2425,6 @@ def test_process_source_selection_input_noop_when_video_receiver_none() -> None:
 
     app = SimpleNamespace(_input_manager=_IM(), _video_receiver=None)
     app_modes.process_source_selection_input(app)  # must not raise
-
-
-def test_process_iface_selection_input_noop_when_input_manager_none() -> None:
-    app = SimpleNamespace(_input_manager=None)
-    app_modes.process_iface_selection_input(app)
 
 
 def test_process_settings_menu_input_noop_when_input_manager_none() -> None:
@@ -3077,7 +2583,6 @@ def test_process_input_clears_keyboard_on_return_from_modal() -> None:
         _button_detection=None,
         _settings_menu_active=False,
         _video_receiver=None,
-        _iface_selection_active=False,
         _source_type_selection_active=False,
         _url_editor_active=False,
         _field_choice_active=False,

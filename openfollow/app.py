@@ -61,9 +61,6 @@ from openfollow.runtime.app_modes import (
     confirm_field_choice_picker as runtime_confirm_field_choice_picker,
 )
 from openfollow.runtime.app_modes import (
-    confirm_iface_selection as runtime_confirm_iface_selection,
-)
-from openfollow.runtime.app_modes import (
     confirm_source_type_selection as runtime_confirm_source_type_selection,
 )
 from openfollow.runtime.app_modes import (
@@ -77,9 +74,6 @@ from openfollow.runtime.app_modes import (
 )
 from openfollow.runtime.app_modes import (
     enter_field_choice_picker as runtime_enter_field_choice_picker,
-)
-from openfollow.runtime.app_modes import (
-    enter_iface_selection as runtime_enter_iface_selection,
 )
 from openfollow.runtime.app_modes import (
     enter_settings_menu as runtime_enter_settings_menu,
@@ -151,9 +145,6 @@ from openfollow.runtime.app_modes import (
     process_field_choice_picker_input as runtime_process_field_choice_picker_input,
 )
 from openfollow.runtime.app_modes import (
-    process_iface_selection_input as runtime_process_iface_selection_input,
-)
-from openfollow.runtime.app_modes import (
     process_input as runtime_process_input,
 )
 from openfollow.runtime.app_modes import (
@@ -164,9 +155,6 @@ from openfollow.runtime.app_modes import (
 )
 from openfollow.runtime.app_modes import (
     process_source_type_selection_input as runtime_process_source_type_selection_input,
-)
-from openfollow.runtime.app_modes import (
-    refresh_iface_list as runtime_refresh_iface_list,
 )
 from openfollow.runtime.app_orchestration import (
     animate as runtime_animate,
@@ -266,10 +254,6 @@ class OpenFollowApp:
         self._web_server: ConfigWebServer | None = None
         self._input_manager: InputManager | None = None
 
-        self._iface_selection_active: bool = False
-        self._available_interfaces: list[str] = []
-        self._selected_iface_index: int = 0
-        self._last_iface_refresh: float = 0.0
         # ``time.perf_counter()`` of the previous animate call (monotonic, not
         # wall clock); drives the real-elapsed frame dt and the stall watchdog.
         self._last_animate_time: float | None = None
@@ -533,9 +517,6 @@ class OpenFollowApp:
     def _process_source_selection_input(self) -> None:
         runtime_process_source_selection_input(self)
 
-    def _process_iface_selection_input(self) -> None:
-        runtime_process_iface_selection_input(self)
-
     def _process_browser_input(self) -> None:
         runtime_process_browser_input(self)
 
@@ -608,15 +589,6 @@ class OpenFollowApp:
 
     def _enter_source_selection(self) -> None:
         runtime_enter_source_selection(self)
-
-    def _refresh_iface_list(self) -> None:
-        runtime_refresh_iface_list(self)
-
-    def _enter_iface_selection(self) -> None:
-        runtime_enter_iface_selection(self)
-
-    def _confirm_iface_selection(self) -> None:
-        runtime_confirm_iface_selection(self)
 
     def _enter_button_detection(self) -> None:
         runtime_enter_button_detection(self)

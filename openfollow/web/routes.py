@@ -310,6 +310,9 @@ _IFNAME_MAX = 15
 _BLANK_IFACE_LABELS = {
     "auto": "-- Auto-detect --",
     "station": "-- Follow station interface --",
+    # The web UI answers on every interface unless pinned – it does not
+    # follow the station pin, so it gets its own wording.
+    "all": "-- All interfaces --",
 }
 
 _SECTION_CONFIG_ATTRS = {
@@ -960,6 +963,7 @@ def get_section_data(cfg: AppConfig, section: str) -> dict[str, Any] | None:
 _INTERFACE_ASSIGNMENT_TARGETS: dict[str, tuple[str | None, str]] = {
     "psn_source_iface": (None, "psn_source_iface"),
     "otp_output.source_iface": ("otp_output", "source_iface"),
+    "web_bind_iface": (None, "web_bind_iface"),
 }
 
 _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
@@ -1059,6 +1063,51 @@ def request_local_iface(environ: Mapping[str, Any]) -> str:
     return get_iface_for_ip(local_addr)
 
 
+def _web_bind_target(cfg: AppConfig) -> str:
+    """Address the web UI binds for this config, via the runtime's own resolver."""
+    from openfollow.net_utils import resolve_web_bind
+
+    return resolve_web_bind(cfg.web_bind, cfg.web_bind_iface)[0]
+
+
+def _web_bind_address(cfg: AppConfig) -> str:
+    """Address column for the Web UI row: where the config UI will answer.
+
+    A pin whose interface has no address reads as the wildcard fallback the
+    runtime actually substitutes, not as an error – unlike every other plane
+    the web UI stays up rather than failing closed.
+    """
+    from openfollow.net_utils import resolve_web_bind
+
+    host, status = resolve_web_bind(cfg.web_bind, cfg.web_bind_iface)
+    if status == "down":
+        return f"{cfg.web_bind_iface} is down - all interfaces"
+    if status == "none":
+        return "All interfaces"
+    return host
+
+
+def build_web_bind_notice(cfg: AppConfig) -> str:
+    """Lockout warning for a pinned web UI, naming the URL that will reach it.
+
+    Rendered whenever the pin is set, not only when it is unresolvable: the
+    address that stops working is the one the operator is reading this in, so
+    the warning has to arrive before the restart, not after it.
+    """
+    if cfg.web_bind or not cfg.web_bind_iface:
+        return ""
+    from openfollow.net_utils import resolve_web_bind
+
+    resolved, status = resolve_web_bind(cfg.web_bind, cfg.web_bind_iface)
+    port = "" if cfg.web_port == 80 else f":{cfg.web_port}"
+    where = f"http://{resolved}{port}" if status == "iface" else f"an address on {cfg.web_bind_iface}"
+    return (
+        f"After a restart the web UI answers only on {where}. "
+        "If that address is unreachable, use the Network screen on the station "
+        "display to serve on all interfaces again."
+    )
+
+
 def build_interface_assignment_rows(cfg: AppConfig) -> list[dict[str, Any]]:
     """Rows for the Interface Assignment panel, in render order.
 
@@ -1123,6 +1172,17 @@ def build_interface_assignment_rows(cfg: AppConfig) -> list[dict[str, Any]]:
             "editable": False,
             "blank": "",
             "note": "Follows station interface",
+        },
+        {
+            # The web UI does not inherit the station pin: a station pinned to
+            # a lighting VLAN would take its own config UI off the office LAN
+            # as a side effect. Blank here means every interface.
+            "key": "web_bind_iface",
+            "label": "Web UI",
+            "value": cfg.web_bind_iface,
+            "address": _web_bind_address(cfg),
+            "editable": True,
+            "blank": "all",
         },
     ]
 
@@ -5101,12 +5161,26 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         template_name = "partials/gamepad" if name == "controller" else f"partials/{name}"
         return template(template_name, config=config, **extra)
 
-    def _render_interface_assignment(cfg: AppConfig, *, saved: bool = False) -> Any:
+    def _web_bind_restart_pending(cfg: AppConfig) -> bool:
+        """True when the configured web-UI pin isn't what the server is
+        actually listening on, so a restart is still owed.
+
+        Comparing the resolved addresses (not the interface names) is what
+        makes this self-clearing: after the restart the running bind equals
+        the pin's address and the button goes away on its own.
+        """
+        return _web_bind_target(cfg) != server.bind_host
+
+    def _render_interface_assignment(cfg: AppConfig, *, saved: bool = False, restarting: bool = False) -> Any:
         return template(
             "partials/interface_assignment",
             config=cfg,
             saved=saved,
+            restarting=restarting,
             assignment_rows=build_interface_assignment_rows(cfg),
+            web_bind_notice=build_web_bind_notice(cfg),
+            web_bind_advisory=server.get_web_bind_advisory(),
+            web_bind_restart=_web_bind_restart_pending(cfg),
         )
 
     @app.get("/section/interface_assignment")
@@ -5122,11 +5196,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def update_interface_assignment() -> Any:
         """Save every pin, then let the config file-watcher live-apply them.
 
-        Each row's field lives on the sub-config that owns its protocol, so
-        the existing per-section hot-reload orchestrators pick the changes up
-        with no dispatch of this panel's own – nothing here needs a restart.
+        Each protocol row's field lives on the sub-config that owns it, so the
+        existing per-section hot-reload orchestrators pick those changes up.
+        The web UI row is the exception: its listening socket can't be moved
+        under the request that is being served on it, so that one pin needs a
+        restart, offered as a separate ``?restart=1`` submit.
         """
         cfg = _save_section_from_form("interface_assignment")
+        if request.query.get("restart") == "1":
+            server.request_restart()
+            return _render_interface_assignment(cfg, saved=True, restarting=True)
         return _render_interface_assignment(cfg, saved=True)
 
     @app.post("/section/video_source")

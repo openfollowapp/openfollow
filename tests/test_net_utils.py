@@ -19,6 +19,7 @@ from openfollow.net_utils import (
     resolve_iface_ip,
     resolve_plane_source_ip,
     resolve_source_ip,
+    resolve_web_bind,
 )
 
 pytestmark = pytest.mark.unit
@@ -885,3 +886,62 @@ class TestMulticastIfacePinning:
         a sibling type would slip past those handlers and kill the thread.
         """
         assert issubclass(net_utils_module.InterfaceUnavailable, OSError)
+
+
+class TestResolveWebBind:
+    """The web UI is the one plane that fails OPEN.
+
+    Every other plane going silent is diagnosable from another station; an
+    unreachable config UI leaves nobody able to correct the pin that caused
+    it, so an unresolvable pin serves everywhere instead of nothing.
+    """
+
+    def test_nothing_configured_serves_every_interface(self) -> None:
+        assert resolve_web_bind("", "") == ("0.0.0.0", "none")
+
+    def test_an_explicit_address_outranks_the_interface_pin(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: _fake_addrs({"eth0": [(socket.AF_INET, "192.168.1.5")]}),
+        )
+        assert resolve_web_bind("10.0.0.9", "eth0") == ("10.0.0.9", "iface")
+
+    def test_a_live_pin_resolves_to_that_interfaces_address(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: _fake_addrs({"eth0": [(socket.AF_INET, "192.168.1.5")]}),
+        )
+        assert resolve_web_bind("", "eth0") == ("192.168.1.5", "iface")
+
+    def test_a_pin_with_no_address_falls_back_to_every_interface(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: _fake_addrs({"eth0": [(socket.AF_INET, "192.168.1.5")]}),
+        )
+        assert resolve_web_bind("", "eth1") == ("0.0.0.0", "down")
+
+    def test_a_pin_with_only_a_loopback_address_falls_back(self, monkeypatch) -> None:
+        """A pin resolving to 127.x would take the UI off the network entirely
+        while still reporting a bound address – worse than the wildcard.
+        """
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: _fake_addrs({"lo": [(socket.AF_INET, "127.0.0.1")]}),
+        )
+        assert resolve_web_bind("", "lo") == ("0.0.0.0", "down")
+
+    def test_it_never_falls_through_to_another_interface(self, monkeypatch) -> None:
+        """The fallback is the wildcard, never a different NIC's address:
+        picking one silently would hide that the pin is broken.
+        """
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: _fake_addrs({"eth0": [(socket.AF_INET, "192.168.1.5")]}),
+        )
+        host, _status = resolve_web_bind("", "eth1")
+        assert host != "192.168.1.5"

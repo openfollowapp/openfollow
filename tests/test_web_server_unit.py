@@ -1320,6 +1320,61 @@ def test_pinned_bind_gets_a_loopback_listener(tmp_path, monkeypatch) -> None:
         assert _make_quiet_server(tmp_path, monkeypatch, host=host)._needs_loopback_listener() is False
 
 
+def test_a_web_bind_iface_pin_still_serves_the_on_screen_browser(tmp_path, monkeypatch) -> None:
+    """Carried end to end from the config field the operator sets: pinning
+    the web UI to one interface must not take the on-screen browser (always
+    loopback) with it, or the station's own recovery screen goes dark."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+    from openfollow.configuration import AppConfig
+    from openfollow.net_utils import resolve_web_bind
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {"eth1": [SimpleNamespace(family=_socket.AF_INET, address="172.16.4.20")]},
+    )
+    cfg = AppConfig(web_bind_iface="eth1")
+    host, _status = resolve_web_bind(cfg.web_bind, cfg.web_bind_iface)
+    assert host == "172.16.4.20"
+    assert _make_quiet_server(tmp_path, monkeypatch, host=host)._needs_loopback_listener() is True
+
+
+def test_bind_host_reports_the_listening_address(tmp_path, monkeypatch) -> None:
+    """The panel compares the configured pin against this to tell whether a
+    restart is still owed, so it has to be the address actually bound."""
+    assert _make_quiet_server(tmp_path, monkeypatch, host="10.0.0.9").bind_host == "10.0.0.9"
+
+
+def test_web_bind_advisory_without_a_provider_is_empty(tmp_path, monkeypatch) -> None:
+    """A server built without the runtime behind it (boot, unit contexts)
+    reports no advisory rather than raising into the panel render."""
+    srv = _make_quiet_server(tmp_path, monkeypatch)
+    assert srv.get_web_bind_advisory() == {"status": "", "banner": "", "resolved_ip": ""}
+
+
+def test_web_bind_advisory_survives_a_raising_provider(tmp_path, monkeypatch) -> None:
+    """The advisory is decoration on a panel whose job is fixing
+    reachability; a provider fault must not 500 the page that fixes it."""
+
+    def _boom() -> dict[str, str]:
+        raise RuntimeError("no runtime")
+
+    srv = _make_quiet_server(tmp_path, monkeypatch, web_bind_advisory_provider=_boom)
+    assert srv.get_web_bind_advisory() == {"status": "", "banner": "", "resolved_ip": ""}
+
+
+def test_web_bind_advisory_passes_the_provider_through(tmp_path, monkeypatch) -> None:
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        web_bind_advisory_provider=lambda: {"status": "down", "banner": "b", "resolved_ip": ""},
+    )
+    assert srv.get_web_bind_advisory()["status"] == "down"
+
+
 def test_refresh_local_ip_is_publicly_callable(tmp_path, monkeypatch) -> None:
     """The runtime observer drives the refresh on a timer. It used to happen
     only on a request path, so a station whose address changed healed its

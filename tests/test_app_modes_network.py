@@ -1649,3 +1649,60 @@ class TestTheScreenNoLongerEditsRouterAndDns:
         anm.enter_pi_network(app)
         _confirm_key(app, "static")
         assert "router" in [r.get("key") for r in anm.build_pi_network_rows(app)]
+
+
+class TestDefensivePathsOnTheReachabilityScreen:
+    """Guards that only fire on a malformed adapter row or a stale row.
+
+    A row is rendered from one snapshot and confirmed against a later one, so
+    "the row was offered" is not proof the action is still valid. These are
+    the paths that close that window, and none of them may leave the screen
+    in a half-applied state.
+    """
+
+    def test_an_unnamed_interface_is_skipped(self, monkeypatch) -> None:
+        """A blank name resolves to no address and names nothing an action
+        could act on, so the row would be a dead stop for a gamepad
+        operator working down the list."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        app._pi_network_interfaces = [
+            NetworkInterface(name="", mac=None, kind=None, is_up=True),
+            NetworkInterface(name="eth0", mac="aa:bb", kind="ethernet", is_up=True),
+        ]
+        values = [r.get("value") for r in anm.build_pi_network_rows(app) if r.get("kind") == "choice"]
+        assert values == ["eth0"]
+
+    def test_unpinning_an_already_unpinned_ui_writes_nothing(self, monkeypatch) -> None:
+        """The row is only offered while pinned, so reaching this means the
+        pin was cleared since it was rendered - the work is already done."""
+        saved: list[object] = []
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: saved.append(app) or True)
+        app = _make_app()
+        anm.enter_pi_network(app)
+
+        anm._unpin_web_ui(app)
+
+        assert saved == []
+        assert app._restart_requests == 0
+
+    def test_dhcp_without_an_adapter_says_so_instead_of_raising(self) -> None:
+        app = _make_app()
+        anm.enter_pi_network(app)
+        app._runtime_services = SimpleNamespace(network_adapter=None)
+
+        anm._set_pi_network_dhcp(app)
+
+        assert app._pi_network_banner == "No network adapter available."
+        assert app._pi_network_worker is None
+
+    def test_dhcp_on_a_read_only_host_says_so_instead_of_applying(self) -> None:
+        adapter = _FakeAdapter(writable=False)
+        app = _make_app(adapter)
+        anm.enter_pi_network(app)
+
+        anm._set_pi_network_dhcp(app)
+
+        assert "Read-only host" in app._pi_network_banner
+        assert adapter.apply_calls == []

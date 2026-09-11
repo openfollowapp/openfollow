@@ -11,7 +11,7 @@
          hx-get="/section/overview"
          hx-trigger="every 5s [!this.closest('.section').classList.contains('is-collapsed')]"
          hx-swap="innerHTML">
-        % include('partials/overview_peers.tpl', local=local, peers=peers)
+        % include('partials/overview_peers.tpl', local=local, peers=peers, station_down=station_down)
     </div>
     <div class="actions" style="margin-top: 12px;">
         <button type="button" onclick="htmx.ajax('GET','/section/overview',{target:'#overview-peers',swap:'innerHTML'})" class="secondary">Refresh</button>

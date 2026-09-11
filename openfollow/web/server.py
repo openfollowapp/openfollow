@@ -250,6 +250,11 @@ class ConfigWebServer:
         self._local_ip_provider = local_ip_provider
         self._local_ip_lock = threading.Lock()
         self._local_ip_refresh_ts = 0.0  # monotonic; throttles _refresh_local_ip
+        # Whether the pinned station interface currently has no address. The
+        # displayed IP deliberately keeps its last known good value, so this is
+        # what lets a surface say the address no longer reaches the station
+        # rather than showing a number whose meaning changed silently.
+        self._station_interface_down = False
         self._command_queue = command_queue or WebCommandQueue()
         self._runtime_stats_provider = runtime_stats_provider
         self._preview_snapshot_provider = preview_snapshot_provider
@@ -364,6 +369,18 @@ class ConfigWebServer:
     @property
     def local_ip(self) -> str:
         return self._local_ip
+
+    @property
+    def station_interface_down(self) -> bool:
+        """Whether the pinned station interface currently has no address.
+
+        ``local_ip`` keeps its last known good value through an outage, because
+        the web UI is usually still reachable there - it binds every interface -
+        and blanking it would take information away from an operator who is
+        demonstrably connected. This says the identity behind that address is
+        down, so a surface can report the state instead of a stale number.
+        """
+        return self._station_interface_down
 
     @property
     def port(self) -> int:
@@ -556,12 +573,14 @@ class ConfigWebServer:
         # multicast follows the routing table onto an unchosen NIC.
         if candidate is None:
             with self._local_ip_lock:
+                self._station_interface_down = True
                 self._beacon_sender.update_iface_ip(None)
                 self._beacon_receiver.update_iface_ip(None)
             return
         if not candidate or candidate.startswith("127."):
             return
         with self._local_ip_lock:
+            self._station_interface_down = False
             if candidate == self._local_ip and self._beacon_sender.iface_ip == candidate:
                 return
             self._local_ip = candidate

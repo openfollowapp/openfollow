@@ -1366,6 +1366,40 @@ def test_beacons_start_unpinned_when_the_station_pin_is_down(tmp_path, monkeypat
     assert srv._beacon_receiver._iface_ip is None
 
 
+def test_a_down_station_pin_is_reported_rather_than_left_implicit(tmp_path, monkeypatch) -> None:
+    """The displayed address stays, and the state is published alongside it.
+
+    Blanking it would take information away from an operator who is
+    demonstrably connected - the web UI binds every interface, so it is usually
+    still reachable at that address while the pinned one is dark. Leaving the
+    number alone and saying nothing is the other half of the problem: the value
+    silently stops meaning "where peers reach this station". This is what lets
+    the self-row and the diagnostics bundle say which of the two it is.
+    """
+    monkeypatch.setattr("openfollow.web.server.get_local_ipv4_addresses", lambda: {"10.0.0.1"})
+    resolved: list[str | None] = ["10.0.0.1"]
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        local_ip="10.0.0.1",
+        station_ip="10.0.0.1",
+        local_ip_provider=lambda: resolved[0],
+    )
+    assert srv.station_interface_down is False
+
+    resolved[0] = None
+    srv._local_ip_refresh_ts -= 1000.0
+    srv.refresh_local_ip()
+    assert srv.station_interface_down is True
+    assert srv.local_ip == "10.0.0.1", "the displayed address should still not be downgraded"
+
+    # And it clears when the interface returns, so the row stops warning.
+    resolved[0] = "10.0.0.1"
+    srv._local_ip_refresh_ts -= 1000.0
+    srv.refresh_local_ip()
+    assert srv.station_interface_down is False, "the warning outlived the outage"
+
+
 def test_a_station_pin_going_down_stops_the_beacons(tmp_path, monkeypatch) -> None:
     """The interface goes dark at runtime: both beacons take ``None`` and stop,
     while the displayed address keeps its last known good value.

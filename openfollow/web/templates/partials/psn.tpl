@@ -2,7 +2,7 @@
       hx-post="/section/psn" hx-target="#psn-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>PSN Output</h2>
-        <span class="section-note">PosiStageNet (PSN) – identity and multicast configuration</span>
+        <span class="section-note">PosiStageNet</span>
     </div>
 
     <div class="group">

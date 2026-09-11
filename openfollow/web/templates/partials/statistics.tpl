@@ -48,8 +48,6 @@
 % end
 % frame_clock_chip = "off" if frame_stalled else ("ok" if frame_age is not None else "warn")
 
-<p class="stat-help">Live indicators for operation and troubleshooting.</p>
-
 <div class="stats-columns">
     <section class="stat-panel">
         <div class="stat-panel-head">

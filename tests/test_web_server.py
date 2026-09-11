@@ -754,6 +754,25 @@ def test_interface_assignment_web_ui_row_defaults_to_all_interfaces(live_server)
     assert "is down" not in web_row
 
 
+def test_interface_assignment_web_ui_row_reads_as_the_wildcard_when_the_pin_is_down(
+    live_server,
+    monkeypatch,
+) -> None:
+    """Unlike the protocol rows, a down pin here is not an error: the runtime
+    serves on every interface rather than failing closed, so the row has to
+    say that instead of implying the UI is unreachable."""
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59"})
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.web_bind_iface = "eth_gone"
+    save_config(cfg, server.config_path)
+
+    _status, body = _get(base, "/section/interface_assignment")
+    web_row = body[body.index("Web UI") :].split("</tr>", 1)[0]
+    assert "eth_gone is down - all interfaces" in web_row
+    assert "192.168.178.59" not in web_row
+
+
 def test_interface_assignment_web_ui_pin_warns_with_the_surviving_url(live_server, monkeypatch) -> None:
     """The address that stops working is the one the operator is reading this
     on, so the warning has to name the replacement before the restart."""

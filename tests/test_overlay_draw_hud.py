@@ -2074,6 +2074,20 @@ class TestDrawPiNetworkScreen:
         # Action row text rendered.
         assert any("Apply Changes" in t for t in texts)
 
+    def test_notice_rows_render_with_a_warning_marker(self) -> None:
+        """The two reachability warnings are the reason the screen exists;
+        rendering them like an ordinary muted value would bury them."""
+        rows = [
+            {"kind": "header", "label": "Open on a computer on the same network"},
+            {"kind": "choice", "key": "iface:eth0", "label": "http://192.168.1.5", "value": "eth0"},
+            {"kind": "notice", "label": "eth0  DHCP unavailable, using fallback 169.254.8.31", "value": ""},
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows, selected_index=1))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        texts = cr.show_text_strings()
+        assert any(t.startswith("! ") and "DHCP unavailable" in t for t in texts)
+
     def test_renders_banner_when_set(self) -> None:
         rows = [
             {"kind": "header", "label": "Actions"},

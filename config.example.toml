@@ -27,6 +27,11 @@ psn_mcast_ip = "236.10.10.10"
 psn_source_iface = ""
 web_port = 80
 web_pin = ""
+# Serve the web UI on one interface only, by name. Blank = every
+# interface, which is what almost every station wants. A pin whose
+# interface has no address serves everywhere anyway rather than leaving
+# the station unreachable; the on-screen Network screen clears it.
+web_bind_iface = ""
 controlled_marker_ids = [
     1,
 ]

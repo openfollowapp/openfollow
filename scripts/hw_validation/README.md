@@ -22,6 +22,7 @@ to grow into a fuller two-Pi validation suite (see the tracking issue).
 | `marker_catalog_two_station.py` | workstation | Reproduces the clock-skew marker-rename revert across two stations: steps station B's clock ahead, renames on A, asserts the rename holds on both. Exits `0` (PASS) / `1` (FAIL). |
 | `osc_marker_paths.py` | companion / workstation | Drives any number of markers along predefined paths (circle, figure8, line, square, spiral, random, static) over OSC, so a receiver can be checked against motion rather than a single static write. Stdlib only. `--dry-run` prints the samples instead of sending. |
 | `multi_interface_two_station.py` | workstation | Drives the multi-interface feature end-to-end: creates a tagged VLAN from the web UI, asserts it becomes a pinnable netdev, exercises the delete guards, then proves PSN leaves tagged on the pinned NIC and **stops** when its interface is unavailable. Exits `0` (PASS) / `1` (FAIL). |
+| `discovery_containment_probe.py` | DUT | Tallies discovery-beacon and marker-catalog-sync datagrams **per interface, by source IP**, over one window, and asserts either silence everywhere or traffic on one interface and nowhere else. Watches every interface at once, because a leak that moved to a second adapter reads as containment on the one interface you thought to watch. Exits `0` (PASS) / `1` (FAIL). |
 | `vlan_tag_probe.py` | DUT | Dependency-free raw-socket capture reporting the 802.1Q tag on each frame. A station ships no `tcpdump` and no uplink to install one. |
 
 ## DUT-local probes (no companion)

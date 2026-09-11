@@ -245,6 +245,7 @@ class ConfigWebServer:
         # The same listing for diagnostics, raising where the picker's lists nothing.
         media_scan_provider: Callable[[], list[Media]] | None = None,
         diagnostics_export: DiagnosticsExport | None = None,
+        web_bind_advisory_provider: (Callable[[], dict[str, str]] | None) = None,
     ) -> None:
         self._config_path = os.path.abspath(config_path)
         self._host = host
@@ -307,6 +308,7 @@ class ConfigWebServer:
         self._network_vlan_create_handler = network_vlan_create_handler
         self._network_vlan_delete_handler = network_vlan_delete_handler
         self._psn_source_advisory_provider = psn_source_advisory_provider
+        self._web_bind_advisory_provider = web_bind_advisory_provider
         self._privilege_states_provider = privilege_states_provider
         self._autostart_state_provider = autostart_state_provider
         self._autostart_apply_handler = autostart_apply_handler
@@ -617,6 +619,19 @@ class ConfigWebServer:
             return self._psn_source_advisory_provider()
         except Exception:  # noqa: BLE001
             logger.exception("PSN source advisory provider raised")
+            return empty
+
+    def get_web_bind_advisory(self) -> dict[str, str]:
+        """How the web UI's own interface pin resolved at bind time; returns
+        status/banner/resolved_ip. ``status`` is ``"down"`` when the pin was
+        unresolvable and the wildcard bind was substituted."""
+        empty = {"status": "", "banner": "", "resolved_ip": ""}
+        if self._web_bind_advisory_provider is None:
+            return empty
+        try:
+            return self._web_bind_advisory_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("web bind advisory provider raised")
             return empty
 
     def _refresh_local_ip(self) -> bool:
@@ -1123,6 +1138,16 @@ class ConfigWebServer:
         ``0.0.0.0`` and any 127.x / ::1 address already cover loopback."""
         host = self._host
         return bool(host) and host != "0.0.0.0" and not host.startswith("127.") and host != "::1"
+
+    @property
+    def bind_host(self) -> str:
+        """Address the external listener was started on.
+
+        The listening socket is fixed for the life of the server, so this is
+        what a configured pin has to be compared against to tell whether a
+        restart is still pending.
+        """
+        return self._host
 
     @property
     def display_port(self) -> int:

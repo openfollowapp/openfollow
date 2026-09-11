@@ -28,7 +28,21 @@ The **address** is allowed to change. If the interface is on DHCP and comes back
 
 **PSN in / out** and **Discovery / marker sync** always follow the station interface and are shown read-only. They carry this station's identity on the network – the address other stations and consoles see it at – so splitting them from the station default would mean the box advertised one address and answered on another.
 
-Following the station interface includes stopping with it. When the station interface has no address, peer discovery and marker-name sync go quiet until it returns, the same as every pinned row above – a station that kept announcing itself would put its name, version and web address on a network you did not choose. The web UI itself stays reachable on every interface throughout, so the station is still there to browse to; it just stops appearing in other stations' peer lists.
+Following the station interface includes stopping with it. When the station interface has no address, peer discovery and marker-name sync go quiet until it returns, the same as every pinned row above – a station that kept announcing itself would put its name, version and web address on a network you did not choose. Unless you have pinned it yourself, the web UI stays reachable on every interface throughout, so the station is still there to browse to; it just stops appearing in other stations' peer lists.
+
+## Web UI
+
+This page. Left blank it answers on every interface, which is what you want on almost every station – it is how you reach the box, not something the show depends on.
+
+Pin it when management traffic has to stay off a show network: with the row set to one interface, the web UI answers only at that interface's address and is simply not there on the others.
+
+This is the one row that does **not** stop when its interface goes away. It falls back to answering everywhere and says so at the top of this panel. Every other function going quiet is something you can diagnose from another station; a config page that went quiet would leave nobody able to undo the setting that did it.
+
+Two things stay true whichever way this row is set. The screen on the station always reaches the UI, so the built-in browser keeps working. And the station's own **Network** screen, reached with the Settings key, can put the UI back on every interface without a working web page – it lists the addresses that reach the station and offers **Serve web UI on all interfaces**. That is the way back if you pin this row to the wrong interface.
+
+Changing this row takes effect on restart: the web UI cannot move the socket it is answering your request on. The panel offers **Save & Restart** while the saved pin and the running one differ, and tells you the address to use afterwards.
+
+Note that this row moves the web UI only. `Station default` still decides the address this station is *known* by – what appears in other stations' peer lists and in PSN.
 
 ## USB Ethernet adapters
 
@@ -42,6 +56,6 @@ A newly plugged adapter keeps whatever name it already had until it is unplugged
 
 ## Saving
 
-Save applies immediately to the running station. PSN, OTP, and the other data planes rebind their sockets in place – no restart, and no interruption to anything on an interface you didn't change.
+Save applies immediately to the running station. PSN, OTP, and the other data planes rebind their sockets in place – no restart, and no interruption to anything on an interface you didn't change. The **Web UI** row is the exception and waits for a restart, as described above.
 
 **Scan** re-reads the adapter list from the system. Use it after plugging in a USB Ethernet adapter or creating a VLAN so the new interface appears in the dropdowns.

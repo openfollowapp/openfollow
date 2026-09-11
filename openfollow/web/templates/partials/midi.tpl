@@ -11,7 +11,6 @@
 <div id="midi-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="midi" data-help="midi">
  <div class="section-head">
  <h2>MIDI</h2>
- <span class="section-note">USB MIDI device aliases and virtual fader sources. The OSC Transmitters trigger forms reference what's configured here.</span>
  </div>
 
  % # ----------------------------------------------------------------
@@ -208,7 +207,6 @@
  % marker_fader_values = marker_fader_values if defined('marker_fader_values') else []
  <div class="group">
  <h3 class="group-title">Marker Faders</h3>
- <span class="section-note">Read-only. One fader per controlled marker, driven by the gamepad that controls it. Send a marker's value with the OSC <code>[markerfader]</code> placeholder.</span>
  % if marker_fader_values:
  <div class="midi-fader-strips" role="group" aria-label="Marker faders">
  % for entry in marker_fader_values:

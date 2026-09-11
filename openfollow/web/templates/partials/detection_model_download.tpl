@@ -11,10 +11,7 @@
 % if unavailable:
     <div class="group">
         <h3 class="group-title">Download Model</h3>
-        <span class="section-note">
-            Export a YOLO model to ONNX into the storage folder. Needs the
-            model-export tools and an internet connection.
-        </span>
+        <p class="section-note">Requires an internet connection.</p>
 %     if not export_installed:
         <p class="section-note">Install the model-export tools (run <code>install-detection.sh --with-export</code>) to enable downloads.</p>
 %     end

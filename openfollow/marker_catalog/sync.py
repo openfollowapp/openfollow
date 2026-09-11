@@ -485,6 +485,23 @@ class MarkerCatalogSync:
             raise
         return sock
 
+    def _wait_before_reopen(self, seconds: float) -> None:
+        """Back off after a failed TX open, without sleeping through a repoint.
+
+        Parked on the full interval this loop would ignore an address change
+        for up to a heartbeat - and a failed open is the state most likely to
+        be parked when the address moves, since it is what a down interface
+        produces. Polled in the same slices as the normal-path wait rather than
+        waiting on a second event, so there is one place that decides how long
+        a repoint can go unnoticed.
+        """
+        deadline = time.monotonic() + seconds
+        while not self._stop_event.is_set() and not self._tx_reopen.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            self._stop_event.wait(min(remaining, _REPOINT_CHECK_INTERVAL_S))
+
     def _send_loop(self) -> None:
         sock: socket.socket | None = None
         next_heartbeat = time.monotonic()
@@ -507,11 +524,11 @@ class MarkerCatalogSync:
                     if now - self._tx_down_log_ts >= _IFACE_DOWN_LOG_INTERVAL_S:
                         self._tx_down_log_ts = now
                         logger.warning("MarkerCatalogSync: %s", exc)
-                    self._stop_event.wait(HEARTBEAT_INTERVAL)
+                    self._wait_before_reopen(HEARTBEAT_INTERVAL)
                     continue
                 except Exception:
                     logger.exception("MarkerCatalogSync: TX socket open failed")
-                    self._stop_event.wait(HEARTBEAT_INTERVAL)
+                    self._wait_before_reopen(HEARTBEAT_INTERVAL)
                     continue
 
             now = time.monotonic()

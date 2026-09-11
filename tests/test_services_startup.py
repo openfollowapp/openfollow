@@ -958,9 +958,18 @@ def test_a_dark_station_interface_suspends_the_beacons(monkeypatch) -> None:
     server = _Server()
     services._app._web_server = server
     services._app._marker_catalog_sync = None
-    services._follow_station_ip()
 
+    # A blip shorter than the debounce must not drop the station out of every
+    # peer's list: Apply and Renew DHCP lease each produce one.
+    _drive_down_polls(services, 1)
+    assert server.suspends == 0, "a single missing sample suspended discovery"
+
+    _drive_down_polls(services)
     assert server.suspends == 1
+    # Once, on the transition: the beacons are already silent, and re-suspending
+    # every second for the length of the outage only refills the journal.
+    _drive_down_polls(services)
+    assert server.suspends == 1, "discovery was re-suspended while already quiet"
     assert server.refreshes == 0, "a dark interface must not repoint to anything"
 
 
@@ -1013,7 +1022,7 @@ def test_sync_recovers_from_a_station_booted_with_a_dark_interface(monkeypatch) 
 
     # Booted dark: the interface the pin names has no address.
     _fake_ifaces(monkeypatch, {})
-    services._follow_station_ip()
+    _drive_down_polls(services)
     assert sync.ips == [None], "a dark interface must put sync into its silent state"
 
     # The cable goes back in. No restart, no config change.
@@ -1038,7 +1047,7 @@ def test_a_station_with_no_web_server_still_silences_sync(monkeypatch) -> None:
     services._app._web_server = None
 
     _fake_ifaces(monkeypatch, {})
-    services._follow_station_ip()
+    _drive_down_polls(services)
 
     assert sync.ips == [None], "sync kept sending because there was no web server to suspend alongside it"
 
@@ -1162,7 +1171,7 @@ def test_station_followers_do_not_move_to_another_interface(monkeypatch) -> None
     sync, server = _Sync(), _Server()
     services._app._marker_catalog_sync = sync
     services._app._web_server = server
-    services._follow_station_ip()
+    _drive_down_polls(services)
     assert server.refreshes == 0
     # Not merely "not repointed": both followers are told to stop, so each
     # goes quiet by decision instead of waiting for a send on a dead address
@@ -1250,6 +1259,19 @@ class _FollowerServer:
 
     def suspend_beacons(self) -> None:
         self.suspends += 1
+
+
+def _drive_down_polls(services, count: int | None = None) -> None:
+    """Poll a down interface until the suspend debounce clears.
+
+    The followers debounce on the same count as the observer's own planes, so a
+    test that wants the suspended state has to earn it rather than assume the
+    first poll does it.
+    """
+    from openfollow.runtime.network_observer import DOWN_POLLS_BEFORE_SUSPEND
+
+    for _ in range(DOWN_POLLS_BEFORE_SUSPEND if count is None else count):
+        services._follow_station_ip()
 
 
 def _wire_followers(services):

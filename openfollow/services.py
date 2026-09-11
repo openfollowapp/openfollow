@@ -33,7 +33,7 @@ from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
 from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT
-from openfollow.runtime.network_observer import NetworkPlaneObserver, Plane
+from openfollow.runtime.network_observer import DOWN_POLLS_BEFORE_SUSPEND, NetworkPlaneObserver, Plane
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.runtime.services_detection_pin import (
     apply_detection_pin as apply_detection_pin_helper,
@@ -634,6 +634,10 @@ class AppRuntimeServices:
         # Whether the station interface has been seen without an address since
         # the followers were last repointed.
         self._station_saw_outage = False
+        # Consecutive polls the station interface has looked addressless, and
+        # whether the followers have already been told to go quiet for it.
+        self._station_down_polls = 0
+        self._station_suspended = False
 
         backend_choice = self._network_backend_choice(app)
         self._network_adapter = _select_network_adapter(
@@ -1012,7 +1016,18 @@ class AppRuntimeServices:
         address, status = resolve_plane_source_ip("", self._app._config.psn_source_iface)
         if status in ("down", "none"):
             self._station_saw_outage = True
-            if status == "down":
+            self._station_down_polls += 1
+            # Debounced on the same count as the observer's own planes, and for
+            # the same reason: Apply and Renew DHCP lease take the interface
+            # down for ~1-5 s, so reacting to the first missing sample would
+            # mean the Network page's own buttons drop this station out of every
+            # peer's list. Resumption stays undebounced.
+            if (
+                status == "down"
+                and not self._station_suspended
+                and self._station_down_polls >= DOWN_POLLS_BEFORE_SUSPEND
+            ):
+                self._station_suspended = True
                 # Every station-follower stops on the same edge: each one
                 # carries this station's identity, so a survivor would put it
                 # on a network nobody chose while PSN is being stopped for
@@ -1033,6 +1048,8 @@ class AppRuntimeServices:
         # still looking healthy, converging with nobody.
         recovered = self._station_saw_outage
         self._station_saw_outage = False
+        self._station_down_polls = 0
+        self._station_suspended = False
 
         server = self._app._web_server
         if server is not None:

@@ -1785,6 +1785,46 @@ class TestUpdateIfaceIp:
         assert memberships[0].endswith(_socket.inet_aton("10.0.0.9"))
 
 
+class TestABackoffDoesNotSleepThroughARepoint:
+    """A failed TX open is the state most likely to be parked when the address
+    moves, because a down interface is what produces it.
+
+    Parked on the full heartbeat, the loop would keep IP_MULTICAST_IF pointed at
+    the dead address for up to HEARTBEAT_INTERVAL after the operator's interface
+    came back - the same delay the normal-path wait is capped to avoid.
+    """
+
+    def _sync(self) -> MarkerCatalogSync:
+        return MarkerCatalogSync(
+            MarkerCatalog(),
+            station_id="station-A",
+            station_name_provider=lambda: "X",
+            selection_provider=lambda: ([], []),
+            iface_ip=None,
+        )
+
+    def test_a_pending_repoint_ends_the_backoff_early(self) -> None:
+        sync = self._sync()
+        sync._tx_reopen.set()
+        started = time.monotonic()
+        sync._wait_before_reopen(30.0)
+        assert time.monotonic() - started < 1.0, "the backoff slept through a repoint"
+
+    def test_a_stop_ends_the_backoff_early(self) -> None:
+        sync = self._sync()
+        sync._stop_event.set()
+        started = time.monotonic()
+        sync._wait_before_reopen(30.0)
+        assert time.monotonic() - started < 1.0, "the backoff slept through a stop"
+
+    def test_it_waits_when_nothing_is_pending(self) -> None:
+        """It is still a backoff: without a repoint it must not spin."""
+        sync = self._sync()
+        started = time.monotonic()
+        sync._wait_before_reopen(0.05)
+        assert time.monotonic() - started >= 0.05
+
+
 class TestADarkInterfaceStaysQuiet:
     """Both loops retry for as long as the pinned interface is out, and say so
     at most once a minute.

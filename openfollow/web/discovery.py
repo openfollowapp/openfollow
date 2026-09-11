@@ -20,7 +20,11 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 
-from openfollow.net_utils import get_local_ipv4_addresses
+from openfollow.net_utils import (
+    bind_multicast_send_iface,
+    get_local_ipv4_addresses,
+    join_multicast_group_on_iface,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +128,7 @@ def _sanitize_beacon_text(value: object, max_len: int) -> str:
 class BeaconSender:
     """Sends periodic beacon packets via UDP multicast."""
 
-    def __init__(self, name: str, web_port: int, version: str = "0.1.0", iface_ip: str = "") -> None:
+    def __init__(self, name: str, web_port: int, version: str = "0.1.0", iface_ip: str | None = "") -> None:
         self._packet = BeaconPacket(name=name, web_port=web_port, version=version)
         self._iface_ip = iface_ip
         self._stop_event = threading.Event()
@@ -141,19 +145,36 @@ class BeaconSender:
         self._last_send_ts = 0.0  # monotonic, 0 = never sent successfully
         self._send_count = 0
 
+    @property
+    def iface_ip(self) -> str | None:
+        """Interface this beacon sends from; ``None`` while it is stopped."""
+        return self._iface_ip
+
     def update_name(self, name: str) -> None:
         """Update the beacon name (e.g., after config change)."""
         self._packet.name = name
 
-    def update_iface_ip(self, iface_ip: str) -> None:
+    def update_iface_ip(self, iface_ip: str | None) -> None:
         """Repoint the multicast send interface after a host IP change.
 
         The send loop rebuilds its socket on the next iteration so beacons
         egress from the new source address. A no-op when the IP is unchanged.
+
+        ``None`` means the configured interface currently has no address, which
+        stops the beacon until it returns rather than moving it elsewhere.
         """
         if iface_ip == self._iface_ip:
             return
         self._iface_ip = iface_ip
+        self.reopen()
+
+    def reopen(self) -> None:
+        """Force the send socket to rebuild on the next loop iteration.
+
+        For a link that flapped: removing an address drops the egress route,
+        and getting the identical address back does not restore it - so an
+        unchanged-IP guard alone would leave the beacon sending nowhere.
+        """
         self._reopen.set()
 
     def _drain_reopen(self, sock: socket.socket | None) -> socket.socket | None:
@@ -188,22 +209,11 @@ class BeaconSender:
         """Create a fresh multicast TX socket bound to the configured interface."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-        if self._iface_ip:
-            try:
-                sock.setsockopt(
-                    socket.IPPROTO_IP,
-                    socket.IP_MULTICAST_IF,
-                    socket.inet_aton(self._iface_ip),
-                )
-            except OSError as exc:
-                # Preferred iface is gone. Fall back to all-interfaces –
-                # beacons still go out, they just aren't bound to a
-                # specific source IP until the interface returns.
-                logger.warning(
-                    "BeaconSender: interface IP %s not available (%s), sending on all interfaces.",
-                    self._iface_ip,
-                    exc,
-                )
+        try:
+            bind_multicast_send_iface(sock, self._iface_ip, label="BeaconSender")
+        except OSError:
+            sock.close()
+            raise
         return sock
 
     def _run(self) -> None:
@@ -320,7 +330,7 @@ class BeaconReceiver:
     def __init__(
         self,
         on_peer_discovered: Callable[[PeerInfo], None] | None = None,
-        iface_ip: str = "",
+        iface_ip: str | None = "",
     ) -> None:
         self._peers: dict[str, PeerInfo] = {}  # ip:port -> PeerInfo
         self._lock = threading.Lock()
@@ -349,11 +359,16 @@ class BeaconReceiver:
         # startup most needs surfacing.)
         self._peer_cap_log_ts = float("-inf")
 
+    @property
+    def iface_ip(self) -> str | None:
+        """Interface this beacon listens on; ``None`` while it is stopped."""
+        return self._iface_ip
+
     def set_local_port(self, port: int) -> None:
         """Set local web port to filter out self-discovery."""
         self._local_port = port
 
-    def update_iface_ip(self, iface_ip: str) -> None:
+    def update_iface_ip(self, iface_ip: str | None) -> None:
         """Rejoin the multicast group on a new interface after a host IP change.
 
         The receive loop rebuilds its socket on the next iteration so membership
@@ -366,6 +381,16 @@ class BeaconReceiver:
         # as local immediately; otherwise our own looped-back beacon passes the
         # filter and we self-list as a peer until the next TTL refresh.
         self._local_ips_ts = 0.0
+        self.reopen()
+
+    def reopen(self) -> None:
+        """Force the receive socket to rebuild on the next loop iteration.
+
+        For a link that flapped: the kernel drops the group membership when the
+        address is removed, and getting the identical address back does not
+        restore it - so an unchanged-IP guard alone would leave the receiver
+        joined to nothing while still looking healthy.
+        """
         self._reopen.set()
 
     def start(self) -> None:
@@ -409,19 +434,7 @@ class BeaconReceiver:
             pass  # SO_REUSEPORT not available on all platforms
         try:
             sock.bind(("", BEACON_PORT))
-            # Join multicast group on the configured interface (or all interfaces)
-            iface_addr = socket.inet_aton(self._iface_ip) if self._iface_ip else socket.inet_aton("0.0.0.0")
-            mreq = socket.inet_aton(BEACON_MCAST_GROUP) + iface_addr
-            try:
-                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-            except OSError as exc:
-                logger.warning(
-                    "BeaconReceiver: interface IP %s not available (%s), joining on all interfaces.",
-                    self._iface_ip or "0.0.0.0",
-                    exc,
-                )
-                mreq = socket.inet_aton(BEACON_MCAST_GROUP) + socket.inet_aton("0.0.0.0")
-                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            join_multicast_group_on_iface(sock, BEACON_MCAST_GROUP, self._iface_ip, label="BeaconReceiver")
             sock.settimeout(1.0)
         except OSError:
             sock.close()

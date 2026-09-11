@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 import openfollow.network.psutil_adapter as psutil_adapter
-from openfollow.network.adapter import Ipv4Config, Ipv4Method
+from openfollow.network.adapter import VLAN_UNSUPPORTED_MESSAGE, Ipv4Config, Ipv4Method
 from openfollow.network.psutil_adapter import PsutilReadOnlyAdapter
 
 pytestmark = pytest.mark.unit
@@ -295,3 +295,23 @@ class TestGetStateInnerErrors:
         state = PsutilReadOnlyAdapter().get_state("eth0")
         assert state is not None
         assert state.ipv4.address is None
+
+
+class TestVlansUnsupported:
+    """psutil reads interfaces, it does not create links."""
+
+    def test_reports_unsupported(self) -> None:
+        assert PsutilReadOnlyAdapter().supports_vlans() is False
+
+    def test_lists_nothing(self) -> None:
+        assert PsutilReadOnlyAdapter().list_vlans() == []
+
+    def test_create_refuses(self) -> None:
+        result = PsutilReadOnlyAdapter().create_vlan("eth0", 10)
+        assert result.ok is False
+        assert result.message == VLAN_UNSUPPORTED_MESSAGE
+
+    def test_delete_refuses(self) -> None:
+        result = PsutilReadOnlyAdapter().delete_vlan("eth0.10")
+        assert result.ok is False
+        assert result.message == VLAN_UNSUPPORTED_MESSAGE

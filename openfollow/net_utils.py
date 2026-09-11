@@ -15,8 +15,12 @@ from typing import Literal
 
 import psutil
 
-# Status from resolve_source_ip: "iface" (pinned), "primary" (auto), "none" (offline).
-ResolveStatus = Literal["iface", "primary", "none"]
+# Status from resolve_source_ip / resolve_plane_source_ip: "iface" (pinned),
+# "station" (inherited the station-wide pin), "primary" (auto-detected),
+# "down" (an interface *is* configured but currently has no address – an error
+# state, never a reason to bind elsewhere), "none" (nothing configured and
+# nothing to auto-detect).
+ResolveStatus = Literal["iface", "station", "primary", "down", "none"]
 
 
 def get_primary_local_ipv4(default: str = "N/A") -> str:
@@ -31,11 +35,35 @@ def get_primary_local_ipv4(default: str = "N/A") -> str:
     except OSError:
         pass
 
-    for ip in get_local_ipv4_addresses():
+    # Ordered, not set-iteration order: on an offline show LAN the probe above
+    # always fails, so this branch decides the station's address. Unordered
+    # iteration makes that pick flip when an unrelated address appears (a VPN,
+    # docker0, a second lease), which reads downstream as a genuine IP change
+    # and repoints the data planes onto a network nobody chose.
+    #
+    # Link-local sorts last rather than first: a station that took a 169.254
+    # address while DHCP was failing keeps advertising it after a real lease
+    # arrives, because "169." precedes "192." lexicographically. That address
+    # is the station's identity - what peers and consoles reach it at - so a
+    # real lease has to win.
+    for ip in sorted(get_local_ipv4_addresses(), key=_address_preference):
         if not ip.startswith("127."):
             return ip
 
     return default
+
+
+def _address_preference(ip: str) -> tuple[int, tuple[int, ...]]:
+    """Sort key preferring a routable address, then ordering numerically.
+
+    Numeric rather than lexicographic so ``10.0.0.9`` precedes ``10.0.0.10``;
+    the point is a stable pick, and digit-string order is stable but arbitrary.
+    """
+    try:
+        octets = tuple(int(part) for part in ip.split("."))
+    except ValueError:  # pragma: no cover - psutil only yields dotted quads
+        octets = ()
+    return (1 if ip.startswith("169.254.") else 0, octets)
 
 
 def get_local_ipv4_addresses() -> set[str]:
@@ -110,6 +138,49 @@ def resolve_source_ip(
     return "", "none"
 
 
+def plane_source_iface(pin: str, station_iface: str = "") -> str:
+    """Return the interface a plane is configured to use, or "" for auto-detect.
+
+    A blank *pin* means "follow the station interface"; a blank station
+    interface in turn means "let the OS choose". This resolves *configuration*
+    only – it never looks at whether the interface currently has an address.
+    """
+    return pin or station_iface
+
+
+def resolve_plane_source_ip(
+    pin: str,
+    station_iface: str = "",
+) -> tuple[str, ResolveStatus]:
+    """Resolve one network plane's configured interface to a concrete bind IP.
+
+    Inheritance happens for an **unset** value only: blank pin follows
+    *station_iface*, blank station interface auto-detects. Once an interface is
+    configured, it is the only one this plane may use – if it currently has no
+    address the result is ``("", "down")`` and the caller must bind nothing,
+    surface the error and retry.
+
+    It deliberately does **not** fall through to another interface. Silently
+    moving PSN onto the office LAN because a lighting VLAN went dark is worse
+    than PSN stopping: a dead output is diagnosable, a misrouted one is not.
+
+    The *address* is free to change – callers re-resolve on every retry so a new
+    DHCP lease on the same interface is picked up automatically. Only the
+    interface is fixed.
+    """
+    configured = plane_source_iface(pin, station_iface)
+    if configured:
+        resolved = get_iface_ipv4(configured)
+        if resolved:
+            return resolved, "iface" if pin else "station"
+        return "", "down"
+
+    primary = get_primary_local_ipv4(default="")
+    if primary and not primary.startswith("127."):
+        return primary, "primary"
+    return "", "none"
+
+
 def resolve_iface_ip(configured: str) -> str:
     """Return configured IP, or auto-detect primary for multicast binding."""
     if configured:
@@ -142,3 +213,65 @@ def wait_for_source_ip(
             return "127.0.0.1"
         # Don't sleep past deadline.
         time.sleep(min(interval_s, remaining))
+
+
+class InterfaceUnavailable(OSError):
+    """A pinned interface has no usable address, so the plane must stay silent.
+
+    Subclasses :class:`OSError` so the socket-error handling each sender
+    already has keeps working unchanged.
+    """
+
+
+def bind_multicast_send_iface(sock: socket.socket, iface_ip: str | None, *, label: str) -> None:
+    """Pin a multicast TX socket to *iface_ip*, raising rather than roaming.
+
+    An unbound multicast socket does not send "on all interfaces" - it sends on
+    whichever single interface the routing table picks, which is why a plane
+    that quietly fell back looked contained on the interface anyone thought to
+    capture. A pin that cannot be honoured is an error state, never a reason to
+    transmit somewhere the operator did not choose.
+
+    Three states, matching :func:`resolve_plane_source_ip`: an address pins the
+    socket, ``""`` means nothing is configured and is left to the OS, and
+    ``None`` means an interface *is* configured but currently has no address -
+    which must stop the plane rather than move it.
+    """
+    if iface_ip is None:
+        raise InterfaceUnavailable(
+            f"{label}: the configured interface has no address; staying silent until it "
+            f"returns rather than sending on another interface"
+        )
+    if not iface_ip:
+        return
+    try:
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(iface_ip))
+    except OSError as exc:
+        raise InterfaceUnavailable(
+            f"{label}: interface address {iface_ip} is unavailable ({exc}); "
+            f"staying silent until it returns rather than sending on another interface"
+        ) from exc
+
+
+def join_multicast_group_on_iface(sock: socket.socket, group: str, iface_ip: str | None, *, label: str) -> None:
+    """Join *group* on *iface_ip* only, raising rather than joining everywhere.
+
+    The receive side of :func:`bind_multicast_send_iface`, with the same three
+    states: joining on ``0.0.0.0`` subscribes on an interface the operator
+    excluded, so peers from that network reach the station's own peer list.
+    """
+    if iface_ip is None:
+        raise InterfaceUnavailable(
+            f"{label}: the configured interface has no address; staying unsubscribed until "
+            f"it returns rather than joining on every interface"
+        )
+    mreq = socket.inet_aton(group) + socket.inet_aton(iface_ip or "0.0.0.0")
+    try:
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    except OSError as exc:
+        if not iface_ip:
+            raise
+        raise InterfaceUnavailable(
+            f"{label}: interface address {iface_ip} is unavailable ({exc}); "
+            f"staying unsubscribed until it returns rather than joining on every interface"
+        ) from exc

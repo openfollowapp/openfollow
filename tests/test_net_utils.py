@@ -17,6 +17,7 @@ from openfollow.net_utils import (
     get_primary_local_ipv4,
     list_iface_ipv4,
     resolve_iface_ip,
+    resolve_plane_source_ip,
     resolve_source_ip,
 )
 
@@ -464,6 +465,132 @@ class TestResolveSourceIp:
         assert resolve_source_ip("") == ("", "none")
 
 
+class TestResolvePlaneSourceIp:
+    """``resolve_plane_source_ip(pin, station_iface)`` resolves one network
+    plane's *configured* interface. Inheritance happens for an unset value
+    only – a configured interface that is down reports ``down`` and the plane
+    binds nothing rather than moving to a different network."""
+
+    @staticmethod
+    def _ifaces(monkeypatch, spec: dict[str, list[tuple[int, str]]]) -> None:
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: _fake_addrs(spec),
+        )
+
+    def test_plane_pin_wins_over_station(self, monkeypatch) -> None:
+        """A live plane pin is honoured even when the station pins a
+        different, equally live interface – that's the whole point of
+        splitting a plane onto its own network."""
+        self._ifaces(
+            monkeypatch,
+            {
+                "eth0": [(socket.AF_INET, "192.168.1.5")],
+                "eth1": [(socket.AF_INET, "10.0.0.9")],
+            },
+        )
+        assert resolve_plane_source_ip("eth1", "eth0") == ("10.0.0.9", "iface")
+
+    def test_blank_pin_follows_station(self, monkeypatch) -> None:
+        """Blank pin = "follow station interface" – the default for every
+        plane, and what keeps a single-NIC station behaving as before."""
+        self._ifaces(
+            monkeypatch,
+            {
+                "eth0": [(socket.AF_INET, "192.168.1.5")],
+                "eth1": [(socket.AF_INET, "10.0.0.9")],
+            },
+        )
+        assert resolve_plane_source_ip("", "eth0") == ("192.168.1.5", "station")
+
+    def test_down_plane_pin_does_not_move_to_the_station_interface(self, monkeypatch) -> None:
+        """The load-bearing rule: a pinned plane whose interface is gone stops.
+        Rebinding it to the station interface would put show data on whatever
+        network that happens to be – silently, mid-show."""
+        self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.5")]})
+        assert resolve_plane_source_ip("eth9", "eth0") == ("", "down")
+
+    def test_down_station_interface_does_not_auto_detect(self, monkeypatch) -> None:
+        """Same rule one level up: an explicitly configured station interface
+        that is down must not silently become the OS primary."""
+        self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.5")]})
+        monkeypatch.setattr(
+            net_utils_module,
+            "get_primary_local_ipv4",
+            lambda default="": "172.16.4.20",
+        )
+        assert resolve_plane_source_ip("", "eth8") == ("", "down")
+
+    def test_a_new_address_on_the_configured_interface_is_followed(self, monkeypatch) -> None:
+        """Only the interface is fixed. A reconnect that yields a different
+        DHCP lease on the same NIC must resolve to the new address."""
+        self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.5")]})
+        assert resolve_plane_source_ip("eth0", "") == ("192.168.1.5", "iface")
+        self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.77")]})
+        assert resolve_plane_source_ip("eth0", "") == ("192.168.1.77", "iface")
+
+    def test_no_pins_at_all_is_auto_detect(self, monkeypatch) -> None:
+        """Nothing configured anywhere is not an error – auto-detect is the
+        chosen behaviour, so it still resolves."""
+        self._ifaces(monkeypatch, {})
+        monkeypatch.setattr(
+            net_utils_module,
+            "get_primary_local_ipv4",
+            lambda default="": "192.168.1.50",
+        )
+        assert resolve_plane_source_ip("", "") == ("192.168.1.50", "primary")
+
+    def test_offline_with_nothing_configured_reports_none(self, monkeypatch) -> None:
+        """Distinct from ``down``: nothing was configured, so nothing is
+        broken – there is simply no address to auto-detect yet."""
+        self._ifaces(monkeypatch, {})
+        monkeypatch.setattr(
+            net_utils_module,
+            "get_primary_local_ipv4",
+            lambda default="": "",
+        )
+        assert resolve_plane_source_ip("", "") == ("", "none")
+
+    def test_loopback_only_primary_is_rejected(self, monkeypatch) -> None:
+        """A loopback primary is not a usable bind for LAN multicast, so it
+        must report "none" rather than pinning traffic to 127.x."""
+        self._ifaces(monkeypatch, {})
+        monkeypatch.setattr(
+            net_utils_module,
+            "get_primary_local_ipv4",
+            lambda default="": "127.0.0.1",
+        )
+        assert resolve_plane_source_ip("", "") == ("", "none")
+
+    def test_configured_interface_without_ipv4_is_down(self, monkeypatch) -> None:
+        """An interface holding only IPv6 / loopback has no usable IPv4 bind.
+        It is configured, so it is ``down`` – not a reason to auto-detect."""
+        self._ifaces(
+            monkeypatch,
+            {
+                "eth0": [(socket.AF_INET6, "fe80::1"), (socket.AF_INET, "127.0.0.1")],
+            },
+        )
+        monkeypatch.setattr(
+            net_utils_module,
+            "get_primary_local_ipv4",
+            lambda default="": "10.1.1.4",
+        )
+        assert resolve_plane_source_ip("", "eth0") == ("", "down")
+
+
+class TestPlaneSourceIface:
+    def test_pin_wins(self) -> None:
+        assert net_utils_module.plane_source_iface("eth1", "eth0") == "eth1"
+
+    def test_blank_pin_inherits_the_station(self) -> None:
+        assert net_utils_module.plane_source_iface("", "eth0") == "eth0"
+
+    def test_nothing_configured_is_empty(self) -> None:
+        assert net_utils_module.plane_source_iface("", "") == ""
+
+
 class TestWaitForSourceIp:
     """The startup wait now understands the iface-pin model – prefer
     the pin (iface or explicit ip) while polling, fall back to the
@@ -602,3 +729,138 @@ class TestWaitForSourceIp:
             )
             == "127.0.0.1"
         )
+
+
+class TestPrimaryAddressPrefersARealLease:
+    """A link-local address must never outrank a routable one.
+
+    The offline probe always fails on a show LAN, so this branch picks the
+    station's identity - the address peers and consoles reach it at. Ordering
+    the raw strings puts ``169.254.x`` ahead of ``192.168.x`` (``"16"`` sorts
+    before ``"19"``), so a station that self-assigned while DHCP was failing
+    kept advertising that address after a real lease arrived.
+    """
+
+    @staticmethod
+    def _offline(monkeypatch, addresses: set[str]) -> None:
+        class FakeSocket:
+            def __init__(self, *a, **kw) -> None:
+                pass
+
+            def connect(self, addr) -> None:
+                raise OSError("No route")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a) -> None:
+                pass
+
+        monkeypatch.setattr(net_utils_module.socket, "socket", FakeSocket)
+        monkeypatch.setattr(net_utils_module, "get_local_ipv4_addresses", lambda: addresses)
+
+    def test_real_lease_beats_link_local(self, monkeypatch) -> None:
+        self._offline(monkeypatch, {"169.254.8.31", "192.168.178.66"})
+        assert get_primary_local_ipv4() == "192.168.178.66"
+
+    def test_link_local_still_used_when_it_is_all_there_is(self, monkeypatch) -> None:
+        """The DHCP-failure fallback is a working address on its own segment,
+        so it is a legitimate last resort - just never a preferred one."""
+        self._offline(monkeypatch, {"169.254.8.31"})
+        assert get_primary_local_ipv4() == "169.254.8.31"
+
+    def test_pick_is_numeric_not_lexicographic(self, monkeypatch) -> None:
+        self._offline(monkeypatch, {"10.0.0.10", "10.0.0.9"})
+        assert get_primary_local_ipv4() == "10.0.0.9"
+
+    def test_pick_is_stable_across_calls(self, monkeypatch) -> None:
+        """The reason ordering exists at all: an unordered pick flips when an
+        unrelated address appears, which reads downstream as a real IP change."""
+        self._offline(monkeypatch, {"192.168.1.50", "172.16.0.4", "10.1.2.3"})
+        first = get_primary_local_ipv4()
+        self._offline(monkeypatch, {"172.16.0.4", "10.1.2.3", "192.168.1.50"})
+        assert get_primary_local_ipv4() == first
+
+
+class TestMulticastIfacePinning:
+    """The three-state pin rule shared by the discovery beacon and catalog sync.
+
+    An unbound multicast socket does not reach "all interfaces" - it follows the
+    routing table onto one NIC the operator never chose, which is why a plane
+    that fell back read as contained on whichever interface was captured.
+    """
+
+    class _Sock:
+        def __init__(self, fail_on: int | None = None) -> None:
+            self.fail_on = fail_on
+            self.calls: list[tuple[int, int, bytes]] = []
+
+        def setsockopt(self, level: int, opt: int, val: bytes) -> None:
+            if opt == self.fail_on:
+                raise OSError("iface gone")
+            self.calls.append((level, opt, val))
+
+    def test_an_address_pins_the_send_socket(self) -> None:
+        sock = self._Sock()
+        net_utils_module.bind_multicast_send_iface(sock, "10.0.0.5", label="X")
+        assert sock.calls == [(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton("10.0.0.5"))]
+
+    def test_blank_leaves_the_send_socket_to_the_os(self) -> None:
+        """Nothing configured is not the same as a pin that failed."""
+        sock = self._Sock()
+        net_utils_module.bind_multicast_send_iface(sock, "", label="X")
+        assert sock.calls == []
+
+    def test_none_refuses_to_send(self) -> None:
+        sock = self._Sock()
+        with pytest.raises(net_utils_module.InterfaceUnavailable):
+            net_utils_module.bind_multicast_send_iface(sock, None, label="X")
+        assert sock.calls == []
+
+    def test_a_failed_pin_refuses_to_send(self) -> None:
+        sock = self._Sock(fail_on=socket.IP_MULTICAST_IF)
+        with pytest.raises(net_utils_module.InterfaceUnavailable):
+            net_utils_module.bind_multicast_send_iface(sock, "10.0.0.5", label="X")
+
+    def test_an_address_joins_only_that_iface(self) -> None:
+        sock = self._Sock()
+        net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "10.0.0.5", label="X")
+        assert sock.calls == [
+            (
+                socket.IPPROTO_IP,
+                socket.IP_ADD_MEMBERSHIP,
+                socket.inet_aton("239.1.2.3") + socket.inet_aton("10.0.0.5"),
+            )
+        ]
+
+    def test_blank_joins_the_wildcard(self) -> None:
+        sock = self._Sock()
+        net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "", label="X")
+        assert sock.calls[0][2].endswith(socket.inet_aton("0.0.0.0"))
+
+    def test_none_refuses_to_join(self) -> None:
+        sock = self._Sock()
+        with pytest.raises(net_utils_module.InterfaceUnavailable):
+            net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", None, label="X")
+        assert sock.calls == []
+
+    def test_a_failed_join_does_not_retry_on_the_wildcard(self) -> None:
+        sock = self._Sock(fail_on=socket.IP_ADD_MEMBERSHIP)
+        with pytest.raises(net_utils_module.InterfaceUnavailable):
+            net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "10.0.0.5", label="X")
+        assert sock.calls == []
+
+    def test_an_unpinned_join_failure_propagates_unchanged(self) -> None:
+        """With nothing configured there is no pin to protect, so the OSError
+        is the caller's own bind problem rather than an excluded interface.
+        """
+        sock = self._Sock(fail_on=socket.IP_ADD_MEMBERSHIP)
+        with pytest.raises(OSError) as excinfo:
+            net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "", label="X")
+        assert not isinstance(excinfo.value, net_utils_module.InterfaceUnavailable)
+
+    def test_the_error_is_an_oserror(self) -> None:
+        """Each sender already wraps its socket setup in ``except OSError``;
+        a sibling type would slip past those handlers and kill the thread.
+        """
+        assert issubclass(net_utils_module.InterfaceUnavailable, OSError)

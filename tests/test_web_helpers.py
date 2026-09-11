@@ -67,6 +67,34 @@ def test_strip_device_local_fields_drops_detection_storage_path() -> None:
     assert scrubbed["model"] == "yolov8n.onnx"  # non-local fields kept
 
 
+def test_interface_assignment_is_device_local_in_full() -> None:
+    """Every row names a NIC on this box. A pin copied to a peer would repin
+    that peer's PSN and OTP to an interface it may not even have."""
+    from openfollow.web.routes import _INTERFACE_ASSIGNMENT_TARGETS
+
+    payload = dict.fromkeys(_INTERFACE_ASSIGNMENT_TARGETS, "eth1")
+    assert strip_device_local_fields("interface_assignment", payload) == {}
+
+
+def test_interface_assignment_is_not_broadcastable() -> None:
+    from openfollow.web.routes import _BROADCAST_EXCLUDED_SECTIONS
+
+    assert "interface_assignment" in _BROADCAST_EXCLUDED_SECTIONS
+
+
+def test_interface_assignment_get_matches_what_post_accepts() -> None:
+    """GET used to 404 while POST silently wrote – the two must agree."""
+    from openfollow.web.routes import _INTERFACE_ASSIGNMENT_TARGETS, get_section_data
+
+    cfg = AppConfig(psn_source_iface="eth0")
+    cfg.otp_output.source_iface = "eth1"
+    data = get_section_data(cfg, "interface_assignment")
+    assert data is not None
+    assert set(data) == set(_INTERFACE_ASSIGNMENT_TARGETS)
+    assert data["psn_source_iface"] == "eth0"
+    assert data["otp_output.source_iface"] == "eth1"
+
+
 def test_general_section_rejects_invalid_web_pin_and_port() -> None:
     cfg = AppConfig(web_pin="1234", web_port=80)
     apply_section_data(cfg, "general", {"web_pin": "abcd", "web_port": 99999})

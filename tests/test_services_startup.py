@@ -536,6 +536,11 @@ class _FakeWritableAdapter:
         self._state = state
         self.applied: list = []
         self.renewed: list = []
+        self.vlans: list = []
+        self.vlans_created: list = []
+        self.vlans_deleted: list = []
+        self.vlan_support = True
+        self.vlan_list_raises = False
 
     def list_interfaces(self):
         return list(self._ifaces)
@@ -556,6 +561,26 @@ class _FakeWritableAdapter:
         from openfollow.network.adapter import ApplyResult
 
         self.renewed.append(iface)
+        return ApplyResult(ok=True)
+
+    def supports_vlans(self) -> bool:
+        return self.vlan_support
+
+    def list_vlans(self):
+        if self.vlan_list_raises:
+            raise RuntimeError("nmcli exploded")
+        return list(self.vlans)
+
+    def create_vlan(self, parent, vlan_id):
+        from openfollow.network.adapter import ApplyResult
+
+        self.vlans_created.append((parent, vlan_id))
+        return ApplyResult(ok=True)
+
+    def delete_vlan(self, name):
+        from openfollow.network.adapter import ApplyResult
+
+        self.vlans_deleted.append(name)
         return ApplyResult(ok=True)
 
 
@@ -680,4 +705,641 @@ def test_handle_network_renew_no_adapter(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
     services._network_adapter = None
     result = services._handle_network_renew("eth0")
+    assert result.ok is False and "No network adapter" in result.message
+
+
+# --------------------------------------------------------------------------- #
+# _network_interfaces_provider – backs the Network Settings interface list
+# --------------------------------------------------------------------------- #
+
+
+def _ifrow(name: str, *, is_up: bool = True, kind: str = "ethernet"):
+    from openfollow.network.adapter import NetworkInterface
+
+    return NetworkInterface(name=name, mac="aa:bb", kind=kind, is_up=is_up)
+
+
+def _ifrow_state(iface: str, *, address: str, prefix: int | None, method_value: str):
+    from openfollow.network.adapter import Ipv4Config, Ipv4Method, NetworkState
+
+    return NetworkState(
+        interface=_ifrow(iface),
+        ipv4=Ipv4Config(method=Ipv4Method(method_value), address=address, prefix=prefix),
+        lease=None,
+    )
+
+
+def test_network_interfaces_provider_returns_empty_without_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = None
+    assert services._network_interfaces_provider() == []
+
+
+def test_network_interfaces_provider_lists_every_interface(monkeypatch) -> None:
+    """The old form showed one adapter at a time; this backs the list that
+    replaced it, so every adapter carries its own address and method."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _FakeAdapter:
+        backend_name = "fake"
+
+        def list_interfaces(self):
+            return [_ifrow("eth0"), _ifrow("eth1")]
+
+        def is_writable(self):
+            return True
+
+        def get_state(self, iface):
+            if iface == "eth0":
+                return _ifrow_state(iface, address="192.168.1.5", prefix=24, method_value="dhcp")
+            return _ifrow_state(iface, address="10.0.0.9", prefix=16, method_value="static")
+
+    services._network_adapter = _FakeAdapter()
+    rows = {r["name"]: r for r in services._network_interfaces_provider()}
+    assert rows["eth0"]["address"] == "192.168.1.5"
+    assert rows["eth0"]["method"] == "dhcp"
+    assert rows["eth0"]["subnet_mask"] == "255.255.255.0"
+    assert rows["eth1"]["address"] == "10.0.0.9"
+    assert rows["eth1"]["method"] == "static"
+    assert rows["eth1"]["prefix"] == 16
+
+
+def test_network_interfaces_provider_skips_loopback(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _FakeAdapter:
+        backend_name = "fake"
+
+        def list_interfaces(self):
+            return [_ifrow("lo", kind="loopback"), _ifrow("eth0")]
+
+        def is_writable(self):
+            return True
+
+        def get_state(self, iface):
+            return _ifrow_state(iface, address="192.168.1.5", prefix=24, method_value="dhcp")
+
+    services._network_adapter = _FakeAdapter()
+    assert [r["name"] for r in services._network_interfaces_provider()] == ["eth0"]
+
+
+def test_network_interfaces_provider_reports_an_addressless_interface(monkeypatch) -> None:
+    """An interface with no state still has to appear – "wlan0 has no address"
+    is exactly what the operator needs to see."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _FakeAdapter:
+        backend_name = "fake"
+
+        def list_interfaces(self):
+            return [_ifrow("wlan0", is_up=False)]
+
+        def is_writable(self):
+            return True
+
+        def get_state(self, _iface):
+            return None
+
+    services._network_adapter = _FakeAdapter()
+    (row,) = services._network_interfaces_provider()
+    assert row == {
+        "name": "wlan0",
+        "is_up": False,
+        "address": "",
+        "prefix": None,
+        "subnet_mask": "",
+        "method": "dhcp",
+    }
+
+
+def test_network_interfaces_provider_degrades_one_failing_row(monkeypatch) -> None:
+    """One adapter read failing (interface vanishing mid-scan, backend hiccup)
+    must degrade that row, not drop the whole list."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _FakeAdapter:
+        backend_name = "fake"
+
+        def list_interfaces(self):
+            return [_ifrow("eth0"), _ifrow("eth1")]
+
+        def is_writable(self):
+            return True
+
+        def get_state(self, iface):
+            if iface == "eth0":
+                raise RuntimeError("nmcli exploded")
+            return _ifrow_state(iface, address="10.0.0.9", prefix=24, method_value="dhcp")
+
+    services._network_adapter = _FakeAdapter()
+    rows = {r["name"]: r for r in services._network_interfaces_provider()}
+    assert rows["eth0"]["address"] == ""
+    assert rows["eth1"]["address"] == "10.0.0.9"
+
+
+# --------------------------------------------------------------------------- #
+# Network plane observer wiring
+# --------------------------------------------------------------------------- #
+
+
+def _fake_ifaces(monkeypatch, spec: dict[str, str]) -> None:
+    import socket as _socket
+    from types import SimpleNamespace
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {name: [SimpleNamespace(family=_socket.AF_INET, address=addr)] for name, addr in spec.items()},
+    )
+
+
+def test_planes_resolve_their_own_and_the_station_interface(monkeypatch) -> None:
+    """PSN is the station itself; OTP inherits it only when its own pin is blank."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+    services._app._config.psn_source_iface = "eth0"
+    services._app._config.otp_output.source_iface = "eth1"
+
+    resolved = {p.label: p.resolve() for p in services._build_network_planes()}
+    assert resolved["PSN"] == ("192.168.1.5", "iface", "eth0")
+    assert resolved["OTP output"] == ("10.0.0.9", "iface", "eth1")
+
+    services._app._config.otp_output.source_iface = ""
+    resolved = {p.label: p.resolve() for p in services._build_network_planes()}
+    assert resolved["OTP output"] == ("192.168.1.5", "station", "eth0")
+
+
+def test_a_down_plane_reports_down_not_another_interface(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "eth0"
+    services._app._config.otp_output.source_iface = "eth_gone"
+
+    resolved = {p.label: p.resolve() for p in services._build_network_planes()}
+    assert resolved["OTP output"] == ("", "down", "eth_gone")
+
+
+def test_suspending_psn_stops_both_directions(monkeypatch) -> None:
+    """Leaving the receiver joined on a dead address would keep viewer markers
+    showing stale positions."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _Stoppable:
+        def __init__(self) -> None:
+            self.stopped = 0
+
+        def stop(self) -> None:
+            self.stopped += 1
+
+    server, receiver = _Stoppable(), _Stoppable()
+    services._app._server = server
+    services._app._psn_receiver = receiver
+    psn = next(p for p in services._build_network_planes() if p.label == "PSN")
+    psn.suspend()
+    assert (server.stopped, receiver.stopped) == (1, 1)
+
+
+def test_station_followers_are_repointed_without_a_web_request(monkeypatch) -> None:
+    """These used to heal only from a request path, so a station whose address
+    changed stayed stale unless somebody had a browser tab open."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "eth0"
+
+    class _Server:
+        def __init__(self) -> None:
+            self.refreshes = 0
+
+        def refresh_local_ip(self) -> None:
+            self.refreshes += 1
+
+        def suspend_beacons(self) -> None:
+            raise AssertionError("a healthy interface must not suspend the beacons")
+
+    class _Sync:
+        def __init__(self) -> None:
+            self.ips: list[str] = []
+
+        def update_iface_ip(self, ip: str) -> None:
+            self.ips.append(ip)
+
+    server, sync = _Server(), _Sync()
+    services._app._web_server = server
+    services._app._marker_catalog_sync = sync
+    services._follow_station_ip()
+    assert server.refreshes == 1
+    assert sync.ips == ["192.168.1.5"]
+
+
+def test_a_dark_station_interface_suspends_the_beacons(monkeypatch) -> None:
+    """The one plane with no ``Plane`` entry of its own still has to stop.
+
+    Discovery is the last thing left announcing the station's name, version and
+    web port, so leaving it running while the observer stops PSN would put
+    exactly the information a peer acts on onto an unchosen network.
+    """
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "of-nodev0"  # configured, absent
+
+    class _Server:
+        def __init__(self) -> None:
+            self.suspends = 0
+            self.refreshes = 0
+
+        def suspend_beacons(self) -> None:
+            self.suspends += 1
+
+        def refresh_local_ip(self) -> None:
+            self.refreshes += 1
+
+    server = _Server()
+    services._app._web_server = server
+    services._app._marker_catalog_sync = None
+    services._follow_station_ip()
+
+    assert server.suspends == 1
+    assert server.refreshes == 0, "a dark interface must not repoint to anything"
+
+
+def test_nothing_configured_does_not_suspend_the_beacons(monkeypatch) -> None:
+    """ "Nothing configured and nothing auto-detected" is not a dark pin.
+
+    Suspending there would take a station with no interface settings at all
+    off the network, which is the default configuration.
+    """
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {})
+    # An empty adapter list is not enough: with no pin the resolver falls
+    # through to the primary-address probe, which reaches the real host and
+    # reports "primary". Neutralising it is what actually produces "none".
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(net_utils_module, "get_primary_local_ipv4", lambda default="N/A": default)
+    services._app._config.psn_source_iface = ""
+    assert net_utils_module.resolve_plane_source_ip("", "")[1] == "none"
+
+    class _Server:
+        def __init__(self) -> None:
+            self.suspends = 0
+
+        def suspend_beacons(self) -> None:
+            self.suspends += 1
+
+        def refresh_local_ip(self) -> None:
+            pass
+
+    server = _Server()
+    services._app._web_server = server
+    services._app._marker_catalog_sync = None
+    services._follow_station_ip()
+
+    assert server.suspends == 0
+
+
+def test_follow_station_ip_tolerates_missing_services(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._web_server = None
+    services._app._marker_catalog_sync = None
+    services._follow_station_ip()
+
+
+def test_alerts_are_empty_before_the_first_poll(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    assert services.network_alerts() == []
+
+
+def test_applying_psn_routes_through_the_rebind_orchestrator(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    applied: list[str] = []
+    services.apply_psn_source_ip_change = applied.append  # type: ignore[method-assign]
+    psn = next(p for p in services._build_network_planes() if p.label == "PSN")
+    psn.apply("10.0.0.9")
+    assert applied == ["10.0.0.9"]
+
+
+def test_suspending_psn_tolerates_a_service_that_never_started(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._server = None
+    services._app._psn_receiver = None
+    next(p for p in services._build_network_planes() if p.label == "PSN").suspend()
+
+
+def test_applying_otp_re_resolves_through_its_orchestrator(monkeypatch) -> None:
+    """The orchestrator resolves the pin itself, so it binds the address this
+    poll observed rather than one the observer passed along."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    applied: list[object] = []
+    services.apply_otp_output_change = applied.append  # type: ignore[method-assign]
+    otp = next(p for p in services._build_network_planes() if p.label == "OTP output")
+    otp.apply("10.0.0.9")
+    assert applied == [services._app._config.otp_output]
+
+
+def test_suspending_otp_stops_the_server(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _Server:
+        def __init__(self) -> None:
+            self.stopped = 0
+
+        def stop(self) -> None:
+            self.stopped += 1
+
+    server = _Server()
+    services._app._otp_server = server
+    otp = next(p for p in services._build_network_planes() if p.label == "OTP output")
+    otp.suspend()
+    assert server.stopped == 1
+    services._app._otp_server = None
+    otp.suspend()  # no server to stop
+
+
+def test_observe_builds_the_observer_once(monkeypatch) -> None:
+    """Housekeeping calls this ~10x/s; rebuilding the plane list each time
+    would re-enumerate interfaces on every tick."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "eth0"
+    services.apply_psn_source_ip_change = lambda _ip: None  # type: ignore[method-assign]
+    services._follow_station_ip = lambda: None  # type: ignore[method-assign]
+
+    services.observe_network_planes()
+    first = services._network_observer
+    services.observe_network_planes()
+    assert services._network_observer is first
+
+
+def test_station_followers_share_the_observer_throttle(monkeypatch) -> None:
+    """Resolving the station address enumerates every adapter, and
+    housekeeping runs at 100ms - paying that ten times a second on the render
+    thread is exactly what the observer's own throttle exists to avoid."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "eth0"
+    services.apply_psn_source_ip_change = lambda _ip: None  # type: ignore[method-assign]
+
+    followed: list[int] = []
+    services._follow_station_ip = lambda: followed.append(1)  # type: ignore[method-assign]
+
+    services.observe_network_planes()
+    services.observe_network_planes()  # same instant - throttled
+    assert len(followed) == 1
+
+
+def test_station_followers_do_not_move_to_another_interface(monkeypatch) -> None:
+    """The station interface being down must not put this station's identity -
+    its name, marker names and colours - on whatever else happens to be up, at
+    the exact moment the observer is stopping PSN for that same reason."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    services._app._config.psn_source_iface = "eth0_gone"
+
+    class _Sync:
+        def __init__(self) -> None:
+            self.ips: list[str] = []
+
+        def update_iface_ip(self, ip: str) -> None:
+            self.ips.append(ip)
+
+    class _Server:
+        def __init__(self) -> None:
+            self.refreshes = 0
+            self.suspends = 0
+
+        def refresh_local_ip(self) -> None:
+            self.refreshes += 1
+
+        def suspend_beacons(self) -> None:
+            self.suspends += 1
+
+    sync, server = _Sync(), _Server()
+    services._app._marker_catalog_sync = sync
+    services._app._web_server = server
+    services._follow_station_ip()
+    assert sync.ips == []
+    assert server.refreshes == 0
+    # Not merely "not repointed": discovery is told to stop, so it goes quiet
+    # by decision instead of waiting for a send on a dead address to fail.
+    assert server.suspends == 1
+
+
+def test_suspending_psn_stops_the_receiver_even_if_the_server_raises(monkeypatch) -> None:
+    """Aborting on the first failure left the receiver joined on the dead
+    address - the exact outcome the suspend exists to prevent - and swallowed
+    the HUD alert with it."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _Boom:
+        def stop(self) -> None:
+            raise OSError("stop failed")
+
+    class _Stoppable:
+        def __init__(self) -> None:
+            self.stopped = 0
+
+        def stop(self) -> None:
+            self.stopped += 1
+
+    receiver = _Stoppable()
+    services._app._server = _Boom()
+    services._app._psn_receiver = receiver
+    psn = next(p for p in services._build_network_planes() if p.label == "PSN")
+    with pytest.raises(OSError, match="stop failed"):
+        psn.suspend()
+    assert receiver.stopped == 1
+
+
+def test_a_disabled_otp_output_is_not_a_plane_to_alert_on(monkeypatch) -> None:
+    """The shipped default has OTP off; a false 'is down' row would put a
+    second fault on the HUD for a protocol nobody enabled."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    otp = next(p for p in services._build_network_planes() if p.label == "OTP output")
+    services._app._config.otp_output.enabled = False
+    assert otp.enabled() is False
+    services._app._config.otp_output.enabled = True
+    assert otp.enabled() is True
+
+
+def test_plane_current_reports_the_live_binding(monkeypatch) -> None:
+    """Drives the 'already bound correctly, leave it alone' decision, which is
+    what keeps the first poll from tearing down a healthy startup binding."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _Server:
+        def bound_source_ip(self) -> str | None:
+            return "192.168.1.5"
+
+    services._app._server = _Server()
+    services._app._otp_server = None
+    planes = {p.label: p for p in services._build_network_planes()}
+    assert planes["PSN"].current() == "192.168.1.5"
+    assert planes["OTP output"].current() is None
+
+
+class _FollowerSync:
+    def __init__(self) -> None:
+        self.ips: list[str] = []
+        self.reopens = 0
+
+    def update_iface_ip(self, ip: str) -> None:
+        self.ips.append(ip)
+
+    def reopen(self) -> None:
+        self.reopens += 1
+
+
+class _FollowerServer:
+    def __init__(self) -> None:
+        self.refreshes = 0
+        self.reopens = 0
+        self.suspends = 0
+
+    def refresh_local_ip(self) -> None:
+        self.refreshes += 1
+
+    def reopen_beacons(self) -> None:
+        self.reopens += 1
+
+    def suspend_beacons(self) -> None:
+        self.suspends += 1
+
+
+def _wire_followers(services):
+    sync, server = _FollowerSync(), _FollowerServer()
+    services._app._marker_catalog_sync = sync
+    services._app._web_server = server
+    return sync, server
+
+
+def test_station_followers_rebuild_after_a_same_lease_flap(monkeypatch) -> None:
+    """The observer forces its own planes to rebuild after an outage even at an
+    unchanged address; the followers short-circuit on an unchanged IP, so a
+    replug returning the same lease left catalog sync and the beacon joined to
+    memberships the kernel had already dropped - converging with nobody while
+    looking healthy."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.psn_source_iface = "eth0"
+    sync, server = _wire_followers(services)
+
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._follow_station_ip()
+    assert (sync.reopens, server.reopens) == (0, 0)
+
+    _fake_ifaces(monkeypatch, {})  # cable out
+    services._follow_station_ip()
+
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})  # same lease back
+    services._follow_station_ip()
+    assert sync.reopens == 1
+    assert server.reopens == 1
+
+
+def test_a_steady_station_never_forces_a_rebuild(monkeypatch) -> None:
+    """Rebuilding sockets once a second would be worse than the bug."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.psn_source_iface = "eth0"
+    sync, server = _wire_followers(services)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    for _ in range(5):
+        services._follow_station_ip()
+    assert (sync.reopens, server.reopens) == (0, 0)
+
+
+def test_the_outage_flag_clears_after_one_recovery(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.psn_source_iface = "eth0"
+    sync, server = _wire_followers(services)
+    _fake_ifaces(monkeypatch, {})
+    services._follow_station_ip()
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._follow_station_ip()
+    services._follow_station_ip()
+    assert sync.reopens == 1
+    assert server.reopens == 1
+
+
+# VLAN providers / handlers
+# --------------------------------------------------------------------------- #
+
+
+def test_vlan_provider_reports_unsupported_without_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = None
+    assert services._network_vlan_provider() == {"supported": False, "vlans": []}
+
+
+def test_vlan_provider_reports_unsupported_on_a_read_only_backend(monkeypatch) -> None:
+    """The psutil backend reads interfaces; it cannot create links."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    assert services._network_vlan_provider() == {"supported": False, "vlans": []}
+
+
+def test_vlan_provider_lists_the_backend_vlans(monkeypatch) -> None:
+    from openfollow.network.adapter import VlanInterface
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    fake = _FakeWritableAdapter([_iface()], None)
+    fake.vlans = [VlanInterface(name="eth0.10", parent="eth0", vlan_id=10)]
+    services._network_adapter = fake
+    assert services._network_vlan_provider() == {
+        "supported": True,
+        "vlans": [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}],
+    }
+
+
+def test_vlan_provider_survives_a_backend_failure(monkeypatch) -> None:
+    """Still reports supported – the backend does own links, this read just
+    failed – so the card keeps the controls rather than pretending the
+    station cannot do VLANs at all."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    fake = _FakeWritableAdapter([_iface()], None)
+    fake.vlan_list_raises = True
+    services._network_adapter = fake
+    assert services._network_vlan_provider() == {"supported": True, "vlans": []}
+
+
+def test_vlan_create_calls_the_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    fake = _FakeWritableAdapter([_iface()], None)
+    services._network_adapter = fake
+    result = services._handle_network_vlan_create("eth0", 10)
+    assert result.ok is True
+    assert fake.vlans_created == [("eth0", 10)]
+
+
+def test_vlan_create_refused_on_a_read_only_host(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    result = services._handle_network_vlan_create("eth0", 10)
+    assert result.ok is False and "Read-only" in result.message
+
+
+def test_vlan_create_refused_without_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = None
+    result = services._handle_network_vlan_create("eth0", 10)
+    assert result.ok is False and "No network adapter" in result.message
+
+
+def test_vlan_delete_calls_the_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    fake = _FakeWritableAdapter([_iface()], None)
+    services._network_adapter = fake
+    result = services._handle_network_vlan_delete("eth0.10")
+    assert result.ok is True
+    assert fake.vlans_deleted == ["eth0.10"]
+
+
+def test_vlan_delete_refused_on_a_read_only_host(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    result = services._handle_network_vlan_delete("eth0.10")
+    assert result.ok is False and "Read-only" in result.message
+
+
+def test_vlan_delete_refused_without_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = None
+    result = services._handle_network_vlan_delete("eth0.10")
     assert result.ok is False and "No network adapter" in result.message

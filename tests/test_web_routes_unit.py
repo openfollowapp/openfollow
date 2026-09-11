@@ -66,6 +66,7 @@ from openfollow.web.routes import (
     _swap_for_direction,
     _wizard_camera_params,
     apply_section_data,
+    build_interface_assignment_rows,
     strip_device_local_fields,
 )
 
@@ -1043,3 +1044,198 @@ class TestOperatorMessagesSection:
             {"btn_clear_messages": "START"},
         )
         assert cfg.controller.btn_clear_messages == "START"
+
+
+# ---------------------------------------------------------------------------
+# Interface Assignment panel
+# ---------------------------------------------------------------------------
+
+
+class TestInterfaceAssignmentRows:
+    """``build_interface_assignment_rows`` resolves every row's live address
+    through the same pin -> station -> auto chain the runtime uses, so the
+    panel shows where a plane will actually bind rather than just its pin."""
+
+    @staticmethod
+    def _ifaces(monkeypatch, spec: dict[str, str]) -> None:
+        import socket
+        from types import SimpleNamespace
+
+        import openfollow.net_utils as net_utils_module
+
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: {name: [SimpleNamespace(family=socket.AF_INET, address=addr)] for name, addr in spec.items()},
+        )
+
+    def test_station_row_owns_psn_source_iface(self, monkeypatch) -> None:
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        cfg = AppConfig(psn_source_iface="eth0")
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        station = rows["Station default"]
+        assert station["key"] == "psn_source_iface"
+        assert station["value"] == "eth0"
+        assert station["address"] == "192.168.1.5"
+        # The station picker has nothing to follow, so it keeps auto-detect.
+        assert station["blank"] == "auto"
+
+    def test_blank_plane_pin_shows_the_station_address(self, monkeypatch) -> None:
+        """An OTP row left on "follow station" must display where it actually
+        points – an empty cell would hide the indirection entirely."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+        cfg = AppConfig(psn_source_iface="eth0")
+        cfg.otp_output.source_iface = ""
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        assert rows["OTP output"]["value"] == ""
+        assert rows["OTP output"]["address"] == "192.168.1.5"
+        assert rows["OTP output"]["blank"] == "station"
+
+    def test_pinned_plane_shows_its_own_address(self, monkeypatch) -> None:
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+        cfg = AppConfig(psn_source_iface="eth0")
+        cfg.otp_output.source_iface = "eth1"
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        assert rows["OTP output"]["address"] == "10.0.0.9"
+
+    def test_station_followers_are_read_only(self, monkeypatch) -> None:
+        """PSN and discovery carry the station's identity on the network, so
+        they follow the station pin and must not offer their own dropdown –
+        a picker would imply an independence they don't have."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        cfg = AppConfig(psn_source_iface="eth0")
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        for label in ("PSN in / out", "Discovery / marker sync"):
+            assert rows[label]["editable"] is False
+            assert rows[label]["key"] == ""
+            assert rows[label]["address"] == "192.168.1.5"
+
+    def test_every_editable_row_maps_to_a_known_target(self, monkeypatch) -> None:
+        """Guards the panel against growing a control the save path can't
+        write – the row list and the target map have to stay in step."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        rows = build_interface_assignment_rows(AppConfig())
+        editable = {r["key"] for r in rows if r["editable"]}
+        assert editable == set(routes_module._INTERFACE_ASSIGNMENT_TARGETS)
+
+
+class TestApplyInterfaceAssignment:
+    """The panel writes across several owning dataclasses in one save."""
+
+    def test_writes_top_level_and_sub_config_pins(self) -> None:
+        cfg = AppConfig()
+        apply_section_data(
+            cfg,
+            "interface_assignment",
+            {"psn_source_iface": "eth0", "otp_output.source_iface": "eth1"},
+        )
+        assert cfg.psn_source_iface == "eth0"
+        assert cfg.otp_output.source_iface == "eth1"
+
+    def test_strips_whitespace_like_post_init(self) -> None:
+        """A stray-space pin would compare unequal to the stored value on
+        every hot-reload pass and trigger a needless socket rebind."""
+        cfg = AppConfig()
+        apply_section_data(
+            cfg,
+            "interface_assignment",
+            {"psn_source_iface": "  eth0  ", "otp_output.source_iface": "\teth1 "},
+        )
+        assert cfg.psn_source_iface == "eth0"
+        assert cfg.otp_output.source_iface == "eth1"
+
+    def test_absent_key_leaves_current_value(self) -> None:
+        cfg = AppConfig(psn_source_iface="eth0")
+        cfg.otp_output.source_iface = "eth1"
+        apply_section_data(cfg, "interface_assignment", {"psn_source_iface": "eth2"})
+        assert cfg.psn_source_iface == "eth2"
+        assert cfg.otp_output.source_iface == "eth1"
+
+    def test_blank_clears_a_pin(self) -> None:
+        """Selecting "follow station interface" has to be able to undo a pin."""
+        cfg = AppConfig()
+        cfg.otp_output.source_iface = "eth1"
+        apply_section_data(cfg, "interface_assignment", {"otp_output.source_iface": ""})
+        assert cfg.otp_output.source_iface == ""
+
+    def test_none_pin_preserves_current(self) -> None:
+        cfg = AppConfig(psn_source_iface="eth0")
+        apply_section_data(cfg, "interface_assignment", {"psn_source_iface": None})
+        assert cfg.psn_source_iface == "eth0"
+
+    @pytest.mark.parametrize("bad", [0, True, ["eth0"]])
+    def test_non_string_pin_still_stores_a_string(self, bad: object) -> None:
+        """A crafted POST must never leave a non-string in a field the runtime
+        hands to socket binding. Matching the existing ``psn`` / ``otp_output``
+        save paths, the value is stringified rather than rejected: the result
+        is a nonsense interface name that resolves to nothing and falls through
+        to the station pin, so output degrades rather than crashing."""
+        cfg = AppConfig(psn_source_iface="eth0")
+        apply_section_data(cfg, "interface_assignment", {"psn_source_iface": bad})
+        assert isinstance(cfg.psn_source_iface, str)
+
+    def test_post_init_reruns_on_touched_configs(self) -> None:
+        """The re-run is what stops a crafted POST bypassing validation a
+        hand-edited TOML would trip – prove it by smuggling an out-of-range
+        sibling field past the parser and watching it get clamped."""
+        cfg = AppConfig()
+        cfg.otp_output.port = 999999
+        apply_section_data(cfg, "interface_assignment", {"otp_output.source_iface": "eth1"})
+        assert cfg.otp_output.port == 65535
+
+    def test_untouched_config_is_not_renormalised(self) -> None:
+        """``__post_init__`` runs only on the dataclasses the save touched, so
+        a panel save can't silently rewrite an unrelated section."""
+        cfg = AppConfig()
+        cfg.otp_output.port = 999999
+        apply_section_data(cfg, "interface_assignment", {"psn_source_iface": "eth0"})
+        assert cfg.otp_output.port == 999999
+
+
+class TestRequestLocalIface:
+    """``request_local_iface`` answers "which adapter did this operator reach
+    us on", which guards them from editing that adapter and dropping their own
+    session. It reads the connection's local address, not the Host header:
+    with the default wildcard bind the operator usually arrives via
+    ``<slug>.local``, so the header holds a name."""
+
+    KEY = "openfollow.local_addr"
+
+    def test_resolves_a_local_address_to_its_interface(self, monkeypatch) -> None:
+        import socket
+        from types import SimpleNamespace
+
+        import openfollow.net_utils as net_utils_module
+
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: {
+                "eth0": [SimpleNamespace(family=socket.AF_INET, address="192.168.1.5")],
+                "eth1": [SimpleNamespace(family=socket.AF_INET, address="10.0.0.9")],
+            },
+        )
+        assert routes_module.request_local_iface({self.KEY: "10.0.0.9"}) == "eth1"
+
+    def test_missing_key_yields_no_marker(self) -> None:
+        """Any WSGI server that doesn't supply the address (a test harness, a
+        future front-end) must degrade to no marker, not raise."""
+        assert routes_module.request_local_iface({}) == ""
+
+    @pytest.mark.parametrize("addr", ["", "   ", None])
+    def test_blank_address_yields_no_marker(self, addr: object) -> None:
+        assert routes_module.request_local_iface({self.KEY: addr}) == ""
+
+    def test_loopback_yields_no_marker(self) -> None:
+        """A loopback connection is the on-screen embedded browser, which no
+        interface change can disconnect – marking one would be misleading."""
+        assert routes_module.request_local_iface({self.KEY: "127.0.0.1"}) == ""
+
+    def test_unknown_address_yields_no_marker(self, monkeypatch) -> None:
+        """Rather than guess when the address matches no local interface: a
+        missing marker is a missed warning, a wrong one points at the wrong
+        adapter."""
+        import openfollow.net_utils as net_utils_module
+
+        monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", dict)
+        assert routes_module.request_local_iface({self.KEY: "203.0.113.7"}) == ""

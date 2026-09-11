@@ -138,6 +138,7 @@ def _make_fake_app(
         _check_pi_network_worker=_recorder("check_pi_network_worker"),
         _check_button_detection_request=_recorder("check_button_detection_request"),
         _check_marker_speeds_persist=_recorder("check_marker_speeds_persist"),
+        _observe_network_planes=_recorder("observe_network_planes"),
         _check_frame_loop_stall=_recorder("check_frame_loop_stall"),
         _frame_stalled=False,
         _frame_stall_since=0.0,
@@ -289,6 +290,7 @@ class TestHousekeeping:
             "check_pi_network_worker",
             "check_button_detection_request",
             "check_marker_speeds_persist",
+            "observe_network_planes",
             # The stall watchdog belongs here and not on the frame clock: a
             # stalled loop cannot report its own stall.
             "check_frame_loop_stall",
@@ -312,6 +314,7 @@ class TestHousekeeping:
             "check_pi_network_worker",
             "check_button_detection_request",
             "check_marker_speeds_persist",
+            "observe_network_planes",
             "check_frame_loop_stall",
         ]
 

@@ -643,6 +643,19 @@ class TestDelegators:
         # All helpers take ``app`` as first arg.
         assert hits[0][0] is app
 
+    def test_observe_network_planes_delegates_to_services(
+        self,
+        patched_ctor,
+        monkeypatch: pytest.MonkeyPatch,  # noqa: ANN001
+    ) -> None:
+        """Housekeeping drives this ~10x/s; it must reach the observer that
+        keeps each plane on its configured interface."""
+        app = OpenFollowApp(config_path=patched_ctor.cfg_path)
+        hits: list[int] = []
+        app._runtime_services.observe_network_planes = lambda: hits.append(1)
+        app._observe_network_planes()
+        assert hits == [1]
+
     @pytest.mark.parametrize("verdict", [True, False])
     def test_run_frame_forwards_the_helpers_verdict(
         self,

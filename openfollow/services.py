@@ -27,11 +27,13 @@ from openfollow.configuration import (
     HotkeyTrigger,
 )
 from openfollow.input import InputManager
+from openfollow.net_utils import ResolveStatus
 from openfollow.otp import OtpServer
 from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
 from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT
+from openfollow.runtime.network_observer import NetworkPlaneObserver, Plane
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.runtime.services_detection_pin import (
     apply_detection_pin as apply_detection_pin_helper,
@@ -626,6 +628,13 @@ class AppRuntimeServices:
         # app launch.
         from openfollow.network.detect import select_adapter as _select_network_adapter
 
+        # Built lazily on the first housekeeping poll so construction stays
+        # free of interface enumeration.
+        self._network_observer: NetworkPlaneObserver | None = None
+        # Whether the station interface has been seen without an address since
+        # the followers were last repointed.
+        self._station_saw_outage = False
+
         backend_choice = self._network_backend_choice(app)
         self._network_adapter = _select_network_adapter(
             backend_choice,
@@ -854,21 +863,183 @@ class AppRuntimeServices:
         overlay.state = state
 
     def _resolved_source_ip(self) -> str:
-        """Return the concrete IP to bind PSN/marker-sync sockets to.
+        """Return the concrete IP to bind the station's own sockets to.
 
-        Central resolution point for the iface-pin model. Resolves the
-        active ``psn_source_iface`` with fallback enabled so a stale pin
-        never disables PSN: when the pinned interface isn't live, the
-        auto-detected primary wins and the app keeps running.
-        ``init_psn`` / ``init_psn_receiver`` / the marker-catalog sync
-        all route through here so they agree on the same validated IP.
+        Central resolution point for the iface-pin model: ``init_psn`` /
+        ``init_psn_receiver`` / the marker-catalog sync all route through here
+        so they agree on the same validated address.
+
+        **Not fail-closed, and not for binding.** A configured station
+        interface with no address collapses to ``""`` here, and every socket
+        reads an empty source as *auto-detect* - so binding to this value puts
+        the station on whatever interface happens to be up, which is the
+        outcome the pin exists to prevent.
+
+        Use it only where an unknown address is harmless: a displayed IP, or a
+        worker that skips when there is no address. Anything that **binds** -
+        PSN in and out, marker-catalog sync - must call
+        :meth:`station_source_ip_or_none` and not start on ``None``.
         """
-        from openfollow.net_utils import resolve_source_ip
+        return self.station_source_ip_or_none() or ""
 
-        resolved, _status = resolve_source_ip(
-            self._app._config.psn_source_iface,
-        )
+    def station_source_ip_or_none(self) -> str | None:
+        """Station bind address, or ``None`` when its interface has no address.
+
+        ``None`` and ``""`` are different: ``""`` means nothing is configured
+        and auto-detect found nothing, while ``None`` means the operator chose
+        an interface that is currently down - which must stop the plane, not
+        move it.
+        """
+        from openfollow.net_utils import resolve_plane_source_ip
+
+        resolved, status = resolve_plane_source_ip("", self._app._config.psn_source_iface)
+        if status == "down":
+            logger.error(
+                "Configured psn_source_iface '%s' has no address; PSN stays down until it "
+                "returns (it will not be sent on another interface).",
+                self._app._config.psn_source_iface,
+            )
+            return None
         return resolved
+
+    def _build_network_planes(self) -> list[Plane]:
+        """Every plane the observer follows, in report order.
+
+        Later PRs add a row each (web UI, OSC in, RTTrPM, OSC destinations,
+        video input); each is one entry here and needs no observer changes.
+        """
+        from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
+
+        def _resolver(
+            pin_getter: Callable[[], str],
+            *,
+            is_station: bool,
+        ) -> Callable[[], tuple[str, ResolveStatus, str]]:
+            def _resolve() -> tuple[str, ResolveStatus, str]:
+                pin = pin_getter()
+                station = "" if is_station else self._app._config.psn_source_iface
+                address, status = resolve_plane_source_ip(pin, station)
+                return address, status, plane_source_iface(pin, station)
+
+            return _resolve
+
+        def _apply_psn(address: str) -> None:
+            self.apply_psn_source_ip_change(address)
+
+        def _current_psn() -> str | None:
+            server = self._app._server
+            return server.bound_source_ip() if server is not None else None
+
+        def _suspend_psn() -> None:
+            # Both directions, and both attempted even if the first raises:
+            # leaving the receiver joined on a dead address would keep viewer
+            # markers showing stale positions, which is the thing this exists
+            # to prevent.
+            errors: list[Exception] = []
+            for service in (self._app._server, self._app._psn_receiver):
+                if service is None:
+                    continue
+                try:
+                    service.stop()
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(exc)
+            if errors:
+                raise errors[0]
+
+        def _apply_otp(_address: str) -> None:
+            # The orchestrator re-resolves the pin itself, so it always binds
+            # the address this poll just observed.
+            self.apply_otp_output_change(self._app._config.otp_output)
+
+        def _current_otp() -> str | None:
+            server = self._app._otp_server
+            return server.bound_source_ip() if server is not None else None
+
+        def _suspend_otp() -> None:
+            if self._app._otp_server is not None:
+                self._app._otp_server.stop()
+
+        return [
+            Plane(
+                label="PSN",
+                resolve=_resolver(lambda: self._app._config.psn_source_iface, is_station=True),
+                current=_current_psn,
+                apply=_apply_psn,
+                suspend=_suspend_psn,
+            ),
+            Plane(
+                label="OTP output",
+                resolve=_resolver(lambda: self._app._config.otp_output.source_iface, is_station=False),
+                current=_current_otp,
+                apply=_apply_otp,
+                suspend=_suspend_otp,
+                # A switched-off output is not broken; alerting on it would put
+                # a second fault on the HUD for a protocol nobody enabled.
+                enabled=lambda: self._app._config.otp_output.enabled,
+            ),
+        ]
+
+    def observe_network_planes(self) -> None:
+        """Follow every plane's configured interface. Called from housekeeping.
+
+        Also repoints the station-followers that have no plane of their own -
+        the web self-row, the discovery beacon and marker-catalog sync. Those
+        were previously repointed from a web request path, so they only healed
+        while somebody had a browser tab open.
+        """
+        observer = self._network_observer
+        if observer is None:
+            observer = NetworkPlaneObserver(planes=self._build_network_planes(), clock=time.monotonic)
+            self._network_observer = observer
+        # Inside the same throttle: resolving the station address enumerates
+        # every adapter, and housekeeping runs at 100 ms.
+        if observer.poll():
+            self._follow_station_ip()
+
+    def _follow_station_ip(self) -> None:
+        """Repoint the services that track the station address rather than pin one.
+
+        Resolved fail-closed, like every other plane: the station interface
+        being down must not move catalog sync or the discovery beacon onto
+        whatever else happens to be up. Doing so would put this station's
+        identity - its name, marker names and colours, its selection - on a
+        network the operator never chose, at the exact moment the observer is
+        stopping PSN for that same reason.
+        """
+        from openfollow.net_utils import resolve_plane_source_ip
+
+        address, status = resolve_plane_source_ip("", self._app._config.psn_source_iface)
+        if status in ("down", "none"):
+            self._station_saw_outage = True
+            server = self._app._web_server
+            if status == "down" and server is not None:
+                server.suspend_beacons()
+            return
+
+        # The observer forces its own planes to rebuild after an outage even at
+        # an unchanged address; these followers need the same treatment, and
+        # both of their entry points short-circuit on an unchanged IP. Without
+        # this a replug that returns the same DHCP lease leaves catalog sync
+        # and the beacon joined to memberships the kernel already dropped -
+        # still looking healthy, converging with nobody.
+        recovered = self._station_saw_outage
+        self._station_saw_outage = False
+
+        server = self._app._web_server
+        if server is not None:
+            server.refresh_local_ip()
+            if recovered:
+                server.reopen_beacons()
+        sync = getattr(self._app, "_marker_catalog_sync", None)
+        if sync is not None:
+            sync.update_iface_ip(address)
+            if recovered:
+                sync.reopen()
+
+    def network_alerts(self) -> list[str]:
+        """Planes currently stopped because their interface has no address."""
+        observer = self._network_observer
+        return observer.alerts() if observer is not None else []
 
     def init_online_sync(self) -> None:
         """Start the background online-sync worker.
@@ -902,7 +1073,11 @@ class AppRuntimeServices:
         return self._app._config.web_bind or "0.0.0.0"
 
     def init_psn(self) -> None:
-        source_ip = self._resolved_source_ip()
+        source_ip = self.station_source_ip_or_none()
+        if source_ip is None:
+            # Configured station interface has no address. Binding "" would
+            # send PSN via the OS routing table.
+            return
         server = PsnServer(
             system_name=self._app._config.psn_system_name,
             mcast_ip=self._app._config.psn_mcast_ip,
@@ -963,35 +1138,51 @@ class AppRuntimeServices:
             marker.set_pos(*default_pos)
         self._app._selected_id = self._app._controlled_ids[0] if self._app._controlled_ids else None
 
-    @staticmethod
-    def _resolved_otp_source_ip(cfg: OtpOutputConfig) -> str:
-        """Resolve the OTP output's pinned interface to a concrete bind IP.
+    def _resolved_plane_source_ip(self, pin: str, *, label: str) -> str | None:
+        """Resolve one plane's configured interface to a concrete bind IP.
 
-        Mirrors PSN (``_resolved_source_ip``): a pinned interface that's down –
-        or unset – falls back to the primary interface so a stale pin never
-        silently stalls multicast output. Empty result lets the OS pick.
+        A blank *pin* follows ``psn_source_iface`` (the station-wide default),
+        which in turn auto-detects – inheritance for an *unset* value only.
+        Once an interface is configured it is the only one this plane may use.
+        When it has no address the result is ``None`` and the caller must not
+        start the service at all - an empty string would be wrong, because
+        every downstream socket reads "" as *auto-detect* and would send on
+        whatever interface the OS picks. *label* names the config field in the
+        error.
         """
-        from openfollow.net_utils import resolve_source_ip
+        from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
 
-        resolved, status = resolve_source_ip(cfg.source_iface, fallback=True)
-        if cfg.source_iface and status != "iface":
-            logger.warning(
-                "Configured otp_output.source_iface '%s' is unavailable; "
-                "falling back to %s. OTP multicast may use the wrong interface.",
-                cfg.source_iface,
-                resolved or "OS default",
+        resolved, status = resolve_plane_source_ip(
+            pin,
+            self._app._config.psn_source_iface,
+        )
+        if status == "down":
+            configured = plane_source_iface(pin, self._app._config.psn_source_iface)
+            logger.error(
+                "Configured %s '%s' has no address; %s stays down until it returns "
+                "(it will not be sent on another interface).",
+                label,
+                configured,
+                label,
             )
+            return None
         return resolved
 
     def init_otp(self) -> None:
         cfg = self._app._config.otp_output
         if not cfg.enabled:
             return
+        source_ip = self._resolved_plane_source_ip(cfg.source_iface, label="otp_output.source_iface")
+        if source_ip is None:
+            # Configured interface has no address. Starting with "" would bind
+            # via the OS routing table, i.e. send stage data on whatever NIC
+            # happens to be up - the outcome the pin exists to prevent.
+            return
         self._app._otp_server = OtpServer(
             system_name=self._app._config.psn_system_name,
             system_number=cfg.system_number,
             port=cfg.port,
-            source_ip=self._resolved_otp_source_ip(cfg),
+            source_ip=source_ip,
             priority=cfg.priority,
         )
         server = self._app._server
@@ -1025,12 +1216,17 @@ class AppRuntimeServices:
         self._app._rttrpm_server.start()
 
     def init_psn_receiver(self) -> None:
-        # Read the resolved IP (iface pin first, then explicit IP, then
-        # auto-detect) so the receiver binds to the same interface as the
-        # server. Reading ``psn_source_ip`` directly would skip iface-pin.
+        # Same resolution as ``init_psn`` so input and output land on the same
+        # interface, and the same refusal: a configured station interface with
+        # no address means bind nothing. Passing "" would join the multicast
+        # group on whatever interface the OS picks, so the station would answer
+        # on a network the operator did not choose while its output was stopped.
+        source_ip = self.station_source_ip_or_none()
+        if source_ip is None:
+            return
         self._app._psn_receiver = PsnReceiver(
             ignore_ids=self._app._controlled_ids,
-            source_ip=self._resolved_source_ip(),
+            source_ip=source_ip,
         )
         self._app._psn_receiver.start()
 
@@ -1329,12 +1525,18 @@ class AppRuntimeServices:
             old_port = server._port
             old_source_ip = server._source_ip
             old_priority = server._priority
+            new_source_ip = self._resolved_plane_source_ip(new_cfg.source_iface, label="otp_output.source_iface")
+            if new_source_ip is None:
+                # Configured interface has no address: stop rather than
+                # restart, because "" would rebind via the OS routing table.
+                server.stop()
+                return
             try:
                 server.restart(
                     system_name=self._app._config.psn_system_name,
                     system_number=new_cfg.system_number,
                     port=new_cfg.port,
-                    source_ip=self._resolved_otp_source_ip(new_cfg),
+                    source_ip=new_source_ip,
                     priority=new_cfg.priority,
                 )
             except Exception:
@@ -1459,6 +1661,42 @@ class AppRuntimeServices:
         # hot-reload branch needs a parallel sync. Keeping it outside
         # ``manager.restart`` keeps the manager registry-agnostic.
         self._sync_osc_binding_conflicts()
+
+    def apply_station_iface_change(self) -> None:
+        """Rebind every plane that inherits the station interface.
+
+        A plane with a blank pin follows ``psn_source_iface``, so changing only
+        the Station default row moves it – but the hot-reload dispatcher gates
+        each plane on its *own* dataclass differing, which it doesn't here.
+        Without this the panel would immediately render the new address for a
+        plane still sending from the old interface until a restart.
+
+        PSN itself is not included: the dispatcher pairs this with
+        ``apply_psn_source_ip_change``, which owns the receiver/server rebind.
+        """
+        otp_cfg = self._app._config.otp_output
+        if self._app._otp_server is not None and otp_cfg.enabled and not otp_cfg.source_iface:
+            self.apply_otp_output_change(otp_cfg)
+
+    def suspend_psn_planes(self) -> None:
+        """Stop PSN output and input because the station interface has no address.
+
+        The counterpart to ``init_psn`` declining to start: a live pin change to
+        an interface that is currently down must leave PSN sending nowhere, not
+        rebind it to whatever the OS routing table picks. Both sides stop so the
+        station cannot answer on one interface while advertising another.
+        """
+        logger.error(
+            "Configured psn_source_iface '%s' has no address; PSN input and output are stopped "
+            "(they will not be moved to another interface).",
+            self._app._config.psn_source_iface,
+        )
+        server = self._app._server
+        if server is not None:
+            server.stop()
+        receiver = self._app._psn_receiver
+        if receiver is not None:
+            receiver.stop()
 
     def apply_psn_source_ip_change(
         self,
@@ -1868,7 +2106,8 @@ class AppRuntimeServices:
             # live so a runtime IP change (static → DHCP) updates the
             # self-row + beacon interface without a restart.
             local_ip=self._resolved_source_ip(),
-            local_ip_provider=self._resolved_source_ip,
+            station_ip=self.station_source_ip_or_none(),
+            local_ip_provider=self.station_source_ip_or_none,
             runtime_stats_provider=self.get_runtime_stats_snapshot,
             preview_snapshot_provider=self._preview_provider.get_snapshot,
             zone_state_provider=self._get_zone_states_snapshot,
@@ -1911,8 +2150,12 @@ class AppRuntimeServices:
             # Web write path: raw editable config snapshot for the form +
             # apply / renew handlers (broker-elevated, serialised).
             network_config_provider=self._network_config_provider,
+            network_interfaces_provider=self._network_interfaces_provider,
             network_apply_handler=self._handle_network_apply,
             network_renew_handler=self._handle_network_renew,
+            network_vlan_provider=self._network_vlan_provider,
+            network_vlan_create_handler=self._handle_network_vlan_create,
+            network_vlan_delete_handler=self._handle_network_vlan_delete,
             # Privilege capability snapshot for the diagnostics bundle.
             privilege_states_provider=self._privilege_states_provider,
             marker_catalog_provider=lambda: self._app._marker_catalog,
@@ -2158,6 +2401,53 @@ class AppRuntimeServices:
         )
         return base
 
+    def _network_interfaces_provider(self) -> list[dict[str, Any]]:
+        """Every non-loopback interface with its address, method and up-state.
+
+        The single-interface form only ever showed one adapter at a time, so
+        there was nowhere to see a multi-NIC (or tagged-VLAN) station's layout.
+        This backs the interface list that replaced its picker.
+
+        One ``get_state`` per interface means one backend call each – on the
+        NetworkManager adapter that is an ``nmcli`` subprocess – so the caller
+        is expected to cache it rather than resolve on every render.
+        """
+        from openfollow.network.adapter import is_loopback
+        from openfollow.network.validate import prefix_to_mask
+
+        adapter = getattr(self, "_network_adapter", None)
+        if adapter is None:
+            return []
+        rows: list[dict[str, Any]] = []
+        for iface in adapter.list_interfaces():
+            if is_loopback(iface):
+                continue
+            row: dict[str, Any] = {
+                "name": iface.name,
+                "is_up": iface.is_up,
+                "address": "",
+                "prefix": None,
+                "subnet_mask": "",
+                "method": "dhcp",
+            }
+            # A per-interface read can fail (interface disappearing mid-scan,
+            # backend hiccup) without invalidating the rest of the list, so
+            # degrade that row instead of dropping the whole panel.
+            try:
+                state = adapter.get_state(iface.name)
+            except Exception:  # noqa: BLE001
+                logger.exception("Network state read failed for %s", iface.name)
+                state = None
+            if state is not None:
+                row.update(
+                    address=state.ipv4.address or "",
+                    prefix=state.ipv4.prefix,
+                    subnet_mask=prefix_to_mask(state.ipv4.prefix) or "",
+                    method=state.ipv4.method.value,
+                )
+            rows.append(row)
+        return rows
+
     def _handle_network_apply(
         self,
         iface: str,
@@ -2191,6 +2481,47 @@ class AppRuntimeServices:
             return ApplyResult(ok=False, message="Read-only host – cannot renew.")
         with self._network_op_lock:
             return cast(ApplyResult, adapter.renew_lease(iface))
+
+    def _network_vlan_provider(self) -> dict[str, Any]:
+        """Whether this backend owns VLAN links, and the ones that exist."""
+        adapter = getattr(self, "_network_adapter", None)
+        if adapter is None or not adapter.supports_vlans():
+            return {"supported": False, "vlans": []}
+        try:
+            vlans = adapter.list_vlans()
+        except Exception:  # noqa: BLE001
+            logger.exception("VLAN list read failed")
+            return {"supported": True, "vlans": []}
+        return {
+            "supported": True,
+            "vlans": [{"name": v.name, "parent": v.parent, "vlan_id": v.vlan_id} for v in vlans],
+        }
+
+    def _handle_network_vlan_create(self, parent: str, vlan_id: int) -> ApplyResult:
+        """Create a VLAN sub-interface, serialised with the other network
+        writes (see :meth:`_handle_network_apply`)."""
+        from openfollow.network.adapter import ApplyResult
+
+        adapter = getattr(self, "_network_adapter", None)
+        if adapter is None:
+            return ApplyResult(ok=False, message="No network adapter available.")
+        if not adapter.is_writable():
+            return ApplyResult(ok=False, message="Read-only host – cannot create a VLAN.")
+        with self._network_op_lock:
+            return cast(ApplyResult, adapter.create_vlan(parent, vlan_id))
+
+    def _handle_network_vlan_delete(self, name: str) -> ApplyResult:
+        """Delete a VLAN sub-interface, serialised with the other network
+        writes (see :meth:`_handle_network_apply`)."""
+        from openfollow.network.adapter import ApplyResult
+
+        adapter = getattr(self, "_network_adapter", None)
+        if adapter is None:
+            return ApplyResult(ok=False, message="No network adapter available.")
+        if not adapter.is_writable():
+            return ApplyResult(ok=False, message="Read-only host – cannot delete a VLAN.")
+        with self._network_op_lock:
+            return cast(ApplyResult, adapter.delete_vlan(name))
 
     def _privilege_states_provider(self) -> dict[str, str]:
         """Snapshot every capability's state for the web UI.
@@ -2288,6 +2619,7 @@ class AppRuntimeServices:
             person_detector=self._person_detector,
             cam_params_buffer=self._cam_params_buffer,
             dt=dt,
+            network_alerts=self.network_alerts(),
         )
 
         # Atomic swap: release old state back to pool

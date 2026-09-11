@@ -54,6 +54,11 @@ _FALLBACK_PORTS: tuple[int, ...] = (8080, 2010)
 # paths and the resolver enumerates interfaces, so an IP change is picked up
 # within this window rather than re-resolving on every request.
 _LOCAL_IP_REFRESH_TTL = 5.0
+# How long the Network Settings interface list is reused before re-reading.
+# Enumerating every adapter costs one backend call each (an ``nmcli``
+# subprocess on the NetworkManager backend), and addresses don't change on a
+# sub-second cadence. ``Scan`` bypasses this.
+_NETWORK_IFACES_TTL = 5.0
 
 _REQUEST_BUSY_BODY = b"Server busy; retry"
 _REQUEST_BUSY_RESPONSE = (
@@ -64,9 +69,30 @@ _REQUEST_BUSY_RESPONSE = (
 )
 
 
+# WSGI environ key carrying the local (server-side) address of the accepted
+# connection, i.e. the station address this request actually arrived on.
+LOCAL_ADDR_ENVIRON_KEY = "openfollow.local_addr"
+
+
 class _QuietHandler(WSGIRequestHandler):
     def log_request(self, *args: object, **kwargs: object) -> None:
         pass
+
+    def get_environ(self) -> dict[str, Any]:
+        """Add the connection's local address to the environ.
+
+        Needed to answer "which interface did this operator reach us on",
+        which guards them from editing that interface's address and cutting
+        their own session. The Host header can't answer it: with a wildcard
+        bind the operator usually arrives via ``<slug>.local``, so the header
+        holds a name, not the address avahi resolved it to.
+        """
+        environ: dict[str, Any] = super().get_environ()
+        try:
+            environ[LOCAL_ADDR_ENVIRON_KEY] = self.connection.getsockname()[0]
+        except OSError:  # pragma: no cover - socket already torn down
+            pass
+        return environ
 
 
 class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
@@ -113,6 +139,15 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
             sem.release()
 
 
+def _copy_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy the list *and* each row.
+
+    Copying only the list leaves every caller holding the cached dicts, so a
+    template helper decorating a row corrupts what the next render reads.
+    """
+    return [dict(row) for row in rows]
+
+
 class ConfigWebServer:
     """Threaded web server for configuration UI with peer discovery."""
 
@@ -124,7 +159,11 @@ class ConfigWebServer:
         system_name: str = "OpenFollow",
         command_queue: WebCommandQueue | None = None,
         local_ip: str = "",
-        local_ip_provider: Callable[[], str] | None = None,
+        # Fail-closed station address for the beacons: an address pins them,
+        # "" leaves the interface to the OS, and None means the configured
+        # interface has no address, which stops them until it returns.
+        station_ip: str | None = "",
+        local_ip_provider: Callable[[], str | None] | None = None,
         runtime_stats_provider: Callable[[], dict[str, Any]] | None = None,
         preview_snapshot_provider: Callable[[], bytes | None] | None = None,
         zone_state_provider: Callable[[], list[tuple[int, bool, int]]] | None = None,
@@ -162,8 +201,14 @@ class ConfigWebServer:
         network_state_provider: Callable[[], dict[str, Any] | None] | None = None,
         # Web write path: config snapshot + apply/renew handlers; optional for tests.
         network_config_provider: (Callable[[str | None], dict[str, Any] | None] | None) = None,
+        # Every interface at once, for the Network Settings list. Costs one
+        # backend call per interface, so the result is TTL-cached here.
+        network_interfaces_provider: (Callable[[], list[dict[str, Any]]] | None) = None,
         network_apply_handler: Callable[[str, Any], ApplyResult] | None = None,
         network_renew_handler: Callable[[str], ApplyResult] | None = None,
+        network_vlan_provider: Callable[[], dict[str, Any]] | None = None,
+        network_vlan_create_handler: Callable[[str, int], ApplyResult] | None = None,
+        network_vlan_delete_handler: Callable[[str], ApplyResult] | None = None,
         # Privilege capability snapshot for the diagnostics bundle; optional for tests.
         privilege_states_provider: Callable[[], dict[str, str]] | None = None,
         # Shared marker catalog (id/name/color) + multicast sync.
@@ -229,8 +274,18 @@ class ConfigWebServer:
         self._log_ring = log_ring
         self._network_state_provider = network_state_provider
         self._network_config_provider = network_config_provider
+        self._network_interfaces_provider = network_interfaces_provider
+        # TTL cache for the interface list: enumerating every adapter's method
+        # costs one backend call each, and the General tab re-renders often.
+        # ``Scan`` bypasses it, so a freshly plugged NIC never needs a wait.
+        self._network_ifaces_cache: list[dict[str, Any]] = []
+        self._network_ifaces_ts = 0.0  # monotonic; 0 = never populated
+        self._network_ifaces_lock = threading.Lock()
         self._network_apply_handler = network_apply_handler
         self._network_renew_handler = network_renew_handler
+        self._network_vlan_provider = network_vlan_provider
+        self._network_vlan_create_handler = network_vlan_create_handler
+        self._network_vlan_delete_handler = network_vlan_delete_handler
         self._psn_source_advisory_provider = psn_source_advisory_provider
         self._privilege_states_provider = privilege_states_provider
         self._marker_catalog_provider = marker_catalog_provider
@@ -272,15 +327,16 @@ class ConfigWebServer:
         self._loopback_http_server: Any = None
 
         # Peer discovery
+        beacon_iface_ip = station_ip if station_ip != "127.0.0.1" else ""
         self._beacon_sender = BeaconSender(
             name=system_name,
             web_port=port,
             version=openfollow.__version__,
-            iface_ip=self._local_ip if self._local_ip != "127.0.0.1" else "",
+            iface_ip=beacon_iface_ip,
         )
         self._beacon_receiver = BeaconReceiver(
             on_peer_discovered=self._on_peer_discovered,
-            iface_ip=self._local_ip if self._local_ip != "127.0.0.1" else "",
+            iface_ip=beacon_iface_ip,
         )
         self._beacon_receiver.set_local_port(port)
 
@@ -361,6 +417,38 @@ class ConfigWebServer:
             logger.exception("Network config provider raised")
             return None
 
+    def get_network_interfaces(self, *, force: bool = False) -> list[dict[str, Any]]:
+        """Every interface with address / method / up-state, TTL-cached.
+
+        ``force=True`` is the ``Scan`` path: it re-reads immediately so a
+        just-plugged adapter (or a just-created VLAN) shows up without waiting
+        out the TTL.
+
+        The provider is called outside the lock: it shells out per interface,
+        and holding the lock across that would serialise every render behind
+        one slow backend read. A concurrent caller may duplicate the work, but
+        both write the same snapshot, which is cheaper than the contention.
+        """
+        if self._network_interfaces_provider is None:
+            return []
+        now = time.monotonic()
+        if not force:
+            with self._network_ifaces_lock:
+                if self._network_ifaces_ts and now - self._network_ifaces_ts < _NETWORK_IFACES_TTL:
+                    return _copy_rows(self._network_ifaces_cache)
+        try:
+            rows = self._network_interfaces_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("Network interfaces provider raised")
+            # Serve the last good snapshot rather than blanking the list on a
+            # transient backend failure.
+            with self._network_ifaces_lock:
+                return _copy_rows(self._network_ifaces_cache)
+        with self._network_ifaces_lock:
+            self._network_ifaces_cache = _copy_rows(rows)
+            self._network_ifaces_ts = time.monotonic()
+        return _copy_rows(rows)
+
     def apply_network(self, iface: str, config: Any) -> ApplyResult:
         """Apply IPv4 config to iface; always returns ApplyResult."""
         from openfollow.network.adapter import ApplyResult
@@ -383,6 +471,46 @@ class ConfigWebServer:
             return self._network_renew_handler(iface)
         except Exception as exc:  # noqa: BLE001
             logger.exception("network_renew handler raised")
+            return ApplyResult(ok=False, message=str(exc))
+
+    def get_network_vlans(self) -> dict[str, Any]:
+        """Return ``{"supported": bool, "vlans": [{name, parent, vlan_id}]}``.
+
+        Reported unsupported when unwired or when the provider fails, so the
+        card omits the VLAN controls rather than offering a button that cannot
+        work.
+        """
+        empty: dict[str, Any] = {"supported": False, "vlans": []}
+        if self._network_vlan_provider is None:
+            return empty
+        try:
+            return self._network_vlan_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("Network VLAN provider raised")
+            return empty
+
+    def create_network_vlan(self, parent: str, vlan_id: int) -> ApplyResult:
+        """Create a VLAN sub-interface on ``parent``; always returns ApplyResult."""
+        from openfollow.network.adapter import ApplyResult
+
+        if self._network_vlan_create_handler is None:
+            return ApplyResult(ok=False, message="Network writes are not available on this build.")
+        try:
+            return self._network_vlan_create_handler(parent, vlan_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("network_vlan_create handler raised")
+            return ApplyResult(ok=False, message=str(exc))
+
+    def delete_network_vlan(self, name: str) -> ApplyResult:
+        """Delete the VLAN sub-interface ``name``; always returns ApplyResult."""
+        from openfollow.network.adapter import ApplyResult
+
+        if self._network_vlan_delete_handler is None:
+            return ApplyResult(ok=False, message="Network writes are not available on this build.")
+        try:
+            return self._network_vlan_delete_handler(name)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("network_vlan_delete handler raised")
             return ApplyResult(ok=False, message=str(exc))
 
     def get_psn_source_advisory(self) -> dict[str, str]:
@@ -422,10 +550,19 @@ class ConfigWebServer:
         except Exception:  # noqa: BLE001
             logger.exception("local_ip provider raised")
             return
+        # ``None`` is the one state that means *stop*: an interface is pinned
+        # and has no address. Blank or loopback only mean "could not resolve",
+        # which is no reason to unpin a beacon that is working - unpinned
+        # multicast follows the routing table onto an unchosen NIC.
+        if candidate is None:
+            with self._local_ip_lock:
+                self._beacon_sender.update_iface_ip(None)
+                self._beacon_receiver.update_iface_ip(None)
+            return
         if not candidate or candidate.startswith("127."):
             return
         with self._local_ip_lock:
-            if candidate == self._local_ip:
+            if candidate == self._local_ip and self._beacon_sender.iface_ip == candidate:
                 return
             self._local_ip = candidate
             # Repoint beacons under the lock so IP + interface stay consistent
@@ -433,6 +570,40 @@ class ConfigWebServer:
             self._beacon_sender.update_iface_ip(candidate)
             self._beacon_receiver.update_iface_ip(candidate)
         logger.info("Local IP changed to %s; beacon interface repointed.", candidate)
+
+    def refresh_local_ip(self) -> None:
+        """Public entry point for the runtime network observer.
+
+        The refresh used to happen only on a request path, so a station whose
+        address changed healed its self-row and beacon interface only while
+        somebody had a browser tab open. The observer calls this on a timer
+        instead; the internal throttle still applies, so the request paths
+        calling it too costs nothing.
+        """
+        self._refresh_local_ip()
+
+    def suspend_beacons(self) -> None:
+        """Stop both beacons because the station interface has no address.
+
+        Called on the observer's down edge so the beacon goes quiet by
+        decision rather than by waiting for its next send to fail: a socket
+        pinned to a removed address does not reliably error, and the whole
+        point is that nothing leaves on an interface nobody chose.
+        """
+        with self._local_ip_lock:
+            self._beacon_sender.update_iface_ip(None)
+            self._beacon_receiver.update_iface_ip(None)
+
+    def reopen_beacons(self) -> None:
+        """Rebuild both beacon sockets regardless of whether the IP changed.
+
+        Called on recovery from an interface outage: the kernel drops the
+        group membership and the egress route when an address is removed, and
+        the same address coming back does not restore either - so the
+        unchanged-IP guard in ``update_iface_ip`` is not enough on its own.
+        """
+        self._beacon_sender.reopen()
+        self._beacon_receiver.reopen()
 
     def get_local_peer_info(self) -> PeerInfo:
         """Get info about this server as a PeerInfo object."""

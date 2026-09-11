@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Tests for the IPv4 validation helpers: parse_ipv4/prefix, prefix<->mask, DNS list, router-subnet, validate_apply."""
+"""Tests for the IPv4 validation helpers: parsing, masks, DNS list, router-subnet, validate_apply, VLAN create."""
 
 from __future__ import annotations
 
@@ -8,15 +8,41 @@ import pytest
 
 from openfollow.network.adapter import Ipv4Method
 from openfollow.network.validate import (
+    is_link_local,
     parse_dns_list,
     parse_ipv4,
     parse_prefix,
+    parse_vlan_id,
     prefix_to_mask,
     router_in_subnet,
     validate_apply,
+    validate_vlan_create,
+    vlan_interface_name,
 )
 
 pytestmark = pytest.mark.unit
+
+
+class TestIsLinkLocal:
+    @pytest.mark.parametrize(
+        "value",
+        ["169.254.0.1", "169.254.255.254", "  169.254.8.31  ", "169.254.0.0"],
+    )
+    def test_link_local(self, value: str) -> None:
+        assert is_link_local(value) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        # 169.253/169.255 bracket the block: an off-by-one on the second octet
+        # would classify a routable address as a DHCP failure.
+        ["192.168.1.5", "10.0.0.1", "169.253.1.1", "169.255.1.1", "127.0.0.1"],
+    )
+    def test_routable(self, value: str) -> None:
+        assert is_link_local(value) is False
+
+    @pytest.mark.parametrize("value", ["", "   ", None, "not-an-ip", "fe80::1"])
+    def test_unparseable_is_not_link_local(self, value) -> None:
+        assert is_link_local(value) is False
 
 
 class TestParseIpv4:
@@ -224,3 +250,84 @@ class TestValidateApply:
         # because prefix is out of range.
         assert any("Subnet prefix" in e for e in errors)
         assert not any("not inside the subnet" in e for e in errors)
+
+
+class TestVlanValidation:
+    """VLAN create is the one path that can name a link into existence, so
+    every rejection here is what stops a bad name reaching ``nmcli con add``."""
+
+    _IFACES = ("lo", "eth0", "eth0.10", "wlan0")
+    _VLANS = ("eth0.10",)
+
+    def _errors(self, parent: str, vlan_id: object) -> list[str]:
+        return validate_vlan_create(
+            parent,
+            vlan_id,  # type: ignore[arg-type]
+            interfaces=self._IFACES,
+            vlan_names=self._VLANS,
+        )
+
+    def test_accepts_a_new_vlan_on_a_physical_parent(self) -> None:
+        assert self._errors("eth0", 20) == []
+
+    @pytest.mark.parametrize("vlan_id", [0, 4095, -1, 4096, 100000])
+    def test_rejects_reserved_and_out_of_range_ids(self, vlan_id: int) -> None:
+        assert any("VLAN ID" in e for e in self._errors("eth0", vlan_id))
+
+    @pytest.mark.parametrize("vlan_id", [1, 4094])
+    def test_accepts_the_boundary_ids(self, vlan_id: int) -> None:
+        assert self._errors("eth0", vlan_id) == []
+
+    @pytest.mark.parametrize("vlan_id", ["abc", None, "", True, 12.5, "1e3"])
+    def test_rejects_non_integer_ids(self, vlan_id: object) -> None:
+        assert any("VLAN ID" in e for e in self._errors("eth0", vlan_id))
+
+    def test_accepts_a_digit_string_id(self) -> None:
+        assert self._errors("eth0", "20") == []
+
+    def test_rejects_a_vlan_parent(self) -> None:
+        assert any("stacked" in e for e in self._errors("eth0.10", 20))
+
+    def test_rejects_loopback_parent(self) -> None:
+        assert any("loopback" in e for e in self._errors("lo", 20))
+
+    def test_rejects_unknown_parent(self) -> None:
+        assert any("not a network interface" in e for e in self._errors("eth9", 20))
+
+    def test_rejects_blank_parent(self) -> None:
+        assert any("Choose a parent" in e for e in self._errors("   ", 20))
+
+    def test_rejects_a_duplicate_derived_name(self) -> None:
+        assert any("already exists" in e for e in self._errors("eth0", 10))
+
+    def test_rejects_a_name_over_ifnamsiz(self) -> None:
+        errors = validate_vlan_create(
+            "verylongifname",
+            4094,
+            interfaces=("verylongifname",),
+        )
+        assert any("longer than" in e for e in errors)
+
+    def test_blank_parent_does_not_also_report_a_name_error(self) -> None:
+        """The derived-name checks need a parent to derive from; reporting
+        'the interface name .20 is too long' on top of 'choose a parent'
+        would be noise."""
+        errors = self._errors("", 20)
+        assert errors == ["Choose a parent interface."]
+
+
+class TestVlanInterfaceName:
+    def test_derives_dot_notation(self) -> None:
+        assert vlan_interface_name("eth0", 10) == "eth0.10"
+
+    def test_strips_surrounding_whitespace(self) -> None:
+        assert vlan_interface_name("  eth0  ", 10) == "eth0.10"
+
+
+class TestParseVlanId:
+    @pytest.mark.parametrize(("value", "expected"), [("10", 10), (10, 10), (" 10 ", 10)])
+    def test_accepts_valid(self, value: object, expected: int) -> None:
+        assert parse_vlan_id(value) == expected  # type: ignore[arg-type]
+
+    def test_rejects_bool_which_is_an_int_subclass(self) -> None:
+        assert parse_vlan_id(True) is None

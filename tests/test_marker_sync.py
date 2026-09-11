@@ -1228,34 +1228,82 @@ class TestRecvLoopOneIteration:
             selection_provider=lambda: ([], []),
         )
 
-    def test_bind_failure_returns_immediately(self) -> None:
+    def test_bind_failure_retries_across_a_dhcp_release(self, monkeypatch) -> None:
+        """The retry budget has to outlast a DHCP re-lease (5-15s), because
+        that is the window it exists to cover. Giving up sooner fails in
+        exactly the case it was added for."""
+        assert marker_sync._RX_OPEN_MAX_RETRIES * marker_sync._RX_OPEN_RETRY_S >= 15.0
+
+    def test_bind_failure_parks_instead_of_killing_the_thread(self, monkeypatch) -> None:
+        """The receive thread is never restarted - ``start()`` short-circuits
+        while it exists - so returning at the cap would disable sync input for
+        the process with no way back.
+
+        Driven on a daemon thread with an external terminator: the park calls
+        nothing, so a terminator that depends on the loop's own internals can
+        never fire.
+        """
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_RETRY_S", 0.001)
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_MAX_RETRIES", 2)
         sync = self._sync()
         bad_sock = MagicMock()
         bad_sock.bind.side_effect = OSError("port busy")
+
         with patch.object(_socket, "socket", return_value=bad_sock):
-            sync._recv_loop()
-        bad_sock.close.assert_called_once()
+            worker = threading.Thread(target=sync._recv_loop, daemon=True)
+            worker.start()
+            time.sleep(0.2)
+            assert worker.is_alive(), "gave up and exited instead of parking"
+            sync._stop_event.set()
+            worker.join(timeout=5.0)
+        assert not worker.is_alive(), "park did not honour the stop event"
+
+    def test_a_repoint_revives_a_parked_receive_loop(self, monkeypatch) -> None:
+        """Parking is only safe if something can wake it - otherwise it is the
+        same dead end as returning, just quieter."""
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_RETRY_S", 0.001)
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_MAX_RETRIES", 2)
+        sync = self._sync()
+        opens = [0]
+        bad_sock = MagicMock()
+        bad_sock.bind.side_effect = OSError("port busy")
+
+        def _factory(*_a, **_kw):
+            opens[0] += 1
+            return bad_sock
+
+        with patch.object(_socket, "socket", _factory):
+            worker = threading.Thread(target=sync._recv_loop, daemon=True)
+            worker.start()
+            time.sleep(0.2)
+            parked_at = opens[0]
+            sync.reopen()
+            time.sleep(0.2)
+            assert opens[0] > parked_at, "repoint did not wake the parked loop"
+            sync._stop_event.set()
+            worker.join(timeout=5.0)
 
     def test_reuseport_attribute_error_swallowed(self) -> None:
+        """SO_REUSEPORT is absent on some platforms; its absence must not stop
+        the socket being opened."""
         sync = self._sync()
         sock = MagicMock()
-        # Make setsockopt fail with AttributeError on the SO_REUSEPORT call only.
 
         def setsockopt(level, opt, val):
             if opt == _socket.SO_REUSEPORT:
                 raise AttributeError("not available")
 
         sock.setsockopt.side_effect = setsockopt
-        # bind succeeds (default MagicMock); set stop so recv loop exits.
-        sync._stop_event.set()
         with patch.object(_socket, "socket", return_value=sock):
-            sync._recv_loop()
-        sock.close.assert_called_once()
+            assert sync._open_rx_socket() is sock
 
-    def test_fallback_join_on_iface_failure(self) -> None:
-        """When IP_ADD_MEMBERSHIP fails on the bound iface (e.g. iface
-        IP not present), the loop retries with the wildcard. Both
-        failing also short-circuits the loop and closes the socket."""
+    def test_no_wildcard_join_when_the_iface_is_unavailable(self) -> None:
+        """A failed join on the pinned interface must not retry on 0.0.0.0.
+
+        Subscribing on every interface puts marker names and colours - this
+        station's identity - on a network the operator excluded, at the moment
+        the observer is stopping PSN for that same reason.
+        """
         sync = MarkerCatalogSync(
             MarkerCatalog(),
             station_id="station-A",
@@ -1273,9 +1321,10 @@ class TestRecvLoopOneIteration:
 
         sock.setsockopt.side_effect = setsockopt
         with patch.object(_socket, "socket", return_value=sock):
-            sync._recv_loop()
-        # Two IP_ADD_MEMBERSHIP attempts (iface, then 0.0.0.0 fallback).
-        assert len(membership_calls) == 2
+            assert sync._open_rx_socket() is None
+        # Exactly one attempt, on the pinned interface - never a wildcard retry.
+        assert len(membership_calls) == 1
+        assert membership_calls[0].endswith(_socket.inet_aton("10.0.0.5"))
         sock.close.assert_called_once()
 
     def test_recv_timeout_continues_until_stop(self) -> None:
@@ -1490,7 +1539,12 @@ class TestStartStop:
 
 
 class TestOpenTxSocket:
-    def test_iface_ip_failure_logs_and_still_returns_socket(self) -> None:
+    def test_iface_ip_failure_refuses_the_socket_instead_of_roaming(self) -> None:
+        """A TX socket that could not be pinned must not reach the send loop:
+        unpinned multicast follows the routing table, not "all interfaces".
+        """
+        from openfollow.net_utils import InterfaceUnavailable
+
         sync = MarkerCatalogSync(
             MarkerCatalog(),
             station_id="station-A",
@@ -1505,11 +1559,9 @@ class TestOpenTxSocket:
                 raise OSError("iface gone")
 
         sock.setsockopt.side_effect = setsockopt
-        with patch.object(_socket, "socket", return_value=sock):
-            result = sync._open_tx_socket()
-        # Open returns the socket even though IP_MULTICAST_IF failed –
-        # send loop falls back to all-interfaces routing.
-        assert result is sock
+        with patch.object(_socket, "socket", return_value=sock), pytest.raises(InterfaceUnavailable):
+            sync._open_tx_socket()
+        sock.close.assert_called_once()
 
 
 class TestPeerExpiry:
@@ -1634,3 +1686,100 @@ def test_entry_from_dict_caps_huge_version() -> None:
     back = _entry_from_dict({"id": 1, "name": "A", "color": "#ffffff", "version": 10**30})
     assert back is not None
     assert back.version == 2**63 - 1
+
+
+class TestUpdateIfaceIp:
+    """Sync has to follow the station onto a new address.
+
+    Both sockets pin the interface at open time - TX via IP_MULTICAST_IF, RX
+    via IP_ADD_MEMBERSHIP - and an idle recv times out rather than raising, so
+    without an explicit repoint sync silently stops converging after an
+    interface switch.
+    """
+
+    def _sync(self, iface_ip: str = "192.168.1.5") -> MarkerCatalogSync:
+        return MarkerCatalogSync(
+            MarkerCatalog(),
+            station_id="station-A",
+            station_name_provider=lambda: "X",
+            selection_provider=lambda: ([], []),
+            iface_ip=iface_ip,
+        )
+
+    def test_new_address_arms_both_loops(self) -> None:
+        sync = self._sync()
+        sync.update_iface_ip("10.0.0.9")
+        assert sync._iface_ip == "10.0.0.9"
+        assert sync._tx_reopen.is_set()
+        assert sync._rx_reopen.is_set()
+
+    def test_unchanged_address_is_a_no_op(self) -> None:
+        """A steady station must not rebuild its sockets on every poll."""
+        sync = self._sync()
+        sync.update_iface_ip("192.168.1.5")
+        assert not sync._tx_reopen.is_set()
+        assert not sync._rx_reopen.is_set()
+
+    def test_reopen_forces_a_rebuild_at_the_same_address(self) -> None:
+        """A link that dropped and came back with the same lease has had its
+        memberships torn down by the kernel; the address string cannot show
+        that, so the caller has to be able to force it."""
+        sync = self._sync()
+        sync.reopen()
+        assert sync._tx_reopen.is_set()
+        assert sync._rx_reopen.is_set()
+
+    def test_the_loops_do_not_consume_each_others_event(self) -> None:
+        """One shared event is a trap: RX wakes within its 1s socket timeout
+        while TX is parked for a whole heartbeat, so RX would clear the flag
+        and TX would keep IP_MULTICAST_IF on the dead address forever."""
+        sync = self._sync()
+        sync.reopen()
+        # Model the RX loop reaching its clear first.
+        sync._rx_reopen.clear()
+        assert sync._tx_reopen.is_set(), "RX consumed the TX repoint"
+
+    def test_tx_socket_is_rebuilt_on_a_repoint(self) -> None:
+        """The behaviour the whole fix exists for. Driven on a daemon thread so
+        a regression fails the assertion instead of hanging the suite."""
+        sync = self._sync()
+        opened: list[MagicMock] = []
+
+        def _open():
+            sock = MagicMock()
+            opened.append(sock)
+            return sock
+
+        sync._open_tx_socket = _open  # type: ignore[method-assign]
+        worker = threading.Thread(target=sync._send_loop, daemon=True)
+        worker.start()
+        try:
+            deadline = time.monotonic() + 3.0
+            while not opened and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert opened, "send loop never opened a socket"
+            before = len(opened)
+            sync.reopen()
+            deadline = time.monotonic() + 3.0
+            while len(opened) == before and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert len(opened) > before, "TX socket was not rebuilt after the repoint"
+            assert opened[before - 1].close.called
+        finally:
+            sync._stop_event.set()
+            worker.join(timeout=5.0)
+
+    def test_rx_socket_joins_on_the_new_address(self) -> None:
+        sync = self._sync()
+        sync.update_iface_ip("10.0.0.9")
+        sock = MagicMock()
+        memberships: list[bytes] = []
+
+        def setsockopt(level, opt, val):
+            if opt == _socket.IP_ADD_MEMBERSHIP:
+                memberships.append(val)
+
+        sock.setsockopt.side_effect = setsockopt
+        with patch.object(_socket, "socket", return_value=sock):
+            assert sync._open_rx_socket() is sock
+        assert memberships[0].endswith(_socket.inet_aton("10.0.0.9"))

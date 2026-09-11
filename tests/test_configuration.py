@@ -5294,6 +5294,23 @@ class TestControllerButtonTrigger:
         assert ControllerButtonTrigger().kind == "controller_button"
 
 
+class TestCoerceOptionalMarkerIdBlankString:
+    """Pins the blank-string arm deterministically.
+
+    Its only caller strips and returns before reaching the helper, so the
+    public boundary cannot drive this arm and no ordinary test covers it. What
+    did cover it was a Hypothesis property test happening to draw a
+    whitespace-only string, which made the 100% gate depend on a random draw -
+    green on one machine and red on the next with no code change between them.
+    """
+
+    @pytest.mark.parametrize("value", ["", " ", "\t", "   \n "])
+    def test_a_blank_string_collapses_to_none(self, value: str) -> None:
+        from openfollow.configuration import _coerce_optional_marker_id
+
+        assert _coerce_optional_marker_id(value) is None
+
+
 class TestCoerceOptionalInt:
     """Wildcard-or-bounded-int coercion helper tests.
 

@@ -1011,9 +1011,17 @@ class AppRuntimeServices:
         address, status = resolve_plane_source_ip("", self._app._config.psn_source_iface)
         if status in ("down", "none"):
             self._station_saw_outage = True
-            server = self._app._web_server
-            if status == "down" and server is not None:
-                server.suspend_beacons()
+            if status == "down":
+                # Every station-follower stops on the same edge: each one
+                # carries this station's identity, so a survivor would put it
+                # on a network nobody chose while PSN is being stopped for
+                # exactly that reason.
+                server = self._app._web_server
+                if server is not None:
+                    server.suspend_beacons()
+                sync = getattr(self._app, "_marker_catalog_sync", None)
+                if sync is not None:
+                    sync.update_iface_ip(None)
             return
 
         # The observer forces its own planes to rebuild after an outage even at

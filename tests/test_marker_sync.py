@@ -1783,3 +1783,73 @@ class TestUpdateIfaceIp:
         with patch.object(_socket, "socket", return_value=sock):
             assert sync._open_rx_socket() is sock
         assert memberships[0].endswith(_socket.inet_aton("10.0.0.9"))
+
+
+class TestADarkInterfaceStaysQuiet:
+    """Both loops retry for as long as the pinned interface is out, and say so
+    at most once a minute.
+
+    An interface with no address is an expected state on this path, not a
+    fault: the loops are *meant* to sit there retrying until the cable comes
+    back. Reporting each attempt puts a line in the journal every heartbeat for
+    the whole outage, which buries whatever the operator is actually looking
+    for - so the retry is silent after the first line.
+    """
+
+    def _sync(self, iface_ip: str | None = None) -> MarkerCatalogSync:
+        return MarkerCatalogSync(
+            MarkerCatalog(),
+            station_id="station-A",
+            station_name_provider=lambda: "X",
+            selection_provider=lambda: ([], []),
+            iface_ip=iface_ip,
+        )
+
+    def test_the_send_loop_keeps_retrying_and_logs_once(self, monkeypatch, caplog) -> None:
+        monkeypatch.setattr(marker_sync, "HEARTBEAT_INTERVAL", 0.0)
+        sync = self._sync()
+        attempts: list[int] = []
+
+        def open_dark():
+            attempts.append(1)
+            if len(attempts) >= 3:
+                sync._stop_event.set()
+            raise marker_sync.InterfaceUnavailable("the configured interface has no address")
+
+        with caplog.at_level("WARNING", logger=marker_sync.logger.name):
+            with patch.object(sync, "_open_tx_socket", side_effect=open_dark):
+                sync._send_loop()
+
+        assert len(attempts) == 3, "the send loop stopped retrying while the interface was out"
+        assert len(caplog.records) == 1, "every retry reported itself instead of only the first"
+
+    def test_the_receive_open_reports_the_outage_once(self, caplog) -> None:
+        sync = self._sync()
+        with caplog.at_level("WARNING", logger=marker_sync.logger.name):
+            with patch.object(_socket, "socket", return_value=MagicMock()):
+                assert sync._open_rx_socket() is None
+                assert sync._open_rx_socket() is None
+
+        assert len(caplog.records) == 1, "the second attempt reported the same outage again"
+
+    def test_an_unpinned_join_failure_is_still_reported(self, caplog) -> None:
+        """Blank is "nothing configured", so a failed join there is a real fault.
+
+        It is not the outage this class is about and must not be rate-limited
+        into the same quiet path - nobody asked for that interface, so nothing
+        is expected to bring it back.
+        """
+        sync = self._sync(iface_ip="")
+        sock = MagicMock()
+
+        def setsockopt(level, opt, val):
+            if opt == _socket.IP_ADD_MEMBERSHIP:
+                raise OSError("no such device")
+
+        sock.setsockopt.side_effect = setsockopt
+        with caplog.at_level("ERROR", logger=marker_sync.logger.name):
+            with patch.object(_socket, "socket", return_value=sock):
+                assert sync._open_rx_socket() is None
+
+        assert [r.levelname for r in caplog.records] == ["ERROR"]
+        sock.close.assert_called_once()

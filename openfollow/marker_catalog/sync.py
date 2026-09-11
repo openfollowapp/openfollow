@@ -32,7 +32,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from openfollow.marker_catalog.catalog import MarkerCatalog, MarkerEntry, _sanitize_text
-from openfollow.net_utils import bind_multicast_send_iface, join_multicast_group_on_iface
+from openfollow.net_utils import (
+    InterfaceUnavailable,
+    bind_multicast_send_iface,
+    join_multicast_group_on_iface,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +70,8 @@ _MAX_RX_PACKET = 60 * 1024
 # (5-15s is normal), because that is exactly the window the retry exists to
 # cover - a shorter one gives up in the case it was added for. A port that is
 # permanently taken still stops rather than spinning for the whole show.
+# One line per minute while an interface is out, per loop.
+_IFACE_DOWN_LOG_INTERVAL_S = 60.0
 _RX_OPEN_MAX_RETRIES = 30
 _RX_OPEN_RETRY_S = 1.0
 
@@ -294,7 +300,7 @@ class MarkerCatalogSync:
         station_name_provider: Callable[[], str],
         selection_provider: Callable[[], tuple[list[int], list[int]]],
         on_change: Callable[[list[int]], None] | None = None,
-        iface_ip: str = "",
+        iface_ip: str | None = "",
     ) -> None:
         self._catalog = catalog
         self._station_id = station_id
@@ -330,11 +336,20 @@ class MarkerCatalogSync:
         self._rotation_log_ts = float("-inf")
         self._unchunkable_log_ts = float("-inf")
         self._envelope_log_ts = float("-inf")
+        # Rate-limits the "interface is down" line on each loop; separate
+        # counters because the two loops retry on different periods.
+        self._tx_down_log_ts = float("-inf")
+        self._rx_down_log_ts = float("-inf")
 
     # -- Public API ----------------------------------------------------------
 
-    def update_iface_ip(self, iface_ip: str) -> None:
+    def update_iface_ip(self, iface_ip: str | None) -> None:
         """Repoint both sockets after the station's address changed.
+
+        ``None`` means the station interface currently has no address, which
+        stops sync until it returns rather than moving it elsewhere. The sync
+        is constructed either way, so a station that booted with a dark
+        interface still has an object to bring back when the link returns.
 
         The TX socket pins ``IP_MULTICAST_IF`` and the RX socket joins
         ``IP_ADD_MEMBERSHIP`` on the address they were opened with, and neither
@@ -484,6 +499,16 @@ class MarkerCatalogSync:
                 self._tx_reopen.clear()
                 try:
                     sock = self._open_tx_socket()
+                except InterfaceUnavailable as exc:
+                    # Expected while the station interface is down, and it
+                    # retries every heartbeat - a traceback per attempt would
+                    # bury the journal for as long as the cable is out.
+                    now = time.monotonic()
+                    if now - self._tx_down_log_ts >= _IFACE_DOWN_LOG_INTERVAL_S:
+                        self._tx_down_log_ts = now
+                        logger.warning("MarkerCatalogSync: %s", exc)
+                    self._stop_event.wait(HEARTBEAT_INTERVAL)
+                    continue
                 except Exception:
                     logger.exception("MarkerCatalogSync: TX socket open failed")
                     self._stop_event.wait(HEARTBEAT_INTERVAL)
@@ -673,6 +698,13 @@ class MarkerCatalogSync:
 
         try:
             join_multicast_group_on_iface(sock, CATALOG_MCAST_GROUP, self._iface_ip, label="MarkerCatalogSync")
+        except InterfaceUnavailable as exc:
+            now = time.monotonic()
+            if now - self._rx_down_log_ts >= _IFACE_DOWN_LOG_INTERVAL_S:
+                self._rx_down_log_ts = now
+                logger.warning("MarkerCatalogSync: %s", exc)
+            sock.close()
+            return None
         except OSError as exc:
             logger.error("MarkerCatalogSync: join failed: %s", exc)
             sock.close()

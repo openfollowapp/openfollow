@@ -999,6 +999,50 @@ def test_nothing_configured_does_not_suspend_the_beacons(monkeypatch) -> None:
     assert server.suspends == 0
 
 
+def test_sync_recovers_from_a_station_booted_with_a_dark_interface(monkeypatch) -> None:
+    """The gap a bench run found: the beacon self-healed and sync did not.
+
+    Sync used not to be constructed at all when the station booted dark, and
+    the recovery path can only repoint an object that exists - so marker names
+    stayed unsynced until somebody restarted the station, long after the cable
+    was back in.
+    """
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.psn_source_iface = "eth0"
+    sync, server = _wire_followers(services)
+
+    # Booted dark: the interface the pin names has no address.
+    _fake_ifaces(monkeypatch, {})
+    services._follow_station_ip()
+    assert sync.ips == [None], "a dark interface must put sync into its silent state"
+
+    # The cable goes back in. No restart, no config change.
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._follow_station_ip()
+
+    assert sync.ips == [None, "192.168.1.5"], "sync never came back after the interface returned"
+    assert sync.reopens == 1, "the membership the kernel dropped was not rebuilt"
+
+
+def test_a_station_with_no_web_server_still_silences_sync(monkeypatch) -> None:
+    """The two followers stop independently.
+
+    Each puts this station's identity on its own socket, so whichever one
+    exists has to go quiet on the down edge regardless of the other. Guarding
+    them together would leave marker names on an excluded network on any
+    station whose web server had not been built.
+    """
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.psn_source_iface = "eth0"
+    sync, _server = _wire_followers(services)
+    services._app._web_server = None
+
+    _fake_ifaces(monkeypatch, {})
+    services._follow_station_ip()
+
+    assert sync.ips == [None], "sync kept sending because there was no web server to suspend alongside it"
+
+
 def test_follow_station_ip_tolerates_missing_services(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
     services._app._web_server = None
@@ -1119,10 +1163,11 @@ def test_station_followers_do_not_move_to_another_interface(monkeypatch) -> None
     services._app._marker_catalog_sync = sync
     services._app._web_server = server
     services._follow_station_ip()
-    assert sync.ips == []
     assert server.refreshes == 0
-    # Not merely "not repointed": discovery is told to stop, so it goes quiet
-    # by decision instead of waiting for a send on a dead address to fail.
+    # Not merely "not repointed": both followers are told to stop, so each
+    # goes quiet by decision instead of waiting for a send on a dead address
+    # to fail. None is the sync's own "stay silent" state.
+    assert sync.ips == [None]
     assert server.suspends == 1
 
 
@@ -1181,10 +1226,10 @@ def test_plane_current_reports_the_live_binding(monkeypatch) -> None:
 
 class _FollowerSync:
     def __init__(self) -> None:
-        self.ips: list[str] = []
+        self.ips: list[str | None] = []
         self.reopens = 0
 
-    def update_iface_ip(self, ip: str) -> None:
+    def update_iface_ip(self, ip: str | None) -> None:
         self.ips.append(ip)
 
     def reopen(self) -> None:

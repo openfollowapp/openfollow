@@ -679,10 +679,19 @@ class TestMarkerCatalogSyncFollowsTheStationInterface:
         OpenFollowApp._init_marker_catalog_sync(fake)  # type: ignore[arg-type]
         return built
 
-    def test_does_not_start_when_the_interface_is_down(self, tmp_path, monkeypatch) -> None:
+    def test_is_built_silent_when_the_interface_is_down(self, tmp_path, monkeypatch) -> None:
+        """Down means silent, not absent.
+
+        Returning early here left a station that BOOTED dark with no sync
+        object at all, and the observer's recovery path can only repoint one
+        that exists - so marker names never synced again until the next
+        restart, long after the cable was back. ``None`` is the "stay silent"
+        state the sync itself understands.
+        """
         fake = self._fake(tmp_path, None)
-        assert self._run(fake, monkeypatch) == []
-        assert fake._marker_catalog_sync is None
+        built = self._run(fake, monkeypatch)
+        assert [k["iface_ip"] for k in built] == [None]
+        assert fake._marker_catalog_sync is not None
 
     def test_starts_bound_to_the_station_address(self, tmp_path, monkeypatch) -> None:
         fake = self._fake(tmp_path, "10.20.0.5")

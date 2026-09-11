@@ -4,7 +4,6 @@
       hx-post="/section/mouse" hx-target="#mouse-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>Mouse Input</h2>
-        <span class="section-note">Click a marker's ground circle to take control; right-click releases</span>
     </div>
 
     <div class="group">

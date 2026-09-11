@@ -56,7 +56,6 @@
 
     <div class="group">
         <h3 class="group-title">Buttons</h3>
-        <span class="section-note">Click Detect, then press a button. Blank = unbound.</span>
         % for i in range(0, len(MOUSE3D_BUTTON_FORM_LABELS), 2):
         <div class="row">
             % for field, label in MOUSE3D_BUTTON_FORM_LABELS[i:i + 2]:

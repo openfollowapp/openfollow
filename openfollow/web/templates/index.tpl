@@ -32,7 +32,6 @@
     <div class="section" id="statistics-section" data-fold-key="statistics" data-help="statistics">
         <div class="section-head">
             <h2>Live Statistics</h2>
-            <span class="section-note">Core status first, advanced diagnostics on demand</span>
         </div>
         <div id="statistics-section-content"
              hx-get="/section/statistics"

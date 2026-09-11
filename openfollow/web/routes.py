@@ -3211,7 +3211,13 @@ def _build_diagnostics_providers(
             }
             for p in server.get_peers()
         ],
-        iface_ip=lambda: server.local_ip,
+        # Annotated rather than bare: the address keeps its last known good
+        # value through an outage, and the bundle carries no alert list to
+        # contradict it, so offline support would read a stale address as
+        # current with nothing on the page saying otherwise.
+        iface_ip=lambda: (
+            f"{server.local_ip} (station interface down)" if server.station_interface_down else server.local_ip
+        ),
         config_redacted_toml=lambda: diagnostics.redact_config_secrets(
             _config_to_toml(cfg),
         ),
@@ -4697,6 +4703,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             config=config,
             peers=peers,
             local=local,
+            station_down=server.station_interface_down,
             network_state=server.get_network_state(),
             stats=server.get_runtime_stats(),
             controller_slots=_controller_slots_view(server),
@@ -4766,6 +4773,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "partials/overview_peers",
             peers=peers,
             local=local,
+            station_down=server.station_interface_down,
         )
 
     @app.get("/section/statistics")

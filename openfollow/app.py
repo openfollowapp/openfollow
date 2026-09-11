@@ -349,6 +349,8 @@ class OpenFollowApp:
         self._pi_network_field_edit_active: bool = False
         self._pi_network_field_name: str = ""
         self._pi_network_field_value: str = ""
+        # Cursor into the field editor's digit grid, for d-pad entry.
+        self._pi_network_field_digit_index: int = 0
         self._pi_network_banner: str = ""
         self._pi_network_busy: bool = False
         self._pi_network_worker: threading.Thread | None = None

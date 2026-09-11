@@ -1329,8 +1329,6 @@ def _make_minimal_app_for_dispatch() -> SimpleNamespace:
         _url_editor_active=False,
         _browser_active=False,
         _pi_network_field_edit_active=False,
-        _pi_network_method_picker_active=False,
-        _pi_network_iface_picker_active=False,
         _pi_network_active=False,
         _config=AppConfig(),
         _settings_key_pressed=False,
@@ -1341,8 +1339,6 @@ def _make_minimal_app_for_dispatch() -> SimpleNamespace:
     "state_attr,dispatcher_name",
     [
         ("_pi_network_field_edit_active", "process_pi_network_field_edit_input"),
-        ("_pi_network_method_picker_active", "process_pi_network_method_picker_input"),
-        ("_pi_network_iface_picker_active", "process_pi_network_iface_picker_input"),
         ("_pi_network_active", "process_pi_network_input"),
     ],
 )
@@ -1364,8 +1360,6 @@ def test_process_input_routes_into_network_substate(
 @pytest.mark.parametrize(
     "state_attr,handler_name",
     [
-        ("_pi_network_method_picker_active", "handle_pi_network_method_picker_key"),
-        ("_pi_network_iface_picker_active", "handle_pi_network_iface_picker_key"),
         ("_pi_network_active", "handle_pi_network_key"),
     ],
 )

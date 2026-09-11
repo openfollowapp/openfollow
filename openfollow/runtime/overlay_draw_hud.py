@@ -1485,6 +1485,17 @@ def draw_pi_network_screen(
             row_y += header_h + spacing_after_header
             continue
 
+        if kind == "notice":
+            # Amber, not muted: these are the two states that break
+            # reachability while still looking like a working station.
+            renderer._set_ui_font(cr, 11.5)
+            cr.set_source_rgba(*COLOR_ACCENT, 1.0)
+            text = renderer._truncate_text_to_width(cr, f"! {label}", inner_w - 14.0)
+            cr.move_to(inner_x, row_y + data_row_h * 0.65)
+            cr.show_text(text)
+            row_y += data_row_h
+            continue
+
         if kind == "action":
             # Button-styled row.
             is_selected = idx == selected_idx
@@ -1548,74 +1559,6 @@ def draw_pi_network_screen_overlay(
 ) -> None:
     draw_modal_scrim(cr, w, h, alpha=0.56)
     draw_pi_network_screen(renderer, cr, state, w, h)
-
-
-def draw_pi_network_iface_picker(
-    renderer: Any,
-    cr: Any,
-    state: OverlayState,
-    w: int,
-    h: int,
-) -> None:
-    net = state.pi_network
-    draw_selection_menu(
-        renderer,
-        cr,
-        state,
-        w,
-        h,
-        title="SELECT INTERFACE",
-        subtitle="Pick an interface, Enter to confirm, Esc to cancel.",
-        mode="pi-network-iface",
-        items=list(net.iface_picker_items),
-        selected_idx=net.iface_picker_selected_index,
-        empty_message="No interfaces detected.",
-    )
-
-
-def draw_pi_network_iface_picker_overlay(
-    renderer: Any,
-    cr: Any,
-    state: OverlayState,
-    w: int,
-    h: int,
-) -> None:
-    draw_modal_scrim(cr, w, h, alpha=0.56)
-    draw_pi_network_iface_picker(renderer, cr, state, w, h)
-
-
-def draw_pi_network_method_picker(
-    renderer: Any,
-    cr: Any,
-    state: OverlayState,
-    w: int,
-    h: int,
-) -> None:
-    net = state.pi_network
-    draw_selection_menu(
-        renderer,
-        cr,
-        state,
-        w,
-        h,
-        title="CONFIGURE IPv4",
-        subtitle="Pick a method, Enter to confirm, Esc to cancel.",
-        mode="pi-network-method",
-        items=list(net.method_picker_items),
-        selected_idx=net.method_picker_selected_index,
-        empty_message="No methods available.",
-    )
-
-
-def draw_pi_network_method_picker_overlay(
-    renderer: Any,
-    cr: Any,
-    state: OverlayState,
-    w: int,
-    h: int,
-) -> None:
-    draw_modal_scrim(cr, w, h, alpha=0.56)
-    draw_pi_network_method_picker(renderer, cr, state, w, h)
 
 
 def draw_pi_network_field_edit(

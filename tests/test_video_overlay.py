@@ -94,8 +94,6 @@ def patched_passes(monkeypatch):
         "draw_url_editor_overlay_pass",
         "draw_field_choice_picker_overlay_pass",
         "draw_pi_network_screen_overlay_pass",
-        "draw_pi_network_iface_picker_overlay_pass",
-        "draw_pi_network_method_picker_overlay_pass",
         "draw_pi_network_field_edit_overlay_pass",
         "draw_detections_pass",
         "draw_grid_pass",
@@ -165,18 +163,6 @@ class TestDrawDispatch:
         renderer.state.pi_network.field_edit_active = True
         renderer.draw(FakeCairo(), 1280, 720)
         assert patched_passes == ["draw_pi_network_field_edit_overlay_pass"]
-
-    def test_pi_network_method_picker_dispatches_method_picker_overlay(self, patched_passes) -> None:
-        renderer = CairoOverlayRenderer()
-        renderer.state.pi_network.method_picker_active = True
-        renderer.draw(FakeCairo(), 1280, 720)
-        assert patched_passes == ["draw_pi_network_method_picker_overlay_pass"]
-
-    def test_pi_network_iface_picker_dispatches_iface_picker_overlay(self, patched_passes) -> None:
-        renderer = CairoOverlayRenderer()
-        renderer.state.pi_network.iface_picker_active = True
-        renderer.draw(FakeCairo(), 1280, 720)
-        assert patched_passes == ["draw_pi_network_iface_picker_overlay_pass"]
 
     def test_pi_network_screen_dispatches_screen_overlay(self, patched_passes) -> None:
         renderer = CairoOverlayRenderer()

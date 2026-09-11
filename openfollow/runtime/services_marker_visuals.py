@@ -288,16 +288,6 @@ def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
         target.selected_index = int(getattr(app, "_pi_network_index", 0))
         target.active_iface = str(getattr(app, "_pi_network_active_iface", ""))
         target.banner = str(getattr(app, "_pi_network_banner", ""))
-    target.iface_picker_active = bool(getattr(app, "_pi_network_iface_picker_active", False))
-    if target.iface_picker_active:
-        target.iface_picker_items = [i.name for i in getattr(app, "_pi_network_interfaces", [])]
-        target.iface_picker_selected_index = int(getattr(app, "_pi_network_iface_picker_index", 0))
-    target.method_picker_active = bool(getattr(app, "_pi_network_method_picker_active", False))
-    if target.method_picker_active:
-        from openfollow.runtime.app_modes_network import method_picker_items
-
-        target.method_picker_items = [label for _, label in method_picker_items()]
-        target.method_picker_selected_index = int(getattr(app, "_pi_network_method_picker_index", 0))
     target.field_edit_active = bool(getattr(app, "_pi_network_field_edit_active", False))
     if target.field_edit_active:
         target.field_label = str(getattr(app, "_pi_network_field_name", "")).replace("_", " ").title()

@@ -772,34 +772,6 @@ class TestPopulatePiNetworkOverlay:
         assert state.pi_network.active_iface == "eth0"
         assert state.pi_network.banner == "Apply ok."
 
-    def test_iface_picker_active_copies_names(self) -> None:
-        from openfollow.network.adapter import NetworkInterface
-
-        app = SimpleNamespace(
-            _pi_network_iface_picker_active=True,
-            _pi_network_iface_picker_index=1,
-            _pi_network_interfaces=[
-                NetworkInterface(name="eth0", mac=None, kind=None, is_up=True),
-                NetworkInterface(name="wlan0", mac=None, kind=None, is_up=False),
-            ],
-        )
-        state = OverlayState()
-        _populate_pi_network_overlay(app, state)
-        assert state.pi_network.iface_picker_active is True
-        assert state.pi_network.iface_picker_items == ["eth0", "wlan0"]
-        assert state.pi_network.iface_picker_selected_index == 1
-
-    def test_method_picker_active_copies_labels(self) -> None:
-        app = SimpleNamespace(
-            _pi_network_method_picker_active=True,
-            _pi_network_method_picker_index=2,
-        )
-        state = OverlayState()
-        _populate_pi_network_overlay(app, state)
-        assert state.pi_network.method_picker_active is True
-        assert "DHCP" in state.pi_network.method_picker_items
-        assert state.pi_network.method_picker_selected_index == 2
-
     def test_field_edit_active_humanises_label(self) -> None:
         """``dns_1`` → "Dns 1"; ``ip_address`` → "Ip Address"."""
         app = SimpleNamespace(

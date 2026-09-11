@@ -46,14 +46,6 @@ class PiNetworkOverlayState:
     active_iface: str = ""
     banner: str = ""
 
-    iface_picker_active: bool = False
-    iface_picker_items: list[str] = field(default_factory=list)
-    iface_picker_selected_index: int = 0
-
-    method_picker_active: bool = False
-    method_picker_items: list[str] = field(default_factory=list)
-    method_picker_selected_index: int = 0
-
     field_edit_active: bool = False
     field_label: str = ""
     field_value: str = ""
@@ -64,12 +56,6 @@ class PiNetworkOverlayState:
         self.selected_index = 0
         self.active_iface = ""
         self.banner = ""
-        self.iface_picker_active = False
-        self.iface_picker_items.clear()
-        self.iface_picker_selected_index = 0
-        self.method_picker_active = False
-        self.method_picker_items.clear()
-        self.method_picker_selected_index = 0
         self.field_edit_active = False
         self.field_label = ""
         self.field_value = ""

@@ -31,12 +31,6 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_pi_network_field_edit_overlay as draw_pi_network_field_edit_overlay_pass,
 )
 from openfollow.runtime.overlay_draw_hud import (
-    draw_pi_network_iface_picker_overlay as draw_pi_network_iface_picker_overlay_pass,
-)
-from openfollow.runtime.overlay_draw_hud import (
-    draw_pi_network_method_picker_overlay as draw_pi_network_method_picker_overlay_pass,
-)
-from openfollow.runtime.overlay_draw_hud import (
     draw_pi_network_screen_overlay as draw_pi_network_screen_overlay_pass,
 )
 from openfollow.runtime.overlay_draw_hud import (
@@ -294,12 +288,6 @@ class CairoOverlayRenderer:
             if net.field_edit_active:
                 self._draw_pi_network_field_edit_overlay(cr, state, width, height)
                 return
-            if net.method_picker_active:
-                self._draw_pi_network_method_picker_overlay(cr, state, width, height)
-                return
-            if net.iface_picker_active:
-                self._draw_pi_network_iface_picker_overlay(cr, state, width, height)
-                return
             if net.screen_active:
                 self._draw_pi_network_screen_overlay(cr, state, width, height)
                 return
@@ -485,24 +473,6 @@ class CairoOverlayRenderer:
         h: int,
     ) -> None:
         draw_pi_network_screen_overlay_pass(self, cr, state, w, h)
-
-    def _draw_pi_network_iface_picker_overlay(
-        self,
-        cr: Any,
-        state: OverlayState,
-        w: int,
-        h: int,
-    ) -> None:
-        draw_pi_network_iface_picker_overlay_pass(self, cr, state, w, h)
-
-    def _draw_pi_network_method_picker_overlay(
-        self,
-        cr: Any,
-        state: OverlayState,
-        w: int,
-        h: int,
-    ) -> None:
-        draw_pi_network_method_picker_overlay_pass(self, cr, state, w, h)
 
     def _draw_pi_network_field_edit_overlay(
         self,

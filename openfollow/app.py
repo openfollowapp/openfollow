@@ -326,10 +326,8 @@ class OpenFollowApp:
         self._pi_network_active_iface: str = ""
         self._pi_network_state_cache: _NetworkState | None = None
         self._pi_network_pending_config: _Ipv4Config | None = None
-        self._pi_network_iface_picker_active: bool = False
-        self._pi_network_iface_picker_index: int = 0
-        self._pi_network_method_picker_active: bool = False
-        self._pi_network_method_picker_index: int = 0
+        # True while the static-address fields are revealed on the screen.
+        self._pi_network_static_edit: bool = False
         self._pi_network_field_edit_active: bool = False
         self._pi_network_field_name: str = ""
         self._pi_network_field_value: str = ""

@@ -42,8 +42,6 @@ def process_input(app: OpenFollowApp, dt: float) -> None:
         or getattr(app, "_settings_menu_active", False)
         or getattr(app, "_about_active", False)
         or getattr(app, "_pi_network_field_edit_active", False)
-        or getattr(app, "_pi_network_method_picker_active", False)
-        or getattr(app, "_pi_network_iface_picker_active", False)
         or getattr(app, "_pi_network_active", False)
         or getattr(getattr(app, "_video_receiver", None), "source_selection_active", False)
         or getattr(app, "_source_type_selection_active", False)
@@ -84,16 +82,6 @@ def process_input(app: OpenFollowApp, dt: float) -> None:
         from openfollow.runtime.app_modes_network import process_pi_network_field_edit_input
 
         process_pi_network_field_edit_input(app)
-        return
-    if getattr(app, "_pi_network_method_picker_active", False):
-        from openfollow.runtime.app_modes_network import process_pi_network_method_picker_input
-
-        process_pi_network_method_picker_input(app)
-        return
-    if getattr(app, "_pi_network_iface_picker_active", False):
-        from openfollow.runtime.app_modes_network import process_pi_network_iface_picker_input
-
-        process_pi_network_iface_picker_input(app)
         return
     if getattr(app, "_pi_network_active", False):
         from openfollow.runtime.app_modes_network import process_pi_network_input
@@ -605,16 +593,6 @@ def handle_key_press(app: OpenFollowApp, key: str) -> None:
     # that ARE in that set don't double-insert or fire app shortcuts beneath
     # the editor.
     if getattr(app, "_pi_network_field_edit_active", False):
-        return
-    if getattr(app, "_pi_network_method_picker_active", False):
-        from openfollow.runtime.app_modes_network import handle_pi_network_method_picker_key
-
-        handle_pi_network_method_picker_key(app, key)
-        return
-    if getattr(app, "_pi_network_iface_picker_active", False):
-        from openfollow.runtime.app_modes_network import handle_pi_network_iface_picker_key
-
-        handle_pi_network_iface_picker_key(app, key)
         return
     if getattr(app, "_pi_network_active", False):
         from openfollow.runtime.app_modes_network import handle_pi_network_key
@@ -1645,8 +1623,6 @@ def _exclusive_mode_active(app: OpenFollowApp) -> bool:
         or getattr(app, "_settings_menu_active", False)
         or getattr(app, "_about_active", False)
         or getattr(app, "_pi_network_field_edit_active", False)
-        or getattr(app, "_pi_network_method_picker_active", False)
-        or getattr(app, "_pi_network_iface_picker_active", False)
         or getattr(app, "_pi_network_active", False)
         or getattr(app, "_source_type_selection_active", False)
         or getattr(app, "_field_choice_active", False)

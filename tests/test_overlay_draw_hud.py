@@ -37,10 +37,6 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_panel_background,
     draw_pi_network_field_edit,
     draw_pi_network_field_edit_overlay,
-    draw_pi_network_iface_picker,
-    draw_pi_network_iface_picker_overlay,
-    draw_pi_network_method_picker,
-    draw_pi_network_method_picker_overlay,
     draw_pi_network_screen,
     draw_pi_network_screen_overlay,
     draw_selectable_list,
@@ -2133,48 +2129,6 @@ class TestDrawPiNetworkScreen:
         # row label.
         texts = cr.show_text_strings()
         assert any("Configure" in t for t in texts)
-
-
-class TestDrawPiNetworkIfacePicker:
-    def test_renders_iface_list(self) -> None:
-        state = _base_state(
-            pi_network=_network_state(
-                iface_picker_items=["eth0", "wlan0"],
-                iface_picker_selected_index=1,
-            )
-        )
-        cr = FakeCairo()
-        draw_pi_network_iface_picker(FakeRenderer(state=state), cr, state, 1280, 720)
-        texts = cr.show_text_strings()
-        assert any("eth0" in t for t in texts)
-        assert any("wlan0" in t for t in texts)
-
-    def test_overlay_wraps_with_scrim(self) -> None:
-        state = _base_state(pi_network=_network_state())
-        cr = FakeCairo()
-        draw_pi_network_iface_picker_overlay(FakeRenderer(state=state), cr, state, 1280, 720)
-        assert (0, 0, 1280, 720) in cr.rects
-
-
-class TestDrawPiNetworkMethodPicker:
-    def test_renders_method_list(self) -> None:
-        state = _base_state(
-            pi_network=_network_state(
-                method_picker_items=["DHCP", "DHCP with manual address", "Static"],
-                method_picker_selected_index=2,
-            )
-        )
-        cr = FakeCairo()
-        draw_pi_network_method_picker(FakeRenderer(state=state), cr, state, 1280, 720)
-        texts = cr.show_text_strings()
-        assert any("DHCP" in t for t in texts)
-        assert any("Static" in t for t in texts)
-
-    def test_overlay_wraps_with_scrim(self) -> None:
-        state = _base_state(pi_network=_network_state())
-        cr = FakeCairo()
-        draw_pi_network_method_picker_overlay(FakeRenderer(state=state), cr, state, 1280, 720)
-        assert (0, 0, 1280, 720) in cr.rects
 
 
 class TestDrawPiNetworkFieldEdit:

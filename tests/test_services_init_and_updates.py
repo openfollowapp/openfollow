@@ -552,8 +552,14 @@ class TestInitPsn:
         monkeypatch.setattr(services_module, "PsnServer", factory)
 
         services.init_psn()
-        assert factory.last_kwargs == {}
-        assert services._app._server is None
+        # Built, so the observer has something to rebind when the interface
+        # returns, but never started and never handed another interface's
+        # address - the two things that would put PSN on the wire.
+        assert factory.instances[0].start_called is False, "PSN started on a down interface"
+        assert factory.last_kwargs["source_ip"] == "", "PSN was handed a borrowed address"
+        assert services._app._server is not None, (
+            "a server that is absent cannot be repointed, so PSN never returns without a restart"
+        )
 
     def _stub_primary_ip(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import socket as _socket
@@ -4156,15 +4162,44 @@ class TestStationFollowersDoNotBindOnADownInterface:
     def test_psn_receiver_does_not_start(self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch) -> None:
         self._down_station(services, monkeypatch)
         built: list[object] = []
+        started: list[int] = []
         monkeypatch.setattr(
             services_module,
             "PsnReceiver",
-            lambda **kw: built.append(kw) or SimpleNamespace(start=lambda: None),
+            lambda **kw: built.append(kw) or SimpleNamespace(start=lambda: started.append(1)),
         )
         services._app._psn_receiver = None
         services.init_psn_receiver()
-        assert built == [], f"receiver was constructed with {built!r}"
-        assert services._app._psn_receiver is None
+        assert started == [], "receiver joined the multicast group on a down interface"
+        assert built and built[0]["source_ip"] == "", "receiver was handed a borrowed address"
+        assert services._app._psn_receiver is not None, (
+            "a receiver that is absent cannot be repointed when the interface returns"
+        )
+
+    def test_psn_output_returns_when_the_interface_comes_back(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The gap this shape exists to close.
+
+        A station booted with its pinned interface dark used to leave ``_server``
+        None, which skips markers and every dependent output for the life of the
+        process - and the observer's recovery only repoints a server that
+        already exists, so it logged that output had resumed while nothing had.
+        """
+        self._down_station(services, monkeypatch)
+        factory = _FakePsnServerFactory()
+        monkeypatch.setattr(services_module, "PsnServer", factory)
+        services.init_psn()
+        server = services._app._server
+        assert server is not None and server.start_called is False
+
+        # The cable goes back in and the observer repoints the plane.
+        services._app._psn_receiver = None
+        services.apply_psn_source_ip_change("192.168.4.20")
+
+        assert server.rebind_calls == ["192.168.4.20"], (
+            "PSN never came back after the interface returned; it needs a restart"
+        )
 
     def test_psn_receiver_still_starts_on_a_live_interface(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

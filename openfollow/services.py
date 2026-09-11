@@ -894,11 +894,12 @@ class AppRuntimeServices:
 
         resolved, status = resolve_plane_source_ip("", self._app._config.psn_source_iface)
         if status == "down":
-            logger.error(
-                "Configured psn_source_iface '%s' has no address; PSN stays down until it "
-                "returns (it will not be sent on another interface).",
-                self._app._config.psn_source_iface,
-            )
+            # Deliberately quiet. This is a query, called once a second by the
+            # stats collector and again by the online-sync and beacon providers,
+            # so logging here put an identical ERROR line in the journal every
+            # second for the whole outage - burying the one thing an operator
+            # reading it is looking for. ``init_psn`` logs the startup decision
+            # and the network observer logs the down and up edges.
             return None
         return resolved
 
@@ -1082,15 +1083,28 @@ class AppRuntimeServices:
 
     def init_psn(self) -> None:
         source_ip = self.station_source_ip_or_none()
-        if source_ip is None:
-            # Configured station interface has no address. Binding "" would
-            # send PSN via the OS routing table.
-            return
         server = PsnServer(
             system_name=self._app._config.psn_system_name,
             mcast_ip=self._app._config.psn_mcast_ip,
-            source_ip=source_ip,
+            source_ip=source_ip or "",
         )
+        if source_ip is None:
+            # Down means silent, not absent. The server is built but never
+            # started, so nothing is sent - binding "" would send PSN via the
+            # OS routing table, which is the outcome the pin exists to prevent.
+            #
+            # Returning here instead left ``_server`` None, which skips markers
+            # and every dependent output for the life of the process, and the
+            # observer's recovery only repoints a server that already exists -
+            # so a station booted with its interface dark never sent a packet
+            # again, while the recovery logged that output had resumed.
+            logger.error(
+                "Configured psn_source_iface '%s' has no address; PSN output stays silent "
+                "until it returns (it will not be sent on another interface).",
+                self._app._config.psn_source_iface,
+            )
+            self._app._server = server
+            return
         # Assign only after start() succeeds: a failed start must leave
         # ``_server`` None so the dependent init group is skipped, not run
         # against a server whose send threads never came up.
@@ -1230,13 +1244,15 @@ class AppRuntimeServices:
         # group on whatever interface the OS picks, so the station would answer
         # on a network the operator did not choose while its output was stopped.
         source_ip = self.station_source_ip_or_none()
-        if source_ip is None:
-            return
-        self._app._psn_receiver = PsnReceiver(
+        receiver = PsnReceiver(
             ignore_ids=self._app._controlled_ids,
-            source_ip=source_ip,
+            source_ip=source_ip or "",
         )
-        self._app._psn_receiver.start()
+        # Built either way, started only with an address, for the same reason
+        # as the server: the recovery path can only rebind one that exists.
+        if source_ip is not None:
+            receiver.start()
+        self._app._psn_receiver = receiver
 
     def init_virtual_faders(self) -> None:
         """Re-apply the persisted virtual-fader config and provision the

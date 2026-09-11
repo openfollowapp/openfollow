@@ -481,15 +481,16 @@ class TestGamepadFieldEditCancel:
     """Gamepad Cancel must exit field editor; gamepad-only operator
     can't get stranded inside text input."""
 
-    def _fake_input(self, cancel: bool = False, confirm: bool = False):
-        from types import SimpleNamespace as NS
+    def _fake_input(self, **pressed: bool):
+        """Build the real input dataclass, not a stand-in.
 
-        return NS(
-            up_pressed=False,
-            down_pressed=False,
-            cancel_pressed=cancel,
-            confirm_pressed=confirm,
-        )
+        A hand-rolled namespace silently stops matching the moment a button is
+        added, and the poll then fails on an attribute the production code is
+        entitled to read.
+        """
+        from openfollow.input.gamepad import SettingsMenuInput
+
+        return SettingsMenuInput(**{f"{name}_pressed": value for name, value in pressed.items()})
 
     def test_cancel_exits_editor(self) -> None:
         app = _make_app()
@@ -686,15 +687,16 @@ class TestPiNetworkMove:
 class TestPiNetworkInputDispatchers:
     """Cover the gamepad-poll input dispatchers (cancel / confirm / move)."""
 
-    def _fake_input(self, *, up=False, down=False, confirm=False, cancel=False):
-        from types import SimpleNamespace
+    def _fake_input(self, **pressed: bool):
+        """Build the real input dataclass, not a stand-in.
 
-        return SimpleNamespace(
-            up_pressed=up,
-            down_pressed=down,
-            confirm_pressed=confirm,
-            cancel_pressed=cancel,
-        )
+        A hand-rolled namespace silently stops matching the moment a button is
+        added, and the poll then fails on an attribute the production code is
+        entitled to read.
+        """
+        from openfollow.input.gamepad import SettingsMenuInput
+
+        return SettingsMenuInput(**{f"{name}_pressed": value for name, value in pressed.items()})
 
     def _attach_gamepad(self, app, inp_obj):
         from types import SimpleNamespace
@@ -1490,15 +1492,16 @@ class TestProcessInputConfirmsAndCancels:
     """Cover the confirm-button paths in the input handlers (lines 291,
     411->exit, 496->exit, 623->exit)."""
 
-    def _fake_input(self, *, confirm=False, cancel=False):
-        from types import SimpleNamespace
+    def _fake_input(self, **pressed: bool):
+        """Build the real input dataclass, not a stand-in.
 
-        return SimpleNamespace(
-            up_pressed=False,
-            down_pressed=False,
-            confirm_pressed=confirm,
-            cancel_pressed=cancel,
-        )
+        A hand-rolled namespace silently stops matching the moment a button is
+        added, and the poll then fails on an attribute the production code is
+        entitled to read.
+        """
+        from openfollow.input.gamepad import SettingsMenuInput
+
+        return SettingsMenuInput(**{f"{name}_pressed": value for name, value in pressed.items()})
 
     def test_process_pi_network_confirm_branch(self) -> None:
         app = _make_app()

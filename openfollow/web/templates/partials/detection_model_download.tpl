@@ -11,6 +11,7 @@
 % if unavailable:
     <div class="group">
         <h3 class="group-title">Download Model</h3>
+        <p class="section-note">Requires an internet connection.</p>
 %     if not export_installed:
         <p class="section-note">Install the model-export tools (run <code>install-detection.sh --with-export</code>) to enable downloads.</p>
 %     end

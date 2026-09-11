@@ -2,7 +2,7 @@
       hx-post="/section/otp_output" hx-target="#otp-output-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>OTP Output</h2>
-        <span class="section-note">ANSI E1.59 Object Transform Protocol – parallel output alongside PSN</span>
+        <span class="section-note">Object Transform Protocol</span>
     </div>
 
     <div class="group">

@@ -13,7 +13,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
-from openfollow.configuration import save_config
 from openfollow.network.adapter import (
     ApplyResult,
     Ipv4Config,
@@ -385,55 +384,7 @@ def _pi_network_iface_picker_confirm(app: OpenFollowApp) -> None:
     if 0 <= idx < len(names):
         app._pi_network_active_iface = names[idx]
         _refresh_pi_network_bounded(app)
-        _apply_as_bind_iface(app, names[idx])
     exit_pi_network_iface_picker(app)
-
-
-def _apply_as_bind_iface(app: OpenFollowApp, iface: str) -> None:
-    """Bind PSN/mDNS/web sockets to the selected NIC and hot-reload the resolver."""
-    state = getattr(app, "_pi_network_state_cache", None)
-    if state is None or state.ipv4.address is None:
-        return
-    # Defense-in-depth: ``_refresh_pi_network`` already filters loopback
-    # out of the picker, but bail here too in case a caller bypasses
-    # the picker. Rebinding PSN/mDNS/web to 127.0.0.1 would silently
-    # take the device off the show network.
-    if is_loopback(state.interface) or state.ipv4.address.startswith("127."):
-        return
-    new_ip = state.ipv4.address
-    if not new_ip:
-        return
-    if iface == getattr(app._config, "psn_source_iface", ""):
-        return
-    old_iface = app._config.psn_source_iface
-    app._config.psn_source_iface = iface
-    try:
-        app._runtime_services.apply_psn_source_ip_change(new_ip)
-    except Exception as exc:  # noqa: BLE001
-        app._config.psn_source_iface = old_iface
-        # Restore the advisory to the prior iface's state.
-        app._refresh_psn_source_advisory()
-        logger.warning(
-            "Failed to rebind OpenFollow listeners to %s (%s): %s – keeping iface=%r.",
-            iface,
-            new_ip,
-            exc,
-            old_iface,
-        )
-        return
-    try:
-        save_config(app._config, app._config_path)
-        app._config_mtime = app._get_config_mtime()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to persist bind iface change: %s", exc)
-        app._pi_network_banner = "Applied live but failed to save – will revert on restart."
-    # Clear/refresh the stale-iface advisory now the pin is honoured.
-    app._refresh_psn_source_advisory()
-    logger.info(
-        "Network screen rebound OpenFollow listeners to %s (%s, live).",
-        iface,
-        new_ip,
-    )
 
 
 def process_pi_network_iface_picker_input(app: OpenFollowApp) -> None:

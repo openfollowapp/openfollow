@@ -28,6 +28,7 @@ from openfollow.network.validate import (
     prefix_to_mask,
     validate_apply,
 )
+from openfollow.runtime import ipv4_digit_grid
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -592,6 +593,8 @@ _NUMPAD_FIELD_CHARS["KP_Separator"] = "."
 def enter_pi_network_field_edit(app: OpenFollowApp, field: str) -> None:
     app._pi_network_field_edit_active = True
     app._pi_network_field_name = field
+    # Cursor starts on the first digit; it only matters once the d-pad is used.
+    app._pi_network_field_digit_index = 0
     pending: Ipv4Config | None = getattr(app, "_pi_network_pending_config", None)
     if pending is None:
         app._pi_network_field_value = ""
@@ -624,11 +627,12 @@ def exit_pi_network_field_edit(app: OpenFollowApp) -> None:
     app._pi_network_field_edit_active = False
     app._pi_network_field_name = ""
     app._pi_network_field_value = ""
+    app._pi_network_field_digit_index = 0
 
 
 def confirm_pi_network_field_edit(app: OpenFollowApp) -> None:
     field = getattr(app, "_pi_network_field_name", "")
-    value = getattr(app, "_pi_network_field_value", "").strip()
+    value = ipv4_digit_grid.strip_padding(getattr(app, "_pi_network_field_value", "").strip())
     pending: Ipv4Config | None = getattr(app, "_pi_network_pending_config", None)
     if pending is None or not field:
         exit_pi_network_field_edit(app)
@@ -702,6 +706,32 @@ def handle_pi_network_field_edit_key(app: OpenFollowApp, key: str) -> None:
         app._pi_network_field_value += key
 
 
+def _field_digit_state(app: OpenFollowApp) -> tuple[str, int]:
+    """Current buffer as grid digits, plus the cursor, both bounds-checked."""
+    digits = ipv4_digit_grid.to_grid(getattr(app, "_pi_network_field_value", ""))
+    index = getattr(app, "_pi_network_field_digit_index", 0)
+    if not isinstance(index, int):
+        index = 0
+    return digits, max(0, min(ipv4_digit_grid.DIGIT_SLOTS - 1, index))
+
+
+def _move_field_digit_cursor(app: OpenFollowApp, delta: int) -> None:
+    _, index = _field_digit_state(app)
+    app._pi_network_field_digit_index = ipv4_digit_grid.move_cursor(index, delta)
+
+
+def _bump_field_digit(app: OpenFollowApp, delta: int) -> None:
+    """Cycle the digit under the cursor and write the padded value back.
+
+    The buffer keeps its padding from here on: it is what holds the cursor and
+    the character it points at in fixed correspondence, and ``confirm`` strips
+    it again before anything parses the value.
+    """
+    digits, index = _field_digit_state(app)
+    app._pi_network_field_digit_index = index
+    app._pi_network_field_value = ipv4_digit_grid.from_grid(ipv4_digit_grid.bump_digit(digits, index, delta))
+
+
 def process_pi_network_field_edit_input(app: OpenFollowApp) -> None:
     """Gamepad poll for field editor; Cancel backs out."""
     input_manager = app._input_manager
@@ -714,10 +744,20 @@ def process_pi_network_field_edit_input(app: OpenFollowApp) -> None:
         return
     if inp.cancel_pressed:
         cancel_pi_network_field_edit(app)
-    elif inp.confirm_pressed:
+        return
+    if inp.confirm_pressed:
         # Confirm with whatever's in the buffer – the validator will
         # reject and keep the editor open if the value is invalid.
         confirm_pi_network_field_edit(app)
+        return
+    if inp.left_pressed:
+        _move_field_digit_cursor(app, -1)
+    if inp.right_pressed:
+        _move_field_digit_cursor(app, 1)
+    if inp.up_pressed:
+        _bump_field_digit(app, 1)
+    if inp.down_pressed:
+        _bump_field_digit(app, -1)
 
 
 # ---------------------------------------------------------------------------

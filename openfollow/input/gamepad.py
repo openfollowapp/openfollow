@@ -177,6 +177,10 @@ class SettingsMenuInput:
 
     up_pressed: bool = False
     down_pressed: bool = False
+    # Left/right move the cursor in the network field editor's digit grid; the
+    # menus themselves are a single column and ignore them.
+    left_pressed: bool = False
+    right_pressed: bool = False
     confirm_pressed: bool = False
     cancel_pressed: bool = False
 
@@ -1453,6 +1457,14 @@ class GamepadHandler:
                 inp.down_pressed = inp.down_pressed or self._detect_button_edge(
                     controller_idx,
                     CONTROLLER_BUTTON_DPAD_DOWN,
+                )
+                inp.left_pressed = inp.left_pressed or self._detect_button_edge(
+                    controller_idx,
+                    CONTROLLER_BUTTON_DPAD_LEFT,
+                )
+                inp.right_pressed = inp.right_pressed or self._detect_button_edge(
+                    controller_idx,
+                    CONTROLLER_BUTTON_DPAD_RIGHT,
                 )
                 inp.confirm_pressed = inp.confirm_pressed or self._detect_button_edge(
                     controller_idx,

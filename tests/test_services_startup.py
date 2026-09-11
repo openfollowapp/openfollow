@@ -915,6 +915,9 @@ def test_station_followers_are_repointed_without_a_web_request(monkeypatch) -> N
         def refresh_local_ip(self) -> None:
             self.refreshes += 1
 
+        def suspend_beacons(self) -> None:
+            raise AssertionError("a healthy interface must not suspend the beacons")
+
     class _Sync:
         def __init__(self) -> None:
             self.ips: list[str] = []
@@ -928,6 +931,72 @@ def test_station_followers_are_repointed_without_a_web_request(monkeypatch) -> N
     services._follow_station_ip()
     assert server.refreshes == 1
     assert sync.ips == ["192.168.1.5"]
+
+
+def test_a_dark_station_interface_suspends_the_beacons(monkeypatch) -> None:
+    """The one plane with no ``Plane`` entry of its own still has to stop.
+
+    Discovery is the last thing left announcing the station's name, version and
+    web port, so leaving it running while the observer stops PSN would put
+    exactly the information a peer acts on onto an unchosen network.
+    """
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "of-nodev0"  # configured, absent
+
+    class _Server:
+        def __init__(self) -> None:
+            self.suspends = 0
+            self.refreshes = 0
+
+        def suspend_beacons(self) -> None:
+            self.suspends += 1
+
+        def refresh_local_ip(self) -> None:
+            self.refreshes += 1
+
+    server = _Server()
+    services._app._web_server = server
+    services._app._marker_catalog_sync = None
+    services._follow_station_ip()
+
+    assert server.suspends == 1
+    assert server.refreshes == 0, "a dark interface must not repoint to anything"
+
+
+def test_nothing_configured_does_not_suspend_the_beacons(monkeypatch) -> None:
+    """ "Nothing configured and nothing auto-detected" is not a dark pin.
+
+    Suspending there would take a station with no interface settings at all
+    off the network, which is the default configuration.
+    """
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {})
+    # An empty adapter list is not enough: with no pin the resolver falls
+    # through to the primary-address probe, which reaches the real host and
+    # reports "primary". Neutralising it is what actually produces "none".
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(net_utils_module, "get_primary_local_ipv4", lambda default="N/A": default)
+    services._app._config.psn_source_iface = ""
+    assert net_utils_module.resolve_plane_source_ip("", "")[1] == "none"
+
+    class _Server:
+        def __init__(self) -> None:
+            self.suspends = 0
+
+        def suspend_beacons(self) -> None:
+            self.suspends += 1
+
+        def refresh_local_ip(self) -> None:
+            pass
+
+    server = _Server()
+    services._app._web_server = server
+    services._app._marker_catalog_sync = None
+    services._follow_station_ip()
+
+    assert server.suspends == 0
 
 
 def test_follow_station_ip_tolerates_missing_services(monkeypatch) -> None:
@@ -1038,9 +1107,13 @@ def test_station_followers_do_not_move_to_another_interface(monkeypatch) -> None
     class _Server:
         def __init__(self) -> None:
             self.refreshes = 0
+            self.suspends = 0
 
         def refresh_local_ip(self) -> None:
             self.refreshes += 1
+
+        def suspend_beacons(self) -> None:
+            self.suspends += 1
 
     sync, server = _Sync(), _Server()
     services._app._marker_catalog_sync = sync
@@ -1048,6 +1121,9 @@ def test_station_followers_do_not_move_to_another_interface(monkeypatch) -> None
     services._follow_station_ip()
     assert sync.ips == []
     assert server.refreshes == 0
+    # Not merely "not repointed": discovery is told to stop, so it goes quiet
+    # by decision instead of waiting for a send on a dead address to fail.
+    assert server.suspends == 1
 
 
 def test_suspending_psn_stops_the_receiver_even_if_the_server_raises(monkeypatch) -> None:
@@ -1119,12 +1195,16 @@ class _FollowerServer:
     def __init__(self) -> None:
         self.refreshes = 0
         self.reopens = 0
+        self.suspends = 0
 
     def refresh_local_ip(self) -> None:
         self.refreshes += 1
 
     def reopen_beacons(self) -> None:
         self.reopens += 1
+
+    def suspend_beacons(self) -> None:
+        self.suspends += 1
 
 
 def _wire_followers(services):

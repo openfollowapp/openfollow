@@ -780,3 +780,87 @@ class TestPrimaryAddressPrefersARealLease:
         first = get_primary_local_ipv4()
         self._offline(monkeypatch, {"172.16.0.4", "10.1.2.3", "192.168.1.50"})
         assert get_primary_local_ipv4() == first
+
+
+class TestMulticastIfacePinning:
+    """The three-state pin rule shared by the discovery beacon and catalog sync.
+
+    An unbound multicast socket does not reach "all interfaces" - it follows the
+    routing table onto one NIC the operator never chose, which is why a plane
+    that fell back read as contained on whichever interface was captured.
+    """
+
+    class _Sock:
+        def __init__(self, fail_on: int | None = None) -> None:
+            self.fail_on = fail_on
+            self.calls: list[tuple[int, int, bytes]] = []
+
+        def setsockopt(self, level: int, opt: int, val: bytes) -> None:
+            if opt == self.fail_on:
+                raise OSError("iface gone")
+            self.calls.append((level, opt, val))
+
+    def test_an_address_pins_the_send_socket(self) -> None:
+        sock = self._Sock()
+        net_utils_module.bind_multicast_send_iface(sock, "10.0.0.5", label="X")
+        assert sock.calls == [(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton("10.0.0.5"))]
+
+    def test_blank_leaves_the_send_socket_to_the_os(self) -> None:
+        """Nothing configured is not the same as a pin that failed."""
+        sock = self._Sock()
+        net_utils_module.bind_multicast_send_iface(sock, "", label="X")
+        assert sock.calls == []
+
+    def test_none_refuses_to_send(self) -> None:
+        sock = self._Sock()
+        with pytest.raises(net_utils_module.InterfaceUnavailable):
+            net_utils_module.bind_multicast_send_iface(sock, None, label="X")
+        assert sock.calls == []
+
+    def test_a_failed_pin_refuses_to_send(self) -> None:
+        sock = self._Sock(fail_on=socket.IP_MULTICAST_IF)
+        with pytest.raises(net_utils_module.InterfaceUnavailable):
+            net_utils_module.bind_multicast_send_iface(sock, "10.0.0.5", label="X")
+
+    def test_an_address_joins_only_that_iface(self) -> None:
+        sock = self._Sock()
+        net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "10.0.0.5", label="X")
+        assert sock.calls == [
+            (
+                socket.IPPROTO_IP,
+                socket.IP_ADD_MEMBERSHIP,
+                socket.inet_aton("239.1.2.3") + socket.inet_aton("10.0.0.5"),
+            )
+        ]
+
+    def test_blank_joins_the_wildcard(self) -> None:
+        sock = self._Sock()
+        net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "", label="X")
+        assert sock.calls[0][2].endswith(socket.inet_aton("0.0.0.0"))
+
+    def test_none_refuses_to_join(self) -> None:
+        sock = self._Sock()
+        with pytest.raises(net_utils_module.InterfaceUnavailable):
+            net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", None, label="X")
+        assert sock.calls == []
+
+    def test_a_failed_join_does_not_retry_on_the_wildcard(self) -> None:
+        sock = self._Sock(fail_on=socket.IP_ADD_MEMBERSHIP)
+        with pytest.raises(net_utils_module.InterfaceUnavailable):
+            net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "10.0.0.5", label="X")
+        assert sock.calls == []
+
+    def test_an_unpinned_join_failure_propagates_unchanged(self) -> None:
+        """With nothing configured there is no pin to protect, so the OSError
+        is the caller's own bind problem rather than an excluded interface.
+        """
+        sock = self._Sock(fail_on=socket.IP_ADD_MEMBERSHIP)
+        with pytest.raises(OSError) as excinfo:
+            net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "", label="X")
+        assert not isinstance(excinfo.value, net_utils_module.InterfaceUnavailable)
+
+    def test_the_error_is_an_oserror(self) -> None:
+        """Each sender already wraps its socket setup in ``except OSError``;
+        a sibling type would slip past those handlers and kill the thread.
+        """
+        assert issubclass(net_utils_module.InterfaceUnavailable, OSError)

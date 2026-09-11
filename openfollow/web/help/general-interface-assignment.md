@@ -28,6 +28,8 @@ The **address** is allowed to change. If the interface is on DHCP and comes back
 
 **PSN in / out** and **Discovery / marker sync** always follow the station interface and are shown read-only. They carry this station's identity on the network – the address other stations and consoles see it at – so splitting them from the station default would mean the box advertised one address and answered on another.
 
+Following the station interface includes stopping with it. When the station interface has no address, peer discovery and marker-name sync go quiet until it returns, the same as every pinned row above – a station that kept announcing itself would put its name, version and web address on a network you did not choose. The web UI itself stays reachable on every interface throughout, so the station is still there to browse to; it just stops appearing in other stations' peer lists.
+
 ## USB Ethernet adapters
 
 A USB adapter is named after its own hardware address, so it appears as something like `enx88a29edf04e3` rather than `eth1`. The name is long, but it belongs to that one physical adapter and stays the same wherever it is plugged in and whatever else is fitted.

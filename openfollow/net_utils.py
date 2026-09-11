@@ -213,3 +213,65 @@ def wait_for_source_ip(
             return "127.0.0.1"
         # Don't sleep past deadline.
         time.sleep(min(interval_s, remaining))
+
+
+class InterfaceUnavailable(OSError):
+    """A pinned interface has no usable address, so the plane must stay silent.
+
+    Subclasses :class:`OSError` so the socket-error handling each sender
+    already has keeps working unchanged.
+    """
+
+
+def bind_multicast_send_iface(sock: socket.socket, iface_ip: str | None, *, label: str) -> None:
+    """Pin a multicast TX socket to *iface_ip*, raising rather than roaming.
+
+    An unbound multicast socket does not send "on all interfaces" - it sends on
+    whichever single interface the routing table picks, which is why a plane
+    that quietly fell back looked contained on the interface anyone thought to
+    capture. A pin that cannot be honoured is an error state, never a reason to
+    transmit somewhere the operator did not choose.
+
+    Three states, matching :func:`resolve_plane_source_ip`: an address pins the
+    socket, ``""`` means nothing is configured and is left to the OS, and
+    ``None`` means an interface *is* configured but currently has no address -
+    which must stop the plane rather than move it.
+    """
+    if iface_ip is None:
+        raise InterfaceUnavailable(
+            f"{label}: the configured interface has no address; staying silent until it "
+            f"returns rather than sending on another interface"
+        )
+    if not iface_ip:
+        return
+    try:
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(iface_ip))
+    except OSError as exc:
+        raise InterfaceUnavailable(
+            f"{label}: interface address {iface_ip} is unavailable ({exc}); "
+            f"staying silent until it returns rather than sending on another interface"
+        ) from exc
+
+
+def join_multicast_group_on_iface(sock: socket.socket, group: str, iface_ip: str | None, *, label: str) -> None:
+    """Join *group* on *iface_ip* only, raising rather than joining everywhere.
+
+    The receive side of :func:`bind_multicast_send_iface`, with the same three
+    states: joining on ``0.0.0.0`` subscribes on an interface the operator
+    excluded, so peers from that network reach the station's own peer list.
+    """
+    if iface_ip is None:
+        raise InterfaceUnavailable(
+            f"{label}: the configured interface has no address; staying unsubscribed until "
+            f"it returns rather than joining on every interface"
+        )
+    mreq = socket.inet_aton(group) + socket.inet_aton(iface_ip or "0.0.0.0")
+    try:
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    except OSError as exc:
+        if not iface_ip:
+            raise
+        raise InterfaceUnavailable(
+            f"{label}: interface address {iface_ip} is unavailable ({exc}); "
+            f"staying unsubscribed until it returns rather than joining on every interface"
+        ) from exc

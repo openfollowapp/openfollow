@@ -1083,6 +1083,7 @@ def test_get_local_peer_info_adopts_live_ip_change(tmp_path, monkeypatch) -> Non
         tmp_path,
         monkeypatch,
         local_ip="10.0.0.1",
+        station_ip="10.0.0.1",
         local_ip_provider=lambda: current["ip"],
     )
 
@@ -1111,10 +1112,13 @@ def test_get_local_peer_info_keeps_ip_when_provider_unresolved(
         tmp_path,
         monkeypatch,
         local_ip="10.0.0.1",
+        station_ip="10.0.0.1",
         local_ip_provider=lambda: unresolved,
     )
 
     assert srv.get_local_peer_info().ip == "10.0.0.1"
+    # "Could not resolve" is not "unpin": an unpinned beacon follows the
+    # routing table onto a NIC nobody chose, so a working pin has to survive.
     assert srv._beacon_sender._iface_ip == "10.0.0.1"
 
 
@@ -1340,3 +1344,114 @@ def test_reopen_beacons_rebuilds_both_sockets(tmp_path, monkeypatch) -> None:
     srv.reopen_beacons()
     assert srv._beacon_sender._reopen.is_set()
     assert srv._beacon_receiver._reopen.is_set()
+
+
+# ---------------------------------------------------------------------------
+# Beacon interface: pinned-but-down must stop it, never move it
+# ---------------------------------------------------------------------------
+
+
+def test_beacons_start_unpinned_when_the_station_pin_is_down(tmp_path, monkeypatch) -> None:
+    """A station booted with its pinned interface dark must not advertise.
+
+    ``station_ip=None`` is what the strict station resolver returns then. The
+    displayed address still collapses to a string, so seeding the beacon from
+    the display value is what let a misconfigured station advertise its name,
+    version and web port on an unchosen NIC from its very first packet.
+    """
+    monkeypatch.setattr("openfollow.web.server.get_local_ipv4_addresses", lambda: {"10.0.0.1"})
+    srv = _make_quiet_server(tmp_path, monkeypatch, local_ip="10.0.0.1", station_ip=None)
+
+    assert srv._beacon_sender._iface_ip is None
+    assert srv._beacon_receiver._iface_ip is None
+
+
+def test_a_station_pin_going_down_stops_the_beacons(tmp_path, monkeypatch) -> None:
+    """The interface goes dark at runtime: both beacons take ``None`` and stop,
+    while the displayed address keeps its last known good value.
+    """
+    monkeypatch.setattr("openfollow.web.server.get_local_ipv4_addresses", lambda: {"10.0.0.1"})
+    resolved: list[str | None] = ["10.0.0.1"]
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        local_ip="10.0.0.1",
+        station_ip="10.0.0.1",
+        local_ip_provider=lambda: resolved[0],
+    )
+
+    resolved[0] = None
+    srv._local_ip_refresh_ts -= 1000.0  # elapse the refresh throttle window
+    srv.refresh_local_ip()
+
+    assert srv._beacon_sender._iface_ip is None
+    assert srv._beacon_receiver._iface_ip is None
+    assert srv.local_ip == "10.0.0.1", "the displayed address should not be downgraded"
+
+
+def test_the_beacons_come_back_when_the_interface_returns(tmp_path, monkeypatch) -> None:
+    """Recovery needs no restart - the observer's next poll repins both."""
+    monkeypatch.setattr(
+        "openfollow.web.server.get_local_ipv4_addresses",
+        lambda: {"10.0.0.1", "10.0.0.2"},
+    )
+    resolved: list[str | None] = [None]
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        local_ip="10.0.0.1",
+        station_ip=None,
+        local_ip_provider=lambda: resolved[0],
+    )
+    assert srv._beacon_sender._iface_ip is None
+
+    resolved[0] = "10.0.0.2"
+    srv._local_ip_refresh_ts -= 1000.0
+    srv.refresh_local_ip()
+
+    assert srv._beacon_sender._iface_ip == "10.0.0.2"
+    assert srv._beacon_receiver._iface_ip == "10.0.0.2"
+
+
+def test_the_beacons_come_back_at_the_very_same_address(tmp_path, monkeypatch) -> None:
+    """A replug that returns the identical DHCP lease must still repin.
+
+    The displayed address never downgrades, so on recovery the candidate can
+    equal the address already on record. Comparing against that alone would
+    short-circuit and leave the beacons stopped with nothing to say so.
+    """
+    monkeypatch.setattr("openfollow.web.server.get_local_ipv4_addresses", lambda: {"10.0.0.1"})
+    resolved: list[str | None] = ["10.0.0.1"]
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        local_ip="10.0.0.1",
+        station_ip="10.0.0.1",
+        local_ip_provider=lambda: resolved[0],
+    )
+
+    resolved[0] = None
+    srv._local_ip_refresh_ts -= 1000.0
+    srv.refresh_local_ip()
+    assert srv._beacon_sender.iface_ip is None
+
+    resolved[0] = "10.0.0.1"  # same lease back
+    srv._local_ip_refresh_ts -= 1000.0
+    srv.refresh_local_ip()
+
+    assert srv._beacon_sender.iface_ip == "10.0.0.1"
+    assert srv._beacon_receiver.iface_ip == "10.0.0.1"
+
+
+def test_suspend_beacons_stops_both(tmp_path, monkeypatch) -> None:
+    """The observer's down edge stops the beacons by decision, not by waiting
+    for a send to fail - a socket pinned to a removed address does not
+    reliably error.
+    """
+    monkeypatch.setattr("openfollow.web.server.get_local_ipv4_addresses", lambda: {"10.0.0.1"})
+    srv = _make_quiet_server(tmp_path, monkeypatch, local_ip="10.0.0.1", station_ip="10.0.0.1")
+
+    srv.suspend_beacons()
+
+    assert srv._beacon_sender.iface_ip is None
+    assert srv._beacon_receiver.iface_ip is None

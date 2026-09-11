@@ -159,7 +159,11 @@ class ConfigWebServer:
         system_name: str = "OpenFollow",
         command_queue: WebCommandQueue | None = None,
         local_ip: str = "",
-        local_ip_provider: Callable[[], str] | None = None,
+        # Fail-closed station address for the beacons: an address pins them,
+        # "" leaves the interface to the OS, and None means the configured
+        # interface has no address, which stops them until it returns.
+        station_ip: str | None = "",
+        local_ip_provider: Callable[[], str | None] | None = None,
         runtime_stats_provider: Callable[[], dict[str, Any]] | None = None,
         preview_snapshot_provider: Callable[[], bytes | None] | None = None,
         zone_state_provider: Callable[[], list[tuple[int, bool, int]]] | None = None,
@@ -323,15 +327,16 @@ class ConfigWebServer:
         self._loopback_http_server: Any = None
 
         # Peer discovery
+        beacon_iface_ip = station_ip if station_ip != "127.0.0.1" else ""
         self._beacon_sender = BeaconSender(
             name=system_name,
             web_port=port,
             version=openfollow.__version__,
-            iface_ip=self._local_ip if self._local_ip != "127.0.0.1" else "",
+            iface_ip=beacon_iface_ip,
         )
         self._beacon_receiver = BeaconReceiver(
             on_peer_discovered=self._on_peer_discovered,
-            iface_ip=self._local_ip if self._local_ip != "127.0.0.1" else "",
+            iface_ip=beacon_iface_ip,
         )
         self._beacon_receiver.set_local_port(port)
 
@@ -545,10 +550,19 @@ class ConfigWebServer:
         except Exception:  # noqa: BLE001
             logger.exception("local_ip provider raised")
             return
+        # ``None`` is the one state that means *stop*: an interface is pinned
+        # and has no address. Blank or loopback only mean "could not resolve",
+        # which is no reason to unpin a beacon that is working - unpinned
+        # multicast follows the routing table onto an unchosen NIC.
+        if candidate is None:
+            with self._local_ip_lock:
+                self._beacon_sender.update_iface_ip(None)
+                self._beacon_receiver.update_iface_ip(None)
+            return
         if not candidate or candidate.startswith("127."):
             return
         with self._local_ip_lock:
-            if candidate == self._local_ip:
+            if candidate == self._local_ip and self._beacon_sender.iface_ip == candidate:
                 return
             self._local_ip = candidate
             # Repoint beacons under the lock so IP + interface stay consistent
@@ -567,6 +581,18 @@ class ConfigWebServer:
         calling it too costs nothing.
         """
         self._refresh_local_ip()
+
+    def suspend_beacons(self) -> None:
+        """Stop both beacons because the station interface has no address.
+
+        Called on the observer's down edge so the beacon goes quiet by
+        decision rather than by waiting for its next send to fail: a socket
+        pinned to a removed address does not reliably error, and the whole
+        point is that nothing leaves on an interface nobody chose.
+        """
+        with self._local_ip_lock:
+            self._beacon_sender.update_iface_ip(None)
+            self._beacon_receiver.update_iface_ip(None)
 
     def reopen_beacons(self) -> None:
         """Rebuild both beacon sockets regardless of whether the IP changed.

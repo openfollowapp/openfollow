@@ -38,8 +38,7 @@ class ReceiverStateMachine:
     def reset_video_flow(self) -> None:
         self.connected = False
         self.video_flow_detected = False
-        self.resolution = (0, 0)
-        self.source_framerate = 0.0
+        self.clear_source_caps()
 
     def clear_source_caps(self) -> None:
         """Forget the negotiated resolution / frame rate of the last source."""

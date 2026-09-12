@@ -582,12 +582,6 @@ class TestPlaceholderPipeline:
             assembler.create_placeholder_pipeline()
 
 
-class TestPlaceholderResolution:
-    def test_property_returns_default_tuple(self) -> None:
-        assembler = _make_assembler()
-        assert assembler.placeholder_resolution == (1920, 1080)
-
-
 class TestCombinedBranches:
     def test_detection_plus_preview_plus_snapshot_all_wired(self) -> None:
         detector = FakeDetector()

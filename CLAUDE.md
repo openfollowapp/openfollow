@@ -151,6 +151,8 @@ All config lives in `config.toml` (auto-reloaded when file changes on disk).
 | `video_source_type` | `"testpattern"` | `"testpattern"` (Media Gallery, the default), `"ndi"`, `"srt"`, `"rtsp"`, `"rtp"`, `"picam"`, `"v4l2"` (Linux USB camera), `"avf"` (macOS USB camera), or any registered plugin ID |
 | `ndi_source_name` | `""` | NDI source string (read by NDI plugin) |
 | `srt_host` | `"srt://0.0.0.0:5000"` | SRT URL (read by SRT plugin) |
+| `srt_passphrase` | `""` | SRT encryption key; drives `srtsrc.passphrase` and outranks a `?passphrase=` in the URL |
+| `rtsp_user` / `rtsp_password` | `""` | RTSP login; drives `rtspsrc.user-id` / `user-pw` and outranks URL userinfo. **Not** device-local: shared across stations pointed at the same camera, so both survive export / peer broadcast (`web_pin` does not). Redacted in the diagnostics bundle |
 | `window_width/height` | `1280×720` | |
 | `psn_system_name` | `"OpenFollow"` | Shown in PSN + web UI |
 | `psn_mcast_ip` | `"236.10.10.10"` | PSN multicast group |
@@ -269,10 +271,21 @@ ndisrc → ndisrcdemux → ndi_video_queue (leaky) → videoconvert → shared_v
 srtsrc → pre_queue → decodebin → post_queue → videoconvert → shared_videosink
 ```
 - `srtsrc`: `mode=caller`, `wait-for-connection=True`, `latency=125ms`
+- `srt_passphrase`, when set, drives the `passphrase` property and the URL's own `?passphrase=` is stripped first, so one field answers "which key is this stream encrypted with". Blank leaves the URL path untouched
 - Hardware decoder priority boosting (V4L2 > avdec > openh264)
 - Preserves decoder latency on ASYNC_DONE (do NOT force 0)
 - `pad-added` on decodebin: **do NOT filter by pad name** (uses `src_0`, not `video_0`)
 - Reconnect: 3 retries with 8s first-frame timeout, then no-signal placeholder fallback
+
+### Stream credentials (RTSP / SRT)
+`rtsp_user` / `rtsp_password` / `srt_passphrase` are rendered as a login block under each plugin's URL (password inputs) and drive the element properties directly. The URL's own credential is **stripped before** `location` / `uri` is handed over – `rtspsrc` tries URL userinfo first and only then falls back to `user-id` / `user-pw`, so leaving it in would let a stale URL credential outrank the form. Blank fields leave the existing URL-userinfo path working untouched.
+
+`ConfigField(strip=False)` marks a credential so the web-save path keeps its edge whitespace, where every other string field is trimmed: the whitespace can be part of the secret and is invisible in a password field, so trimming it fails authentication with nothing on screen to explain why.
+
+### Placeholder pipeline vs source state
+The "No Signal" placeholder is a black `videotestsrc` pinned at 1920x1080 @ 30 that feeds the **shared** sink, and both sink probes are attached once for that sink's lifetime – so its caps reach the same writer the real source uses. `ReceiverStateMachine.set_resolution` / `set_source_framerate` therefore refuse while `is_placeholder_pipeline`, mirroring `mark_frame_received`, and `_create_placeholder_pipeline` calls `clear_source_caps()` rather than writing its own geometry in. **Do not publish placeholder caps as source state**: `video.resolution` / `source_fps` are what the Statistics panel reports as the feed's own, and what `update_video` shapes the window from – a source that has never delivered a frame would otherwise present as a working 1080p feed and pin the window to 16:9 for the session.
+
+`update_video` applies the aspect-ratio hint whenever the real resolution changes (tracked in `app._video_aspect`), **not** once per session: the HUD projects across the canvas while calibration is solved against the input, so a window left at a previous source's aspect ratio slides the overlay off the video with nothing in the UI to explain it. `app._video_logged` stays a one-shot latch for its log line only.
 
 ### Snapshot provider (`video/preview.py`)
 `SnapshotProvider` captures on-demand full-resolution JPEG frames for the setup wizard. It connects to a `tee` → `queue` → `videoconvert` → `jpegenc` → `appsink` branch in the receiver pipeline (no downscale). The snapshot is pulled lazily – no background polling. The last captured frame is cached so repeated requests don't block on GStreamer. Wired via `full_snapshot_provider` callback on `ConfigWebServer`.
@@ -615,7 +628,7 @@ and "manage X under Y" pointers – goes in that section's **help drawer markdow
 | `/api/wizard/solve` | POST | Run DLT solve from 4 corner screen positions |
 
 ### Config transfer (export / import)
-- **Export:** `GET /api/config/export` returns the full config as a downloadable JSON file. Device-local fields are stripped from the payload by `_config_dict_redacted`: `web_pin` (login secret) and `detection.storage_path` (an absolute path that only makes sense on the exporting host).
+- **Export:** `GET /api/config/export` returns the full config as a downloadable JSON file. Device-local fields are stripped from the payload by `_config_dict_redacted`: `web_pin` (login secret) and `detection.storage_path` (an absolute path that only makes sense on the exporting host). Stream credentials (`rtsp_user` / `rtsp_password` / `srt_passphrase`) deliberately **stay**: a station PIN is that station's own login, while a camera password is shared by every station pointed at the same camera, so stripping it would break the fleet-provisioning workflow export and broadcast exist for. They are redacted in the diagnostics bundle instead, which is the artefact operators attach to public issue reports.
 - **Import:** `POST /api/config/import` applies imported JSON; always preserves the current device's `psn_source_iface`, `web_pin`, `web_port`, and `detection.storage_path` (captured before the section apply, restored after, in `_apply_import_data`). Section-level peer broadcast / `/api/config/<section>` go through `strip_device_local_fields`, which drops the same per-section set (`_DEVICE_LOCAL_FIELDS_BY_SECTION`). A storage path from another machine must never land here – it would be unwritable and break model storage / export.
 - Import uses a two-phase flow when restart-requiring changes are detected: the first request analyses without saving, then the user confirms one of three actions:
   - **Restart Now** (`?confirm_restart=1`): saves full config, hot-reload triggers restart
@@ -684,6 +697,12 @@ Per-IP exponential-backoff lockout on PIN authentication. Without this, a 4-digi
 - **Threading:** every public method takes the instance lock, and `now = self._clock()` is read **inside** the critical section so a contended caller can't compute `lockout_until = now + delay` against a stale timestamp.
 - **Per-IP, not per-account:** acceptable because there is only one shared PIN. Legitimate users behind the same NAT share lockout – a known trade-off on a LAN show network. No persistence across server restarts; matches the LAN threat model.
 - **Coverage:** 100% line + branch in `tests/test_login_throttle.py` (mock-clock unit tests, including thread-safety stress) + integration tests in `tests/test_web_server.py` (live server, real `urllib`, both vectors). Module is in the `mypy --strict` batch.
+
+### Diagnostics redaction (`web/diagnostics.py`)
+The bundle is what operators attach to public issue reports, so nothing that reaches it may carry a credential.
+
+- `redact_config_secrets` rewrites the effective-config dump: keys in `_SECRET_CONFIG_KEYS` (`web_pin`, `rtsp_user`, `rtsp_password`, `srt_passphrase`) collapse to `"***"` / `"(empty)"` – whether a login is *set* is the diagnostic, and it is the whole useful content – while keys in `_URI_CONFIG_KEYS` (`rtsp_url`, `srt_host`) go through `redact_uri`, keeping everything but the credential fused into them. Add a new credential or URL-valued field to the matching set.
+- `redact_log_line` (signatures + `redact_uri` over every URI in the text) is the **single** redactor for log content: the bundle's log tail, its failure extract, worker-thread tracebacks, and the `/api/diagnostics/log-tail` route. Our own source logging already redacts, but GStreamer's does not – an `rtspsrc` failure carries the full `location` in its debug string, and an auth failure is both the condition that puts it in the log and the condition that makes an operator send a bundle. **Do not add a log path that bypasses it.**
 
 ### Broadcast target restriction
 `_send_config_to_peer` / `_send_config_import_to_peer` refuse to POST to non-private IPs – `ipaddress.IPv4Address.is_private` covers RFC 1918, link-local, and loopback, which is the set a legitimate peer can plausibly have. Closes the SSRF vector where a crafted beacon advertised an attacker-chosen endpoint (e.g. `web_port=22` or an internal service port).

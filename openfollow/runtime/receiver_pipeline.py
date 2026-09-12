@@ -39,10 +39,6 @@ class ReceiverPipelineAssembler:
         self._snapshot_provider = snapshot_provider
         self._placeholder_resolution = (1920, 1080)
 
-    @property
-    def placeholder_resolution(self) -> tuple[int, int]:
-        return self._placeholder_resolution
-
     def set_detector(self, detector: PersonDetector | None) -> None:
         """Update detector reference for pipeline rebuild."""
         self._detector = detector

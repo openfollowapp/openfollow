@@ -5,7 +5,8 @@
 ``VideoInputBase`` is the ABC each protocol plugin subclasses; the dataclasses
 (``ConfigField``, ``WebRoute``, ``ReconnectPolicy``, ``InputCapabilities``)
 declare its config fields, routes, reconnection behaviour, and feature flags.
-Also provides shared helpers for URI redaction and positive-int coercion.
+Also provides a shared helper for positive-int coercion; URI credential
+handling lives in :mod:`openfollow.uri_redaction`.
 """
 
 from __future__ import annotations
@@ -16,11 +17,8 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
-
-_REDACTED_QUERY_KEYS = frozenset({"passphrase", "streamid"})
 
 
 def coerce_positive_int(value: Any, default: int) -> int:
@@ -37,63 +35,6 @@ def coerce_positive_int(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return n if n >= 1 else default
-
-
-def strip_uri_userinfo(uri: str) -> str:
-    """Return ``uri`` with any ``user:pass@`` prefix removed from its authority.
-
-    Hands a bare location to an element that authenticates from explicit
-    credential properties instead: ``rtspsrc`` tries URL userinfo first and
-    only falls back to ``user-id`` / ``user-pw``, so a credential left in the
-    URL would outrank the one the operator typed into the form.
-
-    A schemeless ``user:pass@host/s`` (common RTSP shorthand) is handled too –
-    ``urlsplit`` parses its userinfo as a bogus scheme with an empty netloc,
-    so a plain pass-through would leave the password in place.
-    """
-    try:
-        parts = urlsplit(uri)
-    except ValueError:  # pragma: no cover - defensive; urlsplit rarely raises
-        return uri
-    if not parts.netloc:
-        prefix, slash, rest = uri.partition("/")
-        if "@" in prefix:
-            return prefix.rsplit("@", 1)[-1] + slash + rest
-        return uri
-    if "@" not in parts.netloc:
-        return uri
-    netloc = parts.netloc.rsplit("@", 1)[-1]
-    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
-
-
-def strip_uri_query_key(uri: str, key: str) -> str:
-    """Return ``uri`` without ``key`` (case-insensitive) in its query string."""
-    try:
-        parts = urlsplit(uri)
-    except ValueError:  # pragma: no cover - defensive; urlsplit rarely raises
-        return uri
-    if not parts.query:
-        return uri
-    pairs = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k.lower() != key.lower()]
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(pairs), parts.fragment))
-
-
-def redact_uri(uri: str) -> str:
-    """Strip inline credentials from a media URI so it is safe to log/display.
-
-    ``rtsp://user:pass@host:554/s`` → ``rtsp://host:554/s``; SRT
-    ``?passphrase=..`` / ``?streamid=..`` values are masked.
-    """
-    stripped = strip_uri_userinfo(uri)
-    try:
-        parts = urlsplit(stripped)
-    except ValueError:  # pragma: no cover - defensive; urlsplit rarely raises
-        return stripped
-    if not parts.netloc or not parts.query:
-        return stripped
-    pairs = parse_qsl(parts.query, keep_blank_values=True)
-    query = urlencode([(k, "***" if k.lower() in _REDACTED_QUERY_KEYS else v) for k, v in pairs])
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
 @dataclass

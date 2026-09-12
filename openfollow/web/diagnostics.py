@@ -35,7 +35,7 @@ from typing import Any, TypeVar
 
 import openfollow
 from openfollow.logging_setup import RingBufferLogHandler
-from openfollow.video.inputs._base import redact_uri
+from openfollow.uri_redaction import redact_uri, redact_uris_in_text
 
 logger = logging.getLogger(__name__)
 
@@ -409,12 +409,18 @@ _URI_CONFIG_KEYS = frozenset({"rtsp_url", "srt_host"})
 
 
 def _redact_toml_uri(raw_value: str) -> str:
-    """Redact the URI inside a quoted TOML scalar, keeping its quoting."""
+    """Redact the URI inside a quoted TOML scalar, keeping its quoting.
+
+    A value in any other shape collapses to ``"***"``. The dump is what
+    operators attach to public issue reports, so a form we could not parse has
+    to fail closed – printing whatever it holds is the one outcome this
+    function exists to prevent.
+    """
     text = raw_value.strip()
     for quote in ('"', "'"):
         if len(text) >= 2 and text.startswith(quote) and text.endswith(quote):
             return f"{quote}{redact_uri(text[1:-1])}{quote}"
-    return raw_value
+    return '"***"'
 
 
 def redact_config_secrets(toml_text: str) -> str:
@@ -484,30 +490,9 @@ def redact_signatures(line: str) -> str:
     return _SIGNATURE_REDACT_RE.sub(r"\1***", line)
 
 
-# Media URIs as they appear *inside* a log line. Our own source logging already
-# goes through ``redact_uri``, but GStreamer's does not: an ``rtspsrc`` error
-# carries the full ``location`` in its debug string, and an auth failure is both
-# the condition that puts it there and the condition that makes an operator send
-# us a bundle.
-_URI_IN_TEXT_RE = re.compile(r"""\b(?:rtsps?|rtmps?|srt|https?)://[^\s"\'<>]+""")
-
-# Sentence punctuation a URI at the end of a log line absorbs; trimmed before
-# redaction so it survives into the output instead of being parsed as a path.
-_URI_TRAILING_PUNCT = ".,;:!?)]}>"
-
-
-def _redact_uri_match(match: re.Match[str]) -> str:
-    raw = match.group(0)
-    trailing = ""
-    while raw and raw[-1] in _URI_TRAILING_PUNCT:
-        trailing = raw[-1] + trailing
-        raw = raw[:-1]
-    return redact_uri(raw) + trailing
-
-
 def redact_log_line(line: str) -> str:
     """Strip HMAC signatures and stream credentials from one log line."""
-    return _URI_IN_TEXT_RE.sub(_redact_uri_match, redact_signatures(line))
+    return redact_uris_in_text(redact_signatures(line))
 
 
 # Log capture sizing – bounded to match the in-memory ring capacity.

@@ -15,6 +15,8 @@ from collections.abc import Callable
 from enum import Enum, auto
 from typing import NamedTuple
 
+from openfollow.uri_redaction import redact_uris_in_text
+
 logger = logging.getLogger(__name__)
 
 # Signature for status-change listeners.
@@ -34,7 +36,14 @@ class ConnectionStatus(Enum):
 
 
 class _StatusSnapshot(NamedTuple):
-    """Immutable view of the four status fields, published as a unit."""
+    """Immutable view of the four status fields, published as a unit.
+
+    ``error_message`` is rendered on the projected HUD and served from
+    ``/api/stats``, and the two writers that accept free text are handed
+    GStreamer's raw error/debug text – which for an ``rtspsrc`` failure carries
+    the full ``location``, credentials included. Both redact on the way in, so
+    every reader of this field is safe by construction.
+    """
 
     status: ConnectionStatus
     source_name: str
@@ -134,13 +143,13 @@ class NdiStatusMarker:
 
     def set_disconnected(self, error_message: str = "") -> None:
         """Transition to DISCONNECTED state."""
-        self._update(lambda prior: _StatusSnapshot(ConnectionStatus.DISCONNECTED, prior.source_name, 0, error_message))
+        error = redact_uris_in_text(error_message)
+        self._update(lambda prior: _StatusSnapshot(ConnectionStatus.DISCONNECTED, prior.source_name, 0, error))
 
     def set_reconnecting(self, attempt: int, error_message: str = "") -> None:
         """Transition to RECONNECTING state with attempt counter."""
-        self._update(
-            lambda prior: _StatusSnapshot(ConnectionStatus.RECONNECTING, prior.source_name, attempt, error_message)
-        )
+        error = redact_uris_in_text(error_message)
+        self._update(lambda prior: _StatusSnapshot(ConnectionStatus.RECONNECTING, prior.source_name, attempt, error))
 
     def _update(self, derive: Callable[[_StatusSnapshot], _StatusSnapshot]) -> None:
         """Publish the derived state as a unit and notify callbacks on change.

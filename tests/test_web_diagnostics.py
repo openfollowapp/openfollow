@@ -349,20 +349,23 @@ def test_redact_config_secrets_leaves_a_credential_free_url_intact() -> None:
 
 
 @pytest.mark.parametrize(
-    "line",
+    "line, key",
     [
-        "rtsp_url = rtsp://cam:554/s",  # unquoted
-        "srt_host = [",  # start of a multi-line array
-        'rtsp_url = "unterminated',
+        ("rtsp_url = rtsp://admin:hunter2@cam:554/s", "rtsp_url"),  # unquoted
+        ("srt_host = [", "srt_host"),  # start of a multi-line array
+        ('rtsp_url = "unterminated', "rtsp_url"),
     ],
 )
-def test_redact_config_secrets_passes_through_an_unquoted_uri_value(line: str) -> None:
-    """A URI key whose value is not a quoted scalar is left exactly as found.
+def test_redact_config_secrets_fails_closed_on_an_unparsed_uri_value(line: str, key: str) -> None:
+    """A URI value in a shape we cannot parse collapses to ``"***"``.
 
-    Rewriting a shape we did not parse would corrupt the dump, and the dump is
-    advertised as paste-back-compatible with ``config.toml``.
+    The dump is what operators attach to public issue reports, so passing an
+    unrecognised form through would print whatever it holds - the one outcome
+    this redaction exists to prevent. ``"***"`` also keeps the block valid
+    TOML, which a raw pass-through of a broken value would not.
     """
-    assert diag.redact_config_secrets(line) == line
+    assert diag.redact_config_secrets(line) == f'{key} = "***"'
+    assert "hunter2" not in diag.redact_config_secrets(line)
 
 
 def test_collect_config_streams_provider_text() -> None:

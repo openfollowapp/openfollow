@@ -787,7 +787,6 @@ class TestPlayNoSourceSelection:
         r = _make_receiver(on_widget_changed=widgets.append)
         fake_pipeline = FakePipeline()
         r._pipeline_assembler.create_placeholder_pipeline = lambda: fake_pipeline
-        r._pipeline_assembler._placeholder_resolution = (1920, 1080)
         # Sink widget must be present so the widget-callback branch is
         # exercised in addition to placeholder construction.
         sink = r._get_shared_sink()
@@ -811,9 +810,6 @@ class TestPlayNoSourceSelection:
         r = _make_receiver(input_config={"fake_source": "cam-1"})
         fake_pipeline = FakePipeline()
         FakeInput.create_pipeline_result = fake_pipeline
-        # Set the placeholder resolution to a distinctive value so we can
-        # tell placeholder-path from happy-path through `r.resolution`.
-        r._pipeline_assembler._placeholder_resolution = (1920, 1080)
         r._pipeline_assembler.create_placeholder_pipeline = lambda: fake_pipeline
 
         r.play()
@@ -940,7 +936,6 @@ class TestCreatePipeline:
         monkeypatch.setattr(FakeInput, "_available", (False, "SDK missing"))
         r = _make_receiver(input_config={"fake_source": "cam-1"})
         placeholder = FakePipeline()
-        r._pipeline_assembler._placeholder_resolution = (1920, 1080)
         r._pipeline_assembler.create_placeholder_pipeline = lambda: placeholder
 
         r.create_pipeline()
@@ -959,7 +954,6 @@ class TestCreatePipeline:
         FakeInput.create_pipeline_raises = RuntimeError("boom")
         r = _make_receiver(input_config={"fake_source": "cam-1"})
         placeholder = FakePipeline()
-        r._pipeline_assembler._placeholder_resolution = (1920, 1080)
         r._pipeline_assembler.create_placeholder_pipeline = lambda: placeholder
 
         r.create_pipeline()
@@ -1724,7 +1718,6 @@ class TestPlaceholderWiring:
         r = _make_receiver()
         fake_pipeline = FakePipeline()
         r._pipeline_assembler.create_placeholder_pipeline = lambda: fake_pipeline
-        r._pipeline_assembler._placeholder_resolution = (640, 360)
         r._state.set_resolution(1280, 720)
         r._state.set_source_framerate(25.0)
 

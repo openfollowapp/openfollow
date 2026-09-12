@@ -24,7 +24,10 @@ def update_video(app: Any, logger: logging.Logger) -> None:
         # latching its first figure: the HUD projects across the canvas while
         # calibration is solved against the input, so a window left at the
         # previous source's aspect ratio slides the overlay off the video.
-        if app._video_aspect != (w, h):
+        # Compared as a ratio, so a resolution change that preserves the shape
+        # (1920x1080 -> 1280x720) doesn't re-hint the window for nothing.
+        prev = app._video_aspect
+        if prev is None or prev[0] * h != prev[1] * w:
             canvas = app._canvas
             if hasattr(canvas, "set_aspect_ratio"):
                 canvas.set_aspect_ratio(w, h)

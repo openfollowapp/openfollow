@@ -33,6 +33,14 @@ def _panel(body: str, title: str) -> str:
     return body[start : body.index("</section>", start)]
 
 
+def _row(panel: str, label: str) -> str:
+    """Return the rendered value of one metric row, by its label."""
+    marker = f'<dt class="metric-label">{label}</dt>'
+    start = panel.index(marker) + len(marker)
+    value = panel[start : panel.index("</dd>", start)]
+    return value.split('<dd class="metric-value">', 1)[1].strip()
+
+
 def _connected(**overrides: Any) -> dict[str, Any]:
     video = {
         "connected": True,
@@ -51,14 +59,34 @@ class TestVideoPanel:
             _render(video={"connected": False, "resolution": {"width": 0, "height": 0}, "source_fps": 0.0}),
             "Video",
         )
-        assert "Input resolution" in panel
+        assert _row(panel, "Input resolution") == "N/A"
+        assert _row(panel, "Frame Rate (source)") == "N/A"
         assert "1920x1080" not in panel
-        assert panel.count("N/A") >= 2
+
+    def test_a_disconnected_source_reports_no_figures_even_if_present(self) -> None:
+        """Connection state is what decides, not whether a number happens to be
+        non-zero: the panel must never present a figure as the live feed's
+        while nothing is connected."""
+        panel = _panel(
+            _render(video={"connected": False, "resolution": {"width": 1920, "height": 1080}, "source_fps": 30.0}),
+            "Video",
+        )
+        assert _row(panel, "Input resolution") == "N/A"
+        assert _row(panel, "Frame Rate (source)") == "N/A"
 
     def test_reports_the_source_figures_once_connected(self) -> None:
         panel = _panel(_render(video=_connected()), "Video")
-        assert "1024x768" in panel
-        assert "25.0 fps" in panel
+        assert _row(panel, "Input resolution") == "1024x768"
+        assert _row(panel, "Frame Rate (source)") == "25.0 fps"
+
+    def test_a_connected_source_advertising_no_rate_is_not_reported_as_offline(self) -> None:
+        """A variable-frame-rate source negotiates ``framerate=0/1``, which the
+        receiver stores as ``0.0``. Rendering ``N/A`` for it would mean exactly
+        what the help drawer says ``N/A`` means - "nothing is connected" -
+        inverting the diagnosis this panel was reworked to fix.
+        """
+        panel = _panel(_render(video=_connected(source_fps=0.0)), "Video")
+        assert _row(panel, "Frame Rate (source)") == "0.0 fps"
 
     def test_carries_no_device_figure(self) -> None:
         """``Frame Rate (measured)`` was the overlay redraw rate sitting between
@@ -79,18 +107,16 @@ class TestDevicePanel:
             ),
             "Device",
         )
-        assert "Overlay redraw rate" in panel
-        assert "59.7 fps" in panel
-        assert "Output resolution" in panel
-        assert "1920x1200" in panel
+        assert _row(panel, "Overlay redraw rate") == "59.7 fps"
+        assert _row(panel, "Output resolution") == "1920x1200"
 
     def test_headless_station_says_so_instead_of_fabricating_a_size(self) -> None:
         panel = _panel(_render(system={"hud_fps": 0.0, "output_resolution": None}), "Device")
-        assert "N/A (no display)" in panel
-        assert "0.0 fps" in panel
+        assert _row(panel, "Output resolution") == "N/A (no display)"
+        assert _row(panel, "Overlay redraw rate") == "0.0 fps"
 
     def test_a_snapshot_without_the_device_figures_still_renders(self) -> None:
         # A payload published before these fields existed (an older peer).
         panel = _panel(_render(system={"ip": "10.0.0.7"}), "Device")
-        assert "N/A (no display)" in panel
-        assert "0.0 fps" in panel
+        assert _row(panel, "Output resolution") == "N/A (no display)"
+        assert _row(panel, "Overlay redraw rate") == "0.0 fps"

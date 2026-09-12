@@ -141,6 +141,17 @@ class TestUpdateVideo:
 
         assert canvas.aspect_calls == [(1920, 1080), (1024, 768)]
 
+    def test_an_aspect_preserving_resolution_change_does_not_re_hint(self) -> None:
+        """1920x1080 -> 1280x720 is the same shape, so the window is already
+        constrained correctly and there is nothing to re-apply."""
+        canvas = _FakeCanvas(has_set_aspect_ratio=True)
+        app = _fake_app(resolution=(1920, 1080), canvas=canvas)
+        logger = logging.getLogger("test-update-video")
+        update_video(app, logger)
+        app._video_receiver.current = (1280, 720)
+        update_video(app, logger)
+        assert canvas.aspect_calls == [(1920, 1080)]
+
     def test_first_logged_resolution_does_not_gate_later_hints(self) -> None:
         """The one-shot log line and the aspect hint are separate concerns."""
         canvas = _FakeCanvas(has_set_aspect_ratio=True)

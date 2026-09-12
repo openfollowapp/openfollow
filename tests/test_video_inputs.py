@@ -12,39 +12,13 @@ from openfollow.runtime.receiver_bus import ReceiverBusHandler
 from openfollow.runtime.receiver_pipeline import ReceiverPipelineAssembler
 from openfollow.runtime.receiver_state import ReceiverStateMachine
 from openfollow.video.inputs import get_registry
-from openfollow.video.inputs._base import ReconnectPolicy, redact_uri
+from openfollow.video.inputs._base import ReconnectPolicy
 from openfollow.video.inputs.ndi import NdiInput
 from openfollow.video.inputs.rtp import _parse_rtp_url
 from openfollow.video.inputs.rtsp import RtspInput
 from openfollow.video.inputs.srt import SrtInput, _resolve_srt_uri
 
 pytestmark = pytest.mark.unit
-
-
-def test_redact_uri_strips_inline_credentials() -> None:
-    assert redact_uri("rtsp://user:pass@cam.local:554/h264") == "rtsp://cam.local:554/h264"
-
-
-def test_redact_uri_masks_srt_query_secrets_keeps_host() -> None:
-    out = redact_uri("srt://host:5000?streamid=r=0&passphrase=secret&latency=20")
-    assert "secret" not in out
-    assert "r=0" not in out
-    assert "host:5000" in out
-    assert "latency=20" in out
-
-
-def test_redact_uri_passes_through_credential_free_and_schemeless() -> None:
-    assert redact_uri("rtsp://cam:554/stream") == "rtsp://cam:554/stream"  # no creds
-    assert redact_uri("not-a-uri") == "not-a-uri"  # no scheme
-    assert redact_uri("file:///x") == "file:///x"  # no netloc
-    assert redact_uri("host:554/path") == "host:554/path"  # bare host:port, no userinfo
-
-
-def test_redact_uri_strips_credentials_from_schemeless_shorthand() -> None:
-    # urlsplit reads the userinfo as a bogus scheme + empty netloc; a plain
-    # pass-through would have logged/displayed the password verbatim.
-    assert redact_uri("user:pass@192.168.0.1/stream") == "192.168.0.1/stream"
-    assert redact_uri("admin:hunter2@cam.local:554") == "cam.local:554"
 
 
 def test_get_source_label_redacts_rtsp_credentials() -> None:

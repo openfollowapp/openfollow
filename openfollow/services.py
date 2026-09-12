@@ -2570,7 +2570,16 @@ class AppRuntimeServices:
         getter = getattr(self._app._canvas, "get_canvas_size", None)
         if getter is None:
             return None
-        width, height = getter()
+        try:
+            width, height = getter()
+        except Exception:
+            # ``publish_runtime_stats`` runs on the frame loop *ahead* of the
+            # liveness stamp, so a raising GTK read would stop
+            # ``_last_frame_completed`` advancing and report a permanent stall
+            # for a loop that is in fact running - while freezing every other
+            # figure on the page with it. One unreadable row is the cheap loss.
+            logger.debug("Canvas size unavailable for runtime stats", exc_info=True)
+            return None
         if width <= 0 or height <= 0:
             return None
         return {"width": int(width), "height": int(height)}

@@ -326,3 +326,45 @@ class TestNdiStatusMarker:
             ConnectionStatus.CONNECTED,
             ConnectionStatus.DISCONNECTED,
         ]
+
+
+class TestErrorMessageRedaction:
+    """``error_message`` is rendered on the projected HUD and served from
+    ``/api/stats``, and the two writers that take free text are handed
+    GStreamer's raw error/debug string - which for an ``rtspsrc`` auth failure
+    carries the full ``location``, credentials and all. Redacting at the writer
+    makes every reader of the field safe by construction.
+    """
+
+    _GST_AUTH_ERROR = (
+        "Unauthorized – gstrtspsrc.c(7469): gst_rtspsrc_send (): "
+        "Could not open resource for reading "
+        "rtsp://operator:hunter2@192.168.0.182:554/profile2/media.smp"
+    )
+
+    def test_reconnecting_redacts_a_credential(self) -> None:
+        marker = NdiStatusMarker()
+        marker.set_reconnecting(1, self._GST_AUTH_ERROR)
+        assert "hunter2" not in marker.error_message
+        # Still diagnosable: host, path and reason survive.
+        assert "192.168.0.182:554/profile2/media.smp" in marker.error_message
+        assert "Unauthorized" in marker.error_message
+
+    def test_disconnected_redacts_a_credential(self) -> None:
+        marker = NdiStatusMarker()
+        marker.set_disconnected("srt://10.0.0.5:5000?passphrase=topsecret unreachable")
+        assert "topsecret" not in marker.error_message
+        assert "unreachable" in marker.error_message
+
+    def test_the_redacted_message_is_what_reaches_callbacks_and_snapshot(self) -> None:
+        marker = NdiStatusMarker()
+        seen: list[str] = []
+        marker.add_callback(lambda _s, _n, _a, error: seen.append(error))
+        marker.set_reconnecting(1, self._GST_AUTH_ERROR)
+        assert seen and "hunter2" not in seen[0]
+        assert "hunter2" not in marker.snapshot().error_message
+
+    def test_a_credential_free_message_is_unchanged(self) -> None:
+        marker = NdiStatusMarker()
+        marker.set_disconnected("Connection timed out")
+        assert marker.error_message == "Connection timed out"

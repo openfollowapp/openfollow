@@ -8,13 +8,12 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from openfollow.uri_redaction import redact_uri, strip_uri_query_key
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
     ReconnectPolicy,
     VideoInputBase,
-    redact_uri,
-    strip_uri_query_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,7 +41,8 @@ class SrtInput(VideoInputBase):
     def config_fields(cls) -> list[ConfigField]:
         return [
             ConfigField("srt_host", str, "srt://0.0.0.0:5000", "SRT URL"),
-            ConfigField("srt_passphrase", str, "", "Passphrase", strip=False),
+            # Web-only – see the note on the RTSP credential fields.
+            ConfigField("srt_passphrase", str, "", "Passphrase", device_editable=False, strip=False),
         ]
 
     @classmethod

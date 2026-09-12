@@ -2305,6 +2305,39 @@ class TestFieldChoicePicker:
 
         assert app_modes._first_video_choice_field("not-a-real-plugin") is None
 
+    @pytest.mark.parametrize(
+        "source_type, expected",
+        [("rtsp", "rtsp_url"), ("srt", "srt_host")],
+    )
+    def test_on_device_editor_opens_the_url_never_a_credential(self, source_type: str, expected: str) -> None:
+        """The on-device editor renders a free-text field on the projected HUD
+        and picks the plugin's first device-editable string field. A camera
+        password must not be reachable from it whatever the declaration order
+        happens to be, so the credential fields opt out explicitly rather than
+        relying on the URL being declared first.
+        """
+        from openfollow.runtime import app_modes
+
+        field = app_modes._first_video_text_field(source_type)
+        assert field is not None
+        assert field[0] == expected
+
+    @pytest.mark.parametrize(
+        "source_type, credentials",
+        [
+            ("rtsp", ("rtsp_user", "rtsp_password")),
+            ("srt", ("srt_passphrase",)),
+        ],
+    )
+    def test_credentials_are_web_only(self, source_type: str, credentials: tuple[str, ...]) -> None:
+        from openfollow.video.inputs import get_input_class
+
+        cls = get_input_class(source_type)
+        assert cls is not None
+        by_name = {f.name: f for f in cls.config_fields()}
+        for name in credentials:
+            assert by_name[name].device_editable is False, name
+
 
 class TestSourceTypeConfirmAutoChainIntoPicker:
     """Swap failure auto-chains into picker for choice-bearing fields instead of URL editor."""

@@ -1,15 +1,6 @@
 % system = stats.get("system", {})
 % video = stats.get("video", {})
 % resolution = video.get("resolution", {})
-% input_w = resolution.get("width", 0)
-% input_h = resolution.get("height", 0)
-% # A placeholder ("No Signal") pipeline publishes no geometry and no rate, so
-% # an unconnected source reads N/A here instead of the black pattern's figures.
-% input_resolution = ("%dx%d" % (input_w, input_h)) if input_w and input_h else "N/A"
-% source_fps = video.get("source_fps", 0.0)
-% source_fps_text = ("%.1f fps" % source_fps) if source_fps else "N/A"
-% output_resolution = system.get("output_resolution")
-% output_text = ("%dx%d" % (output_resolution["width"], output_resolution["height"])) if output_resolution else "N/A (no display)"
 % controllers = stats.get("controllers", {})
 % tracking = stats.get("tracking", {})
 % playback = stats.get("playback", {})
@@ -20,6 +11,15 @@
 % tracking_running = bool(tracking.get("running"))
 % tracking_missing = tracking.get("missing_deps") or []
 % video_state = "Connected" if video_connected else "Disconnected"
+% # Keyed off the connection, not off a falsy figure: a placeholder ("No Signal")
+% # pipeline publishes no geometry and no rate, while a connected variable-rate
+% # source legitimately advertises 0 fps and must not read as "not connected".
+% input_w = resolution.get("width", 0)
+% input_h = resolution.get("height", 0)
+% input_resolution = ("%dx%d" % (input_w, input_h)) if video_connected and input_w and input_h else "N/A"
+% source_fps_text = ("%.1f fps" % video.get("source_fps", 0.0)) if video_connected else "N/A"
+% output_resolution = system.get("output_resolution")
+% output_text = ("%dx%d" % (output_resolution["width"], output_resolution["height"])) if output_resolution else "N/A (no display)"
 % tracking_state = "Off"
 % if tracking_enabled:
 %     if tracking_missing:

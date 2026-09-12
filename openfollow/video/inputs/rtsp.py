@@ -8,13 +8,12 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from openfollow.uri_redaction import redact_uri, strip_uri_userinfo
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
     ReconnectPolicy,
     VideoInputBase,
-    redact_uri,
-    strip_uri_userinfo,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,8 +31,11 @@ class RtspInput(VideoInputBase):
     def config_fields(cls) -> list[ConfigField]:
         return [
             ConfigField("rtsp_url", str, "rtsp://0.0.0.0:554/stream", "RTSP URL"),
-            ConfigField("rtsp_user", str, "", "Username"),
-            ConfigField("rtsp_password", str, "", "Password", strip=False),
+            # Web-only: the on-device editor picks the first device-editable
+            # string field, and a credential must never be the one it opens
+            # in plain text on a stage projector.
+            ConfigField("rtsp_user", str, "", "Username", device_editable=False),
+            ConfigField("rtsp_password", str, "", "Password", device_editable=False, strip=False),
         ]
 
     @classmethod

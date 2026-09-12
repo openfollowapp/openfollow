@@ -692,3 +692,37 @@ class TestDeviceFigures:
         self._prime(services, hud_fps=59.75, canvas=canvas)
         snap = self._publish(services, monkeypatch)
         assert snap["system"]["output_resolution"] is None
+
+    def test_a_raising_canvas_read_cannot_stall_the_frame_loop(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``publish_runtime_stats`` runs on the frame loop *ahead* of the
+        liveness stamp. A raising GTK read here would stop
+        ``_last_frame_completed`` advancing, so the watchdog would report a
+        permanent stall - and freeze every other figure on the page - for a
+        loop that is in fact running. One unreadable row is the cheap loss.
+        """
+
+        class _RaisingCanvas:
+            def get_canvas_size(self) -> tuple[int, int]:
+                raise RuntimeError("window is being destroyed")
+
+        self._prime(services, hud_fps=59.75, canvas=_RaisingCanvas())
+        snap = self._publish(services, monkeypatch)
+        assert snap["system"]["output_resolution"] is None
+        # The rest of the snapshot still published.
+        assert snap["system"]["hud_fps"] == 59.75
+        assert snap["system"]["ip"] == "10.0.0.7"
+
+    def test_a_canvas_returning_the_wrong_shape_reports_none(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same contract for the unpack: a non-pair raises ``ValueError``."""
+
+        class _WrongShapeCanvas:
+            def get_canvas_size(self) -> Any:
+                return (1920, 1200, 60)
+
+        self._prime(services, hud_fps=59.75, canvas=_WrongShapeCanvas())
+        snap = self._publish(services, monkeypatch)
+        assert snap["system"]["output_resolution"] is None

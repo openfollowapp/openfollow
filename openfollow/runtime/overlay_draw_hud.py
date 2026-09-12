@@ -1405,6 +1405,30 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
 # ---------------------------------------------------------------------------
 
 
+def _menu_button_hint(state: OverlayState, action: str, default: str) -> str:
+    """Friendly label for a menu button, or "" when the operator unbound it.
+
+    These screens are reachable on a station with no keyboard, so every modal
+    that can be driven from a pad has to name the pad buttons. Read from the
+    operator's own bindings rather than hardcoded, because a rebound control
+    named by its default sends them to a button that does nothing.
+    """
+    raw = state.button_labels.get(action, default)
+    return friendly_button_label(raw) if raw else ""
+
+
+def _confirm_cancel_hint(state: OverlayState, confirm_verb: str, cancel_verb: str) -> str:
+    """``"A saves, B cancels"`` from live bindings; "" when neither is bound."""
+    confirm = _menu_button_hint(state, "menu_confirm", "A")
+    cancel = _menu_button_hint(state, "menu_cancel", "B")
+    parts = []
+    if confirm:
+        parts.append(f"{confirm} {confirm_verb}")
+    if cancel:
+        parts.append(f"{cancel} {cancel_verb}")
+    return ", ".join(parts)
+
+
 def draw_pi_network_screen(
     renderer: Any,
     cr: Any,
@@ -1420,7 +1444,8 @@ def draw_pi_network_screen(
     while data rows sit indented below them.
     """
     net = state.pi_network
-    subtitle = "Use \u2191\u2193 to move, Enter to edit, Esc / Back to leave."
+    pad = _confirm_cancel_hint(state, "opens", "goes back")
+    subtitle = f"D-pad or arrows to move. {pad}." if pad else "Arrows to move, Enter to open, Esc to leave."
     panel_w = min(w * 0.62, 880.0)
     panel_h = min(h * 0.92, 760.0)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
@@ -1574,7 +1599,12 @@ def draw_pi_network_field_edit(
 ) -> None:
     net = state.pi_network
     title = (net.field_label or "VALUE").upper()
-    subtitle = "D-pad moves and changes the digit, or type digits and dots. Enter to save, Esc to cancel."
+    pad = _confirm_cancel_hint(state, "saves", "cancels")
+    subtitle = (
+        f"D-pad moves and changes the digit. {pad}."
+        if pad
+        else "Type digits and dots only, Enter to save, Esc to cancel."
+    )
     panel_w = min(w * 0.62, 720.0)
     panel_h = min(h * 0.30, 240.0)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(

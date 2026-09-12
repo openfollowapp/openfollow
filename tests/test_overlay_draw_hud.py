@@ -2194,13 +2194,36 @@ class TestTheFieldEditorShowsTheDpadCursor:
         verticals = [seg for seg in _stroked_segments(cr) if abs(seg[0] - seg[2]) < 0.5]
         assert verticals, "no caret drawn for a typed value"
 
-    def test_the_subtitle_names_the_dpad(self) -> None:
-        """A station with no keyboard is the case this editor exists for;
-        telling that operator to type is the whole failure."""
+    def _subtitle(self, buttons: dict[str, str] | None = None) -> str:
         state = _base_state(pi_network=_network_state(field_label="IP Address", field_edit_active=True))
+        state.button_labels = {"menu_confirm": "A", "menu_cancel": "B"} if buttons is None else buttons
         cr = FakeCairo()
         draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
-        assert any("D-pad" in t for t in cr.show_text_strings())
+        return next(t for t in cr.show_text_strings() if "digit" in t or "Type digits" in t)
+
+    def test_the_subtitle_names_the_pad_buttons_that_save_and_cancel(self) -> None:
+        """A station with no keyboard is the case this editor exists for. The
+        gamepad has always been able to save and cancel; the dialog named only
+        Enter and Esc, so from the operator's side it needed a keyboard.
+        """
+        subtitle = self._subtitle()
+        assert "D-pad" in subtitle
+        assert "A saves" in subtitle
+        assert "B cancels" in subtitle
+
+    def test_it_names_the_operator_s_own_bindings(self) -> None:
+        """Naming the defaults would send an operator who rebound these to a
+        button that does nothing."""
+        subtitle = self._subtitle({"menu_confirm": "START", "menu_cancel": "BACK"})
+        assert "Start saves" in subtitle
+        assert "Back cancels" in subtitle
+
+    def test_unbound_buttons_fall_back_to_the_keyboard_wording(self) -> None:
+        """Promising a pad button that is not bound is worse than naming the
+        keys, which always work."""
+        subtitle = self._subtitle({"menu_confirm": "", "menu_cancel": ""})
+        assert "Enter to save" in subtitle
+        assert "Esc to cancel" in subtitle
 
 
 class TestTheScreenDoesNotTruncateAUrl:

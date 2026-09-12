@@ -461,14 +461,20 @@ class TestDpadEntryThroughTheGamepadPoll:
         return app, press
 
     def test_up_raises_the_digit_under_the_cursor(self) -> None:
-        app, press = self._editing()
+        """Seeded low so the hundreds digit has room in both directions.
+
+        From ``192`` the only valid hundreds values are 0 and 1, so up and
+        down land on the same digit and the test could not tell them apart.
+        """
+        app, press = self._editing("10.0.0.5")
         press(up=True)
-        assert app._pi_network_field_value == "292.168.001.005"
+        assert app._pi_network_field_value == "110.000.000.005"
 
     def test_down_lowers_it(self) -> None:
-        app, press = self._editing()
+        """Down from 0 lands on the highest hundreds an octet can hold, not 9."""
+        app, press = self._editing("10.0.0.5")
         press(down=True)
-        assert app._pi_network_field_value == "092.168.001.005"
+        assert app._pi_network_field_value == "210.000.000.005"
 
     def test_right_then_up_moves_to_the_next_digit(self) -> None:
         app, press = self._editing()
@@ -486,10 +492,10 @@ class TestDpadEntryThroughTheGamepadPoll:
 
     def test_the_cursor_stops_at_the_first_digit(self) -> None:
         """Wrapping to the far end would read as the value jumping."""
-        app, press = self._editing()
+        app, press = self._editing("10.0.0.5")
         press(left=True)
         press(up=True)
-        assert app._pi_network_field_value == "292.168.001.005"
+        assert app._pi_network_field_value == "110.000.000.005"
 
 
 class TestGamepadEntryOnTheSubnetField:

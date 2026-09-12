@@ -552,6 +552,28 @@ def test_api_diagnostics_log_tail_redacts_signatures(live_server) -> None:
     assert "X-Auth-Signature: ***" in body
 
 
+def test_api_diagnostics_log_tail_redacts_stream_credentials(live_server) -> None:
+    """The route is the other way the log leaves the station, so it redacts
+    exactly what the bundle does - a camera password reaching an operator's
+    screen here would reach a screenshot next."""
+    _, base, _ = live_server
+    import logging
+
+    logging.getLogger("openfollow.test.redact").error(
+        "GStreamer error: Unauthorized (Could not open resource for reading "
+        "rtsp://operator:hunter2@192.168.0.182:554/profile2/media.smp)",
+    )
+    logging.getLogger("openfollow.test.redact").error(
+        "srt://10.0.0.5:5000?passphrase=topsecret&latency=125 failed",
+    )
+    status, body, _ = _get(base, "/api/diagnostics/log-tail?n=200")
+    assert status == 200
+    assert "hunter2" not in body
+    assert "topsecret" not in body
+    assert "192.168.0.182:554/profile2/media.smp" in body
+    assert "latency=125" in body
+
+
 def test_api_diagnostics_log_tail_escapes_html_for_htmx_consumer(live_server) -> None:
     """The diagnostics partial swaps the log-tail response into a
     ``<pre>`` via ``hx-swap="innerHTML"``. Content must be HTML-escaped

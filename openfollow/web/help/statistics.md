@@ -8,10 +8,11 @@ State of the active camera source.
 
 - **Source** – the configured source name or type (for example the RTSP URL label or NDI source name). Confirms which input the pipeline is reading from.
 - **Signal** – `Connected` with a live feed; `Disconnected` when the source is unreachable or not yet opened. The panel header chip mirrors this.
-- **Resolution** – pixel dimensions (width × height) of the incoming frames.
-- **Frame Rate (measured)** – actual frame rate delivered, measured at runtime. Compare to the source rate to spot frame drops or decoder stalls.
-- **Frame Rate (source)** – frame rate advertised by the source. On a healthy pipeline the measured and source rates should be close.
+- **Input resolution** – pixel dimensions (width × height) of the frames arriving from the source, read from the negotiated stream. `N/A` until a source has actually connected: the black *No Signal* picture is generated on this station, so it reports no geometry of its own.
+- **Frame Rate (source)** – frame rate the source advertises in that same stream. `N/A` while nothing is connected, for the same reason.
 - **Pipeline** – internal GStreamer pipeline state in uppercase (for example `PLAYING`, `PAUSED`, `NULL`). `PLAYING` is normal; anything else means it's not running.
+
+Every figure in this panel describes the incoming feed only. Nothing in this panel measures how fast this station is drawing – that lives under **Device**, and a station with no screen attached draws nothing while the feed stays perfectly healthy.
 
 ## Device
 
@@ -22,6 +23,8 @@ System health for the station hardware.
 - **CPU** – processor load as a percentage. Sustained values above roughly 80–90 % can cause frame drops or tracking lag.
 - **RAM** – memory usage as a percentage. Approaching 100 % on a Raspberry Pi typically causes slowdowns and should be investigated.
 - **Temperature** – processor temperature in degrees Celsius; `N/A` on platforms without a thermal sensor. On a Raspberry Pi, sustained values above 80 °C may trigger thermal throttling, visible as CPU spikes paired with frame-rate drops.
+- **Output resolution** – the size of the canvas the overlay is drawn on: the actual window, or the whole screen when running fullscreen, rather than the size requested under Display. Read it against **Input resolution** in the Video panel. Camera calibration is solved against the input while the grid, zones, and markers are drawn across the output, so when the two have different aspect ratios the overlay sits off the video with nothing else on screen to explain it. `N/A (no display)` on a station with no screen attached.
+- **Overlay redraw rate** – how often this station redraws its on-screen overlay, in frames per second. This measures the display, not the feed: it tracks the screen's refresh rate, and it reads `0.0 fps` on a station with no screen attached while video, tracking, and every position output keep running normally. It is not a measure of video throughput, and a healthy figure here says nothing about whether a single video frame has arrived – check **Signal** in the Video panel for that.
 - **Frame clock** – the loop that reads your input and updates marker positions. `Running` is normal, and it stays running with no display attached. `Stalled` means the loop has not run for over a second: marker positions, input, and detection are frozen, while PSN, OTP, RTTrPM, and OSC keep transmitting the last known position at full rate. To a receiving console that looks like a healthy stream whose coordinates never move, so treat this chip as the first thing to check when a station appears connected but nothing follows. Restart the application from the Diagnostics section, and send the diagnostics bundle if it recurs.
 
 ## Person Detection

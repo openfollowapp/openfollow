@@ -826,8 +826,9 @@ class GstNativeSinkReceiver:
         self._pipeline = pipeline
         self._setup_bus()
         self._state.set_placeholder_pipeline(True)
-        width, height = self._pipeline_assembler.placeholder_resolution
-        self._state.set_resolution(width, height)
+        # The "No Signal" frame is ours, not the source's: report no geometry
+        # and no rate while it is up rather than the black pattern's.
+        self._state.clear_source_caps()
 
     # -- Bus handling ---------------------------------------------------------
 

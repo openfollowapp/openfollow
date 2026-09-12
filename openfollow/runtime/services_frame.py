@@ -15,12 +15,20 @@ def update_video(app: Any, logger: logging.Logger) -> None:
     """Update video resolution-dependent runtime state."""
     try:
         w, h = app._video_receiver.resolution
-        if w > 0 and h > 0 and not app._video_logged:
+        if w <= 0 or h <= 0:
+            return
+        if not app._video_logged:
             logger.info("Native sink: %dx%d", w, h)
             app._video_logged = True
+        # The hint tracks the live source for the whole session rather than
+        # latching its first figure: the HUD projects across the canvas while
+        # calibration is solved against the input, so a window left at the
+        # previous source's aspect ratio slides the overlay off the video.
+        if app._video_aspect != (w, h):
             canvas = app._canvas
             if hasattr(canvas, "set_aspect_ratio"):
                 canvas.set_aspect_ratio(w, h)
+                app._video_aspect = (w, h)
     except Exception as e:
         logger.debug("Video update error: %s", e)
 

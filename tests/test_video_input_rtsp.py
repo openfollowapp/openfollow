@@ -94,6 +94,104 @@ class TestCreatePipeline:
         assert post.properties["leaky"] == 2
 
 
+class TestRtspCredentials:
+    """A camera that needs a login and does not get one never connects.
+
+    These pin the login path an operator can reach from the form, and the
+    precedence that decides which credential wins when a URL carries one too.
+    """
+
+    def _rtspsrc(self, config: dict[str, object]):  # noqa: ANN202
+        from gi.repository import Gst  # noqa: F401
+
+        fake = make_fake_gst()
+        sink = FakeElement("shared_videosink")
+        with patch("gi.repository.Gst", fake):
+            pipeline = RtspInput().create_pipeline(
+                config=config,
+                sink=sink,
+                build_overlay_tail=lambda *a: None,
+                prepare_sink=lambda: sink,
+            )
+        src = pipeline.get_by_name("rtspsrc")
+        assert src is not None
+        return src
+
+    def test_credentials_drive_the_element_properties(self) -> None:
+        src = self._rtspsrc(
+            {
+                "rtsp_url": "rtsp://192.168.0.182:554/profile2/media.smp",
+                "rtsp_user": "operator",
+                "rtsp_password": "hunter2",
+            }
+        )
+        assert src.properties["user-id"] == "operator"
+        assert src.properties["user-pw"] == "hunter2"
+        assert src.properties["location"] == "rtsp://192.168.0.182:554/profile2/media.smp"
+
+    @pytest.mark.parametrize("password", ["p@ss:word/1", "with spaces", "  padded  "])
+    def test_password_reaches_the_element_verbatim(self, password: str) -> None:
+        """The point of the field is that it needs no URL-encoding: a password
+        with ``@``, ``:`` or ``/`` breaks a URL but must survive intact here.
+        Edge whitespace is kept too - it can be part of the password and is
+        invisible in a password field, so trimming it would fail auth silently.
+        """
+        src = self._rtspsrc(
+            {
+                "rtsp_url": "rtsp://cam:554/s",
+                "rtsp_user": "operator",
+                "rtsp_password": password,
+            }
+        )
+        assert src.properties["user-pw"] == password
+
+    def test_username_is_trimmed(self) -> None:
+        src = self._rtspsrc(
+            {"rtsp_url": "rtsp://cam:554/s", "rtsp_user": "  operator  ", "rtsp_password": "x"}
+        )
+        assert src.properties["user-id"] == "operator"
+
+    def test_fields_outrank_a_credential_left_in_the_url(self) -> None:
+        """``rtspsrc`` tries URL userinfo before ``user-id``/``user-pw``, so a
+        stale login in the URL would otherwise beat what the operator typed."""
+        src = self._rtspsrc(
+            {
+                "rtsp_url": "rtsp://stale:old@192.168.0.182:554/s",
+                "rtsp_user": "operator",
+                "rtsp_password": "hunter2",
+            }
+        )
+        assert src.properties["location"] == "rtsp://192.168.0.182:554/s"
+        assert src.properties["user-id"] == "operator"
+        assert src.properties["user-pw"] == "hunter2"
+
+    def test_only_a_password_is_enough_to_take_the_field_path(self) -> None:
+        """Some cameras authenticate on a password alone; an empty username
+        must not drop the whole login back to the URL path."""
+        src = self._rtspsrc(
+            {"rtsp_url": "rtsp://stale:old@cam:554/s", "rtsp_user": "", "rtsp_password": "hunter2"}
+        )
+        assert src.properties["location"] == "rtsp://cam:554/s"
+        assert src.properties["user-id"] == ""
+        assert src.properties["user-pw"] == "hunter2"
+
+    def test_the_password_renders_as_a_password_input(self) -> None:
+        """A visible credential is a credential in the next screenshot."""
+        html = RtspInput.web_ui_html({"rtsp_user": "operator", "rtsp_password": "hunter2"})
+        assert 'type="password" name="rtsp_password"' in html
+        assert 'type="text" name="rtsp_user"' in html
+        assert html.count('autocomplete="off"') == 2
+
+    @pytest.mark.parametrize("config", [{}, {"rtsp_user": "", "rtsp_password": ""}])
+    def test_blank_fields_leave_the_url_path_untouched(self, config: dict[str, object]) -> None:
+        """Nobody's saved config breaks: with no fields set, a login fused into
+        the URL is handed over exactly as before."""
+        src = self._rtspsrc({"rtsp_url": "rtsp://user:pass@cam:554/s", **config})
+        assert src.properties["location"] == "rtsp://user:pass@cam:554/s"
+        assert "user-id" not in src.properties
+        assert "user-pw" not in src.properties
+
+
 class TestRtspsrcPadAdded:
     def test_links_rtspsrc_dynamic_pad_into_decodebin(self) -> None:
         from gi.repository import Gst  # noqa: F401

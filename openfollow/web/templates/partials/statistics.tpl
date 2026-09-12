@@ -1,6 +1,15 @@
 % system = stats.get("system", {})
 % video = stats.get("video", {})
 % resolution = video.get("resolution", {})
+% input_w = resolution.get("width", 0)
+% input_h = resolution.get("height", 0)
+% # A placeholder ("No Signal") pipeline publishes no geometry and no rate, so
+% # an unconnected source reads N/A here instead of the black pattern's figures.
+% input_resolution = ("%dx%d" % (input_w, input_h)) if input_w and input_h else "N/A"
+% source_fps = video.get("source_fps", 0.0)
+% source_fps_text = ("%.1f fps" % source_fps) if source_fps else "N/A"
+% output_resolution = system.get("output_resolution")
+% output_text = ("%dx%d" % (output_resolution["width"], output_resolution["height"])) if output_resolution else "N/A (no display)"
 % controllers = stats.get("controllers", {})
 % tracking = stats.get("tracking", {})
 % playback = stats.get("playback", {})
@@ -64,16 +73,12 @@
                 <dd class="metric-value">{{video_state}}</dd>
             </div>
             <div class="metric-row">
-                <dt class="metric-label">Resolution</dt>
-                <dd class="metric-value">{{resolution.get('width', 0)}}x{{resolution.get('height', 0)}}</dd>
-            </div>
-            <div class="metric-row">
-                <dt class="metric-label">Frame Rate (measured)</dt>
-                <dd class="metric-value">{{'%.1f fps' % video.get('fps', 0.0)}}</dd>
+                <dt class="metric-label">Input resolution</dt>
+                <dd class="metric-value">{{input_resolution}}</dd>
             </div>
             <div class="metric-row">
                 <dt class="metric-label">Frame Rate (source)</dt>
-                <dd class="metric-value">{{'%.1f fps' % video.get('source_fps', 0.0)}}</dd>
+                <dd class="metric-value">{{source_fps_text}}</dd>
             </div>
             <div class="metric-row">
                 <dt class="metric-label">Pipeline</dt>
@@ -106,6 +111,14 @@
             <div class="metric-row">
                 <dt class="metric-label">Temperature</dt>
                 <dd class="metric-value">{{'%.1f C' % temp_c if temp_c is not None else 'N/A'}}</dd>
+            </div>
+            <div class="metric-row">
+                <dt class="metric-label">Output resolution</dt>
+                <dd class="metric-value">{{output_text}}</dd>
+            </div>
+            <div class="metric-row">
+                <dt class="metric-label">Overlay redraw rate</dt>
+                <dd class="metric-value">{{'%.1f fps' % system.get('hud_fps', 0.0)}}</dd>
             </div>
             <div class="metric-row">
                 <dt class="metric-label">Frame clock</dt>

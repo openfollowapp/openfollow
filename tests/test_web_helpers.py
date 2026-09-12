@@ -58,6 +58,42 @@ def test_config_dict_redacted_drops_device_local_fields() -> None:
     assert d["web_port"] == 8080  # non-secret fields preserved
 
 
+def test_config_dict_redacted_keeps_stream_credentials() -> None:
+    """A deliberate split from ``web_pin``.
+
+    A station PIN is that station's own login and must never travel. A camera
+    password is the opposite: every station pointed at the same camera needs
+    the same one, so stripping it would break the fleet-provisioning workflow
+    export and peer broadcast exist for. It stays redacted in the diagnostics
+    bundle, which is the artefact we ask operators to post publicly.
+    """
+    cfg = AppConfig(
+        web_pin="1234",
+        rtsp_user="operator",
+        rtsp_password="hunter2",
+        srt_passphrase="0123456789abcdef",
+    )
+    d = _config_dict_redacted(cfg)
+    assert "web_pin" not in d
+    assert d["rtsp_user"] == "operator"
+    assert d["rtsp_password"] == "hunter2"
+    assert d["srt_passphrase"] == "0123456789abcdef"
+
+
+def test_broadcast_keeps_stream_credentials_on_the_video_source_section() -> None:
+    scrubbed = strip_device_local_fields(
+        "video_source",
+        {
+            "rtsp_password": "hunter2",
+            "srt_passphrase": "key",
+            "testpattern_selected_media": "0123456789abcdef",
+        },
+    )
+    assert scrubbed["rtsp_password"] == "hunter2"
+    assert scrubbed["srt_passphrase"] == "key"
+    assert "testpattern_selected_media" not in scrubbed
+
+
 def test_strip_device_local_fields_drops_detection_storage_path() -> None:
     scrubbed = strip_device_local_fields(
         "detection",
@@ -373,6 +409,83 @@ def test_apply_section_data_video_source(monkeypatch) -> None:
 
     assert ok is True
     assert config.video_source_type == "srt"
+
+
+class TestStreamCredentialRoundTrip:
+    """Save → read back → hot-reload, for the RTSP login and SRT passphrase.
+
+    A credential that does not survive the round trip fails authentication with
+    nothing on screen to explain it, which is the failure this form exists to
+    end.
+    """
+
+    def test_saved_credentials_land_on_the_config(self) -> None:
+        cfg = AppConfig(video_source_type="rtsp")
+        ok = apply_section_data(
+            cfg,
+            "video_source",
+            {
+                "video_source_type": "rtsp",
+                "rtsp_url": "rtsp://192.168.0.182:554/profile2/media.smp",
+                "rtsp_user": "  operator  ",
+                "rtsp_password": "p@ss:word/1",
+            },
+        )
+        assert ok is True
+        assert cfg.rtsp_user == "operator"
+        assert cfg.rtsp_password == "p@ss:word/1"
+
+    def test_a_password_keeps_its_edge_whitespace(self) -> None:
+        """Every other string field is trimmed on save. A credential is not:
+        the whitespace may be part of it and is invisible in a password
+        field, so trimming it would fail auth silently."""
+        cfg = AppConfig(video_source_type="rtsp")
+        apply_section_data(
+            cfg,
+            "video_source",
+            {"video_source_type": "rtsp", "rtsp_password": "  padded  "},
+        )
+        assert cfg.rtsp_password == "  padded  "
+
+    def test_saved_passphrase_lands_on_the_config(self) -> None:
+        cfg = AppConfig(video_source_type="srt")
+        apply_section_data(
+            cfg,
+            "video_source",
+            {"video_source_type": "srt", "srt_passphrase": " 0123456789abcdef "},
+        )
+        assert cfg.srt_passphrase == " 0123456789abcdef "
+
+    def test_credentials_read_back_into_the_section_view(self) -> None:
+        cfg = AppConfig(rtsp_user="operator", rtsp_password="hunter2", srt_passphrase="key")
+        data = get_section_data(cfg, "video_source")
+        assert data is not None
+        assert data["rtsp_user"] == "operator"
+        assert data["rtsp_password"] == "hunter2"
+        assert data["srt_passphrase"] == "key"
+
+    @pytest.mark.parametrize(
+        "input_id, field, value",
+        [
+            ("rtsp", "rtsp_user", "operator"),
+            ("rtsp", "rtsp_password", "hunter2"),
+            ("srt", "srt_passphrase", "key"),
+        ],
+    )
+    def test_a_credential_edit_alone_triggers_the_live_swap(
+        self, input_id: str, field: str, value: str
+    ) -> None:
+        """Hot-reload is driven by ``config_changed``. A credential-only edit
+        that did not register would leave the pipeline on the old login until
+        an unrelated field happened to change."""
+        from openfollow.video.inputs import get_input_class
+
+        cls = get_input_class(input_id)
+        assert cls is not None
+        old = AppConfig(video_source_type=input_id)
+        new = AppConfig(video_source_type=input_id, **{field: value})
+        assert cls.config_changed(old, new) is True
+        assert cls.config_changed(old, AppConfig(video_source_type=input_id)) is False
 
 
 def test_get_section_data_returns_none_for_unknown_section() -> None:

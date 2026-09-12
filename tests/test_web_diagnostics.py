@@ -281,31 +281,71 @@ def test_collect_discovery_no_providers_still_lists_local_ips() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_redact_web_pin_replaces_set_value() -> None:
-    out = diag.redact_web_pin('web_pin = "secret"\nsystem = "rig"')
+def test_redact_config_secrets_replaces_set_value() -> None:
+    out = diag.redact_config_secrets('web_pin = "secret"\nsystem = "rig"')
     assert 'web_pin = "***"' in out
     assert "secret" not in out
     assert 'system = "rig"' in out  # other lines untouched
 
 
-def test_redact_web_pin_marks_empty_explicitly() -> None:
-    assert 'web_pin = "(empty)"' in diag.redact_web_pin('web_pin = ""')
-    assert 'web_pin = "(empty)"' in diag.redact_web_pin("web_pin = ''")
+def test_redact_config_secrets_marks_empty_explicitly() -> None:
+    assert 'web_pin = "(empty)"' in diag.redact_config_secrets('web_pin = ""')
+    assert 'web_pin = "(empty)"' in diag.redact_config_secrets("web_pin = ''")
 
 
-def test_redact_web_pin_does_not_match_sibling_keys() -> None:
-    """Regex anchors to exact key followed by = to avoid sibling key matches."""
+def test_redact_config_secrets_does_not_match_sibling_keys() -> None:
+    """Matching anchors to the whole key so a similar one is left alone."""
     text = 'web_pin = "real-secret"\nweb_pin_hint = "do not redact me"\nweb_pinger = "also untouched"'
-    out = diag.redact_web_pin(text)
+    out = diag.redact_config_secrets(text)
     assert 'web_pin = "***"' in out
     assert 'web_pin_hint = "do not redact me"' in out
     assert 'web_pinger = "also untouched"' in out
 
 
-def test_redact_web_pin_handles_indented_line() -> None:
+def test_redact_config_secrets_handles_indented_line() -> None:
     text = '  web_pin = "leaked"'
-    out = diag.redact_web_pin(text)
+    out = diag.redact_config_secrets(text)
     assert out == '  web_pin = "***"'
+
+
+@pytest.mark.parametrize(
+    "key, secret",
+    [
+        ("rtsp_password", "hunter2"),
+        ("rtsp_user", "operator"),
+        ("srt_passphrase", "0123456789abcdef"),
+    ],
+)
+def test_redact_config_secrets_hides_stream_credentials(key: str, secret: str) -> None:
+    """Whether a login is set is the diagnostic; the value never is.
+
+    It separates "the operator never entered a login" from "the login is
+    wrong", which is the whole of the useful content.
+    """
+    out = diag.redact_config_secrets(f'{key} = "{secret}"')
+    assert out == f'{key} = "***"'
+    assert secret not in out
+    assert diag.redact_config_secrets(f'{key} = ""') == f'{key} = "(empty)"'
+
+
+def test_redact_config_secrets_strips_credentials_fused_into_a_url() -> None:
+    """An operator told to put the password in the URL must not then have it
+    printed back in a bundle we ask them to attach to a public issue."""
+    out = diag.redact_config_secrets(
+        'rtsp_url = "rtsp://operator:hunter2@192.168.0.182:554/profile2/media.smp"\n'
+        'srt_host = "srt://10.0.0.5:5000?passphrase=topsecret&latency=125"'
+    )
+    assert "hunter2" not in out
+    assert "topsecret" not in out
+    # Everything that is not the credential survives, or the dump stops being
+    # useful for diagnosing the connection it describes.
+    assert "192.168.0.182:554/profile2/media.smp" in out
+    assert "latency=125" in out
+
+
+def test_redact_config_secrets_leaves_a_credential_free_url_intact() -> None:
+    text = 'rtsp_url = "rtsp://192.168.0.182:554/stream1"'
+    assert diag.redact_config_secrets(text) == text
 
 
 def test_collect_config_streams_provider_text() -> None:
@@ -356,6 +396,48 @@ def test_redact_signatures_is_case_insensitive_and_multiline() -> None:
     assert "ff" not in out
     assert " 11" not in out
     assert "untouched" in out
+
+
+# A real ``rtspsrc`` failure: GStreamer's debug string carries the full
+# ``location``, userinfo and all. An auth failure is both the condition that
+# puts it in the log and the condition that makes an operator send us a bundle.
+_GST_AUTH_ERROR = (
+    "2026-09-12 10:04:11 [ERROR] openfollow.runtime.receiver_bus: GStreamer error: "
+    "Unauthorized (gstrtspsrc.c(7469): gst_rtspsrc_send (): "
+    "/GstPipeline:rtsp-sink/GstRTSPSrc:rtspsrc: Could not open resource for reading "
+    "rtsp://operator:hunter2@192.168.0.182:554/profile2/media.smp)"
+)
+
+
+def test_redact_log_line_strips_a_credential_from_a_gstreamer_error() -> None:
+    out = diag.redact_log_line(_GST_AUTH_ERROR)
+    assert "hunter2" not in out
+    assert "operator:" not in out
+    # The line has to stay diagnosable: host, path and reason all survive.
+    assert "rtsp://192.168.0.182:554/profile2/media.smp" in out
+    assert "Unauthorized" in out
+
+
+def test_redact_log_line_masks_an_srt_passphrase() -> None:
+    out = diag.redact_log_line("INFO srt: connecting srt://10.0.0.5:5000?passphrase=topsecret&latency=125")
+    assert "topsecret" not in out
+    assert "latency=125" in out
+
+
+def test_redact_log_line_keeps_trailing_punctuation_outside_the_uri() -> None:
+    out = diag.redact_log_line("WARNING video: gave up on rtsp://u:p@cam.local:554/s.")
+    assert out.endswith("rtsp://cam.local:554/s.")
+
+
+def test_redact_log_line_still_strips_signatures() -> None:
+    out = diag.redact_log_line("INFO X-Auth-Signature: deadbeef ok")
+    assert "deadbeef" not in out
+    assert "X-Auth-Signature: ***" in out
+
+
+def test_redact_log_line_leaves_a_credential_free_line_alone() -> None:
+    line = "INFO video: RTSP source: rtsp://192.168.0.182:554/stream1 (latency=0)"
+    assert diag.redact_log_line(line) == line
 
 
 @pytest.fixture(autouse=True)
@@ -540,6 +622,28 @@ def test_collect_recent_failures_redacts_signatures_in_log_tail() -> None:
     assert "BeaconSender" in joined
     assert "503s): 3" in joined
     assert "phase             idle" in joined
+
+
+def test_collect_recent_failures_redacts_credentials_across_every_log_surface() -> None:
+    """Log tail, failure extract, and worker tracebacks share one redactor.
+
+    A credential surfacing in only one of the three would still reach a public
+    issue report, so the guarantee is pinned across all of them at once.
+    """
+    p = diag.DiagnosticsProviders(
+        worker_thread_tracebacks=lambda: {
+            "VideoReceiver": f"File a.py, line 1\n  {_GST_AUTH_ERROR}\n  raise RuntimeError",
+        },
+    )
+    rows = diag.collect_recent_failures(
+        p,
+        lambda: ("test", [_GST_AUTH_ERROR]),
+        lambda: ("test", ["[ERROR] srt://10.0.0.5:5000?passphrase=topsecret failed"]),
+    )
+    joined = "\n".join(rows)
+    assert "hunter2" not in joined
+    assert "topsecret" not in joined
+    assert joined.count("192.168.0.182:554/profile2/media.smp") == 2
 
 
 def test_collect_recent_failures_redacts_signatures_in_worker_traceback() -> None:

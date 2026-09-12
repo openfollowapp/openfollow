@@ -2749,7 +2749,7 @@ def _build_diagnostics_providers(
             for p in server.get_peers()
         ],
         iface_ip=lambda: server.local_ip,
-        config_redacted_toml=lambda: diagnostics.redact_web_pin(
+        config_redacted_toml=lambda: diagnostics.redact_config_secrets(
             _config_to_toml(cfg),
         ),
         request_semaphore_rejections=(lambda: server.request_semaphore_rejections),
@@ -4628,9 +4628,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             update_service_name=cfg.update_service_name or None,
             last_n=n,
         )
-        # Redact signatures from log content before serving – same
-        # always-on stripping the bundle uses.
-        redacted = [diagnostics.redact_signatures(ln) for ln in lines]
+        # Strip signatures and stream credentials from log content before
+        # serving – the same always-on redaction the bundle uses.
+        redacted = [diagnostics.redact_log_line(ln) for ln in lines]
         body = f"[source: {src}]\n" + "\n".join(redacted)
         # XSS guard for the HTMX path: the partial swaps this into a
         # ``<pre>`` via ``hx-swap="innerHTML"``, so ``<…>`` in log content

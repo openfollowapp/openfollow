@@ -335,6 +335,55 @@ class TestDecodebinCallbacks:
         assert "max-threads" not in depay.properties
 
 
+class TestSrtPassphrase:
+    """SRT encryption key, reached from the form instead of the URL query."""
+
+    def _srtsrc(self, config: dict[str, object]):  # noqa: ANN202
+        from gi.repository import Gst  # noqa: F401
+
+        sink = FakeElement("shared_videosink")
+        with patch("gi.repository.Gst", make_fake_gst()):
+            pipeline = SrtInput().create_pipeline(
+                config=config,
+                sink=sink,
+                build_overlay_tail=lambda *a: None,
+                prepare_sink=lambda: sink,
+            )
+        src = pipeline.get_by_name("srtsrc")
+        assert src is not None
+        return src
+
+    def test_passphrase_drives_the_element_property(self) -> None:
+        src = self._srtsrc({"srt_host": "srt://10.0.0.5:5000", "srt_passphrase": "0123456789abcdef"})
+        assert src.properties["passphrase"] == "0123456789abcdef"
+        assert src.properties["uri"] == "srt://10.0.0.5:5000"
+
+    def test_field_outranks_a_passphrase_carried_in_the_url(self) -> None:
+        """One answer to "which key is this stream encrypted with": the field
+        wins and the URL's copy is dropped rather than left to compete."""
+        src = self._srtsrc(
+            {
+                "srt_host": "srt://10.0.0.5:5000?passphrase=stale&latency=20",
+                "srt_passphrase": "0123456789abcdef",
+            }
+        )
+        assert src.properties["passphrase"] == "0123456789abcdef"
+        assert "stale" not in str(src.properties["uri"])
+        # Non-credential query parameters survive the strip.
+        assert "latency=20" in str(src.properties["uri"])
+
+    def test_the_passphrase_renders_as_a_password_input(self) -> None:
+        html = SrtInput.web_ui_html({"srt_passphrase": "0123456789abcdef"})
+        assert 'type="password" name="srt_passphrase"' in html
+        assert 'autocomplete="off"' in html
+
+    @pytest.mark.parametrize("config", [{}, {"srt_passphrase": ""}])
+    def test_blank_field_leaves_the_url_path_untouched(self, config: dict[str, object]) -> None:
+        src = self._srtsrc({"srt_host": "srt://10.0.0.5:5000?passphrase=fromurl", **config})
+        assert src.properties["uri"] == "srt://10.0.0.5:5000?passphrase=fromurl"
+        assert "passphrase" not in src.properties
+
+
 class TestCreatePipelineLinkFailures:
     """Each link in the SRT chain has its own ``raise RuntimeError`` arm.
     Targeting them individually keeps a regression on any one seam from

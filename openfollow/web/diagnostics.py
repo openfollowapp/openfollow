@@ -35,6 +35,7 @@ from typing import Any, TypeVar
 
 import openfollow
 from openfollow.logging_setup import RingBufferLogHandler
+from openfollow.video.inputs._base import redact_uri
 
 logger = logging.getLogger(__name__)
 
@@ -395,26 +396,47 @@ def collect_discovery(p: DiagnosticsProviders) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-_WEB_PIN_LINE_RE = re.compile(r"^(\s*)web_pin\s*=")
+_CONFIG_KEY_LINE_RE = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
+
+# Keys whose value is a credential. Whether one is *set* is the diagnostic –
+# it separates "the operator never entered a login" from "the login is wrong" –
+# and it is the whole of the useful content, so the value never appears.
+_SECRET_CONFIG_KEYS = frozenset({"web_pin", "rtsp_user", "rtsp_password", "srt_passphrase"})
+
+# Keys holding a media URI, which can carry a credential inline: RTSP userinfo
+# (``rtsp://user:pass@host/s``) and the SRT ``?passphrase=`` query.
+_URI_CONFIG_KEYS = frozenset({"rtsp_url", "srt_host"})
 
 
-def redact_web_pin(toml_text: str) -> str:
-    """Replace the ``web_pin`` value with ``"***"`` or ``"(empty)"`` in TOML text.
+def _redact_toml_uri(raw_value: str) -> str:
+    """Redact the URI inside a quoted TOML scalar, keeping its quoting."""
+    text = raw_value.strip()
+    for quote in ('"', "'"):
+        if len(text) >= 2 and text.startswith(quote) and text.endswith(quote):
+            return f"{quote}{redact_uri(text[1:-1])}{quote}"
+    return raw_value
 
-    The match is anchored to the exact ``web_pin`` key to avoid
-    rewriting similar keys like ``web_pin_hint``.
+
+def redact_config_secrets(toml_text: str) -> str:
+    """Strip credentials from a TOML config dump.
+
+    Credential keys collapse to ``"***"`` or ``"(empty)"`` so the bundle still
+    answers "is a login configured?"; URI-valued keys keep everything except
+    the credential fused into them. Matching is anchored to a whole key so a
+    similarly-named one (``web_pin_hint``) is left alone.
     """
     out: list[str] = []
     for line in toml_text.splitlines():
-        m = _WEB_PIN_LINE_RE.match(line)
-        if m is not None:
-            # Detect empty-string assignment so the bundle reader
-            # can distinguish "operator never set a PIN" from "PIN
-            # is set but redacted"; the security signal is meaningful.
-            value_part = line.split("=", 1)[1].strip() if "=" in line else ""
-            replacement = '"***"' if value_part not in ('""', "''", "") else '"(empty)"'
-            indent = m.group(1)
-            out.append(f"{indent}web_pin = {replacement}")
+        m = _CONFIG_KEY_LINE_RE.match(line)
+        if m is None:
+            out.append(line)
+            continue
+        indent, key, value = m.groups()
+        if key in _SECRET_CONFIG_KEYS:
+            replacement = '"(empty)"' if value.strip() in ('""', "''", "") else '"***"'
+            out.append(f"{indent}{key} = {replacement}")
+        elif key in _URI_CONFIG_KEYS:
+            out.append(f"{indent}{key} = {_redact_toml_uri(value)}")
         else:
             out.append(line)
     return "\n".join(out)
@@ -430,7 +452,7 @@ def collect_config(p: DiagnosticsProviders) -> list[str]:
     except Exception as exc:  # noqa: BLE001
         rows.append(f"  [unavailable: {exc!r}]")
         return rows
-    rows.append("  ----- begin effective config (web_pin redacted) -----")
+    rows.append("  ----- begin effective config (credentials redacted) -----")
     for line in text.splitlines():
         rows.append(f"  {line}")
     rows.append("  ----- end effective config -----")
@@ -460,6 +482,32 @@ def redact_signatures(line: str) -> str:
     Always-on (no toggle). Pre-compiled regex so the log-tail path
     stays cheap even when the ring is full."""
     return _SIGNATURE_REDACT_RE.sub(r"\1***", line)
+
+
+# Media URIs as they appear *inside* a log line. Our own source logging already
+# goes through ``redact_uri``, but GStreamer's does not: an ``rtspsrc`` error
+# carries the full ``location`` in its debug string, and an auth failure is both
+# the condition that puts it there and the condition that makes an operator send
+# us a bundle.
+_URI_IN_TEXT_RE = re.compile(r'''\b(?:rtsps?|rtmps?|srt|https?)://[^\s"\'<>]+''')
+
+# Sentence punctuation a URI at the end of a log line absorbs; trimmed before
+# redaction so it survives into the output instead of being parsed as a path.
+_URI_TRAILING_PUNCT = ".,;:!?)]}>"
+
+
+def _redact_uri_match(match: re.Match[str]) -> str:
+    raw = match.group(0)
+    trailing = ""
+    while raw and raw[-1] in _URI_TRAILING_PUNCT:
+        trailing = raw[-1] + trailing
+        raw = raw[:-1]
+    return redact_uri(raw) + trailing
+
+
+def redact_log_line(line: str) -> str:
+    """Strip HMAC signatures and stream credentials from one log line."""
+    return _URI_IN_TEXT_RE.sub(_redact_uri_match, redact_signatures(line))
 
 
 # Log capture sizing – bounded to match the in-memory ring capacity.
@@ -531,7 +579,7 @@ def collect_recent_failures(
         rows.append(f"  Log source: {src}")
         rows.append("  ----- begin log tail -----")
         for line in log_lines:
-            rows.append(f"  {redact_signatures(line)}")
+            rows.append(f"  {redact_log_line(line)}")
         rows.append("  ----- end log tail -----")
     if failure_collector is not None:
         rows.append("")
@@ -548,7 +596,7 @@ def collect_recent_failures(
             rows.append("  ----- begin failure extract -----")
             if failure_lines:
                 for line in failure_lines:
-                    rows.append(f"  {redact_signatures(line)}")
+                    rows.append(f"  {redact_log_line(line)}")
             else:
                 rows.append("  [no WARNING/ERROR/CRITICAL lines in window]")
             rows.append("  ----- end failure extract -----")
@@ -570,7 +618,7 @@ def collect_recent_failures(
                         # standard tracebacks carry no locals, but a future
                         # change (or a captured header string) shouldn't leak
                         # an HMAC signature past the always-on stripping.
-                        rows.append(f"    {redact_signatures(tb_line)}")
+                        rows.append(f"    {redact_log_line(tb_line)}")
     if p.request_semaphore_rejections is not None:
         rows.append(
             f"  Request semaphore rejections (503s): "

@@ -242,6 +242,7 @@ class OpenFollowApp:
         self._camera: Camera | None = None
         self._video_receiver: GstNativeSinkReceiver | None = None
         self._video_logged: bool = False
+        self._video_aspect: tuple[int, int] | None = None
         self._server: PsnServer | None = None
         self._otp_server: OtpServer | None = None
         self._rttrpm_server: RttrpmServer | None = None

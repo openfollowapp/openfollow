@@ -500,7 +500,9 @@ class TestPublishRuntimeStats:
         assert snap["system"]["ram_percent"] == 0.0
         assert snap["system"]["temperature_c"] is None
         assert snap["system"]["ip"] == "N/A"
-        assert snap["video"]["fps"] == 0.0
+        assert snap["system"]["hud_fps"] == 0.0
+        # No overlay renderer ⇒ nothing is drawing ⇒ no canvas to report.
+        assert snap["system"]["output_resolution"] is None
 
     def test_system_stats_with_none_temperature(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -604,3 +606,89 @@ class TestGamepadRuntimeSnapshot:
                 "calibration_stored": True,
             }
         ]
+
+
+# --------------------------------------------------------------------------- #
+# Device figures – overlay redraw rate + output resolution
+# --------------------------------------------------------------------------- #
+
+
+class _FakeSizedCanvas:
+    def __init__(self, size: tuple[int, int] = (1920, 1200)) -> None:
+        self._size = size
+
+    def get_canvas_size(self) -> tuple[int, int]:
+        return self._size
+
+
+class TestDeviceFigures:
+    """The redraw rate and the canvas size describe the station, not the feed.
+
+    An operator reading a healthy redraw rate next to a resolution concluded
+    video was flowing when nothing had ever connected, so these two live under
+    Device and the video section carries neither.
+    """
+
+    def _prime(
+        self,
+        services: AppRuntimeServices,
+        *,
+        hud_fps: float,
+        canvas: Any,
+        receiver: _FakeReceiver | None = None,
+    ) -> None:
+        services._system_stats = _FakeSystemStatsCollector()
+        services._overlay_renderer = _FakeOverlayRenderer(fps=hud_fps)
+        services._app._canvas = canvas
+        services._app._video_receiver = receiver
+
+    def _publish(self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        services.publish_runtime_stats(force=True)
+        return services.get_runtime_stats_snapshot()
+
+    def test_publishes_redraw_rate_and_live_canvas_under_device(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._prime(services, hud_fps=59.75, canvas=_FakeSizedCanvas((1920, 1200)))
+        snap = self._publish(services, monkeypatch)
+        assert snap["system"]["hud_fps"] == 59.75
+        assert snap["system"]["output_resolution"] == {"width": 1920, "height": 1200}
+
+    @pytest.mark.parametrize("receiver", [None, _FakeReceiver()], ids=["no-receiver", "receiver"])
+    def test_video_section_carries_no_device_figure(
+        self,
+        services: AppRuntimeServices,
+        monkeypatch: pytest.MonkeyPatch,
+        receiver: _FakeReceiver | None,
+    ) -> None:
+        """The redraw rate is not a third measurement of the feed, so it is not
+        reported beside the ones that are. Both branches of the video snapshot
+        are checked: the live one is the only one production takes.
+        """
+        self._prime(services, hud_fps=59.75, canvas=_FakeSizedCanvas(), receiver=receiver)
+        snap = self._publish(services, monkeypatch)
+        assert "fps" not in snap["video"]
+        assert snap["system"]["hud_fps"] == 59.75
+
+    def test_headless_station_reports_no_canvas(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no compositor frame clock nothing draws, and the window's
+        allocation falls back to the *requested* size - which under fullscreen
+        is routinely not the real canvas. Report nothing rather than that.
+        """
+        self._prime(services, hud_fps=0.0, canvas=_FakeSizedCanvas((1280, 720)))
+        snap = self._publish(services, monkeypatch)
+        assert snap["system"]["hud_fps"] == 0.0
+        assert snap["system"]["output_resolution"] is None
+
+    @pytest.mark.parametrize("canvas", [None, SimpleNamespace(), _FakeSizedCanvas((0, 0))])
+    def test_unusable_canvas_reports_none(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, canvas: Any
+    ) -> None:
+        self._prime(services, hud_fps=59.75, canvas=canvas)
+        snap = self._publish(services, monkeypatch)
+        assert snap["system"]["output_resolution"] is None

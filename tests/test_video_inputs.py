@@ -205,6 +205,43 @@ def test_receiver_state_machine_marks_video_flow_without_placeholder_connect() -
     assert state.video_flow_detected is False
 
 
+def test_receiver_state_machine_refuses_placeholder_caps() -> None:
+    """The placeholder's own geometry is not the source's.
+
+    Both probes live on the shared sink and outlive every pipeline rebuild, so
+    the "No Signal" caps reach the same writer the real source uses. Publishing
+    them reports a feed that has never delivered a frame as 1080p @ 30.
+    """
+    state = ReceiverStateMachine(reconnect_delay=1.0)
+    state.set_placeholder_pipeline(True)
+
+    assert state.set_resolution(1920, 1080) is False
+    state.set_source_framerate(30.0)
+    assert state.resolution == (0, 0)
+    assert state.source_framerate == 0.0
+
+    # Not a latch: the real pipeline replacing it publishes normally.
+    state.set_placeholder_pipeline(False)
+    assert state.set_resolution(1024, 768) is True
+    state.set_source_framerate(25.0)
+    assert state.resolution == (1024, 768)
+    assert state.source_framerate == 25.0
+
+
+def test_receiver_state_machine_clear_source_caps_drops_a_prior_source() -> None:
+    """Falling back to the placeholder must not leave the previous source's
+    figures standing, or the panel reports a resolution and rate for a feed
+    that has stopped delivering frames."""
+    state = ReceiverStateMachine(reconnect_delay=1.0)
+    state.set_resolution(1280, 720)
+    state.set_source_framerate(50.0)
+
+    state.clear_source_caps()
+
+    assert state.resolution == (0, 0)
+    assert state.source_framerate == 0.0
+
+
 def test_receiver_bus_handler_dispatches_core_message_types() -> None:
     class FakeGst:
         class MessageType:

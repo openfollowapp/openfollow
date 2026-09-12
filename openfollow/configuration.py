@@ -2137,9 +2137,12 @@ class AppConfig:
     video_source_type: str = "testpattern"  # "testpattern" | "ndi" | "srt" | "rtp" | "rtsp" | ...
     ndi_source_name: str = ""
     srt_host: str = "srt://0.0.0.0:5000"
+    srt_passphrase: str = ""
     rtp_url: str = "rtp://0.0.0.0:5004"
     rtp_encoding: str = "H264"
     rtsp_url: str = "rtsp://0.0.0.0:554/stream"
+    rtsp_user: str = ""
+    rtsp_password: str = ""
     picam_camera_name: str = ""
     picam_width: int = 1920
     picam_height: int = 1080

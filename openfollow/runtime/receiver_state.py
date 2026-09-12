@@ -41,12 +41,30 @@ class ReceiverStateMachine:
         self.resolution = (0, 0)
         self.source_framerate = 0.0
 
+    def clear_source_caps(self) -> None:
+        """Forget the negotiated resolution / frame rate of the last source."""
+        self.resolution = (0, 0)
+        self.source_framerate = 0.0
+
     def set_resolution(self, width: int, height: int) -> bool:
+        """Record the source's negotiated resolution; ``True`` when it changed.
+
+        Placeholder caps are refused for the same reason placeholder buffers
+        can't connect (see ``mark_frame_received``): the "No Signal" pipeline
+        feeds the *shared* sink, whose caps probe is attached once for the
+        sink's lifetime, so its 1920x1080 would otherwise be published as the
+        source's own geometry and pin the window's aspect hint to 16:9 for a
+        source that has never delivered a frame.
+        """
+        if self.is_placeholder_pipeline:
+            return False
         previous = self.resolution
         self.resolution = (width, height)
         return previous != self.resolution
 
     def set_source_framerate(self, fps: float) -> None:
+        if self.is_placeholder_pipeline:
+            return
         self.source_framerate = float(fps)
 
     def mark_frame_received(self) -> bool:

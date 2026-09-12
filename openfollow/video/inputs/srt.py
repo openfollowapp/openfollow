@@ -14,6 +14,7 @@ from openfollow.video.inputs._base import (
     ReconnectPolicy,
     VideoInputBase,
     redact_uri,
+    strip_uri_query_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ class SrtInput(VideoInputBase):
     def config_fields(cls) -> list[ConfigField]:
         return [
             ConfigField("srt_host", str, "srt://0.0.0.0:5000", "SRT URL"),
+            ConfigField("srt_passphrase", str, "", "Passphrase", strip=False),
         ]
 
     @classmethod
@@ -101,7 +103,12 @@ class SrtInput(VideoInputBase):
 
         self._prefer_hardware_decoders()
 
-        srt_uri = _resolve_srt_uri(config.get("srt_host", "srt://0.0.0.0:5000"))
+        srt_uri = _resolve_srt_uri(str(config.get("srt_host", "srt://0.0.0.0:5000")))
+        passphrase = str(config.get("srt_passphrase", "") or "")
+        if passphrase:
+            # Drop any passphrase carried in the URL so the explicit field is
+            # the single answer to "which key is this stream encrypted with".
+            srt_uri = strip_uri_query_key(srt_uri, "passphrase")
 
         pipeline = Gst.Pipeline.new("srt-sink")
 
@@ -109,9 +116,16 @@ class SrtInput(VideoInputBase):
         if srtsrc is None:
             raise RuntimeError("srtsrc GStreamer element not found – install gst-plugins-bad")
         srtsrc.set_property("uri", srt_uri)
+        if passphrase:
+            srtsrc.set_property("passphrase", passphrase)
         srtsrc.set_property("mode", "caller")
         srtsrc.set_property("wait-for-connection", True)
         srtsrc.set_property("latency", 125)
+        logger.info(
+            "SRT source: %s (latency=125, passphrase=%s)",
+            redact_uri(srt_uri),
+            "set" if passphrase else "none",
+        )
 
         pre_queue = Gst.ElementFactory.make("queue", "pre_queue")
         pre_queue.set_property("max-size-buffers", 4)
@@ -210,12 +224,20 @@ class SrtInput(VideoInputBase):
     @classmethod
     def web_ui_html(cls, config: dict[str, Any]) -> str:
         srt_host = cls._esc(config.get("srt_host", "srt://0.0.0.0:5000"))
+        srt_passphrase = cls._esc(config.get("srt_passphrase", ""))
         return (
             '<div class="row">'
             '    <div class="field wide">'
             "        <label>SRT URL</label>"
             f'        <input type="text" name="srt_host" value="{srt_host}"'
             '               placeholder="srt://192.168.0.182:1600?streamid=r=0">'
+            "    </div>"
+            "</div>"
+            '<div class="row">'
+            '    <div class="field wide">'
+            "        <label>Passphrase</label>"
+            f'        <input type="password" name="srt_passphrase" value="{srt_passphrase}"'
+            '               autocomplete="off">'
             "    </div>"
             "</div>"
         )

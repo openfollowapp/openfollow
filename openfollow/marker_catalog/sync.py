@@ -343,7 +343,7 @@ class MarkerCatalogSync:
 
     # -- Public API ----------------------------------------------------------
 
-    def update_iface_ip(self, iface_ip: str | None) -> None:
+    def update_iface_ip(self, iface_ip: str | None, *, force: bool = False) -> None:
         """Repoint both sockets after the station's address changed.
 
         ``None`` means the station interface currently has no address, which
@@ -357,12 +357,15 @@ class MarkerCatalogSync:
         than raising, so nothing triggers a rebuild. Without this, sync stops
         converging after an interface switch until the app restarts.
 
-        A no-op when the address is unchanged. That is *not* enough on its own:
-        an interface that drops and returns with the same lease has had its
+        A no-op when the address is unchanged, unless *force* is set. An
+        interface that drops and returns with the same lease has had its
         memberships torn down by the kernel while the address string stayed
-        put, so the station-follower path calls :meth:`reopen` on recovery.
+        put, so recovery passes ``force=True``. It is a flag here rather than a
+        separate :meth:`reopen` call afterwards because the two together
+        rebuild twice whenever the address *did* move, and a worker that
+        rebuilds between them tears down sockets it has just opened.
         """
-        if iface_ip == self._iface_ip:
+        if iface_ip == self._iface_ip and not force:
             return
         self._iface_ip = iface_ip
         self.reopen()
@@ -715,19 +718,34 @@ class MarkerCatalogSync:
 
         try:
             join_multicast_group_on_iface(sock, CATALOG_MCAST_GROUP, self._iface_ip)
-        except InterfaceUnavailable as exc:
-            now = time.monotonic()
-            if now - self._rx_down_log_ts >= _IFACE_DOWN_LOG_INTERVAL_S:
-                self._rx_down_log_ts = now
-                logger.warning("MarkerCatalogSync: %s", exc)
+        except InterfaceUnavailable:
+            # Propagated, not folded into the ``None`` that means "open
+            # failed": a pinned interface with no address is a state the
+            # caller is waiting out, and the generic failure budget would
+            # escalate it to an ERROR and park the loop.
             sock.close()
-            return None
+            raise
         except OSError as exc:
             logger.error("MarkerCatalogSync: join failed: %s", exc)
             sock.close()
             return None
         sock.settimeout(1.0)
         return sock
+
+    def _wait_before_rx_reopen(self, seconds: float) -> None:
+        """Back off after a down-interface RX open, waking on a repoint.
+
+        The RX counterpart of :meth:`_wait_before_reopen`, polled in the same
+        slices: a down interface is the state most likely to be parked when
+        the address returns, so the wait has to notice that rather than sleep
+        the interval out.
+        """
+        deadline = time.monotonic() + seconds
+        while not self._stop_event.is_set() and not self._rx_reopen.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            self._stop_event.wait(min(remaining, _REPOINT_CHECK_INTERVAL_S))
 
     def _recv_loop(self) -> None:
         # Outer loop so a repoint rebuilds the socket: the group membership is
@@ -742,7 +760,20 @@ class MarkerCatalogSync:
         while not self._stop_event.is_set():
             # Cleared before the open, for the same reason as TX.
             self._rx_reopen.clear()
-            sock = self._open_rx_socket()
+            try:
+                sock = self._open_rx_socket()
+            except InterfaceUnavailable as exc:
+                # Expected while the station interface is down, and outside the
+                # failure budget below: that budget exists to give up on a port
+                # this station will never get, whereas this one returns when the
+                # cable does. Counting it would retire sync input with an ERROR
+                # for a condition the operator already knows about.
+                now = time.monotonic()
+                if now - self._rx_down_log_ts >= _IFACE_DOWN_LOG_INTERVAL_S:
+                    self._rx_down_log_ts = now
+                    logger.warning("MarkerCatalogSync: %s", exc)
+                self._wait_before_rx_reopen(_RX_OPEN_RETRY_S)
+                continue
             if sock is None:
                 failures += 1
                 if failures >= _RX_OPEN_MAX_RETRIES:

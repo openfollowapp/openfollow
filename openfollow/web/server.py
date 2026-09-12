@@ -524,8 +524,12 @@ class ConfigWebServer:
             logger.exception("PSN source advisory provider raised")
             return empty
 
-    def _refresh_local_ip(self) -> None:
+    def _refresh_local_ip(self) -> bool:
         """Re-resolve this host's primary IP and adopt it if it changed.
+
+        Returns True only when the beacons were actually repointed, so a
+        caller that would otherwise force a rebuild afterwards can tell it has
+        already happened.
 
         The IP captured at startup goes stale when the operator switches the
         interface from static to DHCP (or a lease hands back a new address)
@@ -539,17 +543,17 @@ class ConfigWebServer:
         enumeration, so it must not re-resolve on every hit.
         """
         if self._local_ip_provider is None:
-            return
+            return False
         now = time.monotonic()
         with self._local_ip_lock:
             if now - self._local_ip_refresh_ts < _LOCAL_IP_REFRESH_TTL:
-                return
+                return False
             self._local_ip_refresh_ts = now
         try:
             candidate = self._local_ip_provider()
         except Exception:  # noqa: BLE001
             logger.exception("local_ip provider raised")
-            return
+            return False
         # ``None`` is the one state that means *stop*: an interface is pinned
         # and has no address. Blank or loopback only mean "could not resolve",
         # which is no reason to unpin a beacon that is working - unpinned
@@ -558,29 +562,29 @@ class ConfigWebServer:
             with self._local_ip_lock:
                 self._beacon_sender.update_iface_ip(None)
                 self._beacon_receiver.update_iface_ip(None)
-            return
+            return True
         if not candidate or candidate.startswith("127."):
-            return
+            return False
         with self._local_ip_lock:
             if candidate == self._local_ip and self._beacon_sender.iface_ip == candidate:
-                return
+                return False
             self._local_ip = candidate
             # Repoint beacons under the lock so IP + interface stay consistent
             # under concurrent refreshes (update_iface_ip never blocks).
             self._beacon_sender.update_iface_ip(candidate)
             self._beacon_receiver.update_iface_ip(candidate)
         logger.info("Local IP changed to %s; beacon interface repointed.", candidate)
+        return True
 
-    def refresh_local_ip(self) -> None:
-        """Public entry point for the runtime network observer.
+    def refresh_local_ip(self) -> bool:
+        """Re-resolve this station's address; True when the beacons repointed.
 
-        The refresh used to happen only on a request path, so a station whose
-        address changed healed its self-row and beacon interface only while
-        somebody had a browser tab open. The observer calls this on a timer
-        instead; the internal throttle still applies, so the request paths
-        calling it too costs nothing.
+        Called by the runtime network observer on a timer and by the request
+        paths; the internal throttle makes the extra calls free. The return
+        value lets the observer's recovery path tell whether the beacons have
+        already been rebuilt, so it does not rebuild them a second time.
         """
-        self._refresh_local_ip()
+        return self._refresh_local_ip()
 
     def suspend_beacons(self) -> None:
         """Stop both beacons because the station interface has no address.

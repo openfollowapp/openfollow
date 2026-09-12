@@ -1046,6 +1046,11 @@ class AppRuntimeServices:
         # this a replug that returns the same DHCP lease leaves catalog sync
         # and the beacon joined to memberships the kernel already dropped -
         # still looking healthy, converging with nobody.
+        #
+        # Exactly one rebuild per plane either way: each entry point reports
+        # (or is told) whether it has already done it, because a forced reopen
+        # stacked on top of a repoint tears down sockets the worker may have
+        # just opened.
         recovered = self._station_saw_outage
         self._station_saw_outage = False
         self._station_down_polls = 0
@@ -1053,14 +1058,12 @@ class AppRuntimeServices:
 
         server = self._app._web_server
         if server is not None:
-            server.refresh_local_ip()
-            if recovered:
+            repointed = server.refresh_local_ip()
+            if recovered and not repointed:
                 server.reopen_beacons()
         sync = getattr(self._app, "_marker_catalog_sync", None)
         if sync is not None:
-            sync.update_iface_ip(address)
-            if recovered:
-                sync.reopen()
+            sync.update_iface_ip(address, force=recovered)
 
     def network_alerts(self) -> list[str]:
         """Planes currently stopped because their interface has no address."""

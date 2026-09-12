@@ -912,8 +912,9 @@ def test_station_followers_are_repointed_without_a_web_request(monkeypatch) -> N
         def __init__(self) -> None:
             self.refreshes = 0
 
-        def refresh_local_ip(self) -> None:
+        def refresh_local_ip(self) -> bool:
             self.refreshes += 1
+            return False
 
         def suspend_beacons(self) -> None:
             raise AssertionError("a healthy interface must not suspend the beacons")
@@ -922,7 +923,7 @@ def test_station_followers_are_repointed_without_a_web_request(monkeypatch) -> N
         def __init__(self) -> None:
             self.ips: list[str] = []
 
-        def update_iface_ip(self, ip: str) -> None:
+        def update_iface_ip(self, ip: str, *, force: bool = False) -> None:
             self.ips.append(ip)
 
     server, sync = _Server(), _Sync()
@@ -1018,19 +1019,23 @@ def test_sync_recovers_from_a_station_booted_with_a_dark_interface(monkeypatch) 
     """
     services = _build_services_with_psutil_backend(monkeypatch)
     services._app._config.psn_source_iface = "eth0"
-    sync, server = _wire_followers(services)
+    # Booted dark, so both followers start pointed nowhere - not at an address
+    # they never had.
+    sync, server = _FollowerSync(None), _FollowerServer(None)
+    services._app._marker_catalog_sync = sync
+    services._app._web_server = server
 
-    # Booted dark: the interface the pin names has no address.
     _fake_ifaces(monkeypatch, {})
     _drive_down_polls(services)
     assert sync.ips == [None], "a dark interface must put sync into its silent state"
+    assert sync.rebuilds == 0, "a sync that never pointed anywhere had nothing to tear down"
 
     # The cable goes back in. No restart, no config change.
-    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    _fake_ifaces(monkeypatch, {"eth0": _FOLLOWER_ADDRESS})
     services._follow_station_ip()
 
-    assert sync.ips == [None, "192.168.1.5"], "sync never came back after the interface returned"
-    assert sync.reopens == 1, "the membership the kernel dropped was not rebuilt"
+    assert sync.ips == [None, _FOLLOWER_ADDRESS], "sync never came back after the interface returned"
+    assert sync.rebuilds == 1, "the membership the kernel dropped was not rebuilt exactly once"
 
 
 def test_a_station_with_no_web_server_still_silences_sync(monkeypatch) -> None:
@@ -1233,32 +1238,64 @@ def test_plane_current_reports_the_live_binding(monkeypatch) -> None:
     assert planes["OTP output"].current() is None
 
 
+# The address every follower test's interface resolves to.
+_FOLLOWER_ADDRESS = "192.168.1.5"
+
+
 class _FollowerSync:
-    def __init__(self) -> None:
+    """Models the real short-circuit, not just the call.
+
+    A double that only recorded the address could not tell one rebuild from
+    two, which is exactly the defect this shape exists to catch: a forced
+    reopen stacked on a repoint tears down sockets the worker may have just
+    opened. ``rebuilds`` counts what the real object would actually do.
+    """
+
+    def __init__(self, iface_ip: str | None = None) -> None:
         self.ips: list[str | None] = []
         self.reopens = 0
+        self.rebuilds = 0
+        self._iface_ip = iface_ip
 
-    def update_iface_ip(self, ip: str | None) -> None:
+    def update_iface_ip(self, ip: str | None, *, force: bool = False) -> None:
         self.ips.append(ip)
+        if ip == self._iface_ip and not force:
+            return
+        self._iface_ip = ip
+        self.reopen()
 
     def reopen(self) -> None:
         self.reopens += 1
+        self.rebuilds += 1
 
 
 class _FollowerServer:
-    def __init__(self) -> None:
+    """Same contract as the real server: the refresh reports whether it
+    repointed, so a caller can tell the rebuild has already happened."""
+
+    def __init__(self, local_ip: str | None = None) -> None:
         self.refreshes = 0
         self.reopens = 0
         self.suspends = 0
+        self.rebuilds = 0
+        self._local_ip = local_ip
 
-    def refresh_local_ip(self) -> None:
+    def refresh_local_ip(self) -> bool:
         self.refreshes += 1
+        if self._local_ip == _FOLLOWER_ADDRESS:
+            return False
+        self._local_ip = _FOLLOWER_ADDRESS
+        self.rebuilds += 1
+        return True
 
     def reopen_beacons(self) -> None:
         self.reopens += 1
+        self.rebuilds += 1
 
     def suspend_beacons(self) -> None:
         self.suspends += 1
+        self.rebuilds += 1
+        self._local_ip = None
 
 
 def _drive_down_polls(services, count: int | None = None) -> None:
@@ -1275,7 +1312,11 @@ def _drive_down_polls(services, count: int | None = None) -> None:
 
 
 def _wire_followers(services):
-    sync, server = _FollowerSync(), _FollowerServer()
+    """Wired the way production starts: both followers already pointed at the
+    station address, so a steady poll is a genuine no-op rather than an
+    artefact of the double booting blank."""
+    sync = _FollowerSync(_FOLLOWER_ADDRESS)
+    server = _FollowerServer(_FOLLOWER_ADDRESS)
     services._app._marker_catalog_sync = sync
     services._app._web_server = server
     return sync, server
@@ -1291,17 +1332,52 @@ def test_station_followers_rebuild_after_a_same_lease_flap(monkeypatch) -> None:
     services._app._config.psn_source_iface = "eth0"
     sync, server = _wire_followers(services)
 
-    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    _fake_ifaces(monkeypatch, {"eth0": _FOLLOWER_ADDRESS})
     services._follow_station_ip()
-    assert (sync.reopens, server.reopens) == (0, 0)
+    assert (sync.rebuilds, server.rebuilds) == (0, 0)
 
     _fake_ifaces(monkeypatch, {})  # cable out
+    _drive_down_polls(services)
+
+    before = (sync.rebuilds, server.rebuilds)
+    _fake_ifaces(monkeypatch, {"eth0": _FOLLOWER_ADDRESS})  # same lease back
     services._follow_station_ip()
 
-    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})  # same lease back
+    # Exactly one, not zero and not two: zero leaves both joined to
+    # memberships the kernel dropped, and two tears down sockets the worker
+    # may have just opened.
+    assert sync.rebuilds - before[0] == 1
+    assert server.rebuilds - before[1] == 1
+
+
+def test_a_blip_shorter_than_the_debounce_still_forces_a_rebuild(monkeypatch) -> None:
+    """The case the forced rebuild actually exists for.
+
+    An outage too short to trip the suspend debounce never puts the followers
+    into their silent state, so the address they hold is still the one that
+    comes back - and their own short-circuit would skip the rebuild. The
+    kernel dropped the membership and the egress route regardless of how long
+    the cable was out, so the flag has to override that guard.
+    """
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.psn_source_iface = "eth0"
+    sync, server = _wire_followers(services)
+
+    _fake_ifaces(monkeypatch, {"eth0": _FOLLOWER_ADDRESS})
     services._follow_station_ip()
-    assert sync.reopens == 1
-    assert server.reopens == 1
+    assert (sync.rebuilds, server.rebuilds) == (0, 0)
+
+    # One missed sample - below DOWN_POLLS_BEFORE_SUSPEND, so nothing suspends.
+    _fake_ifaces(monkeypatch, {})
+    services._follow_station_ip()
+    assert server.suspends == 0, "the blip should not have reached the suspend"
+    assert None not in sync.ips, "the blip should not have silenced sync"
+
+    _fake_ifaces(monkeypatch, {"eth0": _FOLLOWER_ADDRESS})
+    services._follow_station_ip()
+
+    assert sync.rebuilds == 1, "the unchanged address skipped the rebuild the kernel needs"
+    assert server.rebuilds == 1
 
 
 def test_a_steady_station_never_forces_a_rebuild(monkeypatch) -> None:
@@ -1309,10 +1385,10 @@ def test_a_steady_station_never_forces_a_rebuild(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
     services._app._config.psn_source_iface = "eth0"
     sync, server = _wire_followers(services)
-    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    _fake_ifaces(monkeypatch, {"eth0": _FOLLOWER_ADDRESS})
     for _ in range(5):
         services._follow_station_ip()
-    assert (sync.reopens, server.reopens) == (0, 0)
+    assert (sync.rebuilds, server.rebuilds) == (0, 0)
 
 
 def test_the_outage_flag_clears_after_one_recovery(monkeypatch) -> None:
@@ -1320,12 +1396,14 @@ def test_the_outage_flag_clears_after_one_recovery(monkeypatch) -> None:
     services._app._config.psn_source_iface = "eth0"
     sync, server = _wire_followers(services)
     _fake_ifaces(monkeypatch, {})
+    _drive_down_polls(services)
+    before = (sync.rebuilds, server.rebuilds)
+    _fake_ifaces(monkeypatch, {"eth0": _FOLLOWER_ADDRESS})
     services._follow_station_ip()
-    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
     services._follow_station_ip()
-    services._follow_station_ip()
-    assert sync.reopens == 1
-    assert server.reopens == 1
+    # The second healthy poll must not force a further rebuild.
+    assert sync.rebuilds - before[0] == 1
+    assert server.rebuilds - before[1] == 1
 
 
 # VLAN providers / handlers

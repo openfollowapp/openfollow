@@ -799,13 +799,9 @@ class OpenFollowApp:
         # Sync follows the station interface, and stops with it: an empty
         # iface_ip joins the multicast group on whatever the OS picks, so a
         # station whose interface was down would trade marker names with peers
-        # over a network nobody chose.
-        #
-        # A dark interface yields None, which the sync holds as "stay silent".
-        # It is still constructed, because returning here instead left a
-        # station that BOOTED dark with no sync object at all - and the
-        # observer's recovery path can only repoint one that exists, so marker
-        # names never synced again until the next restart.
+        # over a network nobody chose. A dark interface yields None, which the
+        # sync holds as "stay silent" - constructed either way, because the
+        # observer's recovery path can only repoint a sync that exists.
         iface_ip = self._runtime_services.station_source_ip_or_none()
         sync = MarkerCatalogSync(
             self._marker_catalog,

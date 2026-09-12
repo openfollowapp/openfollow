@@ -1321,7 +1321,8 @@ class TestRecvLoopOneIteration:
 
         sock.setsockopt.side_effect = setsockopt
         with patch.object(_socket, "socket", return_value=sock):
-            assert sync._open_rx_socket() is None
+            with pytest.raises(marker_sync.InterfaceUnavailable):
+                sync._open_rx_socket()
         # Exactly one attempt, on the pinned interface - never a wildcard retry.
         assert len(membership_calls) == 1
         assert membership_calls[0].endswith(_socket.inet_aton("10.0.0.5"))
@@ -1824,6 +1825,30 @@ class TestABackoffDoesNotSleepThroughARepoint:
         sync._wait_before_reopen(0.05)
         assert time.monotonic() - started >= 0.05
 
+    def test_the_receive_backoff_ends_on_a_repoint(self) -> None:
+        """RX parks on the same kind of wait and needs the same escape: the
+        down interface returning is precisely when it must stop waiting."""
+        sync = self._sync()
+        sync._rx_reopen.set()
+        started = time.monotonic()
+        sync._wait_before_rx_reopen(30.0)
+        assert time.monotonic() - started < 1.0, "the receive backoff slept through a repoint"
+
+    def test_the_receive_backoff_ends_on_a_stop(self) -> None:
+        sync = self._sync()
+        sync._stop_event.set()
+        started = time.monotonic()
+        sync._wait_before_rx_reopen(30.0)
+        assert time.monotonic() - started < 1.0, "the receive backoff slept through a stop"
+
+    def test_the_receive_backoff_still_backs_off(self) -> None:
+        """Without it the loop would re-attempt the join as fast as the CPU
+        allows for the whole outage."""
+        sync = self._sync()
+        started = time.monotonic()
+        sync._wait_before_rx_reopen(0.05)
+        assert time.monotonic() - started >= 0.05
+
 
 class TestADarkInterfaceStaysQuiet:
     """Both loops retry for as long as the pinned interface is out, and say so
@@ -1863,14 +1888,68 @@ class TestADarkInterfaceStaysQuiet:
         assert len(attempts) == 3, "the send loop stopped retrying while the interface was out"
         assert len(caplog.records) == 1, "every retry reported itself instead of only the first"
 
-    def test_the_receive_open_reports_the_outage_once(self, caplog) -> None:
+    def test_the_receive_loop_keeps_retrying_and_logs_once(self, monkeypatch, caplog) -> None:
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_RETRY_S", 0.0)
         sync = self._sync()
-        with caplog.at_level("WARNING", logger=marker_sync.logger.name):
-            with patch.object(_socket, "socket", return_value=MagicMock()):
-                assert sync._open_rx_socket() is None
-                assert sync._open_rx_socket() is None
+        attempts: list[int] = []
 
-        assert len(caplog.records) == 1, "the second attempt reported the same outage again"
+        def open_dark():
+            attempts.append(1)
+            if len(attempts) >= 3:
+                sync._stop_event.set()
+            raise marker_sync.InterfaceUnavailable("the configured interface has no address")
+
+        with caplog.at_level("WARNING", logger=marker_sync.logger.name):
+            with patch.object(sync, "_open_rx_socket", side_effect=open_dark):
+                sync._recv_loop()
+
+        assert len(attempts) == 3, "the receive loop stopped retrying while the interface was out"
+        assert len(caplog.records) == 1, "every retry reported itself instead of only the first"
+
+    def test_a_dark_interface_never_retires_the_receive_loop(self, monkeypatch, caplog) -> None:
+        """The failure budget exists to give up on a port this station will
+        never get. A pinned interface with no address is the opposite: it comes
+        back when the cable does, so counting it would retire sync input with
+        an ERROR for a condition the operator already knows about - and the
+        rate-limited warning above would have been pointless.
+        """
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_RETRY_S", 0.0)
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_MAX_RETRIES", 3)
+        sync = self._sync()
+        attempts: list[int] = []
+
+        def open_dark():
+            attempts.append(1)
+            if len(attempts) >= marker_sync._RX_OPEN_MAX_RETRIES * 3:
+                sync._stop_event.set()
+            raise marker_sync.InterfaceUnavailable("the configured interface has no address")
+
+        with caplog.at_level("ERROR", logger=marker_sync.logger.name):
+            with patch.object(sync, "_open_rx_socket", side_effect=open_dark):
+                sync._recv_loop()
+
+        assert len(attempts) == marker_sync._RX_OPEN_MAX_RETRIES * 3
+        assert caplog.records == [], "an expected outage was escalated to an ERROR"
+
+    def test_a_real_open_failure_still_spends_the_budget(self, monkeypatch, caplog) -> None:
+        """The distinction has to cut both ways: a port this station cannot
+        have must still give up and say so, rather than retrying forever."""
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_RETRY_S", 0.0)
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_MAX_RETRIES", 3)
+        sync = self._sync()
+        attempts: list[int] = []
+
+        def open_failed():
+            attempts.append(1)
+            if len(attempts) >= marker_sync._RX_OPEN_MAX_RETRIES:
+                sync._stop_event.set()
+            return None
+
+        with caplog.at_level("ERROR", logger=marker_sync.logger.name):
+            with patch.object(sync, "_open_rx_socket", side_effect=open_failed):
+                sync._recv_loop()
+
+        assert [r.levelname for r in caplog.records] == ["ERROR"]
 
     def test_an_unpinned_join_failure_is_still_reported(self, caplog) -> None:
         """Blank is "nothing configured", so a failed join there is a real fault.
@@ -1892,4 +1971,6 @@ class TestADarkInterfaceStaysQuiet:
                 assert sync._open_rx_socket() is None
 
         assert [r.levelname for r in caplog.records] == ["ERROR"]
+        # And it stays inside the failure budget, unlike the pinned outage:
+        # nothing is expected to bring an unconfigured interface back.
         sock.close.assert_called_once()

@@ -74,6 +74,18 @@ class RtspInput(VideoInputBase):
             factory.set_rank(Gst.Rank.MARGINAL)
             logger.info("Decoder priority: openh264dec -> MARGINAL")
 
+    @staticmethod
+    def _credentials(config: dict[str, Any]) -> tuple[str, str]:
+        """Return the configured ``(user, password)``, blank when unset.
+
+        The password is taken verbatim – edge whitespace can be part of it and
+        is invisible in a password field – while the username is stripped, so
+        a pasted identifier with a trailing space still authenticates.
+        """
+        user = str(config.get("rtsp_user", "") or "").strip()
+        password = str(config.get("rtsp_password", "") or "")
+        return user, password
+
     def create_pipeline(
         self,
         config: dict[str, Any],
@@ -204,18 +216,6 @@ class RtspInput(VideoInputBase):
         """RTSP: force zero latency for minimal delay."""
         pipeline.set_latency(0)
         logger.info("Pipeline ASYNC_DONE (RTSP) -- latency forced to 0")
-
-    @staticmethod
-    def _credentials(config: dict[str, Any]) -> tuple[str, str]:
-        """Return the configured ``(user, password)``, blank when unset.
-
-        The password is taken verbatim – edge whitespace can be part of it and
-        is invisible in a password field – while the username is stripped, so
-        a pasted identifier with a trailing space still authenticates.
-        """
-        user = str(config.get("rtsp_user", "") or "").strip()
-        password = str(config.get("rtsp_password", "") or "")
-        return user, password
 
     # -- Web UI ---------------------------------------------------------------
 

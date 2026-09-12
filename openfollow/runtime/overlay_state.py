@@ -49,6 +49,9 @@ class PiNetworkOverlayState:
     field_edit_active: bool = False
     field_label: str = ""
     field_value: str = ""
+    # Character offset of the d-pad cursor within ``field_value``, or -1
+    # when the value is freely typed and the caret belongs at the end.
+    field_caret_offset: int = -1
 
     def reset(self) -> None:
         self.screen_active = False
@@ -59,6 +62,7 @@ class PiNetworkOverlayState:
         self.field_edit_active = False
         self.field_label = ""
         self.field_value = ""
+        self.field_caret_offset = -1
 
 
 @dataclass

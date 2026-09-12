@@ -72,6 +72,22 @@ class _FakeAdapter:
         return self.renew_result
 
 
+class _FakeWebServer:
+    """Stand-in for the running ``ConfigWebServer``.
+
+    The screen reads the **live** bind off this, never the config pin, so
+    tests set the two apart deliberately - that gap is the fail-open case.
+    """
+
+    def __init__(self, bind_host: str = "0.0.0.0", display_port: int = 80, banner: str = "") -> None:
+        self.bind_host = bind_host
+        self.display_port = display_port
+        self._banner = banner
+
+    def get_web_bind_advisory(self) -> dict[str, str]:
+        return {"status": "down" if self._banner else "", "banner": self._banner, "resolved_ip": ""}
+
+
 def _make_app(adapter: _FakeAdapter | None = None) -> SimpleNamespace:
     if adapter is None:
         adapter = _FakeAdapter()
@@ -115,6 +131,7 @@ def _make_app(adapter: _FakeAdapter | None = None) -> SimpleNamespace:
 
     app._enter_settings_menu = _enter_settings_menu
     app._get_config_mtime = _get_config_mtime
+    app._web_server = _FakeWebServer()
     app._restart_requests = 0
     app._web_commands = SimpleNamespace(
         request_restart=lambda: setattr(app, "_restart_requests", app._restart_requests + 1)
@@ -1407,8 +1424,21 @@ class TestTheScreenAnswersHowToReachTheWebUi:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         app = _make_app()
         app._config.web_port = 8080
+        app._web_server = _FakeWebServer(display_port=8080)
         anm.enter_pi_network(app)
         assert "http://192.168.1.5:8080" in _labels(app)
+
+    def test_the_url_carries_the_port_that_actually_bound(self, monkeypatch) -> None:
+        """An unprivileged station that could not take :80 is serving on the
+        fallback. Printing the configured port would hand out an address
+        nothing answers on - the one thing this screen must not do."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._config.web_port = 80
+        app._web_server = _FakeWebServer(display_port=8080)
+        anm.enter_pi_network(app)
+        assert "http://192.168.1.5:8080" in _labels(app)
+        assert "http://192.168.1.5" not in _labels(app)
 
     def test_an_interface_with_no_address_says_so_instead_of_a_url(self, monkeypatch) -> None:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
@@ -1423,6 +1453,7 @@ class TestTheScreenAnswersHowToReachTheWebUi:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5", "wlan0": "172.16.4.20"})
         app = _make_app()
         app._config.web_bind_iface = "wlan0"
+        app._web_server = _FakeWebServer(bind_host="172.16.4.20")
         anm.enter_pi_network(app)
         rows = {str(r.get("value")): str(r.get("label")) for r in anm.build_pi_network_rows(app)}
         assert rows["wlan0"] == "http://172.16.4.20"
@@ -1481,13 +1512,16 @@ class TestTheScreenCallsOutWhatBreaksReachability:
         anm.enter_pi_network(app)
         assert _rows_by_kind(app, "notice") == []
 
-    def test_a_pinned_web_ui_is_called_out(self, monkeypatch) -> None:
+    def test_a_restricted_web_ui_is_called_out_by_its_address(self, monkeypatch) -> None:
+        """Named by the address that works, not by the interface that was
+        asked for - the address is what the operator has to type."""
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         app = _make_app()
         app._config.web_bind_iface = "eth0"
+        app._web_server = _FakeWebServer(bind_host="192.168.1.5")
         anm.enter_pi_network(app)
         notices = [str(r["label"]) for r in _rows_by_kind(app, "notice")]
-        assert any("pinned to eth0" in n for n in notices)
+        assert any("served only at 192.168.1.5" in n for n in notices)
 
     def test_notices_are_not_selectable(self, monkeypatch) -> None:
         """They carry no action, so landing on one would be a dead stop for a
@@ -1706,3 +1740,252 @@ class TestDefensivePathsOnTheReachabilityScreen:
 
         assert "Read-only host" in app._pi_network_banner
         assert adapter.apply_calls == []
+
+
+class TestTheScreenReportsTheLiveBindNotThePin:
+    """The pin fails open, so the config is not evidence of where the UI is.
+
+    This is the scenario the screen exists for, and reading the pin instead
+    of the bind inverts its answer in exactly that case.
+    """
+
+    def test_a_pin_that_missed_still_shows_every_working_url(self, monkeypatch) -> None:
+        """Pinned to a dark interface, the runtime serves everywhere. A screen
+        that echoed the pin would show zero usable URLs for a station that is
+        reachable at all of them."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5", "wlan0": "172.16.4.20"})
+        app = _make_app()
+        app._config.web_bind_iface = "eth_gone"
+        app._web_server = _FakeWebServer(bind_host="0.0.0.0")
+        anm.enter_pi_network(app)
+
+        rows = {str(r.get("value")): str(r.get("label")) for r in anm.build_pi_network_rows(app)}
+        assert rows["eth0"] == "http://192.168.1.5"
+        assert rows["wlan0"] == "http://172.16.4.20"
+        assert "-- web UI not served here --" not in rows.values()
+
+    def test_a_pin_that_missed_is_explained_rather_than_hidden(self, monkeypatch) -> None:
+        """Serving everywhere contradicts the config, so the screen carries
+        the runtime's own account of why."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._config.web_bind_iface = "eth_gone"
+        app._web_server = _FakeWebServer(
+            bind_host="0.0.0.0",
+            banner="Web UI is pinned to 'eth_gone', which has no address.",
+        )
+        anm.enter_pi_network(app)
+        notices = [str(r["label"]) for r in _rows_by_kind(app, "notice")]
+        assert any("eth_gone" in n for n in notices)
+
+    def test_a_literal_bind_address_restricts_the_rows_too(self, monkeypatch) -> None:
+        """``web_bind`` outranks the interface pin, so a station using it is
+        just as restricted - and the screen has to say so."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5", "wlan0": "172.16.4.20"})
+        app = _make_app()
+        app._config.web_bind = "192.168.1.5"
+        app._web_server = _FakeWebServer(bind_host="192.168.1.5")
+        anm.enter_pi_network(app)
+
+        rows = {str(r.get("value")): str(r.get("label")) for r in anm.build_pi_network_rows(app)}
+        assert rows["eth0"] == "http://192.168.1.5"
+        assert rows["wlan0"] == "-- web UI not served here --"
+
+    def test_a_literal_bind_address_is_cleared_by_the_escape(self, monkeypatch) -> None:
+        """Clearing only the interface pin would leave this station exactly
+        as unreachable while reporting the escape succeeded."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: True)
+        app = _make_app()
+        app._config.web_bind = "192.168.1.5"
+        app._web_server = _FakeWebServer(bind_host="192.168.1.5")
+        anm.enter_pi_network(app)
+
+        _confirm_key(app, "web_unpin")
+
+        assert app._config.web_bind == ""
+        assert app._restart_requests == 1
+
+    def test_a_failed_save_restores_both_pins(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: False)
+        app = _make_app()
+        app._config.web_bind = "192.168.1.5"
+        app._config.web_bind_iface = "eth0"
+        app._web_server = _FakeWebServer(bind_host="192.168.1.5")
+        anm.enter_pi_network(app)
+
+        _confirm_key(app, "web_unpin")
+
+        assert (app._config.web_bind, app._config.web_bind_iface) == ("192.168.1.5", "eth0")
+        assert app._restart_requests == 0
+
+
+class TestTheCursorSurvivesRowsAppearingAndDisappearing:
+    """The cursor is a bare index into a list rebuilt every frame.
+
+    A row appearing or vanishing under it moves the highlight onto a
+    different action, and an index past the end makes Enter a silent no-op.
+    """
+
+    def _key_under_cursor(self, app) -> str:
+        rows = anm.build_pi_network_rows(app)
+        idx = app._pi_network_index
+        assert 0 <= idx < len(rows), f"cursor {idx} is outside a {len(rows)}-row list"
+        return str(rows[idx].get("key", ""))
+
+    def test_opening_the_static_editor_lands_on_the_first_field(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _confirm_key(app, "static")
+        assert self._key_under_cursor(app) == "address"
+
+    def test_cancelling_returns_the_cursor_to_the_action_it_came_from(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _confirm_key(app, "static")
+        _confirm_key(app, "cancel_static")
+        assert self._key_under_cursor(app) == "static"
+
+    def test_unpinning_does_not_leave_the_cursor_on_apply_dhcp(self, monkeypatch) -> None:
+        """The escape removes its own row. Landing on the next action down
+        means a second Enter tap reconfigures the interface."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: True)
+        app = _make_app()
+        app._config.web_bind_iface = "eth0"
+        app._web_server = _FakeWebServer(bind_host="192.168.1.5")
+        anm.enter_pi_network(app)
+        rows = anm.build_pi_network_rows(app)
+        app._pi_network_index = next(i for i, r in enumerate(rows) if r.get("key") == "web_unpin")
+
+        anm._pi_network_confirm(app)
+
+        assert self._key_under_cursor(app) == "dhcp"
+        adapter = app._runtime_services.network_adapter
+        assert adapter.apply_calls == []
+
+    def test_switching_interface_keeps_the_cursor_on_that_interface(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5", "wlan0": "172.16.4.20"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _confirm_key(app, "iface:wlan0")
+        assert self._key_under_cursor(app) == "iface:wlan0"
+
+
+class TestApplyingAStaticAddressKeepsDns:
+    def test_dns_survives_the_static_editor(self, monkeypatch) -> None:
+        """DNS is not editable here, but the apply path writes whatever the
+        config holds - so dropping it would clear the station's nameservers
+        as a side effect of setting an address, taking NTP and the update
+        check down with it."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        adapter = _FakeAdapter()
+        app = _make_app(adapter)
+        anm.enter_pi_network(app)
+        assert app._pi_network_pending_config.dns == ("8.8.8.8",)
+
+        _confirm_key(app, "static")
+
+        assert app._pi_network_pending_config.dns == ("8.8.8.8",)
+
+    def test_the_applied_config_still_carries_dns(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        adapter = _FakeAdapter()
+        app = _make_app(adapter)
+        anm.enter_pi_network(app)
+        _confirm_key(app, "static")
+        _confirm_key(app, "apply")
+        worker = app._pi_network_worker
+        assert worker is not None
+        worker.join(timeout=2.0)
+
+        assert adapter.apply_calls[0][1].dns == ("8.8.8.8",)
+
+
+class TestTheScreenNeverBlocksTheFrameLoop:
+    def test_cancelling_the_static_editor_uses_the_bounded_read(self, monkeypatch) -> None:
+        """A hung nmcli must cost this screen its refresh, not the frame loop
+        every output depends on - each adapter call has an 8 s timeout."""
+        calls: list[str] = []
+        monkeypatch.setattr(anm, "_refresh_pi_network_bounded", lambda app: calls.append("bounded"))
+        monkeypatch.setattr(anm, "_refresh_pi_network", lambda app: calls.append("UNBOUNDED"))
+        app = _make_app()
+        app._pi_network_static_edit = True
+
+        anm._cancel_static_edit(app)
+
+        assert calls == ["bounded"]
+
+
+class TestTheScreenEnumeratesInterfacesOnce:
+    def test_one_enumeration_per_row_build(self, monkeypatch) -> None:
+        """The list is rebuilt every frame while the screen is open, so a
+        per-interface lookup walks every NIC dozens of times a second for
+        data that cannot change within one frame."""
+        from openfollow.runtime import app_modes_network as mod
+
+        calls = 0
+
+        def _spy() -> list[tuple[str, str]]:
+            nonlocal calls
+            calls += 1
+            return [("eth0", "192.168.1.5"), ("wlan0", "169.254.8.31")]
+
+        app = _make_app()
+        anm.enter_pi_network(app)
+        monkeypatch.setattr(mod, "list_iface_ipv4", _spy, raising=False)
+        monkeypatch.setattr("openfollow.net_utils.list_iface_ipv4", _spy)
+
+        calls = 0
+        anm.build_pi_network_rows(app)
+
+        assert calls == 1
+
+
+class TestTheAdvisoryNeverBlanksTheScreen:
+    """The screen is the last surface an operator has when the web UI is gone.
+
+    Everything it reads off the running server is optional decoration on a
+    page whose job is fixing reachability, so none of it may cost the URLs.
+    """
+
+    def test_a_raising_advisory_costs_the_notice_not_the_page(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+
+        class _Boom:
+            bind_host = "0.0.0.0"
+            display_port = 80
+
+            def get_web_bind_advisory(self) -> dict[str, str]:
+                raise RuntimeError("no runtime")
+
+        app = _make_app()
+        app._web_server = _Boom()
+        anm.enter_pi_network(app)
+
+        assert "http://192.168.1.5" in _labels(app)
+        assert _rows_by_kind(app, "notice") == []
+
+    def test_a_server_without_the_advisory_is_tolerated(self, monkeypatch) -> None:
+        """Boot and unit contexts hand over a partially wired server; the
+        screen has to render from whatever is there."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._web_server = SimpleNamespace(bind_host="0.0.0.0", display_port=80)
+        anm.enter_pi_network(app)
+
+        assert "http://192.168.1.5" in _labels(app)
+
+    def test_no_server_at_all_falls_back_to_the_configured_bind(self, monkeypatch) -> None:
+        """Before ``init_web_server`` runs there is nothing to read, so the
+        screen resolves what the server *would* bind rather than rendering
+        blank."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._web_server = None
+        anm.enter_pi_network(app)
+
+        assert "http://192.168.1.5" in _labels(app)

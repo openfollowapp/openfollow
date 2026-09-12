@@ -285,10 +285,6 @@ class TestSettingsMenu:
                 self._pi_network_active_iface = ""
                 self._pi_network_state_cache = None
                 self._pi_network_pending_config = None
-                self._pi_network_iface_picker_active = False
-                self._pi_network_iface_picker_index = 0
-                self._pi_network_method_picker_active = False
-                self._pi_network_method_picker_index = 0
                 self._pi_network_field_edit_active = False
                 self._pi_network_field_name = ""
                 self._pi_network_field_value = ""

@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from openfollow.net_utils import WEB_BIND_ALL
 from openfollow.network.adapter import (
     ApplyResult,
     Ipv4Config,
@@ -155,17 +156,55 @@ _SELECTABLE_KINDS = {"choice", "text", "action"}
 _IFACE_ROW_PREFIX = "iface:"
 
 
+def _web_server(app: OpenFollowApp) -> Any:
+    return getattr(app, "_web_server", None)
+
+
+def _served_port(app: OpenFollowApp) -> int:
+    """Port the operator should type.
+
+    ``display_port`` over the configured one: an unprivileged station that
+    could not take :80 is serving on the fallback, and this screen exists to
+    hand out an address that answers.
+    """
+    server = _web_server(app)
+    port = getattr(server, "display_port", None) if server is not None else None
+    if port is None:
+        port = getattr(app._config, "web_port", 80)
+    try:
+        return int(port or 80)
+    except (TypeError, ValueError):  # pragma: no cover - __post_init__ coerces this
+        return 80
+
+
 def _web_url_for(app: OpenFollowApp, host: str) -> str:
     """``http://<host>``, with the port only when it isn't the default 80."""
-    port = _soft_web_port(app)
+    port = _served_port(app)
     return f"http://{host}" if port == 80 else f"http://{host}:{port}"
 
 
-def _soft_web_port(app: OpenFollowApp) -> int:
-    try:
-        return int(getattr(app._config, "web_port", 80) or 80)
-    except (TypeError, ValueError):  # pragma: no cover - __post_init__ coerces this
-        return 80
+def _served_bind_host(app: OpenFollowApp) -> str:
+    """The address the web server is **actually** listening on.
+
+    Read from the running server, never derived from the config pin. The pin
+    fails open, so a pin naming a dark interface leaves the UI on the wildcard
+    - and a screen that reported the config would tell an operator that none
+    of their addresses work while every one of them does.
+    """
+    server = _web_server(app)
+    host = str(getattr(server, "bind_host", "") or "") if server is not None else ""
+    if host:
+        return host
+    # No server wired (boot, tests): fall back to what it would bind.
+    from openfollow.net_utils import resolve_web_bind
+
+    cfg = app._config
+    return resolve_web_bind(getattr(cfg, "web_bind", ""), getattr(cfg, "web_bind_iface", ""))[0]
+
+
+def _serves_every_interface(app: OpenFollowApp) -> bool:
+    host = _served_bind_host(app)
+    return not host or host == WEB_BIND_ALL
 
 
 def _mdns_host(app: OpenFollowApp) -> str:
@@ -186,29 +225,39 @@ def _mdns_host(app: OpenFollowApp) -> str:
     return f"{name}.local"
 
 
-def _pinned_web_iface(app: OpenFollowApp) -> str:
-    return str(getattr(app._config, "web_bind_iface", "") or "")
+def _iface_addresses(app: OpenFollowApp) -> list[tuple[str, str]]:
+    """``(name, address)`` for each interface on the screen, one enumeration.
+
+    The whole row list is rebuilt every frame while the screen is open, so a
+    per-interface lookup would walk every NIC dozens of times a second for
+    data that cannot change between two reads of the same frame.
+    """
+    from openfollow.net_utils import list_iface_ipv4
+
+    addresses = dict(list_iface_ipv4())
+    return [
+        (name, addresses.get(name, ""))
+        for name in (str(getattr(i, "name", "") or "") for i in getattr(app, "_pi_network_interfaces", []))
+        if name
+    ]
 
 
-def _iface_rows(app: OpenFollowApp) -> list[dict[str, object]]:
+def _iface_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[str, object]]:
     """One row per interface: the URL that reaches this UI there.
 
-    A pinned web UI answers on one interface only, so the others say why they
-    won't work instead of showing a URL that would fail. Handing the operator
-    an address that doesn't answer is the one thing this screen must not do.
+    A restricted web UI answers at one address only, so the others say why
+    they won't work instead of showing a URL that would fail. Handing the
+    operator an address that doesn't answer is the one thing this screen must
+    not do - which is why "restricted" is judged from the live bind and not
+    from the pin that asked for it.
     """
-    from openfollow.net_utils import get_iface_ipv4
-
-    pinned = _pinned_web_iface(app)
+    everywhere = _serves_every_interface(app)
+    bind_host = _served_bind_host(app)
     rows: list[dict[str, object]] = []
-    for iface in getattr(app, "_pi_network_interfaces", []):
-        name = str(getattr(iface, "name", "") or "")
-        if not name:
-            continue
-        address = get_iface_ipv4(name)
+    for name, address in ifaces:
         if not address:
             label = "-- no address --"
-        elif pinned and name != pinned:
+        elif not everywhere and address != bind_host:
             label = "-- web UI not served here --"
         else:
             label = _web_url_for(app, address)
@@ -216,29 +265,46 @@ def _iface_rows(app: OpenFollowApp) -> list[dict[str, object]]:
     return rows
 
 
-def _reachability_notices(app: OpenFollowApp) -> list[dict[str, object]]:
+def _reachability_notices(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[str, object]]:
     """The states that break reachability without looking broken.
 
     A link-local address reads like a working lease to anyone who doesn't know
-    the 169.254 prefix, and a pinned web UI explains why four of five rows
-    above have no URL.
+    the 169.254 prefix; a restricted web UI explains why the other rows have
+    no URL; and a pin that missed explains why the UI is reachable everywhere
+    despite the config asking otherwise.
     """
-    from openfollow.net_utils import get_iface_ipv4
-
-    notices: list[dict[str, object]] = []
-    for iface in getattr(app, "_pi_network_interfaces", []):
-        name = str(getattr(iface, "name", "") or "")
-        address = get_iface_ipv4(name) if name else ""
-        if is_link_local(address):
-            notices.append(
-                {"kind": "notice", "label": f"{name}  DHCP unavailable, using fallback {address}", "value": ""}
-            )
-    pinned = _pinned_web_iface(app)
-    if pinned:
+    notices: list[dict[str, object]] = [
+        {"kind": "notice", "label": f"{name}  DHCP unavailable, using fallback {address}", "value": ""}
+        for name, address in ifaces
+        if is_link_local(address)
+    ]
+    if not _serves_every_interface(app):
         notices.append(
-            {"kind": "notice", "label": f"Web UI is pinned to {pinned} - only that address works", "value": ""}
+            {
+                "kind": "notice",
+                "label": f"Web UI is served only at {_served_bind_host(app)}",
+                "value": "",
+            }
         )
+    else:
+        banner = _web_bind_banner(app)
+        if banner:
+            notices.append({"kind": "notice", "label": banner, "value": ""})
     return notices
+
+
+def _web_bind_banner(app: OpenFollowApp) -> str:
+    """The runtime's own account of a pin it could not honour, or "".
+
+    One guard covers all three ways this is absent - no server yet, a server
+    without the accessor, and a provider that raises. The banner is decoration
+    on a screen whose job is fixing reachability; none of those may cost it
+    the URLs it exists to show.
+    """
+    try:
+        return str(_web_server(app).get_web_bind_advisory().get("banner", "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _addr_of(pending: Ipv4Config | None, field: str) -> str:
@@ -285,17 +351,18 @@ def build_pi_network_rows(app: OpenFollowApp) -> list[dict[str, object]]:
 
     rows: list[dict[str, object]] = [{"kind": "header", "label": "Open on a computer on the same network"}]
 
+    ifaces = _iface_addresses(app)
     mdns = _mdns_host(app)
     if mdns:
         # First, and not selectable: it reaches the station on any interface,
         # so there is no per-interface action it could drive. It is also the
         # one line an operator can read out over comms.
         rows.append({"kind": "display", "key": "mdns", "label": _web_url_for(app, mdns), "value": "any interface"})
-    rows.extend(_iface_rows(app))
-    rows.extend(_reachability_notices(app))
+    rows.extend(_iface_rows(app, ifaces))
+    rows.extend(_reachability_notices(app, ifaces))
 
     rows.append({"kind": "header", "label": "Fix reachability"})
-    if _pinned_web_iface(app):
+    if _web_ui_is_restricted(app):
         # Deliberately not gated on ``writable``: this writes config, not the
         # network stack, so it stays available on a host whose addressing this
         # build cannot manage - which is exactly where a lockout would strand
@@ -329,6 +396,29 @@ def build_pi_network_rows(app: OpenFollowApp) -> list[dict[str, object]]:
             )
     rows.append({"kind": "action", "key": "back", "label": "Back", "value": ""})
     return rows
+
+
+def _focus_row(app: OpenFollowApp, key: str) -> None:
+    """Put the cursor on ``key``, or on the nearest selectable row.
+
+    Every action that reshapes the list has to call this. The cursor is a
+    bare index into a list that is rebuilt from scratch each frame, so a row
+    appearing or disappearing under it silently moves the highlight onto a
+    different action - and an index past the end leaves Enter a no-op with
+    nothing on screen explaining why.
+    """
+    rows = build_pi_network_rows(app)
+    for i, row in enumerate(rows):
+        if row.get("key") == key and row.get("kind") in _SELECTABLE_KINDS:
+            app._pi_network_index = i
+            return
+    idx = min(max(int(getattr(app, "_pi_network_index", 0)), 0), max(len(rows) - 1, 0))
+    while idx >= 0:
+        if rows[idx].get("kind") in _SELECTABLE_KINDS:
+            app._pi_network_index = idx
+            return
+        idx -= 1
+    app._pi_network_index = _first_selectable_index(app)
 
 
 def _pi_network_move(app: OpenFollowApp, step: int) -> None:
@@ -397,27 +487,48 @@ def _select_pi_network_iface(app: OpenFollowApp, name: str) -> None:
     app._pi_network_active_iface = name
     app._pi_network_static_edit = False
     _refresh_pi_network_bounded(app)
+    _focus_row(app, f"{_IFACE_ROW_PREFIX}{name}")
+
+
+def _web_ui_is_restricted(app: OpenFollowApp) -> bool:
+    """True when the UI answers at one address, or is configured to.
+
+    Covers both pins - the interface name and the older literal ``web_bind``
+    address - and stays true for a pin that has not taken effect yet, so the
+    escape is offered before the restart as well as after it.
+    """
+    cfg = app._config
+    if getattr(cfg, "web_bind", "") or getattr(cfg, "web_bind_iface", ""):
+        return True
+    return not _serves_every_interface(app)
 
 
 def _unpin_web_ui(app: OpenFollowApp) -> None:
-    """Clear the web UI's interface pin and ask for a restart.
+    """Clear the web UI's pins and ask for a restart.
 
-    The lockout escape: with the pin cleared the UI answers on every
-    interface again. It cannot take effect without a restart because the
-    listening socket is fixed for the life of the server.
+    The lockout escape: with both cleared the UI answers on every interface
+    again. It cannot take effect without a restart because the listening
+    socket is fixed for the life of the server. ``web_bind`` goes too - it
+    outranks the interface pin, so clearing only the latter would leave a
+    literal-address station exactly as unreachable while reporting success.
     """
-    if not _pinned_web_iface(app):
-        return
     from openfollow.runtime.app_modes import _persist_config
 
-    previous = app._config.web_bind_iface
-    app._config.web_bind_iface = ""
+    cfg = app._config
+    previous = (getattr(cfg, "web_bind", ""), getattr(cfg, "web_bind_iface", ""))
+    if not any(previous):
+        return
+    cfg.web_bind = ""
+    cfg.web_bind_iface = ""
     if not _persist_config(app):
-        app._config.web_bind_iface = previous
+        cfg.web_bind, cfg.web_bind_iface = previous
         app._pi_network_banner = "Could not save - web UI is still pinned."
         return
     app._pi_network_banner = "Web UI will serve on all interfaces after the restart."
     app._web_commands.request_restart()
+    # The row just removed itself; without this the same index is now the
+    # next action down, and a second Enter tap would run it.
+    _focus_row(app, "dhcp")
 
 
 def _set_pi_network_dhcp(app: OpenFollowApp) -> None:
@@ -442,19 +553,30 @@ def _begin_static_edit(app: OpenFollowApp) -> None:
     types one digit, not a whole address on a d-pad.
     """
     pending: Ipv4Config | None = getattr(app, "_pi_network_pending_config", None)
+    # ``dns`` carries over untouched. It is not editable here, but the apply
+    # path writes whatever this config holds, so dropping it would silently
+    # clear the interface's nameservers as a side effect of setting an address.
     app._pi_network_pending_config = Ipv4Config(
         method=Ipv4Method.STATIC,
         address=pending.address if pending else None,
         prefix=pending.prefix if pending else None,
         router=pending.router if pending else None,
+        dns=pending.dns if pending else (),
     )
     app._pi_network_static_edit = True
+    _focus_row(app, "address")
 
 
 def _cancel_static_edit(app: OpenFollowApp) -> None:
-    """Drop the typed values and go back to the interface's real state."""
+    """Drop the typed values and go back to the interface's real state.
+
+    Bounded, like every other on-screen read: a hung network backend must
+    cost this screen its refresh, not the frame loop that every output
+    depends on.
+    """
     app._pi_network_static_edit = False
-    _refresh_pi_network(app)
+    _refresh_pi_network_bounded(app)
+    _focus_row(app, "static")
 
 
 def process_pi_network_input(app: OpenFollowApp) -> None:

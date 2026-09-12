@@ -78,3 +78,24 @@ def bump_digit(digits: str, index: int, delta: int) -> str:
         return digits
     current = int(digits[index]) if digits[index].isdigit() else 0
     return digits[:index] + str((current + delta) % 10) + digits[index + 1 :]
+
+
+def is_grid_form(value: str) -> bool:
+    """True when *value* is a fully padded grid, i.e. the d-pad has edited it.
+
+    While that holds, a digit slot and a character position are in fixed
+    correspondence, so a caret can be drawn under the digit the cursor names.
+    A freely typed value has no such correspondence.
+    """
+    parts = value.split(".")
+    return len(parts) == OCTETS and all(len(p) == DIGITS_PER_OCTET and p.isdigit() for p in parts)
+
+
+def caret_offset(index: int) -> int:
+    """Character offset of digit slot *index* within the dotted grid form.
+
+    Steps over the dot separating each octet, so the caret lands on the digit
+    the cursor names rather than drifting one place left per octet crossed.
+    """
+    index = max(0, min(DIGIT_SLOTS - 1, index))
+    return index + index // DIGITS_PER_OCTET

@@ -18,6 +18,19 @@
         <span class="section-note">Which network each function uses</span>
     </div>
 
+    %# Poll until the server answers again, then reload. Unlike every other
+    %# restart notice this one may come back at a DIFFERENT address, so it
+    %# names the one to try when the reload cannot reach this one.
+    % if defined('restarting') and restarting:
+    <div class="restart-notice"
+         hx-get="/api/info"
+         hx-trigger="every 2s"
+         hx-swap="none"
+         hx-on::after-request="if(event.detail.successful) window.location.reload()">App is restarting&hellip;
+        If this page does not come back, the web UI has moved - the station's
+        Network screen lists the address that reaches it.</div>
+    % end
+
     %# The web UI is the surface this panel is edited from, so a pin that
     %# misses is a lockout rather than a silent plane. Both notices name the
     %# way back: the URL that will work, and the on-screen escape.

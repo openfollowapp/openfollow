@@ -1321,7 +1321,8 @@ class TestRecvLoopOneIteration:
 
         sock.setsockopt.side_effect = setsockopt
         with patch.object(_socket, "socket", return_value=sock):
-            assert sync._open_rx_socket() is None
+            with pytest.raises(marker_sync.InterfaceUnavailable):
+                sync._open_rx_socket()
         # Exactly one attempt, on the pinned interface - never a wildcard retry.
         assert len(membership_calls) == 1
         assert membership_calls[0].endswith(_socket.inet_aton("10.0.0.5"))
@@ -1783,3 +1784,193 @@ class TestUpdateIfaceIp:
         with patch.object(_socket, "socket", return_value=sock):
             assert sync._open_rx_socket() is sock
         assert memberships[0].endswith(_socket.inet_aton("10.0.0.9"))
+
+
+class TestABackoffDoesNotSleepThroughARepoint:
+    """A failed TX open is the state most likely to be parked when the address
+    moves, because a down interface is what produces it.
+
+    Parked on the full heartbeat, the loop would keep IP_MULTICAST_IF pointed at
+    the dead address for up to HEARTBEAT_INTERVAL after the operator's interface
+    came back - the same delay the normal-path wait is capped to avoid.
+    """
+
+    def _sync(self) -> MarkerCatalogSync:
+        return MarkerCatalogSync(
+            MarkerCatalog(),
+            station_id="station-A",
+            station_name_provider=lambda: "X",
+            selection_provider=lambda: ([], []),
+            iface_ip=None,
+        )
+
+    def test_a_pending_repoint_ends_the_backoff_early(self) -> None:
+        sync = self._sync()
+        sync._tx_reopen.set()
+        started = time.monotonic()
+        sync._wait_before_reopen(30.0)
+        assert time.monotonic() - started < 1.0, "the backoff slept through a repoint"
+
+    def test_a_stop_ends_the_backoff_early(self) -> None:
+        sync = self._sync()
+        sync._stop_event.set()
+        started = time.monotonic()
+        sync._wait_before_reopen(30.0)
+        assert time.monotonic() - started < 1.0, "the backoff slept through a stop"
+
+    def test_it_waits_when_nothing_is_pending(self) -> None:
+        """It is still a backoff: without a repoint it must not spin."""
+        sync = self._sync()
+        started = time.monotonic()
+        sync._wait_before_reopen(0.05)
+        assert time.monotonic() - started >= 0.05
+
+    def test_the_receive_backoff_ends_on_a_repoint(self) -> None:
+        """RX parks on the same kind of wait and needs the same escape: the
+        down interface returning is precisely when it must stop waiting."""
+        sync = self._sync()
+        sync._rx_reopen.set()
+        started = time.monotonic()
+        sync._wait_before_rx_reopen(30.0)
+        assert time.monotonic() - started < 1.0, "the receive backoff slept through a repoint"
+
+    def test_the_receive_backoff_ends_on_a_stop(self) -> None:
+        sync = self._sync()
+        sync._stop_event.set()
+        started = time.monotonic()
+        sync._wait_before_rx_reopen(30.0)
+        assert time.monotonic() - started < 1.0, "the receive backoff slept through a stop"
+
+    def test_the_receive_backoff_still_backs_off(self) -> None:
+        """Without it the loop would re-attempt the join as fast as the CPU
+        allows for the whole outage."""
+        sync = self._sync()
+        started = time.monotonic()
+        sync._wait_before_rx_reopen(0.05)
+        assert time.monotonic() - started >= 0.05
+
+
+class TestADarkInterfaceStaysQuiet:
+    """Both loops retry for as long as the pinned interface is out, and say so
+    at most once a minute.
+
+    An interface with no address is an expected state on this path, not a
+    fault: the loops are *meant* to sit there retrying until the cable comes
+    back. Reporting each attempt puts a line in the journal every heartbeat for
+    the whole outage, which buries whatever the operator is actually looking
+    for - so the retry is silent after the first line.
+    """
+
+    def _sync(self, iface_ip: str | None = None) -> MarkerCatalogSync:
+        return MarkerCatalogSync(
+            MarkerCatalog(),
+            station_id="station-A",
+            station_name_provider=lambda: "X",
+            selection_provider=lambda: ([], []),
+            iface_ip=iface_ip,
+        )
+
+    def test_the_send_loop_keeps_retrying_and_logs_once(self, monkeypatch, caplog) -> None:
+        monkeypatch.setattr(marker_sync, "HEARTBEAT_INTERVAL", 0.0)
+        sync = self._sync()
+        attempts: list[int] = []
+
+        def open_dark():
+            attempts.append(1)
+            if len(attempts) >= 3:
+                sync._stop_event.set()
+            raise marker_sync.InterfaceUnavailable("the configured interface has no address")
+
+        with caplog.at_level("WARNING", logger=marker_sync.logger.name):
+            with patch.object(sync, "_open_tx_socket", side_effect=open_dark):
+                sync._send_loop()
+
+        assert len(attempts) == 3, "the send loop stopped retrying while the interface was out"
+        assert len(caplog.records) == 1, "every retry reported itself instead of only the first"
+
+    def test_the_receive_loop_keeps_retrying_and_logs_once(self, monkeypatch, caplog) -> None:
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_RETRY_S", 0.0)
+        sync = self._sync()
+        attempts: list[int] = []
+
+        def open_dark():
+            attempts.append(1)
+            if len(attempts) >= 3:
+                sync._stop_event.set()
+            raise marker_sync.InterfaceUnavailable("the configured interface has no address")
+
+        with caplog.at_level("WARNING", logger=marker_sync.logger.name):
+            with patch.object(sync, "_open_rx_socket", side_effect=open_dark):
+                sync._recv_loop()
+
+        assert len(attempts) == 3, "the receive loop stopped retrying while the interface was out"
+        assert len(caplog.records) == 1, "every retry reported itself instead of only the first"
+
+    def test_a_dark_interface_never_retires_the_receive_loop(self, monkeypatch, caplog) -> None:
+        """The failure budget exists to give up on a port this station will
+        never get. A pinned interface with no address is the opposite: it comes
+        back when the cable does, so counting it would retire sync input with
+        an ERROR for a condition the operator already knows about - and the
+        rate-limited warning above would have been pointless.
+        """
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_RETRY_S", 0.0)
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_MAX_RETRIES", 3)
+        sync = self._sync()
+        attempts: list[int] = []
+
+        def open_dark():
+            attempts.append(1)
+            if len(attempts) >= marker_sync._RX_OPEN_MAX_RETRIES * 3:
+                sync._stop_event.set()
+            raise marker_sync.InterfaceUnavailable("the configured interface has no address")
+
+        with caplog.at_level("ERROR", logger=marker_sync.logger.name):
+            with patch.object(sync, "_open_rx_socket", side_effect=open_dark):
+                sync._recv_loop()
+
+        assert len(attempts) == marker_sync._RX_OPEN_MAX_RETRIES * 3
+        assert caplog.records == [], "an expected outage was escalated to an ERROR"
+
+    def test_a_real_open_failure_still_spends_the_budget(self, monkeypatch, caplog) -> None:
+        """The distinction has to cut both ways: a port this station cannot
+        have must still give up and say so, rather than retrying forever."""
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_RETRY_S", 0.0)
+        monkeypatch.setattr(marker_sync, "_RX_OPEN_MAX_RETRIES", 3)
+        sync = self._sync()
+        attempts: list[int] = []
+
+        def open_failed():
+            attempts.append(1)
+            if len(attempts) >= marker_sync._RX_OPEN_MAX_RETRIES:
+                sync._stop_event.set()
+            return None
+
+        with caplog.at_level("ERROR", logger=marker_sync.logger.name):
+            with patch.object(sync, "_open_rx_socket", side_effect=open_failed):
+                sync._recv_loop()
+
+        assert [r.levelname for r in caplog.records] == ["ERROR"]
+
+    def test_an_unpinned_join_failure_is_still_reported(self, caplog) -> None:
+        """Blank is "nothing configured", so a failed join there is a real fault.
+
+        It is not the outage this class is about and must not be rate-limited
+        into the same quiet path - nobody asked for that interface, so nothing
+        is expected to bring it back.
+        """
+        sync = self._sync(iface_ip="")
+        sock = MagicMock()
+
+        def setsockopt(level, opt, val):
+            if opt == _socket.IP_ADD_MEMBERSHIP:
+                raise OSError("no such device")
+
+        sock.setsockopt.side_effect = setsockopt
+        with caplog.at_level("ERROR", logger=marker_sync.logger.name):
+            with patch.object(_socket, "socket", return_value=sock):
+                assert sync._open_rx_socket() is None
+
+        assert [r.levelname for r in caplog.records] == ["ERROR"]
+        # And it stays inside the failure budget, unlike the pinned outage:
+        # nothing is expected to bring an unconfigured interface back.
+        sock.close.assert_called_once()

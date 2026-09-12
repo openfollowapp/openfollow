@@ -912,8 +912,9 @@ def test_station_followers_are_repointed_without_a_web_request(monkeypatch) -> N
         def __init__(self) -> None:
             self.refreshes = 0
 
-        def refresh_local_ip(self) -> None:
+        def refresh_local_ip(self) -> bool:
             self.refreshes += 1
+            return False
 
         def suspend_beacons(self) -> None:
             raise AssertionError("a healthy interface must not suspend the beacons")
@@ -922,7 +923,7 @@ def test_station_followers_are_repointed_without_a_web_request(monkeypatch) -> N
         def __init__(self) -> None:
             self.ips: list[str] = []
 
-        def update_iface_ip(self, ip: str) -> None:
+        def update_iface_ip(self, ip: str, *, force: bool = False) -> None:
             self.ips.append(ip)
 
     server, sync = _Server(), _Sync()
@@ -958,9 +959,18 @@ def test_a_dark_station_interface_suspends_the_beacons(monkeypatch) -> None:
     server = _Server()
     services._app._web_server = server
     services._app._marker_catalog_sync = None
-    services._follow_station_ip()
 
+    # A blip shorter than the debounce must not drop the station out of every
+    # peer's list: Apply and Renew DHCP lease each produce one.
+    _drive_down_polls(services, 1)
+    assert server.suspends == 0, "a single missing sample suspended discovery"
+
+    _drive_down_polls(services)
     assert server.suspends == 1
+    # Once, on the transition: the beacons are already silent, and re-suspending
+    # every second for the length of the outage only refills the journal.
+    _drive_down_polls(services)
+    assert server.suspends == 1, "discovery was re-suspended while already quiet"
     assert server.refreshes == 0, "a dark interface must not repoint to anything"
 
 
@@ -997,6 +1007,54 @@ def test_nothing_configured_does_not_suspend_the_beacons(monkeypatch) -> None:
     services._follow_station_ip()
 
     assert server.suspends == 0
+
+
+def test_sync_recovers_from_a_station_booted_with_a_dark_interface(monkeypatch) -> None:
+    """The gap a bench run found: the beacon self-healed and sync did not.
+
+    Sync used not to be constructed at all when the station booted dark, and
+    the recovery path can only repoint an object that exists - so marker names
+    stayed unsynced until somebody restarted the station, long after the cable
+    was back in.
+    """
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.psn_source_iface = "eth0"
+    # Booted dark, so both followers start pointed nowhere - not at an address
+    # they never had.
+    sync, server = _FollowerSync(None), _FollowerServer(None)
+    services._app._marker_catalog_sync = sync
+    services._app._web_server = server
+
+    _fake_ifaces(monkeypatch, {})
+    _drive_down_polls(services)
+    assert sync.ips == [None], "a dark interface must put sync into its silent state"
+    assert sync.rebuilds == 0, "a sync that never pointed anywhere had nothing to tear down"
+
+    # The cable goes back in. No restart, no config change.
+    _fake_ifaces(monkeypatch, {"eth0": _FOLLOWER_ADDRESS})
+    services._follow_station_ip()
+
+    assert sync.ips == [None, _FOLLOWER_ADDRESS], "sync never came back after the interface returned"
+    assert sync.rebuilds == 1, "the membership the kernel dropped was not rebuilt exactly once"
+
+
+def test_a_station_with_no_web_server_still_silences_sync(monkeypatch) -> None:
+    """The two followers stop independently.
+
+    Each puts this station's identity on its own socket, so whichever one
+    exists has to go quiet on the down edge regardless of the other. Guarding
+    them together would leave marker names on an excluded network on any
+    station whose web server had not been built.
+    """
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.psn_source_iface = "eth0"
+    sync, _server = _wire_followers(services)
+    services._app._web_server = None
+
+    _fake_ifaces(monkeypatch, {})
+    _drive_down_polls(services)
+
+    assert sync.ips == [None], "sync kept sending because there was no web server to suspend alongside it"
 
 
 def test_follow_station_ip_tolerates_missing_services(monkeypatch) -> None:
@@ -1118,11 +1176,12 @@ def test_station_followers_do_not_move_to_another_interface(monkeypatch) -> None
     sync, server = _Sync(), _Server()
     services._app._marker_catalog_sync = sync
     services._app._web_server = server
-    services._follow_station_ip()
-    assert sync.ips == []
+    _drive_down_polls(services)
     assert server.refreshes == 0
-    # Not merely "not repointed": discovery is told to stop, so it goes quiet
-    # by decision instead of waiting for a send on a dead address to fail.
+    # Not merely "not repointed": both followers are told to stop, so each
+    # goes quiet by decision instead of waiting for a send on a dead address
+    # to fail. None is the sync's own "stay silent" state.
+    assert sync.ips == [None]
     assert server.suspends == 1
 
 
@@ -1179,36 +1238,85 @@ def test_plane_current_reports_the_live_binding(monkeypatch) -> None:
     assert planes["OTP output"].current() is None
 
 
-class _FollowerSync:
-    def __init__(self) -> None:
-        self.ips: list[str] = []
-        self.reopens = 0
+# The address every follower test's interface resolves to.
+_FOLLOWER_ADDRESS = "192.168.1.5"
 
-    def update_iface_ip(self, ip: str) -> None:
+
+class _FollowerSync:
+    """Models the real short-circuit, not just the call.
+
+    A double that only recorded the address could not tell one rebuild from
+    two, which is exactly the defect this shape exists to catch: a forced
+    reopen stacked on a repoint tears down sockets the worker may have just
+    opened. ``rebuilds`` counts what the real object would actually do.
+    """
+
+    def __init__(self, iface_ip: str | None = None) -> None:
+        self.ips: list[str | None] = []
+        self.reopens = 0
+        self.rebuilds = 0
+        self._iface_ip = iface_ip
+
+    def update_iface_ip(self, ip: str | None, *, force: bool = False) -> None:
         self.ips.append(ip)
+        if ip == self._iface_ip and not force:
+            return
+        self._iface_ip = ip
+        self.reopen()
 
     def reopen(self) -> None:
         self.reopens += 1
+        self.rebuilds += 1
 
 
 class _FollowerServer:
-    def __init__(self) -> None:
+    """Same contract as the real server: the refresh reports whether it
+    repointed, so a caller can tell the rebuild has already happened."""
+
+    def __init__(self, local_ip: str | None = None) -> None:
         self.refreshes = 0
         self.reopens = 0
         self.suspends = 0
+        self.rebuilds = 0
+        self._local_ip = local_ip
 
-    def refresh_local_ip(self) -> None:
+    def refresh_local_ip(self) -> bool:
         self.refreshes += 1
+        if self._local_ip == _FOLLOWER_ADDRESS:
+            return False
+        self._local_ip = _FOLLOWER_ADDRESS
+        self.rebuilds += 1
+        return True
 
     def reopen_beacons(self) -> None:
         self.reopens += 1
+        self.rebuilds += 1
 
     def suspend_beacons(self) -> None:
         self.suspends += 1
+        self.rebuilds += 1
+        self._local_ip = None
+
+
+def _drive_down_polls(services, count: int | None = None) -> None:
+    """Poll a down interface until the suspend debounce clears.
+
+    The followers debounce on the same count as the observer's own planes, so a
+    test that wants the suspended state has to earn it rather than assume the
+    first poll does it.
+    """
+    from openfollow.runtime.network_observer import DOWN_POLLS_BEFORE_SUSPEND
+
+    for _ in range(DOWN_POLLS_BEFORE_SUSPEND if count is None else count):
+        services._follow_station_ip()
 
 
 def _wire_followers(services):
-    sync, server = _FollowerSync(), _FollowerServer()
+    """Wired the way production starts: both followers already pointed at the
+    station address, so a steady poll is a genuine no-op rather than an
+    artefact of the double booting blank."""
+    sync = _FollowerSync(_FOLLOWER_ADDRESS)
+    server = _FollowerServer(_FOLLOWER_ADDRESS)
     services._app._marker_catalog_sync = sync
     services._app._web_server = server
     return sync, server
@@ -1224,17 +1332,52 @@ def test_station_followers_rebuild_after_a_same_lease_flap(monkeypatch) -> None:
     services._app._config.psn_source_iface = "eth0"
     sync, server = _wire_followers(services)
 
-    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    _fake_ifaces(monkeypatch, {"eth0": _FOLLOWER_ADDRESS})
     services._follow_station_ip()
-    assert (sync.reopens, server.reopens) == (0, 0)
+    assert (sync.rebuilds, server.rebuilds) == (0, 0)
 
     _fake_ifaces(monkeypatch, {})  # cable out
+    _drive_down_polls(services)
+
+    before = (sync.rebuilds, server.rebuilds)
+    _fake_ifaces(monkeypatch, {"eth0": _FOLLOWER_ADDRESS})  # same lease back
     services._follow_station_ip()
 
-    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})  # same lease back
+    # Exactly one, not zero and not two: zero leaves both joined to
+    # memberships the kernel dropped, and two tears down sockets the worker
+    # may have just opened.
+    assert sync.rebuilds - before[0] == 1
+    assert server.rebuilds - before[1] == 1
+
+
+def test_a_blip_shorter_than_the_debounce_still_forces_a_rebuild(monkeypatch) -> None:
+    """The case the forced rebuild actually exists for.
+
+    An outage too short to trip the suspend debounce never puts the followers
+    into their silent state, so the address they hold is still the one that
+    comes back - and their own short-circuit would skip the rebuild. The
+    kernel dropped the membership and the egress route regardless of how long
+    the cable was out, so the flag has to override that guard.
+    """
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.psn_source_iface = "eth0"
+    sync, server = _wire_followers(services)
+
+    _fake_ifaces(monkeypatch, {"eth0": _FOLLOWER_ADDRESS})
     services._follow_station_ip()
-    assert sync.reopens == 1
-    assert server.reopens == 1
+    assert (sync.rebuilds, server.rebuilds) == (0, 0)
+
+    # One missed sample - below DOWN_POLLS_BEFORE_SUSPEND, so nothing suspends.
+    _fake_ifaces(monkeypatch, {})
+    services._follow_station_ip()
+    assert server.suspends == 0, "the blip should not have reached the suspend"
+    assert None not in sync.ips, "the blip should not have silenced sync"
+
+    _fake_ifaces(monkeypatch, {"eth0": _FOLLOWER_ADDRESS})
+    services._follow_station_ip()
+
+    assert sync.rebuilds == 1, "the unchanged address skipped the rebuild the kernel needs"
+    assert server.rebuilds == 1
 
 
 def test_a_steady_station_never_forces_a_rebuild(monkeypatch) -> None:
@@ -1242,10 +1385,10 @@ def test_a_steady_station_never_forces_a_rebuild(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
     services._app._config.psn_source_iface = "eth0"
     sync, server = _wire_followers(services)
-    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    _fake_ifaces(monkeypatch, {"eth0": _FOLLOWER_ADDRESS})
     for _ in range(5):
         services._follow_station_ip()
-    assert (sync.reopens, server.reopens) == (0, 0)
+    assert (sync.rebuilds, server.rebuilds) == (0, 0)
 
 
 def test_the_outage_flag_clears_after_one_recovery(monkeypatch) -> None:
@@ -1253,12 +1396,14 @@ def test_the_outage_flag_clears_after_one_recovery(monkeypatch) -> None:
     services._app._config.psn_source_iface = "eth0"
     sync, server = _wire_followers(services)
     _fake_ifaces(monkeypatch, {})
+    _drive_down_polls(services)
+    before = (sync.rebuilds, server.rebuilds)
+    _fake_ifaces(monkeypatch, {"eth0": _FOLLOWER_ADDRESS})
     services._follow_station_ip()
-    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
     services._follow_station_ip()
-    services._follow_station_ip()
-    assert sync.reopens == 1
-    assert server.reopens == 1
+    # The second healthy poll must not force a further rebuild.
+    assert sync.rebuilds - before[0] == 1
+    assert server.rebuilds - before[1] == 1
 
 
 # VLAN providers / handlers

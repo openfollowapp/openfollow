@@ -1389,6 +1389,86 @@ def test_a_station_pin_going_down_stops_the_beacons(tmp_path, monkeypatch) -> No
     assert srv.local_ip == "10.0.0.1", "the displayed address should not be downgraded"
 
 
+class TestTheRefreshReportsWhetherItRepointed:
+    """The observer's recovery path forces a rebuild only when the refresh did
+    not already do one. Getting this backwards costs a rebuild in one
+    direction and doubles it in the other, and neither shows up in a test that
+    only checks where the beacons ended up."""
+
+    def _server(self, tmp_path, monkeypatch, resolved, **kwargs):
+        monkeypatch.setattr(
+            "openfollow.web.server.get_local_ipv4_addresses",
+            lambda: {"10.0.0.1", "10.0.0.2"},
+        )
+        return _make_quiet_server(
+            tmp_path,
+            monkeypatch,
+            local_ip_provider=lambda: resolved[0],
+            **kwargs,
+        )
+
+    def test_an_unchanged_address_reports_no_repoint(self, tmp_path, monkeypatch) -> None:
+        """The case the forced rebuild exists for: nothing moved, so nothing
+        was rebuilt, and the caller still has to rebuild the membership the
+        kernel dropped."""
+        resolved: list[str | None] = ["10.0.0.1"]
+        srv = self._server(tmp_path, monkeypatch, resolved, local_ip="10.0.0.1", station_ip="10.0.0.1")
+        srv._local_ip_refresh_ts -= 1000.0
+
+        assert srv.refresh_local_ip() is False
+
+    def test_a_new_address_reports_the_repoint(self, tmp_path, monkeypatch) -> None:
+        resolved: list[str | None] = ["10.0.0.2"]
+        srv = self._server(tmp_path, monkeypatch, resolved, local_ip="10.0.0.1", station_ip="10.0.0.1")
+        srv._local_ip_refresh_ts -= 1000.0
+
+        assert srv.refresh_local_ip() is True
+
+    def test_going_dark_reports_the_repoint(self, tmp_path, monkeypatch) -> None:
+        """Stopping the beacons is a rebuild too - the caller must not stack a
+        forced reopen on top of sockets that were just torn down."""
+        resolved: list[str | None] = [None]
+        srv = self._server(tmp_path, monkeypatch, resolved, local_ip="10.0.0.1", station_ip="10.0.0.1")
+        srv._local_ip_refresh_ts -= 1000.0
+
+        assert srv.refresh_local_ip() is True
+
+    def test_a_throttled_call_reports_no_repoint(self, tmp_path, monkeypatch) -> None:
+        """A call that never read the provider cannot have repointed anything,
+        so reporting a repoint would suppress the rebuild recovery owes."""
+        resolved: list[str | None] = ["10.0.0.1"]
+        srv = self._server(tmp_path, monkeypatch, resolved, local_ip="10.0.0.1", station_ip="10.0.0.1")
+        srv._local_ip_refresh_ts -= 1000.0
+        assert srv.refresh_local_ip() is False  # opens the throttle window
+
+        # A value that WOULD repoint, so False can only mean "did not run".
+        resolved[0] = "10.0.0.2"
+        assert srv.refresh_local_ip() is False
+        assert srv._beacon_sender.iface_ip != "10.0.0.2", "the throttled call ran after all"
+
+    def test_an_unresolved_address_reports_no_repoint(self, tmp_path, monkeypatch) -> None:
+        resolved: list[str | None] = [""]
+        srv = self._server(tmp_path, monkeypatch, resolved, local_ip="10.0.0.1", station_ip="10.0.0.1")
+        srv._local_ip_refresh_ts -= 1000.0
+
+        assert srv.refresh_local_ip() is False
+
+    def test_a_raising_provider_reports_no_repoint(self, tmp_path, monkeypatch) -> None:
+        def _boom() -> str:
+            raise OSError("no interfaces")
+
+        srv = _make_quiet_server(tmp_path, monkeypatch, local_ip="10.0.0.1", local_ip_provider=_boom)
+        srv._local_ip_refresh_ts -= 1000.0
+
+        assert srv.refresh_local_ip() is False
+
+    def test_a_server_with_no_provider_reports_no_repoint(self, tmp_path, monkeypatch) -> None:
+        srv = _make_quiet_server(tmp_path, monkeypatch, local_ip="10.0.0.1")
+        srv._local_ip_refresh_ts -= 1000.0
+
+        assert srv.refresh_local_ip() is False
+
+
 def test_the_beacons_come_back_when_the_interface_returns(tmp_path, monkeypatch) -> None:
     """Recovery needs no restart - the observer's next poll repins both."""
     monkeypatch.setattr(

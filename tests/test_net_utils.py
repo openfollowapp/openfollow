@@ -802,29 +802,29 @@ class TestMulticastIfacePinning:
 
     def test_an_address_pins_the_send_socket(self) -> None:
         sock = self._Sock()
-        net_utils_module.bind_multicast_send_iface(sock, "10.0.0.5", label="X")
+        net_utils_module.bind_multicast_send_iface(sock, "10.0.0.5")
         assert sock.calls == [(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton("10.0.0.5"))]
 
     def test_blank_leaves_the_send_socket_to_the_os(self) -> None:
         """Nothing configured is not the same as a pin that failed."""
         sock = self._Sock()
-        net_utils_module.bind_multicast_send_iface(sock, "", label="X")
+        net_utils_module.bind_multicast_send_iface(sock, "")
         assert sock.calls == []
 
     def test_none_refuses_to_send(self) -> None:
         sock = self._Sock()
         with pytest.raises(net_utils_module.InterfaceUnavailable):
-            net_utils_module.bind_multicast_send_iface(sock, None, label="X")
+            net_utils_module.bind_multicast_send_iface(sock, None)
         assert sock.calls == []
 
     def test_a_failed_pin_refuses_to_send(self) -> None:
         sock = self._Sock(fail_on=socket.IP_MULTICAST_IF)
         with pytest.raises(net_utils_module.InterfaceUnavailable):
-            net_utils_module.bind_multicast_send_iface(sock, "10.0.0.5", label="X")
+            net_utils_module.bind_multicast_send_iface(sock, "10.0.0.5")
 
     def test_an_address_joins_only_that_iface(self) -> None:
         sock = self._Sock()
-        net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "10.0.0.5", label="X")
+        net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "10.0.0.5")
         assert sock.calls == [
             (
                 socket.IPPROTO_IP,
@@ -835,19 +835,19 @@ class TestMulticastIfacePinning:
 
     def test_blank_joins_the_wildcard(self) -> None:
         sock = self._Sock()
-        net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "", label="X")
+        net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "")
         assert sock.calls[0][2].endswith(socket.inet_aton("0.0.0.0"))
 
     def test_none_refuses_to_join(self) -> None:
         sock = self._Sock()
         with pytest.raises(net_utils_module.InterfaceUnavailable):
-            net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", None, label="X")
+            net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", None)
         assert sock.calls == []
 
     def test_a_failed_join_does_not_retry_on_the_wildcard(self) -> None:
         sock = self._Sock(fail_on=socket.IP_ADD_MEMBERSHIP)
         with pytest.raises(net_utils_module.InterfaceUnavailable):
-            net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "10.0.0.5", label="X")
+            net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "10.0.0.5")
         assert sock.calls == []
 
     def test_an_unpinned_join_failure_propagates_unchanged(self) -> None:
@@ -856,7 +856,7 @@ class TestMulticastIfacePinning:
         """
         sock = self._Sock(fail_on=socket.IP_ADD_MEMBERSHIP)
         with pytest.raises(OSError) as excinfo:
-            net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "", label="X")
+            net_utils_module.join_multicast_group_on_iface(sock, "239.1.2.3", "")
         assert not isinstance(excinfo.value, net_utils_module.InterfaceUnavailable)
 
     def test_the_error_is_an_oserror(self) -> None:

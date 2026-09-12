@@ -33,7 +33,7 @@ from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
 from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT
-from openfollow.runtime.network_observer import NetworkPlaneObserver, Plane
+from openfollow.runtime.network_observer import DOWN_POLLS_BEFORE_SUSPEND, NetworkPlaneObserver, Plane
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.runtime.services_detection_pin import (
     apply_detection_pin as apply_detection_pin_helper,
@@ -634,6 +634,10 @@ class AppRuntimeServices:
         # Whether the station interface has been seen without an address since
         # the followers were last repointed.
         self._station_saw_outage = False
+        # Consecutive polls the station interface has looked addressless, and
+        # whether the followers have already been told to go quiet for it.
+        self._station_down_polls = 0
+        self._station_suspended = False
 
         backend_choice = self._network_backend_choice(app)
         self._network_adapter = _select_network_adapter(
@@ -894,11 +898,12 @@ class AppRuntimeServices:
 
         resolved, status = resolve_plane_source_ip("", self._app._config.psn_source_iface)
         if status == "down":
-            logger.error(
-                "Configured psn_source_iface '%s' has no address; PSN stays down until it "
-                "returns (it will not be sent on another interface).",
-                self._app._config.psn_source_iface,
-            )
+            # Deliberately quiet. This is a query, called once a second by the
+            # stats collector and again by the online-sync and beacon providers,
+            # so logging here put an identical ERROR line in the journal every
+            # second for the whole outage - burying the one thing an operator
+            # reading it is looking for. ``init_psn`` logs the startup decision
+            # and the network observer logs the down and up edges.
             return None
         return resolved
 
@@ -1011,9 +1016,28 @@ class AppRuntimeServices:
         address, status = resolve_plane_source_ip("", self._app._config.psn_source_iface)
         if status in ("down", "none"):
             self._station_saw_outage = True
-            server = self._app._web_server
-            if status == "down" and server is not None:
-                server.suspend_beacons()
+            self._station_down_polls += 1
+            # Debounced on the same count as the observer's own planes, and for
+            # the same reason: Apply and Renew DHCP lease take the interface
+            # down for ~1-5 s, so reacting to the first missing sample would
+            # mean the Network page's own buttons drop this station out of every
+            # peer's list. Resumption stays undebounced.
+            if (
+                status == "down"
+                and not self._station_suspended
+                and self._station_down_polls >= DOWN_POLLS_BEFORE_SUSPEND
+            ):
+                self._station_suspended = True
+                # Every station-follower stops on the same edge: each one
+                # carries this station's identity, so a survivor would put it
+                # on a network nobody chose while PSN is being stopped for
+                # exactly that reason.
+                server = self._app._web_server
+                if server is not None:
+                    server.suspend_beacons()
+                sync = getattr(self._app, "_marker_catalog_sync", None)
+                if sync is not None:
+                    sync.update_iface_ip(None)
             return
 
         # The observer forces its own planes to rebuild after an outage even at
@@ -1022,19 +1046,24 @@ class AppRuntimeServices:
         # this a replug that returns the same DHCP lease leaves catalog sync
         # and the beacon joined to memberships the kernel already dropped -
         # still looking healthy, converging with nobody.
+        #
+        # Exactly one rebuild per plane either way: each entry point reports
+        # (or is told) whether it has already done it, because a forced reopen
+        # stacked on top of a repoint tears down sockets the worker may have
+        # just opened.
         recovered = self._station_saw_outage
         self._station_saw_outage = False
+        self._station_down_polls = 0
+        self._station_suspended = False
 
         server = self._app._web_server
         if server is not None:
-            server.refresh_local_ip()
-            if recovered:
+            repointed = server.refresh_local_ip()
+            if recovered and not repointed:
                 server.reopen_beacons()
         sync = getattr(self._app, "_marker_catalog_sync", None)
         if sync is not None:
-            sync.update_iface_ip(address)
-            if recovered:
-                sync.reopen()
+            sync.update_iface_ip(address, force=recovered)
 
     def network_alerts(self) -> list[str]:
         """Planes currently stopped because their interface has no address."""
@@ -1074,15 +1103,28 @@ class AppRuntimeServices:
 
     def init_psn(self) -> None:
         source_ip = self.station_source_ip_or_none()
-        if source_ip is None:
-            # Configured station interface has no address. Binding "" would
-            # send PSN via the OS routing table.
-            return
         server = PsnServer(
             system_name=self._app._config.psn_system_name,
             mcast_ip=self._app._config.psn_mcast_ip,
-            source_ip=source_ip,
+            source_ip=source_ip or "",
         )
+        if source_ip is None:
+            # Down means silent, not absent. The server is built but never
+            # started, so nothing is sent - binding "" would send PSN via the
+            # OS routing table, which is the outcome the pin exists to prevent.
+            #
+            # Returning here instead left ``_server`` None, which skips markers
+            # and every dependent output for the life of the process, and the
+            # observer's recovery only repoints a server that already exists -
+            # so a station booted with its interface dark never sent a packet
+            # again, while the recovery logged that output had resumed.
+            logger.error(
+                "Configured psn_source_iface '%s' has no address; PSN output stays silent "
+                "until it returns (it will not be sent on another interface).",
+                self._app._config.psn_source_iface,
+            )
+            self._app._server = server
+            return
         # Assign only after start() succeeds: a failed start must leave
         # ``_server`` None so the dependent init group is skipped, not run
         # against a server whose send threads never came up.
@@ -1222,13 +1264,15 @@ class AppRuntimeServices:
         # group on whatever interface the OS picks, so the station would answer
         # on a network the operator did not choose while its output was stopped.
         source_ip = self.station_source_ip_or_none()
-        if source_ip is None:
-            return
-        self._app._psn_receiver = PsnReceiver(
+        receiver = PsnReceiver(
             ignore_ids=self._app._controlled_ids,
-            source_ip=source_ip,
+            source_ip=source_ip or "",
         )
-        self._app._psn_receiver.start()
+        # Built either way, started only with an address, for the same reason
+        # as the server: the recovery path can only rebind one that exists.
+        if source_ip is not None:
+            receiver.start()
+        self._app._psn_receiver = receiver
 
     def init_virtual_faders(self) -> None:
         """Re-apply the persisted virtual-fader config and provision the

@@ -20,6 +20,7 @@ from openfollow.network.adapter import (
     NetworkInterface,
     NetworkState,
 )
+from openfollow.runtime import ipv4_digit_grid
 
 pytestmark = pytest.mark.unit
 
@@ -522,15 +523,22 @@ class TestGamepadEntryOnTheSubnetField:
         assert parse_prefix(app._pi_network_field_value or "255.255.255.0") is not None
 
     def test_moving_the_cursor_expands_it_too(self) -> None:
-        """The cursor is meaningless against a value the grid cannot address."""
+        """The cursor is meaningless against a value the grid cannot address.
+
+        Asserted through ``strip_padding`` because a move now also pads: the
+        padding is what gives the cursor a character to sit under, and commit
+        takes it back off.
+        """
         app = self._editing_prefix("24")
         anm._move_field_digit_cursor(app, 1)
-        assert app._pi_network_field_value == "255.255.255.0"
+        assert ipv4_digit_grid.strip_padding(app._pi_network_field_value) == "255.255.255.0"
 
     def test_a_mask_is_left_alone(self) -> None:
+        """Padded for the cursor, but the same mask - not rewritten into
+        another one."""
         app = self._editing_prefix("255.255.255.0")
         anm._move_field_digit_cursor(app, 1)
-        assert app._pi_network_field_value == "255.255.255.0"
+        assert ipv4_digit_grid.strip_padding(app._pi_network_field_value) == "255.255.255.0"
 
     def test_an_unparseable_prefix_is_not_invented_into_one(self) -> None:
         app = self._editing_prefix("99")
@@ -1989,3 +1997,97 @@ class TestTheAdvisoryNeverBlanksTheScreen:
         anm.enter_pi_network(app)
 
         assert "http://192.168.1.5" in _labels(app)
+
+
+class TestTheDpadCursorIsVisibleBeforeItChangesAnything:
+    """Navigation has to pad the buffer, not the first digit change.
+
+    The cursor can only sit under a character once the value is in grid form.
+    Padding on the first *edit* instead means the operator navigates blind and
+    meets the cursor for the first time on a digit they have already altered.
+    """
+
+    def _editing(self, value: str = "192.168.1.50"):
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _confirm_key(app, "static")
+        anm.enter_pi_network_field_edit(app, "address")
+        app._pi_network_field_value = value
+        return app
+
+    def test_one_move_puts_the_value_in_grid_form(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = self._editing()
+        assert ipv4_digit_grid.is_grid_form(app._pi_network_field_value) is False
+
+        anm._move_field_digit_cursor(app, +1)
+
+        assert ipv4_digit_grid.is_grid_form(app._pi_network_field_value) is True
+
+    def test_moving_changes_no_digit(self, monkeypatch) -> None:
+        """Padding is not editing: the octets must read the same afterwards."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = self._editing()
+
+        for _ in range(5):
+            anm._move_field_digit_cursor(app, +1)
+
+        assert ipv4_digit_grid.strip_padding(app._pi_network_field_value) == "192.168.1.50"
+
+    def test_a_navigated_value_still_commits(self, monkeypatch) -> None:
+        """Padding is display-only: it must come back off before anything
+        parses the value, or ``ipaddress`` rejects the leading zeros."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = self._editing()
+        anm._move_field_digit_cursor(app, +1)
+
+        anm.confirm_pi_network_field_edit(app)
+
+        assert app._pi_network_pending_config.address == "192.168.1.50"
+        assert app._pi_network_banner == ""
+
+    def test_the_cursor_lands_on_the_digit_it_names(self, monkeypatch) -> None:
+        """Checked in the third octet, past the first zero-padded one.
+
+        In the leading octets the padded and unpadded strings happen to agree
+        character for character, so an unpadded buffer would pass there by
+        coincidence - the mapping only diverges once a short octet has been
+        widened.
+        """
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = self._editing()
+
+        for _ in range(8):  # into the third octet, which seeds as a single "1"
+            anm._move_field_digit_cursor(app, +1)
+
+        value = app._pi_network_field_value
+        offset = ipv4_digit_grid.caret_offset(app._pi_network_field_digit_index)
+        assert value == "192.168.001.050"
+        assert value[offset] == "1", "the cursor is not under the digit it reports"
+
+
+class TestAStaleBindIsNamedRatherThanLeftLookingDead:
+    def test_a_bind_no_interface_has_any_more_is_called_out(self, monkeypatch) -> None:
+        """The socket is fixed for the life of the process, so a DHCP lease
+        that moves under a pinned web UI leaves it answering nowhere. Reporting
+        only "served at X" would read as working."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.77"})  # lease moved
+        app = _make_app()
+        app._config.web_bind_iface = "eth0"
+        app._web_server = _FakeWebServer(bind_host="192.168.1.5")  # opened on the old one
+        anm.enter_pi_network(app)
+
+        notices = [str(r["label"]) for r in _rows_by_kind(app, "notice")]
+        assert any("no interface has any more" in n and "192.168.1.5" in n for n in notices)
+        assert any("restart" in n for n in notices), "the operator was not told what fixes it"
+
+    def test_a_live_restricted_bind_is_not_called_stale(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._config.web_bind_iface = "eth0"
+        app._web_server = _FakeWebServer(bind_host="192.168.1.5")
+        anm.enter_pi_network(app)
+
+        notices = [str(r["label"]) for r in _rows_by_kind(app, "notice")]
+        assert any("served only at 192.168.1.5" in n for n in notices)
+        assert not any("no interface has" in n for n in notices)

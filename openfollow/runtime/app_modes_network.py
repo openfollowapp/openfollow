@@ -279,13 +279,22 @@ def _reachability_notices(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> 
         if is_link_local(address)
     ]
     if not _serves_every_interface(app):
-        notices.append(
-            {
-                "kind": "notice",
-                "label": f"Web UI is served only at {_served_bind_host(app)}",
-                "value": "",
-            }
-        )
+        bind_host = _served_bind_host(app)
+        if bind_host in {address for _name, address in ifaces if address}:
+            notices.append({"kind": "notice", "label": f"Web UI is served only at {bind_host}", "value": ""})
+        else:
+            # The bind is fixed for the life of the process, so an address that
+            # moved under it (a DHCP lease change on the pinned interface)
+            # leaves the UI answering nowhere. Naming it as gone is the
+            # difference between a station that looks dead and one that tells
+            # the operator which action brings it back.
+            notices.append(
+                {
+                    "kind": "notice",
+                    "label": f"Web UI is served at {bind_host}, which no interface has any more - restart to move it",
+                    "value": "",
+                }
+            )
     else:
         banner = _web_bind_banner(app)
         if banner:
@@ -754,7 +763,15 @@ def _field_digit_state(app: OpenFollowApp) -> tuple[str, int]:
 
 
 def _move_field_digit_cursor(app: OpenFollowApp, delta: int) -> None:
-    _, index = _field_digit_state(app)
+    """Step the cursor, padding the buffer on the way.
+
+    The padding is what gives the cursor a character to sit under, so it has
+    to happen on the first move rather than on the first digit change. Without
+    it an operator navigates blind and meets the cursor for the first time on
+    a digit they have already altered.
+    """
+    digits, index = _field_digit_state(app)
+    app._pi_network_field_value = ipv4_digit_grid.from_grid(digits)
     app._pi_network_field_digit_index = ipv4_digit_grid.move_cursor(index, delta)
 
 

@@ -1138,6 +1138,7 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
             return f"{plane_source_iface(pin, station_iface)} is down"
         return resolved
 
+    resolved = web_bind if web_bind is not None else resolve_web_bind_for(cfg)
     station = cfg.psn_source_iface
     station_ip = _plane_address(station, "")
 
@@ -1183,12 +1184,18 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
             # The web UI does not inherit the station pin: a station pinned to
             # a lighting VLAN would take its own config UI off the office LAN
             # as a side effect. Blank here means every interface.
-            "key": "web_bind_iface",
+            #
+            # A literal ``web_bind`` address outranks this picker, so while one
+            # is set the row is read-only: an editable control that cannot take
+            # effect is worse than none, and this one would also report "All
+            # interfaces" for a UI answering at exactly one.
+            "key": "" if cfg.web_bind else "web_bind_iface",
             "label": "Web UI",
             "value": cfg.web_bind_iface,
-            "address": _web_bind_address(cfg, web_bind if web_bind is not None else resolve_web_bind_for(cfg)),
-            "editable": True,
+            "address": resolved[0] if cfg.web_bind else _web_bind_address(cfg, resolved),
+            "editable": not cfg.web_bind,
             "blank": "all",
+            "note": f"Fixed to {cfg.web_bind} by web_bind in config.toml" if cfg.web_bind else "",
         },
     ]
 

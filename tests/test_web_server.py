@@ -773,6 +773,31 @@ def test_interface_assignment_web_ui_row_reads_as_the_wildcard_when_the_pin_is_d
     assert "192.168.178.59" not in web_row
 
 
+def test_interface_assignment_web_ui_row_is_read_only_under_a_literal_bind(live_server, monkeypatch) -> None:
+    """``web_bind`` outranks the interface picker, so an editable picker there
+    could never take effect - and with the pin blank it would report "All
+    interfaces" for a UI answering at exactly one."""
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59"})
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.web_bind = "192.168.178.59"
+    save_config(cfg, server.config_path)
+
+    _status, body = _get(base, "/section/interface_assignment")
+    web_row = body[body.index("Web UI") :].split("</tr>", 1)[0]
+    assert 'name="web_bind_iface"' not in web_row, "the picker cannot apply while web_bind is set"
+    assert "web_bind in config.toml" in web_row
+    assert "192.168.178.59" in web_row
+
+
+def test_interface_assignment_web_ui_row_stays_editable_without_one(live_server, monkeypatch) -> None:
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59"})
+    _server, base = live_server
+    _status, body = _get(base, "/section/interface_assignment")
+    web_row = body[body.index("Web UI") :].split("</tr>", 1)[0]
+    assert 'name="web_bind_iface"' in web_row
+
+
 def test_interface_assignment_web_ui_pin_warns_with_the_surviving_url(live_server, monkeypatch) -> None:
     """The address that stops working is the one the operator is reading this
     on, so the warning has to name the replacement before the restart."""
@@ -812,7 +837,7 @@ def test_interface_assignment_offers_a_restart_for_a_pin_to_a_down_interface(
     monkeypatch,
 ) -> None:
     """A pin naming a down interface resolves to the same wildcard the server
-    is already on, so comparing addresses reports nothing pending — and the
+    is already on, so comparing addresses reports nothing pending – and the
     operator is never told the pin has not taken effect."""
     _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59"})
     server, base = live_server
@@ -854,7 +879,7 @@ def test_interface_assignment_offers_no_restart_once_the_pin_is_in_force(
 
 def test_interface_assignment_restart_notice_names_the_moved_address(live_server, monkeypatch) -> None:
     """Unlike every other restart notice, this one may come back at a
-    different address — so it has to say where to look when the reload
+    different address – so it has to say where to look when the reload
     cannot reach this one."""
     _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
     _server, base = live_server

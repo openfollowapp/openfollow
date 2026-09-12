@@ -42,6 +42,10 @@ Two things stay true whichever way this row is set. The screen on the station al
 
 Changing this row takes effect on restart: the web UI cannot move the socket it is answering your request on. The panel offers **Save & Restart** while the saved pin and the running one differ, and tells you the address to use afterwards.
 
+For the same reason this row is the one exception to *the address is allowed to change*, above. The data planes re-resolve their interface and follow a new lease on their own; the web UI holds the address it opened with until the next restart. If the pinned interface is on DHCP and its address moves, the UI keeps answering at the old one until you restart the station. The station's own **Network** screen says so in as many words, listing the addresses that really reach it and naming the bind that no longer does.
+
+If that matters for a venue, give the interface a static address, or leave this row blank so the UI answers everywhere.
+
 Note that this row moves the web UI only. `Station default` still decides the address this station is *known* by – what appears in other stations' peer lists and in PSN.
 
 ## USB Ethernet adapters

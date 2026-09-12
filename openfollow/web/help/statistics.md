@@ -6,8 +6,10 @@ A read-only panel on the Overview tab that refreshes every second. Use it to con
 
 State of the active camera source.
 
+When the source fails, a red banner at the top of the panel gives the reason reported by the video pipeline itself – `Unauthorized`, `Connection refused`, `Could not open resource for reading`, or the name of a source that no longer exists. It is shown word for word rather than translated into something friendlier, because the exact wording is what tells you whether to check the network, the encoder, or the login. While the station is still retrying, the banner also counts the attempts, so a source working through its reconnect schedule is distinguishable from one that has given up. Any password embedded in a stream URL is stripped before the banner is drawn.
+
 - **Source** – the configured source name or type (for example the RTSP URL label or NDI source name). Confirms which input the pipeline is reading from.
-- **Signal** – `Connected` with a live feed; `Disconnected` when the source is unreachable or not yet opened. The panel header chip mirrors this.
+- **Signal** – `Connected` with a live feed; `Disconnected` when the source is unreachable or not yet opened. The panel header chip mirrors this. When it reads `Disconnected`, the banner above says why.
 - **Input resolution** – pixel dimensions (width × height) of the frames arriving from the source, read from the negotiated stream. `N/A` until a source has actually connected: the black *No Signal* picture is generated on this station, so it reports no geometry of its own.
 - **Frame Rate (source)** – frame rate the source advertises in that same stream. `N/A` while nothing is connected, for the same reason.
 - **Pipeline** – internal GStreamer pipeline state in uppercase (for example `PLAYING`, `PAUSED`, `NULL`). `PLAYING` is normal; anything else means it's not running.

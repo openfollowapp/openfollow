@@ -1052,6 +1052,14 @@
  background: rgba(255, 140, 140, 0.13);
  color: #ffd7d7;
  }
+ /* Supporting detail under a notice's headline – present, but subordinate to
+    the line that actually answers the operator's question. */
+ .notice .notice-sub {
+ margin-top: 4px;
+ font-weight: 400;
+ font-size: 0.85rem;
+ opacity: 0.8;
+ }
  .update-notice {
  margin-bottom: 12px;
  padding: 10px 12px;

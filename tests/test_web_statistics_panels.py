@@ -120,3 +120,148 @@ class TestDevicePanel:
         panel = _panel(_render(system={"ip": "10.0.0.7"}), "Device")
         assert _row(panel, "Output resolution") == "N/A (no display)"
         assert _row(panel, "Overlay redraw rate") == "0.0 fps"
+
+
+class TestVideoFailureBanner:
+    """The receiver knows exactly why a source failed, and used to say so
+    nowhere. An operator facing `Disconnected` had to guess between a wrong
+    URL, a firewall, a dead encoder, a codec the box can't decode, and a source
+    name that no longer exists - while the reason sat in the payload the page
+    had already fetched.
+    """
+
+    _ERROR = "Could not open resource for reading: Unauthorized"
+
+    def _banner(self, **video: Any) -> str:
+        payload: dict[str, Any] = {"connected": False, "error_message": self._ERROR}
+        payload.update(video)
+        panel = _panel(_render(video=payload), "Video")
+        start = panel.index('<div class="notice error">')
+        return panel[start : panel.index("</div>", panel.rindex("</div>", start, len(panel)))]
+
+    def test_a_failure_reason_is_rendered(self) -> None:
+        assert self._ERROR in self._banner()
+
+    def test_the_reason_is_shown_verbatim(self) -> None:
+        """No mapping to friendlier categories: a wrong mapping is worse than a
+        blunt string, and the raw text is what separates "connection refused"
+        from "no such NDI source"."""
+        raw = "gstrtspsrc.c(7469): gst_rtspsrc_send (): Unauthorized (401)"
+        assert raw in self._banner(error_message=raw)
+
+    def test_it_sits_above_the_metric_rows(self) -> None:
+        """A row saying `Unauthorized` among six other rows is one more figure
+        to weigh, not an answer. It has to be the first thing in the panel."""
+        panel = _panel(_render(video={"connected": False, "error_message": self._ERROR}), "Video")
+        assert panel.index('class="notice error"') < panel.index('<dl class="metric-list">')
+
+    def test_it_announces_itself_assertively(self) -> None:
+        banner = self._banner()
+        assert 'role="alert"' in banner
+        assert 'aria-live="assertive"' in banner
+        assert 'aria-atomic="true"' in banner
+
+    def test_it_reuses_the_shared_notice_style(self) -> None:
+        """``.notice.error`` from base.tpl, not another one-off inline-styled
+        block like the Person Detection banner's."""
+        banner = self._banner()
+        assert 'class="notice error"' in banner
+        assert "style=" not in banner
+
+    @pytest.mark.parametrize(
+        "video",
+        [
+            {"connected": True, "error_message": "stale reason carried forward"},
+            {"connected": False, "error_message": ""},
+            {"connected": False},
+        ],
+        ids=["connected", "empty-reason", "no-reason"],
+    )
+    def test_no_banner_without_a_live_failure(self, video: dict[str, Any]) -> None:
+        assert 'class="notice error"' not in _panel(_render(video=video), "Video")
+
+    def test_the_reason_is_escaped(self) -> None:
+        """Straight from GStreamer into the DOM: a ``<`` in an error message
+        must not parse as markup."""
+        body = _render(video={"connected": False, "error_message": "<script>alert(1)</script>"})
+        assert "<script>alert" not in body
+
+    def test_retry_progress_is_shown_while_reconnecting(self) -> None:
+        """A source working through its backoff and one that has given up read
+        identically without this, and they call for different responses."""
+        assert "Reconnect attempt 3." in self._banner(reconnect_attempt=3)
+
+    @pytest.mark.parametrize("attempt", [0, None])
+    def test_no_retry_line_when_not_retrying(self, attempt: Any) -> None:
+        assert "Reconnect attempt" not in self._banner(reconnect_attempt=attempt)
+
+
+class TestVideoFailureBannerIsNotReannounced:
+    """This partial is re-swapped every second. A freshly inserted
+    ``role="alert"`` on each poll would have a screen reader repeating the
+    failure without pause, so the announcing node is preserved across swaps and
+    identified by what it says.
+    """
+
+    def _alert_id(self, message: str, **video: Any) -> str:
+        payload: dict[str, Any] = {"connected": False, "error_message": message}
+        payload.update(video)
+        panel = _panel(_render(video=payload), "Video")
+        start = panel.index('<div id="video-error-')
+        return panel[start + len('<div id="') : panel.index('"', start + len('<div id="'))]
+
+    def test_the_announcing_node_is_preserved_across_swaps(self) -> None:
+        banner = _panel(_render(video={"connected": False, "error_message": "boom"}), "Video")
+        assert 'hx-preserve="true"' in banner
+
+    def test_an_unchanged_reason_keeps_the_same_node_identity(self) -> None:
+        first = self._alert_id("Could not open resource for reading")
+        second = self._alert_id("Could not open resource for reading")
+        assert first == second
+
+    def test_a_changed_reason_takes_a_new_identity_so_it_announces(self) -> None:
+        assert self._alert_id("Connection refused") != self._alert_id("Unauthorized")
+
+    def test_a_retry_tick_alone_does_not_change_the_announcing_node(self) -> None:
+        """The attempt counter moves every few seconds. It is progress on a
+        failure already announced, so it lives outside the preserved node."""
+        message = "Connection refused"
+        assert self._alert_id(message, reconnect_attempt=1) == self._alert_id(message, reconnect_attempt=7)
+        banner = _panel(_render(video={"connected": False, "error_message": message, "reconnect_attempt": 7}), "Video")
+        alert_start = banner.index('<div id="video-error-')
+        alert_end = banner.index("</div>", alert_start)
+        assert "Reconnect attempt" not in banner[alert_start:alert_end]
+
+
+def test_a_credential_in_the_receiver_error_never_reaches_the_banner() -> None:
+    """End to end, through the real status marker.
+
+    The reason is shown verbatim, and an ``rtspsrc`` failure carries the full
+    location - so for a camera authenticated through the URL the reason *is*
+    the password. This partial is exempt from the web PIN
+    (``routes.py`` ``_check_auth``), so an un-redacted banner would publish the
+    camera credential to anything that can reach the station.
+    """
+    from openfollow.video.connection_status import NdiStatusMarker
+
+    marker = NdiStatusMarker()
+    marker.set_reconnecting(
+        2,
+        "Could not open resource for reading rtsp://operator:hunter2@192.168.0.182:554/profile2/media.smp",
+    )
+    # Exactly what ``publish_runtime_stats`` copies into the snapshot.
+    panel = _panel(
+        _render(
+            video={
+                "connected": bool(marker.is_connected),
+                "error_message": marker.error_message,
+                "reconnect_attempt": int(marker.reconnect_attempt),
+            }
+        ),
+        "Video",
+    )
+    assert "hunter2" not in panel
+    assert "operator:" not in panel
+    # Still the answer the operator needs.
+    assert "192.168.0.182:554/profile2/media.smp" in panel
+    assert "Reconnect attempt 2." in panel

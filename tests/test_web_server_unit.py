@@ -1375,6 +1375,29 @@ def test_web_bind_advisory_passes_the_provider_through(tmp_path, monkeypatch) ->
     assert srv.get_web_bind_advisory()["status"] == "down"
 
 
+def test_suspending_beacons_marks_the_station_down(tmp_path, monkeypatch) -> None:
+    """The observer's down edge is authoritative. The request-driven refresh
+    is not, so a diagnostics bundle collected without a preceding page load
+    would otherwise record the address as if it still reached the station."""
+    srv = _make_quiet_server(tmp_path, monkeypatch)
+    assert srv.station_interface_down is False
+
+    srv.suspend_beacons()
+
+    assert srv.station_interface_down is True
+
+
+def test_reopening_beacons_clears_the_station_down_mark(tmp_path, monkeypatch) -> None:
+    """Recovery is an observer decision too, not something to be discovered
+    by whoever next loads a page."""
+    srv = _make_quiet_server(tmp_path, monkeypatch)
+    srv.suspend_beacons()
+
+    srv.reopen_beacons()
+
+    assert srv.station_interface_down is False
+
+
 def test_refresh_local_ip_is_publicly_callable(tmp_path, monkeypatch) -> None:
     """The runtime observer drives the refresh on a timer. It used to happen
     only on a request path, so a station whose address changed healed its

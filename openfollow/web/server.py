@@ -623,8 +623,14 @@ class ConfigWebServer:
         decision rather than by waiting for its next send to fail: a socket
         pinned to a removed address does not reliably error, and the whole
         point is that nothing leaves on an interface nobody chose.
+
+        Also flips the station-down flag. This is the authoritative edge; the
+        request-driven refresh is not, so a diagnostics bundle collected
+        without a preceding page load would otherwise record the address as if
+        it still reached the station.
         """
         with self._local_ip_lock:
+            self._station_interface_down = True
             self._beacon_sender.update_iface_ip(None)
             self._beacon_receiver.update_iface_ip(None)
 
@@ -635,7 +641,13 @@ class ConfigWebServer:
         group membership and the egress route when an address is removed, and
         the same address coming back does not restore either - so the
         unchanged-IP guard in ``update_iface_ip`` is not enough on its own.
+
+        Clears the station-down flag for the same reason ``suspend_beacons``
+        sets it: recovery is an observer decision, not something to be
+        discovered by the next HTTP request.
         """
+        with self._local_ip_lock:
+            self._station_interface_down = False
         self._beacon_sender.reopen()
         self._beacon_receiver.reopen()
 

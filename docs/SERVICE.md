@@ -85,14 +85,15 @@ first:
 
 1. **The station's own screen.** Settings → Network lists the address that
    reaches the UI on each adapter, and offers **Serve web UI on all
-   interfaces**, which clears the pin and restarts. This works on a gamepad
-   and needs no keyboard or network access.
+   interfaces**, which clears both `web_bind_iface` and `web_bind` and
+   restarts. This works on a gamepad and needs no keyboard or network access,
+   and it stays available on a station whose network backend is read-only.
 2. **The pinned address.** The same screen shows which address does answer;
    browse to that from a machine on that network.
 3. **Edit the config file** over SSH or on the SD card, then restart:
 
 ```bash
-sudo -u openfollow sed -i '/^web_bind_iface/d' /var/lib/openfollow/config.toml
+sudo -u openfollow sed -i '/^web_bind_iface/d;/^web_bind /d' /var/lib/openfollow/config.toml
 sudo systemctl restart openfollow
 ```
 

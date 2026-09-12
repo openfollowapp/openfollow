@@ -290,8 +290,18 @@ def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
         target.banner = str(getattr(app, "_pi_network_banner", ""))
     target.field_edit_active = bool(getattr(app, "_pi_network_field_edit_active", False))
     if target.field_edit_active:
+        from openfollow.runtime import ipv4_digit_grid
+
         target.field_label = str(getattr(app, "_pi_network_field_name", "")).replace("_", " ").title()
         target.field_value = str(getattr(app, "_pi_network_field_value", ""))
+        # The caret only tracks a digit slot once the d-pad has padded the
+        # buffer; a freely typed value has no fixed slot-to-character mapping,
+        # so it keeps the end-of-string caret a typist expects.
+        target.field_caret_offset = (
+            ipv4_digit_grid.caret_offset(int(getattr(app, "_pi_network_field_digit_index", 0)))
+            if ipv4_digit_grid.is_grid_form(target.field_value)
+            else -1
+        )
 
 
 def _populate_zone_overlay(state: OverlayState, cfg: Any, app: Any) -> None:

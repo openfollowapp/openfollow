@@ -498,6 +498,7 @@ class AppRuntimeServices:
         self._web_bind_status = ""
         self._web_bind_banner = ""
         self._web_bind_resolved_ip = ""
+        self._web_bind_pin_at_start: tuple[str, str] = ("", "")
         self._overlay_renderer: CairoOverlayRenderer | None = None  # set in init_video
         self._system_stats: SystemStatsCollector | None = None  # set in init_video
         self._person_detector: PersonDetector | None = None  # set in init_video if enabled
@@ -1090,6 +1091,12 @@ class AppRuntimeServices:
 
         cfg = self._app._config
         host, status = resolve_web_bind(cfg.web_bind, cfg.web_bind_iface)
+        # The pin as it stood when the socket was opened. The panel compares
+        # the saved config against this to tell whether a restart is still
+        # owed - comparing resolved addresses instead would miss a pin whose
+        # interface is down, because that resolves to the same wildcard the
+        # server is already on.
+        self._web_bind_pin_at_start = (cfg.web_bind, cfg.web_bind_iface)
         self._web_bind_status = "" if status == "none" else status
         self._web_bind_resolved_ip = host if status == "iface" else ""
         self._web_bind_banner = (
@@ -1108,6 +1115,10 @@ class AppRuntimeServices:
             "status": self._web_bind_status,
             "banner": self._web_bind_banner,
             "resolved_ip": self._web_bind_resolved_ip,
+            # What the running server was started with, so a caller can tell a
+            # pending restart from an applied one.
+            "bind_at_start": self._web_bind_pin_at_start[0],
+            "iface_at_start": self._web_bind_pin_at_start[1],
         }
 
     def init_psn(self) -> None:

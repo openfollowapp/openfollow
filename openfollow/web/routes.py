@@ -1063,23 +1063,27 @@ def request_local_iface(environ: Mapping[str, Any]) -> str:
     return get_iface_for_ip(local_addr)
 
 
-def _web_bind_target(cfg: AppConfig) -> str:
-    """Address the web UI binds for this config, via the runtime's own resolver."""
+def resolve_web_bind_for(cfg: AppConfig) -> tuple[str, str]:
+    """``(host, status)`` the web UI binds for this config.
+
+    Resolved once per render and passed down: each call walks every NIC, and
+    three independent lookups could also disagree if an address changes
+    mid-render.
+    """
     from openfollow.net_utils import resolve_web_bind
 
-    return resolve_web_bind(cfg.web_bind, cfg.web_bind_iface)[0]
+    host, status = resolve_web_bind(cfg.web_bind, cfg.web_bind_iface)
+    return host, str(status)
 
 
-def _web_bind_address(cfg: AppConfig) -> str:
+def _web_bind_address(cfg: AppConfig, resolved: tuple[str, str]) -> str:
     """Address column for the Web UI row: where the config UI will answer.
 
     A pin whose interface has no address reads as the wildcard fallback the
     runtime actually substitutes, not as an error – unlike every other plane
     the web UI stays up rather than failing closed.
     """
-    from openfollow.net_utils import resolve_web_bind
-
-    host, status = resolve_web_bind(cfg.web_bind, cfg.web_bind_iface)
+    host, status = resolved
     if status == "down":
         return f"{cfg.web_bind_iface} is down - all interfaces"
     if status == "none":
@@ -1087,20 +1091,22 @@ def _web_bind_address(cfg: AppConfig) -> str:
     return host
 
 
-def build_web_bind_notice(cfg: AppConfig) -> str:
+def build_web_bind_notice(cfg: AppConfig, resolved: tuple[str, str], display_port: int) -> str:
     """Lockout warning for a pinned web UI, naming the URL that will reach it.
 
     Rendered whenever the pin is set, not only when it is unresolvable: the
     address that stops working is the one the operator is reading this in, so
     the warning has to arrive before the restart, not after it.
+
+    The port is the one actually bound, not the configured one - a station
+    that could not take :80 is serving on the fallback, and a URL naming the
+    wrong port is the same failure as naming the wrong address.
     """
     if cfg.web_bind or not cfg.web_bind_iface:
         return ""
-    from openfollow.net_utils import resolve_web_bind
-
-    resolved, status = resolve_web_bind(cfg.web_bind, cfg.web_bind_iface)
-    port = "" if cfg.web_port == 80 else f":{cfg.web_port}"
-    where = f"http://{resolved}{port}" if status == "iface" else f"an address on {cfg.web_bind_iface}"
+    address, status = resolved
+    port = "" if display_port == 80 else f":{display_port}"
+    where = f"http://{address}{port}" if status == "iface" else f"an address on {cfg.web_bind_iface}"
     return (
         f"After a restart the web UI answers only on {where}. "
         "If that address is unreachable, use the Network screen on the station "
@@ -1108,7 +1114,7 @@ def build_web_bind_notice(cfg: AppConfig) -> str:
     )
 
 
-def build_interface_assignment_rows(cfg: AppConfig) -> list[dict[str, Any]]:
+def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | None = None) -> list[dict[str, Any]]:
     """Rows for the Interface Assignment panel, in render order.
 
     Every row carries the address the plane will actually bind, resolved
@@ -1180,7 +1186,7 @@ def build_interface_assignment_rows(cfg: AppConfig) -> list[dict[str, Any]]:
             "key": "web_bind_iface",
             "label": "Web UI",
             "value": cfg.web_bind_iface,
-            "address": _web_bind_address(cfg),
+            "address": _web_bind_address(cfg, web_bind if web_bind is not None else resolve_web_bind_for(cfg)),
             "editable": True,
             "blank": "all",
         },
@@ -5161,26 +5167,37 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         template_name = "partials/gamepad" if name == "controller" else f"partials/{name}"
         return template(template_name, config=config, **extra)
 
-    def _web_bind_restart_pending(cfg: AppConfig) -> bool:
-        """True when the configured web-UI pin isn't what the server is
-        actually listening on, so a restart is still owed.
+    def _web_bind_restart_pending(cfg: AppConfig, resolved: tuple[str, str]) -> bool:
+        """True when the saved web-UI pin isn't the one the server started on.
 
-        Comparing the resolved addresses (not the interface names) is what
-        makes this self-clearing: after the restart the running bind equals
-        the pin's address and the button goes away on its own.
+        Compares the *configured* pin against what was in force at bind time,
+        not the two resolved addresses. A pin naming an interface that is
+        currently down resolves to the same wildcard the server is already
+        serving on, so an address comparison would report nothing pending and
+        the operator would never be told the pin has not taken effect.
+
+        Self-clearing either way: after the restart the recorded pin equals
+        the saved one and the button goes away on its own.
         """
-        return _web_bind_target(cfg) != server.bind_host
+        advisory = server.get_web_bind_advisory()
+        if "iface_at_start" in advisory:
+            at_start = (advisory.get("bind_at_start", ""), advisory.get("iface_at_start", ""))
+            return (cfg.web_bind, cfg.web_bind_iface) != at_start
+        # No runtime behind the server (boot, unit contexts): fall back to
+        # comparing where it would bind against where it did.
+        return resolved[0] != server.bind_host
 
     def _render_interface_assignment(cfg: AppConfig, *, saved: bool = False, restarting: bool = False) -> Any:
+        resolved = resolve_web_bind_for(cfg)
         return template(
             "partials/interface_assignment",
             config=cfg,
             saved=saved,
             restarting=restarting,
-            assignment_rows=build_interface_assignment_rows(cfg),
-            web_bind_notice=build_web_bind_notice(cfg),
+            assignment_rows=build_interface_assignment_rows(cfg, resolved),
+            web_bind_notice=build_web_bind_notice(cfg, resolved, server.display_port),
             web_bind_advisory=server.get_web_bind_advisory(),
-            web_bind_restart=_web_bind_restart_pending(cfg),
+            web_bind_restart=_web_bind_restart_pending(cfg, resolved),
         )
 
     @app.get("/section/interface_assignment")

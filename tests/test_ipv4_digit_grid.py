@@ -103,3 +103,46 @@ class TestWhatTheGridHandsBack:
 
         edited = grid.from_grid(grid.bump_digit(grid.to_grid("10.0.0.5"), 0, 1))
         assert parse_ipv4(grid.strip_padding(edited)) == "110.0.0.5"
+
+
+class TestWhereTheCursorSitsOnScreen:
+    """The renderer draws the cursor by character offset, so the mapping from
+    digit slot to character is what puts the marker under the digit the
+    operator is actually about to change."""
+
+    @pytest.mark.parametrize(
+        ("slot", "char"),
+        [(0, 0), (2, 2), (3, 4), (5, 6), (6, 8), (8, 10), (9, 12), (11, 14)],
+    )
+    def test_the_offset_steps_over_each_dot(self, slot: int, char: int) -> None:
+        assert grid.caret_offset(slot) == char
+
+    def test_every_slot_lands_on_a_digit_not_a_dot(self) -> None:
+        """One drift per octet crossed is the failure this prevents, and it
+        only shows on the later octets - the ones an operator edits most."""
+        rendered = grid.from_grid("192168001005")
+        for slot in range(grid.DIGIT_SLOTS):
+            assert rendered[grid.caret_offset(slot)].isdigit()
+
+    def test_the_offset_names_the_digit_the_bump_will_change(self) -> None:
+        rendered = grid.from_grid("192168001005")
+        for slot in (0, 4, 7, 11):
+            bumped = grid.from_grid(grid.bump_digit(grid.to_grid(rendered), slot, 1))
+            changed = [i for i, (a, b) in enumerate(zip(rendered, bumped, strict=True)) if a != b]
+            assert changed == [grid.caret_offset(slot)]
+
+    @pytest.mark.parametrize("slot", [-5, -1, grid.DIGIT_SLOTS, 99])
+    def test_an_out_of_range_slot_clamps_into_the_value(self, slot: int) -> None:
+        rendered = grid.from_grid("192168001005")
+        assert 0 <= grid.caret_offset(slot) < len(rendered)
+
+    @pytest.mark.parametrize("value", ["192.168.001.005", "000.000.000.000"])
+    def test_a_padded_quad_is_grid_form(self, value: str) -> None:
+        assert grid.is_grid_form(value) is True
+
+    @pytest.mark.parametrize("value", ["192.168.1.5", "24", "", "255.255.255", "19a.168.001.005"])
+    def test_anything_else_is_not(self, value: str) -> None:
+        """A freely typed value has no fixed slot-to-character mapping, so the
+        renderer must fall back to the end-of-string caret rather than
+        underline an arbitrary character."""
+        assert grid.is_grid_form(value) is False

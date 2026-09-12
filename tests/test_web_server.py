@@ -807,6 +807,67 @@ def test_interface_assignment_web_ui_pin_offers_a_restart(live_server, monkeypat
     assert "/section/interface_assignment?restart=1" in body
 
 
+def test_interface_assignment_offers_a_restart_for_a_pin_to_a_down_interface(
+    live_server,
+    monkeypatch,
+) -> None:
+    """A pin naming a down interface resolves to the same wildcard the server
+    is already on, so comparing addresses reports nothing pending — and the
+    operator is never told the pin has not taken effect."""
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59"})
+    server, base = live_server
+    monkeypatch.setattr(
+        server,
+        "_web_bind_advisory_provider",
+        lambda: {"status": "", "banner": "", "resolved_ip": "", "bind_at_start": "", "iface_at_start": ""},
+        raising=False,
+    )
+    cfg = load_config(server.config_path)
+    cfg.web_bind_iface = "eth_gone"
+    save_config(cfg, server.config_path)
+
+    _status, body = _get(base, "/section/interface_assignment")
+    assert "/section/interface_assignment?restart=1" in body
+
+
+def test_interface_assignment_offers_no_restart_once_the_pin_is_in_force(
+    live_server,
+    monkeypatch,
+) -> None:
+    """Self-clearing: after the restart the recorded pin equals the saved one
+    and the button goes away, even though the pin never resolved."""
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59"})
+    server, base = live_server
+    monkeypatch.setattr(
+        server,
+        "_web_bind_advisory_provider",
+        lambda: {"status": "down", "banner": "", "resolved_ip": "", "bind_at_start": "", "iface_at_start": "eth_gone"},
+        raising=False,
+    )
+    cfg = load_config(server.config_path)
+    cfg.web_bind_iface = "eth_gone"
+    save_config(cfg, server.config_path)
+
+    _status, body = _get(base, "/section/interface_assignment")
+    assert "/section/interface_assignment?restart=1" not in body
+
+
+def test_interface_assignment_restart_notice_names_the_moved_address(live_server, monkeypatch) -> None:
+    """Unlike every other restart notice, this one may come back at a
+    different address — so it has to say where to look when the reload
+    cannot reach this one."""
+    _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    _server, base = live_server
+    status, body = _post_form(
+        base,
+        "/section/interface_assignment?restart=1",
+        {"psn_source_iface": "", "otp_output.source_iface": "", "web_bind_iface": "eth1"},
+    )
+    assert status == 200
+    assert "restart-notice" in body
+    assert "Network screen" in body
+
+
 def test_interface_assignment_offers_no_restart_when_the_bind_already_matches(live_server) -> None:
     """Self-clearing: once the server is listening on what the config asks
     for, the restart button goes away on its own rather than staying as

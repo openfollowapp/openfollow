@@ -2038,10 +2038,6 @@ def _network_state(**overrides: object):
     s.banner = ""
     s.rows = []
     s.selected_index = 0
-    s.iface_picker_items = ["eth0", "wlan0"]
-    s.iface_picker_selected_index = 0
-    s.method_picker_items = ["DHCP", "Static"]
-    s.method_picker_selected_index = 0
     s.field_label = "IP Address"
     s.field_value = "192.168.1.50"
     for k, v in overrides.items():
@@ -2143,6 +2139,84 @@ class TestDrawPiNetworkScreen:
         # row label.
         texts = cr.show_text_strings()
         assert any("Configure" in t for t in texts)
+
+
+def _stroked_segments(cr) -> list[tuple[float, float, float, float]]:
+    """``(x0, y0, x1, y1)`` for each move_to immediately followed by line_to."""
+    segments = []
+    for prev, cur in zip(cr.calls, cr.calls[1:], strict=False):
+        if prev[0] == "move_to" and cur[0] == "line_to":
+            segments.append((prev[1], prev[2], cur[1], cur[2]))
+    return segments
+
+
+class TestTheFieldEditorShowsTheDpadCursor:
+    """Without this the gamepad entry path has no visual feedback at all:
+    left/right move nothing on screen, and up then changes a digit at a
+    position the operator cannot see."""
+
+    def _underlines(self, caret: int) -> list[tuple[float, float, float, float]]:
+        state = _base_state(
+            pi_network=_network_state(
+                field_label="IP Address",
+                field_value="192.168.001.005",
+                field_caret_offset=caret,
+                field_edit_active=True,
+            )
+        )
+        cr = FakeCairo()
+        draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
+        return [seg for seg in _stroked_segments(cr) if abs(seg[1] - seg[3]) < 0.5]
+
+    def test_the_marker_tracks_the_digit_the_cursor_names(self) -> None:
+        """Asserted by moving it: the panel chrome draws horizontal strokes
+        too, so "a horizontal line exists" would pass with no cursor drawn
+        at all."""
+        first = set(self._underlines(0))
+        last = set(self._underlines(14))
+        moved = last - first
+        assert moved, "the cursor marker did not move with the cursor"
+        assert min(seg[0] for seg in moved) > max(seg[0] for seg in first - last)
+
+    def test_a_typed_value_keeps_the_end_of_string_caret(self) -> None:
+        """A freely typed value has no fixed slot-to-character mapping, so a
+        digit underline would sit under an arbitrary character."""
+        state = _base_state(
+            pi_network=_network_state(
+                field_label="IP Address",
+                field_value="192.168.1.5",
+                field_caret_offset=-1,
+                field_edit_active=True,
+            )
+        )
+        cr = FakeCairo()
+        draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
+        verticals = [seg for seg in _stroked_segments(cr) if abs(seg[0] - seg[2]) < 0.5]
+        assert verticals, "no caret drawn for a typed value"
+
+    def test_the_subtitle_names_the_dpad(self) -> None:
+        """A station with no keyboard is the case this editor exists for;
+        telling that operator to type is the whole failure."""
+        state = _base_state(pi_network=_network_state(field_label="IP Address", field_edit_active=True))
+        cr = FakeCairo()
+        draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
+        assert any("D-pad" in t for t in cr.show_text_strings())
+
+
+class TestTheScreenDoesNotTruncateAUrl:
+    def test_a_station_hostname_url_fits_the_label_column(self) -> None:
+        """The ``<slug>.local`` row is the headline of the recovery screen and
+        the line an operator reads out over comms. At the old 180px split it
+        ellipsised for a realistic station name."""
+        url = "http://openfollow-eager-moose.local"
+        rows = [
+            {"kind": "header", "label": "Open on a computer on the same network"},
+            {"kind": "display", "key": "mdns", "label": url, "value": "any interface"},
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows, selected_index=1))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1280, 720)
+        assert url in cr.show_text_strings()
 
 
 class TestDrawPiNetworkFieldEdit:

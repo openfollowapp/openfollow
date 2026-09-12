@@ -1532,7 +1532,11 @@ def draw_pi_network_screen(
             draw_rounded_rect(cr, inner_x, row_y - 2.0, inner_w, data_row_h, 6.0)
             cr.fill()
         label_x = inner_x + 14.0
-        value_x = inner_x + 180.0
+        # The label column carries URLs on this screen, not just field names.
+        # At 180 a station's own ``<slug>.local`` - the headline row, and the
+        # line an operator reads out over comms - ellipsised; the values here
+        # are short interface names, so the space belongs on the left.
+        value_x = inner_x + 300.0
         renderer._set_ui_font(cr, 11.5, bold=is_selected)
         cr.set_source_rgba(*COLOR_TEXT_MUTED if kind == "display" else COLOR_TEXT)
         cr.move_to(label_x, row_y + data_row_h * 0.65)
@@ -1570,7 +1574,7 @@ def draw_pi_network_field_edit(
 ) -> None:
     net = state.pi_network
     title = (net.field_label or "VALUE").upper()
-    subtitle = "Type digits and dots only, Enter to save, Esc to cancel."
+    subtitle = "D-pad moves and changes the digit, or type digits and dots. Enter to save, Esc to cancel."
     panel_w = min(w * 0.62, 720.0)
     panel_h = min(h * 0.30, 240.0)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
@@ -1600,13 +1604,26 @@ def draw_pi_network_field_edit(
     cr.move_to(text_x, text_y)
     cr.show_text(rendered)
 
-    rendered_ext = cr.text_extents(rendered)
-    cursor_x = text_x + rendered_ext.x_advance + 1.0
+    # A d-pad cursor names one digit, so it is underlined in place. Without
+    # this the operator presses left/right and nothing moves, then presses up
+    # and a digit changes somewhere they cannot see. A typed value keeps the
+    # end-of-string caret instead.
+    caret = net.field_caret_offset
     cr.set_source_rgba(*COLOR_ACCENT)
-    cr.set_line_width(1.6)
-    cr.move_to(cursor_x, box_y + 14.0)
-    cr.line_to(cursor_x, box_y + box_h - 14.0)
-    cr.stroke()
+    if 0 <= caret < len(rendered):
+        before = cr.text_extents(rendered[:caret]).x_advance
+        width = cr.text_extents(rendered[caret]).x_advance
+        underline_y = box_y + box_h - 12.0
+        cr.set_line_width(2.2)
+        cr.move_to(text_x + before, underline_y)
+        cr.line_to(text_x + before + width, underline_y)
+        cr.stroke()
+    else:
+        cursor_x = text_x + cr.text_extents(rendered).x_advance + 1.0
+        cr.set_line_width(1.6)
+        cr.move_to(cursor_x, box_y + 14.0)
+        cr.line_to(cursor_x, box_y + box_h - 14.0)
+        cr.stroke()
 
 
 def draw_pi_network_field_edit_overlay(

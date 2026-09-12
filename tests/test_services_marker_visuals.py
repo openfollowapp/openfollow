@@ -785,6 +785,42 @@ class TestPopulatePiNetworkOverlay:
         assert state.pi_network.field_label == "Dns 1"
         assert state.pi_network.field_value == "8.8.8.8"
 
+    def test_a_grid_edited_value_publishes_the_cursor_position(self) -> None:
+        """The renderer draws the cursor by character offset, so the slot the
+        d-pad is on has to be translated across the dots on the way out - the
+        drift is one character per octet crossed, worst on the octets an
+        operator edits most."""
+        app = SimpleNamespace(
+            _pi_network_field_edit_active=True,
+            _pi_network_field_name="address",
+            _pi_network_field_value="192.168.001.005",
+            _pi_network_field_digit_index=9,
+        )
+        state = OverlayState()
+        _populate_pi_network_overlay(app, state)
+        offset = state.pi_network.field_caret_offset
+        assert state.pi_network.field_value[offset] == "0"
+        assert offset == 12
+
+    def test_a_typed_value_publishes_no_cursor(self) -> None:
+        """Without the padding a slot and a character are not in fixed
+        correspondence, so an underline would sit under an arbitrary digit."""
+        app = SimpleNamespace(
+            _pi_network_field_edit_active=True,
+            _pi_network_field_name="address",
+            _pi_network_field_value="192.168.1.5",
+            _pi_network_field_digit_index=9,
+        )
+        state = OverlayState()
+        _populate_pi_network_overlay(app, state)
+        assert state.pi_network.field_caret_offset == -1
+
+    def test_a_closed_editor_publishes_no_cursor(self) -> None:
+        app = SimpleNamespace(_pi_network_field_edit_active=False)
+        state = OverlayState()
+        _populate_pi_network_overlay(app, state)
+        assert state.pi_network.field_caret_offset == -1
+
 
 class _TornMarker:
     """Marker stub whose ``pos`` property returns a *different* whole-tuple

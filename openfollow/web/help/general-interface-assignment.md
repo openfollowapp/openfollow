@@ -36,7 +36,7 @@ This page. Left blank it answers on every interface, which is what you want on a
 
 Pin it when management traffic has to stay off a show network: with the row set to one interface, the web UI answers only at that interface's address and is simply not there on the others.
 
-This is the one row that does **not** stop when its interface goes away. It falls back to answering everywhere and says so at the top of this panel. Every other function going quiet is something you can diagnose from another station; a config page that went quiet would leave nobody able to undo the setting that did it.
+This is the one row that does **not** stop when its interface goes away. It falls back to answering everywhere and says so both at the top of this panel and on the station's own screen, which lists the addresses that really reach it rather than the ones the pin asked for. Every other function going quiet is something you can diagnose from another station; a config page that went quiet would leave nobody able to undo the setting that did it.
 
 Two things stay true whichever way this row is set. The screen on the station always reaches the UI, so the built-in browser keeps working. And the station's own **Network** screen, reached with the Settings key, can put the UI back on every interface without a working web page – it lists the addresses that reach the station and offers **Serve web UI on all interfaces**. That is the way back if you pin this row to the wrong interface.
 

@@ -489,7 +489,7 @@ def redact_signatures(line: str) -> str:
 # carries the full ``location`` in its debug string, and an auth failure is both
 # the condition that puts it there and the condition that makes an operator send
 # us a bundle.
-_URI_IN_TEXT_RE = re.compile(r'''\b(?:rtsps?|rtmps?|srt|https?)://[^\s"\'<>]+''')
+_URI_IN_TEXT_RE = re.compile(r"""\b(?:rtsps?|rtmps?|srt|https?)://[^\s"\'<>]+""")
 
 # Sentence punctuation a URI at the end of a log line absorbs; trimmed before
 # redaction so it survives into the output instead of being parsed as a path.

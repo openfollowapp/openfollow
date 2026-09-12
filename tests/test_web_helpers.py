@@ -472,9 +472,7 @@ class TestStreamCredentialRoundTrip:
             ("srt", "srt_passphrase", "key"),
         ],
     )
-    def test_a_credential_edit_alone_triggers_the_live_swap(
-        self, input_id: str, field: str, value: str
-    ) -> None:
+    def test_a_credential_edit_alone_triggers_the_live_swap(self, input_id: str, field: str, value: str) -> None:
         """Hot-reload is driven by ``config_changed``. A credential-only edit
         that did not register would leave the pipeline on the old login until
         an unrelated field happened to change."""

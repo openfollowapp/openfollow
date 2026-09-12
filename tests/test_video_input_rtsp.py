@@ -146,9 +146,7 @@ class TestRtspCredentials:
         assert src.properties["user-pw"] == password
 
     def test_username_is_trimmed(self) -> None:
-        src = self._rtspsrc(
-            {"rtsp_url": "rtsp://cam:554/s", "rtsp_user": "  operator  ", "rtsp_password": "x"}
-        )
+        src = self._rtspsrc({"rtsp_url": "rtsp://cam:554/s", "rtsp_user": "  operator  ", "rtsp_password": "x"})
         assert src.properties["user-id"] == "operator"
 
     def test_fields_outrank_a_credential_left_in_the_url(self) -> None:
@@ -168,9 +166,7 @@ class TestRtspCredentials:
     def test_only_a_password_is_enough_to_take_the_field_path(self) -> None:
         """Some cameras authenticate on a password alone; an empty username
         must not drop the whole login back to the URL path."""
-        src = self._rtspsrc(
-            {"rtsp_url": "rtsp://stale:old@cam:554/s", "rtsp_user": "", "rtsp_password": "hunter2"}
-        )
+        src = self._rtspsrc({"rtsp_url": "rtsp://stale:old@cam:554/s", "rtsp_user": "", "rtsp_password": "hunter2"})
         assert src.properties["location"] == "rtsp://cam:554/s"
         assert src.properties["user-id"] == ""
         assert src.properties["user-pw"] == "hunter2"

@@ -348,6 +348,23 @@ def test_redact_config_secrets_leaves_a_credential_free_url_intact() -> None:
     assert diag.redact_config_secrets(text) == text
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "rtsp_url = rtsp://cam:554/s",  # unquoted
+        "srt_host = [",  # start of a multi-line array
+        'rtsp_url = "unterminated',
+    ],
+)
+def test_redact_config_secrets_passes_through_an_unquoted_uri_value(line: str) -> None:
+    """A URI key whose value is not a quoted scalar is left exactly as found.
+
+    Rewriting a shape we did not parse would corrupt the dump, and the dump is
+    advertised as paste-back-compatible with ``config.toml``.
+    """
+    assert diag.redact_config_secrets(line) == line
+
+
 def test_collect_config_streams_provider_text() -> None:
     p = diag.DiagnosticsProviders(
         config_redacted_toml=lambda: 'web_pin = "***"\nsystem = "rig"',

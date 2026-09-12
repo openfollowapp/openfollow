@@ -77,6 +77,31 @@ page first.
 - **Auto-restart:** Yes (5s delay)
 - **Logs:** `journalctl -u openfollow`
 
+## Web UI unreachable after pinning it to an interface
+
+`web_bind_iface` restricts the web UI to one interface. If that interface is
+the wrong one, the UI stops answering where you are. Three ways back, cheapest
+first:
+
+1. **The station's own screen.** Settings → Network lists the address that
+   reaches the UI on each adapter, and offers **Serve web UI on all
+   interfaces**, which clears both `web_bind_iface` and `web_bind` and
+   restarts. This works on a gamepad and needs no keyboard or network access,
+   and it stays available on a station whose network backend is read-only.
+2. **The pinned address.** The same screen shows which address does answer;
+   browse to that from a machine on that network.
+3. **Edit the config file** over SSH or on the SD card, then restart:
+
+```bash
+sudo -u openfollow sed -i '/^web_bind_iface/d;/^web_bind /d' /var/lib/openfollow/config.toml
+sudo systemctl restart openfollow
+```
+
+The pin only ever takes effect on restart, and an interface that has no
+address at boot is ignored: the UI serves on every interface and the station
+says so both on its own screen and in the web Interface Assignment panel. A
+pin cannot leave the station with no web UI at all.
+
 ## NVMe for YOLO models (recommended on Pi)
 
 If internal flash is nearly full, mount NVMe at `/mnt/nvme` and set:

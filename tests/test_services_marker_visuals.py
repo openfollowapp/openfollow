@@ -450,9 +450,6 @@ class TestBuildInitialOverlayState:
         assert state.source_selection_title == "SELECT SOURCE"
         assert state.discovered_sources == []
         assert state.selected_source_index == 0
-        assert state.iface_selection_active is False
-        assert state.available_interfaces == []
-        assert state.selected_iface_index == 0
 
     def test_grid_config_is_applied(self) -> None:
         cfg = SimpleNamespace(
@@ -775,34 +772,6 @@ class TestPopulatePiNetworkOverlay:
         assert state.pi_network.active_iface == "eth0"
         assert state.pi_network.banner == "Apply ok."
 
-    def test_iface_picker_active_copies_names(self) -> None:
-        from openfollow.network.adapter import NetworkInterface
-
-        app = SimpleNamespace(
-            _pi_network_iface_picker_active=True,
-            _pi_network_iface_picker_index=1,
-            _pi_network_interfaces=[
-                NetworkInterface(name="eth0", mac=None, kind=None, is_up=True),
-                NetworkInterface(name="wlan0", mac=None, kind=None, is_up=False),
-            ],
-        )
-        state = OverlayState()
-        _populate_pi_network_overlay(app, state)
-        assert state.pi_network.iface_picker_active is True
-        assert state.pi_network.iface_picker_items == ["eth0", "wlan0"]
-        assert state.pi_network.iface_picker_selected_index == 1
-
-    def test_method_picker_active_copies_labels(self) -> None:
-        app = SimpleNamespace(
-            _pi_network_method_picker_active=True,
-            _pi_network_method_picker_index=2,
-        )
-        state = OverlayState()
-        _populate_pi_network_overlay(app, state)
-        assert state.pi_network.method_picker_active is True
-        assert "DHCP" in state.pi_network.method_picker_items
-        assert state.pi_network.method_picker_selected_index == 2
-
     def test_field_edit_active_humanises_label(self) -> None:
         """``dns_1`` → "Dns 1"; ``ip_address`` → "Ip Address"."""
         app = SimpleNamespace(
@@ -815,6 +784,42 @@ class TestPopulatePiNetworkOverlay:
         assert state.pi_network.field_edit_active is True
         assert state.pi_network.field_label == "Dns 1"
         assert state.pi_network.field_value == "8.8.8.8"
+
+    def test_a_grid_edited_value_publishes_the_cursor_position(self) -> None:
+        """The renderer draws the cursor by character offset, so the slot the
+        d-pad is on has to be translated across the dots on the way out - the
+        drift is one character per octet crossed, worst on the octets an
+        operator edits most."""
+        app = SimpleNamespace(
+            _pi_network_field_edit_active=True,
+            _pi_network_field_name="address",
+            _pi_network_field_value="192.168.001.005",
+            _pi_network_field_digit_index=9,
+        )
+        state = OverlayState()
+        _populate_pi_network_overlay(app, state)
+        offset = state.pi_network.field_caret_offset
+        assert state.pi_network.field_value[offset] == "0"
+        assert offset == 12
+
+    def test_a_typed_value_publishes_no_cursor(self) -> None:
+        """Without the padding a slot and a character are not in fixed
+        correspondence, so an underline would sit under an arbitrary digit."""
+        app = SimpleNamespace(
+            _pi_network_field_edit_active=True,
+            _pi_network_field_name="address",
+            _pi_network_field_value="192.168.1.5",
+            _pi_network_field_digit_index=9,
+        )
+        state = OverlayState()
+        _populate_pi_network_overlay(app, state)
+        assert state.pi_network.field_caret_offset == -1
+
+    def test_a_closed_editor_publishes_no_cursor(self) -> None:
+        app = SimpleNamespace(_pi_network_field_edit_active=False)
+        state = OverlayState()
+        _populate_pi_network_overlay(app, state)
+        assert state.pi_network.field_caret_offset == -1
 
 
 class _TornMarker:
@@ -917,9 +922,6 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
         _viewer_ids=[1],
         _input_manager=None,
         _video_receiver=video_receiver,
-        _iface_selection_active=False,
-        _available_interfaces=[],
-        _selected_iface_index=0,
         _source_type_selection_active=False,
         _available_source_types=[],
         _selected_source_type_index=0,

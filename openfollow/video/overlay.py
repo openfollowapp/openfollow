@@ -28,16 +28,7 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_hud as draw_hud_pass,
 )
 from openfollow.runtime.overlay_draw_hud import (
-    draw_iface_selection_overlay as draw_iface_selection_overlay_pass,
-)
-from openfollow.runtime.overlay_draw_hud import (
     draw_pi_network_field_edit_overlay as draw_pi_network_field_edit_overlay_pass,
-)
-from openfollow.runtime.overlay_draw_hud import (
-    draw_pi_network_iface_picker_overlay as draw_pi_network_iface_picker_overlay_pass,
-)
-from openfollow.runtime.overlay_draw_hud import (
-    draw_pi_network_method_picker_overlay as draw_pi_network_method_picker_overlay_pass,
 )
 from openfollow.runtime.overlay_draw_hud import (
     draw_pi_network_screen_overlay as draw_pi_network_screen_overlay_pass,
@@ -297,19 +288,8 @@ class CairoOverlayRenderer:
             if net.field_edit_active:
                 self._draw_pi_network_field_edit_overlay(cr, state, width, height)
                 return
-            if net.method_picker_active:
-                self._draw_pi_network_method_picker_overlay(cr, state, width, height)
-                return
-            if net.iface_picker_active:
-                self._draw_pi_network_iface_picker_overlay(cr, state, width, height)
-                return
             if net.screen_active:
                 self._draw_pi_network_screen_overlay(cr, state, width, height)
-                return
-
-            # Interface selection takes priority – must work in any state
-            if state.iface_selection_active:
-                self._draw_iface_selection_overlay(cr, state, width, height)
                 return
 
             # Source-type selection – same modal-priority slot as iface
@@ -448,9 +428,6 @@ class CairoOverlayRenderer:
     def _draw_source_selection_overlay(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
         draw_source_selection_overlay_pass(self, cr, state, w, h)
 
-    def _draw_iface_selection_overlay(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
-        draw_iface_selection_overlay_pass(self, cr, state, w, h)
-
     def _draw_source_type_selection_overlay(
         self,
         cr: Any,
@@ -496,24 +473,6 @@ class CairoOverlayRenderer:
         h: int,
     ) -> None:
         draw_pi_network_screen_overlay_pass(self, cr, state, w, h)
-
-    def _draw_pi_network_iface_picker_overlay(
-        self,
-        cr: Any,
-        state: OverlayState,
-        w: int,
-        h: int,
-    ) -> None:
-        draw_pi_network_iface_picker_overlay_pass(self, cr, state, w, h)
-
-    def _draw_pi_network_method_picker_overlay(
-        self,
-        cr: Any,
-        state: OverlayState,
-        w: int,
-        h: int,
-    ) -> None:
-        draw_pi_network_method_picker_overlay_pass(self, cr, state, w, h)
 
     def _draw_pi_network_field_edit_overlay(
         self,

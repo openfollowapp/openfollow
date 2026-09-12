@@ -18,6 +18,31 @@
         <span class="section-note">Which network each function uses</span>
     </div>
 
+    %# Poll until the server answers again, then reload. Unlike every other
+    %# restart notice this one may come back at a DIFFERENT address, so it
+    %# names the one to try when the reload cannot reach this one.
+    % if defined('restarting') and restarting:
+    <div class="restart-notice"
+         hx-get="/api/info"
+         hx-trigger="every 2s"
+         hx-swap="none"
+         hx-on::after-request="if(event.detail.successful) window.location.reload()">App is restarting&hellip;
+        If this page does not come back, the web UI has moved - the station's
+        Network screen lists the address that reaches it.</div>
+    % end
+
+    %# The web UI is the surface this panel is edited from, so a pin that
+    %# misses is a lockout rather than a silent plane. Both notices name the
+    %# way back: the URL that will work, and the on-screen escape.
+    % _wadv = web_bind_advisory if defined('web_bind_advisory') and web_bind_advisory else {}
+    % if _wadv.get('banner'):
+    <div class="notice warning" role="status">{{_wadv['banner']}}</div>
+    % end
+    % _wnotice = web_bind_notice if defined('web_bind_notice') else ''
+    % if _wnotice:
+    <div class="notice warning" role="status">{{_wnotice}}</div>
+    % end
+
     <table class="ia-table ia-assign">
         <thead>
             <tr><th>Function</th><th>Interface</th><th>Address</th></tr>
@@ -55,6 +80,12 @@
 
     <div class="actions">
         <button type="submit" class="save-btn">Save</button>
+        %# Pinning the web UI moves the listening socket, which the running
+        %# server cannot do under itself while serving this request.
+        % if defined('web_bind_restart') and web_bind_restart:
+        <button type="submit" class="save-btn"
+                hx-post="/section/interface_assignment?restart=1">Save &amp; Restart</button>
+        % end
         <button type="button" id="refresh-iface-assignment" class="secondary"
                 hx-get="/section/interface_assignment"
                 hx-target="#interface-assignment-section" hx-swap="outerHTML">Scan</button>

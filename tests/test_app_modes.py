@@ -260,7 +260,6 @@ class TestSettingsMenu:
                 self._video_receiver = FakeVideoReceiver()
                 self._canvas = FakeCanvas()
                 self._button_detection = None
-                self._iface_selection_active = False
                 self._source_type_selection_active = False
                 self._available_source_types: list[tuple[str, str]] = []
                 self._selected_source_type_index = 0
@@ -273,7 +272,6 @@ class TestSettingsMenu:
                 self._url_editor_revert_type = ""
                 self._browser_active = False
                 self._browser_overlay = None
-                self._iface_entered = False
                 self._source_entered = False
                 self._source_type_entered = False
                 self._url_editor_entered = False
@@ -287,18 +285,11 @@ class TestSettingsMenu:
                 self._pi_network_active_iface = ""
                 self._pi_network_state_cache = None
                 self._pi_network_pending_config = None
-                self._pi_network_iface_picker_active = False
-                self._pi_network_iface_picker_index = 0
-                self._pi_network_method_picker_active = False
-                self._pi_network_method_picker_index = 0
                 self._pi_network_field_edit_active = False
                 self._pi_network_field_name = ""
                 self._pi_network_field_value = ""
                 self._pi_network_banner = ""
                 self._pi_network_busy = False
-
-            def _enter_iface_selection(self) -> None:
-                self._iface_entered = True
 
             def _enter_source_selection(self) -> None:
                 self._source_entered = True
@@ -372,7 +363,6 @@ class TestSettingsMenu:
         assert app._settings_menu_index == 0
         handle_key_press(app, "Enter")
         assert app._pi_network_active is True
-        assert app._iface_entered is False
         assert app._settings_menu_active is False
 
     def test_key_arrow_down_skips_disabled_items(
@@ -499,7 +489,6 @@ class TestSettingsMenu:
         app._settings_menu_index = 0  # Network
         handle_key_press(app, "Enter")
         assert app._pi_network_active is True
-        assert app._iface_entered is False
         assert app._settings_menu_active is False
 
     def test_confirm_change_video_source_enters_picker(self) -> None:
@@ -589,7 +578,6 @@ class TestSourceTypeSelection:
                 # so the source-type guard is the only mode in play.
                 self._button_detection = None
                 self._video_receiver = None
-                self._iface_selection_active = False
                 self._url_editor_active = False
                 self._field_choice_active = False
                 self._url_editor_field_name = ""
@@ -1065,7 +1053,6 @@ class TestSourceTypeSelection:
             _button_detection=None,
             _settings_menu_active=False,
             _video_receiver=None,
-            _iface_selection_active=False,
             _source_type_selection_active=True,
             _field_choice_active=False,
             _config=AppConfig(),
@@ -1154,7 +1141,6 @@ class TestUrlEditor:
                 self._settings_menu_banner = ""
                 self._swap_calls = swap_calls
                 self._button_detection = None
-                self._iface_selection_active = False
                 self._source_type_selection_active = False
                 self._video_receiver = None
                 self._input_manager = None
@@ -1468,7 +1454,6 @@ class TestUrlEditorInputRouting:
             _button_detection=None,
             _settings_menu_active=False,
             _video_receiver=None,
-            _iface_selection_active=False,
             _source_type_selection_active=False,
             _field_choice_active=False,
             _url_editor_active=True,
@@ -1502,7 +1487,6 @@ class TestUrlEditorInputRouting:
             _settings_menu_index=0,
             _settings_menu_banner="",
             _video_receiver=None,
-            _iface_selection_active=False,
             _source_type_selection_active=False,
             _field_choice_active=False,
             _url_editor_active=True,
@@ -1551,7 +1535,6 @@ class TestUrlEditorInputRouting:
             _button_detection=None,
             _settings_menu_active=False,
             _video_receiver=None,
-            _iface_selection_active=False,
             _source_type_selection_active=False,
             _field_choice_active=False,
             _url_editor_active=True,
@@ -1750,7 +1733,6 @@ class TestFieldChoicePicker:
                 self._picker_calls: list[dict] = []
                 self._source_selection_calls: list[bool] = []
                 self._button_detection = None
-                self._iface_selection_active = False
                 self._url_editor_active = False
                 self._field_choice_active = False
                 self._url_editor_field_name = ""
@@ -2379,7 +2361,6 @@ class TestLegacyShortcutsRemoved:
                 self._settings_menu_active = False
                 self._settings_menu_index = 0
                 self._button_detection = None
-                self._iface_selection_active = False
                 self._source_type_selection_active = False
                 self._available_source_types: list[tuple[str, str]] = []
                 self._selected_source_type_index = 0
@@ -2397,12 +2378,8 @@ class TestLegacyShortcutsRemoved:
                 self._server = FakeServer()
                 self._selected_id = None
                 self._show_hud_help = False
-                self._iface_entered = False
                 self._source_entered = False
                 self._button_detection_entered = False
-
-            def _enter_iface_selection(self) -> None:
-                self._iface_entered = True
 
             def _enter_source_selection(self) -> None:
                 self._source_entered = True
@@ -2411,11 +2388,6 @@ class TestLegacyShortcutsRemoved:
                 self._button_detection_entered = True
 
         return FakeApp()
-
-    def test_i_key_does_not_enter_iface_selection(self) -> None:
-        app = self._make_app()
-        handle_key_press(app, "i")
-        assert app._iface_entered is False
 
     def test_n_key_does_not_enter_source_selection(self) -> None:
         app = self._make_app()
@@ -2451,7 +2423,6 @@ class TestNormalModeKeyDispatch:
                 self._config = AppConfig()
                 self._settings_menu_active = False
                 self._button_detection = None
-                self._iface_selection_active = False
                 self._source_type_selection_active = False
                 self._available_source_types: list[tuple[str, str]] = []
                 self._selected_source_type_index = 0

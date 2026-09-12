@@ -325,28 +325,6 @@ def draw_source_selection_overlay(renderer: Any, cr: Any, state: OverlayState, w
     draw_source_selection(renderer, cr, state, w, h)
 
 
-def draw_iface_selection(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    formatted_ifaces = [iface if iface else "Auto-detect" for iface in state.available_interfaces]
-    draw_selection_menu(
-        renderer,
-        cr,
-        state,
-        w,
-        h,
-        title="SELECT NETWORK INTERFACE",
-        subtitle="Choose the interface used for PSN, mDNS, and receiver binding.",
-        mode="iface-selection",
-        items=formatted_ifaces,
-        selected_idx=state.selected_iface_index,
-        empty_message="No interfaces detected.",
-    )
-
-
-def draw_iface_selection_overlay(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    draw_modal_scrim(cr, w, h, alpha=0.56)
-    draw_iface_selection(renderer, cr, state, w, h)
-
-
 def draw_source_type_selection(
     renderer: Any,
     cr: Any,
@@ -1427,6 +1405,30 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
 # ---------------------------------------------------------------------------
 
 
+def _menu_button_hint(state: OverlayState, action: str, default: str) -> str:
+    """Friendly label for a menu button, or "" when the operator unbound it.
+
+    These screens are reachable on a station with no keyboard, so every modal
+    that can be driven from a pad has to name the pad buttons. Read from the
+    operator's own bindings rather than hardcoded, because a rebound control
+    named by its default sends them to a button that does nothing.
+    """
+    raw = state.button_labels.get(action, default)
+    return friendly_button_label(raw) if raw else ""
+
+
+def _confirm_cancel_hint(state: OverlayState, confirm_verb: str, cancel_verb: str) -> str:
+    """``"A saves, B cancels"`` from live bindings; "" when neither is bound."""
+    confirm = _menu_button_hint(state, "menu_confirm", "A")
+    cancel = _menu_button_hint(state, "menu_cancel", "B")
+    parts = []
+    if confirm:
+        parts.append(f"{confirm} {confirm_verb}")
+    if cancel:
+        parts.append(f"{cancel} {cancel_verb}")
+    return ", ".join(parts)
+
+
 def draw_pi_network_screen(
     renderer: Any,
     cr: Any,
@@ -1442,7 +1444,8 @@ def draw_pi_network_screen(
     while data rows sit indented below them.
     """
     net = state.pi_network
-    subtitle = "Use \u2191\u2193 to move, Enter to edit, Esc / Back to leave."
+    pad = _confirm_cancel_hint(state, "opens", "goes back")
+    subtitle = f"D-pad or arrows to move. {pad}." if pad else "Arrows to move, Enter to open, Esc to leave."
     panel_w = min(w * 0.62, 880.0)
     panel_h = min(h * 0.92, 760.0)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
@@ -1507,6 +1510,17 @@ def draw_pi_network_screen(
             row_y += header_h + spacing_after_header
             continue
 
+        if kind == "notice":
+            # Amber, not muted: these are the two states that break
+            # reachability while still looking like a working station.
+            renderer._set_ui_font(cr, 11.5)
+            cr.set_source_rgba(*COLOR_ACCENT, 1.0)
+            text = renderer._truncate_text_to_width(cr, f"! {label}", inner_w - 14.0)
+            cr.move_to(inner_x, row_y + data_row_h * 0.65)
+            cr.show_text(text)
+            row_y += data_row_h
+            continue
+
         if kind == "action":
             # Button-styled row.
             is_selected = idx == selected_idx
@@ -1543,7 +1557,11 @@ def draw_pi_network_screen(
             draw_rounded_rect(cr, inner_x, row_y - 2.0, inner_w, data_row_h, 6.0)
             cr.fill()
         label_x = inner_x + 14.0
-        value_x = inner_x + 180.0
+        # The label column carries URLs on this screen, not just field names.
+        # At 180 a station's own ``<slug>.local`` - the headline row, and the
+        # line an operator reads out over comms - ellipsised; the values here
+        # are short interface names, so the space belongs on the left.
+        value_x = inner_x + 300.0
         renderer._set_ui_font(cr, 11.5, bold=is_selected)
         cr.set_source_rgba(*COLOR_TEXT_MUTED if kind == "display" else COLOR_TEXT)
         cr.move_to(label_x, row_y + data_row_h * 0.65)
@@ -1572,74 +1590,6 @@ def draw_pi_network_screen_overlay(
     draw_pi_network_screen(renderer, cr, state, w, h)
 
 
-def draw_pi_network_iface_picker(
-    renderer: Any,
-    cr: Any,
-    state: OverlayState,
-    w: int,
-    h: int,
-) -> None:
-    net = state.pi_network
-    draw_selection_menu(
-        renderer,
-        cr,
-        state,
-        w,
-        h,
-        title="SELECT INTERFACE",
-        subtitle="Pick an interface, Enter to confirm, Esc to cancel.",
-        mode="pi-network-iface",
-        items=list(net.iface_picker_items),
-        selected_idx=net.iface_picker_selected_index,
-        empty_message="No interfaces detected.",
-    )
-
-
-def draw_pi_network_iface_picker_overlay(
-    renderer: Any,
-    cr: Any,
-    state: OverlayState,
-    w: int,
-    h: int,
-) -> None:
-    draw_modal_scrim(cr, w, h, alpha=0.56)
-    draw_pi_network_iface_picker(renderer, cr, state, w, h)
-
-
-def draw_pi_network_method_picker(
-    renderer: Any,
-    cr: Any,
-    state: OverlayState,
-    w: int,
-    h: int,
-) -> None:
-    net = state.pi_network
-    draw_selection_menu(
-        renderer,
-        cr,
-        state,
-        w,
-        h,
-        title="CONFIGURE IPv4",
-        subtitle="Pick a method, Enter to confirm, Esc to cancel.",
-        mode="pi-network-method",
-        items=list(net.method_picker_items),
-        selected_idx=net.method_picker_selected_index,
-        empty_message="No methods available.",
-    )
-
-
-def draw_pi_network_method_picker_overlay(
-    renderer: Any,
-    cr: Any,
-    state: OverlayState,
-    w: int,
-    h: int,
-) -> None:
-    draw_modal_scrim(cr, w, h, alpha=0.56)
-    draw_pi_network_method_picker(renderer, cr, state, w, h)
-
-
 def draw_pi_network_field_edit(
     renderer: Any,
     cr: Any,
@@ -1649,7 +1599,12 @@ def draw_pi_network_field_edit(
 ) -> None:
     net = state.pi_network
     title = (net.field_label or "VALUE").upper()
-    subtitle = "Type digits and dots only, Enter to save, Esc to cancel."
+    pad = _confirm_cancel_hint(state, "saves", "cancels")
+    subtitle = (
+        f"D-pad moves and changes the digit. {pad}."
+        if pad
+        else "Type digits and dots only, Enter to save, Esc to cancel."
+    )
     panel_w = min(w * 0.62, 720.0)
     panel_h = min(h * 0.30, 240.0)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
@@ -1679,13 +1634,26 @@ def draw_pi_network_field_edit(
     cr.move_to(text_x, text_y)
     cr.show_text(rendered)
 
-    rendered_ext = cr.text_extents(rendered)
-    cursor_x = text_x + rendered_ext.x_advance + 1.0
+    # A d-pad cursor names one digit, so it is underlined in place. Without
+    # this the operator presses left/right and nothing moves, then presses up
+    # and a digit changes somewhere they cannot see. A typed value keeps the
+    # end-of-string caret instead.
+    caret = net.field_caret_offset
     cr.set_source_rgba(*COLOR_ACCENT)
-    cr.set_line_width(1.6)
-    cr.move_to(cursor_x, box_y + 14.0)
-    cr.line_to(cursor_x, box_y + box_h - 14.0)
-    cr.stroke()
+    if 0 <= caret < len(rendered):
+        before = cr.text_extents(rendered[:caret]).x_advance
+        width = cr.text_extents(rendered[caret]).x_advance
+        underline_y = box_y + box_h - 12.0
+        cr.set_line_width(2.2)
+        cr.move_to(text_x + before, underline_y)
+        cr.line_to(text_x + before + width, underline_y)
+        cr.stroke()
+    else:
+        cursor_x = text_x + cr.text_extents(rendered).x_advance + 1.0
+        cr.set_line_width(1.6)
+        cr.move_to(cursor_x, box_y + 14.0)
+        cr.line_to(cursor_x, box_y + box_h - 14.0)
+        cr.stroke()
 
 
 def draw_pi_network_field_edit_overlay(

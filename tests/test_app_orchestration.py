@@ -102,7 +102,6 @@ class _RecordingServices:
 
 def _make_fake_app(
     *,
-    iface_selection_active: bool = False,
     input_manager: _FakeInputManager | None = None,
     config_path: str = "/tmp/does-not-exist.toml",
 ) -> SimpleNamespace:
@@ -119,8 +118,6 @@ def _make_fake_app(
     services = _RecordingServices()
     app = SimpleNamespace(
         _input_manager=input_manager,
-        _iface_selection_active=iface_selection_active,
-        _last_iface_refresh=0.0,
         _last_animate_time=None,
         _runtime_services=services,
         _canvas=canvas,
@@ -144,7 +141,6 @@ def _make_fake_app(
         _frame_stall_since=0.0,
         _check_video_disconnect_banner=_recorder("check_video_disconnect_banner"),
         _process_input=_recorder("process_input"),
-        _refresh_iface_list=_recorder("refresh_iface_list"),
         _get_config_mtime=lambda: app._config_mtime,
         _frame_err_log=_RecordingErrorLog(),
         _last_frame_completed=None,
@@ -253,22 +249,6 @@ class TestAnimate:
             "check_button_detection_request",
         ):
             assert moved not in app._calls
-
-    def test_iface_selection_refresh_respects_1hz_throttle(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """`_refresh_iface_list` should run once per second (monotonic)."""
-        times = iter([1000.0, 1000.0, 1000.5, 1001.5])
-        monkeypatch.setattr(orch.time, "monotonic", lambda: next(times))
-
-        app = _make_fake_app(iface_selection_active=True)
-        app._last_iface_refresh = 0.0
-        orch.animate(app)  # monotonic=1000.0 → first refresh (delta 1000 ≥ 1)
-        orch.animate(app)  # monotonic=1000.5 → throttled (delta 0.5 < 1)
-        assert app._calls.count("refresh_iface_list") == 1
-
-    def test_iface_selection_inactive_never_refreshes(self) -> None:
-        app = _make_fake_app(iface_selection_active=False)
-        orch.animate(app)
-        assert "refresh_iface_list" not in app._calls
 
 
 # --------------------------------------------------------------------------- #

@@ -194,9 +194,6 @@ def _build_app(
         _video_receiver=_FakeVideoReceiver(),
         _camera=_FakeCamera(),
         _button_detection=button_detection,
-        _iface_selection_active=False,
-        _available_interfaces=[],
-        _selected_iface_index=0,
         _settings_menu_active=settings_menu_active,
         _settings_menu_index=0,
         _settings_menu_banner="",
@@ -898,66 +895,6 @@ class TestSpeedRoundTrip:
 # --------------------------------------------------------------------------- #
 # Camera, detection, button-detection
 # --------------------------------------------------------------------------- #
-
-
-class TestIfaceSelectionLabels:
-    """Iface picker labels show interface name with IP for multi-homed hosts."""
-
-    def test_iface_names_resolve_to_label_with_ip_suffix(self, pool: OverlayStatePool, monkeypatch) -> None:
-        from openfollow.runtime import services_marker_visuals
-
-        monkeypatch.setattr(
-            services_marker_visuals,
-            "list_iface_ipv4",
-            lambda: [("eth0", "192.168.178.61"), ("wlan0", "10.0.0.5")],
-        )
-        app = _build_app()
-        app._available_interfaces = ["", "eth0", "wlan0"]
-        app._selected_iface_index = 1
-        app._iface_selection_active = True
-        state = _build(app, pool)
-        assert state.available_interfaces == [
-            "",  # auto-detect – labelled by the renderer, not here
-            "eth0 (192.168.178.61)",
-            "wlan0 (10.0.0.5)",
-        ]
-        assert state.selected_iface_index == 1
-
-    def test_down_iface_left_unformatted_when_no_ip(self, pool: OverlayStatePool, monkeypatch) -> None:
-        """A persisted iface that's no longer in ``list_iface_ipv4()`` –
-        cable unplugged, modem suspended – has no current IP to render,
-        so the row stays as the bare name. The on-screen UI still shows
-        the operator's pick instead of silently dropping it."""
-        from openfollow.runtime import services_marker_visuals
-
-        monkeypatch.setattr(
-            services_marker_visuals,
-            "list_iface_ipv4",
-            lambda: [("eth0", "192.168.178.61")],
-        )
-        app = _build_app()
-        app._available_interfaces = ["", "ghost0"]
-        app._iface_selection_active = True
-        state = _build(app, pool)
-        assert state.available_interfaces == ["", "ghost0"]
-
-    def test_closed_picker_skips_psutil_snapshot(self, pool: OverlayStatePool, monkeypatch) -> None:
-        from openfollow.runtime import services_marker_visuals
-
-        calls = 0
-
-        def _spy() -> list[tuple[str, str]]:
-            nonlocal calls
-            calls += 1
-            return [("eth0", "192.168.178.61")]
-
-        monkeypatch.setattr(services_marker_visuals, "list_iface_ipv4", _spy)
-        app = _build_app()
-        app._available_interfaces = ["", "eth0", "wlan0"]
-        app._iface_selection_active = False
-        state = _build(app, pool)
-        assert calls == 0
-        assert state.available_interfaces == ["", "eth0", "wlan0"]
 
 
 class TestExternalStateSnapshots:

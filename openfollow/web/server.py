@@ -232,6 +232,7 @@ class ConfigWebServer:
         camera_names_provider: Callable[[], list[str]] | None = None,
         # Startup PSN-source advisory when pinned iface unavailable; optional for tests.
         psn_source_advisory_provider: (Callable[[], dict[str, str]] | None) = None,
+        web_bind_advisory_provider: (Callable[[], dict[str, str]] | None) = None,
     ) -> None:
         self._config_path = os.path.abspath(config_path)
         self._host = host
@@ -250,6 +251,11 @@ class ConfigWebServer:
         self._local_ip_provider = local_ip_provider
         self._local_ip_lock = threading.Lock()
         self._local_ip_refresh_ts = 0.0  # monotonic; throttles _refresh_local_ip
+        # Whether the pinned station interface currently has no address. The
+        # displayed IP deliberately keeps its last known good value, so this is
+        # what lets a surface say the address no longer reaches the station
+        # rather than showing a number whose meaning changed silently.
+        self._station_interface_down = False
         self._command_queue = command_queue or WebCommandQueue()
         self._runtime_stats_provider = runtime_stats_provider
         self._preview_snapshot_provider = preview_snapshot_provider
@@ -287,6 +293,7 @@ class ConfigWebServer:
         self._network_vlan_create_handler = network_vlan_create_handler
         self._network_vlan_delete_handler = network_vlan_delete_handler
         self._psn_source_advisory_provider = psn_source_advisory_provider
+        self._web_bind_advisory_provider = web_bind_advisory_provider
         self._privilege_states_provider = privilege_states_provider
         self._marker_catalog_provider = marker_catalog_provider
         self._marker_catalog_sync_provider = marker_catalog_sync_provider
@@ -364,6 +371,18 @@ class ConfigWebServer:
     @property
     def local_ip(self) -> str:
         return self._local_ip
+
+    @property
+    def station_interface_down(self) -> bool:
+        """Whether the pinned station interface currently has no address.
+
+        ``local_ip`` keeps its last known good value through an outage, because
+        the web UI is usually still reachable there - it binds every interface -
+        and blanking it would take information away from an operator who is
+        demonstrably connected. This says the identity behind that address is
+        down, so a surface can report the state instead of a stale number.
+        """
+        return self._station_interface_down
 
     @property
     def port(self) -> int:
@@ -524,6 +543,19 @@ class ConfigWebServer:
             logger.exception("PSN source advisory provider raised")
             return empty
 
+    def get_web_bind_advisory(self) -> dict[str, str]:
+        """How the web UI's own interface pin resolved at bind time; returns
+        status/banner/resolved_ip. ``status`` is ``"down"`` when the pin was
+        unresolvable and the wildcard bind was substituted."""
+        empty = {"status": "", "banner": "", "resolved_ip": ""}
+        if self._web_bind_advisory_provider is None:
+            return empty
+        try:
+            return self._web_bind_advisory_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("web bind advisory provider raised")
+            return empty
+
     def _refresh_local_ip(self) -> None:
         """Re-resolve this host's primary IP and adopt it if it changed.
 
@@ -556,12 +588,14 @@ class ConfigWebServer:
         # multicast follows the routing table onto an unchosen NIC.
         if candidate is None:
             with self._local_ip_lock:
+                self._station_interface_down = True
                 self._beacon_sender.update_iface_ip(None)
                 self._beacon_receiver.update_iface_ip(None)
             return
         if not candidate or candidate.startswith("127."):
             return
         with self._local_ip_lock:
+            self._station_interface_down = False
             if candidate == self._local_ip and self._beacon_sender.iface_ip == candidate:
                 return
             self._local_ip = candidate
@@ -589,8 +623,14 @@ class ConfigWebServer:
         decision rather than by waiting for its next send to fail: a socket
         pinned to a removed address does not reliably error, and the whole
         point is that nothing leaves on an interface nobody chose.
+
+        Also flips the station-down flag. This is the authoritative edge; the
+        request-driven refresh is not, so a diagnostics bundle collected
+        without a preceding page load would otherwise record the address as if
+        it still reached the station.
         """
         with self._local_ip_lock:
+            self._station_interface_down = True
             self._beacon_sender.update_iface_ip(None)
             self._beacon_receiver.update_iface_ip(None)
 
@@ -601,7 +641,13 @@ class ConfigWebServer:
         group membership and the egress route when an address is removed, and
         the same address coming back does not restore either - so the
         unchanged-IP guard in ``update_iface_ip`` is not enough on its own.
+
+        Clears the station-down flag for the same reason ``suspend_beacons``
+        sets it: recovery is an observer decision, not something to be
+        discovered by the next HTTP request.
         """
+        with self._local_ip_lock:
+            self._station_interface_down = False
         self._beacon_sender.reopen()
         self._beacon_receiver.reopen()
 
@@ -1010,6 +1056,16 @@ class ConfigWebServer:
         ``0.0.0.0`` and any 127.x / ::1 address already cover loopback."""
         host = self._host
         return bool(host) and host != "0.0.0.0" and not host.startswith("127.") and host != "::1"
+
+    @property
+    def bind_host(self) -> str:
+        """Address the external listener was started on.
+
+        The listening socket is fixed for the life of the server, so this is
+        what a configured pin has to be compared against to tell whether a
+        restart is still pending.
+        """
+        return self._host
 
     @property
     def display_port(self) -> int:

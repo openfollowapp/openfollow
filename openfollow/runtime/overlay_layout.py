@@ -316,19 +316,6 @@ def build_help_sections(
                 f"{_btn('menu_confirm', 'A')}: Confirm source type",
                 f"{_btn('menu_cancel', 'B')}: Cancel source type menu",
             ]
-    elif mode == "iface-selection":
-        if keyboard_connected:
-            keyboard = [
-                "Arrow Up/Down: Select interface",
-                "Enter: Apply interface (live)",
-                "Esc: Cancel interface menu",
-            ]
-        if controller_connected:
-            controller = [
-                "D-Pad Up/Down: Select interface",
-                f"{_btn('menu_confirm', 'A')}: Apply interface (live)",
-                f"{_btn('menu_cancel', 'B')}: Cancel interface menu",
-            ]
     elif mode == "button-detection":
         if keyboard_connected:
             keyboard = [

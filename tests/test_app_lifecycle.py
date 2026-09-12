@@ -140,7 +140,6 @@ class TestConstruction:
         assert app._camera is None
         assert app._canvas is None
         assert app._controlled_ids == []
-        assert app._iface_selection_active is False
         assert app._input_manager is None
         assert app._otp_server is None
         assert app._psn_receiver is None
@@ -591,11 +590,7 @@ class TestDelegators:
             ("_check_update_request", "runtime_check_update_request", ()),
             ("_check_button_detection_request", "runtime_check_button_detection_request", ()),
             ("_process_source_selection_input", "runtime_process_source_selection_input", ()),
-            ("_process_iface_selection_input", "runtime_process_iface_selection_input", ()),
             ("_enter_source_selection", "runtime_enter_source_selection", ()),
-            ("_refresh_iface_list", "runtime_refresh_iface_list", ()),
-            ("_enter_iface_selection", "runtime_enter_iface_selection", ()),
-            ("_confirm_iface_selection", "runtime_confirm_iface_selection", ()),
             ("_enter_button_detection", "runtime_enter_button_detection", ()),
             ("_process_button_detection", "runtime_process_button_detection", ()),
             ("_exit_button_detection", "runtime_exit_button_detection", ()),

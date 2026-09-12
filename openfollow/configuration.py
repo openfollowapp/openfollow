@@ -2183,6 +2183,11 @@ class AppConfig:
     # pins the bind; "0.0.0.0" forces all interfaces. The server always also
     # serves loopback so the on-screen browser keeps working.
     web_bind: str = ""
+    # Interface the web UI listens on. Blank = every interface. An explicit
+    # ``web_bind`` address outranks it. Unlike every other plane this one
+    # falls back to the wildcard bind when the pin cannot be resolved: a
+    # silent output is diagnosable, an unreachable config UI is not.
+    web_bind_iface: str = ""
 
     # Web-triggered update settings (signed-.deb GitHub-release installer)
     update_github_repo: str = "openfollowapp/openfollow"
@@ -2256,6 +2261,9 @@ class AppConfig:
         if not isinstance(self.web_bind, str):
             self.web_bind = ""
         self.web_bind = self.web_bind.strip()
+        if not isinstance(self.web_bind_iface, str):
+            self.web_bind_iface = ""
+        self.web_bind_iface = self.web_bind_iface.strip()
         # Strip ``psn_source_iface`` so whitespace doesn't look like a value
         # change each load and trigger a needless rebind cycle.
         if not isinstance(self.psn_source_iface, str):

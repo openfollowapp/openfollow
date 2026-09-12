@@ -1619,6 +1619,21 @@ def test_app_config_coerces_non_str_web_bind() -> None:
     assert cfg.web_bind == ""
 
 
+def test_app_config_strips_web_bind_iface_at_construction() -> None:
+    """Stripped on load so a hand-edited TOML matches the panel's save path -
+    an unstripped ``" eth0 "`` would resolve to no address and read as a
+    down interface."""
+    assert AppConfig(web_bind_iface="  eth0  ").web_bind_iface == "eth0"
+
+
+@pytest.mark.parametrize("bad", [0, None, True, 1.5, ["eth0"], {"iface": "eth0"}])
+def test_app_config_coerces_non_str_web_bind_iface(bad) -> None:
+    """A non-string pin becomes "" (serve everywhere) rather than reaching
+    ``resolve_web_bind``, where it would raise inside the web server's bind."""
+    cfg = AppConfig(web_bind_iface=bad)  # type: ignore[arg-type]
+    assert cfg.web_bind_iface == ""
+
+
 def test_osc_transmitter_config_normalises_leading_slash() -> None:
     from openfollow.configuration import OscTransmitterConfig
 

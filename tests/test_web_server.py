@@ -712,6 +712,238 @@ def test_interface_assignment_shows_a_down_interface_as_an_error(
     assert "192.168.178.59" not in otp_row
 
 
+def _patch_ifaces(monkeypatch, ifaces: dict[str, str]) -> None:
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {name: [SimpleNamespace(family=_socket.AF_INET, address=addr)] for name, addr in ifaces.items()},
+    )
+
+
+def test_interface_assignment_has_a_web_ui_row(live_server, monkeypatch) -> None:
+    """The web UI gets its own pin rather than following the station: a
+    station pinned to a lighting VLAN would otherwise take its own config UI
+    off the office LAN as a side effect."""
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_source_iface = "eth0"
+    cfg.web_bind_iface = "eth1"
+    save_config(cfg, server.config_path)
+
+    status, body = _get(base, "/section/interface_assignment")
+    assert status == 200
+    assert 'name="web_bind_iface"' in body
+    web_row = body[body.index("Web UI") :].split("</tr>", 1)[0]
+    assert "10.0.0.9" in web_row
+    assert "192.168.178.59" not in web_row
+
+
+def test_interface_assignment_web_ui_row_defaults_to_all_interfaces(live_server) -> None:
+    """Blank is not "down" for this row - unpinned means every interface, and
+    reading it as an error would alarm every stock station."""
+    _server, base = live_server
+    _status, body = _get(base, "/section/interface_assignment")
+    web_row = body[body.index("Web UI") :].split("</tr>", 1)[0]
+    assert "All interfaces" in web_row
+    assert "is down" not in web_row
+
+
+def test_interface_assignment_web_ui_row_reads_as_the_wildcard_when_the_pin_is_down(
+    live_server,
+    monkeypatch,
+) -> None:
+    """Unlike the protocol rows, a down pin here is not an error: the runtime
+    serves on every interface rather than failing closed, so the row has to
+    say that instead of implying the UI is unreachable."""
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59"})
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.web_bind_iface = "eth_gone"
+    save_config(cfg, server.config_path)
+
+    _status, body = _get(base, "/section/interface_assignment")
+    web_row = body[body.index("Web UI") :].split("</tr>", 1)[0]
+    assert "eth_gone is down - all interfaces" in web_row
+    assert "192.168.178.59" not in web_row
+
+
+def test_interface_assignment_web_ui_row_is_read_only_under_a_literal_bind(live_server, monkeypatch) -> None:
+    """``web_bind`` outranks the interface picker, so an editable picker there
+    could never take effect - and with the pin blank it would report "All
+    interfaces" for a UI answering at exactly one."""
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59"})
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.web_bind = "192.168.178.59"
+    save_config(cfg, server.config_path)
+
+    _status, body = _get(base, "/section/interface_assignment")
+    web_row = body[body.index("Web UI") :].split("</tr>", 1)[0]
+    assert 'name="web_bind_iface"' not in web_row, "the picker cannot apply while web_bind is set"
+    assert "web_bind in config.toml" in web_row
+    assert "192.168.178.59" in web_row
+
+
+def test_interface_assignment_web_ui_row_stays_editable_without_one(live_server, monkeypatch) -> None:
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59"})
+    _server, base = live_server
+    _status, body = _get(base, "/section/interface_assignment")
+    web_row = body[body.index("Web UI") :].split("</tr>", 1)[0]
+    assert 'name="web_bind_iface"' in web_row
+
+
+def test_interface_assignment_web_ui_pin_warns_with_the_surviving_url(live_server, monkeypatch) -> None:
+    """The address that stops working is the one the operator is reading this
+    on, so the warning has to name the replacement before the restart."""
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.web_bind_iface = "eth1"
+    save_config(cfg, server.config_path)
+
+    _status, body = _get(base, "/section/interface_assignment")
+    assert "http://10.0.0.9" in body
+    # Names the on-screen escape, so a lockout has a documented way back.
+    assert "Network screen" in body
+
+
+def test_interface_assignment_unpinned_web_ui_shows_no_warning(live_server) -> None:
+    _server, base = live_server
+    _status, body = _get(base, "/section/interface_assignment")
+    assert "After a restart the web UI answers only on" not in body
+
+
+def test_interface_assignment_web_ui_pin_offers_a_restart(live_server, monkeypatch) -> None:
+    """The listening socket can't be moved under the request being served on
+    it, so this one pin needs a restart the other rows don't."""
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.web_bind_iface = "eth1"
+    save_config(cfg, server.config_path)
+
+    _status, body = _get(base, "/section/interface_assignment")
+    assert "/section/interface_assignment?restart=1" in body
+
+
+def test_interface_assignment_offers_a_restart_for_a_pin_to_a_down_interface(
+    live_server,
+    monkeypatch,
+) -> None:
+    """A pin naming a down interface resolves to the same wildcard the server
+    is already on, so comparing addresses reports nothing pending – and the
+    operator is never told the pin has not taken effect."""
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59"})
+    server, base = live_server
+    monkeypatch.setattr(
+        server,
+        "_web_bind_advisory_provider",
+        lambda: {"status": "", "banner": "", "resolved_ip": "", "bind_at_start": "", "iface_at_start": ""},
+        raising=False,
+    )
+    cfg = load_config(server.config_path)
+    cfg.web_bind_iface = "eth_gone"
+    save_config(cfg, server.config_path)
+
+    _status, body = _get(base, "/section/interface_assignment")
+    assert "/section/interface_assignment?restart=1" in body
+
+
+def test_interface_assignment_offers_no_restart_once_the_pin_is_in_force(
+    live_server,
+    monkeypatch,
+) -> None:
+    """Self-clearing: after the restart the recorded pin equals the saved one
+    and the button goes away, even though the pin never resolved."""
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59"})
+    server, base = live_server
+    monkeypatch.setattr(
+        server,
+        "_web_bind_advisory_provider",
+        lambda: {"status": "down", "banner": "", "resolved_ip": "", "bind_at_start": "", "iface_at_start": "eth_gone"},
+        raising=False,
+    )
+    cfg = load_config(server.config_path)
+    cfg.web_bind_iface = "eth_gone"
+    save_config(cfg, server.config_path)
+
+    _status, body = _get(base, "/section/interface_assignment")
+    assert "/section/interface_assignment?restart=1" not in body
+
+
+def test_interface_assignment_restart_notice_names_the_moved_address(live_server, monkeypatch) -> None:
+    """Unlike every other restart notice, this one may come back at a
+    different address – so it has to say where to look when the reload
+    cannot reach this one."""
+    _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    _server, base = live_server
+    status, body = _post_form(
+        base,
+        "/section/interface_assignment?restart=1",
+        {"psn_source_iface": "", "otp_output.source_iface": "", "web_bind_iface": "eth1"},
+    )
+    assert status == 200
+    assert "restart-notice" in body
+    assert "Network screen" in body
+
+
+def test_interface_assignment_offers_no_restart_when_the_bind_already_matches(live_server) -> None:
+    """Self-clearing: once the server is listening on what the config asks
+    for, the restart button goes away on its own rather than staying as
+    permanent noise."""
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.web_bind = server.bind_host
+    save_config(cfg, server.config_path)
+
+    _status, body = _get(base, "/section/interface_assignment")
+    assert "/section/interface_assignment?restart=1" not in body
+
+
+def test_interface_assignment_saves_the_web_ui_pin(live_server, monkeypatch) -> None:
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
+    server, base = live_server
+    status, _body = _post_form(
+        base,
+        "/section/interface_assignment",
+        {"psn_source_iface": "eth0", "otp_output.source_iface": "", "web_bind_iface": "eth1"},
+    )
+    assert status == 200
+    assert load_config(server.config_path).web_bind_iface == "eth1"
+
+
+def test_interface_assignment_surfaces_the_runtime_fallback(tmp_path, monkeypatch) -> None:
+    """When the pin missed at boot the panel has to say the UI is serving
+    everywhere. A panel that showed only the configured pin would let the
+    operator believe a bind that never happened."""
+    monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
+    config_path = tmp_path / "config.toml"
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            web_bind_advisory_provider=lambda: {
+                "status": "down",
+                "banner": "Web UI is pinned to 'eth7', which has no address.",
+                "resolved_ip": "",
+            },
+        )
+    ) as (_server, base):
+        _status, body = _get(base, "/section/interface_assignment")
+    assert "Web UI is pinned to &#039;eth7&#039;, which has no address." in body
+
+
 def test_interface_assignment_scan_rerenders_the_panel(live_server) -> None:
     """Scan re-renders instead of refreshing the pickers in place: an in-place
     refresh re-marked the SAVED value as selected and silently discarded an
@@ -1287,6 +1519,38 @@ def test_api_update_zone_ignores_non_list_vertices(live_server) -> None:
 # ---------------------------------------------------------------------------
 # Restart flag
 # ---------------------------------------------------------------------------
+
+
+def test_post_interface_assignment_with_restart_flag_queues_restart(live_server, monkeypatch) -> None:
+    """The web UI pin only takes effect on restart, so the panel's own
+    Save & Restart has to queue one - saving alone would leave the operator
+    looking at a pin that isn't in force."""
+    _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    server, base = live_server
+    assert server.check_restart_requested() is False
+
+    status, _body = _post_form(
+        base,
+        "/section/interface_assignment?restart=1",
+        {"psn_source_iface": "", "otp_output.source_iface": "", "web_bind_iface": "eth1"},
+    )
+    assert status == 200
+    assert load_config(server.config_path).web_bind_iface == "eth1"
+    assert server.check_restart_requested() is True
+
+
+def test_post_interface_assignment_without_restart_flag_queues_nothing(live_server, monkeypatch) -> None:
+    """A plain Save of the protocol rows is live-applied; queueing a restart
+    for those would interrupt a running show for no reason."""
+    _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    server, base = live_server
+    status, _body = _post_form(
+        base,
+        "/section/interface_assignment",
+        {"psn_source_iface": "", "otp_output.source_iface": "eth1", "web_bind_iface": ""},
+    )
+    assert status == 200
+    assert server.check_restart_requested() is False
 
 
 def test_post_general_with_restart_flag_queues_restart(live_server) -> None:

@@ -42,11 +42,8 @@ def process_input(app: OpenFollowApp, dt: float) -> None:
         or getattr(app, "_settings_menu_active", False)
         or getattr(app, "_about_active", False)
         or getattr(app, "_pi_network_field_edit_active", False)
-        or getattr(app, "_pi_network_method_picker_active", False)
-        or getattr(app, "_pi_network_iface_picker_active", False)
         or getattr(app, "_pi_network_active", False)
         or getattr(getattr(app, "_video_receiver", None), "source_selection_active", False)
-        or getattr(app, "_iface_selection_active", False)
         or getattr(app, "_source_type_selection_active", False)
         or getattr(app, "_field_choice_active", False)
         or getattr(app, "_url_editor_active", False)
@@ -86,16 +83,6 @@ def process_input(app: OpenFollowApp, dt: float) -> None:
 
         process_pi_network_field_edit_input(app)
         return
-    if getattr(app, "_pi_network_method_picker_active", False):
-        from openfollow.runtime.app_modes_network import process_pi_network_method_picker_input
-
-        process_pi_network_method_picker_input(app)
-        return
-    if getattr(app, "_pi_network_iface_picker_active", False):
-        from openfollow.runtime.app_modes_network import process_pi_network_iface_picker_input
-
-        process_pi_network_iface_picker_input(app)
-        return
     if getattr(app, "_pi_network_active", False):
         from openfollow.runtime.app_modes_network import process_pi_network_input
 
@@ -104,10 +91,6 @@ def process_input(app: OpenFollowApp, dt: float) -> None:
 
     if app._video_receiver is not None and app._video_receiver.source_selection_active:
         app._process_source_selection_input()
-        return
-
-    if app._iface_selection_active:
-        app._process_iface_selection_input()
         return
 
     if app._source_type_selection_active:
@@ -222,32 +205,6 @@ def _back_to_settings(app: OpenFollowApp) -> None:
     invoked from the main list.
     """
     app._enter_settings_menu()
-
-
-def process_iface_selection_input(app: OpenFollowApp) -> None:
-    """Read gamepad input and apply to network interface selection."""
-    input_manager = app._input_manager
-    if input_manager is None:
-        return
-    try:
-        inp = input_manager.gamepad_handler.read_source_selection_input()
-
-        if not app._available_interfaces:
-            return
-        if inp.up_pressed:
-            app._selected_iface_index = max(0, app._selected_iface_index - 1)
-        if inp.down_pressed:
-            app._selected_iface_index = min(
-                len(app._available_interfaces) - 1,
-                app._selected_iface_index + 1,
-            )
-        if inp.confirm_pressed:
-            app._confirm_iface_selection()
-        if inp.cancel_pressed:
-            app._iface_selection_active = False
-            _back_to_settings(app)
-    except Exception as error:
-        logger.warning("Interface selection input error: %s", error)
 
 
 _SETTINGS_MENU_ITEMS: tuple[tuple[str, str], ...] = (
@@ -637,16 +594,6 @@ def handle_key_press(app: OpenFollowApp, key: str) -> None:
     # the editor.
     if getattr(app, "_pi_network_field_edit_active", False):
         return
-    if getattr(app, "_pi_network_method_picker_active", False):
-        from openfollow.runtime.app_modes_network import handle_pi_network_method_picker_key
-
-        handle_pi_network_method_picker_key(app, key)
-        return
-    if getattr(app, "_pi_network_iface_picker_active", False):
-        from openfollow.runtime.app_modes_network import handle_pi_network_iface_picker_key
-
-        handle_pi_network_iface_picker_key(app, key)
-        return
     if getattr(app, "_pi_network_active", False):
         from openfollow.runtime.app_modes_network import handle_pi_network_key
 
@@ -669,27 +616,6 @@ def handle_key_press(app: OpenFollowApp, key: str) -> None:
         # pragma: no branch – source-selection Escape arm completes the elif chain.
         elif key == "Escape":  # pragma: no branch
             app._video_receiver.exit_source_selection()
-            _back_to_settings(app)
-        return
-
-    if app._iface_selection_active:
-        if not app._available_interfaces:
-            return
-        if key == "ArrowUp":
-            app._selected_iface_index = max(0, app._selected_iface_index - 1)
-        elif key == "ArrowDown":
-            app._selected_iface_index = min(
-                len(app._available_interfaces) - 1,
-                app._selected_iface_index + 1,
-            )
-        # pragma: no branch – iface-selection Enter elif True arm fires only
-        # after the ArrowUp/ArrowDown chain ran; existing tests confirm the
-        # exhaustive-elif coverage.
-        elif key == "Enter":  # pragma: no branch
-            app._confirm_iface_selection()
-        # pragma: no branch – iface-selection Escape arm.
-        elif key == "Escape":  # pragma: no branch
-            app._iface_selection_active = False
             _back_to_settings(app)
         return
 
@@ -948,103 +874,6 @@ def enter_source_selection(app: OpenFollowApp) -> None:
         app._video_receiver.enter_source_selection()
 
 
-def refresh_iface_list(app: OpenFollowApp) -> None:
-    """Re-scan network interfaces, preserving the current selection."""
-    from openfollow.net_utils import list_iface_ipv4
-
-    prev_selected = (
-        app._available_interfaces[app._selected_iface_index]
-        if app._available_interfaces and app._selected_iface_index < len(app._available_interfaces)
-        else None
-    )
-    # Work in iface names. ``""`` stays as the auto-detect option at the head
-    # of the list.
-    ifaces = [name for name, _ip in list_iface_ipv4()]
-    app._available_interfaces = [""] + ifaces
-    if prev_selected is not None and prev_selected in app._available_interfaces:
-        app._selected_iface_index = app._available_interfaces.index(prev_selected)
-    else:
-        app._selected_iface_index = min(
-            app._selected_iface_index,
-            len(app._available_interfaces) - 1,
-        )
-
-
-def enter_iface_selection(app: OpenFollowApp) -> None:
-    """Enter network interface selection mode.
-
-    Picker storage is the iface name, but options still display the IP (with
-    the iface name hinted alongside in the menu renderer) so the operator can
-    pick visually by which network they want on the show. Seeds the selection
-    to the currently-pinned iface so the menu doesn't visually reset.
-    """
-    from openfollow.net_utils import list_iface_ipv4
-
-    ifaces = [name for name, _ip in list_iface_ipv4()]
-    # ``""`` is the auto-detect option; always first so the operator
-    # can clear an iface pin without picking a specific one.
-    app._available_interfaces = [""] + ifaces
-    current = app._config.psn_source_iface
-    try:
-        app._selected_iface_index = app._available_interfaces.index(current)
-    except ValueError:
-        app._selected_iface_index = 0
-    app._iface_selection_active = True
-
-
-def confirm_iface_selection(app: OpenFollowApp) -> None:
-    """Apply the selected interface live (no restart).
-
-    Store ``psn_source_iface`` (the stable name), then resolve to its current
-    IPv4 and route through ``apply_psn_source_ip_change`` – same path the
-    hot-reload dispatcher uses when the operator edits the web UI – so PSN
-    input + output rebind in one transactional cycle. On failure, restore the
-    prior iface and keep the picker open so the operator can pick a different
-    one without an SSH detour.
-    """
-    if not app._available_interfaces:
-        app._iface_selection_active = False
-        return
-    selected = app._available_interfaces[app._selected_iface_index]
-    old_iface = app._config.psn_source_iface
-    if selected == old_iface:
-        # No-op pick – close the picker without touching the runtime.
-        app._iface_selection_active = False
-        return
-
-    from openfollow.net_utils import resolve_source_ip
-
-    resolved_ip, _status = resolve_source_ip(selected)
-    app._config.psn_source_iface = selected
-    try:
-        app._runtime_services.apply_psn_source_ip_change(resolved_ip)
-    except Exception as error:  # noqa: BLE001
-        app._config.psn_source_iface = old_iface
-        # Restore the advisory to the prior iface's state (the PSN web
-        # partial reads it every render).
-        app._refresh_psn_source_advisory()
-        logger.warning(
-            "Failed to live-apply network interface %r: %s – keeping %r.",
-            selected,
-            error,
-            old_iface,
-        )
-        # Keep the picker open so the operator can choose a working
-        # interface; ``apply_psn_source_ip_change`` already rolled the
-        # PSN sockets back to the prior IP.
-        return
-
-    _persist_config(app)
-    # Clear/refresh the stale-iface advisory now the pin is honoured so
-    # the PSN web section stops warning about the old miss.
-    app._refresh_psn_source_advisory()
-    logger.info(
-        "Network interface set to: %s (live)",
-        selected or "auto-detect",
-    )
-    app._iface_selection_active = False
-
-
 # ---------------------------------------------------------------------------
 # Video Source Type switcher
 # ---------------------------------------------------------------------------
@@ -1146,9 +975,8 @@ def confirm_source_type_selection(app: OpenFollowApp) -> None:
     """Apply the selected source type live via ``swap_video`` and
     continue to the per-type next step.
 
-    Mirrors :func:`confirm_iface_selection`'s transactional shape:
-    on a successful swap, persist + route to next step (URL editor
-    or source picker per the plugin's capabilities); on failure
+    Transactional: on a successful swap, persist + route to next step
+    (URL editor or source picker per the plugin's capabilities); on failure
     with an empty URL field, auto-chain into the URL editor with
     rollback semantics; otherwise revert the stored type and bounce
     into the Settings menu with a banner.
@@ -1637,7 +1465,6 @@ def check_video_disconnect_banner(app: OpenFollowApp) -> None:
         return
     if (
         app._settings_menu_active
-        or app._iface_selection_active
         or app._source_type_selection_active
         or app._url_editor_active
         or app._field_choice_active
@@ -1756,8 +1583,7 @@ def process_browser_input(app: OpenFollowApp) -> None:
 
     Gamepad-only operators have no Esc key path; the WebView's own
     ``key-press-event`` handler swallows Esc on hosts that have a
-    keyboard but doesn't see any gamepad activity. Mirrors the
-    cancel-only pattern of ``process_iface_selection_input`` –
+    keyboard but doesn't see any gamepad activity. Cancel-only:
     ``cancel_pressed`` from ``read_source_selection_input`` is the
     operator's mapped ``btn_menu_cancel`` (default ``B``).
     """
@@ -1797,10 +1623,7 @@ def _exclusive_mode_active(app: OpenFollowApp) -> bool:
         or getattr(app, "_settings_menu_active", False)
         or getattr(app, "_about_active", False)
         or getattr(app, "_pi_network_field_edit_active", False)
-        or getattr(app, "_pi_network_method_picker_active", False)
-        or getattr(app, "_pi_network_iface_picker_active", False)
         or getattr(app, "_pi_network_active", False)
-        or getattr(app, "_iface_selection_active", False)
         or getattr(app, "_source_type_selection_active", False)
         or getattr(app, "_field_choice_active", False)
         or getattr(app, "_url_editor_active", False)

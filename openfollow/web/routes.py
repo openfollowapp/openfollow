@@ -310,6 +310,9 @@ _IFNAME_MAX = 15
 _BLANK_IFACE_LABELS = {
     "auto": "-- Auto-detect --",
     "station": "-- Follow station interface --",
+    # The web UI answers on every interface unless pinned – it does not
+    # follow the station pin, so it gets its own wording.
+    "all": "-- All interfaces --",
 }
 
 _SECTION_CONFIG_ATTRS = {
@@ -960,6 +963,7 @@ def get_section_data(cfg: AppConfig, section: str) -> dict[str, Any] | None:
 _INTERFACE_ASSIGNMENT_TARGETS: dict[str, tuple[str | None, str]] = {
     "psn_source_iface": (None, "psn_source_iface"),
     "otp_output.source_iface": ("otp_output", "source_iface"),
+    "web_bind_iface": (None, "web_bind_iface"),
 }
 
 _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
@@ -1059,7 +1063,58 @@ def request_local_iface(environ: Mapping[str, Any]) -> str:
     return get_iface_for_ip(local_addr)
 
 
-def build_interface_assignment_rows(cfg: AppConfig) -> list[dict[str, Any]]:
+def resolve_web_bind_for(cfg: AppConfig) -> tuple[str, str]:
+    """``(host, status)`` the web UI binds for this config.
+
+    Resolved once per render and passed down: each call walks every NIC, and
+    three independent lookups could also disagree if an address changes
+    mid-render.
+    """
+    from openfollow.net_utils import resolve_web_bind
+
+    host, status = resolve_web_bind(cfg.web_bind, cfg.web_bind_iface)
+    return host, str(status)
+
+
+def _web_bind_address(cfg: AppConfig, resolved: tuple[str, str]) -> str:
+    """Address column for the Web UI row: where the config UI will answer.
+
+    A pin whose interface has no address reads as the wildcard fallback the
+    runtime actually substitutes, not as an error – unlike every other plane
+    the web UI stays up rather than failing closed.
+    """
+    host, status = resolved
+    if status == "down":
+        return f"{cfg.web_bind_iface} is down - all interfaces"
+    if status == "none":
+        return "All interfaces"
+    return host
+
+
+def build_web_bind_notice(cfg: AppConfig, resolved: tuple[str, str], display_port: int) -> str:
+    """Lockout warning for a pinned web UI, naming the URL that will reach it.
+
+    Rendered whenever the pin is set, not only when it is unresolvable: the
+    address that stops working is the one the operator is reading this in, so
+    the warning has to arrive before the restart, not after it.
+
+    The port is the one actually bound, not the configured one - a station
+    that could not take :80 is serving on the fallback, and a URL naming the
+    wrong port is the same failure as naming the wrong address.
+    """
+    if cfg.web_bind or not cfg.web_bind_iface:
+        return ""
+    address, status = resolved
+    port = "" if display_port == 80 else f":{display_port}"
+    where = f"http://{address}{port}" if status == "iface" else f"an address on {cfg.web_bind_iface}"
+    return (
+        f"After a restart the web UI answers only on {where}. "
+        "If that address is unreachable, use the Network screen on the station "
+        "display to serve on all interfaces again."
+    )
+
+
+def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | None = None) -> list[dict[str, Any]]:
     """Rows for the Interface Assignment panel, in render order.
 
     Every row carries the address the plane will actually bind, resolved
@@ -1083,6 +1138,7 @@ def build_interface_assignment_rows(cfg: AppConfig) -> list[dict[str, Any]]:
             return f"{plane_source_iface(pin, station_iface)} is down"
         return resolved
 
+    resolved = web_bind if web_bind is not None else resolve_web_bind_for(cfg)
     station = cfg.psn_source_iface
     station_ip = _plane_address(station, "")
 
@@ -1123,6 +1179,23 @@ def build_interface_assignment_rows(cfg: AppConfig) -> list[dict[str, Any]]:
             "editable": False,
             "blank": "",
             "note": "Follows station interface",
+        },
+        {
+            # The web UI does not inherit the station pin: a station pinned to
+            # a lighting VLAN would take its own config UI off the office LAN
+            # as a side effect. Blank here means every interface.
+            #
+            # A literal ``web_bind`` address outranks this picker, so while one
+            # is set the row is read-only: an editable control that cannot take
+            # effect is worse than none, and this one would also report "All
+            # interfaces" for a UI answering at exactly one.
+            "key": "" if cfg.web_bind else "web_bind_iface",
+            "label": "Web UI",
+            "value": cfg.web_bind_iface,
+            "address": resolved[0] if cfg.web_bind else _web_bind_address(cfg, resolved),
+            "editable": not cfg.web_bind,
+            "blank": "all",
+            "note": f"Fixed to {cfg.web_bind} by web_bind in config.toml" if cfg.web_bind else "",
         },
     ]
 
@@ -2922,7 +2995,13 @@ def _build_diagnostics_providers(
             }
             for p in server.get_peers()
         ],
-        iface_ip=lambda: server.local_ip,
+        # Annotated rather than bare: the address keeps its last known good
+        # value through an outage, and the bundle carries no alert list to
+        # contradict it, so offline support would read a stale address as
+        # current with nothing on the page saying otherwise.
+        iface_ip=lambda: (
+            f"{server.local_ip} (station interface down)" if server.station_interface_down else server.local_ip
+        ),
         config_redacted_toml=lambda: diagnostics.redact_web_pin(
             _config_to_toml(cfg),
         ),
@@ -4365,6 +4444,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             config=config,
             peers=peers,
             local=local,
+            station_down=server.station_interface_down,
             network_state=server.get_network_state(),
             stats=server.get_runtime_stats(),
             local_ips=_get_local_ips(),
@@ -4430,6 +4510,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "partials/overview_peers",
             peers=peers,
             local=local,
+            station_down=server.station_interface_down,
         )
 
     @app.get("/section/statistics")
@@ -5093,12 +5174,37 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         template_name = "partials/gamepad" if name == "controller" else f"partials/{name}"
         return template(template_name, config=config, **extra)
 
-    def _render_interface_assignment(cfg: AppConfig, *, saved: bool = False) -> Any:
+    def _web_bind_restart_pending(cfg: AppConfig, resolved: tuple[str, str]) -> bool:
+        """True when the saved web-UI pin isn't the one the server started on.
+
+        Compares the *configured* pin against what was in force at bind time,
+        not the two resolved addresses. A pin naming an interface that is
+        currently down resolves to the same wildcard the server is already
+        serving on, so an address comparison would report nothing pending and
+        the operator would never be told the pin has not taken effect.
+
+        Self-clearing either way: after the restart the recorded pin equals
+        the saved one and the button goes away on its own.
+        """
+        advisory = server.get_web_bind_advisory()
+        if "iface_at_start" in advisory:
+            at_start = (advisory.get("bind_at_start", ""), advisory.get("iface_at_start", ""))
+            return (cfg.web_bind, cfg.web_bind_iface) != at_start
+        # No runtime behind the server (boot, unit contexts): fall back to
+        # comparing where it would bind against where it did.
+        return resolved[0] != server.bind_host
+
+    def _render_interface_assignment(cfg: AppConfig, *, saved: bool = False, restarting: bool = False) -> Any:
+        resolved = resolve_web_bind_for(cfg)
         return template(
             "partials/interface_assignment",
             config=cfg,
             saved=saved,
-            assignment_rows=build_interface_assignment_rows(cfg),
+            restarting=restarting,
+            assignment_rows=build_interface_assignment_rows(cfg, resolved),
+            web_bind_notice=build_web_bind_notice(cfg, resolved, server.display_port),
+            web_bind_advisory=server.get_web_bind_advisory(),
+            web_bind_restart=_web_bind_restart_pending(cfg, resolved),
         )
 
     @app.get("/section/interface_assignment")
@@ -5114,11 +5220,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def update_interface_assignment() -> Any:
         """Save every pin, then let the config file-watcher live-apply them.
 
-        Each row's field lives on the sub-config that owns its protocol, so
-        the existing per-section hot-reload orchestrators pick the changes up
-        with no dispatch of this panel's own – nothing here needs a restart.
+        Each protocol row's field lives on the sub-config that owns it, so the
+        existing per-section hot-reload orchestrators pick those changes up.
+        The web UI row is the exception: its listening socket can't be moved
+        under the request that is being served on it, so that one pin needs a
+        restart, offered as a separate ``?restart=1`` submit.
         """
         cfg = _save_section_from_form("interface_assignment")
+        if request.query.get("restart") == "1":
+            server.request_restart()
+            return _render_interface_assignment(cfg, saved=True, restarting=True)
         return _render_interface_assignment(cfg, saved=True)
 
     @app.post("/section/video_source")

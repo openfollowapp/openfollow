@@ -906,6 +906,17 @@ class TestInitPsnReceiver:
         assert recv.kwargs["source_ip"] == "10.0.0.1"
 
 
+def _fake_ifaces(monkeypatch, ifaces: dict[str, str]) -> None:
+    """Replace the host's interface table with ``{name: ipv4}``."""
+    from openfollow import net_utils
+
+    monkeypatch.setattr(
+        net_utils.psutil,
+        "net_if_addrs",
+        lambda: {name: [SimpleNamespace(family=socket.AF_INET, address=addr)] for name, addr in ifaces.items()},
+    )
+
+
 class TestResolveWebBind:
     def test_explicit_web_bind_wins(self, services: AppRuntimeServices) -> None:
         services._app._config = replace(services._app._config, web_bind="192.168.5.5", psn_source_iface="eth0")
@@ -924,6 +935,49 @@ class TestResolveWebBind:
     def test_explicit_web_bind_all_interfaces_passthrough(self, services: AppRuntimeServices) -> None:
         services._app._config = replace(services._app._config, web_bind="0.0.0.0", psn_source_iface="eth0")
         assert services._resolve_web_bind() == "0.0.0.0"
+
+    def test_a_live_pin_binds_that_interface(self, services: AppRuntimeServices, monkeypatch) -> None:
+        _fake_ifaces(monkeypatch, {"eth1": "172.16.4.20"})
+        services._app._config = replace(services._app._config, web_bind="", web_bind_iface="eth1")
+        assert services._resolve_web_bind() == "172.16.4.20"
+        advisory = services._web_bind_advisory()
+        assert advisory["status"] == "iface"
+        assert advisory["banner"] == ""
+        assert advisory["resolved_ip"] == "172.16.4.20"
+        # The pin in force at bind time; the panel compares the saved config
+        # against this to tell whether a restart is still owed.
+        assert advisory["iface_at_start"] == "eth1"
+
+    def test_an_unresolvable_pin_serves_everywhere_and_says_so(self, services: AppRuntimeServices, monkeypatch) -> None:
+        """The web UI is the one plane that fails open: a pin that misses must
+        not take the config UI down, because nobody could then correct it."""
+        _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        services._app._config = replace(services._app._config, web_bind="", web_bind_iface="eth1")
+        assert services._resolve_web_bind() == "0.0.0.0"
+        advisory = services._web_bind_advisory()
+        assert advisory["status"] == "down"
+        assert "eth1" in advisory["banner"]
+        assert advisory["resolved_ip"] == ""
+
+    def test_an_unpinned_bind_reports_no_advisory(self, services: AppRuntimeServices) -> None:
+        """Blank is the default, not a degraded state - surfacing a banner for
+        it would cry wolf on every stock station."""
+        services._app._config = replace(services._app._config, web_bind="", web_bind_iface="")
+        services._resolve_web_bind()
+        advisory = services._web_bind_advisory()
+        assert (advisory["status"], advisory["banner"], advisory["resolved_ip"]) == ("", "", "")
+        assert (advisory["bind_at_start"], advisory["iface_at_start"]) == ("", "")
+
+    def test_a_recovered_pin_clears_the_earlier_advisory(self, services: AppRuntimeServices, monkeypatch) -> None:
+        """Each resolve re-states the whole advisory, so a stale "down" banner
+        cannot outlive the restart that fixed it."""
+        _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        services._app._config = replace(services._app._config, web_bind="", web_bind_iface="eth1")
+        services._resolve_web_bind()
+        assert services._web_bind_advisory()["status"] == "down"
+        _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "172.16.4.20"})
+        assert services._resolve_web_bind() == "172.16.4.20"
+        assert services._web_bind_advisory()["banner"] == ""
 
 
 # --------------------------------------------------------------------------- #

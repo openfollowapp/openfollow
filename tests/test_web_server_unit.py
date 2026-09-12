@@ -1320,6 +1320,84 @@ def test_pinned_bind_gets_a_loopback_listener(tmp_path, monkeypatch) -> None:
         assert _make_quiet_server(tmp_path, monkeypatch, host=host)._needs_loopback_listener() is False
 
 
+def test_a_web_bind_iface_pin_still_serves_the_on_screen_browser(tmp_path, monkeypatch) -> None:
+    """Carried end to end from the config field the operator sets: pinning
+    the web UI to one interface must not take the on-screen browser (always
+    loopback) with it, or the station's own recovery screen goes dark."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+    from openfollow.configuration import AppConfig
+    from openfollow.net_utils import resolve_web_bind
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {"eth1": [SimpleNamespace(family=_socket.AF_INET, address="172.16.4.20")]},
+    )
+    cfg = AppConfig(web_bind_iface="eth1")
+    host, _status = resolve_web_bind(cfg.web_bind, cfg.web_bind_iface)
+    assert host == "172.16.4.20"
+    assert _make_quiet_server(tmp_path, monkeypatch, host=host)._needs_loopback_listener() is True
+
+
+def test_bind_host_reports_the_listening_address(tmp_path, monkeypatch) -> None:
+    """The panel compares the configured pin against this to tell whether a
+    restart is still owed, so it has to be the address actually bound."""
+    assert _make_quiet_server(tmp_path, monkeypatch, host="10.0.0.9").bind_host == "10.0.0.9"
+
+
+def test_web_bind_advisory_without_a_provider_is_empty(tmp_path, monkeypatch) -> None:
+    """A server built without the runtime behind it (boot, unit contexts)
+    reports no advisory rather than raising into the panel render."""
+    srv = _make_quiet_server(tmp_path, monkeypatch)
+    assert srv.get_web_bind_advisory() == {"status": "", "banner": "", "resolved_ip": ""}
+
+
+def test_web_bind_advisory_survives_a_raising_provider(tmp_path, monkeypatch) -> None:
+    """The advisory is decoration on a panel whose job is fixing
+    reachability; a provider fault must not 500 the page that fixes it."""
+
+    def _boom() -> dict[str, str]:
+        raise RuntimeError("no runtime")
+
+    srv = _make_quiet_server(tmp_path, monkeypatch, web_bind_advisory_provider=_boom)
+    assert srv.get_web_bind_advisory() == {"status": "", "banner": "", "resolved_ip": ""}
+
+
+def test_web_bind_advisory_passes_the_provider_through(tmp_path, monkeypatch) -> None:
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        web_bind_advisory_provider=lambda: {"status": "down", "banner": "b", "resolved_ip": ""},
+    )
+    assert srv.get_web_bind_advisory()["status"] == "down"
+
+
+def test_suspending_beacons_marks_the_station_down(tmp_path, monkeypatch) -> None:
+    """The observer's down edge is authoritative. The request-driven refresh
+    is not, so a diagnostics bundle collected without a preceding page load
+    would otherwise record the address as if it still reached the station."""
+    srv = _make_quiet_server(tmp_path, monkeypatch)
+    assert srv.station_interface_down is False
+
+    srv.suspend_beacons()
+
+    assert srv.station_interface_down is True
+
+
+def test_reopening_beacons_clears_the_station_down_mark(tmp_path, monkeypatch) -> None:
+    """Recovery is an observer decision too, not something to be discovered
+    by whoever next loads a page."""
+    srv = _make_quiet_server(tmp_path, monkeypatch)
+    srv.suspend_beacons()
+
+    srv.reopen_beacons()
+
+    assert srv.station_interface_down is False
+
+
 def test_refresh_local_ip_is_publicly_callable(tmp_path, monkeypatch) -> None:
     """The runtime observer drives the refresh on a timer. It used to happen
     only on a request path, so a station whose address changed healed its
@@ -1364,6 +1442,40 @@ def test_beacons_start_unpinned_when_the_station_pin_is_down(tmp_path, monkeypat
 
     assert srv._beacon_sender._iface_ip is None
     assert srv._beacon_receiver._iface_ip is None
+
+
+def test_a_down_station_pin_is_reported_rather_than_left_implicit(tmp_path, monkeypatch) -> None:
+    """The displayed address stays, and the state is published alongside it.
+
+    Blanking it would take information away from an operator who is
+    demonstrably connected - the web UI binds every interface, so it is usually
+    still reachable at that address while the pinned one is dark. Leaving the
+    number alone and saying nothing is the other half of the problem: the value
+    silently stops meaning "where peers reach this station". This is what lets
+    the self-row and the diagnostics bundle say which of the two it is.
+    """
+    monkeypatch.setattr("openfollow.web.server.get_local_ipv4_addresses", lambda: {"10.0.0.1"})
+    resolved: list[str | None] = ["10.0.0.1"]
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        local_ip="10.0.0.1",
+        station_ip="10.0.0.1",
+        local_ip_provider=lambda: resolved[0],
+    )
+    assert srv.station_interface_down is False
+
+    resolved[0] = None
+    srv._local_ip_refresh_ts -= 1000.0
+    srv.refresh_local_ip()
+    assert srv.station_interface_down is True
+    assert srv.local_ip == "10.0.0.1", "the displayed address should still not be downgraded"
+
+    # And it clears when the interface returns, so the row stops warning.
+    resolved[0] = "10.0.0.1"
+    srv._local_ip_refresh_ts -= 1000.0
+    srv.refresh_local_ip()
+    assert srv.station_interface_down is False, "the warning outlived the outage"
 
 
 def test_a_station_pin_going_down_stops_the_beacons(tmp_path, monkeypatch) -> None:

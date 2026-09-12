@@ -46,17 +46,12 @@ class PiNetworkOverlayState:
     active_iface: str = ""
     banner: str = ""
 
-    iface_picker_active: bool = False
-    iface_picker_items: list[str] = field(default_factory=list)
-    iface_picker_selected_index: int = 0
-
-    method_picker_active: bool = False
-    method_picker_items: list[str] = field(default_factory=list)
-    method_picker_selected_index: int = 0
-
     field_edit_active: bool = False
     field_label: str = ""
     field_value: str = ""
+    # Character offset of the d-pad cursor within ``field_value``, or -1
+    # when the value is freely typed and the caret belongs at the end.
+    field_caret_offset: int = -1
 
     def reset(self) -> None:
         self.screen_active = False
@@ -64,15 +59,10 @@ class PiNetworkOverlayState:
         self.selected_index = 0
         self.active_iface = ""
         self.banner = ""
-        self.iface_picker_active = False
-        self.iface_picker_items.clear()
-        self.iface_picker_selected_index = 0
-        self.method_picker_active = False
-        self.method_picker_items.clear()
-        self.method_picker_selected_index = 0
         self.field_edit_active = False
         self.field_label = ""
         self.field_value = ""
+        self.field_caret_offset = -1
 
 
 @dataclass
@@ -213,10 +203,6 @@ class OverlayState:
     source_selection_title: str = "SELECT SOURCE"
     discovered_sources: list[str] = field(default_factory=list)
     selected_source_index: int = 0
-    # Network interface selection
-    iface_selection_active: bool = False
-    available_interfaces: list[str] = field(default_factory=list)
-    selected_iface_index: int = 0
     # Video source-type selection
     source_type_selection_active: bool = False
     # Each entry: (input_id, display_name) – pre-sorted by display.
@@ -345,9 +331,6 @@ class OverlayState:
         self.source_selection_title = "SELECT SOURCE"
         self.discovered_sources.clear()
         self.selected_source_index = 0
-        self.iface_selection_active = False
-        self.available_interfaces.clear()
-        self.selected_iface_index = 0
         self.source_type_selection_active = False
         self.available_source_types.clear()
         self.selected_source_type_index = 0

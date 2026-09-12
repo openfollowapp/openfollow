@@ -156,6 +156,7 @@ All config lives in `config.toml` (auto-reloaded when file changes on disk).
 | `psn_mcast_ip` | `"236.10.10.10"` | PSN multicast group |
 | `psn_source_iface` | `""` | Bind PSN / beacon to this interface **by name**; empty = auto-detect |
 | `web_port` | `80` | Web config UI port |
+| `web_bind_iface` | `""` | Serve the web UI on this interface only, **by name**; empty = every interface. Resolved by `net_utils.resolve_web_bind`, which an explicit `web_bind` address outranks. The **one plane that fails open**: an unresolvable pin serves everywhere and records an advisory, because a silent output is diagnosable from another station and an unreachable config UI is not. Device-local |
 | `web_pin` | `""` | Auth PIN; when non-empty, browser routes require login + cookie (`SameSite=Strict`), peer-to-peer routes require HMAC-signed headers |
 | `update_github_repo` | `"openfollowapp/openfollow"` | `owner/repo` slug the `.deb`-release updater queries for new releases |
 | `update_service_name` | `"openfollow"` | systemd unit restarted after a `.deb` install |
@@ -194,7 +195,7 @@ When you add, remove, or change a field on any config dataclass:
 A config change that skips any of these four steps is incomplete, regardless of what the happy path looks like. Code review should reject it.
 
 ### Hot-reload rules (`apply_runtime_config_changes`)
-- **Requires app restart:** **detection** changes the worker can't serve in-process: enabling (`detection.enabled` going `False → True`, because the receiver pipeline must wire the GStreamer appsink into a fresh detector and only `init_video` does that), changing `detection.inference_size` (GStreamer appsink caps are pinned at pipeline build time; live-restamping the worker's `_inference_size` would silently disagree with the appsink resolution), and any detection edit when the detector is missing or unavailable (`_person_detector` is None or `available is False` because the backend never loaded at startup – `reload_config` would silently no-op since the worker thread was never started). `web_port` also stays restart-required (server-restart-in-place is fragile while a request is in flight, rare change)
+- **Requires app restart:** **detection** changes the worker can't serve in-process: enabling (`detection.enabled` going `False → True`, because the receiver pipeline must wire the GStreamer appsink into a fresh detector and only `init_video` does that), changing `detection.inference_size` (GStreamer appsink caps are pinned at pipeline build time; live-restamping the worker's `_inference_size` would silently disagree with the appsink resolution), and any detection edit when the detector is missing or unavailable (`_person_detector` is None or `available is False` because the backend never loaded at startup – `reload_config` would silently no-op since the worker thread was never started). `web_port` and `web_bind_iface` also stay restart-required (the listening socket can't move under a request being served on it; server-restart-in-place is fragile, and both are rare changes). The on-screen Network screen's `Serve web UI on all interfaces` clears the pin and requests the restart itself - it is the documented lockout escape and is deliberately not gated on a writable network backend
 - **Live update (no restart):** **video_source_type and any plugin config field** (auto-detected via `plugin.config_changed()`; the receiver live-swaps the active input plugin in place via `swap_video` → `receiver.swap_input`, transactional with rollback – see [`AppRuntimeServices.swap_video`](openfollow/services.py)), camera, grid, movement (speed limits + default position), marker, controller, **mouse3d** (read thread runs for the handler's lifetime; the block swaps the mapping config and the `enabled` gate is read live in `InputManager.update`), osc, trigger_zones, controlled_marker_ids, viewer_marker_ids, psn_system_name, **psn_source_iface, otp_output, rttrpm_output**, **detection** running-detector cases – on→on (worker drains a staged config between frames; rebuilds the inference session in-thread when model / storage_path changes) and on→off, **window_width / window_height, web_pin**
 - Restart triggered via `_web_commands.request_restart()`, polled in `_check_restart_request()`
 - Saving config with restart-requiring changes triggers an automatic restart via the hot-reload file watcher within ~1 animation frame
@@ -461,7 +462,7 @@ Every binding is a `ControllerConfig` field; the defaults are shown. There is no
 | H | `key_toggle_help` | Toggle help overlay |
 | Z | `key_toggle_zones` | Toggle trigger-zone overlay |
 | Tab | `key_next_marker` | Select next marker |
-| M | `key_settings` | Open the Settings menu (source / interface / network) |
+| M | `key_settings` | Open the Settings menu (source / network / button detection / web UI / restart / about) |
 | N | NDI plugin `hotkey_label` | NDI source selection (NDI source only) |
 | Esc | modal | Close the active overlay |
 

@@ -86,7 +86,7 @@ include = [
 # producing a spurious reformat diff) on changes unrelated to the work at hand.
 # The ``ruff-pre-commit`` hook ``rev`` in ``.pre-commit-config.yaml`` is pinned
 # to the SAME version so the local hooks and CI never disagree. Bump together.
-ruff = "0.16.5"
+ruff = "0.16.6"
 pytest = "^9.1.1"
 pytest-cov = "^7.1"
 coverage = { extras = ["toml"], version = "^7.16" }

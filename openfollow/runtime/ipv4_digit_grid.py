@@ -67,17 +67,44 @@ def move_cursor(index: int, delta: int) -> int:
     return max(0, min(DIGIT_SLOTS - 1, index + delta))
 
 
+MAX_OCTET = 255
+
+
+def _octet_bounds(index: int) -> tuple[int, int]:
+    """Slice bounds of the octet containing digit slot *index*."""
+    start = (index // DIGITS_PER_OCTET) * DIGITS_PER_OCTET
+    return start, start + DIGITS_PER_OCTET
+
+
 def bump_digit(digits: str, index: int, delta: int) -> str:
     """Cycle the digit at *index* by *delta*, wrapping 0-9.
 
     Wrapping is what keeps 255 one press from 0; clamping would put the common
     high octets nine presses away.
+
+    Values that would take the octet past 255 are skipped rather than offered,
+    so a dotted quad the grid produced is always a real address. The
+    alternative - let the operator dial ``648`` and reject it at save - spends
+    the error on a banner several presses after the mistake, and leaves them to
+    work out which octet it meant.
     """
     digits = digits.rjust(DIGIT_SLOTS, "0")[:DIGIT_SLOTS]
     if not 0 <= index < DIGIT_SLOTS:
         return digits
+    if delta == 0:
+        return digits
     current = int(digits[index]) if digits[index].isdigit() else 0
-    return digits[:index] + str((current + delta) % 10) + digits[index + 1 :]
+    step = 1 if delta > 0 else -1
+    start, end = _octet_bounds(index)
+    for hop in range(1, 11):
+        candidate = digits[:index] + str((current + step * hop) % 10) + digits[index + 1 :]
+        octet = candidate[start:end]
+        if octet.isdigit() and int(octet) <= MAX_OCTET:
+            return candidate
+    # Every value of this digit leaves the octet out of range, which only a
+    # buffer that was already invalid can produce. Leave it be rather than
+    # rewrite digits the operator did not touch.
+    return digits
 
 
 def is_grid_form(value: str) -> bool:

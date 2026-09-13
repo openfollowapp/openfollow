@@ -392,7 +392,12 @@ def test_the_session_row_names_the_address_it_is_answering(net_server) -> None:
     wlan = body.split('data-adv-key="net-iface-wlan0"', 1)[1].split("</details>", 1)[0]
     eth0 = body.split('data-adv-key="net-iface-eth0"', 1)[1].split("</details>", 1)[0]
     assert "This session" in wlan
-    assert "answering your browser at 169.254.32.55" in wlan
+    # The notice itself, not the badge's tooltip - both carry the address, so
+    # asserting on the body alone passes with the old topology claim in place.
+    notice = wlan.split('class="notice warning"', 1)[1].split("</div>", 1)[0]
+    assert "answering your browser at 169.254.32.55" in notice
+    assert "connected over this interface" not in notice
+    assert "169.254.32.55" in wlan.split('class="stat-chip info"', 1)[1].split(">", 1)[0]
     assert "This session" not in eth0
     assert "answering your browser" not in eth0
 

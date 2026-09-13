@@ -2699,7 +2699,11 @@ class AppRuntimeServices:
         }
         receiver = getattr(app, "_video_receiver", None)
         if receiver is not None:
-            status = receiver.status_marker
+            # One consistent unit, per ``NdiStatusMarker.snapshot``: four
+            # separate property reads can each land in a different generation,
+            # and the Video panel reads ``connected`` and ``error_message``
+            # together to decide whether to raise the failure banner.
+            status = receiver.status_marker.snapshot()
             width, height = receiver.resolution
             video_snapshot = {
                 "source_type": cfg.video_source_type,

@@ -72,10 +72,20 @@ class _FakeOverlayRenderer:
 
 @dataclass
 class _FakeStatusMarker:
+    """Models the real marker, including that readers take one snapshot.
+
+    ``NdiStatusMarker`` publishes its four fields as an immutable unit and
+    requires multi-field readers to go through ``snapshot()``; a fake that also
+    answered bare property reads would let that contract be broken silently.
+    """
+
     status: SimpleNamespace = field(default_factory=lambda: SimpleNamespace(name="PLAYING"))
     is_connected: bool = True
     reconnect_attempt: int = 2
     error_message: str = "prev reset"
+
+    def snapshot(self) -> _FakeStatusMarker:
+        return self
 
 
 class _FakeReceiver:

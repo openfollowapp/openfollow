@@ -42,7 +42,16 @@ _USERINFO_IN_TEXT_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^/?#\s]*@")
 # ``@``, a credential always does. ``?`` and ``#`` are excluded for the same
 # reason they are above - without them an SRT ``?passphrase=p@ss`` reads as a
 # host:port pair followed by userinfo, and the query rule never gets to mask it.
-_SCHEMELESS_USERINFO_IN_TEXT_RE = re.compile(r"(?<![\w@.+-])[^\s:@/?#]+:[^\s@/?#]*@(?=[^\s@])")
+#
+# What follows the ``@`` has to look like a host - dotted, or followed by a path.
+# Deleting a run is destructive, and plenty of ordinary log content has the same
+# ``token:token@token`` shape: an aspect ratio and refresh (``16:9@60Hz``) or a
+# timestamped event (``10:30:00@host``) would otherwise be eaten out of a
+# diagnostics bundle. The cost is a credential against a bare, dotless host with
+# no path, which the structural helpers below still strip.
+_SCHEMELESS_USERINFO_IN_TEXT_RE = re.compile(
+    r"(?<![\w@.+-])[^\s:@/?#]+:[^\s@/?#]*@(?=[^\s@/?#]*\.[^\s@/?#]|[^\s@/?#]+/)",
+)
 
 # A secret query value in free text, running to the next separator.
 _SECRET_QUERY_IN_TEXT_RE = re.compile(
@@ -120,6 +129,14 @@ def redact_uri(uri: str) -> str:
     it describes.
     """
     stripped = strip_uri_userinfo(uri)
+    scheme, sep, rest = stripped.partition("://")
+    if sep and "@" in rest:
+        # Userinfo survived the parse. A ``/`` in a password puts it in the
+        # path (``rtsp://user:pa/ss@cam/s`` splits as netloc ``user:pa``), and
+        # nothing distinguishes that from a genuine ``@`` in a path. Since this
+        # feeds the HUD label, our own logging and the bundle's config dump,
+        # the unprovable case fails closed rather than printing the secret.
+        return f"{scheme}://{REDACTION}"
     head, query, hash_sep, fragment = _split_query(stripped)
     if not query:
         return stripped

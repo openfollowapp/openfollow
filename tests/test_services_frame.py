@@ -152,6 +152,26 @@ class TestUpdateVideo:
         update_video(app, logger)
         assert canvas.aspect_calls == [(1920, 1080)]
 
+    def test_a_raising_hint_is_attempted_once_not_every_frame(self) -> None:
+        """The latch this replaced tried once. Recording the shape only on
+        success would retry a raising GTK call 60 times a second for the rest
+        of the session."""
+
+        class _RaisingCanvas:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def set_aspect_ratio(self, w: int, h: int) -> None:
+                self.calls += 1
+                raise RuntimeError("window is being destroyed")
+
+        canvas = _RaisingCanvas()
+        app = _fake_app(resolution=(1920, 1080), canvas=canvas)
+        logger = logging.getLogger("test-update-video")
+        for _ in range(5):
+            update_video(app, logger)
+        assert canvas.calls == 1
+
     def test_first_logged_resolution_does_not_gate_later_hints(self) -> None:
         """The one-shot log line and the aspect hint are separate concerns."""
         canvas = _FakeCanvas(has_set_aspect_ratio=True)

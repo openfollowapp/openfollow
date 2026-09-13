@@ -30,8 +30,12 @@ def update_video(app: Any, logger: logging.Logger) -> None:
         if prev is None or prev[0] * h != prev[1] * w:
             canvas = app._canvas
             if hasattr(canvas, "set_aspect_ratio"):
-                canvas.set_aspect_ratio(w, h)
+                # Recorded before the call, not after: a raising GTK hint would
+                # otherwise be retried on every frame for the rest of the
+                # session. One attempt per shape is what the latch this
+                # replaced gave, and all this row can usefully do.
                 app._video_aspect = (w, h)
+                canvas.set_aspect_ratio(w, h)
     except Exception as e:
         logger.debug("Video update error: %s", e)
 

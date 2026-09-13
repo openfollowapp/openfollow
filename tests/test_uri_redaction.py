@@ -57,6 +57,25 @@ class TestRedactUri:
     def test_a_password_containing_an_at_sign_is_fully_stripped(self) -> None:
         assert redact_uri("rtsp://operator:p@ss@cam.local:554/s") == "rtsp://cam.local:554/s"
 
+    @pytest.mark.parametrize(
+        "uri",
+        ["rtsp://user:pa/ss@cam.local/stream", "rtsp://cam.local:554/path@2x"],
+    )
+    def test_an_unstrippable_at_sign_fails_closed(self, uri: str) -> None:
+        """A ``/`` in a password lands the userinfo in the *path*
+        (``rtsp://user:pa/ss@cam/s`` splits as netloc ``user:pa``), and nothing
+        distinguishes that from a genuine ``@`` in a path. This feeds the HUD
+        label, our own logging and the bundle's config dump, so the unprovable
+        case must not print the string it cannot vouch for.
+        """
+        out = redact_uri(uri)
+        assert out == "rtsp://***"
+        assert "@" not in out
+
+    def test_a_clean_uri_is_not_swept_up_by_the_fail_closed_rule(self) -> None:
+        assert redact_uri("rtsp://user:pass@cam/s") == "rtsp://cam/s"
+        assert redact_uri("srt://h:5000?passphrase=x") == "srt://h:5000?passphrase=***"
+
     def test_keeps_a_fragment(self) -> None:
         assert redact_uri("rtsp://u:p@h/s?passphrase=x#frag") == "rtsp://h/s?passphrase=***#frag"
 
@@ -162,6 +181,25 @@ class TestRedactUrisInText:
         """An address has no colon-separated pair before the ``@``; a
         credential always does. That is the whole of the distinction."""
         assert redact_uris_in_text(line) == line
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "ratio 16:9@60Hz output",
+            "Renewed lease at 10:30:00@host",
+        ],
+    )
+    def test_ordinary_token_colon_token_at_token_text_survives(self, line: str) -> None:
+        """Deleting a run is destructive, and log content shares the shape.
+
+        What follows the ``@`` has to look like a host - dotted, or followed by
+        a path - or an aspect ratio and a timestamped event get eaten out of a
+        diagnostics bundle.
+        """
+        assert redact_uris_in_text(line) == line
+
+    def test_a_dotless_host_with_a_path_is_still_a_credential(self) -> None:
+        assert redact_uris_in_text("creds user:pw@camera/stream here") == "creds camera/stream here"
 
     def test_the_schemeless_rule_leaves_a_query_to_the_query_rule(self) -> None:
         """``?passphrase=p@ss`` reads as ``host:port?…=p`` + userinfo unless the

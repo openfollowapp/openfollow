@@ -1464,6 +1464,26 @@ class TestReconnect:
         assert r._state.is_placeholder_pipeline is True
         assert r.status_marker.error_message == "Unauthorized (401)"
 
+    def test_a_progress_note_is_never_published_as_the_failure_reason(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        """Cancelling source selection schedules a reconnect that is progress,
+        not a failure. An input with ``max_attempts=1`` (NDI) falls back on the
+        very next attempt, so storing that note as the error would have the
+        banner say "Reconnecting to previous source" at the moment the receiver
+        gave up - worse than the generic it replaced.
+        """
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.enter_source_selection()
+        r.exit_source_selection()
+        r._state.reconnect_attempt = 99
+
+        r._do_reconnect()
+
+        assert "Reconnecting" not in r.status_marker.error_message
+        assert r.status_marker.error_message == "No Fake connection"
+
     def test_fallback_falls_back_to_a_generic_reason_when_none_was_recorded(
         self, fake_gst, fake_glib, fake_input_cls
     ) -> None:

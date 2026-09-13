@@ -790,7 +790,12 @@ class GstNativeSinkReceiver:
         if self._state.restore_connection_after_selection():
             self._status_marker.set_connected(source_label)
         elif source_label:
-            self._schedule_reconnect("Reconnecting to previous source")
+            # No message: this is progress, not a failure. Passing one would
+            # store it as the error, and an input with ``max_attempts=1`` (NDI)
+            # falls back on the very next attempt and would publish
+            # "Reconnecting to previous source" as the terminal reason - saying
+            # it is still trying at the moment it gave up.
+            self._schedule_reconnect()
         else:
             self._status_marker.set_disconnected("Source selection cancelled")
 

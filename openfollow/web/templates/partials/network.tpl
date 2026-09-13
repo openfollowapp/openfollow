@@ -67,7 +67,10 @@
             % _name = row.get("name", "")
             % _addr = row.get("address", "")
             % _prefix = row.get("prefix")
-            % _rmethod = row.get("method") or "dhcp"
+            %# What the operator typed on a rejected apply, for the fields
+            %# only: the summary above them reports the adapter's own state.
+            % _entered = row.get("entered") or {}
+            % _rmethod = _entered.get("method") or row.get("method") or "dhcp"
             % _vlan_id = row.get("vlan_id")
             % _row_edit = bool(_editable and _name and _name == _editing)
             % _dis = '' if _row_edit else 'disabled'
@@ -95,7 +98,14 @@
                 % if _row_edit:
                       hx-post="/section/network/apply" hx-target="#network-interface"
                       hx-swap="innerHTML" hx-trigger="submit"
+                    %# The blind reload is for an apply that severs this very
+                    %# connection, so it is armed only on the row answering it.
+                    %# On any other row the apply changes nothing about how the
+                    %# browser got here, and a slow one would otherwise time out
+                    %# and navigate to an address the operator cannot reach.
+                    % if _name and _name == _session:
                       hx-on:submit="netScheduleReload(this)"
+                    % end
                 % end
                       >
                     <input type="hidden" name="iface" value="{{_name}}">
@@ -112,6 +122,17 @@
                         will drop this web session. A static or manual address reloads the UI
                         at the new one automatically; otherwise the station stays reachable by
                         name and from the on-screen <em>Settings &rsaquo; Network</em> menu.
+                    </div>
+                    %# Reached over IPv6, or at an address that is none of this
+                    %# host's, there is no row to put the notice on - so every
+                    %# editor carries the caution instead. Saying nothing is the
+                    %# one outcome that leaves the operator unwarned.
+                    % elif _row_edit and not _session:
+                    <div class="notice warning" role="status">
+                        Which interface is answering your browser can't be determined here,
+                        so this may be the one carrying this web session. Applying would then
+                        drop it; the station stays reachable by name and from the on-screen
+                        <em>Settings &rsaquo; Network</em> menu.
                     </div>
                     % end
 
@@ -132,20 +153,20 @@
                         <div class="network-grid">
                             <label for="net-address-{{_name}}">IP address</label>
                             <input id="net-address-{{_name}}" type="text" name="address"
-                                   value="{{row.get('address', '')}}" placeholder="192.168.1.50" {{_dis}}>
+                                   value="{{_entered.get('address', row.get('address', ''))}}" placeholder="192.168.1.50" {{_dis}}>
                             <label class="net-static-only" for="net-subnet-{{_name}}">Subnet mask</label>
                             <input class="net-static-only" id="net-subnet-{{_name}}" type="text" name="subnet_mask"
-                                   value="{{row.get('subnet_mask', '')}}" placeholder="255.255.255.0" {{_dis}}>
+                                   value="{{_entered.get('subnet_mask', row.get('subnet_mask', ''))}}" placeholder="255.255.255.0" {{_dis}}>
                             <label class="net-static-only" for="net-router-{{_name}}">Router (optional)</label>
                             <input class="net-static-only" id="net-router-{{_name}}" type="text" name="router"
-                                   value="{{row.get('router', '')}}" placeholder="192.168.1.1" {{_dis}}>
+                                   value="{{_entered.get('router', row.get('router', ''))}}" placeholder="192.168.1.1" {{_dis}}>
                         </div>
                     </div>
 
                     <div class="group">
                         <h4 class="group-title">DNS</h4>
                         <div class="network-grid">
-                            % _dns = row.get("dns") or []
+                            % _dns = _entered.get("dns") or row.get("dns") or []
                             % for i in range(3):
                             <label for="net-dns{{i + 1}}-{{_name}}">Server {{i + 1}}</label>
                             <input id="net-dns{{i + 1}}-{{_name}}" type="text" name="dns{{i + 1}}"
@@ -229,7 +250,12 @@
         </div>
 
         % if _vlan_add:
-        <form class="ia-vlan-add" {{'' if _vopen else 'hidden'}}>
+        %# Its own form: the card is a div, so ``closest form`` has nothing
+        %# else to find, and Create submits it rather than the browser falling
+        %# through to a native GET that silently creates nothing.
+        <form class="ia-vlan-add" {{'' if _vopen else 'hidden'}}
+              hx-post="/section/network/vlan/create" hx-target="#network-interface"
+              hx-swap="innerHTML" hx-trigger="submit">
             <h4 class="group-title">Add VLAN</h4>
             <div class="network-grid">
                 <label for="net-vlan-parent">Parent interface</label>
@@ -244,14 +270,11 @@
                        placeholder="10" value="{{_vform.get('vlan_id', '')}}">
             </div>
             <div class="actions">
-                <button type="button" class="save-btn"
-                        hx-post="/section/network/vlan/create" hx-target="#network-interface"
-                        hx-swap="innerHTML" hx-include="closest form">Create</button>
+                <button type="submit" class="save-btn">Create</button>
                 <button type="button" class="ghost-btn"
                         onclick="var b=this.closest('.group'); b.querySelector('.ia-vlan-add').hidden = true; b.querySelector('.ia-legend-actions button').hidden = false;">Cancel</button>
             </div>
         </form>
-        % end
         % end
     </div>
     % end

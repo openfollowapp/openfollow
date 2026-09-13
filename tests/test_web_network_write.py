@@ -361,6 +361,38 @@ def test_apply_to_another_interface_does_not_move_the_browser(net_server) -> Non
     assert "hx-redirect" not in {k.lower() for k in headers}
 
 
+def test_the_session_interface_is_read_before_the_address_is_changed(net_server, monkeypatch) -> None:
+    """Applying to the session's own interface is what removes the address the
+    lookup resolves, so asking afterwards answers "unknown" - and the redirect
+    would be suppressed in exactly the single-NIC case it exists for."""
+    import openfollow.web.routes as routes_module
+
+    fake, base = net_server
+    calls: list[str] = []
+
+    def _iface_before_and_after(_environ: str) -> str:
+        # Before the apply the address is still on eth0; afterwards it is gone
+        # from every interface, which is what ``get_iface_for_ip`` reports as "".
+        answer = "" if fake.applied else "eth0"
+        calls.append(answer)
+        return answer
+
+    monkeypatch.setattr(routes_module, "request_local_iface", _iface_before_and_after)
+    _status, _body, headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {
+            "iface": "eth0",
+            "method": "static",
+            "address": "192.168.1.50",
+            "subnet_mask": "255.255.255.0",
+        },
+    )
+    assert len(fake.applied) == 1
+    assert calls[0] == "eth0"  # read while the old address was still up
+    assert "192.168.1.50" in headers.get("hx-redirect", "")
+
+
 def test_apply_with_no_known_session_interface_does_not_redirect(net_server) -> None:
     """Reached over IPv6, or from an address that is none of this host's, the
     session interface is unknown. Redirecting on a guess is how the operator
@@ -400,6 +432,82 @@ def test_the_session_row_names_the_address_it_is_answering(net_server) -> None:
     assert "169.254.32.55" in wlan.split('class="stat-chip info"', 1)[1].split(">", 1)[0]
     assert "This session" not in eth0
     assert "answering your browser" not in eth0
+
+
+def test_a_rejected_address_stays_out_of_the_summary_line(net_server) -> None:
+    """The fields carry back what was typed so it can be corrected. The
+    summary above them reports what the adapter holds - rendering the rejected
+    value there presents it as live, with the previous prefix appended and an
+    up status dot beside it."""
+    fake, base = net_server
+    _status, body, _headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {
+            "iface": "eth0",
+            "method": "static",
+            "address": "192.168.1.999",
+            "subnet_mask": "255.255.255.0",
+        },
+    )
+    assert fake.applied == []  # validate_apply refused it
+    row = body.split('data-adv-key="net-iface-eth0"', 1)[1].split("</details>", 1)[0]
+    summary = row.split("</summary>", 1)[0]
+    assert "192.168.1.999" not in summary
+    assert "10.0.0.5" in summary  # what the adapter actually holds
+    # ... and the editable field still offers it back for correction.
+    assert 'value="192.168.1.999"' in row.split("</summary>", 1)[1]
+
+
+def test_the_blind_reload_is_armed_only_on_the_session_row(net_server) -> None:
+    """The 6s timer navigates to the address the row was given, and fires when
+    no response has arrived. On a row that is not answering this session an
+    apply slower than the timer would move the browser to an adapter the
+    operator may not be able to reach - the very move the server gate refuses."""
+    fake, base = net_server
+    fake.session_iface = "wlan0"
+    _status, body = _get(base, "/section/network/edit/eth0")
+    eth0 = body.split('data-adv-key="net-iface-eth0"', 1)[1].split("</details>", 1)[0]
+    assert ">Apply<" in eth0  # it is the editable row
+    assert "netScheduleReload" not in eth0
+
+    _status, body = _get(base, "/section/network/edit/wlan0")
+    wlan = body.split('data-adv-key="net-iface-wlan0"', 1)[1].split("</details>", 1)[0]
+    assert "netScheduleReload" in wlan
+
+
+def test_an_editor_warns_when_the_session_interface_is_unknown(net_server) -> None:
+    """Reached over IPv6, or at an address that is none of this host's, no row
+    can be marked - so the caution goes on every editor. Saying nothing is the
+    one outcome that lets the operator cut their own session unwarned."""
+    fake, base = net_server
+    fake.session_iface = ""
+    _status, body = _get(base, "/section/network/edit/eth0")
+    eth0 = body.split('data-adv-key="net-iface-eth0"', 1)[1].split("</details>", 1)[0]
+    assert "may be the one carrying this web session" in eth0
+    # Read-only rows are not about to apply anything, so they stay quiet.
+    wlan = body.split('data-adv-key="net-iface-wlan0"', 1)[1].split("</details>", 1)[0]
+    assert "may be the one carrying this web session" not in wlan
+
+    # With the session placed, the row that owns the address says so instead.
+    fake.session_iface = "eth0"
+    fake.session_address = "10.0.0.5"
+    _status, body = _get(base, "/section/network/edit/eth0")
+    eth0 = body.split('data-adv-key="net-iface-eth0"', 1)[1].split("</details>", 1)[0]
+    assert "may be the one carrying this web session" not in eth0
+    assert "answering your browser at 10.0.0.5" in eth0
+
+
+def test_the_add_vlan_form_submits_rather_than_navigating(net_server) -> None:
+    """The block is its own form with one implicit-submission-blocking field
+    and no submit button of its own - Enter in the VLAN ID would fall through
+    to a native GET on the page URL, creating nothing and losing the entry."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/status")
+    form = body.split('class="ia-vlan-add"', 1)[1].split(">", 1)[0]
+    assert 'hx-post="/section/network/vlan/create"' in form
+    assert 'hx-trigger="submit"' in form
+    assert '<button type="submit" class="save-btn">Create</button>' in body
 
 
 def test_apply_unknown_iface_touches_nothing(net_server) -> None:

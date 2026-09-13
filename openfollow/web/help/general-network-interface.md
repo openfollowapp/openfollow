@@ -4,9 +4,9 @@ The station's IPv4 configuration.
 
 This is where addressing is set. The station's own **Settings → Network** screen is the fallback for getting *back* here when this page is unreachable: it lists the address that reaches the web UI on each adapter, and offers a short list of fixes (DHCP, a static address, renew a lease, and serving the web UI on every interface again). Everything else – DNS, VLANs, and which network each protocol uses – is set here.
 
-**Interfaces on this station** – every network adapter the station can see, with its address, subnet method, and whether it currently holds an address. **Configure** opens that adapter's settings underneath its own row; opening a different row moves the form there.
+Every network adapter the station can see is listed, each showing its address, its method, and whether it currently holds one. Clicking a row opens that adapter's settings underneath it; rows stay open until you close them, and the browser remembers which were open. **Edit** inside an open row unlocks that row's fields. Only one row is editable at a time, so two adapters can't be half-edited against each other.
 
-A **This session** marker means your browser reached the station over that adapter. Changing its address will drop the page you are reading – the station's own **Settings → Network** screen then lists the address that reaches it, and the name shown on the HUD (`Web address`, e.g. `openfollow-noble-bear.local`) keeps working whatever address it ends up with, but you will need to reconnect. The marker only appears when the station can tell which adapter you arrived on; with some setups it can't, so its absence is not a guarantee.
+A **This session** marker means the address answering your browser belongs to that adapter. It is the address, not necessarily the cable: a station answers for any of its addresses on whichever adapter your request arrives over, so the marker can land on a VLAN you are not otherwise on. Either way, changing that adapter's addressing drops the page you are reading – the station's own **Settings → Network** screen then lists the address that reaches it, and the name shown on the HUD (`Web address`, e.g. `openfollow-noble-bear.local`) keeps working whatever address it ends up with, but you will need to reconnect. The marker only appears when the station can tell which address answered; with some setups it can't, and then every open editor carries a general caution instead.
 
 **Scan** re-reads the adapter list. Use it after plugging in a USB Ethernet adapter so it appears without waiting.
 
@@ -24,9 +24,9 @@ A **This session** marker means your browser reached the station over that adapt
 
 **DNS (Server 1–3)** – resolver addresses in priority order. Only needed to reach external hostnames (e.g. software updates); leave blank on an offline LAN.
 
-**Lease remaining** – countdown on the active DHCP lease (read-only, refreshes every 5 s).
+**Lease remaining** – countdown on the active DHCP lease, with **Renew DHCP lease** beside it.
 
-> Applying may disconnect this web session. A static/manual address reloads the UI at the new address automatically; for DHCP, reconnect manually if the session drops.
+> Applying to the adapter answering your browser disconnects this web session. A static or manual address reloads the UI at the new one automatically; for DHCP, reconnect manually if the session drops. Applying to any other adapter leaves the page you are reading alone.
 
 ## If DHCP is unavailable
 
@@ -49,21 +49,21 @@ A VLAN sub-interface behaves like any other adapter once it exists: it appears i
 
 - **Parent interface** – the physical adapter carrying the tags. The switch port it plugs into must be configured as a trunk (tagged) port for that VLAN, or no traffic arrives. A VLAN cannot be stacked on another VLAN.
 - **VLAN ID** – `1`–`4094`, matching the tag the switch sends. `0` and `4095` are reserved by the standard.
-- The name is derived as `<parent>.<id>` and cannot be chosen.
+- The name is derived as `<parent>.<id>` and cannot be chosen. Where the parent's own name is long enough to leave no room for the tag, it is shortened to make space – the tag always survives, and the real parent is recorded on the sub-interface itself.
 
-The parent keeps its own untagged address; adding VLANs does not take it away. Each new sub-interface starts with no address – use **Configure** on its row to give it one. A tagged lighting VLAN frequently has no DHCP server, in which case the fallback above applies to it too.
+The parent keeps its own untagged address; adding VLANs does not take it away. Each new sub-interface starts with no address – open its row and use **Edit** to give it one. A tagged lighting VLAN frequently has no DHCP server, in which case the fallback above applies to it too.
 
-**Delete VLAN** appears inside a VLAN row's own settings, so it can only ever remove the adapter named at the top of that form. It is refused for the adapter your browser arrived on – reconnect over another network first. Anything pinned to a deleted VLAN stops sending until it is reassigned.
+**Delete VLAN** appears inside a VLAN row's own settings, so it can only ever remove the adapter named at the top of that form. It is refused for the adapter whose address is answering your browser – reconnect at another of the station's addresses first. Anything pinned to a deleted VLAN stops sending until it is reassigned.
 
 VLAN creation needs NetworkManager. On a station using another network backend the controls are not shown.
 
-**Modes:** the form opens in **View mode** – fields are locked so settings can't change by mistake. Use **Switch to edit view** to unlock them; **Edit mode** then shows Apply / Renew / Cancel. On a station whose network backend is read-only, the form shows a **Read only** badge instead, and so does the station's own screen – see openfollow.app for troubleshooting and how to enable web editing.
+An open row reads out its settings with its fields locked, so nothing changes by mistake. On a station whose network backend is read-only there is no **Edit** at all, and the card carries a **Read only** badge instead – the station's own screen says the same. See openfollow.app for troubleshooting and how to enable web editing.
 
 **Buttons:**
 
-- **Switch to edit view** – unlocks the fields (enters Edit mode). Absent when the backend is read-only.
-- **Apply** – validates and commits the form. Invalid input is rejected and nothing is written.
-- **Renew DHCP lease** – requests a fresh lease (DHCP methods only).
-- **+ Add VLAN** – creates a tagged sub-interface (Edit mode, NetworkManager only).
+- **Edit** – unlocks that row's fields. Absent when the backend is read-only.
+- **Apply** – validates and commits the row. Invalid input is rejected and nothing is written.
+- **Renew DHCP lease** – requests a fresh lease; sits on the lease line, DHCP methods only.
+- **+ Add VLAN** – creates a tagged sub-interface (NetworkManager only).
 - **Delete VLAN** – removes the sub-interface whose settings are open.
-- **Cancel** – discards unsaved edits and returns to View mode.
+- **Cancel** – discards unsaved edits and locks the fields again. The row stays open.

@@ -162,6 +162,35 @@ class TestGeneralNetworkInterfaceRegion:
         assert "/section/general/network_state" not in body
 
 
+class TestNetworkPartialStructure:
+    """``partials/network`` is swapped into the General tab as an HTML
+    fragment, so its own block nesting is the only thing keeping the markup
+    well-formed - a fragment parser silently drops a stray close tag."""
+
+    @pytest.mark.parametrize(
+        "net",
+        [
+            {"available": False, "writable": False, "editable": False},
+            {"available": True, "writable": False, "editable": False, "iface_rows": []},
+            {
+                "available": True,
+                "writable": True,
+                "editable": False,
+                "iface_rows": [{"name": "eth0", "address": "10.0.0.5", "prefix": 24, "method": "dhcp"}],
+            },
+        ],
+        ids=["unavailable", "read-only-host", "one-interface"],
+    )
+    def test_every_render_closes_exactly_what_it_opens(self, net: dict) -> None:
+        """The unavailable render shipped a second ``</div>``: the group's
+        close tag sat outside the guard its open tag was inside, so a block
+        added after it would have been mis-nested."""
+        body = template("partials/network", net=net)
+        assert body.count("<div") == body.count("</div>")
+        assert body.count("<form") == body.count("</form>")
+        assert body.count("<details") == body.count("</details>")
+
+
 class TestUpdateSupportedFlag:
     """``_build_general_template_data`` derives ``update_supported`` from the
     host platform: the .deb installer is Pi/Linux-only."""

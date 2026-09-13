@@ -139,12 +139,15 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
 
 
 def _copy_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Copy the list *and* each row.
+    """Copy the list, each row, *and* any list a row holds.
 
     Copying only the list leaves every caller holding the cached dicts, so a
-    template helper decorating a row corrupts what the next render reads.
+    template helper decorating a row corrupts what the next render reads. Rows
+    carry a ``dns`` list, which a per-row ``dict()`` would still share with the
+    cache - one in-place edit anywhere downstream would rewrite what every
+    render inside the TTL window reads.
     """
-    return [dict(row) for row in rows]
+    return [{k: list(v) if isinstance(v, list) else v for k, v in row.items()} for row in rows]
 
 
 class ConfigWebServer:

@@ -5040,23 +5040,34 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # without reopening a row the operator closed.
         net["editing_iface"] = net["active_interface"] if (iface or editable) else ""
         net["vlan_form"] = dict(vlan_form) if vlan_form else {}
+        # The single-interface snapshot is a fresh read; it belongs to the row
+        # being configured, while the others keep their own detail off the
+        # cached scan. Captured before the operator's submitted input is
+        # layered on, because the row's summary line reports what the adapter
+        # holds - a rejected address must not appear there as a live one, with
+        # the previous prefix and an up status dot beside it.
+        live = {
+            "method": net["method"],
+            "address": net["address"],
+            "prefix": net["prefix"],
+            "subnet_mask": net["subnet_mask"],
+            "router": net["router"],
+            "dns": list(net["dns"]),
+            "lease_display": net["lease_display"],
+        }
         if overrides:
             net.update(overrides)
-        # The single-interface snapshot is a fresh read, and on a failed apply
-        # it also carries what the operator typed. Both belong to the row being
-        # configured; the others keep their own detail off the cached scan.
         for row in net["iface_rows"]:
             if str(row.get("name", "")) == net["active_interface"]:
                 row.update(
-                    method=net["method"],
-                    address=net["address"],
-                    prefix=net["prefix"],
-                    subnet_mask=net["subnet_mask"],
-                    router=net["router"],
-                    dns=list(net["dns"]),
-                    lease_display=net["lease_display"],
-                    method_label=_NETWORK_METHOD_LABELS.get(net["method"], net["method"]),
+                    **live,
+                    method_label=_NETWORK_METHOD_LABELS.get(live["method"], live["method"]),
                 )
+                if overrides:
+                    # Only the editable fields carry it back, so the operator
+                    # can correct what they typed without it being reported as
+                    # the interface's state.
+                    row["entered"] = {key: net[key] for key in ("method", "address", "subnet_mask", "router", "dns")}
                 break
         return net
 
@@ -5234,6 +5245,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             router=router,
             dns=tuple(fields["dns"]),
         )
+        # Read before the write: the lookup resolves this connection's local
+        # address through the host's *live* address list, and applying a new
+        # address to the session's own interface is exactly what removes the
+        # old one. Asked afterwards it answers "unknown" precisely in the
+        # single-NIC case the redirect below exists for.
+        session_iface = request_local_iface(request.environ)
         result = server.apply_network(iface, config)
         if not result.ok:
             return template(
@@ -5259,7 +5276,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if (
             method in (Ipv4Method.STATIC, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS)
             and address
-            and iface == request_local_iface(request.environ)
+            and iface == session_iface
             and not result.partial_failures
             # Nothing is serving that address yet, so a redirect lands on a
             # dead page and the explanation is lost with the response body.

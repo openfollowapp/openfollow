@@ -1237,6 +1237,20 @@ class TestGetNetworkInterfaces:
         srv.get_network_interfaces(force=True)
         assert len(calls) == 2
 
+    def test_a_cached_rows_list_value_is_not_shared_with_the_caller(self, tmp_path, monkeypatch) -> None:
+        """Rows carry a ``dns`` list, so a per-row ``dict()`` would still hand
+        every render inside the TTL window the same list object the cache
+        holds - one in-place edit downstream rewrites what the next render
+        reads, for the rest of the window."""
+
+        def _provider() -> list[dict]:
+            return [{"name": "eth0", "dns": ["1.1.1.1"]}]
+
+        srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=_provider)
+        first = srv.get_network_interfaces()
+        first[0]["dns"].append("8.8.8.8")
+        assert srv.get_network_interfaces()[0]["dns"] == ["1.1.1.1"]
+
     def test_provider_failure_serves_the_last_good_snapshot(self, tmp_path, monkeypatch) -> None:
         """A transient backend failure must not blank the interface list -
         stale rows are far more useful than an empty card."""

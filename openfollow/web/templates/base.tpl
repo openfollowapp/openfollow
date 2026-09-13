@@ -1932,9 +1932,9 @@
  background: var(--accent-soft);
  font-size: 0.85rem;
  }
- /* Mode bar at the top of the network form: names the current mode and,
- in view mode, offers a text-link switch (not a button) so the unlock
- action doesn't read as a Save. */
+ /* The one banner the network card still carries: a station whose network
+ cannot be written from the web has to say so, or its disabled fields read
+ as a fault. */
  .net-mode-bar {
  display: flex;
  flex-wrap: wrap;
@@ -1946,7 +1946,6 @@
  background: rgba(247, 245, 233, 0.04);
  font-size: 0.82rem;
  }
- .net-mode-bar.edit { border-left-color: var(--accent); background: var(--accent-soft); }
  .net-mode-text { color: var(--muted); }
  .net-mode-pill {
  display: inline-flex;
@@ -1959,18 +1958,11 @@
  font-weight: 700;
  white-space: nowrap;
  }
- .net-mode-pill.view, .net-mode-pill.readonly {
+ .net-mode-pill.readonly {
  color: var(--muted);
  border: 1px solid var(--border);
  background: rgba(247, 245, 233, 0.05);
  }
- .net-mode-pill.edit {
- color: #ffe6a8;
- border: 1px solid var(--btn-secondary-border);
- background: var(--accent-soft);
- }
- /* Small gold-outline button (no fill, via .secondary .small), right-aligned. */
- .net-mode-switch { margin-left: auto; }
  /* Nested foldable sub-sections: tighter padding with subtle left
  border for visual nesting. Hit target inherits from .section-toggle. */
  .section.subsection {

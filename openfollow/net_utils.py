@@ -223,7 +223,7 @@ class InterfaceUnavailable(OSError):
     """
 
 
-def bind_multicast_send_iface(sock: socket.socket, iface_ip: str | None, *, label: str) -> None:
+def bind_multicast_send_iface(sock: socket.socket, iface_ip: str | None) -> None:
     """Pin a multicast TX socket to *iface_ip*, raising rather than roaming.
 
     An unbound multicast socket does not send "on all interfaces" - it sends on
@@ -239,8 +239,8 @@ def bind_multicast_send_iface(sock: socket.socket, iface_ip: str | None, *, labe
     """
     if iface_ip is None:
         raise InterfaceUnavailable(
-            f"{label}: the configured interface has no address; staying silent until it "
-            f"returns rather than sending on another interface"
+            "the configured interface has no address; staying silent until it returns "
+            "rather than sending on another interface"
         )
     if not iface_ip:
         return
@@ -248,12 +248,12 @@ def bind_multicast_send_iface(sock: socket.socket, iface_ip: str | None, *, labe
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(iface_ip))
     except OSError as exc:
         raise InterfaceUnavailable(
-            f"{label}: interface address {iface_ip} is unavailable ({exc}); "
-            f"staying silent until it returns rather than sending on another interface"
+            f"interface address {iface_ip} is unavailable ({exc}); staying silent until it "
+            f"returns rather than sending on another interface"
         ) from exc
 
 
-def join_multicast_group_on_iface(sock: socket.socket, group: str, iface_ip: str | None, *, label: str) -> None:
+def join_multicast_group_on_iface(sock: socket.socket, group: str, iface_ip: str | None) -> None:
     """Join *group* on *iface_ip* only, raising rather than joining everywhere.
 
     The receive side of :func:`bind_multicast_send_iface`, with the same three
@@ -262,8 +262,8 @@ def join_multicast_group_on_iface(sock: socket.socket, group: str, iface_ip: str
     """
     if iface_ip is None:
         raise InterfaceUnavailable(
-            f"{label}: the configured interface has no address; staying unsubscribed until "
-            f"it returns rather than joining on every interface"
+            "the configured interface has no address; staying unsubscribed until it returns "
+            "rather than joining on every interface"
         )
     mreq = socket.inet_aton(group) + socket.inet_aton(iface_ip or "0.0.0.0")
     try:
@@ -272,6 +272,6 @@ def join_multicast_group_on_iface(sock: socket.socket, group: str, iface_ip: str
         if not iface_ip:
             raise
         raise InterfaceUnavailable(
-            f"{label}: interface address {iface_ip} is unavailable ({exc}); "
-            f"staying unsubscribed until it returns rather than joining on every interface"
+            f"interface address {iface_ip} is unavailable ({exc}); staying unsubscribed "
+            f"until it returns rather than joining on every interface"
         ) from exc

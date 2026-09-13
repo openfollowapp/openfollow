@@ -32,7 +32,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from openfollow.marker_catalog.catalog import MarkerCatalog, MarkerEntry, _sanitize_text
-from openfollow.net_utils import bind_multicast_send_iface, join_multicast_group_on_iface
+from openfollow.net_utils import (
+    InterfaceUnavailable,
+    bind_multicast_send_iface,
+    join_multicast_group_on_iface,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +70,8 @@ _MAX_RX_PACKET = 60 * 1024
 # (5-15s is normal), because that is exactly the window the retry exists to
 # cover - a shorter one gives up in the case it was added for. A port that is
 # permanently taken still stops rather than spinning for the whole show.
+# One line per minute while an interface is out, per loop.
+_IFACE_DOWN_LOG_INTERVAL_S = 60.0
 _RX_OPEN_MAX_RETRIES = 30
 _RX_OPEN_RETRY_S = 1.0
 
@@ -294,7 +300,7 @@ class MarkerCatalogSync:
         station_name_provider: Callable[[], str],
         selection_provider: Callable[[], tuple[list[int], list[int]]],
         on_change: Callable[[list[int]], None] | None = None,
-        iface_ip: str = "",
+        iface_ip: str | None = "",
     ) -> None:
         self._catalog = catalog
         self._station_id = station_id
@@ -330,11 +336,20 @@ class MarkerCatalogSync:
         self._rotation_log_ts = float("-inf")
         self._unchunkable_log_ts = float("-inf")
         self._envelope_log_ts = float("-inf")
+        # Rate-limits the "interface is down" line on each loop; separate
+        # counters because the two loops retry on different periods.
+        self._tx_down_log_ts = float("-inf")
+        self._rx_down_log_ts = float("-inf")
 
     # -- Public API ----------------------------------------------------------
 
-    def update_iface_ip(self, iface_ip: str) -> None:
+    def update_iface_ip(self, iface_ip: str | None, *, force: bool = False) -> None:
         """Repoint both sockets after the station's address changed.
+
+        ``None`` means the station interface currently has no address, which
+        stops sync until it returns rather than moving it elsewhere. The sync
+        is constructed either way, so a station that booted with a dark
+        interface still has an object to bring back when the link returns.
 
         The TX socket pins ``IP_MULTICAST_IF`` and the RX socket joins
         ``IP_ADD_MEMBERSHIP`` on the address they were opened with, and neither
@@ -342,12 +357,15 @@ class MarkerCatalogSync:
         than raising, so nothing triggers a rebuild. Without this, sync stops
         converging after an interface switch until the app restarts.
 
-        A no-op when the address is unchanged. That is *not* enough on its own:
-        an interface that drops and returns with the same lease has had its
+        A no-op when the address is unchanged, unless *force* is set. An
+        interface that drops and returns with the same lease has had its
         memberships torn down by the kernel while the address string stayed
-        put, so the station-follower path calls :meth:`reopen` on recovery.
+        put, so recovery passes ``force=True``. It is a flag here rather than a
+        separate :meth:`reopen` call afterwards because the two together
+        rebuild twice whenever the address *did* move, and a worker that
+        rebuilds between them tears down sockets it has just opened.
         """
-        if iface_ip == self._iface_ip:
+        if iface_ip == self._iface_ip and not force:
             return
         self._iface_ip = iface_ip
         self.reopen()
@@ -464,11 +482,28 @@ class MarkerCatalogSync:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
         try:
-            bind_multicast_send_iface(sock, self._iface_ip, label="MarkerCatalogSync")
+            bind_multicast_send_iface(sock, self._iface_ip)
         except OSError:
             sock.close()
             raise
         return sock
+
+    def _wait_before_reopen(self, seconds: float) -> None:
+        """Back off after a failed TX open, without sleeping through a repoint.
+
+        Parked on the full interval this loop would ignore an address change
+        for up to a heartbeat - and a failed open is the state most likely to
+        be parked when the address moves, since it is what a down interface
+        produces. Polled in the same slices as the normal-path wait rather than
+        waiting on a second event, so there is one place that decides how long
+        a repoint can go unnoticed.
+        """
+        deadline = time.monotonic() + seconds
+        while not self._stop_event.is_set() and not self._tx_reopen.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            self._stop_event.wait(min(remaining, _REPOINT_CHECK_INTERVAL_S))
 
     def _send_loop(self) -> None:
         sock: socket.socket | None = None
@@ -484,9 +519,19 @@ class MarkerCatalogSync:
                 self._tx_reopen.clear()
                 try:
                     sock = self._open_tx_socket()
+                except InterfaceUnavailable as exc:
+                    # Expected while the station interface is down, and it
+                    # retries every heartbeat - a traceback per attempt would
+                    # bury the journal for as long as the cable is out.
+                    now = time.monotonic()
+                    if now - self._tx_down_log_ts >= _IFACE_DOWN_LOG_INTERVAL_S:
+                        self._tx_down_log_ts = now
+                        logger.warning("MarkerCatalogSync: %s", exc)
+                    self._wait_before_reopen(HEARTBEAT_INTERVAL)
+                    continue
                 except Exception:
                     logger.exception("MarkerCatalogSync: TX socket open failed")
-                    self._stop_event.wait(HEARTBEAT_INTERVAL)
+                    self._wait_before_reopen(HEARTBEAT_INTERVAL)
                     continue
 
             now = time.monotonic()
@@ -672,13 +717,35 @@ class MarkerCatalogSync:
             return None
 
         try:
-            join_multicast_group_on_iface(sock, CATALOG_MCAST_GROUP, self._iface_ip, label="MarkerCatalogSync")
+            join_multicast_group_on_iface(sock, CATALOG_MCAST_GROUP, self._iface_ip)
+        except InterfaceUnavailable:
+            # Propagated, not folded into the ``None`` that means "open
+            # failed": a pinned interface with no address is a state the
+            # caller is waiting out, and the generic failure budget would
+            # escalate it to an ERROR and park the loop.
+            sock.close()
+            raise
         except OSError as exc:
             logger.error("MarkerCatalogSync: join failed: %s", exc)
             sock.close()
             return None
         sock.settimeout(1.0)
         return sock
+
+    def _wait_before_rx_reopen(self, seconds: float) -> None:
+        """Back off after a down-interface RX open, waking on a repoint.
+
+        The RX counterpart of :meth:`_wait_before_reopen`, polled in the same
+        slices: a down interface is the state most likely to be parked when
+        the address returns, so the wait has to notice that rather than sleep
+        the interval out.
+        """
+        deadline = time.monotonic() + seconds
+        while not self._stop_event.is_set() and not self._rx_reopen.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            self._stop_event.wait(min(remaining, _REPOINT_CHECK_INTERVAL_S))
 
     def _recv_loop(self) -> None:
         # Outer loop so a repoint rebuilds the socket: the group membership is
@@ -693,7 +760,20 @@ class MarkerCatalogSync:
         while not self._stop_event.is_set():
             # Cleared before the open, for the same reason as TX.
             self._rx_reopen.clear()
-            sock = self._open_rx_socket()
+            try:
+                sock = self._open_rx_socket()
+            except InterfaceUnavailable as exc:
+                # Expected while the station interface is down, and outside the
+                # failure budget below: that budget exists to give up on a port
+                # this station will never get, whereas this one returns when the
+                # cable does. Counting it would retire sync input with an ERROR
+                # for a condition the operator already knows about.
+                now = time.monotonic()
+                if now - self._rx_down_log_ts >= _IFACE_DOWN_LOG_INTERVAL_S:
+                    self._rx_down_log_ts = now
+                    logger.warning("MarkerCatalogSync: %s", exc)
+                self._wait_before_rx_reopen(_RX_OPEN_RETRY_S)
+                continue
             if sock is None:
                 failures += 1
                 if failures >= _RX_OPEN_MAX_RETRIES:

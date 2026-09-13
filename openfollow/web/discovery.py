@@ -210,7 +210,7 @@ class BeaconSender:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
         try:
-            bind_multicast_send_iface(sock, self._iface_ip, label="BeaconSender")
+            bind_multicast_send_iface(sock, self._iface_ip)
         except OSError:
             sock.close()
             raise
@@ -434,7 +434,7 @@ class BeaconReceiver:
             pass  # SO_REUSEPORT not available on all platforms
         try:
             sock.bind(("", BEACON_PORT))
-            join_multicast_group_on_iface(sock, BEACON_MCAST_GROUP, self._iface_ip, label="BeaconReceiver")
+            join_multicast_group_on_iface(sock, BEACON_MCAST_GROUP, self._iface_ip)
             sock.settimeout(1.0)
         except OSError:
             sock.close()

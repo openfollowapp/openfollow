@@ -21,7 +21,7 @@ System health for the station hardware.
 - **IP** – the network address this station is reachable on. Useful for pointing another tool or peer at it.
 - **Controllers** – number of input controllers (gamepads, MIDI devices, etc.) currently connected. A drop to zero during a show indicates a disconnected or unpowered device.
 - **CPU** – processor load as a percentage. Sustained values above roughly 80–90 % can cause frame drops or tracking lag.
-- **RAM** – memory usage as a percentage. Approaching 100 % on a Raspberry Pi typically causes slowdowns and should be investigated.
+- **RAM** – memory usage as a percentage. Approaching 100 % on a Raspberry Pi typically causes slowdowns.
 - **Temperature** – processor temperature in degrees Celsius; `N/A` on platforms without a thermal sensor. On a Raspberry Pi, sustained values above 80 °C may trigger thermal throttling, visible as CPU spikes paired with frame-rate drops.
 - **Output resolution** – the canvas the overlay is drawn on: the real window or full screen, not the size requested under Display. If its aspect ratio differs from **Input resolution**, the overlay sits off the video – that mismatch is the only on-screen explanation for it. `N/A (no display)` with no screen attached.
 - **Overlay redraw rate** – how fast this station redraws its overlay. It follows the screen, not the feed: `0.0 fps` with no screen attached is normal and says nothing about the video. Check **Signal** for that.
@@ -35,7 +35,7 @@ State of the optional AI-based person detection engine. The panel header chip su
 |-------------|---------|
 | Green – **Running** | Detection is enabled and the engine is actively processing frames. |
 | Yellow – **Idle** | Detection is enabled but not yet running (for example, waiting for a video signal). |
-| Yellow – **Unavailable** | Detection is enabled but required packages are missing. A banner lists them and prompts you to install from the Person Detection section, then restart. |
+| Yellow – **Unavailable** | Detection is enabled but required packages are missing; a banner lists them. |
 | Grey – **Off** | Detection is disabled. |
 
 - **Status** – a text label matching the header chip state above.
@@ -43,5 +43,3 @@ State of the optional AI-based person detection engine. The panel header chip su
 - **Inference (avg)** – average time in milliseconds for one detection pass. Higher means the engine is under load; if it climbs past the inter-frame interval, the inference rate falls.
 - **Inference Rate** – detection passes per second completing. Compare to the video frame rate to see how well the engine keeps up.
 - **Detections (last)** – raw count of bounding boxes from the last inference pass, before tracking or smoothing.
-
-> If you see **Unavailable** with a missing-packages banner, go to the Person Detection tab, install the listed packages, and use the **Restart application** button in the Diagnostics section to apply the change.

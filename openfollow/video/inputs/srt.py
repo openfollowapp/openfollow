@@ -235,7 +235,7 @@ class SrtInput(VideoInputBase):
             "</div>"
             '<div class="row">'
             '    <div class="field wide">'
-            "        <label>Passphrase</label>"
+            "        <label>Passphrase (optional)</label>"
             f'        <input type="password" name="srt_passphrase" value="{srt_passphrase}"'
             '               autocomplete="off">'
             "    </div>"

@@ -236,12 +236,12 @@ class RtspInput(VideoInputBase):
             "</div>"
             '<div class="row">'
             '    <div class="field">'
-            "        <label>Username</label>"
+            "        <label>Username (optional)</label>"
             f'        <input type="text" name="rtsp_user" value="{rtsp_user}"'
             '               autocomplete="off">'
             "    </div>"
             '    <div class="field">'
-            "        <label>Password</label>"
+            "        <label>Password (optional)</label>"
             f'        <input type="password" name="rtsp_password" value="{rtsp_password}"'
             '               autocomplete="off">'
             "    </div>"

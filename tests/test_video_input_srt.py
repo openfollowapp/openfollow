@@ -377,6 +377,9 @@ class TestSrtPassphrase:
         assert 'type="password" name="srt_passphrase"' in html
         assert 'autocomplete="off"' in html
 
+    def test_the_passphrase_is_labelled_optional(self) -> None:
+        assert "<label>Passphrase (optional)</label>" in SrtInput.web_ui_html({})
+
     @pytest.mark.parametrize("config", [{}, {"srt_passphrase": ""}])
     def test_blank_field_leaves_the_url_path_untouched(self, config: dict[str, object]) -> None:
         src = self._srtsrc({"srt_host": "srt://10.0.0.5:5000?passphrase=fromurl", **config})

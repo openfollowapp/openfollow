@@ -178,6 +178,13 @@ class TestRtspCredentials:
         assert 'type="text" name="rtsp_user"' in html
         assert html.count('autocomplete="off"') == 2
 
+    def test_the_login_is_labelled_optional(self) -> None:
+        """Most cameras need no login, and a form that doesn't say so reads as
+        two more fields the operator has to work out values for."""
+        html = RtspInput.web_ui_html({})
+        assert "<label>Username (optional)</label>" in html
+        assert "<label>Password (optional)</label>" in html
+
     @pytest.mark.parametrize("config", [{}, {"rtsp_user": "", "rtsp_password": ""}])
     def test_blank_fields_leave_the_url_path_untouched(self, config: dict[str, object]) -> None:
         """Nobody's saved config breaks: with no fields set, a login fused into

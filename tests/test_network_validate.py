@@ -347,9 +347,7 @@ class TestVlanInterfaceName:
             ("abcdefghijk", 4094, "abcdefghij.4094"),
         ],
     )
-    def test_truncates_the_parent_to_make_room_for_the_tag(
-        self, parent: str, vlan_id: int, expected: str
-    ) -> None:
+    def test_truncates_the_parent_to_make_room_for_the_tag(self, parent: str, vlan_id: int, expected: str) -> None:
         assert vlan_interface_name(parent, vlan_id) == expected
 
     @pytest.mark.parametrize("vlan_id", [1, 42, 999, 4094])

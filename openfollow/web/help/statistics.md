@@ -6,15 +6,13 @@ A read-only panel on the Overview tab that refreshes every second. Use it to con
 
 State of the active camera source.
 
-When the source fails, a red banner at the top of the panel gives the reason reported by the video pipeline itself – `Unauthorized`, `Connection refused`, `Could not open resource for reading`, or the name of a source that no longer exists. It is shown word for word rather than translated into something friendlier, because the exact wording is what tells you whether to check the network, the encoder, or the login. While the station is still retrying, the banner also counts the attempts, so a source working through its reconnect schedule is distinguishable from one that has given up. Any password embedded in a stream URL is stripped before the banner is drawn.
+When the source fails, a red banner at the top of the panel carries the pipeline's own reason – `Unauthorized`, `Connection refused`, a missing source name – word for word, plus the retry count while retries are still running. Passwords are stripped from it.
 
 - **Source** – the configured source name or type (for example the RTSP URL label or NDI source name). Confirms which input the pipeline is reading from.
-- **Signal** – `Connected` with a live feed; `Disconnected` when the source is unreachable or not yet opened. The panel header chip mirrors this. When it reads `Disconnected`, the banner above says why.
-- **Input resolution** – pixel dimensions (width × height) of the frames arriving from the source, read from the negotiated stream. `N/A` until a source has actually connected: the black *No Signal* picture is generated on this station, so it reports no geometry of its own.
-- **Frame Rate (source)** – frame rate the source advertises in that same stream. `N/A` while nothing is connected, for the same reason.
-- **Pipeline** – the connection attempt behind the Signal row, in more detail: `Connected` when frames are arriving, `Connecting` while the first attempt is still open, `Reconnecting` while retries are in progress, and `Disconnected` once they have run out. It is the row that separates a source still working through its retries from one that has given up – Signal reads `Disconnected` for both.
-
-Every figure in this panel describes the incoming feed only. Nothing in this panel measures how fast this station is drawing – that lives under **Device**, and a station with no screen attached draws nothing while the feed stays perfectly healthy.
+- **Signal** – `Connected` with a live feed; `Disconnected` when the source is unreachable or not yet opened. The panel header chip mirrors this.
+- **Input resolution** – pixel dimensions (width × height) of the frames arriving from the source. `N/A` until one actually connects; the *No Signal* picture is generated here and reports no geometry of its own.
+- **Frame Rate (source)** – frame rate the source advertises. `N/A` while nothing is connected, for the same reason.
+- **Pipeline** – the connection attempt in more detail: `Connecting`, `Reconnecting`, `Connected`, or `Disconnected` once the retries have run out. It is what separates a source still retrying from one that has given up; Signal reads `Disconnected` for both.
 
 ## Device
 
@@ -25,8 +23,8 @@ System health for the station hardware.
 - **CPU** – processor load as a percentage. Sustained values above roughly 80–90 % can cause frame drops or tracking lag.
 - **RAM** – memory usage as a percentage. Approaching 100 % on a Raspberry Pi typically causes slowdowns and should be investigated.
 - **Temperature** – processor temperature in degrees Celsius; `N/A` on platforms without a thermal sensor. On a Raspberry Pi, sustained values above 80 °C may trigger thermal throttling, visible as CPU spikes paired with frame-rate drops.
-- **Output resolution** – the size of the canvas the overlay is drawn on: the actual window, or the whole screen when running fullscreen, rather than the size requested under Display. Read it against **Input resolution** in the Video panel. Camera calibration is solved against the input while the grid, zones, and markers are drawn across the output, so when the two have different aspect ratios the overlay sits off the video with nothing else on screen to explain it. `N/A (no display)` on a station with no screen attached.
-- **Overlay redraw rate** – how often this station redraws its on-screen overlay, in frames per second. This measures the display, not the feed: it tracks the screen's refresh rate, and it reads `0.0 fps` on a station with no screen attached while video, tracking, and every position output keep running normally. It is not a measure of video throughput, and a healthy figure here says nothing about whether a single video frame has arrived – check **Signal** in the Video panel for that.
+- **Output resolution** – the canvas the overlay is drawn on: the real window or full screen, not the size requested under Display. If its aspect ratio differs from **Input resolution**, the overlay sits off the video – that mismatch is the only on-screen explanation for it. `N/A (no display)` with no screen attached.
+- **Overlay redraw rate** – how fast this station redraws its overlay. It follows the screen, not the feed: `0.0 fps` with no screen attached is normal and says nothing about the video. Check **Signal** for that.
 - **Frame clock** – the loop that reads your input and updates marker positions. `Running` is normal, and it stays running with no display attached. `Stalled` means the loop has not run for over a second: marker positions, input, and detection are frozen, while PSN, OTP, RTTrPM, and OSC keep transmitting the last known position at full rate. To a receiving console that looks like a healthy stream whose coordinates never move, so treat this chip as the first thing to check when a station appears connected but nothing follows. Restart the application from the Diagnostics section, and send the diagnostics bundle if it recurs.
 
 ## Person Detection

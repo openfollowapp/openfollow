@@ -16,7 +16,7 @@ Pick the protocol or device for your setup; the fields below update to match.
 ## Settings (by Source Type)
 
 - **RTSP URL** – the full `rtsp://` address, e.g. `rtsp://192.168.0.182:554/stream1`. Best results: 1080p/720p, 25–30 fps, H.264, ~4–8 Mbps CBR, 1 keyframe/s.
-- **Username (optional)** / **Password (optional)** – the camera's login, for the many IP cameras that refuse an unauthenticated stream. A camera that needs one and does not get one never connects at all, so if the Video panel on the Overview tab reports `Disconnected` against a URL that plays in VLC, this is the first thing to check. Type the password as it is; no URL-encoding, and characters like `@` or `:` are fine here where they would break a URL. Leave both blank if the camera needs no login, or if you would rather keep credentials in the URL as `rtsp://user:pass@host/path` – that still works, but when these fields are filled in they win and any login in the URL is ignored.
+- **Username (optional)** / **Password (optional)** – the camera's login, where one is required. Type the password as it is: no URL-encoding, and `@` or `:` are fine here where they would break a URL. Credentials in the URL (`rtsp://user:pass@host/path`) still work, but these fields override them.
 - **SRT URL** – `srt://0.0.0.0:5000` to listen (listener mode) or `srt://203.0.113.10:5000` to connect (caller mode); a bare `host:port` also works.
 - **Passphrase (optional)** – the SRT stream's encryption key, when the sender encrypts. Same precedence as the RTSP login: filling it in overrides a `?passphrase=` carried in the URL.
 - **RTP URL** + **Encoding** – receive address, e.g. `rtp://0.0.0.0:5004` (unicast) or a `224.x–239.x` multicast address; set **Encoding** (`H264`, `H265`, `MP2T`) to match the sender.

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -452,28 +453,58 @@ def test_beacon_sender_open_socket_binds_to_configured_iface(monkeypatch) -> Non
     assert bound_iface_opts[0][2] == _sock_mod.inet_aton("10.0.0.5")
 
 
-def test_beacon_sender_open_socket_falls_back_when_iface_unavailable(monkeypatch, caplog) -> None:
+def test_beacon_sender_stays_silent_when_its_iface_vanishes(monkeypatch) -> None:
+    """An unpinnable send socket must not be handed to the loop.
+
+    An unbound multicast socket does not reach "all interfaces" - it follows
+    the routing table onto whichever NIC happens to be up, which is how the
+    station's name, version and web port reach a network the operator
+    excluded. Refusing to open is what keeps the beacon on its own interface.
+    """
     import socket as _sock_mod
 
+    from openfollow.net_utils import InterfaceUnavailable
     from openfollow.web.discovery import BeaconSender
 
     class _FakeSock:
+        def __init__(self) -> None:
+            self.closed = False
+
         def setsockopt(self, *a):
             # Fail only on IP_MULTICAST_IF; allow the TTL call.
             if len(a) == 3 and a[1] == _sock_mod.IP_MULTICAST_IF:
                 raise OSError("iface vanished")
 
-    monkeypatch.setattr(
-        discovery_module.socket,
-        "socket",
-        lambda *a, **kw: _FakeSock(),
-    )
+        def close(self) -> None:
+            self.closed = True
+
+    made: list[_FakeSock] = []
+
+    def _factory(*_a, **_kw):
+        made.append(_FakeSock())
+        return made[-1]
+
+    monkeypatch.setattr(discovery_module.socket, "socket", _factory)
 
     sender = BeaconSender(name="X", web_port=80, iface_ip="10.0.0.5")
-    with caplog.at_level("WARNING", logger="openfollow.web.discovery"):
-        sock = sender._open_socket()
-    assert sock is not None
-    assert any("not available" in rec.message for rec in caplog.records)
+    with pytest.raises(InterfaceUnavailable):
+        sender._open_socket()
+    assert made[0].closed, "the refused socket leaked"
+
+
+def test_beacon_sender_refuses_to_open_when_the_station_pin_is_down(monkeypatch) -> None:
+    """``None`` is the pinned-but-unavailable state, and it reaches the beacon
+    at construction - a station booted with its pinned interface down would
+    otherwise advertise itself on whatever else is up, from the first packet.
+    """
+    from openfollow.net_utils import InterfaceUnavailable
+    from openfollow.web.discovery import BeaconSender
+
+    monkeypatch.setattr(discovery_module.socket, "socket", lambda *a, **kw: MagicMock())
+
+    sender = BeaconSender(name="X", web_port=80, iface_ip=None)
+    with pytest.raises(InterfaceUnavailable):
+        sender._open_socket()
 
 
 # ---------------------------------------------------------------------------
@@ -1345,3 +1376,26 @@ def test_beacon_receiver_recv_loop_dispatches_then_exits_on_stop() -> None:
 
     receiver._recv_loop(_OneThenStop())
     assert receiver.packets_received == 1
+
+
+class TestPublicReopen:
+    """A link that flapped needs both sockets rebuilt even at an unchanged
+    address: the kernel drops the group membership and the egress route when
+    the address is removed, and the same address returning does not restore
+    either - so the unchanged-IP guard in update_iface_ip is not enough."""
+
+    def test_sender_reopen_arms_a_rebuild(self) -> None:
+        from openfollow.web.discovery import BeaconSender
+
+        sender = BeaconSender(name="Node", web_port=80, version="0.1.0", iface_ip="")
+        assert not sender._reopen.is_set()
+        sender.reopen()
+        assert sender._reopen.is_set()
+
+    def test_receiver_reopen_arms_a_rebuild(self) -> None:
+        from openfollow.web.discovery import BeaconReceiver
+
+        receiver = BeaconReceiver()
+        assert not receiver._reopen.is_set()
+        receiver.reopen()
+        assert receiver._reopen.is_set()

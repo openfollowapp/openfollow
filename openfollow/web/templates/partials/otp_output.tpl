@@ -46,15 +46,13 @@
                 <span id="otp-output-priority-error" class="field-error"></span>
             </div>
             <div class="field">
-                <label>Source Interface (optional)</label>
-                <div class="input-with-button">
-                    %# Pin stable interface name (eth0/wlan0), not IP – resolved
-                    %# to a bind IP at runtime, like psn_source_iface.
-                    <select name="source_iface" hx-get="/network/interfaces/by_name?current={{config.otp_output.source_iface}}" hx-trigger="load, click from:#refresh-iface-otp"
-                            hx-target="this" hx-swap="innerHTML">
-                        <option value="{{config.otp_output.source_iface}}">{{config.otp_output.source_iface or '-- Loading... --'}}</option>
-                    </select>
-                    <button type="button" id="refresh-iface-otp" class="secondary">Scan</button>
+                <label>Source Interface</label>
+                %# Read-only pointer – the pin is edited centrally in
+                %# General > Interface Assignment, alongside every other plane.
+                <div class="ia-pointer">
+                    <span class="ia-pointer-value">{{config.otp_output.source_iface or 'Follows station interface'}}</span>
+                    <a class="ia-link" href="#interface-assignment"
+                       onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Interface Assignment</a>
                 </div>
             </div>
         </div>

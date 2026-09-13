@@ -21,6 +21,7 @@ point, ``build_marker_visual_state``, which:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -229,6 +230,7 @@ def _build(
     system_stats: Any = None,
     person_detector: Any = None,
     dt: float = _FRAME_DT,
+    network_alerts: list[str] | None = None,
 ) -> OverlayState:
     # Controller badge is stamped from InputManager.get_controller_info.
     return build_marker_visual_state(
@@ -238,6 +240,7 @@ def _build(
         person_detector=person_detector,
         cam_params_buffer=np.zeros(7, dtype=np.float64),
         dt=dt,
+        network_alerts=network_alerts,
     )
 
 
@@ -345,6 +348,100 @@ class TestSystemStatsFlow:
         collector = SimpleNamespace(update=lambda: stats)
         state = _build(app, pool, system_stats=collector)
         assert state.ip_text == "10.0.0.7:9000 (wlan0)"
+
+    @pytest.mark.parametrize(
+        "ip,expected",
+        [("169.254.8.31", True), ("192.168.1.5", False), ("N/A", False)],
+    )
+    def test_link_local_address_is_flagged_as_a_fallback(
+        self,
+        pool: OverlayStatePool,
+        ip: str,
+        expected: bool,
+    ) -> None:
+        """The HUD qualifier hangs off this flag – a 169.254 address means
+        DHCP never answered, not that the station is on the show LAN."""
+        app = _build_app()
+        stats = SimpleNamespace(
+            cpu_percent=0.0,
+            ram_percent=0.0,
+            temperature=None,
+            ip_address=ip,
+            iface_name="eth0",
+        )
+        collector = SimpleNamespace(update=lambda: stats)
+        state = _build(app, pool, system_stats=collector)
+        assert state.ip_is_fallback is expected
+
+
+class TestNetworkAlerts:
+    """The observer-to-HUD seam. Nothing asserted this end to end, so blanking
+    the field left the whole suite green while the one surface an operator has
+    during an outage silently went empty."""
+
+    def test_alerts_reach_the_overlay_state(self, pool: OverlayStatePool) -> None:
+        app = _build_app()
+        state = _build(app, pool, network_alerts=["PSN: eth0.10 is down"])
+        assert state.network_alerts == ["PSN: eth0.10 is down"]
+
+    def test_no_alerts_leaves_the_field_empty(self, pool: OverlayStatePool) -> None:
+        app = _build_app()
+        assert _build(app, pool).network_alerts == []
+
+    def test_the_state_owns_its_copy(self, pool: OverlayStatePool) -> None:
+        """The observer rebuilds its list each poll; the overlay must not hold
+        a reference that mutates under the renderer mid-frame."""
+        app = _build_app()
+        alerts = ["PSN: eth0 is down"]
+        state = _build(app, pool, network_alerts=alerts)
+        alerts.append("OTP output: eth1 is down")
+        assert state.network_alerts == ["PSN: eth0 is down"]
+
+
+class TestHostnameRow:
+    def test_hostname_is_the_running_name_not_the_station_slug(
+        self,
+        pool: OverlayStatePool,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When the rename was skipped, advertising the desired slug would
+        send the operator to a name avahi never answers on."""
+        import openfollow.privilege.device_repair as device_repair
+
+        monkeypatch.setattr(device_repair, "current_hostname", lambda: "raspberrypi")
+        app = _build_app()
+        app._config = replace(app._config, psn_system_name="Noble Bear")
+        state = _build(app, pool)
+        assert state.hostname_text == "raspberrypi.local"
+
+    def test_hostname_carries_a_non_default_port(
+        self,
+        pool: OverlayStatePool,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """On a fallback bind the UI is not on port 80, so a bare name would
+        send the operator to a port with nothing listening."""
+        import openfollow.privilege.device_repair as device_repair
+
+        monkeypatch.setattr(device_repair, "current_hostname", lambda: "raspberrypi")
+        app = _build_app()
+        app._config = replace(app._config, web_port=8080)
+        state = _build(app, pool)
+        assert state.hostname_text == "raspberrypi.local:8080"
+
+    @pytest.mark.parametrize("name", ["", "localhost"])
+    def test_unusable_hostname_yields_no_row(
+        self,
+        pool: OverlayStatePool,
+        monkeypatch: pytest.MonkeyPatch,
+        name: str,
+    ) -> None:
+        import openfollow.privilege.device_repair as device_repair
+
+        monkeypatch.setattr(device_repair, "current_hostname", lambda: name)
+        app = _build_app()
+        state = _build(app, pool)
+        assert state.hostname_text == ""
 
 
 # --------------------------------------------------------------------------- #

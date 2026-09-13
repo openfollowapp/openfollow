@@ -8,8 +8,9 @@ import subprocess
 
 import pytest
 
-from openfollow.network.adapter import Ipv4Config, Ipv4Method
+from openfollow.network.adapter import Ipv4Config, Ipv4Method, VlanInterface
 from openfollow.network.nm_adapter import NetworkManagerAdapter
+from openfollow.privilege.capabilities import NETWORK_NM_CON_ADD, NETWORK_NM_CON_DELETE
 from tests._fake_broker import FakeBroker, make_failure
 
 pytestmark = pytest.mark.unit
@@ -179,9 +180,165 @@ class TestApplyIpv4:
         a, _captured, responses = adapter
         _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"], stdout="")
         _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
+        # Device absent from nmcli entirely: says to check the adapter, which
+        # is the only one of the three causes that fits an unknown device.
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="")
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is False
-        assert "No NetworkManager" in result.message
+        assert "is not present" in result.message
+
+
+class TestActionableMessages:
+    """Each cause needs a different operator action, so each needs its own
+    message - "no profile bound" described adapter state and told them nothing."""
+
+    def _no_profile(self, responses) -> None:
+        for argv in (
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"],
+            ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"],
+        ):
+            _set(responses, argv, stdout="")
+
+    def test_unmanaged_device_says_how_to_hand_it_to_networkmanager(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._no_profile(responses)
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:unmanaged\n")
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert result.ok is False
+        assert "not managed by NetworkManager" in result.message
+
+    def test_known_device_without_a_profile_says_how_to_get_one(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._no_profile(responses)
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:disconnected\n")
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert "No saved profile" in result.message
+        assert "Connect the cable once" in result.message
+
+    @pytest.mark.parametrize("device_list", ["", "eth1:connected\nwlan0:disconnected\n"])
+    def test_absent_device_says_to_check_the_adapter(self, adapter, device_list: str) -> None:
+        """Absent whether the device table is empty or simply lists others -
+        the second is the realistic case and used to fall through the loop."""
+        a, _captured, responses = adapter
+        self._no_profile(responses)
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout=device_list)
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert "is not present" in result.message
+
+    def test_an_unreadable_device_state_is_not_reported_as_absent(self, adapter, monkeypatch) -> None:
+        """nmcli timing out is not evidence the adapter is gone. Telling the
+        operator their plugged-in NIC "is not present" contradicts the card
+        they just clicked to get here."""
+        a, _captured, responses = adapter
+        self._no_profile(responses)
+        original = a._run
+
+        def _run(argv, *, check=True):
+            if list(argv)[:5] == ["nmcli", "-t", "-f", "DEVICE,STATE", "device"]:
+                raise RuntimeError("nmcli wedged")
+            return original(argv, check=check)
+
+        monkeypatch.setattr(a, "_run", _run)
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert result.ok is False
+        assert "Could not read" in result.message
+        assert "not present" not in result.message
+
+    def test_every_apply_message_fits_the_on_screen_banner(self, adapter) -> None:
+        """The Settings > Network banner is one truncated line, so a message
+        long enough to wrap loses exactly the actionable half - and that banner
+        is the operator's surface when the web UI is unreachable."""
+        a, _captured, responses = adapter
+        self._no_profile(responses)
+        for state in ("", "unmanaged", "disconnected"):
+            _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout=f"eth0:{state}\n")
+            message = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP)).message
+            assert len(message) <= 80, f"{message!r} will be truncated on the HUD"
+
+    def test_apply_reports_pending_when_the_link_is_down(self, adapter) -> None:
+        """The settings persisted; the interface just never came up. Reporting
+        a hard failure would be wrong, and reporting a clean apply would send
+        the browser to an address nothing is serving."""
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired:eth0\n",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:unavailable\n")
+        # con mod ok, con down ok, con up fails with no reason of its own.
+        a._broker.exceptions = [None, None, make_failure("")]
+        result = a.apply_ipv4(
+            "eth0",
+            Ipv4Config(method=Ipv4Method.STATIC, address="192.168.1.50", prefix=24),
+        )
+        assert result.ok is True
+        assert result.pending is True
+        assert "has a link" in result.message
+
+    def test_a_named_activation_failure_is_not_pending(self, adapter) -> None:
+        """rfkill and an ungranted con-up both leave the device 'unavailable',
+        so keying on device state alone would tell the operator to plug in a
+        cable that isn't the problem."""
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="HomeWifi:wlan0\n",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="wlan0:unavailable\n")
+        a._broker.exceptions = [None, None, make_failure("Wi-Fi radio disabled by rfkill")]
+        result = a.apply_ipv4(
+            "wlan0",
+            Ipv4Config(method=Ipv4Method.STATIC, address="192.168.1.50", prefix=24),
+        )
+        assert result.ok is False
+        assert result.pending is False
+        assert "rfkill" in result.message
+
+    def test_renew_without_a_link_explains_why(self, adapter) -> None:
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired:eth0\n",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:unavailable\n")
+        # nmcli itself gave no reason, so the link explanation is the right one.
+        a._broker.exceptions = [None, make_failure("")]
+        result = a.renew_lease("eth0")
+        assert result.ok is False
+        assert "no link" in result.message
+
+    def test_renew_does_not_blame_the_cable_for_a_real_failure(self, adapter) -> None:
+        """A missing helper or an ungranted rule is not a link problem, and
+        sending the operator to check a cable hides the actual fix."""
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired:eth0\n",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:unavailable\n")
+        a._broker.exceptions = [None, make_failure("not authorised")]
+        result = a.renew_lease("eth0")
+        assert result.ok is False
+        assert "not authorised" in result.message
+        assert "no link" not in result.message
+
+    def test_save_failure_names_the_profile(self, adapter) -> None:
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired:eth0\n",
+        )
+        a._broker.exceptions = [make_failure("read-only")]
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert result.ok is False
+        assert "Wired" in result.message
+        assert "read-only" in result.message
 
 
 class TestRenewLease:
@@ -202,9 +359,11 @@ class TestRenewLease:
         a, _captured, responses = adapter
         _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"], stdout="")
         _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:disconnected\n")
         result = a.renew_lease("eth0")
         assert result.ok is False
-        assert "No NetworkManager" in result.message
+        # Names the cause the operator can act on, not adapter state.
+        assert "No saved profile" in result.message
 
     def test_renew_propagates_up_failure(self, adapter) -> None:
         a, _captured, responses = adapter
@@ -810,7 +969,7 @@ class TestBrokerNotConfigured:
         monkeypatch.setattr(a, "_run", _run)
         result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
         assert result.ok is False
-        assert "Broker" in result.message
+        assert "privileged helper is not configured" in result.message
 
     def test_renew_without_broker_returns_broker_message(self, monkeypatch) -> None:
         import subprocess as sp
@@ -825,7 +984,8 @@ class TestBrokerNotConfigured:
         monkeypatch.setattr(a, "_run", _run)
         result = a.renew_lease("eth0")
         assert result.ok is False
-        assert "Broker" in result.message
+        # Names something the operator can act on, not an internal object.
+        assert "privileged helper is not configured" in result.message
 
     def test_apply_privilege_error_surfaces(self, adapter) -> None:
         """A PrivilegeError on the modify step surfaces with the
@@ -994,3 +1154,282 @@ class TestConnectionForActiveLoopFallthrough:
             stdout="Profile-A:other0\nProfile-B:other1\n",
         )
         assert a._connection_for("eth0") is None
+
+
+class TestConnectionLookupSurvivesAColonInTheName:
+    """A colon in a profile name must not hide the profile.
+
+    ``nmcli -t`` escapes it as ``\\:``, and cutting at the first colon puts the
+    device column in the remainder where it can never match - so the profile is
+    invisible to every lookup and ``apply_ipv4`` answers "No NetworkManager
+    connection profile bound to eth0" for an interface that has one. That is
+    the same failure the actionable-message work exists to remove, reached by a
+    different route.
+    """
+
+    def test_active_pass_finds_a_colon_named_profile(self, adapter) -> None:
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired connection\\: office:eth0\n",
+        )
+        assert a._connection_for("eth0") == "Wired connection: office"
+
+    def test_fallback_pass_finds_a_colon_named_profile(self, adapter) -> None:
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="",
+        )
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"],
+            stdout="Wired connection\\: office:eth0\n",
+        )
+        assert a._connection_for("eth0") == "Wired connection: office"
+
+    def test_apply_reaches_the_profile_instead_of_reporting_none(self, adapter) -> None:
+        """The operator-visible half: the apply succeeds rather than claiming
+        the interface has no profile."""
+        a, captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="Wired connection\\: office:eth0\n",
+        )
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert result.ok is True, result.message
+        modify = next(c for c in captured if c[:3] == ["nmcli", "connection", "modify"])
+        assert "Wired connection: office" in modify
+
+    def test_a_short_row_is_ignored(self, adapter) -> None:
+        a, _captured, responses = adapter
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout="truncated\n",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
+        assert a._connection_for("eth0") is None
+
+
+class TestVlans:
+    _CONNECTIONS = ["nmcli", "-t", "-f", "NAME,UUID,TYPE,DEVICE", "connection", "show"]
+
+    def _prime(self, responses, stdout: str) -> None:
+        _set(responses, self._CONNECTIONS, stdout=stdout)
+
+    def test_backend_supports_vlans(self, adapter) -> None:
+        a, _captured, _responses = adapter
+        assert a.supports_vlans() is True
+
+    def test_lists_vlans_with_parent_and_id(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(
+            responses,
+            "Wired connection 1:uuid-eth0:802-3-ethernet:eth0\nvlan10:uuid-v10:vlan:eth0.10\n",
+        )
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan10"],
+            stdout="vlan.parent:eth0\nvlan.id:10\n",
+        )
+        assert a.list_vlans() == [VlanInterface(name="eth0.10", parent="eth0", vlan_id=10)]
+
+    def test_resolves_a_uuid_parent_back_to_an_interface(self, adapter) -> None:
+        """nmcli stores ``vlan.parent`` as either an interface name or the
+        parent profile's UUID. A raw UUID in the parent column would render
+        as gibberish in the interface list."""
+        a, _captured, responses = adapter
+        self._prime(
+            responses,
+            "Wired connection 1:uuid-eth0:802-3-ethernet:eth0\nvlan10:uuid-v10:vlan:eth0.10\n",
+        )
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan10"],
+            stdout="vlan.parent:uuid-eth0\nvlan.id:10\n",
+        )
+        assert a.list_vlans() == [VlanInterface(name="eth0.10", parent="eth0", vlan_id=10)]
+
+    def test_skips_a_profile_with_an_unreadable_id(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "vlan10:uuid-v10:vlan:eth0.10\n")
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan10"],
+            stdout="vlan.parent:eth0\nvlan.id:not-a-number\n",
+        )
+        assert a.list_vlans() == []
+
+    def test_skips_a_profile_with_no_device(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "vlan10:uuid-v10:vlan:\n")
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan10"],
+            stdout="vlan.parent:eth0\nvlan.id:10\n",
+        )
+        assert a.list_vlans() == []
+
+    def test_a_colon_in_a_profile_name_does_not_shift_the_columns(self, adapter) -> None:
+        """nmcli -t escapes a literal ':' in a value as '\\:'.
+
+        Splitting on every colon shifts each field after a colon-bearing name,
+        so an unrelated profile called "Wired connection: office" poisons the
+        UUID->device map that resolves a VLAN's parent - and a VLAN whose own
+        name contains one drops out of the list entirely, which makes it
+        undeletable from the UI.
+        """
+        a, _captured, responses = adapter
+        self._prime(
+            responses,
+            "Wired connection\\: office:uuid-eth0:802-3-ethernet:eth0\nvlan\\: ten:uuid-v10:vlan:eth0.10\n",
+        )
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan: ten"],
+            stdout="vlan.parent:uuid-eth0\nvlan.id:10\n",
+        )
+        assert a.list_vlans() == [VlanInterface(name="eth0.10", parent="eth0", vlan_id=10)]
+
+    def test_a_colon_named_vlan_is_still_deletable(self, adapter) -> None:
+        a, captured, responses = adapter
+        self._prime(responses, "vlan\\: ten:uuid-v10:vlan:eth0.10\n")
+        result = a.delete_vlan("eth0.10")
+        assert result.ok is True
+        assert ["nmcli", "connection", "delete", "id", "vlan: ten"] in captured
+
+    def test_ignores_non_vlan_profiles(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "Wired connection 1:uuid-eth0:802-3-ethernet:eth0\n")
+        assert a.list_vlans() == []
+
+    def test_create_issues_the_add_argv(self, adapter) -> None:
+        a, captured, _responses = adapter
+        result = a.create_vlan("eth0", 10)
+        assert result.ok is True
+        assert [
+            "nmcli",
+            "connection",
+            "add",
+            "type",
+            "vlan",
+            "con-name",
+            "eth0.10",
+            "ifname",
+            "eth0.10",
+            "dev",
+            "eth0",
+            "id",
+            "10",
+        ] in captured
+
+    def test_create_uses_the_add_capability(self, adapter) -> None:
+        a, _captured, _responses = adapter
+        a.create_vlan("eth0", 10)
+        assert a._broker.calls[-1].capability is NETWORK_NM_CON_ADD
+
+    def test_create_reports_a_broker_failure(self, adapter) -> None:
+        a, _captured, _responses = adapter
+        a._broker.exceptions.append(make_failure("parent device not found"))
+        result = a.create_vlan("eth0", 10)
+        assert result.ok is False
+        assert "parent device not found" in result.message
+
+    def test_delete_issues_the_delete_argv_for_the_bound_profile(self, adapter) -> None:
+        a, captured, responses = adapter
+        self._prime(responses, "vlan10:uuid-v10:vlan:eth0.10\n")
+        result = a.delete_vlan("eth0.10")
+        assert result.ok is True
+        assert ["nmcli", "connection", "delete", "id", "vlan10"] in captured
+
+    def test_delete_targets_the_matching_profile_not_the_first(self, adapter) -> None:
+        """With several VLANs on one parent, deleting the wrong profile tears
+        down a different network than the operator asked for."""
+        a, captured, responses = adapter
+        self._prime(
+            responses,
+            "vlan10:uuid-v10:vlan:eth0.10\nvlan20:uuid-v20:vlan:eth0.20\n",
+        )
+        result = a.delete_vlan("eth0.20")
+        assert result.ok is True
+        assert ["nmcli", "connection", "delete", "id", "vlan20"] in captured
+        assert ["nmcli", "connection", "delete", "id", "vlan10"] not in captured
+
+    def test_delete_uses_the_delete_capability(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "vlan10:uuid-v10:vlan:eth0.10\n")
+        a.delete_vlan("eth0.10")
+        assert a._broker.calls[-1].capability is NETWORK_NM_CON_DELETE
+
+    def test_delete_refuses_a_non_vlan_interface(self, adapter) -> None:
+        """``con delete`` is a wildcarded grant, so this is the check that
+        keeps it off a physical NIC's profile."""
+        a, captured, responses = adapter
+        self._prime(responses, "Wired connection 1:uuid-eth0:802-3-ethernet:eth0\n")
+        result = a.delete_vlan("eth0")
+        assert result.ok is False
+        assert "not a VLAN" in result.message
+        assert not any("delete" in argv for argv in captured)
+
+    def test_delete_reports_a_broker_failure(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "vlan10:uuid-v10:vlan:eth0.10\n")
+        a._broker.exceptions.append(make_failure("profile is in use"))
+        result = a.delete_vlan("eth0.10")
+        assert result.ok is False
+        assert "profile is in use" in result.message
+
+    def test_profile_list_survives_an_nmcli_failure(self, adapter) -> None:
+        a, _captured, _responses = adapter
+
+        def _boom(argv, *, check=True):
+            raise RuntimeError("nmcli exploded")
+
+        a._run = _boom
+        assert a.list_vlans() == []
+        assert a.delete_vlan("eth0.10").ok is False
+
+    def test_profile_list_skips_short_rows(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "truncated:row\n\nvlan10:uuid-v10:vlan:eth0.10\n")
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan10"],
+            stdout="vlan.parent:eth0\nvlan.id:10\n",
+        )
+        assert a.list_vlans() == [VlanInterface(name="eth0.10", parent="eth0", vlan_id=10)]
+
+    def test_skips_a_profile_whose_detail_read_fails(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "vlan10:uuid-v10:vlan:eth0.10\n")
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan10"],
+            stdout="",
+            returncode=1,
+        )
+
+        original = a._run
+
+        def _run(argv, *, check=True):
+            result = original(argv, check=False)
+            if check and result.returncode != 0:
+                raise RuntimeError("nmcli failed")
+            return result
+
+        a._run = _run
+        assert a.list_vlans() == []
+
+    def test_skips_a_profile_with_no_parent(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "vlan10:uuid-v10:vlan:eth0.10\n")
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "vlan.parent,vlan.id", "connection", "show", "id", "vlan10"],
+            stdout="vlan.parent:\nvlan.id:10\n",
+        )
+        assert a.list_vlans() == []

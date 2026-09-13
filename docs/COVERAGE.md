@@ -57,6 +57,7 @@ pragma without an entry here is treated as a review blocker.
 | [`openfollow/video/media_store.py`][media_store]        | `if match is None: # pragma: no cover - callers pass only regex-matched paths` in `_user_item` | `_user_item` is only ever called with paths already filtered through `_USER_FILE_RE`, so the re-match never fails. The guard is defense-in-depth against a future caller bypassing the filter. |
 | [`openfollow/input/mouse3d.py`][mouse3d]                | `...  # pragma: no cover - Protocol method body, never executed` on `Mouse3DBackend.enumerate` | `typing.Protocol` method body is a type-stub ellipsis – the Protocol registers the signature for structural checks but never executes the body. The concrete implementation (`_PySpaceMouseBackend.enumerate`) is exercised by `tests/test_input_mouse3d.py`. |
 | [`openfollow/input/mouse3d.py`][mouse3d]                | `...  # pragma: no cover - Protocol method body, never executed` on `Mouse3DBackend.open` | Same as above for the `open` stub; `_PySpaceMouseBackend.open` is exercised via a mocked `pyspacemouse.open_by_path` in `tests/test_input_mouse3d.py`. |
+| [`openfollow/web/server.py`][webserver]                 | `except OSError: # pragma: no cover - socket already torn down` in `_QuietHandler.get_environ` | `self.connection.getsockname()` only raises once the peer socket is already torn down – a race between the client disconnecting and WSGI environ assembly, which cannot be provoked from a test without reaching into the handler and faking the socket. The value it guards (the local address the request arrived on, used to badge the interface the browser reached the station over) is exercised through `request_local_iface` in `tests/test_web_server.py`; the except body only omits the key. |
 
 [receiver]: ../openfollow/video/receiver.py
 [gamepad]: ../openfollow/input/gamepad.py
@@ -65,6 +66,7 @@ pragma without an entry here is treated as a review blocker.
 [detection]: ../openfollow/video/detection.py
 [media_store]: ../openfollow/video/media_store.py
 [mouse3d]: ../openfollow/input/mouse3d.py
+[webserver]: ../openfollow/web/server.py
 
 ## Mutation testing
 

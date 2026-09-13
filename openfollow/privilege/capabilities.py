@@ -144,6 +144,24 @@ NETWORK_NM_CON_DOWN = Capability(
     sudoers_pattern="/usr/bin/nmcli con down *",
 )
 
+# VLAN sub-interfaces are created and removed as NetworkManager profiles. The
+# grants are wildcarded like ``con mod`` because the profile name is
+# operator-influenced; the app layer refuses to delete anything that is not a
+# VLAN, or the interface the request arrived on, before either is invoked.
+NETWORK_NM_CON_ADD = Capability(
+    name="network.nm.con_add",
+    probe_argv=("/usr/bin/nmcli", "con", "add", _PROBE_PLACEHOLDER),
+    description="Create a NetworkManager connection profile (VLAN)",
+    sudoers_pattern="/usr/bin/nmcli con add *",
+)
+
+NETWORK_NM_CON_DELETE = Capability(
+    name="network.nm.con_delete",
+    probe_argv=("/usr/bin/nmcli", "con", "delete", _PROBE_PLACEHOLDER),
+    description="Delete a NetworkManager connection profile (VLAN)",
+    sudoers_pattern="/usr/bin/nmcli con delete *",
+)
+
 # /etc/dhcpcd.conf is rewritten atomically in two privileged steps: stage the
 # full file to the sibling ``.tmp`` (``tee`` truncates in place, so a killed /
 # timed-out / OOM'd write can only corrupt the tmp – never the live conf), then
@@ -538,6 +556,8 @@ ALL_CAPABILITIES: tuple[Capability, ...] = (
     NETWORK_NM_CON_MOD,
     NETWORK_NM_CON_UP,
     NETWORK_NM_CON_DOWN,
+    NETWORK_NM_CON_ADD,
+    NETWORK_NM_CON_DELETE,
     NETWORK_DHCPCD_CONF_WRITE_TMP,
     NETWORK_DHCPCD_CONF_COMMIT,
     NETWORK_DHCPCD_RELOAD,

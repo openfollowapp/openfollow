@@ -8,7 +8,7 @@ Configures the PosiStageNet (PSN) multicast stream that carries live marker posi
 
 - **PSN Multicast IP** – the multicast group the stream is sent to. Standard PSN group is `236.10.10.10`; change only for a non-standard group or to isolate multiple PSN sources on the same VLAN.
 
-- **PSN Network Interface** – pins the transmitter to a specific interface (for example `eth0` or `wlan0`). Leave blank to auto-select the primary outbound interface. With both Ethernet and Wi-Fi active, pinning to the wired interface is strongly recommended so multicast doesn't leave on the wrong NIC. Press **Scan** to refresh the interface list.
+- **Network Interface** – read-only here; it reports which interface PSN is currently bound to. Set it under **General → Interface Assignment**, where every protocol's interface is chosen in one place. PSN follows the *Station default* row: it carries this station's identity on the network, so it uses the same interface as peer discovery and marker sync. With both Ethernet and Wi-Fi active, pinning the station to the wired interface is strongly recommended so multicast doesn't leave on the wrong NIC.
 
 > On managed switches, PSN multicast requires IGMP snooping with a querier active on the relevant VLAN. If a console can't see the stream, verify the switch fabric isn't silently dropping multicast to the `236.10.10.10` group.
 

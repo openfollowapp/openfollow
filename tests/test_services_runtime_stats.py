@@ -631,6 +631,89 @@ class _FakeSizedCanvas:
         return self._size
 
 
+class _TearingStatusMarker:
+    """A marker that changes generation between bare property reads.
+
+    The real ``NdiStatusMarker`` publishes its four fields as one immutable
+    unit precisely because a writer on the GStreamer bus thread can land
+    between a reader's property accesses. A fake that answers every read from
+    the same object cannot tell the two reading styles apart, so this one
+    advances on each bare read and freezes on ``snapshot()``.
+    """
+
+    _GENERATIONS = (
+        SimpleNamespace(
+            status=SimpleNamespace(name="CONNECTED"),
+            is_connected=True,
+            reconnect_attempt=0,
+            error_message="",
+        ),
+        SimpleNamespace(
+            status=SimpleNamespace(name="DISCONNECTED"),
+            is_connected=False,
+            reconnect_attempt=3,
+            error_message="Unauthorized",
+        ),
+    )
+
+    def __init__(self) -> None:
+        self._n = 0
+
+    def _current(self) -> SimpleNamespace:
+        return self._GENERATIONS[min(self._n, len(self._GENERATIONS) - 1)]
+
+    def _advance(self) -> SimpleNamespace:
+        current = self._current()
+        self._n += 1
+        return current
+
+    @property
+    def status(self) -> SimpleNamespace:
+        return self._advance().status
+
+    @property
+    def is_connected(self) -> bool:
+        return bool(self._advance().is_connected)
+
+    @property
+    def reconnect_attempt(self) -> int:
+        return int(self._advance().reconnect_attempt)
+
+    @property
+    def error_message(self) -> str:
+        return str(self._advance().error_message)
+
+    def snapshot(self) -> SimpleNamespace:
+        return self._current()
+
+
+class TestStatusIsReadAsOneUnit:
+    def test_a_mid_read_transition_cannot_publish_a_mixed_state(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Four separate reads can each land in a different generation.
+
+        The Video panel decides whether to raise the failure banner from
+        ``connected`` and ``error_message`` together, so a torn read can report
+        a connected pipeline that is not connected - and swallow the banner for
+        that poll.
+        """
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        receiver = _FakeReceiver()
+        receiver.status_marker = _TearingStatusMarker()  # type: ignore[assignment]
+        services._system_stats = _FakeSystemStatsCollector()
+        services._overlay_renderer = _FakeOverlayRenderer()
+        services._app._video_receiver = receiver
+
+        services.publish_runtime_stats(force=True)
+        video = services.get_runtime_stats_snapshot()["video"]
+
+        assert (video["pipeline_state"] == "connected") is video["connected"]
+        assert bool(video["error_message"]) is not video["connected"]
+
+
 class TestDeviceFigures:
     """The redraw rate and the canvas size describe the station, not the feed.
 

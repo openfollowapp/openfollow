@@ -36,6 +36,14 @@ _REDACTED_QUERY_KEYS = frozenset({"passphrase", "streamid"})
 # publish half the secret.
 _USERINFO_IN_TEXT_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^/?#\s]*@")
 
+# The schemeless ``user:pass@host/path`` shorthand, which ``strip_uri_userinfo``
+# also accepts, as it appears in free text. The ``:`` is what keeps an ordinary
+# ``someone@example.com`` out: an address has no colon-separated pair before the
+# ``@``, a credential always does. ``?`` and ``#`` are excluded for the same
+# reason they are above - without them an SRT ``?passphrase=p@ss`` reads as a
+# host:port pair followed by userinfo, and the query rule never gets to mask it.
+_SCHEMELESS_USERINFO_IN_TEXT_RE = re.compile(r"(?<![\w@.+-])[^\s:@/?#]+:[^\s@/?#]*@(?=[^\s@])")
+
 # A secret query value in free text, running to the next separator.
 _SECRET_QUERY_IN_TEXT_RE = re.compile(
     r"(?i)([?&](?:" + "|".join(sorted(_REDACTED_QUERY_KEYS)) + r")=)[^&\s\"'<>]*",
@@ -132,4 +140,7 @@ def redact_uris_in_text(text: str) -> str:
     there and the condition that makes an operator send us a bundle.
     """
     text = _USERINFO_IN_TEXT_RE.sub(r"\1", text)
+    # After the scheme rule, a ``scheme://`` URI has no userinfo left, so this
+    # only ever sees the schemeless form.
+    text = _SCHEMELESS_USERINFO_IN_TEXT_RE.sub("", text)
     return _SECRET_QUERY_IN_TEXT_RE.sub(r"\g<1>" + REDACTION, text)

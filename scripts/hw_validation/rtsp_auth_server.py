@@ -23,10 +23,18 @@ Then in the station's Video Source: URL ``rtsp://<this-host>:8554/test`` with
 the matching Username / Password. Leaving them blank must fail with the
 server's own ``401``; filling them in must connect.
 
-Needs the ``gst-rtsp-server`` GObject bindings (``GstRtspServer-1.0.typelib``),
-which ship with a full GStreamer install - ``brew install gst-rtsp-server`` on
-macOS, ``gir1.2-gst-rtsp-server-1.0`` on Debian. This is bench tooling, not
-part of the application.
+Needs the ``gst-rtsp-server`` GObject bindings (``GstRtspServer-1.0.typelib``)
+and any H.264 encoder::
+
+    brew install gst-rtsp-server                                   # macOS
+    sudo apt install gir1.2-gst-rtsp-server-1.0 gstreamer1.0-libav  # Debian
+
+The encoder is picked from whatever is installed (``--list-encoders`` shows the
+choice). ``x264enc`` is preferred where present but comes from
+``gst-plugins-ugly``, which the OpenFollow appliance deliberately does not ship
+(see ``THIRD_PARTY_NOTICES.md``), so on a station the fallback to ``gst-libav``
+or ``gst-plugins-bad`` is the path that actually runs. This is bench tooling,
+not part of the application.
 """
 
 from __future__ import annotations
@@ -34,6 +42,19 @@ from __future__ import annotations
 import argparse
 import socket
 import sys
+from collections.abc import Callable
+
+# Preference order, best-quality-per-CPU first. ``x264enc`` is ``gst-plugins-ugly``
+# and absent from the appliance image; ``avenc_h264`` (gst-libav) and
+# ``openh264enc`` (gst-plugins-bad) are the sets that ship, and ``vtenc_h264`` is
+# VideoToolbox on macOS. Any of them is fine for a bench pattern.
+_ENCODER_PREFERENCE: tuple[str, ...] = ("x264enc", "vtenc_h264", "avenc_h264", "openh264enc")
+
+# Per-encoder flags for low-latency output; absent entries just take defaults.
+_ENCODER_OPTIONS: dict[str, str] = {
+    "x264enc": "tune=zerolatency speed-preset=ultrafast",
+    "vtenc_h264": "realtime=true allow-frame-reordering=false",
+}
 
 DEFAULT_PORT = 8554
 DEFAULT_PATH = "/test"
@@ -68,7 +89,20 @@ def build_parser() -> argparse.ArgumentParser:
         default="smpte",
         help="videotestsrc pattern name (smpte, ball, snow, …)",
     )
+    p.add_argument("--encoder", help="force an H.264 encoder instead of auto-selecting")
+    p.add_argument("--list-encoders", action="store_true", help="print the available encoders and exit")
     return p
+
+
+def pick_encoder(available: Callable[[str], bool], preferred: str | None = None) -> str | None:
+    """Return the encoder to use, or ``None`` when nothing usable is installed.
+
+    Separated from the server so the selection can be tested without a
+    GStreamer registry.
+    """
+    if preferred is not None:
+        return preferred if available(preferred) else None
+    return next((name for name in _ENCODER_PREFERENCE if available(name)), None)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -82,12 +116,27 @@ def main(argv: list[str] | None = None) -> int:
 
     Gst.init(None)
 
+    def available(name: str) -> bool:
+        return Gst.ElementFactory.find(name) is not None
+
+    if args.list_encoders:
+        for name in _ENCODER_PREFERENCE:
+            print(f"  {name:<14} {'available' if available(name) else 'not installed'}")
+        return 0
+
+    encoder = pick_encoder(available, args.encoder)
+    if encoder is None:
+        wanted = args.encoder or " / ".join(_ENCODER_PREFERENCE)
+        print(f"error: no usable H.264 encoder ({wanted}). Install gstreamer1.0-libav.", file=sys.stderr)
+        return 1
+    options = _ENCODER_OPTIONS.get(encoder, "")
+
     # ``is-live`` keeps the pattern advancing on wall-clock time, so a station
     # that connects late still sees motion rather than a frame from t=0.
     launch = (
         f"( videotestsrc is-live=true pattern={args.pattern} "
         f"! video/x-raw,width={args.width},height={args.height},framerate={args.fps}/1 "
-        f"! videoconvert ! x264enc tune=zerolatency speed-preset=ultrafast key-int-max={args.fps} "
+        f"! videoconvert ! {encoder} {options} key-int-max={args.fps} "
         f"! rtph264pay name=pay0 pt=96 )"
     )
 
@@ -119,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     url = f"rtsp://{_local_ip()}:{args.port}{args.path}"
-    print(f"serving {url}  ({args.width}x{args.height} @ {args.fps}, pattern={args.pattern})")
+    print(f"serving {url}  ({args.width}x{args.height} @ {args.fps}, {args.pattern}, {encoder})")
     if args.no_auth:
         print("  auth:     disabled (control run)")
     else:

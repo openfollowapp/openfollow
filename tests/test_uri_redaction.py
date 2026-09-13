@@ -143,6 +143,32 @@ class TestRedactUrisInText:
         out = redact_uris_in_text("connecting srt://10.0.0.5:5000?passphrase=p@ss&latency=125")
         assert out == "connecting srt://10.0.0.5:5000?passphrase=***&latency=125"
 
+    def test_the_schemeless_shorthand_is_redacted_too(self) -> None:
+        """``strip_uri_userinfo`` accepts ``user:pass@host/path`` as a real
+        input, so the free-text path has to cover it or the guarantee splits:
+        the label would be clean while the log tail beside it leaked."""
+        out = redact_uris_in_text("failed to open operator:hunter2@cam.local:554/stream")
+        assert out == "failed to open cam.local:554/stream"
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "mail user@example.com and rtsp://cam.local",
+            "contact michel.honold+tag@example.co.uk today",
+            "07:38:36 [INFO] /GstPipeline:rtsp-sink/GstRTSPSrc:rtspsrc:",
+        ],
+    )
+    def test_the_schemeless_rule_does_not_eat_ordinary_text(self, line: str) -> None:
+        """An address has no colon-separated pair before the ``@``; a
+        credential always does. That is the whole of the distinction."""
+        assert redact_uris_in_text(line) == line
+
+    def test_the_schemeless_rule_leaves_a_query_to_the_query_rule(self) -> None:
+        """``?passphrase=p@ss`` reads as ``host:port?…=p`` + userinfo unless the
+        query delimiter is excluded - and then the masking never runs."""
+        out = redact_uris_in_text("connecting srt://10.0.0.5:5000?passphrase=p@ss&latency=125")
+        assert out == "connecting srt://10.0.0.5:5000?passphrase=***&latency=125"
+
     def test_an_unrelated_email_address_is_left_alone(self) -> None:
         line = "mail user@example.com and rtsp://cam.local"
         assert redact_uris_in_text(line) == line

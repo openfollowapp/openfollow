@@ -2285,6 +2285,20 @@ class AppConfig:
         if not isinstance(self.testpattern_selected_media, str):
             self.testpattern_selected_media = _DEFAULT_SELECTED_MEDIA
         self.testpattern_selected_media = self.testpattern_selected_media.strip() or _DEFAULT_SELECTED_MEDIA
+        # Stream credentials. A hand-edited non-string would reach the element's
+        # ``set_property`` as-is, and - worse - a bare ``0`` reads as falsy, so
+        # the login would silently drop back to whatever is in the URL. The
+        # username is stripped like any other identifier; the two secrets keep
+        # their edge whitespace, which can be part of the value and is invisible
+        # in a password field (``ConfigField(strip=False)`` makes the same
+        # promise on the web-save path).
+        if not isinstance(self.rtsp_user, str):
+            self.rtsp_user = ""
+        self.rtsp_user = self.rtsp_user.strip()
+        if not isinstance(self.rtsp_password, str):
+            self.rtsp_password = ""
+        if not isinstance(self.srt_passphrase, str):
+            self.srt_passphrase = ""
         # Auto online-sync knobs: normalise so a hand-edited TOML can't feed a
         # non-bool / non-string into the worker.
         self.update_include_prereleases = _coerce_bool(self.update_include_prereleases, False)

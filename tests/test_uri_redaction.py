@@ -54,6 +54,9 @@ class TestRedactUri:
         assert redact_uri("user:pass@192.168.0.1/stream") == "192.168.0.1/stream"
         assert redact_uri("admin:hunter2@cam.local:554") == "cam.local:554"
 
+    def test_a_password_containing_an_at_sign_is_fully_stripped(self) -> None:
+        assert redact_uri("rtsp://operator:p@ss@cam.local:554/s") == "rtsp://cam.local:554/s"
+
     def test_keeps_a_fragment(self) -> None:
         assert redact_uri("rtsp://u:p@h/s?passphrase=x#frag") == "rtsp://h/s?passphrase=***#frag"
 
@@ -69,6 +72,9 @@ class TestStripUriUserinfo:
     )
     def test_strips_only_the_userinfo(self, uri: str, expected: str) -> None:
         assert strip_uri_userinfo(uri) == expected
+
+    def test_a_password_containing_an_at_sign_is_fully_stripped(self) -> None:
+        assert strip_uri_userinfo("rtsp://operator:p@ss@cam.local/s") == "rtsp://cam.local/s"
 
     @pytest.mark.parametrize("uri", ["rtsp://[::1", "rtsp://admin:hunter2@[::1"])
     def test_a_malformed_authority_still_comes_back_safe(self, uri: str) -> None:
@@ -122,6 +128,24 @@ class TestRedactUrisInText:
         assert "hunter2" not in out
         assert "pw2" not in out
         assert out == "Tried rtsp://10.0.0.5/a,rtsp://10.0.0.6/b"
+
+    def test_a_password_containing_an_at_sign_is_fully_stripped(self) -> None:
+        """``@`` is exactly the character the credential fields exist to make
+        typeable, so it turns up unencoded in URLs operators paste. Matching to
+        the *first* ``@`` leaves the rest of the password in the line."""
+        out = redact_uris_in_text("failed rtsp://operator:p@ss@cam.local/s")
+        assert out == "failed rtsp://cam.local/s"
+        assert "ss@" not in out
+
+    def test_an_at_sign_in_a_query_value_is_masked_not_mangled(self) -> None:
+        """``?passphrase=p@ss`` must fall to the query rule. Swallowing it as
+        userinfo would both destroy the URL and leave half the secret."""
+        out = redact_uris_in_text("connecting srt://10.0.0.5:5000?passphrase=p@ss&latency=125")
+        assert out == "connecting srt://10.0.0.5:5000?passphrase=***&latency=125"
+
+    def test_an_unrelated_email_address_is_left_alone(self) -> None:
+        line = "mail user@example.com and rtsp://cam.local"
+        assert redact_uris_in_text(line) == line
 
     def test_masks_a_passphrase_mid_line(self) -> None:
         out = redact_uris_in_text("connecting srt://10.0.0.5:5000?passphrase=topsecret&latency=125 now")

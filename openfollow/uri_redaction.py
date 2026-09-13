@@ -24,10 +24,17 @@ REDACTION = "***"
 # a passphrase is set is the diagnostic, the passphrase itself never is.
 _REDACTED_QUERY_KEYS = frozenset({"passphrase", "streamid"})
 
-# ``scheme://user:pass@host`` anywhere in free text. The userinfo run excludes
-# ``/`` and ``@``, so two URIs adjacent on one log line match independently
-# rather than being swallowed as a single run to end-of-line.
-_USERINFO_IN_TEXT_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^/\s@]+@")
+# ``scheme://user:pass@host`` anywhere in free text.
+#
+# The run stops at the first ``/``, ``?``, ``#`` or space, so it stays inside
+# one URI's authority: two URIs adjacent on one line match independently rather
+# than being swallowed as a single run, an ``@`` in a path or query is not
+# mistaken for userinfo, and an SRT ``?passphrase=p@ss`` is left for the query
+# rule below. Within the authority it is greedy, so it consumes through to the
+# *last* ``@`` - a password containing an unencoded ``@``
+# (``rtsp://operator:p@ss@cam/s``) would otherwise leave ``ss@`` behind and
+# publish half the secret.
+_USERINFO_IN_TEXT_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^/?#\s]*@")
 
 # A secret query value in free text, running to the next separator.
 _SECRET_QUERY_IN_TEXT_RE = re.compile(

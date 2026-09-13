@@ -320,6 +320,33 @@ def test_selected_media_dataclass_default_matches_plugin_config_field() -> None:
     assert AppConfig().testpattern_selected_media == plugin_defaults["testpattern_selected_media"]
 
 
+@pytest.mark.parametrize("field", ["rtsp_user", "rtsp_password", "srt_passphrase"])
+@pytest.mark.parametrize("bad", [5, True, None, ["x"], {"a": 1}, 3.5])
+def test_stream_credentials_coerce_non_string_to_blank(field: str, bad: object) -> None:
+    """A hand-edited ``config.toml`` can put a non-string here (``= 5``,
+    ``= true``). Dataclasses don't coerce, so the value would reach the
+    element's ``set_property`` as-is - and a bare ``0`` reads as falsy, so the
+    login would silently drop back to whatever is in the URL rather than
+    failing visibly."""
+    cfg = AppConfig(**{field: bad})  # type: ignore[arg-type]
+    assert getattr(cfg, field) == ""
+
+
+def test_rtsp_user_is_stripped_on_load() -> None:
+    assert AppConfig(rtsp_user="  operator  ").rtsp_user == "operator"
+
+
+@pytest.mark.parametrize("field", ["rtsp_password", "srt_passphrase"])
+def test_secrets_keep_their_edge_whitespace_on_load(field: str) -> None:
+    """Matches the ``ConfigField(strip=False)`` promise on the web-save path.
+
+    If a load stripped what a save preserved, the credential would change under
+    the operator on the next config reload - and a password field shows nothing
+    that would explain why authentication suddenly started failing.
+    """
+    assert getattr(AppConfig(**{field: "  s3cret  "}), field) == "  s3cret  "
+
+
 @pytest.mark.parametrize("bad", [5, True, None, ["x"], {"a": 1}, 3.5])
 def test_selected_media_coerces_non_string_to_default(bad: object) -> None:
     """A hand-edited config.toml can put a non-string here (``= 5``, ``= true``).

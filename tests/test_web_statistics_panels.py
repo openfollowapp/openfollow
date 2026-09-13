@@ -88,6 +88,23 @@ class TestVideoPanel:
         panel = _panel(_render(video=_connected(source_fps=0.0)), "Video")
         assert _row(panel, "Frame Rate (source)") == "0.0 fps"
 
+    @pytest.mark.parametrize(
+        "state, rendered",
+        [
+            ("connected", "Connected"),
+            ("connecting", "Connecting"),
+            ("reconnecting", "Reconnecting"),
+            ("disconnected", "Disconnected"),
+        ],
+    )
+    def test_pipeline_state_reads_like_every_other_value(self, state: str, rendered: str) -> None:
+        """It was the only row shouting in capitals. The states are the four
+        connection states - never GStreamer's ``PLAYING`` / ``NULL``, which the
+        help drawer used to promise and which cannot appear here.
+        """
+        panel = _panel(_render(video={"connected": state == "connected", "pipeline_state": state}), "Video")
+        assert _row(panel, "Pipeline") == rendered
+
     def test_carries_no_device_figure(self) -> None:
         """``Frame Rate (measured)`` was the overlay redraw rate sitting between
         two real video figures, which is what made it read as a third one."""

@@ -1,4 +1,5 @@
 % import hashlib
+% from openfollow.web.labels import pretty_label
 % system = stats.get("system", {})
 % video = stats.get("video", {})
 % resolution = video.get("resolution", {})
@@ -110,7 +111,7 @@
             </div>
             <div class="metric-row">
                 <dt class="metric-label">Pipeline</dt>
-                <dd class="metric-value">{{str(video.get('pipeline_state', 'disconnected')).upper()}}</dd>
+                <dd class="metric-value">{{pretty_label(video.get('pipeline_state', 'disconnected'))}}</dd>
             </div>
         </dl>
     </section>

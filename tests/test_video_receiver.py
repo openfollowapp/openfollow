@@ -1445,6 +1445,50 @@ class TestReconnect:
         assert result is False
         assert FakeState.PLAYING in fake_pipeline.state_changes
 
+    def test_fallback_to_placeholder_keeps_the_failure_reason(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """The reason survives giving up, because that is when it is read.
+
+        An RTSP camera refusing a login reports ``Unauthorized (401)`` on every
+        attempt and then the retries run out - so by the time an operator looks
+        at the panel, a generic "No <input> connection" is all they would see.
+        That sentence says no more than the Signal row, and the 401 is the
+        whole diagnosis.
+        """
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._status_marker.set_reconnecting(3, "Unauthorized (401)")
+        r._state.reconnect_attempt = 99  # past max_attempts → fallback path
+
+        r._do_reconnect()
+
+        assert r._state.is_placeholder_pipeline is True
+        assert r.status_marker.error_message == "Unauthorized (401)"
+
+    def test_fallback_falls_back_to_a_generic_reason_when_none_was_recorded(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        """Nothing ever reported a cause – say something rather than nothing."""
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.reconnect_attempt = 99
+
+        r._do_reconnect()
+
+        assert r.status_marker.error_message == "No Fake connection"
+
+    def test_fallback_reason_is_credential_free(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """The carried reason goes back through the marker, so the redaction
+        that made it safe on the way in still holds on the way out."""
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._status_marker.set_reconnecting(3, "Unauthorized: rtsp://operator:hunter2@cam.local:554/s")
+        r._state.reconnect_attempt = 99
+
+        r._do_reconnect()
+
+        assert "hunter2" not in r.status_marker.error_message
+        assert "cam.local:554/s" in r.status_marker.error_message
+
     def test_do_reconnect_reschedules_when_build_fails_into_placeholder(
         self, fake_gst, fake_glib, fake_input_cls
     ) -> None:

@@ -983,16 +983,22 @@ class GstNativeSinkReceiver:
             )
 
             self._state.reset_reconnect_backoff()
+            # Keep the reason that actually got us here. The last attempt's
+            # error is what tells the operator whether to check the password,
+            # the cable or the encoder - an RTSP camera refusing a login
+            # reports "Unauthorized (401)" on every attempt, and replacing that
+            # with "No RTSP connection" discards the whole diagnosis for a
+            # sentence that says no more than the Signal row already does.
+            reason = self._status_marker.error_message or f"No {self._input.display_name} connection"
             if self._input_caps.has_source_selection:
                 # Clear primary config field for selection-based inputs.
                 if self._input.config_fields():
                     primary_field = self._input.config_fields()[0].name
                     self._input_config[primary_field] = ""
                 self._state.activate_source_selection()
-                self._status_marker.set_disconnected(f"No {self._input.display_name} connection")
             else:
                 self._state.deactivate_source_selection()
-                self._status_marker.set_disconnected(f"No {self._input.display_name} connection")
+            self._status_marker.set_disconnected(reason)
 
             self._create_placeholder_pipeline()
             if self._input_caps.has_source_discovery:

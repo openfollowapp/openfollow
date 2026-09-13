@@ -12,7 +12,7 @@ When the source fails, a red banner at the top of the panel gives the reason rep
 - **Signal** – `Connected` with a live feed; `Disconnected` when the source is unreachable or not yet opened. The panel header chip mirrors this. When it reads `Disconnected`, the banner above says why.
 - **Input resolution** – pixel dimensions (width × height) of the frames arriving from the source, read from the negotiated stream. `N/A` until a source has actually connected: the black *No Signal* picture is generated on this station, so it reports no geometry of its own.
 - **Frame Rate (source)** – frame rate the source advertises in that same stream. `N/A` while nothing is connected, for the same reason.
-- **Pipeline** – internal GStreamer pipeline state in uppercase (for example `PLAYING`, `PAUSED`, `NULL`). `PLAYING` is normal; anything else means it's not running.
+- **Pipeline** – the connection attempt behind the Signal row, in more detail: `Connected` when frames are arriving, `Connecting` while the first attempt is still open, `Reconnecting` while retries are in progress, and `Disconnected` once they have run out. It is the row that separates a source still working through its retries from one that has given up – Signal reads `Disconnected` for both.
 
 Every figure in this panel describes the incoming feed only. Nothing in this panel measures how fast this station is drawing – that lives under **Device**, and a station with no screen attached draws nothing while the feed stays perfectly healthy.
 

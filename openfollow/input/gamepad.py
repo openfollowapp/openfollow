@@ -1668,22 +1668,18 @@ class GamepadHandler:
         to_remove: list[int] = []
         for controller_idx in tuple(self.joysticks):
             try:
-                inp.up_pressed = inp.up_pressed or self._detect_button_edge(
-                    controller_idx,
-                    CONTROLLER_BUTTON_DPAD_UP,
-                )
-                inp.down_pressed = inp.down_pressed or self._detect_button_edge(
-                    controller_idx,
-                    CONTROLLER_BUTTON_DPAD_DOWN,
-                )
-                inp.confirm_pressed = inp.confirm_pressed or self._detect_button_edge(
-                    controller_idx,
-                    self._btn_menu_confirm_id,
-                )
-                inp.cancel_pressed = inp.cancel_pressed or self._detect_button_edge(
-                    controller_idx,
-                    self._btn_menu_cancel_id,
-                )
+                # Read every edge before folding any in - see
+                # ``read_settings_menu_input`` for what ``or`` costs here.
+                edges = {
+                    "up": self._detect_button_edge(controller_idx, CONTROLLER_BUTTON_DPAD_UP),
+                    "down": self._detect_button_edge(controller_idx, CONTROLLER_BUTTON_DPAD_DOWN),
+                    "confirm": self._detect_button_edge(controller_idx, self._btn_menu_confirm_id),
+                    "cancel": self._detect_button_edge(controller_idx, self._btn_menu_cancel_id),
+                }
+                inp.up_pressed = inp.up_pressed or edges["up"]
+                inp.down_pressed = inp.down_pressed or edges["down"]
+                inp.confirm_pressed = inp.confirm_pressed or edges["confirm"]
+                inp.cancel_pressed = inp.cancel_pressed or edges["cancel"]
                 # Refresh normal-mode button/bumper prev-state (update() is
                 # skipped while the picker is open) so closing it doesn't fire a
                 # spurious reset / settings-open / speed change.
@@ -1713,7 +1709,10 @@ class GamepadHandler:
                 # and that call is what advances the prev-state: a second pad
                 # holding the same button keeps a stale "was released" and
                 # fires the press a second time on the next frame, moving the
-                # cursor or editing the digit twice.
+                # cursor or editing the digit twice. The horizontals happen to
+                # escape it, because the sync below covers whatever
+                # btn_prev/next_marker are bound to - which is not a guarantee
+                # and never covered up, down or confirm.
                 edges = {
                     "up": self._detect_button_edge(controller_idx, CONTROLLER_BUTTON_DPAD_UP),
                     "down": self._detect_button_edge(controller_idx, CONTROLLER_BUTTON_DPAD_DOWN),

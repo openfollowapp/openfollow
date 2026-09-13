@@ -1147,19 +1147,41 @@ class TestSettingsMenuInput:
         ``_detect_button_edge`` for the later pads once one reports an edge -
         and that call is what advances the prev-state. The second pad keeps a
         stale "was released" and fires the same held press again on the next
-        frame, moving the cursor or editing the digit twice."""
+        frame, moving the cursor or editing the digit twice.
+
+        Up rather than left: ``_sync_normal_mode_button_prev`` happens to
+        cover the D-pad horizontals, because ``btn_prev_marker`` /
+        ``btn_next_marker`` default to them - so those two are repaired by
+        accident, and only while nobody rebinds them. Up, down and confirm
+        have nothing covering them.
+        """
         handler, _ = make_handler(stubbed_pygame)
         for idx in (0, 1):
             joy = FakeJoystick(num_buttons=16)
-            joy.press(CONTROLLER_BUTTON_DPAD_LEFT)
+            joy.press(CONTROLLER_BUTTON_DPAD_UP)
+            joy.press(CONTROLLER_BUTTON_A)
             handler.joysticks[idx] = joy
 
         first = handler.read_settings_menu_input()
-        assert first.left_pressed is True
+        assert first.up_pressed is True
+        assert first.confirm_pressed is True
 
         # Both still holding: a press already reported is not a new edge.
         second = handler.read_settings_menu_input()
-        assert second.left_pressed is False
+        assert second.up_pressed is False
+        assert second.confirm_pressed is False
+
+    def test_two_pads_on_one_button_fire_it_once_in_source_selection(self, stubbed_pygame) -> None:
+        """The source-selection reader folds its edges the same way, off the
+        same prev-state."""
+        handler, _ = make_handler(stubbed_pygame)
+        for idx in (0, 1):
+            joy = FakeJoystick(num_buttons=16)
+            joy.press(CONTROLLER_BUTTON_DPAD_UP)
+            handler.joysticks[idx] = joy
+
+        assert handler.read_source_selection_input().up_pressed is True
+        assert handler.read_source_selection_input().up_pressed is False
 
     def test_sync_refreshes_normal_mode_prev_state(self, stubbed_pygame) -> None:
         handler, _ = make_handler(stubbed_pygame)

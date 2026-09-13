@@ -152,7 +152,7 @@ class TestGeneralNetworkInterfaceRegion:
     def test_network_interface_is_its_own_subsection(self) -> None:
         body = _render_general()
         assert 'data-fold-key="general-network-interface"' in body
-        assert "Network Settings" in body
+        assert "Network Interface Settings" in body
 
     def test_no_inline_network_state_table(self) -> None:
         """The old inline read-only table + its 5 s poll moved into the status

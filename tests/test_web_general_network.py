@@ -7,8 +7,8 @@ The General tab hosts three foldable sub-sections:
 * ``Station Settings`` (fold key ``general-station``, default-expanded)
   – one box combining the Display-units radios, the Station name
   (``psn_system_name``), and the Web Access PIN (``web_pin``).
-* ``Network Settings`` (fold key ``general-network-interface``) – the
-  lazy-loaded Pi network interface status/edit region.
+* ``Network Interface Settings`` (fold key ``general-network-interface``) –
+  the lazy-loaded Pi network interface status/edit region.
 * ``Software Update`` (fold key ``general-software-update``,
   default-collapsed).
 

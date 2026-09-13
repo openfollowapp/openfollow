@@ -1,4 +1,4 @@
-%# Interface Assignment – which network each function uses.
+%# Network Interface Assignment – which network each function uses.
 %#
 %# Storage stays per-section (each pin lives on the sub-config that owns the
 %# protocol); this panel is only the editing surface, so the protocol sections
@@ -14,8 +14,7 @@
       hx-post="/section/interface_assignment" hx-target="#interface-assignment-section"
       hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
-        <h2>Interface Assignment</h2>
-        <span class="section-note">Which network each function uses</span>
+        <h2>Network Interface Assignment</h2>
     </div>
 
     %# Poll until the server answers again, then reload. Unlike every other

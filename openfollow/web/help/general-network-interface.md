@@ -1,4 +1,4 @@
-# Network Settings
+# Network Interface Settings
 
 The station's IPv4 configuration.
 
@@ -45,7 +45,7 @@ A station with a `Static` address never uses the fallback – it already has the
 
 Many venues deliver one Ethernet run carrying several tagged 802.1Q VLANs rather than a separate cable per network. **+ Add VLAN** creates a sub-interface on top of a physical adapter for one tag, so a single cable can carry lighting, video, and management traffic on separate networks.
 
-A VLAN sub-interface behaves like any other adapter once it exists: it appears in the list as `eth0.10`, takes its own address, and every row in **Interface Assignment** can point at it. That is how PSN reaches the lighting VLAN while OTP goes out on another, over one cable.
+A VLAN sub-interface behaves like any other adapter once it exists: it appears in the list as `eth0.10`, takes its own address, and every row in **Network Interface Assignment** can point at it. That is how PSN reaches the lighting VLAN while OTP goes out on another, over one cable.
 
 - **Parent interface** – the physical adapter carrying the tags. The switch port it plugs into must be configured as a trunk (tagged) port for that VLAN, or no traffic arrives. A VLAN cannot be stacked on another VLAN.
 - **VLAN ID** – `1`–`4094`, matching the tag the switch sends. `0` and `4095` are reserved by the standard.

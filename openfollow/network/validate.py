@@ -138,8 +138,17 @@ def parse_vlan_id(value: str | int | None) -> int | None:
 
 
 def vlan_interface_name(parent: str, vlan_id: int) -> str:
-    """Return the interface name a VLAN on ``parent`` gets."""
-    return f"{parent.strip()}.{vlan_id}"
+    """Return the interface name a VLAN on ``parent`` gets.
+
+    ``<parent>.<id>``, with the parent truncated to whatever room the tag
+    leaves. A NIC whose own name already fills the 15 characters Linux allows
+    - a MAC-derived ``enx9c69d3ac16ab``, say - would otherwise have no name
+    available and could carry no VLAN at all. The tag is the part that has to
+    survive; the parent is recorded on the profile itself, which is where the
+    interface list reads it from, so nothing depends on the name spelling it.
+    """
+    suffix = f".{vlan_id}"
+    return f"{parent.strip()[: _IFNAMSIZ - len(suffix)]}{suffix}"
 
 
 def validate_vlan_create(
@@ -170,10 +179,10 @@ def validate_vlan_create(
     if parsed is None:
         errors.append(VLAN_ID_RANGE_MESSAGE)
     elif name:
+        # The name always fits; truncating the parent is what can make two
+        # long-named NICs collide on one, and that has to be refused.
         derived = vlan_interface_name(name, parsed)
-        if len(derived) > _IFNAMSIZ:
-            errors.append(f"The interface name {derived} is longer than the {_IFNAMSIZ} characters Linux allows.")
-        elif derived in interfaces:
+        if derived in interfaces:
             errors.append(f"{derived} already exists.")
     return errors
 

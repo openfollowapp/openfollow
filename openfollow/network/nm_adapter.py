@@ -627,7 +627,7 @@ class NetworkManagerAdapter(NetworkAdapter):
         )
         if not ok:
             return ApplyResult(ok=False, message=detail or f"Could not create VLAN {vlan_id} on {parent}.")
-        return ApplyResult(ok=True, message=f"Created {name}. Give it an address with Configure.")
+        return ApplyResult(ok=True, message=f"Created {name}. Give it an address with Edit.")
 
     def delete_vlan(self, name: str) -> ApplyResult:
         profile = self._vlan_profile_name(name)

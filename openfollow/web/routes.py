@@ -1057,7 +1057,7 @@ def get_section_data(cfg: AppConfig, section: str) -> dict[str, Any] | None:
 # or full-config-import. ``psn_source_iface`` pins the local NIC and only
 # makes sense for this device. Stripped at both ends (broadcaster-forward
 # and peer-receive) so an out-of-date peer can't poison this device.
-# Interface Assignment form key -> (sub-config attr or None for top-level, field).
+# Network Interface Assignment form key -> (sub-config attr or None for top-level, field).
 _INTERFACE_ASSIGNMENT_TARGETS: dict[str, tuple[str | None, str]] = {
     "psn_source_iface": (None, "psn_source_iface"),
     "otp_output.source_iface": ("otp_output", "source_iface"),
@@ -1083,7 +1083,7 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     # form save path applies this field, so the section broadcast/receive must
     # strip it (matching the full export/import redaction).
     "video_source": frozenset({"testpattern_selected_media"}),
-    # Every row of the Interface Assignment panel names a NIC on THIS box, so
+    # Every row of the Network Interface Assignment panel names a NIC on THIS box, so
     # the whole section is device-local. The section is also refused outright
     # by ``_BROADCAST_EXCLUDED_SECTIONS``; this entry is the peer-receive half,
     # covering a direct POST from an out-of-date sender.
@@ -1105,13 +1105,13 @@ def strip_device_local_fields(
     return {k: v for k, v in data.items() if k not in drop}
 
 
-# Editable rows of the Interface Assignment panel, in render order. Each maps
+# Editable rows of the Network Interface Assignment panel, in render order. Each maps
 # the form field name to the config attribute that owns it: ``None`` for a
 # top-level ``AppConfig`` field, otherwise the sub-config attribute. Storage
 # stays per-section (so the existing save / hot-reload / device-local
 # machinery applies unchanged); only the editing surface is central.
 def _apply_interface_assignment(cfg: AppConfig, data: Mapping[str, Any]) -> None:
-    """Write the Interface Assignment panel's pins onto their owning configs.
+    """Write the Network Interface Assignment panel's pins onto their owning configs.
 
     Each pin is stripped to mirror its ``__post_init__``, then every touched
     dataclass has ``__post_init__`` re-run so a crafted POST can't bypass
@@ -1135,24 +1135,38 @@ def _apply_interface_assignment(cfg: AppConfig, data: Mapping[str, Any]) -> None
         (cfg if attr is None else getattr(cfg, attr)).__post_init__()
 
 
-def request_local_iface(environ: Mapping[str, Any]) -> str:
-    """Interface a request arrived on, or "" when it can't be told.
-
-    Drives the "this session" marker in the Network Settings interface list,
-    so an operator can see which adapter they are connected through before
-    editing its address and cutting their own session.
+def request_local_addr(environ: Mapping[str, Any]) -> str:
+    """Station address this request was answered on, or "" when unknown.
 
     Reads the accepted connection's local address (put in the environ by the
     WSGI handler) rather than the Host header: with the default wildcard bind
     the operator usually arrives via ``<slug>.local``, so the header holds a
     name, not the address avahi resolved it to.
+    """
+    local_addr = str(environ.get("SERVER_ADDR") or "").strip()
+    return "" if local_addr.startswith("127.") else local_addr
+
+
+def request_local_iface(environ: Mapping[str, Any]) -> str:
+    """Interface owning the address this request was answered on, or "".
+
+    Drives the "this session" marker in the Network Interface Settings list,
+    so an operator can see which adapter's addressing their own session
+    depends on before editing it.
+
+    This is the interface that *owns the address*, which is not always the
+    interface the packets rode in on: Linux answers for any of its addresses
+    on any interface, so a station reached at a VLAN's address over the
+    untagged LAN resolves to the VLAN. Editing that VLAN would still drop the
+    session, so the marker is the useful one – but it is why the copy names
+    the address rather than claiming the operator is on that network.
 
     Returns "" rather than guessing when the address is loopback, absent, or
     not one of this host's addresses. A missing marker is a missed warning; a
     wrong one would point at the wrong adapter, which is worse.
     """
-    local_addr = str(environ.get("SERVER_ADDR") or "").strip()
-    if not local_addr or local_addr.startswith("127."):
+    local_addr = request_local_addr(environ)
+    if not local_addr:
         return ""
     from openfollow.net_utils import get_iface_for_ip
 
@@ -1211,7 +1225,7 @@ def build_web_bind_notice(cfg: AppConfig, resolved: tuple[str, str], display_por
 
 
 def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | None = None) -> list[dict[str, Any]]:
-    """Rows for the Interface Assignment panel, in render order.
+    """Rows for the Network Interface Assignment panel, in render order.
 
     Every row carries the address the plane will actually bind, resolved
     through the same chain the runtime uses – so a row left on "Follow station
@@ -4936,15 +4950,19 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def _build_network_form_context(
         *,
         iface: str | None = None,
-        method: str | None = None,
         overrides: dict[str, Any] | None = None,
         banner: dict[str, str] | None = None,
         editable: bool = False,
+        vlan_form: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Assemble the ``partials/network`` context from the adapter's raw
-        snapshot. ``editable`` selects the view (disabled fields) vs. the edit
-        form; ``method`` / ``overrides`` apply the operator's selection +
-        submitted input (so a validation error keeps what they typed)."""
+        snapshot.
+
+        ``iface`` names the row to expand, and with ``editable`` the one row
+        that is writable. ``overrides`` carries submitted input back onto it so
+        a validation error keeps what the operator typed; ``vlan_form`` does
+        the same for the Add VLAN block, which is otherwise closed.
+        """
         cfg = server.get_network_config(iface)
         if not cfg or not cfg.get("interfaces"):
             return {
@@ -4952,6 +4970,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "writable": bool(cfg.get("writable")) if cfg else False,
                 "editable": editable,
                 "banner": banner,
+                "vlan_form": {},
             }
         net: dict[str, Any] = {
             "available": True,
@@ -4984,6 +5003,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "address": net["address"] if name == net["active_interface"] else "",
                     "prefix": net["prefix"] if name == net["active_interface"] else None,
                     "method": net["method"] if name == net["active_interface"] else "",
+                    "subnet_mask": net["subnet_mask"] if name == net["active_interface"] else "",
+                    "router": net["router"] if name == net["active_interface"] else "",
+                    "dns": list(net["dns"]) if name == net["active_interface"] else [],
+                    "lease_display": net["lease_display"] if name == net["active_interface"] else None,
                 }
                 for name in net["interfaces"]
             ]
@@ -5009,14 +5032,32 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             if name and name not in vlan_ids and name not in LOOPBACK_NAMES
         ]
         net["session_iface"] = request_local_iface(request.environ)
-        # One interface is always the current one – the same interface the card
-        # showed before the list existed – so its detail is expanded by default
-        # and picking another row moves the expansion.
-        net["editing_iface"] = net["active_interface"]
-        if method is not None:
-            net["method"] = _network_method_value(method)
+        net["session_address"] = request_local_addr(request.environ)
+        # Editing is per row, so this names the one row that is editable –
+        # and the one forced open, since a row being edited (or carrying an
+        # apply's banner) is a row the operator has to be able to see. A view
+        # render names none, which is what lets the 5s poll refresh addresses
+        # without reopening a row the operator closed.
+        net["editing_iface"] = net["active_interface"] if (iface or editable) else ""
+        net["vlan_form"] = dict(vlan_form) if vlan_form else {}
         if overrides:
             net.update(overrides)
+        # The single-interface snapshot is a fresh read, and on a failed apply
+        # it also carries what the operator typed. Both belong to the row being
+        # configured; the others keep their own detail off the cached scan.
+        for row in net["iface_rows"]:
+            if str(row.get("name", "")) == net["active_interface"]:
+                row.update(
+                    method=net["method"],
+                    address=net["address"],
+                    prefix=net["prefix"],
+                    subnet_mask=net["subnet_mask"],
+                    router=net["router"],
+                    dns=list(net["dns"]),
+                    lease_display=net["lease_display"],
+                    method_label=_NETWORK_METHOD_LABELS.get(net["method"], net["method"]),
+                )
+                break
         return net
 
     def _resolve_network_iface(iface: str) -> tuple[str | None, str]:
@@ -5047,6 +5088,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         *,
         iface: str | None = None,
         banner: dict[str, str] | None = None,
+        vlan_form: dict[str, str] | None = None,
     ) -> Any:
         """Re-render the card after a VLAN create / delete.
 
@@ -5054,11 +5096,15 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         created (or removed) has to appear (or vanish) immediately – waiting
         out the TTL would show the operator a list that contradicts the banner
         they are reading.
+
+        Read-only: a VLAN write is not an edit of some other interface, and
+        ``iface`` expands the new row rather than making it writable. A refused
+        create passes ``vlan_form`` so the operator's entry survives the swap.
         """
         server.get_network_interfaces(force=True)
         return template(
             "partials/network",
-            net=_build_network_form_context(iface=iface, editable=True, banner=banner),
+            net=_build_network_form_context(iface=iface, banner=banner, vlan_form=vlan_form),
         )
 
     def _network_redirect_url(address: str) -> str:
@@ -5094,61 +5140,31 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/network/status")
     def get_network_status() -> Any:
-        """Read-only view (disabled fields + 'Switch to edit view'). The
-        default; also where Cancel and a successful apply/renew return to."""
+        """The card with every row read-only. The default; also where Cancel
+        and a successful apply / renew return to.
+
+        No interface in the path: which rows are expanded is the browser's to
+        remember, so naming one here would reopen a row the operator closed on
+        every poll tick.
+        """
         return template(
             "partials/network",
             net=_build_network_form_context(editable=False),
         )
 
-    @app.get("/section/network/edit")
-    def get_network_edit() -> Any:
-        """The editable form – reached from the view's 'Change' button."""
-        return template(
-            "partials/network",
-            net=_build_network_form_context(editable=True),
-        )
-
-    @app.get("/section/network/status/<iface>")
-    def get_network_status_iface(iface: str) -> Any:
-        """Expand one interface's details read-only.
-
-        The list shows address and method; DNS and lease live in the detail,
-        so View mode can open a row too rather than forcing the operator into
-        Edit mode just to read a value.
-        """
-        return template(
-            "partials/network",
-            net=_build_network_form_context(iface=iface, editable=False),
-        )
-
     @app.get("/section/network/edit/<iface>")
     def get_network_edit_iface(iface: str) -> Any:
-        """Open one interface's editor, expanded under its row in the list.
+        """Open one interface's editor, leaving every other row read-only.
 
         The interface is named in the path rather than carried in a picker, so
-        which adapter is being edited is never ambiguous.
-        ``_build_network_form_context`` sanitises it against the adapter's live
-        list, falling back to the active interface if it's unknown.
+        which adapter is being edited is never ambiguous, and only one is ever
+        writable at a time. ``_build_network_form_context`` sanitises it
+        against the adapter's live list, falling back to the active interface
+        if it's unknown.
         """
         return template(
             "partials/network",
             net=_build_network_form_context(iface=iface, editable=True),
-        )
-
-    @app.post("/section/network")
-    def post_network_section() -> Any:
-        """Re-render the edit form on interface / method change (no apply) so
-        only the fields relevant to the chosen method are shown."""
-        iface = (request.forms.get("iface") or "").strip() or None
-        method = (request.forms.get("method") or "").strip() or None
-        return template(
-            "partials/network",
-            net=_build_network_form_context(
-                iface=iface,
-                method=method,
-                editable=True,
-            ),
         )
 
     @app.post("/section/network/apply")
@@ -5234,9 +5250,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # failures, fall through to the banner view so the warnings aren't
         # lost behind the redirect's empty body. DHCP has no known address
         # and likewise falls through to the read-only view.
+        #
+        # Only for the interface answering this session: that is the one whose
+        # old address just went away. Sending the browser to a secondary
+        # adapter's new address strands the operator on a network they may not
+        # be on at all – and Linux answers for it on whatever interface they
+        # are on, so the move succeeds and hides the mistake.
         if (
             method in (Ipv4Method.STATIC, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS)
             and address
+            and iface == request_local_iface(request.environ)
             and not result.partial_failures
             # Nothing is serving that address yet, so a redirect lands on a
             # dead page and the explanation is lost with the response body.
@@ -5283,6 +5306,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def network_vlan_create() -> Any:
         parent = (request.forms.get("vlan_parent") or "").strip()
         raw_id = (request.forms.get("vlan_id") or "").strip()
+        entered = {"parent": parent, "vlan_id": raw_id}
         vlans = server.get_network_vlans()
         if not vlans.get("supported"):
             return _network_vlan_response(
@@ -5290,16 +5314,19 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             )
         vlan_id = parse_vlan_id(raw_id)
         if vlan_id is None:
-            return _network_vlan_response(banner={"kind": "error", "text": VLAN_ID_RANGE_MESSAGE})
+            return _network_vlan_response(
+                banner={"kind": "error", "text": VLAN_ID_RANGE_MESSAGE},
+                vlan_form=entered,
+            )
         names = [str(row.get("name", "")) for row in server.get_network_interfaces()]
         vlan_names = [str(v.get("name", "")) for v in vlans.get("vlans", [])]
         errors = validate_vlan_create(parent, vlan_id, interfaces=names, vlan_names=vlan_names)
         if errors:
-            return _network_vlan_response(banner={"kind": "error", "text": errors[0]})
+            return _network_vlan_response(banner={"kind": "error", "text": errors[0]}, vlan_form=entered)
         with _config_write_lock:
             result = server.create_network_vlan(parent, vlan_id)
         if not result.ok:
-            return _network_vlan_response(banner={"kind": "error", "text": result.message})
+            return _network_vlan_response(banner={"kind": "error", "text": result.message}, vlan_form=entered)
         return _network_vlan_response(
             iface=vlan_interface_name(parent, vlan_id),
             banner={"kind": "ok", "text": result.message},

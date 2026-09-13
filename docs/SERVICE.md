@@ -116,7 +116,7 @@ sudo systemctl restart openfollow
 
 The pin only ever takes effect on restart, and an interface that has no
 address at boot is ignored: the UI serves on every interface and the station
-says so both on its own screen and in the web Interface Assignment panel. A
+says so both on its own screen and in the web Network Interface Assignment panel. A
 pin cannot leave the station with no web UI at all.
 
 ## NVMe for YOLO models (recommended on Pi)

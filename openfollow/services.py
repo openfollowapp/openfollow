@@ -2676,11 +2676,15 @@ class AppRuntimeServices:
         return base
 
     def _network_interfaces_provider(self) -> list[dict[str, Any]]:
-        """Every non-loopback interface with its address, method and up-state.
+        """Every non-loopback interface with its full IPv4 detail and up-state.
 
         The single-interface form only ever showed one adapter at a time, so
         there was nowhere to see a multi-NIC (or tagged-VLAN) station's layout.
         This backs the interface list that replaced its picker.
+
+        Each row carries router / DNS / lease as well as the address, so the
+        card can render every interface's editor without a second read: the
+        ``get_state`` below already returns them.
 
         One ``get_state`` per interface means one backend call each – on the
         NetworkManager adapter that is an ``nmcli`` subprocess – so the caller
@@ -2703,6 +2707,9 @@ class AppRuntimeServices:
                 "prefix": None,
                 "subnet_mask": "",
                 "method": "dhcp",
+                "router": "",
+                "dns": [],
+                "lease_display": None,
             }
             # A per-interface read can fail (interface disappearing mid-scan,
             # backend hiccup) without invalidating the rest of the list, so
@@ -2713,11 +2720,16 @@ class AppRuntimeServices:
                 logger.exception("Network state read failed for %s", iface.name)
                 state = None
             if state is not None:
+                lease = state.lease
+                seconds = lease.lease_seconds_remaining if lease and lease.lease_seconds_remaining is not None else None
                 row.update(
                     address=state.ipv4.address or "",
                     prefix=state.ipv4.prefix,
                     subnet_mask=prefix_to_mask(state.ipv4.prefix) or "",
                     method=state.ipv4.method.value,
+                    router=state.ipv4.router or "",
+                    dns=list(state.ipv4.dns),
+                    lease_display=_format_lease_remaining(seconds),
                 )
             rows.append(row)
         return rows

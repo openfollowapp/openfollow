@@ -1192,6 +1192,39 @@ class TestApplyInterfaceAssignment:
         assert cfg.otp_output.port == 999999
 
 
+class TestRequestLocalAddr:
+    """``request_local_addr`` is the address half: the station address this
+    request was answered on. The Network card names it, because the interface
+    alone reads as a claim about topology the operator can contradict - Linux
+    answers for any of its addresses on whatever interface a request arrives
+    on, so this can be a VLAN's address reached over the untagged LAN."""
+
+    KEY = "SERVER_ADDR"
+
+    def test_returns_the_address_the_connection_was_answered_on(self) -> None:
+        assert routes_module.request_local_addr({self.KEY: "169.254.32.55"}) == "169.254.32.55"
+
+    def test_strips_surrounding_whitespace(self) -> None:
+        assert routes_module.request_local_addr({self.KEY: "  10.0.0.9  "}) == "10.0.0.9"
+
+    @pytest.mark.parametrize("addr", ["", "   ", None])
+    def test_blank_address_is_unknown(self, addr: object) -> None:
+        assert routes_module.request_local_addr({self.KEY: addr}) == ""
+
+    def test_missing_key_is_unknown(self) -> None:
+        assert routes_module.request_local_addr({}) == ""
+
+    def test_loopback_is_unknown(self) -> None:
+        """The on-screen embedded browser, which no interface change can
+        disconnect - naming 127.0.0.1 would invite a pointless warning."""
+        assert routes_module.request_local_addr({self.KEY: "127.0.0.1"}) == ""
+
+    def test_an_ipv6_address_is_returned_as_it_is(self) -> None:
+        """No interface will match it (the lookup is IPv4-only), so the marker
+        stays off - but the address itself is still what answered."""
+        assert routes_module.request_local_addr({self.KEY: "2001:db8::1"}) == "2001:db8::1"
+
+
 class TestRequestLocalIface:
     """``request_local_iface`` answers "which adapter did this operator reach
     us on", which guards them from editing that adapter and dropping their own

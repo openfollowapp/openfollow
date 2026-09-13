@@ -1,6 +1,6 @@
-# Interface Assignment
+# Network Interface Assignment
 
-Which network each function uses. **Network Settings** above answers "what address does this adapter have"; this panel answers "which adapter does each function go out on".
+Which network each function uses. **Network Interface Settings** above answers "what address does this adapter have"; this panel answers "which adapter does each function go out on".
 
 Useful when lighting, video, and management traffic live on separate networks – a dedicated adapter each, or tagged VLANs on one Ethernet run. Pinning keeps each protocol on its intended network: no PSN leaking onto the office LAN, no need for one flat network just because the tracker only binds one way.
 

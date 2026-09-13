@@ -1142,6 +1142,25 @@ class TestSettingsMenuInput:
         assert inp.up_pressed is True
         assert inp.confirm_pressed is True
 
+    def test_two_pads_on_one_button_fire_it_once(self, stubbed_pygame) -> None:
+        """Folding each edge in with ``or`` as it is read short-circuits past
+        ``_detect_button_edge`` for the later pads once one reports an edge -
+        and that call is what advances the prev-state. The second pad keeps a
+        stale "was released" and fires the same held press again on the next
+        frame, moving the cursor or editing the digit twice."""
+        handler, _ = make_handler(stubbed_pygame)
+        for idx in (0, 1):
+            joy = FakeJoystick(num_buttons=16)
+            joy.press(CONTROLLER_BUTTON_DPAD_LEFT)
+            handler.joysticks[idx] = joy
+
+        first = handler.read_settings_menu_input()
+        assert first.left_pressed is True
+
+        # Both still holding: a press already reported is not a new edge.
+        second = handler.read_settings_menu_input()
+        assert second.left_pressed is False
+
     def test_sync_refreshes_normal_mode_prev_state(self, stubbed_pygame) -> None:
         handler, _ = make_handler(stubbed_pygame)
         joy = FakeJoystick(num_buttons=16)

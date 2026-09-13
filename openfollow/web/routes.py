@@ -1215,10 +1215,19 @@ def build_web_bind_notice(cfg: AppConfig, resolved: tuple[str, str], display_por
     if cfg.web_bind or not cfg.web_bind_iface:
         return ""
     address, status = resolved
+    if status != "iface":
+        # This plane fails open, so a pin naming an interface with no address
+        # is served everywhere rather than nowhere. Warning about a lockout
+        # that is not going to happen sends the operator to undo a pin that is
+        # currently costing them nothing.
+        return (
+            f"{cfg.web_bind_iface} has no address, so a restart serves the web UI on every "
+            f"interface instead. It answers only on {cfg.web_bind_iface} once that interface "
+            "has an address at startup."
+        )
     port = "" if display_port == 80 else f":{display_port}"
-    where = f"http://{address}{port}" if status == "iface" else f"an address on {cfg.web_bind_iface}"
     return (
-        f"After a restart the web UI answers only on {where}. "
+        f"After a restart the web UI answers only on http://{address}{port}. "
         "If that address is unreachable, use the Network screen on the station "
         "display to serve on all interfaces again."
     )

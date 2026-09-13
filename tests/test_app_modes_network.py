@@ -1934,29 +1934,66 @@ class TestTheScreenNeverBlocksTheFrameLoop:
         assert calls == ["bounded"]
 
 
-class TestTheScreenEnumeratesInterfacesOnce:
-    def test_one_enumeration_per_row_build(self, monkeypatch) -> None:
-        """The list is rebuilt every frame while the screen is open, so a
-        per-interface lookup walks every NIC dozens of times a second for
-        data that cannot change within one frame."""
+class TestTheScreenEnumeratesInterfacesSparingly:
+    """The rows are rebuilt on the frame loop - the clock that also drives
+    marker state and every output - so what they read off the OS is held
+    rather than re-walked on every tick."""
+
+    @staticmethod
+    def _spy(monkeypatch) -> list[int]:
         from openfollow.runtime import app_modes_network as mod
 
-        calls = 0
+        calls = [0]
 
-        def _spy() -> list[tuple[str, str]]:
-            nonlocal calls
-            calls += 1
+        def _enumerate() -> list[tuple[str, str]]:
+            calls[0] += 1
             return [("eth0", "192.168.1.5"), ("wlan0", "169.254.8.31")]
 
+        monkeypatch.setattr(mod, "list_iface_ipv4", _enumerate, raising=False)
+        monkeypatch.setattr("openfollow.net_utils.list_iface_ipv4", _enumerate)
+        return calls
+
+    def test_a_build_enumerates_once_not_once_per_interface(self, monkeypatch) -> None:
         app = _make_app()
         anm.enter_pi_network(app)
-        monkeypatch.setattr(mod, "list_iface_ipv4", _spy, raising=False)
-        monkeypatch.setattr("openfollow.net_utils.list_iface_ipv4", _spy)
+        calls = self._spy(monkeypatch)
 
-        calls = 0
+        app._pi_network_addr_ts = 0.0  # cold, as it is on entry
         anm.build_pi_network_rows(app)
 
-        assert calls == 1
+        assert calls[0] == 1
+
+    def test_a_later_build_reuses_the_held_enumeration(self, monkeypatch) -> None:
+        """Rebuilding every frame is what makes this worth holding: without
+        it the screen walks every NIC roughly 60 times a second for an
+        address that changes on a human timescale."""
+        app = _make_app()
+        anm.enter_pi_network(app)
+        calls = self._spy(monkeypatch)
+
+        app._pi_network_addr_ts = 0.0
+        anm.build_pi_network_rows(app)
+        anm.build_pi_network_rows(app)
+        anm.build_pi_network_rows(app)
+
+        assert calls[0] == 1
+
+    def test_a_finished_action_shows_its_result_without_waiting(self, monkeypatch) -> None:
+        """Every change this screen makes lands through the snapshot apply, so
+        that is what drops the held copy - an applied address must not be up
+        to an interval late on the one screen an operator has left."""
+        app = _make_app()
+        anm.enter_pi_network(app)
+        calls = self._spy(monkeypatch)
+
+        app._pi_network_addr_ts = 0.0
+        anm.build_pi_network_rows(app)
+        assert calls[0] == 1
+
+        anm._apply_pi_network_snapshot(app, anm._read_pi_network(app))
+        anm.build_pi_network_rows(app)
+
+        assert calls[0] == 2
 
 
 class TestTheAdvisoryNeverBlanksTheScreen:

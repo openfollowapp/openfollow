@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -112,6 +113,10 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
 
 def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> None:
     """Write a read snapshot into the screen cache. Main-thread only."""
+    # The one funnel for every change this screen makes - entry, interface
+    # pick, cancel, and a finished apply / renew - so the address enumeration
+    # it reads is re-taken on the next rebuild rather than waiting out its TTL.
+    app._pi_network_addr_ts = 0.0
     if not snap.has_adapter:
         app._pi_network_state_cache = None
         app._pi_network_pending_config = None
@@ -148,6 +153,10 @@ def _refresh_pi_network_bounded(app: OpenFollowApp) -> None:
     else:
         app._pi_network_banner = "Querying network status…"
 
+
+# An address changes on a human timescale; the rows are rebuilt on the frame
+# loop. One enumeration a second is plenty, and an action refreshes it outright.
+_IFACE_ADDR_TTL_S = 1.0
 
 _SELECTABLE_KINDS = {"choice", "text", "action"}
 
@@ -231,10 +240,21 @@ def _iface_addresses(app: OpenFollowApp) -> list[tuple[str, str]]:
     The whole row list is rebuilt every frame while the screen is open, so a
     per-interface lookup would walk every NIC dozens of times a second for
     data that cannot change between two reads of the same frame.
+
+    Held for :data:`_IFACE_ADDR_TTL_S` for the same reason one frame's reads
+    are shared: this runs on the clock that drives marker state and every
+    output, and an address does not change 60 times a second. Every state
+    change on this screen funnels through :func:`_apply_pi_network_snapshot`,
+    which drops the cache - so an action's result is on screen at once rather
+    than up to an interval late.
     """
     from openfollow.net_utils import list_iface_ipv4
 
-    addresses = dict(list_iface_ipv4())
+    now = time.monotonic()
+    if now - float(getattr(app, "_pi_network_addr_ts", 0.0)) >= _IFACE_ADDR_TTL_S:
+        app._pi_network_addr_cache = dict(list_iface_ipv4())
+        app._pi_network_addr_ts = now
+    addresses: dict[str, str] = getattr(app, "_pi_network_addr_cache", None) or {}
     return [
         (name, addresses.get(name, ""))
         for name in (str(getattr(i, "name", "") or "") for i in getattr(app, "_pi_network_interfaces", []))

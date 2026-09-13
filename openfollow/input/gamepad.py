@@ -1707,30 +1707,27 @@ class GamepadHandler:
         to_remove: list[int] = []
         for controller_idx in tuple(self.joysticks):
             try:
-                inp.up_pressed = inp.up_pressed or self._detect_button_edge(
-                    controller_idx,
-                    CONTROLLER_BUTTON_DPAD_UP,
-                )
-                inp.down_pressed = inp.down_pressed or self._detect_button_edge(
-                    controller_idx,
-                    CONTROLLER_BUTTON_DPAD_DOWN,
-                )
-                inp.left_pressed = inp.left_pressed or self._detect_button_edge(
-                    controller_idx,
-                    CONTROLLER_BUTTON_DPAD_LEFT,
-                )
-                inp.right_pressed = inp.right_pressed or self._detect_button_edge(
-                    controller_idx,
-                    CONTROLLER_BUTTON_DPAD_RIGHT,
-                )
-                inp.confirm_pressed = inp.confirm_pressed or self._detect_button_edge(
-                    controller_idx,
-                    self._btn_menu_confirm_id,
-                )
-                inp.cancel_pressed = inp.cancel_pressed or self._detect_button_edge(
-                    controller_idx,
-                    self._btn_menu_cancel_id,
-                )
+                # Every edge is read before any is folded in. Folding with
+                # ``or`` in place short-circuits past _detect_button_edge for
+                # the remaining controllers once one of them reports an edge,
+                # and that call is what advances the prev-state: a second pad
+                # holding the same button keeps a stale "was released" and
+                # fires the press a second time on the next frame, moving the
+                # cursor or editing the digit twice.
+                edges = {
+                    "up": self._detect_button_edge(controller_idx, CONTROLLER_BUTTON_DPAD_UP),
+                    "down": self._detect_button_edge(controller_idx, CONTROLLER_BUTTON_DPAD_DOWN),
+                    "left": self._detect_button_edge(controller_idx, CONTROLLER_BUTTON_DPAD_LEFT),
+                    "right": self._detect_button_edge(controller_idx, CONTROLLER_BUTTON_DPAD_RIGHT),
+                    "confirm": self._detect_button_edge(controller_idx, self._btn_menu_confirm_id),
+                    "cancel": self._detect_button_edge(controller_idx, self._btn_menu_cancel_id),
+                }
+                inp.up_pressed = inp.up_pressed or edges["up"]
+                inp.down_pressed = inp.down_pressed or edges["down"]
+                inp.left_pressed = inp.left_pressed or edges["left"]
+                inp.right_pressed = inp.right_pressed or edges["right"]
+                inp.confirm_pressed = inp.confirm_pressed or edges["confirm"]
+                inp.cancel_pressed = inp.cancel_pressed or edges["cancel"]
                 self._sync_normal_mode_button_prev(controller_idx)
             except pygame.error as e:
                 logger.warning("Error reading settings menu input from gamepad instance %s: %s", controller_idx, e)

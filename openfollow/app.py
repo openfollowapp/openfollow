@@ -348,6 +348,10 @@ class OpenFollowApp:
         self._pi_network_index: int = 0
         self._pi_network_interfaces: list[_NetworkInterface] = []
         self._pi_network_active_iface: str = ""
+        # Interface-address enumeration for the screen's rows, held briefly so
+        # the frame loop isn't walking every NIC on every tick.
+        self._pi_network_addr_cache: dict[str, str] = {}
+        self._pi_network_addr_ts: float = 0.0
         self._pi_network_state_cache: _NetworkState | None = None
         self._pi_network_pending_config: _Ipv4Config | None = None
         # True while the static-address fields are revealed on the screen.

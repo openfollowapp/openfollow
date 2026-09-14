@@ -199,6 +199,26 @@ def _post(base: str, path: str, data: dict) -> tuple[int, str]:
         return e.code, e.read().decode()
 
 
+def _outer_html(body: str, marker: str, tag: str = "div") -> str:
+    """The element whose start tag carries ``marker``, children included.
+
+    What the poll may clobber is what it *contains*; where the markup happens
+    to sit in the source proves nothing, so the extent is counted.
+    """
+    at = body.rindex("<" + tag, 0, body.index(marker))
+    open_tag, close_tag = "<" + tag, "</" + tag
+    depth, pos = 0, at
+    while True:
+        nxt_open, nxt_close = body.find(open_tag, pos), body.find(close_tag, pos)
+        assert nxt_close != -1, f"unclosed <{tag}>"
+        if nxt_open != -1 and nxt_open < nxt_close:
+            depth, pos = depth + 1, nxt_open + len(open_tag)
+            continue
+        depth, pos = depth - 1, nxt_close + len(close_tag)
+        if depth == 0:
+            return body[at:pos]
+
+
 def _post_resp(base: str, path: str, data: dict) -> tuple[int, str, dict]:
     """POST that also returns lower-cased response headers (for HX-Redirect)."""
     body = urllib.parse.urlencode(data, doseq=True).encode()
@@ -1055,15 +1075,50 @@ def test_interface_list_uses_the_richer_provider_when_wired(tmp_path, monkeypatc
 # --------------------------------------------------------------------------- #
 
 
-def test_the_poll_holds_while_the_add_vlan_form_is_open(net_server) -> None:
-    """The Add VLAN form sits inside the polled card, so an unconditional poll
-    would clear what the operator is typing into it every five seconds."""
+def test_the_poll_swaps_the_interface_list_and_nothing_else(net_server) -> None:
+    """Refreshing addresses is the whole of the tick's business.
+
+    Swapping the card wholesale took the operator's own state with it, so the
+    poll had to be held off while the Add VLAN form was open - and a held poll
+    is a card showing addresses that have since moved on.
+    """
     _fake, base = net_server
     status, body = _get(base, "/section/network/status")
     assert status == 200
-    assert 'hx-trigger="every 5s [netPollAllowed()]"' in body
+    # No trigger filter: nothing is left for the poll to wait for.
+    assert 'hx-trigger="every 5s"' in body
+    assert 'hx-select="#net-iface-list" hx-target="#net-iface-list" hx-swap="outerHTML"' in body
     # Plain path: the poll names no interface, so it can't reopen a closed row.
-    assert 'hx-get="/section/network/status" hx-trigger="every 5s' in body
+    assert 'hx-get="/section/network/status" hx-trigger="every 5s"' in body
+
+
+def test_the_polled_fragment_carries_no_operator_state(net_server) -> None:
+    """The addresses are inside the swapped fragment; everything the operator
+    put on screen themselves is outside it."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/status")
+    swapped = _outer_html(body, 'id="net-iface-list"')
+    assert "net-iface-row" in swapped
+    assert "ia-vlan-add" not in swapped
+    assert "+ Add VLAN" not in swapped
+    assert "ia-legend" not in swapped
+
+
+def test_a_refused_create_keeps_its_reason_and_its_entry_through_the_poll(net_server) -> None:
+    """A refusal leaves the form open with what was typed and a banner saying
+    why. Both sit outside the fragment the poll replaces, so the reason is
+    still on screen five seconds later, beside the entry it is about."""
+    _fake, base = net_server
+    _status, body = _post(
+        base,
+        "/section/network/vlan/create",
+        {"vlan_parent": "wlan0", "vlan_id": "99999"},
+    )
+    assert "between 1 and 4094" in body
+    assert 'hx-select="#net-iface-list"' in body
+    swapped = _outer_html(body, 'id="net-iface-list"')
+    assert "between 1 and 4094" not in swapped
+    assert 'value="99999"' not in swapped
 
 
 def test_cancel_drops_the_card_back_to_read_only(net_server) -> None:

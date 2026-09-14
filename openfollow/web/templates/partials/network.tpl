@@ -5,6 +5,11 @@
 %# is the browser's to remember (``data-adv-key``), so the 5s poll refreshes
 %# addresses without closing the row an operator is reading.
 %#
+%# The poll swaps ``#net-iface-list`` alone, not the whole card: everything
+%# else here is the operator's own state – a half-typed Add VLAN entry, the
+%# button that revealed it, the banner reporting what their last action did –
+%# and a refresh of the adapter addresses has no business clearing any of it.
+%#
 %# Editing is per row: an expanded row reads out its settings with an Edit
 %# button, and Edit swaps that one row into Apply / Renew / Cancel. Each row is
 %# its own form, so the interface it writes to is the one named in its summary.
@@ -36,8 +41,8 @@
 % _vopen = bool(_vform)
 <div id="network-config-section" class="network-config"
 % if _polls:
-     hx-get="/section/network/status" hx-trigger="every 5s [netPollAllowed()]"
-     hx-target="#network-interface" hx-swap="innerHTML"
+     hx-get="/section/network/status" hx-trigger="every 5s"
+     hx-select="#net-iface-list" hx-target="#net-iface-list" hx-swap="outerHTML"
 % end
      >
     % if _banner:
@@ -59,10 +64,12 @@
     % end
 
     <div class="group">
-        % if not _rows:
-        <p class="muted">No network interfaces detected.</p>
-        % else:
-        <div class="net-iface-list">
+        %# Rendered even with nothing in it: this is what the poll swaps, and a
+        %# card that omitted it would poll against a target that isn't there.
+        <div id="net-iface-list" class="net-iface-list">
+            % if not _rows:
+            <p class="muted">No network interfaces detected.</p>
+            % else:
             % for row in _rows:
             % _name = row.get("name", "")
             % _addr = row.get("address", "")
@@ -230,8 +237,8 @@
                 </form>
             </details>
             % end
+            % end
         </div>
-        % end
 
         <div class="ia-legend">
             <span><span class="ia-dot up"></span> up with an address</span>

@@ -2317,15 +2317,6 @@
  };
  form.addEventListener('htmx:afterRequest', cancel);
  }
- // The Add VLAN form sits inside the polled card, so a refresh mid-entry
- // would clear the parent and id the operator is filling in. Hold the poll
- // while it is open - the card's own Scan button still forces a re-read.
- // Referenced from hx-trigger, which parses its own [] filter, so this has to
- // be a bare call with no brackets of its own.
- function netPollAllowed() {
- const form = document.querySelector('.ia-vlan-add');
- return !form || form.hidden;
- }
  // Which addressing fields the chosen method actually lets you set. CSS
  // hides them off ``data-method``; this disables the hidden ones, because a
  // hidden input still posts and a DHCP apply must not carry a stale static

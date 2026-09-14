@@ -190,6 +190,23 @@ class TestNetworkPartialStructure:
         assert body.count("<form") == body.count("</form>")
         assert body.count("<details") == body.count("</details>")
 
+    @pytest.mark.parametrize(
+        "rows",
+        [[], [{"name": "eth0", "address": "10.0.0.5", "prefix": 24, "method": "dhcp"}]],
+        ids=["no-interfaces", "one-interface"],
+    )
+    def test_the_poll_target_renders_even_with_no_interfaces(self, rows: list) -> None:
+        """htmx drops a swap whose target isn't in the document, silently. A
+        card that omitted the list when the host reported no adapters would
+        poll against nothing for as long as it stayed open - so an adapter
+        appearing would never show up."""
+        body = template(
+            "partials/network",
+            net={"available": True, "writable": False, "editable": False, "iface_rows": rows},
+        )
+        assert 'hx-target="#net-iface-list"' in body
+        assert 'id="net-iface-list"' in body
+
 
 class TestUpdateSupportedFlag:
     """``_build_general_template_data`` derives ``update_supported`` from the

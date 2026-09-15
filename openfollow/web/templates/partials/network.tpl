@@ -50,7 +50,16 @@
     % end
 
     % if not _net.get("available"):
-    <p class="muted">Network configuration is unavailable – no network adapter is configured on this host (or this build has none wired), so there is nothing to edit.</p>
+    %# Wrapped in the swap target like the rows are. The poll selects
+    %# ``#net-iface-list`` out of whatever comes back, so a render that omitted
+    %# it would swap in nothing, delete the live list, and leave every later
+    %# poll aimed at an element that no longer exists - the card would stay
+    %# empty until a page reload, having been merely unreachable for one tick.
+    <div class="group">
+        <div id="net-iface-list" class="net-iface-list">
+            <p class="muted">Network configuration is unavailable – no network adapter is configured on this host (or this build has none wired), so there is nothing to edit.</p>
+        </div>
+    </div>
     % else:
 
     %# A writable host needs no card-level mode: each row says whether it is
@@ -64,8 +73,9 @@
     % end
 
     <div class="group">
-        %# Rendered even with nothing in it: this is what the poll swaps, and a
-        %# card that omitted it would poll against a target that isn't there.
+        %# Rendered in every state - no rows, and no backend either: this is
+        %# what the poll selects and swaps, so a render that omitted it would
+        %# empty the live list instead of replacing it.
         <div id="net-iface-list" class="net-iface-list">
             % if not _rows:
             <p class="muted">No network interfaces detected.</p>

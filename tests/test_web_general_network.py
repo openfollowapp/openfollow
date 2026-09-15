@@ -191,21 +191,43 @@ class TestNetworkPartialStructure:
         assert body.count("<details") == body.count("</details>")
 
     @pytest.mark.parametrize(
-        "rows",
-        [[], [{"name": "eth0", "address": "10.0.0.5", "prefix": 24, "method": "dhcp"}]],
-        ids=["no-interfaces", "one-interface"],
+        "net",
+        [
+            {"available": True, "writable": False, "editable": False, "iface_rows": []},
+            {
+                "available": True,
+                "writable": False,
+                "editable": False,
+                "iface_rows": [{"name": "eth0", "address": "10.0.0.5", "prefix": 24, "method": "dhcp"}],
+            },
+            {"available": False, "writable": False, "editable": False},
+        ],
+        ids=["no-interfaces", "one-interface", "no-backend"],
     )
-    def test_the_poll_target_renders_even_with_no_interfaces(self, rows: list) -> None:
-        """htmx drops a swap whose target isn't in the document, silently. A
-        card that omitted the list when the host reported no adapters would
-        poll against nothing for as long as it stayed open - so an adapter
-        appearing would never show up."""
+    def test_every_render_carries_the_poll_target(self, net: dict) -> None:
+        """The poll selects ``#net-iface-list`` out of whatever comes back, so
+        every render has to contain one.
+
+        The no-backend case is the one that bites. A single tick where the
+        backend cannot answer - a transient nmcli failure - returns a render
+        with no target: ``hx-select`` matches nothing, the ``outerHTML`` swap
+        replaces the live list with nothing, and every later poll is aimed at
+        an element that no longer exists. The card stays empty until a page
+        reload, having been merely unreachable for five seconds.
+        """
+        body = template("partials/network", net=net)
+        assert 'id="net-iface-list"' in body
+
+    def test_the_poll_keeps_running_when_the_backend_cannot_answer(self) -> None:
+        """The polling attributes live on the outer card, which the tick never
+        swaps - so a no-backend render must not be what stops the polling
+        either. It recovers on its own when the backend comes back."""
         body = template(
             "partials/network",
-            net={"available": True, "writable": False, "editable": False, "iface_rows": rows},
+            net={"available": True, "writable": False, "editable": False, "iface_rows": []},
         )
+        assert 'hx-trigger="every 5s"' in body
         assert 'hx-target="#net-iface-list"' in body
-        assert 'id="net-iface-list"' in body
 
 
 class TestUpdateSupportedFlag:

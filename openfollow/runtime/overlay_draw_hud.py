@@ -1899,7 +1899,7 @@ def draw_pi_network_screen(
             draw_rounded_rect(cr, pill_x, pill_y, pill_w, pill_h, pill_h / 2.0)
             cr.fill()
             renderer._set_ui_font(cr, 10)
-            cr.set_source_rgba(*(COLOR_ACCENT, 1.0) if warn else COLOR_TEXT_MUTED)
+            cr.set_source_rgba(*((*COLOR_ACCENT, 1.0) if warn else COLOR_TEXT_MUTED))
             ext = cr.text_extents(pill)
             cr.move_to(pill_x + (pill_w - ext.width) / 2.0, pill_y + pill_h * 0.72)
             cr.show_text(pill)

@@ -327,7 +327,14 @@ def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
     if target.field_edit_active:
         from openfollow.runtime import ipv4_digit_grid
 
-        target.field_label = str(getattr(app, "_pi_network_field_name", "")).replace("_", " ").title()
+        # The row already names the field the way the operator reads it ("IP
+        # Address"); the key behind it ("address") is an internal name and
+        # titles badly.
+        field_key = str(getattr(app, "_pi_network_field_name", ""))
+        target.field_label = next(
+            (str(row.get("label") or "") for row in target.rows if row.get("key") == field_key and row.get("label")),
+            field_key.replace("_", " ").title(),
+        )
         target.field_value = str(getattr(app, "_pi_network_field_value", ""))
         # The caret only tracks a digit slot once the d-pad has padded the
         # buffer; a freely typed value has no fixed slot-to-character mapping,

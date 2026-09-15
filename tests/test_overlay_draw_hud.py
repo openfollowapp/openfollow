@@ -2345,9 +2345,39 @@ class TestTheFieldEditorShowsTheDpadCursor:
         Enter and Esc, so from the operator's side it needed a keyboard.
         """
         subtitle = self._subtitle()
-        assert "D-pad" in subtitle
         assert "A saves" in subtitle
         assert "B cancels" in subtitle
+
+    def test_the_title_says_what_is_being_changed(self) -> None:
+        """ "Address" is the internal key for the row; the operator-facing name
+        is the one the row itself carries."""
+        state = _base_state(
+            pi_network=_network_state(field_label="IP Address", field_edit_active=True, active_iface="eth0")
+        )
+        cr = FakeCairo()
+        draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
+        assert any("CHANGE IP ADDRESS" in t for t in cr.show_text_strings())
+
+    def test_the_subtitle_names_the_interface_first(self) -> None:
+        """On a multi-NIC station the field alone does not say which interface
+        is about to change, and the subtitle is truncated from the end - so an
+        interface appended to it is the part that disappears."""
+        state = _base_state(
+            pi_network=_network_state(field_label="IP Address", field_edit_active=True, active_iface="eth0.13")
+        )
+        state.button_labels = {"menu_confirm": "A", "menu_cancel": "B"}
+        cr = FakeCairo()
+        draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
+        subtitle = next(t for t in cr.show_text_strings() if "digit" in t)
+        assert subtitle.startswith("eth0.13")
+
+    def test_the_subtitle_says_which_way_each_axis_goes(self) -> None:
+        """Naming the d-pad without naming its axes leaves the operator to
+        guess which one picks the digit and which one changes it - on the
+        screen they are using precisely because the web UI is out of reach."""
+        subtitle = self._subtitle()
+        assert "Left/Right" in subtitle
+        assert "Up/Down" in subtitle
 
     def test_it_names_the_operator_s_own_bindings(self) -> None:
         """Naming the defaults would send an operator who rebound these to a
@@ -2399,7 +2429,7 @@ class TestDrawPiNetworkFieldEdit:
         cr = FakeCairo()
         draw_pi_network_field_edit(FakeRenderer(state=state), cr, state, 1280, 720)
         texts = cr.show_text_strings()
-        assert "VALUE" in texts
+        assert "CHANGE VALUE" in texts
 
     def test_overlay_wraps_with_scrim(self) -> None:
         state = _base_state(pi_network=_network_state())

@@ -1855,13 +1855,18 @@ def draw_pi_network_field_edit(
     h: int,
 ) -> None:
     net = state.pi_network
-    title = (net.field_label or "VALUE").upper()
+    # Naming the field alone leaves an operator on a multi-NIC station to
+    # remember which row they opened, and the cost of getting it wrong is
+    # reconfiguring the interface they are reachable on.
+    title = f"Change {net.field_label or 'Value'}".upper()
     pad = _confirm_cancel_hint(state, "saves", "cancels")
-    subtitle = (
-        f"D-pad moves and changes the digit. {pad}."
+    detail = (
+        f"Left/Right move, Up/Down change the digit. {pad}."
         if pad
         else "Type digits and dots only, Enter to save, Esc to cancel."
     )
+    # Interface first: the subtitle is truncated from the end.
+    subtitle = f"{net.active_iface} - {detail}" if net.active_iface else detail
     panel_w = min(w * 0.62, 720.0)
     panel_h = min(h * 0.30, 240.0)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(

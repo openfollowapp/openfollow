@@ -1759,9 +1759,12 @@ def draw_pi_network_screen(
         value = str(row.get("value", ""))
 
         if kind == "header":
-            # Bold section heading; no chrome.
+            # Bold section heading; no chrome. Muted, not accent: amber on this
+            # screen means a row needs attention, and a heading in the warning
+            # colour both raises a false alarm and stops the real ones reading
+            # as different from the furniture around them.
             renderer._set_ui_font(cr, 12, bold=True)
-            cr.set_source_rgba(*COLOR_ACCENT)
+            cr.set_source_rgba(*COLOR_TEXT_MUTED)
             cr.move_to(inner_x, row_y + header_h * 0.75)
             cr.show_text(label.upper())
             row_y += header_h + spacing_after_header

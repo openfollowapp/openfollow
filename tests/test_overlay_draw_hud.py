@@ -2184,6 +2184,23 @@ def _network_state(**overrides: object):
 
 
 class TestDrawPiNetworkScreen:
+    def test_a_heading_is_not_drawn_in_the_warning_colour(self) -> None:
+        """Amber on this screen means a row needs attention. A heading that
+        shares it raises a false alarm on a screen the operator only reaches
+        when something is already wrong, and leaves the real warnings reading
+        as furniture. Asserts they differ rather than naming a colour, so a
+        palette change cannot quietly reunite them."""
+        rows = [
+            {"kind": "header", "label": "Fix reachability"},
+            {"kind": "notice", "label": "eth0 has no address"},
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        heading = next(t for t in cr.texts if "FIX REACHABILITY" in t.text)
+        warning = next(t for t in cr.texts if "no address" in t.text)
+        assert heading.rgba != warning.rgba
+
     def test_renders_sectioned_layout(self) -> None:
         rows = [
             {"kind": "header", "label": "Interface"},

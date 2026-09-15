@@ -1711,7 +1711,6 @@ VALID_MOVE_LAYOUTS = ("wasd", "ijkl", "numpad")
 
 _BUTTON_MAPPING_FIELDS = (
     "btn_reset",
-    "btn_source_select",
     "btn_toggle_help",
     "btn_toggle_zones",
     "btn_speed_down",
@@ -1836,7 +1835,6 @@ class ControllerConfig:
     curve: str = "logarithmic"
     # Normal mode button mappings
     btn_reset: str = "X"
-    btn_source_select: str = "BACK"
     btn_toggle_help: str = "Y"
     btn_speed_down: str = "LB"
     btn_speed_up: str = "RB"
@@ -2767,29 +2765,14 @@ def _warn_renamed_marker_key(old: str, new: str) -> None:
 def _warn_deprecated_controller_bindings(controller: ControllerConfig) -> None:
     """Emit a one-shot warning for deprecated controller bindings.
 
-    - The ``btn_source_select`` direct-entry shortcut was superseded by
-      the Settings menu (``btn_settings``).
-    - Mode-specific confirm/cancel pairs were consolidated into a single
-      ``btn_menu_confirm`` / ``btn_menu_cancel`` used by every menu.
+    Mode-specific confirm/cancel pairs were consolidated into a single
+    ``btn_menu_confirm`` / ``btn_menu_cancel`` used by every menu.
 
     ``load_config`` is invoked on every hot-reload, so a module-level set
     tracks which fields already warned to keep logs from flooding across
     reloads.
     """
     defaults = ControllerConfig()
-    direct_entry_fields = ("btn_source_select",)
-    for field_name in direct_entry_fields:
-        if field_name in _DEPRECATED_WARNED:
-            continue
-        current = getattr(controller, field_name)
-        if current != getattr(defaults, field_name):
-            logger.warning(
-                "Config field controller.%s=%r is deprecated: direct shortcut "
-                "removed – use the Settings menu (btn_settings, default BACK) instead.",
-                field_name,
-                current,
-            )
-            _DEPRECATED_WARNED.add(field_name)
     confirm_cancel_fields = (
         "btn_settings_confirm",
         "btn_settings_cancel",

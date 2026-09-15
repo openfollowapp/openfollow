@@ -1864,7 +1864,6 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "invert_y": _as_bool,
         "curve": _as_str,
         "btn_reset": _as_str,
-        "btn_source_select": _as_str,
         "btn_toggle_help": _as_str,
         "btn_speed_down": _as_str,
         "btn_speed_up": _as_str,

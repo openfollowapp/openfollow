@@ -2553,7 +2553,7 @@ def test_process_input_routes_to_about_when_active() -> None:
     app = SimpleNamespace(
         _input_manager=SimpleNamespace(
             keyboard_handler=SimpleNamespace(keys=set()),
-            gamepad_handler=object(),
+            gamepad_handler=SimpleNamespace(read_settings_toggle=lambda: False),
         ),
         _button_detection=None,
         _settings_menu_active=False,

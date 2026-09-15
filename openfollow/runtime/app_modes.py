@@ -25,20 +25,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def process_input(app: OpenFollowApp, dt: float) -> None:
-    """Process input through the InputManager."""
-    if app._input_manager is None:
-        return
+def on_screen_mode_active(app: OpenFollowApp) -> bool:
+    """True while any on-screen mode is up, i.e. the operator is not on the HUD.
 
-    # A modal/overlay state suspends direct marker control. Track that edge so
-    # that when control RETURNS to the marker, any key still tracked as held
-    # (e.g. held across the menu, or whose key-up GTK dropped) is dropped
-    # instead of drifting the marker. Reads are defensive so partial test apps
-    # don't trip; the clear runs only on the modal->marker-control transition,
-    # where ``_input_manager`` is guaranteed present. Mirrors the early-return
-    # guards below – keep in sync when adding a modal. (A key-up dropped during
-    # continuous control is out of scope; that awaits the planned evdev poller.)
-    modal_active = (
+    One list, read both by the marker-control suspend below and by the Settings
+    button's close. Keep it in step with the early-return guards in
+    :func:`process_input` - a mode missing here keeps steering the marker
+    underneath itself, and cannot be closed by the button that opened it.
+    """
+    return bool(
         getattr(app, "_button_detection", None) is not None
         or getattr(app, "_settings_menu_active", False)
         or getattr(app, "_about_active", False)
@@ -52,11 +47,100 @@ def process_input(app: OpenFollowApp, dt: float) -> None:
         or getattr(app, "_url_editor_active", False)
         or getattr(app, "_browser_active", False)
     )
+
+
+def close_all_screens(app: OpenFollowApp) -> None:
+    """Close every on-screen mode and return to the HUD.
+
+    What the Settings button means once something is open: cancel steps back
+    one level, this leaves outright. Three levels down with something happening
+    on stage, stepping out one screen at a time is not a way out.
+
+    Innermost first, and the settings menu last: a handler that backs out to
+    Settings on close (the browser does) would otherwise leave it on screen.
+    Each mode is closed through its own exit function rather than by clearing
+    the flag - ``exit_pi_network`` bumps the worker generation to orphan an
+    in-flight apply, and dropping that would let a late result write to a
+    screen the operator has left.
+    """
+    from openfollow.runtime.app_modes_media import exit_export_screen, exit_media_picker
+    from openfollow.runtime.app_modes_network import exit_pi_network, exit_pi_network_field_edit
+
+    if getattr(app, "_pi_network_field_edit_active", False):
+        exit_pi_network_field_edit(app)
+    if getattr(app, "_pi_network_active", False):
+        exit_pi_network(app)
+    if getattr(app, "_url_editor_active", False):
+        exit_url_editor(app)
+    if getattr(app, "_field_choice_active", False):
+        exit_field_choice_picker(app)
+    if getattr(app, "_source_type_selection_active", False):
+        exit_source_type_selection(app)
+    receiver = getattr(app, "_video_receiver", None)
+    if receiver is not None and getattr(receiver, "source_selection_active", False):
+        receiver._state.deactivate_source_selection()
+    if getattr(app, "_browser_active", False):
+        exit_browser(app)
+    if getattr(app, "_about_active", False):
+        exit_about(app)
+    if getattr(app, "_media_picker_active", False):
+        exit_media_picker(app)
+    if getattr(app, "_media_export_active", False):
+        exit_export_screen(app)
+    app._button_detection = None
+    if getattr(app, "_settings_menu_active", False):
+        exit_settings_menu(app)
+
+
+def _settings_button_closes(app: OpenFollowApp, keys: set[str]) -> bool:
+    """Did the operator press the Settings button while a screen was open?
+
+    Reading the gamepad edge here is also what stops the press re-opening what
+    it just closed: the edge is consumed on this frame, so ``update()`` does
+    not see a stale "was released" on the first frame back on the HUD. The
+    keyboard flag is the one ``process_input`` already keeps, for the same
+    reason.
+    """
+    # Defensive reads, like the suspend check above: this now runs before every
+    # early return, so a partial test app reaches it where it never used to.
+    controller = getattr(getattr(app, "_config", None), "controller", None)
+    key_settings = getattr(controller, "key_settings", "") or ""
+    if key_settings and key_settings in keys:
+        if getattr(app, "_settings_key_pressed", False):
+            return False
+        app._settings_key_pressed = True
+        return True
+    manager = app._input_manager
+    handler = getattr(manager, "gamepad_handler", None) if manager is not None else None
+    return bool(handler is not None and handler.read_settings_toggle())
+
+
+def process_input(app: OpenFollowApp, dt: float) -> None:
+    """Process input through the InputManager."""
+    if app._input_manager is None:
+        return
+
+    # A modal/overlay state suspends direct marker control. Track that edge so
+    # that when control RETURNS to the marker, any key still tracked as held
+    # (e.g. held across the menu, or whose key-up GTK dropped) is dropped
+    # instead of drifting the marker. Reads are defensive so partial test apps
+    # don't trip; the clear runs only on the modal->marker-control transition,
+    # where ``_input_manager`` is guaranteed present. Mirrors the early-return
+    # guards below – keep in sync when adding a modal. (A key-up dropped during
+    # continuous control is out of scope; that awaits the planned evdev poller.)
+    modal_active = on_screen_mode_active(app)
     if modal_active:
         app._marker_control_suspended = True
     elif getattr(app, "_marker_control_suspended", False):
         app._input_manager.keyboard_handler.clear()
         app._marker_control_suspended = False
+
+    # The button that opens the menus also closes them, from any depth. Before
+    # the dispatch below, because each of those returns early and would
+    # otherwise swallow the press.
+    if modal_active and _settings_button_closes(app, app._input_manager.keyboard_handler.keys):
+        close_all_screens(app)
+        return
 
     # Button detection wizard takes exclusive control of input.
     if app._button_detection is not None:

@@ -4122,3 +4122,59 @@ class TestIdentify:
     def test_an_unknown_pad_cannot_be_identified(self, stubbed_pygame) -> None:
         handler, _ = make_handler(stubbed_pygame)
         assert handler.identify(42) is False
+
+
+class TestReadSettingsToggle:
+    """The Settings button read while a screen is open.
+
+    ``update()`` is skipped then, so its ``settings_open_pressed`` never sees
+    the press - this is the read that closes the screen.
+    """
+
+    def test_a_press_reports_an_edge(self, stubbed_pygame) -> None:
+        handler, _ = make_handler(stubbed_pygame)
+        joy = FakeJoystick(num_buttons=16)
+        joy.press(CONTROLLER_BUTTON_BACK)
+        handler.joysticks[0] = joy
+        assert handler.read_settings_toggle() is True
+
+    def test_a_held_button_reports_one_edge_only(self, stubbed_pygame) -> None:
+        """The press that closes a screen must not read as a fresh press on the
+        next frame, or the menu flickers instead of closing."""
+        handler, _ = make_handler(stubbed_pygame)
+        joy = FakeJoystick(num_buttons=16)
+        joy.press(CONTROLLER_BUTTON_BACK)
+        handler.joysticks[0] = joy
+        assert handler.read_settings_toggle() is True
+        assert handler.read_settings_toggle() is False
+
+    def test_an_unpressed_button_is_no_edge(self, stubbed_pygame) -> None:
+        handler, _ = make_handler(stubbed_pygame)
+        handler.joysticks[0] = FakeJoystick(num_buttons=16)
+        assert handler.read_settings_toggle() is False
+
+    def test_no_pads_is_no_edge(self, stubbed_pygame) -> None:
+        handler, _ = make_handler(stubbed_pygame)
+        assert handler.read_settings_toggle() is False
+
+    def test_a_failing_pad_is_dropped_rather_than_raising(self, stubbed_pygame) -> None:
+        """A pad unplugged mid-read must not take the close path down with it -
+        that is the operator's way off a screen."""
+        handler, _ = make_handler(stubbed_pygame)
+
+        class _Failing:
+            def get_button(self, _btn: int) -> int:
+                raise pygame.error("gone")
+
+            def get_numbuttons(self) -> int:
+                return 16
+
+            def get_numhats(self) -> int:
+                return 0
+
+            def quit(self) -> None:
+                pass
+
+        handler.joysticks[0] = _Failing()
+        assert handler.read_settings_toggle() is False
+        assert 0 not in handler.joysticks

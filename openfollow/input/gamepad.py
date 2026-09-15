@@ -1736,6 +1736,35 @@ class GamepadHandler:
 
         return inp
 
+    def read_settings_toggle(self) -> bool:
+        """Edge on the Settings button, for closing an open screen.
+
+        Separate from ``settings_open_pressed`` in :meth:`update`, which only
+        runs on the HUD: while a screen is up, ``update()`` is skipped, so the
+        open path never sees this press. Reading it here consumes the edge,
+        which is also what stops the same press re-opening what it closed - the
+        prev-state is current by the time the operator is back on the HUD.
+
+        Reads every pad before returning rather than short-circuiting on the
+        first edge: ``_detect_button_edge`` is what advances prev-state, and a
+        pad skipped here keeps a stale "was released" that fires again next
+        frame.
+        """
+        self._pump_events()
+        if not self.joysticks:
+            return False
+        pressed = False
+        to_remove: list[int] = []
+        for controller_idx in tuple(self.joysticks):
+            try:
+                if self._detect_button_edge(controller_idx, self._btn_settings_id):
+                    pressed = True
+            except pygame.error as e:
+                logger.warning("Error reading settings toggle from gamepad instance %s: %s", controller_idx, e)
+                to_remove.append(controller_idx)
+        self._cleanup_failed(to_remove)
+        return pressed
+
     def _sync_normal_mode_button_prev(self, controller_idx: int) -> None:
         """Refresh edge-tracked state for normal-mode action buttons without dispatching.
 

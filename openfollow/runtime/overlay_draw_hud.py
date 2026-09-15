@@ -1760,7 +1760,7 @@ def draw_pi_network_screen(
         cr,
         w,
         h,
-        title=net.open_iface.upper() if net.open_iface else "NETWORK",
+        title=net.open_iface.upper() if net.open_iface else "NETWORK INTERFACES",
         subtitle=subtitle,
         panel_w=panel_w,
         panel_h=panel_h,

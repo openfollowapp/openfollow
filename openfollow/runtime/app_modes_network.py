@@ -324,18 +324,18 @@ def _iface_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[
 
 
 def _reachability_notices(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[str, object]]:
-    """The states that break reachability without looking broken.
+    """The states that break reachability without looking broken, station-wide.
 
-    A link-local address reads like a working lease to anyone who doesn't know
-    the 169.254 prefix; a restricted web UI explains why the other rows have
-    no URL; and a pin that missed explains why the UI is reachable everywhere
-    despite the config asking otherwise.
+    Per-interface trouble is not here: each row carries a pill saying so, and
+    the sentence explaining it belongs on that interface's own screen. Repeating
+    it once per adapter turned the bottom of a five-interface list into a block
+    of warnings that said nothing the rows had not already said.
+
+    What remains is about the station rather than an adapter: a restricted web
+    UI explains why the other rows have no URL, and a pin that missed explains
+    why the UI is reachable everywhere despite the config asking otherwise.
     """
-    notices: list[dict[str, object]] = [
-        {"kind": "notice", "label": f"{name}  DHCP unavailable, using fallback {address}", "value": ""}
-        for name, address in ifaces
-        if is_link_local(address)
-    ]
+    notices: list[dict[str, object]] = []
     if not _serves_every_interface(app):
         bind_host = _served_bind_host(app)
         if bind_host in {address for _name, address in ifaces if address}:
@@ -487,6 +487,16 @@ def _iface_detail_rows(
         rows.append({"kind": "display", "key": "url", "label": "-- web UI not served here --", "value": address})
     else:
         rows.append({"kind": "display", "key": "url", "label": _web_url_for(app, address), "value": "now"})
+
+    if is_link_local(address):
+        rows.append(
+            {
+                "kind": "notice",
+                "label": f"No DHCP server answered, so {name} gave itself {address}. "
+                "Other machines on this network will not reach the station here.",
+                "value": "",
+            }
+        )
 
     rows.append({"kind": "header", "label": "Change this interface"})
     if not writable:

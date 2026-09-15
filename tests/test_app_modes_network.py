@@ -1673,12 +1673,21 @@ class TestTheScreenAnswersHowToReachTheWebUi:
 class TestTheScreenCallsOutWhatBreaksReachability:
     def test_a_link_local_address_is_flagged_as_a_dhcp_failure(self, monkeypatch) -> None:
         """169.254.x reads like a working lease to anyone who does not know
-        the prefix, which is most people reading this screen at 2am."""
+        the prefix, which is most people reading this screen at 2am.
+
+        The list says it in a pill and the interface's own screen says it in a
+        sentence. Repeating the sentence once per adapter turned the bottom of
+        a five-interface list into a block of warnings that added nothing.
+        """
         _patch_ifaces(monkeypatch, {"eth0": "169.254.8.31"})
         app = _make_app()
         anm.enter_pi_network(app)
+        assert _list_pills(app)["eth0"] == "fallback"
+        assert [str(r["label"]) for r in _rows_by_kind(app, "notice")] == []
+
+        _open_iface(app, "eth0")
         notices = [str(r["label"]) for r in _rows_by_kind(app, "notice")]
-        assert any("DHCP unavailable" in n and "169.254.8.31" in n for n in notices)
+        assert any("No DHCP server answered" in n and "169.254.8.31" in n for n in notices)
 
     def test_a_routable_address_raises_no_notice(self, monkeypatch) -> None:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})

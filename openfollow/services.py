@@ -916,8 +916,8 @@ class AppRuntimeServices:
     def _build_network_planes(self) -> list[Plane]:
         """Every plane the observer follows, in report order.
 
-        Later PRs add a row each (web UI, OSC in, RTTrPM, OSC destinations,
-        video input); each is one entry here and needs no observer changes.
+        Later PRs add a row each (web UI, RTTrPM, OSC destinations, video
+        input); each is one entry here and needs no observer changes.
         """
         from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
 
@@ -970,6 +970,41 @@ class AppRuntimeServices:
             if self._app._otp_server is not None:
                 self._app._otp_server.stop()
 
+        def _apply_osc_input(address: str) -> None:
+            # Rebinds the listener so the group follows the interface. The
+            # membership cannot be dropped once the address it was taken on is
+            # gone - the kernel calls that drop a success and releases nothing
+            # - so closing the socket is what releases it.
+            #
+            # A refused join has to raise. The observer reads a returning apply
+            # as success - it clears the outage, logs that the output resumed
+            # and starts the poll again with no backoff - so swallowing the
+            # False would retry once a second forever while reporting health.
+            if not self._osc_service.set_multicast_iface(address):
+                raise OSError(f"could not join the OSC multicast group via {address}")
+
+        def _current_osc_input() -> str | None:
+            status = self._osc_service.listener_status()
+            if not status["multicast_joined"]:
+                return None
+            iface = status["multicast_iface"]
+            return None if iface is None else str(iface)
+
+        def _suspend_osc_input() -> None:
+            self._osc_service.set_multicast_iface(None)
+
+        def _osc_input_pinned() -> bool:
+            # Three things have to be true before this is a plane. Unpinned, the
+            # membership is the routing table's to choose and there is no
+            # interface to follow; with no group configured the pin governs
+            # nothing; and with no listener running there is no socket to move a
+            # membership on, so polling would retry once a second forever
+            # against a port that is in use.
+            cfg = self._app._config.osc
+            pinned = plane_source_iface(cfg.listen_iface, self._app._config.psn_source_iface)
+            listening = self._osc_service.listener_status()["port"] is not None
+            return bool(cfg.enabled and cfg.multicast_group and pinned and listening)
+
         return [
             Plane(
                 label="PSN",
@@ -987,6 +1022,14 @@ class AppRuntimeServices:
                 # A switched-off output is not broken; alerting on it would put
                 # a second fault on the HUD for a protocol nobody enabled.
                 enabled=lambda: self._app._config.otp_output.enabled,
+            ),
+            Plane(
+                label="OSC input",
+                resolve=_resolver(lambda: self._app._config.osc.listen_iface, is_station=False),
+                current=_current_osc_input,
+                apply=_apply_osc_input,
+                suspend=_suspend_osc_input,
+                enabled=_osc_input_pinned,
             ),
         ]
 
@@ -1770,6 +1813,16 @@ class AppRuntimeServices:
         otp_cfg = self._app._config.otp_output
         if self._app._otp_server is not None and otp_cfg.enabled and not otp_cfg.source_iface:
             self.apply_otp_output_change(otp_cfg)
+
+        # The OSC membership inherits the station pin the same way, and the
+        # observer cannot cover it: clearing the Station default row leaves the
+        # plane unpinned, so it stops being followed while the socket still
+        # holds a membership on the interface that was just given up.
+        osc_cfg = self._app._config.osc
+        if osc_cfg.enabled and osc_cfg.multicast_group and not osc_cfg.listen_iface:
+            from openfollow.input.input_manager import resolve_osc_multicast_iface
+
+            self._osc_service.set_multicast_iface(resolve_osc_multicast_iface("", self._app._config.psn_source_iface))
 
     def suspend_psn_planes(self) -> None:
         """Stop PSN output and input because the station interface has no address.

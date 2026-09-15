@@ -181,6 +181,37 @@ def resolve_plane_source_ip(
     return "", "none"
 
 
+def resolve_multicast_iface(pin: str, station_iface: str = "") -> tuple[str, ResolveStatus]:
+    """Resolve the interface a receiver takes its multicast membership on.
+
+    **Not a bind address.** A listener that has to receive multicast binds the
+    wildcard and nothing else: the kernel matches a datagram's destination
+    against the bound address, so a socket bound to one interface's address
+    receives neither the group nor subnet broadcast, while
+    ``IP_ADD_MEMBERSHIP`` still reports success. What this resolves is the
+    ``imr_interface`` of that membership, and callers must not pass it to
+    ``bind()``.
+
+    The receive-side counterpart of :func:`resolve_plane_source_ip`, differing
+    in one arm: with nothing configured the result is ``("", "none")``, meaning
+    the routing table picks the interface, rather than the auto-detected
+    primary. A sender with no pin has to choose one address; a membership does
+    not have to be pinned at all.
+
+    A configured interface with no address yields ``("", "down")``: the caller
+    holds **no membership** rather than taking one on an interface the operator
+    excluded. The listener itself keeps running, so unicast and broadcast go on
+    arriving while the group is unavailable.
+    """
+    configured = plane_source_iface(pin, station_iface)
+    if not configured:
+        return "", "none"
+    resolved = get_iface_ipv4(configured)
+    if resolved:
+        return resolved, "iface" if pin else "station"
+    return "", "down"
+
+
 WEB_BIND_ALL = "0.0.0.0"
 
 

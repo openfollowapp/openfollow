@@ -30,6 +30,16 @@ The **address** is allowed to change. If the interface is on DHCP and comes back
 
 Following the station interface includes stopping with it. When the station interface has no address, peer discovery and marker-name sync go quiet until it returns, the same as every pinned row above – a station that kept announcing itself would put its name, version and web address on a network you did not choose. Unless you have pinned it yourself, the web UI stays reachable on every interface throughout, so the station is still there to browse to; it just stops appearing in other stations' peer lists.
 
+## OSC input
+
+Which interface the station takes its OSC **multicast** subscription on. Left blank it follows Station default, so on a single-adapter station there is nothing to set. It does nothing unless a multicast group is set under OSC Input, and the row says so.
+
+Subscribing to a group is per-interface. Left to itself the system picks one, and it can pick differently from one restart to the next - so on a station with several networks, OSC sent to the group arrives after one restart and not after the next. Pinning the row is what makes it the same every time. On a station with one network there is nothing to pick and the row changes nothing.
+
+If the pinned interface has no address, the station holds no subscription at all rather than taking one on a different network, and the Address column says so. It subscribes again on its own when the interface comes back.
+
+This row does **not** change which addresses OSC is accepted at. Ordinary OSC sent straight to the station, and OSC sent to the subnet broadcast address, arrive on every interface whatever this row is set to - that is how the listener has to be bound for multicast to work at all. To restrict who may send, use **Allowed sender IPs** under OSC Input.
+
 ## Web UI
 
 This page. Left blank it answers on every interface, which is what you want on almost every station – it is how you reach the box, not something the show depends on.

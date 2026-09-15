@@ -292,8 +292,17 @@ def collect_osc_multicast(p: DiagnosticsProviders) -> list[str]:
     rows.append(f"  Listener port:              {port if port is not None else '[not bound]'}")
     group = str(status.get("multicast_group") or "")
     if group:
-        joined = "joined" if status.get("multicast_joined") else "JOIN FAILED"
+        joined = "joined" if status.get("multicast_joined") else "NOT SUBSCRIBED"
         rows.append(f"  Multicast group:            {group} ({joined})")
+        # Which interface holds the membership is the whole question when OSC
+        # arrives on one adapter and not another, and it is not derivable from
+        # the requested config: a blank pin follows the station interface.
+        iface = status.get("multicast_iface")
+        if iface is None:
+            shown = "[pinned interface has no address]"
+        else:
+            shown = str(iface) or "[routing table's choice]"
+        rows.append(f"  Multicast interface:        {shown}")
     else:
         rows.append("  Multicast group:            [none – unicast/broadcast only]")
     allow = status.get("allowed_sender_ips") or []

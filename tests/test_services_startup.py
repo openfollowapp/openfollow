@@ -971,6 +971,204 @@ def test_a_down_plane_reports_down_not_another_interface(monkeypatch) -> None:
     assert resolved["OTP output"] == ("", "down", "eth_gone")
 
 
+class _RecordingOscService:
+    """Stands in for ``OscService`` on the observer's OSC plane.
+
+    Models the membership the real service holds rather than only recording
+    calls, so ``current`` can disagree with the pin the way the real pair can.
+    """
+
+    def __init__(self, *, port: int | None = 8765, group: str = "239.20.20.20") -> None:
+        self.port = port
+        self.group = group
+        self.iface: str | None = ""
+        # The kernel can refuse IP_ADD_MEMBERSHIP on an interface that resolves
+        # perfectly well, so "which interface" and "is it subscribed" are
+        # independent - a double that derives one from the other cannot tell a
+        # failed join from a healthy one.
+        self.join_ok = True
+        self.calls: list[str | None] = []
+
+    def listener_status(self) -> dict[str, object]:
+        joined = self.port is not None and bool(self.group) and self.iface is not None and self.join_ok
+        return {
+            "port": self.port,
+            "multicast_group": self.group,
+            "multicast_iface": self.iface,
+            "multicast_joined": joined,
+            "allowed_sender_ips": [],
+        }
+
+    def set_multicast_iface(self, iface: str | None) -> bool:
+        self.calls.append(iface)
+        self.iface = iface
+        return iface is not None and self.join_ok
+
+
+def _osc_plane(services, service: _RecordingOscService):
+    services._osc_service = service
+    return next(p for p in services._build_network_planes() if p.label == "OSC input")
+
+
+def test_osc_input_plane_follows_its_own_and_the_station_interface(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+    services._app._config.psn_source_iface = "eth0"
+    services._app._config.osc.listen_iface = "eth1"
+
+    resolved = {p.label: p.resolve() for p in services._build_network_planes()}
+    assert resolved["OSC input"] == ("10.0.0.9", "iface", "eth1")
+
+    services._app._config.osc.listen_iface = ""
+    resolved = {p.label: p.resolve() for p in services._build_network_planes()}
+    assert resolved["OSC input"] == ("192.168.1.5", "station", "eth0")
+
+
+@pytest.mark.parametrize(
+    ("label", "setup"),
+    [
+        ("nothing pinned", lambda cfg: None),
+        (
+            "no multicast group",
+            lambda cfg: (setattr(cfg, "psn_source_iface", "eth0"), setattr(cfg.osc, "multicast_group", "")),
+        ),
+        ("osc disabled", lambda cfg: (setattr(cfg, "psn_source_iface", "eth0"), setattr(cfg.osc, "enabled", False))),
+    ],
+)
+def test_osc_input_is_only_a_plane_when_a_pin_governs_something(monkeypatch, label, setup) -> None:
+    """Three ways there is nothing to follow. Unpinned the membership is the
+    routing table's to choose; with no group the pin governs nothing; switched
+    off it is not broken. Any of them alerting would put a fault on the HUD for
+    a station behaving exactly as configured."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    setup(services._app._config)
+    assert _osc_plane(services, _RecordingOscService()).enabled() is False
+
+
+def test_osc_input_is_not_a_plane_while_the_listener_is_down(monkeypatch) -> None:
+    """A listener that never bound (port in use) has no socket to move a
+    membership on. Following it would call apply once a second forever, with no
+    backoff, because the failure never surfaces to the observer."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "eth0"
+    assert _osc_plane(services, _RecordingOscService(port=None)).enabled() is False
+
+
+def test_osc_input_plane_reports_the_live_membership_not_the_pin(monkeypatch) -> None:
+    """``current`` drives the observer's "already correct" short-circuit. Read
+    from config it would report an interface the socket never subscribed on."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    service = _RecordingOscService()
+    plane = _osc_plane(services, service)
+
+    service.iface = "10.0.0.9"
+    assert plane.current() == "10.0.0.9"
+
+    # Pinned but down: no membership is held, which must not read as one.
+    service.iface = None
+    assert plane.current() is None
+
+    # A refused join on an interface that resolves: the address is recorded but
+    # nothing is subscribed, so this must read as "not bound" and let the
+    # observer re-apply. Reporting the interface here would short-circuit it.
+    service.iface = "10.0.0.9"
+    service.join_ok = False
+    assert plane.current() is None
+
+
+def test_osc_input_plane_resubscribes_and_unsubscribes_in_place(monkeypatch) -> None:
+    """Recovery is why this plane exists. It moves the membership on the live
+    socket rather than restarting the listener - a restart would drop every
+    subscription hanging off it, once a second, for a pair of socket options."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    services._app._config.osc.listen_iface = "eth1"
+    service = _RecordingOscService()
+    plane = _osc_plane(services, service)
+
+    plane.suspend()
+    assert service.calls[-1] is None
+    assert service.listener_status()["multicast_joined"] is False
+
+    plane.apply("10.0.0.9")
+    assert service.calls[-1] == "10.0.0.9"
+    assert service.listener_status()["multicast_joined"] is True
+
+
+def test_osc_input_plane_raises_when_the_membership_is_refused(monkeypatch) -> None:
+    """A refused join must reach the observer as a failure.
+
+    ``apply`` returning normally is how the observer is told the plane is well:
+    it clears the outage, logs that the output resumed, and polls on with no
+    backoff. Swallowing the refusal would retry once a second for the length of
+    the show while every surface reported health.
+    """
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    services._app._config.osc.listen_iface = "eth1"
+    service = _RecordingOscService()
+    service.join_ok = False
+    plane = _osc_plane(services, service)
+
+    with pytest.raises(OSError):
+        plane.apply("10.0.0.9")
+
+
+def test_osc_input_plane_does_not_raise_on_a_successful_move(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    services._app._config.osc.listen_iface = "eth1"
+    plane = _osc_plane(services, _RecordingOscService())
+
+    plane.apply("10.0.0.9")
+
+
+def test_clearing_the_station_pin_repoints_an_inheriting_membership(monkeypatch) -> None:
+    """The observer cannot cover this: clearing Station default leaves the
+    plane unpinned, so it stops being followed while the socket still holds a
+    membership on the interface that was just given up."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "eth0"
+    service = _RecordingOscService()
+    services._osc_service = service
+    service.iface = "192.168.1.5"
+    services._app._otp_server = None
+
+    services._app._config.psn_source_iface = ""
+    services.apply_station_iface_change()
+
+    assert service.calls[-1] == ""
+
+
+@pytest.mark.parametrize(
+    ("label", "setup"),
+    [
+        ("own pin", lambda cfg: setattr(cfg.osc, "listen_iface", "eth1")),
+        ("no group", lambda cfg: setattr(cfg.osc, "multicast_group", "")),
+        ("osc disabled", lambda cfg: setattr(cfg.osc, "enabled", False)),
+    ],
+)
+def test_the_station_pin_does_not_repoint_a_membership_it_does_not_own(monkeypatch, label, setup) -> None:
+    """Only an inheriting membership follows the Station default row. Its own
+    pin outranks the station, a station with no group has no membership, and a
+    disabled receiver has no socket - moving any of them on a station edit
+    would override a choice the operator made elsewhere."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+    services._app._config.psn_source_iface = "eth0"
+    setup(services._app._config)
+    service = _RecordingOscService()
+    services._osc_service = service
+    services._app._otp_server = None
+
+    services.apply_station_iface_change()
+
+    assert service.calls == []
+
+
 def test_suspending_psn_stops_both_directions(monkeypatch) -> None:
     """Leaving the receiver joined on a dead address would keep viewer markers
     showing stale positions."""

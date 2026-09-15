@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from openfollow.configuration import VALID_OSC_FRAMINGS as _VALID_OSC_FRAMINGS_TUPLE
+from openfollow.net_utils import join_multicast_group_on_iface
 from openfollow.osc.transport import TcpOscSender
 
 logger = logging.getLogger(__name__)
@@ -302,6 +303,10 @@ class OscService:
         # Whether the live socket actually joined that group – a failed
         # IP_ADD_MEMBERSHIP is non-fatal, so "requested" can differ from "joined".
         self._listener_multicast_joined: bool = False
+        # Interface address the multicast membership is taken on: "" = let the
+        # routing table pick, an address = that interface, None = an interface
+        # is pinned but currently has no address, so no membership is held.
+        self._listener_multicast_iface: str | None = ""
         self._listener_lock = threading.Lock()
 
         self._missing_dep_warned = False
@@ -493,24 +498,30 @@ class OscService:
         *,
         allowed_ips: Iterable[str] = (),
         multicast_group: str = "",
+        multicast_iface: str | None = "",
     ) -> None:
         """Start the inbound UDP listener.
 
         Idempotent: a second call with the same parameters is a no-op.
-        A call with different parameters (port / allowlist / multicast
-        group) is treated as ``restart_listener``.
+        A call with a different port, allowlist, multicast group or interface
+        is treated as ``restart_listener``.
         """
         normalised_ips = frozenset(ip.strip() for ip in allowed_ips if isinstance(ip, str) and ip.strip())
         group = multicast_group.strip()
         with self._listener_lock:
-            if self._listener is not None:
-                if (
-                    self._listener_port == port
-                    and self._listener_allowed_ips == normalised_ips
-                    and self._listener_multicast_group == group
-                ):
-                    return
-        self.restart_listener(port=port, allowed_ips=normalised_ips, multicast_group=group)
+            if self._listener is not None and (
+                self._listener_port == port
+                and self._listener_allowed_ips == normalised_ips
+                and self._listener_multicast_group == group
+                and self._listener_multicast_iface == multicast_iface
+            ):
+                return
+        self.restart_listener(
+            port=port,
+            allowed_ips=normalised_ips,
+            multicast_group=group,
+            multicast_iface=multicast_iface,
+        )
 
     def stop_listener(self) -> None:
         """Stop the inbound listener. No-op if not running."""
@@ -523,6 +534,7 @@ class OscService:
             self._listener_allowed_ips = frozenset()
             self._listener_multicast_group = ""
             self._listener_multicast_joined = False
+            self._listener_multicast_iface = ""
         if listener is not None:
             listener.shutdown()
             listener.server_close()
@@ -535,15 +547,23 @@ class OscService:
         port: int,
         allowed_ips: Iterable[str],
         multicast_group: str = "",
+        multicast_iface: str | None = "",
     ) -> None:
         """Stop, rebind, and restart the inbound listener atomically.
 
         Raises ``OSError`` on bind failure so the caller can revert the
         config (transactional hot-reload contract).
 
-        When ``multicast_group`` is set, the bound socket also joins that
-        IPv4 multicast group (``IP_ADD_MEMBERSHIP`` on ``INADDR_ANY``). A
-        failed join is non-fatal (logged); only a failed bind raises.
+        The socket always binds every interface. Binding it to one address
+        would stop it receiving multicast and broadcast entirely - the kernel
+        matches a datagram's destination against the bound address, and a group
+        address never equals an interface address - so the interface pin
+        governs the *membership* and nothing else. ``multicast_iface`` is that
+        pin, resolved: ``""`` lets the routing table choose, an address takes
+        the membership on that interface, and ``None`` means an interface is
+        pinned but has no address, so no membership is taken at all.
+
+        A failed join is non-fatal (logged); only a failed bind raises.
         """
         if not _PYTHONOSC_AVAILABLE:  # pragma: no cover
             logger.warning("python-osc not installed – OSC input disabled. Run: pip install python-osc")
@@ -563,7 +583,7 @@ class OscService:
                 port,
             )
             raise
-        joined_group = _join_multicast_group(listener.socket, group, port) if group else False
+        joined_group = _join_multicast_group(listener.socket, group, port, iface_ip=multicast_iface) if group else False
         thread = threading.Thread(
             target=listener.serve_forever,
             daemon=True,
@@ -581,6 +601,7 @@ class OscService:
             self._listener_allowed_ips = normalised_ips
             self._listener_multicast_group = group
             self._listener_multicast_joined = joined_group
+            self._listener_multicast_iface = multicast_iface
             try:
                 thread.start()
             except Exception:
@@ -593,9 +614,17 @@ class OscService:
                 self._listener_allowed_ips = frozenset()
                 self._listener_multicast_group = ""
                 self._listener_multicast_joined = False
+                self._listener_multicast_iface = ""
                 listener.server_close()
                 raise
-        group_note = f"; joined multicast group {group}" if joined_group else ""
+        group_note = ""
+        if group:
+            via = f" via {multicast_iface}" if multicast_iface else ""
+            group_note = (
+                f"; joined multicast group {group}{via}"
+                if joined_group
+                else f"; NOT subscribed to multicast group {group}"
+            )
         if normalised_ips:
             logger.info(
                 "OSC input listening on UDP port %d; accepting packets only from %s%s",
@@ -612,6 +641,53 @@ class OscService:
                 group_note,
             )
 
+    def set_multicast_iface(self, multicast_iface: str | None) -> bool:
+        """Move the multicast membership to *multicast_iface*, rebinding the listener.
+
+        The membership is released by closing the socket, never by dropping
+        it. ``IP_DROP_MEMBERSHIP`` is keyed by interface address, so the case
+        that matters most - a pinned interface that lost its address - is
+        exactly the one where that address no longer resolves: the kernel
+        reports the drop as successful and releases nothing. The group then
+        stays subscribed on an interface the operator has moved off, and the
+        stranded membership outlives the socket, the process and a link
+        bounce. Closing releases every membership the socket holds, whatever
+        became of the address it took them on.
+
+        Rebinding costs the subscriptions nothing - they live on the service's
+        dispatcher, which each listener generation is handed - so what it costs
+        is a sub-millisecond gap in inbound OSC, against a group that otherwise
+        stays live on the wrong adapter.
+
+        ``None`` takes no membership at all, which is what a pinned interface
+        with no address has to mean. The listener still binds every interface,
+        so unicast and broadcast keep arriving throughout.
+
+        Returns whether a membership is now held. A no-op (and False) when no
+        listener is running or no group is configured. Raises ``OSError`` if
+        the rebind fails, so a caller following an interface records the
+        failure rather than reading a silent no-op as success.
+        """
+        with self._listener_lock:
+            listener = self._listener
+            group = self._listener_multicast_group
+            port = self._listener_port
+            allowed_ips = self._listener_allowed_ips
+            current = self._listener_multicast_iface
+            joined = self._listener_multicast_joined
+        if listener is None or not group or port is None:
+            return False
+        if current == multicast_iface and joined == (multicast_iface is not None):
+            return joined
+        self.restart_listener(
+            port=port,
+            allowed_ips=allowed_ips,
+            multicast_group=group,
+            multicast_iface=multicast_iface,
+        )
+        with self._listener_lock:
+            return self._listener_multicast_joined
+
     @property
     def listener_port(self) -> int | None:
         """Currently-bound listener port, or None if stopped."""
@@ -619,12 +695,20 @@ class OscService:
 
     def listener_status(self) -> dict[str, Any]:
         """Live inbound-listener state for diagnostics: bound port, the
-        multicast group the socket joined (and whether the join actually
-        succeeded), and the sender allowlist (empty = open to any LAN device)."""
+        multicast group and the interface the membership is held on (and
+        whether it actually succeeded), and the sender allowlist (empty = open
+        to any LAN device).
+
+        ``multicast_iface`` is what the socket really did, not the pin that
+        asked for it: ``""`` is a membership on whichever interface the routing
+        table chose, an address is the pinned one, and ``None`` is a pin whose
+        interface has no address, so no membership is held.
+        """
         with self._listener_lock:
             return {
                 "port": self._listener_port,
                 "multicast_group": self._listener_multicast_group,
+                "multicast_iface": self._listener_multicast_iface,
                 "multicast_joined": self._listener_multicast_joined,
                 "allowed_sender_ips": sorted(self._listener_allowed_ips),
             }
@@ -650,21 +734,33 @@ class OscService:
 # ---------------------------------------------------------------------------
 
 
-def _join_multicast_group(sock: Any, group: str, port: int) -> bool:
-    """Join ``group`` on ``sock`` (best-effort, INADDR_ANY interface).
+def _join_multicast_group(sock: Any, group: str, port: int, *, iface_ip: str | None = "") -> bool:
+    """Join ``group`` on ``sock``, via ``iface_ip`` when one is given.
 
-    Returns True on success, False if the join failed (logged + swallowed).
-    ``group`` is assumed already validated as an IPv4 multicast address;
-    ``inet_aton`` is the only runtime guard.
+    ``INADDR_ANY`` does not subscribe on every interface - the kernel picks one
+    by routing table, so an unpinned listener can take the group on a different
+    adapter from one restart to the next.
+
+    Returns True on success, False if no membership is held (logged +
+    swallowed): the listener keeps serving unicast and broadcast either way, so
+    a group it could not take is a degraded state, not a fatal one.
     """
-    try:
-        mreq = socket.inet_aton(group) + socket.inet_aton("0.0.0.0")
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-    except OSError as exc:
-        logger.warning(
-            "OSC listener on port %d could not join multicast group %s: %s – unicast/broadcast still active.",
+    if iface_ip is None:
+        logger.error(
+            "OSC listener on port %d is not subscribed to multicast group %s: the configured "
+            "interface has no address, and it will not take the group on another one.",
             port,
             group,
+        )
+        return False
+    try:
+        join_multicast_group_on_iface(sock, group, iface_ip)
+    except OSError as exc:
+        logger.warning(
+            "OSC listener on port %d could not join multicast group %s via %s: %s – unicast/broadcast still active.",
+            port,
+            group,
+            iface_ip or "the default interface",
             exc,
         )
         return False

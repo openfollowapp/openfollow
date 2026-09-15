@@ -968,7 +968,7 @@ def test_protocol_sections_link_switches_to_the_general_tab(live_server) -> None
     """A bare href="#id" does nothing when the target sits in a display:none
     tab, so the pointer had no effect at all."""
     _server, base = live_server
-    for path in ("/section/psn", "/section/otp_output"):
+    for path in ("/section/psn", "/section/otp_output", "/section/osc"):
         _status, body = _get(base, path)
         assert "goToSection('general', 'interface-assignment')" in body
 
@@ -996,7 +996,11 @@ def test_interface_assignment_save_round_trips_to_disk(
     status, body = _post_form(
         base,
         "/section/interface_assignment",
-        {"psn_source_iface": "eth0", "otp_output.source_iface": "eth1"},
+        {
+            "psn_source_iface": "eth0",
+            "otp_output.source_iface": "eth1",
+            "osc.listen_iface": "eth1",
+        },
     )
     assert status == 200
     assert "saved" in body
@@ -1004,6 +1008,11 @@ def test_interface_assignment_save_round_trips_to_disk(
     saved = load_config(server.config_path)
     assert saved.psn_source_iface == "eth0"
     assert saved.otp_output.source_iface == "eth1"
+    # The panel is the only editing surface for the OSC pin, so the dotted form
+    # key, the template's submission and the on-disk field have to agree end to
+    # end - a unit test on ``apply_section_data`` alone cannot see a mismatch
+    # between them.
+    assert saved.osc.listen_iface == "eth1"
 
 
 def test_interface_assignment_save_can_clear_a_pin(

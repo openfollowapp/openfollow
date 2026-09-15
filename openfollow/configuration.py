@@ -642,10 +642,17 @@ class OscConfig:
     # IPv4 multicast group the listener joins; empty = off. Validated to
     # 224.0.0.0–239.255.255.255, else coerced to "".
     multicast_group: str = "239.20.20.20"
+    # Pin the listener to one interface by name, like ``psn_source_iface``;
+    # empty follows the station interface, and a station left on auto-detect
+    # listens on every interface.
+    listen_iface: str = ""
 
     def __post_init__(self) -> None:
         """Normalize ``allowed_sender_ips`` (or a bare string) into ``list[str]``."""
         self.port = _coerce_int(self.port, 8765, lo=1, hi=65535)
+        if not isinstance(self.listen_iface, str):
+            self.listen_iface = ""
+        self.listen_iface = self.listen_iface.strip()
         raw = self.allowed_sender_ips
         if isinstance(raw, str):
             # A bare string becomes a single-entry list.
@@ -3232,6 +3239,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 new_config.osc.port,
                 allowed_sender_ips=list(new_config.osc.allowed_sender_ips),
                 multicast_group=new_config.osc.multicast_group,
+                listen_iface=new_config.osc.listen_iface,
             )
 
     # ``enabled`` toggles the OSC ingest adapter; ``max_visible`` /

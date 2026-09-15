@@ -3316,6 +3316,7 @@ class TestDiagnosticsIoProviders:
         assert services._osc_listener_status_provider() == {
             "port": None,
             "multicast_group": "",
+            "multicast_iface": "",
             "multicast_joined": False,
             "allowed_sender_ips": [],
         }

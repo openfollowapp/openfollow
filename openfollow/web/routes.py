@@ -963,6 +963,7 @@ def get_section_data(cfg: AppConfig, section: str) -> dict[str, Any] | None:
 _INTERFACE_ASSIGNMENT_TARGETS: dict[str, tuple[str | None, str]] = {
     "psn_source_iface": (None, "psn_source_iface"),
     "otp_output.source_iface": ("otp_output", "source_iface"),
+    "osc.listen_iface": ("osc", "listen_iface"),
     "web_bind_iface": (None, "web_bind_iface"),
 }
 
@@ -975,6 +976,10 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     # The OTP source interface pins THIS device's NIC by name – like
     # ``psn_source_iface``, it must not cross machines via broadcast/import.
     "otp_output": frozenset({"source_iface"}),
+    # ``listen_iface`` names the NIC this station's OSC receiver binds. A pin
+    # from another machine would either dangle or, worse, resolve to a
+    # different network here and take the receiver off the one it was on.
+    "osc": frozenset({"listen_iface"}),
     # ``storage_path`` is an absolute filesystem path on THIS device (NVMe
     # mount or a local working dir). A path from another machine is invalid
     # here – it must never cross via broadcast/import. Blank means auto-resolve.
@@ -1137,6 +1142,32 @@ def build_web_bind_notice(cfg: AppConfig, resolved: tuple[str, str], display_por
     )
 
 
+def _osc_membership_address(
+    cfg: AppConfig,
+    *,
+    station_ip: str,
+    plane_address: Callable[[str], str],
+) -> str:
+    """Address column for the OSC input row: where the group is subscribed.
+
+    Unpinned there is no interface to name - the routing table picks one per
+    membership - so the row says that rather than an address the socket is not
+    restricted to. Unicast and broadcast arrive on every interface whatever
+    this row says, which is why it names the membership and not the listener.
+
+    Takes the station address the caller already resolved rather than walking
+    every adapter again: an inheriting row must agree with the Station default
+    row above it, and a second walk could disagree if an address moves
+    mid-render.
+    """
+    pin = cfg.osc.listen_iface
+    if not cfg.osc.multicast_group:
+        return "No multicast group"
+    if not pin:
+        return station_ip if cfg.psn_source_iface else "Default interface"
+    return plane_address(pin)
+
+
 def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | None = None) -> list[dict[str, Any]]:
     """Rows for the Network Interface Assignment panel, in render order.
 
@@ -1191,6 +1222,19 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
             "label": "OTP output",
             "value": cfg.otp_output.source_iface,
             "address": _addr(cfg.otp_output.source_iface),
+            "editable": True,
+            "blank": "station",
+        },
+        {
+            # The pin moves the multicast membership only. The socket binds
+            # every interface either way: bound to one address it would receive
+            # no multicast and no broadcast at all, since the kernel matches a
+            # datagram's destination against the bound address and a group
+            # address is neither.
+            "key": "osc.listen_iface",
+            "label": "OSC input",
+            "value": cfg.osc.listen_iface,
+            "address": _osc_membership_address(cfg, station_ip=station_ip, plane_address=_addr),
             "editable": True,
             "blank": "station",
         },
@@ -1817,6 +1861,7 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "port": _as_int,
         "allowed_sender_ips": _as_ip_list,
         "multicast_group": _as_str,
+        "listen_iface": _as_str,
     },
     "operator_messages": {
         "enabled": _as_bool,
@@ -2632,6 +2677,10 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     # ``testpattern_selected_media`` is a device-local gallery item id; media
     # files never travel, so a foreign id would just dangle on another host.
     d.pop("testpattern_selected_media", None)
+    # ``osc.listen_iface`` names a NIC on this box. Carried to a station that
+    # has no such adapter it reads as a pin that is down, which drops the OSC
+    # multicast membership there until somebody finds the setting.
+    d["osc"].pop("listen_iface", None)
     return d
 
 
@@ -2709,6 +2758,8 @@ def _apply_import_data(
     # ``testpattern_selected_media`` is a device-local gallery id (media files
     # don't travel), so an imported selection must not replace this station's.
     original_selected_media = cfg.testpattern_selected_media
+    # ``osc.listen_iface`` names this box's NIC, like ``psn_source_iface``.
+    original_osc_listen_iface = cfg.osc.listen_iface
 
     # General section (top-level scalar fields)
     apply_section_data(cfg, "general", data)
@@ -2795,6 +2846,7 @@ def _apply_import_data(
     cfg.web_port = original_port
     cfg.detection.storage_path = original_storage_path
     cfg.testpattern_selected_media = original_selected_media
+    cfg.osc.listen_iface = original_osc_listen_iface
     return cfg
 
 

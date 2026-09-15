@@ -216,8 +216,45 @@ def test_collect_osc_multicast_join_failed_open_allowlist() -> None:
         }
     )
     joined = "\n".join(diag.collect_osc_multicast(p))
-    assert "239.1.2.3 (JOIN FAILED)" in joined
+    assert "239.1.2.3 (NOT SUBSCRIBED)" in joined
     assert "[open – any LAN device]" in joined
+
+
+def test_collect_osc_multicast_names_the_membership_interface() -> None:
+    """The one field that explains "OSC arrives on one adapter and not the
+    other". It is not derivable from the requested config, because a blank pin
+    follows the station interface."""
+    p = diag.DiagnosticsProviders(
+        osc_multicast_status=lambda: {
+            "port": 8765,
+            "multicast_group": "239.1.2.3",
+            "multicast_iface": "10.0.0.9",
+            "multicast_joined": True,
+            "allowed_sender_ips": [],
+        }
+    )
+    assert "Multicast interface:        10.0.0.9" in "\n".join(diag.collect_osc_multicast(p))
+
+
+def test_collect_osc_multicast_distinguishes_unpinned_from_down() -> None:
+    """A membership on the routing table's pick and no membership at all are
+    different faults, and both show as "no address" if they share a line."""
+
+    def _status(iface: str | None) -> dict[str, object]:
+        return {
+            "port": 8765,
+            "multicast_group": "239.1.2.3",
+            "multicast_iface": iface,
+            "multicast_joined": iface is not None,
+            "allowed_sender_ips": [],
+        }
+
+    unpinned = "\n".join(
+        diag.collect_osc_multicast(diag.DiagnosticsProviders(osc_multicast_status=lambda: _status("")))
+    )
+    down = "\n".join(diag.collect_osc_multicast(diag.DiagnosticsProviders(osc_multicast_status=lambda: _status(None))))
+    assert "[routing table's choice]" in unpinned
+    assert "[pinned interface has no address]" in down
 
 
 def test_collect_osc_multicast_no_group_unbound_port() -> None:

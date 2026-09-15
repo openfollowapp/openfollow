@@ -188,6 +188,7 @@ class _DummyInputManager:
         self.mouse_handler = _DummyMouseHandler()
         self.osc_restarts: list[tuple[bool, int]] = []
         self.osc_multicast_groups: list[str] = []
+        self.osc_listen_ifaces: list[str] = []
         self.operator_message_restarts = 0
         self.mouse3d_restarts: list[Mouse3DConfig] = []
 
@@ -201,9 +202,11 @@ class _DummyInputManager:
         allowed_sender_ips: list[str] | None = None,
         *,
         multicast_group: str = "",
+        listen_iface: str = "",
     ) -> None:
         self.osc_restarts.append((enabled, port))
         self.osc_multicast_groups.append(multicast_group)
+        self.osc_listen_ifaces.append(listen_iface)
 
     def restart_operator_messages(self) -> None:
         self.operator_message_restarts += 1
@@ -1165,6 +1168,24 @@ def test_apply_runtime_osc_multicast_group_threads_into_restart() -> None:
     assert app._input_manager.osc_multicast_groups == ["239.1.2.3"]
 
 
+def test_apply_runtime_osc_listen_iface_threads_into_restart() -> None:
+    """An ``[osc] listen_iface`` change reaches ``InputManager.restart_osc``.
+
+    Live-applied like the rest of the section: the listener is rebound between
+    frames, so repinning it needs no restart. Dropped here, a saved pin would
+    sit in config while the socket stayed on the old interface.
+    """
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig()
+    new_config.osc.listen_iface = "eth1"
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.osc.listen_iface == "eth1"
+    assert app._input_manager.osc_listen_ifaces == ["eth1"]
+    assert app._web_commands.restart_requested is False
+
+
 def test_apply_runtime_mouse3d_enabled_toggle_reaches_input_manager() -> None:
     """Enabling 3D Mouse applies live: stored config updates and the handler is
     reloaded, with no process restart."""
@@ -1839,6 +1860,31 @@ def test_osc_config_clamps_port_to_blur_bounds() -> None:
     assert OscConfig(port=0).port == 1
     assert OscConfig(port=70000).port == 65535
     assert OscConfig(port="not-a-port").port == 8765  # type: ignore[arg-type]
+
+
+def test_osc_config_listen_iface_defaults_to_blank() -> None:
+    assert OscConfig().listen_iface == ""
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("  eth0  ", "eth0"),
+        ("\teth0.10 ", "eth0.10"),
+        ("   ", ""),
+    ],
+)
+def test_osc_config_listen_iface_strips_whitespace(raw: str, expected: str) -> None:
+    """Whitespace around a pin must not read as a configured interface: a
+    " " would otherwise resolve as down and silence the listener."""
+    assert OscConfig(listen_iface=raw).listen_iface == expected
+
+
+@pytest.mark.parametrize("raw", [None, 42, True, ["eth0"]])
+def test_osc_config_listen_iface_rejects_non_strings(raw: object) -> None:
+    """A hand-edited TOML can put anything here; the resolver indexes it by
+    name, so a non-string must fall back to "follow the station"."""
+    assert OscConfig(listen_iface=raw).listen_iface == ""  # type: ignore[arg-type]
 
 
 # Mouse3DConfig.__post_init__ – 3D Mouse (6DOF) coercion

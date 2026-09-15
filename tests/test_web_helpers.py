@@ -55,6 +55,10 @@ def test_config_dict_redacted_drops_device_local_fields() -> None:
     # the selected media id references device-local gallery files that never
     # travel, so a foreign id would just dangle on another host.
     assert "testpattern_selected_media" not in d
+    # the OSC multicast pin names a NIC on this box; carried to a station with
+    # no such adapter it reads as a down pin and drops that station's
+    # subscription until somebody finds the setting.
+    assert "listen_iface" not in d["osc"]
     assert d["web_port"] == 8080  # non-secret fields preserved
 
 
@@ -916,6 +920,22 @@ def test_apply_import_data_preserves_detection_storage_path() -> None:
 
     assert new.detection.storage_path == "/mnt/nvme/openfollow/yolo"  # device path kept
     assert new.detection.confidence == 0.5  # other detection fields still import
+
+
+def test_apply_import_data_preserves_osc_listen_iface() -> None:
+    """Device-local like ``psn_source_iface``. An imported pin naming an
+    adapter this station does not have would silently drop its OSC multicast
+    subscription."""
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.osc.listen_iface = "eth_local"
+
+    imported = {"osc": {"listen_iface": "eth_foreign", "port": 9001}}
+    new = _apply_import_data(current, imported)
+
+    assert new.osc.listen_iface == "eth_local"  # device pin kept
+    assert new.osc.port == 9001  # other OSC fields still import
 
 
 def test_apply_import_data_preserves_testpattern_selected_media() -> None:

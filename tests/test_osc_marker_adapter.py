@@ -49,6 +49,40 @@ def _listening_adapter(svc: OscService, **kwargs: Any) -> tuple[OscMarkerAdapter
     return built[-1], port
 
 
+class _RecordingService:
+    """Records what ``start_listener`` was actually called with.
+
+    The input-manager tests assert on the adapter's constructor argument, which
+    cannot see whether ``start`` then hands it to the service - so the pin can
+    be dropped between the two with every one of them still green.
+    """
+
+    def __init__(self) -> None:
+        self.kwargs: dict[str, Any] = {}
+
+    def subscribe(self, _pattern: str, _handler: Any) -> None:
+        pass
+
+    def unsubscribe(self, _pattern: str) -> None:
+        pass
+
+    def start_listener(self, port: int, **kwargs: Any) -> None:
+        self.kwargs = {"port": port, **kwargs}
+
+    def stop_listener(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize("iface", ["10.0.0.9", "", None])
+def test_start_hands_the_multicast_interface_to_the_service(iface: str | None) -> None:
+    """All three states have to survive the hop: an address pins the
+    membership, "" leaves it to the routing table, and None holds none at all."""
+    service = _RecordingService()
+    OscMarkerAdapter(service, port=9001, multicast_group="239.1.2.3", multicast_iface=iface).start()
+    assert service.kwargs["multicast_iface"] == iface
+    assert service.kwargs["multicast_group"] == "239.1.2.3"
+
+
 def test_handle_routes_three_floats_into_pending() -> None:
     a = _adapter()
     a._handle_triple("/marker/0", 1.0, 2.0, 3.0)

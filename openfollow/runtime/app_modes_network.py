@@ -67,7 +67,9 @@ def _first_selectable_index(app: OpenFollowApp) -> int:
     for i, row in enumerate(rows):
         if row.get("kind") in _SELECTABLE_KINDS:
             return i
-    return 0  # pragma: no cover - build_pi_network_rows always emits a Back action
+    # Reachable: a station with no interfaces and an unpinned web UI has
+    # nothing to select, and leaves by the cancel button like every other menu.
+    return 0
 
 
 def exit_pi_network(app: OpenFollowApp) -> None:
@@ -451,15 +453,16 @@ def _iface_list_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[
     rows.extend(_iface_rows(app, ifaces))
     rows.extend(_reachability_notices(app, ifaces))
 
-    rows.append({"kind": "header", "label": "If you still can't reach it"})
     if _web_ui_is_restricted(app):
+        # The heading comes with the action, not before it: a section whose
+        # only content was a Back button announced a remedy that was not there.
+        rows.append({"kind": "header", "label": "If you still can't reach it"})
         # Belongs to no single interface, so it stays on this screen.
         # Deliberately not gated on ``writable``: this writes config, not the
         # network stack, so it stays available on a host whose addressing this
         # build cannot manage - which is exactly where a lockout would strand
         # the operator otherwise.
         rows.append({"kind": "action", "key": "web_unpin", "label": "Serve web UI on all interfaces", "value": ""})
-    rows.append({"kind": "action", "key": "back", "label": "Back", "value": ""})
     return rows
 
 
@@ -516,7 +519,6 @@ def _iface_detail_rows(
             {"kind": "action", "key": "renew", "label": "Working..." if busy else "Renew DHCP lease", "value": ""}
         )
 
-    rows.append({"kind": "action", "key": "back_to_list", "label": "Back to interfaces", "value": ""})
     return rows
 
 
@@ -573,18 +575,13 @@ def _pi_network_confirm(app: OpenFollowApp) -> None:
     if row.get("kind") not in _SELECTABLE_KINDS:
         return
     key = str(row.get("key") or "")
-    # While the apply/renew worker is in flight, ignore everything except the
-    # ways out - both of them, since a hung screen is most likely reached from
-    # inside an interface, where the way out is "Back to interfaces".
-    if getattr(app, "_pi_network_busy", False) and key not in ("back", "back_to_list"):
+    # While the apply/renew worker is in flight, nothing on the screen acts.
+    # Leaving is unaffected: it is the cancel button, which never comes through
+    # here, so a hung screen can always be left.
+    if getattr(app, "_pi_network_busy", False):
         return
-    if key == "back":
-        exit_pi_network(app)
-        app._enter_settings_menu()
-    elif key.startswith(_IFACE_ROW_PREFIX):
+    if key.startswith(_IFACE_ROW_PREFIX):
         _open_pi_network_iface(app, key[len(_IFACE_ROW_PREFIX) :])
-    elif key == "back_to_list":
-        _close_pi_network_iface(app)
     elif key in ("address", "prefix", "router"):
         enter_pi_network_field_edit(app, key)
     elif key == "web_unpin":
@@ -674,9 +671,10 @@ def _unpin_web_ui(app: OpenFollowApp) -> None:
         return
     app._pi_network_banner = "Web UI will serve on all interfaces after the restart."
     app._web_commands.request_restart()
-    # The row just removed itself; without this the same index is now the
-    # next action down, and a second Enter tap would run it.
-    _focus_row(app, "back")
+    # The row just removed itself, and took its heading with it; without this
+    # the same index is now a different row, and a second tap would run it.
+    # No key to name - the nearest selectable row above is an interface.
+    _focus_row(app, "")
 
 
 def _set_pi_network_dhcp(app: OpenFollowApp) -> None:

@@ -203,20 +203,18 @@ class TestPiNetworkScreen:
         keys = [r.get("key") for r in rows if r.get("key")]
         assert "header" in kinds
         assert "iface:eth0" in keys
-        assert "back" in keys
+        assert "back" not in keys
         # The per-interface actions live on that interface's own screen.
         _open_iface(app, "eth0")
         assert "dhcp" in [r.get("key") for r in anm.build_pi_network_rows(app) if r.get("key")]
 
     def test_back_returns_to_settings(self) -> None:
-        """Back from the Network screen goes straight to Settings;
-        wrapper submenu was removed."""
+        """Leaving the Network screen goes straight to Settings; the wrapper
+        submenu was removed. There is no Back row - every on-screen menu leaves
+        by the cancel button."""
         app = _make_app()
         anm.enter_pi_network(app)
-        rows = anm.build_pi_network_rows(app)
-        idx = next(i for i, r in enumerate(rows) if r.get("key") == "back")
-        app._pi_network_index = idx
-        anm.handle_pi_network_key(app, "Enter")
+        anm.handle_pi_network_key(app, "Escape")
         assert app._pi_network_active is False
         assert app._enter_settings_called is True
 
@@ -241,7 +239,7 @@ class TestPiNetworkScreen:
         keys = [r.get("key") for r in rows]
         assert "apply" not in keys
         assert "renew" not in keys
-        assert "back" in keys
+        assert "back" not in keys
 
     def test_cursor_skips_header_rows(self) -> None:
         app = _make_app()
@@ -1116,8 +1114,8 @@ class TestTheDrillDownCoversItsEdges:
         rows = anm.build_pi_network_rows(app)
         assert any("cannot be changed" in str(r.get("label", "")) for r in rows)
         assert [r for r in rows if r.get("key") in {"dhcp", "static", "renew"}] == []
-        # Still leaveable.
-        assert any(r.get("key") == "back_to_list" for r in rows)
+        # No Back row: every on-screen menu leaves by the cancel button.
+        assert [r for r in rows if r.get("kind") == "action"] == []
 
     def test_opening_no_interface_is_a_noop(self) -> None:
         """The rows are rebuilt every frame, so a name can go away between the
@@ -1171,14 +1169,12 @@ class TestBusyShortCircuit:
         app._pi_network_busy = True
         anm._pi_network_confirm(app)
         assert app._pi_network_static_edit is False
-        # Both ways out stay live, so a hung interface screen can be left and
-        # then the screen itself - a busy station must never trap the operator
-        # one level down.
-        back_idx = next(i for i, r in enumerate(rows) if r.get("key") == "back_to_list")
-        app._pi_network_index = back_idx
-        anm._pi_network_confirm(app)
+        # Leaving is unaffected by busy: it is the cancel button, which does
+        # not come through confirm at all. A hung station must never trap the
+        # operator, one level down or otherwise.
+        anm.handle_pi_network_key(app, "Escape")
         assert app._pi_network_open_iface == ""
-        _confirm_key(app, "back")
+        anm.handle_pi_network_key(app, "Escape")
         assert app._pi_network_active is False
 
     def test_late_worker_drops_result_after_exit(self) -> None:
@@ -1395,10 +1391,10 @@ class TestProcessInputConfirmsAndCancels:
     def test_process_pi_network_confirm_branch(self) -> None:
         app = _make_app()
         anm.enter_pi_network(app)
-        # Land on Back, then send a Confirm event.
+        # Land on an interface row, then send a Confirm event.
         rows = anm.build_pi_network_rows(app)
-        back_idx = next(i for i, r in enumerate(rows) if r.get("key") == "back")
-        app._pi_network_index = back_idx
+        idx = next(i for i, r in enumerate(rows) if str(r.get("key", "")).startswith(anm._IFACE_ROW_PREFIX))
+        app._pi_network_index = idx
         from types import SimpleNamespace
 
         app._input_manager = SimpleNamespace(
@@ -1407,9 +1403,8 @@ class TestProcessInputConfirmsAndCancels:
             ),
         )
         anm.process_pi_network_input(app)
-        # Confirm on Back returns to Settings.
-        assert app._pi_network_active is False
-        assert app._enter_settings_called is True
+        # Confirm on an interface row opens that interface's screen.
+        assert app._pi_network_open_iface == "eth0"
 
     def test_field_edit_no_action_when_no_buttons(self) -> None:
         from types import SimpleNamespace
@@ -1852,7 +1847,7 @@ class TestFixReachabilityActions:
         assert "dhcp" not in keys
         assert "static" not in keys
         assert "renew" not in keys
-        assert "back" in keys
+        assert "back" not in keys
 
 
 class TestTheScreenNoLongerEditsRouterAndDns:
@@ -2050,7 +2045,10 @@ class TestTheCursorSurvivesRowsAppearingAndDisappearing:
 
         anm._pi_network_confirm(app)
 
-        assert self._key_under_cursor(app) == "back"
+        # The escape stays offered until the restart actually moves the bind,
+        # so the cursor may well still be on it - what must never happen is
+        # landing on something that changes an address under the next tap.
+        assert self._key_under_cursor(app) not in {"dhcp", "static", "renew", "apply"}
         adapter = app._runtime_services.network_adapter
         assert adapter.apply_calls == []
 
@@ -2071,7 +2069,7 @@ class TestTheCursorSurvivesRowsAppearingAndDisappearing:
         app = _make_app()
         anm.enter_pi_network(app)
         _confirm_key(app, "iface:wlan0")
-        _confirm_key(app, "back_to_list")
+        anm.handle_pi_network_key(app, "Escape")
         assert app._pi_network_open_iface == ""
         assert self._key_under_cursor(app) == "iface:wlan0"
 

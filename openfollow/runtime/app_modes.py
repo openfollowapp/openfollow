@@ -219,7 +219,7 @@ def _back_to_settings(app: OpenFollowApp) -> None:
 # ``opens`` marks an entry that takes the operator to another screen rather
 # than doing something where they stand. Restart is the only one that acts.
 _SETTINGS_MENU_ITEMS: tuple[tuple[str, str, bool], ...] = (
-    ("Network", "network", True),
+    ("Network Interfaces", "network", True),
     # Single guided entry point for everything video: the operator picks a
     # type and is automatically routed to the right next step (URL editor for
     # RTSP/SRT/RTP/NDI, source picker for discovery-capable plugins like NDI).

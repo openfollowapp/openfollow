@@ -1075,7 +1075,7 @@ def test_build_settings_menu_items_disables_controller_dependent_items(
     app = _make_settings_menu_app(has_controller=False, has_source=False)
     labels, enabled, _reasons, _opens = app_modes.build_settings_menu_items(app)
     assert labels == [
-        "Network",
+        "Network Interfaces",
         "Change Video Source",
         "Button Detection",
         "Open Web UI",

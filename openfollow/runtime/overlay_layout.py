@@ -341,18 +341,28 @@ def build_help_sections(
             confirm = f"{_btn('menu_confirm', 'A')}: Pick a USB storage device"
             controller = [*([confirm] if ended else []), f"{_btn('menu_cancel', 'B')}: Back to Settings"]
     elif mode == "settings":
+        # Two ways out, and they differ: cancel steps back one screen, the
+        # button that opened the menus leaves them entirely. An operator three
+        # screens down has no way to know the second one exists unless it is
+        # listed here.
+        settings_key = kl.get("settings", "m")
+        settings_btn = _btn("settings", "Back")
         if keyboard_connected:
             keyboard = [
                 "Arrow Up/Down: Navigate",
                 "Enter: Confirm",
-                "Esc: Cancel menu",
+                "Esc: Back one screen",
             ]
+            if settings_key:
+                keyboard.append(f"{_key_label(settings_key)}: Close")
         if controller_connected:
             controller = [
                 "D-Pad Up/Down: Navigate",
                 f"{_btn('menu_confirm', 'A')}: Confirm",
-                f"{_btn('menu_cancel', 'B')}: Cancel menu",
+                f"{_btn('menu_cancel', 'B')}: Back one screen",
             ]
+            if settings_btn:
+                controller.append(f"{settings_btn}: Close")
     sections: HelpSections = []
     if keyboard:
         sections.append(("Keyboard", keyboard))

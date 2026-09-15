@@ -319,10 +319,41 @@ def test_build_help_sections_settings_mode_lists_navigation() -> None:
     controller = section_dict["Controller"]
     assert any("Navigate" in line for line in keyboard)
     assert any(line.startswith("Enter: Confirm") for line in keyboard)
-    assert any("Esc: Cancel" in line for line in keyboard)
+    assert any("Esc: Back one screen" in line for line in keyboard)
     assert any("Navigate" in line for line in controller)
     assert any(line.startswith("A: Confirm") for line in controller)
-    assert any(line.startswith("B: Cancel") for line in controller)
+    assert any(line.startswith("B: Back one screen") for line in controller)
+
+
+def test_the_settings_help_lists_both_ways_out() -> None:
+    """Cancel steps back one screen; the button that opened the menus leaves
+    them entirely. An operator several screens down cannot discover the second
+    one unless it is listed."""
+    sections = build_help_sections(
+        mode="settings",
+        keyboard_connected=True,
+        controller_connected=True,
+        button_labels={"menu_confirm": "A", "menu_cancel": "B", "settings": "BACK"},
+        keyboard_labels={"settings": "m"},
+    )
+    section_dict = dict(sections)
+    assert any(line == "M: Close" for line in section_dict["Keyboard"])
+    assert any(line == "Back: Close" for line in section_dict["Controller"])
+
+
+def test_an_unbound_close_button_is_not_promised() -> None:
+    """Naming a button that does nothing is worse than leaving it out, on the
+    screen an operator reaches when they need a way back."""
+    sections = build_help_sections(
+        mode="settings",
+        keyboard_connected=True,
+        controller_connected=True,
+        button_labels={"menu_confirm": "A", "menu_cancel": "B", "settings": ""},
+        keyboard_labels={"settings": ""},
+    )
+    section_dict = dict(sections)
+    assert not any("Close" in line for line in section_dict["Keyboard"])
+    assert not any("Close" in line for line in section_dict["Controller"])
 
 
 def test_help_sections_height_matches_section_math() -> None:

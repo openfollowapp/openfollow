@@ -34,6 +34,8 @@ class _FakeAdapter:
             NetworkInterface(name="eth0", mac="aa:bb", kind="ethernet", is_up=True),
             NetworkInterface(name="wlan0", mac="cc:dd", kind="wifi", is_up=False),
         ]
+        # How the address was come by; the screen shows this as a pill.
+        self.method = Ipv4Method.DHCP
         self.apply_calls: list[tuple[str, Ipv4Config]] = []
         self.renew_calls: list[str] = []
         self.apply_result = ApplyResult(ok=True, message="Applied.")
@@ -49,7 +51,7 @@ class _FakeAdapter:
         return NetworkState(
             interface=self._interfaces[0] if iface == "eth0" else self._interfaces[1],
             ipv4=Ipv4Config(
-                method=Ipv4Method.DHCP,
+                method=self.method,
                 address="192.168.1.50",
                 prefix=24,
                 router="192.168.1.1",
@@ -1053,6 +1055,54 @@ class TestApplyEdgeCases:
         assert "warn-1" in app._pi_network_banner
 
 
+class TestTheInterfaceListSaysHowEachAddressWasCome_By:
+    """The pill is the glanceable half of the row: an operator scanning the
+    list wants to know which interfaces are fine and which are not, before
+    reading a single address."""
+
+    def test_a_normal_lease_reads_as_dhcp(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        assert _list_pills(app)["eth0"] == "DHCP"
+
+    def test_a_static_address_says_so(self, monkeypatch) -> None:
+        from openfollow.network.adapter import Ipv4Method
+
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        adapter = _FakeAdapter()
+        adapter.method = Ipv4Method.STATIC
+        app = _make_app(adapter)
+        anm.enter_pi_network(app)
+        assert _list_pills(app)["eth0"] == "Static"
+
+    def test_a_link_local_address_outranks_its_method(self, monkeypatch) -> None:
+        """A 169.254 address reads like a working lease to anyone who does not
+        know the prefix, and "DHCP" on that row would confirm the mistake -
+        the interface has no DHCP server, which is the whole point."""
+        _patch_ifaces(monkeypatch, {"eth0": "169.254.7.7"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        assert _list_pills(app)["eth0"] == "fallback"
+
+    def test_an_unserved_interface_outranks_its_method(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5", "wlan0": "172.16.4.20"})
+        app = _make_app()
+        app._config.web_bind_iface = "wlan0"
+        app._web_server = _FakeWebServer(bind_host="172.16.4.20")
+        anm.enter_pi_network(app)
+        assert _list_pills(app)["eth0"] == "web UI not here"
+
+    def test_an_unreadable_interface_gets_no_pill_rather_than_a_guess(self, monkeypatch) -> None:
+        """``get_state`` returning None is a real backend answer. Inventing
+        "DHCP" for it would put a claim on screen nothing checked."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        app._pi_network_methods = {}
+        assert _list_pills(app)["eth0"] == ""
+
+
 class TestTheDrillDownCoversItsEdges:
     """Paths the two-screen shape introduced, each reachable on a real station."""
 
@@ -1519,6 +1569,15 @@ def _list_values(app) -> dict[str, str]:
     }
 
 
+def _list_pills(app) -> dict[str, str]:
+    """Interface list rows as ``{name: pill}``."""
+    return {
+        str(r.get("label")): str(r.get("pill", ""))
+        for r in anm.build_pi_network_rows(app)
+        if str(r.get("key", "")).startswith(anm._IFACE_ROW_PREFIX)
+    }
+
+
 class TestTheScreenAnswersHowToReachTheWebUi:
     """The screen exists to hand the operator an address that works.
 
@@ -1560,7 +1619,7 @@ class TestTheScreenAnswersHowToReachTheWebUi:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         app = _make_app()
         anm.enter_pi_network(app)
-        assert _list_values(app)["wlan0"] == "no address"
+        assert _list_pills(app)["wlan0"] == "no address"
         assert "-- no address --" in _detail_labels(app, "wlan0")
 
     def test_a_pinned_web_ui_shows_a_url_only_where_it_answers(self, monkeypatch) -> None:

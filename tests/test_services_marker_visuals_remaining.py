@@ -534,6 +534,7 @@ class TestVideoAndMenuState:
                 ["Option A", "Option B", "Option C"],
                 [True, False, True],
                 ["", "Linux only", ""],
+                [True, False, True],
             ),
         )
         state = _build(app, pool)
@@ -553,7 +554,7 @@ class TestVideoAndMenuState:
         monkeypatch.setattr(
             app_modes,
             "build_settings_menu_items",
-            lambda a: (["X"], [True], [""]),
+            lambda a: (["X"], [True], [""], [False]),
         )
         state = _build(app, pool)
         assert state.settings_menu_banner == "Configured IP unavailable."

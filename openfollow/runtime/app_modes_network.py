@@ -15,7 +15,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from openfollow.net_utils import WEB_BIND_ALL
@@ -86,6 +86,13 @@ def exit_pi_network(app: OpenFollowApp) -> None:
 _ENTRY_READ_BUDGET_S = 2.0
 
 
+_METHOD_LABELS: dict[Ipv4Method, str] = {
+    Ipv4Method.DHCP: "DHCP",
+    Ipv4Method.DHCP_WITH_MANUAL_ADDRESS: "DHCP",
+    Ipv4Method.STATIC: "Static",
+}
+
+
 @dataclass
 class _NetworkSnapshot:
     """Result of a blocking adapter read; applied to the screen cache later."""
@@ -95,6 +102,11 @@ class _NetworkSnapshot:
     active_iface: str
     state: NetworkState | None
     pending: Ipv4Config | None
+    # Interface name -> "DHCP" / "Static". Read here rather than in the row
+    # builder: the rows are rebuilt every frame and this costs one adapter
+    # call per interface, which the render loop cannot afford. This read is
+    # already off-thread and budgeted.
+    methods: dict[str, str] = field(default_factory=dict)
 
 
 def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
@@ -111,7 +123,12 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
         active = interfaces[0].name
     state = adapter.get_state(active)
     pending = state.ipv4 if state is not None else Ipv4Config(method=Ipv4Method.DHCP)
-    return _NetworkSnapshot(True, interfaces, active, state, pending)
+    methods: dict[str, str] = {}
+    for iface in interfaces:
+        iface_state = state if iface.name == active else adapter.get_state(iface.name)
+        if iface_state is not None:
+            methods[iface.name] = _METHOD_LABELS.get(iface_state.ipv4.method, "")
+    return _NetworkSnapshot(True, interfaces, active, state, pending, methods)
 
 
 def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> None:
@@ -130,6 +147,7 @@ def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> No
         app._pi_network_pending_config = None
         return
     app._pi_network_active_iface = snap.active_iface
+    app._pi_network_methods = snap.methods
     app._pi_network_state_cache = snap.state
     app._pi_network_pending_config = snap.pending
 
@@ -276,15 +294,32 @@ def _iface_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[
     """
     everywhere = _serves_every_interface(app)
     bind_host = _served_bind_host(app)
+    methods = getattr(app, "_pi_network_methods", {}) or {}
     rows: list[dict[str, object]] = []
     for name, address in ifaces:
+        # The pill states the one thing worth knowing at a glance, worst first:
+        # anything that breaks reachability outranks how the address was come
+        # by, because that is what the operator is on this screen to find.
         if not address:
-            value = "no address"
+            pill, warn = "no address", True
+        elif is_link_local(address):
+            pill, warn = "fallback", True
         elif not everywhere and address != bind_host:
-            value = f"{address} - web UI not here"
+            pill, warn = "web UI not here", True
         else:
-            value = address
-        rows.append({"kind": "choice", "key": f"{_IFACE_ROW_PREFIX}{name}", "label": name, "value": value})
+            pill, warn = methods.get(name, ""), False
+        rows.append(
+            {
+                "kind": "choice",
+                "key": f"{_IFACE_ROW_PREFIX}{name}",
+                "label": name,
+                "value": address,
+                "pill": pill,
+                "pill_warn": warn,
+                # Confirming this row opens that interface's own screen.
+                "opens": True,
+            }
+        )
     return rows
 
 

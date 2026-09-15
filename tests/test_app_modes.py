@@ -318,7 +318,7 @@ class TestSettingsMenu:
 
     def test_build_items_disables_button_detection_without_controller(self) -> None:
         app = self._make_app(has_controller=False)
-        labels, enabled, _reasons = build_settings_menu_items(app)
+        labels, enabled, _reasons, _opens = build_settings_menu_items(app)
         assert "Button Detection" in labels
         assert enabled[labels.index("Button Detection")] is False
 

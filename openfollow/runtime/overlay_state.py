@@ -239,6 +239,8 @@ class OverlayState:
     # Per-row disabled-reason override. Empty string
     # falls back to the generic "(unavailable)" suffix in the draw pass.
     settings_items_disabled_reasons: list[str] = field(default_factory=list)
+    # Which entries open another screen rather than acting where they stand.
+    settings_items_submenu: list[bool] = field(default_factory=list)
     settings_selected_index: int = 0
     settings_menu_banner: str = ""
     # About / license screen – read-only, no extra payload.
@@ -372,6 +374,7 @@ class OverlayState:
         self.settings_items.clear()
         self.settings_items_enabled.clear()
         self.settings_items_disabled_reasons.clear()
+        self.settings_items_submenu.clear()
         self.settings_selected_index = 0
         self.settings_menu_banner = ""
         self.about_active = False

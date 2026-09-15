@@ -2183,7 +2183,95 @@ def _network_state(**overrides: object):
     return s
 
 
+class TestTheSettingsMenuMarksWhatOpensAScreen:
+    def test_an_entry_that_opens_a_screen_gets_a_chevron(self) -> None:
+        state = _base_state()
+        state.settings_menu_active = True
+        state.settings_items = ["Network", "Restart"]
+        state.settings_items_enabled = [True, True]
+        state.settings_items_disabled_reasons = ["", ""]
+        state.settings_items_submenu = [True, False]
+        cr = FakeCairo()
+        draw_settings_menu(FakeRenderer(state=state), cr, state, 1600, 900)
+        # One chevron for Network, none for Restart, which acts where it stands.
+        assert len([t for t in cr.texts if t.text == "\u203a"]) == 1
+
+
 class TestDrawPiNetworkScreen:
+    def test_a_row_that_opens_a_screen_is_marked(self) -> None:
+        """A d-pad menu otherwise hides which rows take you somewhere until
+        you have already pressed one."""
+        rows = [
+            {"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "10.0.0.2", "opens": True},
+            {"kind": "display", "key": "mdns", "label": "http://x.local", "value": "any interface"},
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert len([t for t in cr.texts if t.text == "\u203a"]) == 1
+
+    def test_the_chevron_and_the_pill_do_not_share_a_place(self) -> None:
+        """Both want the right edge; the chevron takes it and the pill moves
+        inboard, or they draw on top of each other."""
+        rows = [
+            {
+                "kind": "choice",
+                "key": "iface:eth0",
+                "label": "eth0",
+                "value": "10.0.0.2",
+                "pill": "DHCP",
+                "opens": True,
+            }
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        chevron = next(t for t in cr.texts if t.text == "\u203a")
+        pill = next(t for t in cr.texts if t.text == "DHCP")
+        assert pill.x < chevron.x
+
+    def test_a_pill_is_drawn_and_keeps_clear_of_the_value(self) -> None:
+        """The pill sits at the right edge, so the value has to stop short of
+        it - a value drawn to the full width would run underneath."""
+        rows = [
+            {"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "192.168.1.5", "pill": "DHCP"},
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        pill = next(t for t in cr.texts if t.text == "DHCP")
+        value = next(t for t in cr.texts if t.text == "192.168.1.5")
+        assert pill.x > value.x
+
+    def test_a_warning_pill_is_drawn_in_the_warning_colour(self) -> None:
+        """ "fallback" and "no address" are the states that break reachability
+        while the row still looks like a working interface - they read as
+        warnings or they are not worth showing."""
+        rows = [
+            {
+                "kind": "choice",
+                "key": "iface:eth0",
+                "label": "eth0",
+                "value": "",
+                "pill": "no address",
+                "pill_warn": True,
+            },
+            {"kind": "choice", "key": "iface:wlan0", "label": "wlan0", "value": "10.0.0.2", "pill": "DHCP"},
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        warn = next(t for t in cr.texts if t.text == "no address")
+        plain = next(t for t in cr.texts if t.text == "DHCP")
+        assert warn.rgba != plain.rgba
+
+    def test_a_row_without_a_pill_draws_none(self) -> None:
+        rows = [{"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "192.168.1.5"}]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert [t for t in cr.texts if t.text in {"DHCP", "fallback", "no address"}] == []
+
     def test_a_heading_is_not_drawn_in_the_warning_colour(self) -> None:
         """Amber on this screen means a row needs attention. A heading that
         shares it raises a false alarm on a screen the operator only reaches

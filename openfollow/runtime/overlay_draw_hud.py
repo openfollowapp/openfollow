@@ -198,6 +198,38 @@ _DOCS_COL_GAP = 20.0
 _DOCS_QR_MAX = 190.0
 # Below this the code is too small to read off a screen, so draw nothing.
 _DOCS_QR_MIN = 70.0
+# Every on-screen panel is the same width. An operator moving between
+# Settings, Network and the pickers should see the frame stay put rather than
+# resize under them, and a dialog that matches the screen it covers reads as
+# part of the same surface. Heights still follow content: a one-field editor
+# has no business being as tall as a list of interfaces.
+PANEL_W_FRACTION = 0.62
+PANEL_W_MAX = 880.0
+SCREEN_H_FRACTION = 0.90
+SCREEN_H_MAX = 760.0
+
+
+def panel_width(w: int) -> float:
+    """Shared width for every on-screen panel."""
+    return min(w * PANEL_W_FRACTION, PANEL_W_MAX)
+
+
+def screen_height(h: int) -> float:
+    """Shared height for the navigable screens (not the entry dialogs)."""
+    return min(h * SCREEN_H_FRACTION, SCREEN_H_MAX)
+
+
+# Room a chevron needs, so a label is truncated before it runs underneath.
+CHEVRON_GUTTER = 14.0
+_CHEVRON = "\u203a"
+
+
+def draw_submenu_chevron(renderer: Any, cr: Any, x: float, baseline_y: float) -> None:
+    """Mark a row that opens another screen. Right-aligned at ``x``."""
+    renderer._set_ui_font(cr, 12)
+    cr.set_source_rgba(*COLOR_TEXT_MUTED)
+    cr.move_to(x, baseline_y)
+    cr.show_text(_CHEVRON)
 
 
 def draw_selectable_list(
@@ -212,8 +244,16 @@ def draw_selectable_list(
     h: float,
     empty_message: str,
     disabled: Sequence[bool] = (),
+    submenu: list[bool] | None = None,
 ) -> None:
-    """A scrolling list; a row flagged in *disabled* is led by the crossed disc (it can't be picked)."""
+    """A scrolling list of selectable rows.
+
+    A row flagged in *disabled* is led by the crossed disc (it can't be picked).
+    ``submenu`` marks the rows that open another screen rather than doing
+    something. Those get a chevron, so an operator can tell before pressing
+    which rows take them somewhere - the distinction a d-pad menu otherwise
+    hides until it is too late.
+    """
     draw_rounded_rect(cr, x, y, w, h, PANEL_RADIUS)
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.26)
     cr.fill()
@@ -265,9 +305,16 @@ def draw_selectable_list(
         if item_idx < len(disabled) and disabled[item_idx]:
             _draw_offline_mark(cr, text_x + _ROW_MARK_R, row_y + row_h / 2.0, _ROW_MARK_R)
             text_x += 2 * _ROW_MARK_R + 8.0
-        text = renderer._truncate_text_to_width(cr, items[item_idx], text_max_w - (text_x - row_x - 10.0))
+        leads_somewhere = bool(submenu[item_idx]) if submenu and item_idx < len(submenu) else False
+        text = renderer._truncate_text_to_width(
+            cr,
+            items[item_idx],
+            text_max_w - (text_x - row_x - 10.0) - (CHEVRON_GUTTER if leads_somewhere else 0.0),
+        )
         cr.move_to(text_x, row_y + row_h / 2.0 + 4.0)
         cr.show_text(text)
+        if leads_somewhere:
+            draw_submenu_chevron(renderer, cr, row_x + row_w - 16.0, row_y + row_h / 2.0 + 4.0)
 
     if scroll_offset > 0:
         renderer._set_ui_font(cr, 11)
@@ -296,8 +343,8 @@ def draw_selection_menu(
     empty_message: str,
     disabled: Sequence[bool] = (),
 ) -> None:
-    panel_w = min(w * 0.52, 760.0)
-    panel_h = min(h * 0.84, 720.0)
+    panel_w = panel_width(w)
+    panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
         renderer,
         cr,
@@ -524,7 +571,7 @@ def draw_url_editor(
     """Render on-device single-line text editor with caret."""
     title = (state.url_editor_field_label or "URL").upper()
     subtitle = state.url_editor_banner or ("Type the value, Backspace to delete, Enter to save, Esc to cancel.")
-    panel_w = min(w * 0.72, 980.0)
+    panel_w = panel_width(w)
     panel_h = min(h * 0.32, 280.0)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
         renderer,
@@ -590,8 +637,8 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
             items.append(f"{label} ({reason or 'unavailable'})")
 
     # Modal shell; recovery context (banner/error_message) in red-bordered box below for prominence.
-    panel_w = min(w * 0.56, 820.0)
-    panel_h = min(h * 0.88, 760.0)
+    panel_w = panel_width(w)
+    panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
         renderer,
         cr,
@@ -670,6 +717,7 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
         renderer,
         cr,
         items=items,
+        submenu=list(state.settings_items_submenu),
         selected_idx=state.settings_selected_index,
         x=content_x,
         y=cursor_y,
@@ -897,8 +945,8 @@ def draw_about_screen(renderer: Any, cr: Any, state: OverlayState, w: int, h: in
     """
     from openfollow import __version__
 
-    panel_w = min(w * 0.62, 720.0)
-    panel_h = min(h * 0.86, 640.0)
+    panel_w = panel_width(w)
+    panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
         renderer,
         cr,
@@ -1560,8 +1608,8 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
         subtitle = f"All {bd.total_steps} steps done  \u2013  Press Esc to close"
     else:
         subtitle = f"Step {bd.step + 1} of {bd.total_steps}  \u2013  Press Esc to cancel"
-    panel_w = min(w * 0.52, 520.0)
-    panel_h = min(h * 0.78, 520.0)
+    panel_w = panel_width(w)
+    panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
         renderer,
         cr,
@@ -1705,8 +1753,8 @@ def draw_pi_network_screen(
     # the hint has to follow the level rather than describe one of them wrongly.
     pad = _confirm_cancel_hint(state, "selects" if net.open_iface else "opens", "goes back")
     subtitle = f"D-pad or arrows to move. {pad}." if pad else "Arrows to move, Enter to select, Esc to go back."
-    panel_w = min(w * 0.62, 880.0)
-    panel_h = min(h * 0.92, 760.0)
+    panel_w = panel_width(w)
+    panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
         renderer,
         cr,
@@ -1828,10 +1876,33 @@ def draw_pi_network_screen(
         cr.set_source_rgba(*COLOR_TEXT_MUTED if kind == "display" else COLOR_TEXT)
         cr.move_to(label_x, row_y + data_row_h * 0.65)
         cr.show_text(renderer._truncate_text_to_width(cr, label, value_x - label_x - 8.0))
+        # A pill sits at the right edge, so the value column has to stop short
+        # of it rather than run underneath.
+        chevron_w = CHEVRON_GUTTER if row.get("opens") else 0.0
+        pill = str(row.get("pill", ""))
+        pill_w = 0.0
+        if pill:
+            renderer._set_ui_font(cr, 10)
+            pill_w = cr.text_extents(pill).width + 16.0
         renderer._set_ui_font(cr, 11.5, bold=is_selected)
         cr.set_source_rgba(*COLOR_TEXT_MUTED if kind == "display" else COLOR_TEXT)
         cr.move_to(value_x, row_y + data_row_h * 0.65)
-        cr.show_text(renderer._truncate_text_to_width(cr, value, inner_w - (value_x - inner_x) - 14.0))
+        cr.show_text(renderer._truncate_text_to_width(cr, value, inner_w - (value_x - inner_x) - 14.0 - pill_w))
+        if bool(row.get("opens")):
+            draw_submenu_chevron(renderer, cr, inner_x + inner_w - 10.0, row_y + data_row_h * 0.65)
+        if pill:
+            warn = bool(row.get("pill_warn"))
+            pill_x = inner_x + inner_w - pill_w - 8.0 - chevron_w
+            pill_y = row_y + 1.0
+            pill_h = data_row_h - 6.0
+            cr.set_source_rgba(*(COLOR_ACCENT_SOFT if warn else (1.0, 1.0, 1.0, 0.07)))
+            draw_rounded_rect(cr, pill_x, pill_y, pill_w, pill_h, pill_h / 2.0)
+            cr.fill()
+            renderer._set_ui_font(cr, 10)
+            cr.set_source_rgba(*(COLOR_ACCENT, 1.0) if warn else COLOR_TEXT_MUTED)
+            ext = cr.text_extents(pill)
+            cr.move_to(pill_x + (pill_w - ext.width) / 2.0, pill_y + pill_h * 0.72)
+            cr.show_text(pill)
         row_y += data_row_h
 
         # Slight extra gap after the last DNS / lease / router row before
@@ -1872,7 +1943,7 @@ def draw_pi_network_field_edit(
     )
     # Interface first: the subtitle is truncated from the end.
     subtitle = f"{net.active_iface} - {detail}" if net.active_iface else detail
-    panel_w = min(w * 0.62, 720.0)
+    panel_w = panel_width(w)
     panel_h = min(h * 0.30, 240.0)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
         renderer,

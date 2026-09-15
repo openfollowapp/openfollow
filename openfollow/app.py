@@ -348,6 +348,9 @@ class OpenFollowApp:
         self._pi_network_index: int = 0
         self._pi_network_interfaces: list[_NetworkInterface] = []
         self._pi_network_active_iface: str = ""
+        # Interface name -> "DHCP" / "Static", read on refresh because the
+        # rows are rebuilt every frame and this costs an adapter call each.
+        self._pi_network_methods: dict[str, str] = {}
         # Which interface's own screen is open; "" is the interface list.
         # Separate from ``_pi_network_active_iface``, which says whose state is
         # loaded from the adapter and has to stay set for the static editor.

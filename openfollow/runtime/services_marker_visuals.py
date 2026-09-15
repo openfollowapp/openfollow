@@ -557,16 +557,18 @@ def build_marker_visual_state(
     if app._settings_menu_active:
         from openfollow.runtime.app_modes import build_settings_menu_items
 
-        labels, enabled, reasons = build_settings_menu_items(app)
+        labels, enabled, reasons, submenu = build_settings_menu_items(app)
         state.settings_items = labels
         state.settings_items_enabled = enabled
         state.settings_items_disabled_reasons = reasons
+        state.settings_items_submenu = submenu
         state.settings_selected_index = app._settings_menu_index
         state.settings_menu_banner = app._settings_menu_banner
     else:
         state.settings_items = []
         state.settings_items_enabled = []
         state.settings_items_disabled_reasons = []
+        state.settings_items_submenu = []
         state.settings_selected_index = 0
         state.settings_menu_banner = ""
 

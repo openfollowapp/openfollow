@@ -25,7 +25,6 @@
 <div class="section" id="diagnostics-section" data-fold-key="diagnostics" data-help="diagnostics">
     <div class="section-head">
         <h2>Diagnostics</h2>
-        <span class="section-note">Live runtime state and one-click bundle download for issue reports.</span>
     </div>
 
     %# Live cards refresh on their own every 5s. Keeping the poll target inside

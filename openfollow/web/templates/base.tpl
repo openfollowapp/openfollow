@@ -794,7 +794,7 @@
  /* Full-width within its container (e.g. the login Unlock button). */
  .btn-block { width: 100%; }
  /* Network form: compact label:value grid matching the read-only status table. */
- /* Interface Assignment: function -> interface rows. Built from the existing
+ /* Network Interface Assignment: function -> interface rows. Built from the existing
  tokens so it inherits the surrounding look with no new palette. */
  .ia-table {
  width: 100%;
@@ -823,7 +823,7 @@
  .ia-addr { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
  .ia-readonly th[scope="row"] { font-weight: 500; }
  /* Read-only pointer shown by each protocol section now that the pin itself
- is edited centrally in Interface Assignment. Dashed border marks it as a
+ is edited centrally in Network Interface Assignment. Dashed border marks it as a
  report rather than a control. */
  .ia-pointer {
  display: flex;
@@ -835,10 +835,7 @@
  background: var(--surface);
  }
  .ia-pointer-value { font-size: 0.86rem; }
- /* Interface list in Network Settings: status dot, session badge, and the
- per-interface editor that expands under its own row. */
- .ia-nics td:first-child, .ia-nics th:first-child { width: 1.4rem; padding-right: 0; }
- .ia-actions { text-align: right; white-space: nowrap; }
+ /* Interface list: status dot and badges on each row's summary line. */
  .ia-dot {
  display: inline-block;
  width: 8px; height: 8px;
@@ -883,12 +880,26 @@
  }
  .ia-legend .ia-dot { margin-right: 0.3rem; }
  .ia-legend-actions { margin-left: auto; display: inline-flex; gap: 0.4rem; }
- .ia-nics tr.is-configuring > td { background: var(--accent-soft); }
- .ia-editor-row > td { padding: 0 !important; background: var(--bg-soft); }
- .ia-editor { padding: 0.9rem 1rem 1rem; border-left: 3px solid var(--accent); }
- .ia-editor-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.7rem; }
- .ia-editor-head .group-title { margin: 0; }
- .ia-editor .group:last-of-type { border-bottom: 0; }
+ /* Interface rows: one collapsible row per NIC, carrying its own editor.
+    Same shape as an OSC transmitter row - the summary reads as a status
+    line, the body is the form. */
+ .net-iface-list { margin-bottom: 0.6rem; }
+ .net-iface-row { margin-bottom: 0.6rem; border: 1px solid var(--border-soft); border-radius: 0.6rem; padding: 0.5rem 0.8rem; background: var(--surface); }
+ .net-iface-summary { display: flex; gap: 0.6rem; align-items: center; cursor: pointer; padding-bottom: 0.2rem; }
+ .net-iface-row[open] > .net-iface-form { margin-top: 0.9rem; }
+ /* Only the row being edited is accented - expanding a row to read it is not
+    a state worth marking, but the one row that will take a write is. */
+ .net-iface-row[data-mode="edit"] { border-color: var(--accent); }
+ .net-iface-name code { font-size: 0.9rem; }
+ .net-iface-addr { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
+ .net-iface-method-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); flex: none; }
+ .net-iface-form .group:last-of-type { border-bottom: 0; }
+ /* Which addressing fields a method actually lets you set. View mode reads
+    them all out; only Edit mode hides the ones that don't apply. The JS
+    disables what it hides, so a hidden field never posts. */
+ .net-iface-row[data-mode="edit"][data-method="dhcp"] .net-addressing,
+ .net-iface-row[data-mode="edit"][data-method="dhcp_manual"] .net-static-only,
+ .net-iface-row[data-mode="edit"][data-method="static"] .net-dhcp-only { display: none; }
  .ia-link {
  color: var(--accent);
  text-decoration: none;
@@ -921,6 +932,9 @@
  color: rgba(247, 245, 233, 0.95);
  font-variant-numeric: tabular-nums;
  }
+ /* Renew sits on the value it acts on, so the line carries both. */
+ .net-lease-value { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+ .net-lease-value button { margin: 0; }
  /* Disabled fields in the read-only view read as a clean status display
  rather than greyed-out broken inputs. */
  .network-config select:disabled, .network-config input:disabled {
@@ -1926,9 +1940,9 @@
  color: var(--muted);
  font-size: 0.8rem;
  }
- /* Mode bar at the top of the network form: names the current mode and,
- in view mode, offers a text-link switch (not a button) so the unlock
- action doesn't read as a Save. */
+ /* The one banner the network card still carries: a station whose network
+ cannot be written from the web has to say so, or its disabled fields read
+ as a fault. */
  .net-mode-bar {
  display: flex;
  flex-wrap: wrap;
@@ -1940,7 +1954,6 @@
  background: rgba(247, 245, 233, 0.04);
  font-size: 0.82rem;
  }
- .net-mode-bar.edit { border-left-color: var(--accent); background: var(--accent-soft); }
  .net-mode-text { color: var(--muted); }
  .net-mode-pill {
  display: inline-flex;
@@ -1953,18 +1966,11 @@
  font-weight: 700;
  white-space: nowrap;
  }
- .net-mode-pill.view, .net-mode-pill.readonly {
+ .net-mode-pill.readonly {
  color: var(--muted);
  border: 1px solid var(--border);
  background: rgba(247, 245, 233, 0.05);
  }
- .net-mode-pill.edit {
- color: #ffe6a8;
- border: 1px solid var(--btn-secondary-border);
- background: var(--accent-soft);
- }
- /* Small gold-outline button (no fill, via .secondary .small), right-aligned. */
- .net-mode-switch { margin-left: auto; }
  /* Nested foldable sub-sections: tighter padding with subtle left
  border for visual nesting. Hit target inherits from .section-toggle. */
  .section.subsection {
@@ -2258,6 +2264,30 @@
  };
  form.addEventListener('htmx:afterRequest', cancel);
  }
+ // Which addressing fields the chosen method actually lets you set. CSS
+ // hides them off ``data-method``; this disables the hidden ones, because a
+ // hidden input still posts and a DHCP apply must not carry a stale static
+ // address. View-mode rows are disabled wholesale and are left alone.
+ function netSyncMethodFields(row) {
+ const sel = row.querySelector('.net-method-select');
+ if (!sel || row.dataset.mode !== 'edit') return;
+ row.dataset.method = sel.value;
+ const manual = sel.value === 'static' || sel.value === 'dhcp_manual';
+ row.querySelectorAll('.net-addressing input').forEach((el) => { el.disabled = !manual; });
+ row.querySelectorAll('.net-static-only').forEach((el) => {
+ if ('disabled' in el) el.disabled = sel.value !== 'static';
+ });
+ }
+ function initNetworkMethodFields(root) {
+ (root || document).querySelectorAll('.net-iface-row').forEach(netSyncMethodFields);
+ }
+ // Delegated so rows swapped in by a poll or an apply need no rebinding.
+ document.addEventListener('change', (evt) => {
+ const sel = evt.target.closest && evt.target.closest('.net-method-select');
+ if (!sel) return;
+ const row = sel.closest('.net-iface-row');
+ if (row) netSyncMethodFields(row);
+ });
 
  const sectionFoldStoragePrefix = 'psnfs:section:';
  const advancedFoldStoragePrefix = 'psnfs:advanced:';
@@ -2362,17 +2392,25 @@
  function initializeInlineAdvanced(root) {
  const scope = root || document;
  const detailsNodes = [];
- if (scope.matches && scope.matches('details.inline-advanced[data-adv-key]')) {
+ if (scope.matches && scope.matches('details[data-adv-key]')) {
  detailsNodes.push(scope);
  }
- scope.querySelectorAll('details.inline-advanced[data-adv-key]')
+ scope.querySelectorAll('details[data-adv-key]')
  .forEach((node) => detailsNodes.push(node));
  detailsNodes.forEach((node) => {
  const key = node.dataset.advKey;
  if (!key) return;
+ // A server-forced open outranks the remembered state: the row carries a
+ // result the operator has to see. Remembering it keeps the next poll's
+ // re-render from closing it again.
+ if (node.dataset.advForceOpen === '1') {
+ node.open = true;
+ writeStorage(getAdvancedFoldStorageKey(key), 'open');
+ } else {
  const stored = readStorage(getAdvancedFoldStorageKey(key));
  if (stored === 'open') node.open = true;
  else if (stored === 'closed') node.open = false;
+ }
  if (node.dataset.bound === '1') return;
  node.dataset.bound = '1';
  node.addEventListener('toggle', () => {
@@ -3463,6 +3501,7 @@
  }
  initializeSectionFolding(document);
  initializeInlineAdvanced(document);
+ initNetworkMethodFields(document);
  });
  // Periodic pollers (Live Statistics 1s, Diagnostics / Server overview 5s)
  // replace whole DOM subtrees. That destroys Firefox's scroll-anchor node,
@@ -4527,6 +4566,7 @@
  document.addEventListener('DOMContentLoaded', () => {
  initializeSectionFolding(document);
  initializeInlineAdvanced(document);
+ initNetworkMethodFields(document);
  initTabs();
  oscEditorInit(document);
  });

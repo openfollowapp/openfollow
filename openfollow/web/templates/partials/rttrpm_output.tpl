@@ -2,7 +2,7 @@
       hx-post="/section/rttrpm_output" hx-target="#rttrpm-output-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>RTTrPM Output <span class="badge-experimental">Experimental</span></h2>
-        <span class="section-note">Real Time Tracking Protocol – Motion – unicast UDP send-only output</span>
+        <span class="section-note">Real Time Tracking Protocol – Motion</span>
     </div>
 
     <div class="group">

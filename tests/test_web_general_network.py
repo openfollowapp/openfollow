@@ -7,8 +7,8 @@ The General tab hosts three foldable sub-sections:
 * ``Station Settings`` (fold key ``general-station``, default-expanded)
   – one box combining the Display-units radios, the Station name
   (``psn_system_name``), and the Web Access PIN (``web_pin``).
-* ``Network Settings`` (fold key ``general-network-interface``) – the
-  lazy-loaded Pi network interface status/edit region.
+* ``Network Interface Settings`` (fold key ``general-network-interface``) –
+  the lazy-loaded Pi network interface status/edit region.
 * ``Software Update`` (fold key ``general-software-update``,
   default-collapsed).
 
@@ -152,7 +152,7 @@ class TestGeneralNetworkInterfaceRegion:
     def test_network_interface_is_its_own_subsection(self) -> None:
         body = _render_general()
         assert 'data-fold-key="general-network-interface"' in body
-        assert "Network Settings" in body
+        assert "Network Interface Settings" in body
 
     def test_no_inline_network_state_table(self) -> None:
         """The old inline read-only table + its 5 s poll moved into the status
@@ -160,6 +160,74 @@ class TestGeneralNetworkInterfaceRegion:
         body = _render_general()
         assert 'id="general-network-state"' not in body
         assert "/section/general/network_state" not in body
+
+
+class TestNetworkPartialStructure:
+    """``partials/network`` is swapped into the General tab as an HTML
+    fragment, so its own block nesting is the only thing keeping the markup
+    well-formed - a fragment parser silently drops a stray close tag."""
+
+    @pytest.mark.parametrize(
+        "net",
+        [
+            {"available": False, "writable": False, "editable": False},
+            {"available": True, "writable": False, "editable": False, "iface_rows": []},
+            {
+                "available": True,
+                "writable": True,
+                "editable": False,
+                "iface_rows": [{"name": "eth0", "address": "10.0.0.5", "prefix": 24, "method": "dhcp"}],
+            },
+        ],
+        ids=["unavailable", "read-only-host", "one-interface"],
+    )
+    def test_every_render_closes_exactly_what_it_opens(self, net: dict) -> None:
+        """The unavailable render shipped a second ``</div>``: the group's
+        close tag sat outside the guard its open tag was inside, so a block
+        added after it would have been mis-nested."""
+        body = template("partials/network", net=net)
+        assert body.count("<div") == body.count("</div>")
+        assert body.count("<form") == body.count("</form>")
+        assert body.count("<details") == body.count("</details>")
+
+    @pytest.mark.parametrize(
+        "net",
+        [
+            {"available": True, "writable": False, "editable": False, "iface_rows": []},
+            {
+                "available": True,
+                "writable": False,
+                "editable": False,
+                "iface_rows": [{"name": "eth0", "address": "10.0.0.5", "prefix": 24, "method": "dhcp"}],
+            },
+            {"available": False, "writable": False, "editable": False},
+        ],
+        ids=["no-interfaces", "one-interface", "no-backend"],
+    )
+    def test_every_render_carries_the_poll_target(self, net: dict) -> None:
+        """The poll selects ``#net-iface-list`` out of whatever comes back, so
+        every render has to contain one.
+
+        The no-backend case is the one that bites. A single tick where the
+        backend cannot answer - a transient nmcli failure - returns a render
+        with no target: ``hx-select`` matches nothing, the ``outerHTML`` swap
+        replaces the live list with nothing, and every later poll is aimed at
+        an element that no longer exists. The card stays empty until a page
+        reload, having been merely unreachable for five seconds.
+        """
+        body = template("partials/network", net=net)
+        assert 'id="net-iface-list"' in body
+
+    def test_the_poll_keeps_running_when_the_backend_cannot_answer(self) -> None:
+        """The polling attributes live on the outer card, which the tick never
+        swaps - so a no-backend render must not be what stops the polling
+        either. It recovers on its own when the backend comes back."""
+        body = template(
+            "partials/network",
+            net={"available": True, "writable": False, "editable": False, "iface_rows": []},
+        )
+        assert 'hx-trigger="every 5s"' in body
+        assert 'hx-target="#net-iface-list"' in body
 
 
 class TestUpdateSupportedFlag:

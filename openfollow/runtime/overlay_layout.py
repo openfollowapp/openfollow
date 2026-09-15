@@ -316,19 +316,6 @@ def build_help_sections(
                 f"{_btn('menu_confirm', 'A')}: Confirm source type",
                 f"{_btn('menu_cancel', 'B')}: Cancel source type menu",
             ]
-    elif mode == "iface-selection":
-        if keyboard_connected:
-            keyboard = [
-                "Arrow Up/Down: Select interface",
-                "Enter: Apply interface (live)",
-                "Esc: Cancel interface menu",
-            ]
-        if controller_connected:
-            controller = [
-                "D-Pad Up/Down: Select interface",
-                f"{_btn('menu_confirm', 'A')}: Apply interface (live)",
-                f"{_btn('menu_cancel', 'B')}: Cancel interface menu",
-            ]
     elif mode == "button-detection":
         if keyboard_connected:
             keyboard = [
@@ -339,18 +326,28 @@ def build_help_sections(
                 "Press the prompted button",
             ]
     elif mode == "settings":
+        # Two ways out, and they differ: cancel steps back one screen, the
+        # button that opened the menus leaves them entirely. An operator three
+        # screens down has no way to know the second one exists unless it is
+        # listed here.
+        settings_key = kl.get("settings", "m")
+        settings_btn = _btn("settings", "Back")
         if keyboard_connected:
             keyboard = [
                 "Arrow Up/Down: Navigate",
                 "Enter: Confirm",
-                "Esc: Cancel menu",
+                "Esc: Back one screen",
             ]
+            if settings_key:
+                keyboard.append(f"{_key_label(settings_key)}: Close Menu")
         if controller_connected:
             controller = [
                 "D-Pad Up/Down: Navigate",
                 f"{_btn('menu_confirm', 'A')}: Confirm",
-                f"{_btn('menu_cancel', 'B')}: Cancel menu",
+                f"{_btn('menu_cancel', 'B')}: Back one screen",
             ]
+            if settings_btn:
+                controller.append(f"{settings_btn}: Close Menu")
     sections: HelpSections = []
     if keyboard:
         sections.append(("Keyboard", keyboard))

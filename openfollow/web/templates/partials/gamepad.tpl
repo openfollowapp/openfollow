@@ -3,7 +3,6 @@
       hx-post="/section/gamepad" hx-target="#gamepad-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>Gamepad Input</h2>
-        <span class="section-note">Input behavior for game controllers</span>
     </div>
 
     <div class="group">

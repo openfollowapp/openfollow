@@ -18,6 +18,7 @@ import pytest
 
 import openfollow.web.discovery as discovery_module
 from openfollow.network.adapter import ApplyResult, Ipv4Method
+from openfollow.network.validate import vlan_interface_name
 from openfollow.web.routes import _port_suffix
 from openfollow.web.server import ConfigWebServer
 from tests._ports import free_tcp_port, live_on_free_port
@@ -81,6 +82,10 @@ class FakeNetwork:
         self.vlans_deleted: list[str] = []
         self.vlan_create_result = ApplyResult(ok=True, message="Created.")
         self.vlan_delete_result = ApplyResult(ok=True, message="Deleted.")
+        # Which interface is answering the browser. Loopback in a test, so the
+        # real lookup can never report one; the fixture patches it to this.
+        self.session_iface = ""
+        self.session_address = ""
 
     def config_provider(self, iface: str | None = None) -> dict | None:
         if not self.interfaces:
@@ -114,17 +119,35 @@ class FakeNetwork:
         """
         if not self.provide_rows:
             return []
-        return [
-            {
+
+        def _row(index: int, name: str) -> dict:
+            if index == 0:
+                return {
+                    "name": name,
+                    "is_up": True,
+                    "address": self.address,
+                    "prefix": self.prefix,
+                    "subnet_mask": self.subnet_mask,
+                    "method": self.method,
+                    "router": self.router,
+                    "dns": list(self.dns),
+                    "lease_display": self.lease_display,
+                }
+            # Deliberately unlike the active interface's, so a row rendering
+            # the active one's detail instead of its own is visible.
+            return {
                 "name": name,
                 "is_up": True,
-                "address": self.address if name == self.interfaces[0] else "",
-                "prefix": self.prefix if name == self.interfaces[0] else None,
-                "subnet_mask": self.subnet_mask if name == self.interfaces[0] else "",
-                "method": self.method,
+                "address": "10.9.9.9",
+                "prefix": 16,
+                "subnet_mask": "255.255.0.0",
+                "method": "static",
+                "router": "10.9.0.1",
+                "dns": ["9.9.9.9"],
+                "lease_display": None,
             }
-            for name in self.interfaces
-        ]
+
+        return [_row(i, name) for i, name in enumerate(self.interfaces)]
 
     def apply_handler(self, iface: str, config: object) -> ApplyResult:
         self.applied.append((iface, config))
@@ -139,6 +162,13 @@ class FakeNetwork:
 
     def vlan_create_handler(self, parent: str, vlan_id: int) -> ApplyResult:
         self.vlans_created.append((parent, vlan_id))
+        if self.vlan_create_result.ok:
+            # The card is re-rendered from the interface list straight after,
+            # so the new link has to be in it - that is the whole point of the
+            # forced re-read.
+            name = vlan_interface_name(parent, vlan_id)
+            self.interfaces.append(name)
+            self.vlans.append({"name": name, "parent": parent, "vlan_id": vlan_id})
         return self.vlan_create_result
 
     def vlan_delete_handler(self, name: str) -> ApplyResult:
@@ -169,6 +199,26 @@ def _post(base: str, path: str, data: dict) -> tuple[int, str]:
         return e.code, e.read().decode()
 
 
+def _outer_html(body: str, marker: str, tag: str = "div") -> str:
+    """The element whose start tag carries ``marker``, children included.
+
+    What the poll may clobber is what it *contains*; where the markup happens
+    to sit in the source proves nothing, so the extent is counted.
+    """
+    at = body.rindex("<" + tag, 0, body.index(marker))
+    open_tag, close_tag = "<" + tag, "</" + tag
+    depth, pos = 0, at
+    while True:
+        nxt_open, nxt_close = body.find(open_tag, pos), body.find(close_tag, pos)
+        assert nxt_close != -1, f"unclosed <{tag}>"
+        if nxt_open != -1 and nxt_open < nxt_close:
+            depth, pos = depth + 1, nxt_open + len(open_tag)
+            continue
+        depth, pos = depth - 1, nxt_close + len(close_tag)
+        if depth == 0:
+            return body[at:pos]
+
+
 def _post_resp(base: str, path: str, data: dict) -> tuple[int, str, dict]:
     """POST that also returns lower-cased response headers (for HX-Redirect)."""
     body = urllib.parse.urlencode(data, doseq=True).encode()
@@ -190,6 +240,13 @@ def net_server(tmp_path, monkeypatch):
         monkeypatch.setattr(getattr(discovery_module, attr), "start", lambda self: None)
         monkeypatch.setattr(getattr(discovery_module, attr), "stop", lambda self: None)
     fake = FakeNetwork()
+    # The server binds loopback, so the real lookups always answer "unknown".
+    # Routing them through the fake is what lets a test place the session on a
+    # named interface - the one thing that gates the post-apply redirect.
+    import openfollow.web.routes as routes_module
+
+    monkeypatch.setattr(routes_module, "request_local_iface", lambda _environ: fake.session_iface)
+    monkeypatch.setattr(routes_module, "request_local_addr", lambda _environ: fake.session_address)
     config_path = tmp_path / "config.toml"
     config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
     with live_on_free_port(
@@ -215,50 +272,57 @@ def net_server(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_status_view_is_read_only_with_switch_link(net_server) -> None:
-    fake, base = net_server
+def test_status_view_offers_edit_per_row_and_writes_nothing(net_server) -> None:
+    """A writable host carries no card-level mode: every row reads out its
+    settings with its own Edit button, and none of them can be submitted."""
+    _fake, base = net_server
     status, body = _get(base, "/section/network/status")
     assert status == 200
     assert 'id="network-config-section"' in body
-    # View-mode bar: a labelled switch link, not a Save-styled button.
-    assert "Switch to edit view" in body
-    assert 'class="net-mode-pill view"' in body
-    assert "protected from change" in body
-    assert "/section/network/edit" in body
-    assert "disabled" in body  # fields disabled in the view
-    assert ">Apply<" not in body  # no apply in the read-only view
-    # The view live-polls itself; the Backend field is dropped (not user-facing).
+    assert body.count('data-mode="view"') == 2
+    assert 'data-mode="edit"' not in body
+    assert body.count("/section/network/edit/") == 2  # one Edit per row
+    assert ">Apply<" not in body
+    assert "disabled" in body
+    # The card live-polls itself; the Backend field is dropped (not user-facing).
     assert "/section/network/status" in body and "every 5s" in body
     assert "Backend" not in body
-    # Read-only view shows current address even for DHCP so operator sees the lease-assigned IP.
+    # The view shows the current address even for DHCP, so the operator can
+    # read the lease-assigned IP without entering an editor.
     assert 'name="address"' in body
-    assert "10.0.0.5" in body  # FakeNetwork's current address
+    assert "10.0.0.5" in body
 
 
-def test_edit_view_enables_fields_and_actions(net_server) -> None:
-    fake, base = net_server
-    status, body = _get(base, "/section/network/edit")
+def test_edit_makes_exactly_the_named_row_writable(net_server) -> None:
+    """Editing is per row, so opening one leaves every other adapter
+    read-only - two can never be half-edited against each other."""
+    _fake, base = net_server
+    status, body = _get(base, "/section/network/edit/eth0")
     assert status == 200
     assert ">Apply<" in body
     assert "Renew DHCP lease" in body
     assert ">Cancel<" in body
-    assert "Switch to edit view" not in body
-    assert 'class="net-mode-pill edit"' in body
-    assert "may disconnect" in body  # disconnect warning moved into the edit-mode bar
+    assert body.count('data-mode="edit"') == 1
+    assert body.count('data-mode="view"') == 1
+    # The editable row is the one named in the path.
+    edit_row = body.split('data-adv-key="net-iface-eth0"', 1)[1].split("</details>", 1)[0]
+    assert 'data-mode="edit"' in edit_row
 
 
-def test_method_change_rerenders_edit_fields(net_server) -> None:
-    fake, base = net_server
-    _, dhcp_body = _post(base, "/section/network", {"iface": "eth0", "method": "dhcp"})
-    assert 'name="address"' not in dhcp_body
-    _, static_body = _post(base, "/section/network", {"iface": "eth0", "method": "static"})
-    assert 'name="address"' in static_body
-    assert 'name="subnet_mask"' in static_body
-    assert 'name="router"' in static_body
-    assert ">Apply<" in static_body  # still the edit form, not the view
-    # Renew is DHCP-only – a static config has no lease to renew.
-    assert "Renew DHCP lease" not in static_body
-    assert "Renew DHCP lease" in dhcp_body
+def test_method_fields_are_all_rendered_and_tagged_for_the_client(net_server) -> None:
+    """Switching method no longer round-trips: every field is in the DOM and
+    the row's ``data-method`` is what decides which ones apply. A field the
+    method does not allow is disabled client-side so it cannot post."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/edit/eth0")
+    edit_row = body.split('data-adv-key="net-iface-eth0"', 1)[1].split("</details>", 1)[0]
+    assert 'data-method="dhcp"' in edit_row
+    for field in ('name="address"', 'name="subnet_mask"', 'name="router"'):
+        assert field in edit_row
+    # The hooks the stylesheet keys off to hide what the method excludes.
+    assert 'class="group net-addressing"' in edit_row
+    assert edit_row.count("net-static-only") == 4  # subnet + router, label and input each
+    assert "net-dhcp-only" in edit_row  # the lease group, hidden for static
 
 
 # --------------------------------------------------------------------------- #
@@ -268,6 +332,7 @@ def test_method_change_rerenders_edit_fields(net_server) -> None:
 
 def test_apply_static_calls_adapter_and_redirects_to_new_ip(net_server) -> None:
     fake, base = net_server
+    fake.session_iface = "eth0"  # the browser is answered on the interface being changed
     status, body, headers = _post_resp(
         base,
         "/section/network/apply",
@@ -290,8 +355,179 @@ def test_apply_static_calls_adapter_and_redirects_to_new_ip(net_server) -> None:
     assert config.prefix == 24  # converted from the 255.255.255.0 mask
     assert config.router == "192.168.1.1"
     assert config.dns == ("1.1.1.1", "8.8.8.8")
-    # Reload the UI at the new static address.
+    # Reload the UI at the new static address - the old one just went away.
     assert "192.168.1.50" in headers.get("hx-redirect", "")
+
+
+def test_apply_to_another_interface_does_not_move_the_browser(net_server) -> None:
+    """Applying to an adapter that is not answering this session leaves the
+    session untouched, so redirecting to the new address strands the operator
+    on a network they may not be on. Linux answers for that address on
+    whatever interface they *are* on, so the move succeeds and hides it - a
+    VLAN given a link-local address took the browser with it."""
+    fake, base = net_server
+    fake.session_iface = "wlan0"  # the browser is answered on the other adapter
+    _status, _body, headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {
+            "iface": "eth0",
+            "method": "static",
+            "address": "169.254.32.55",
+            "subnet_mask": "255.255.0.0",
+        },
+    )
+    assert [iface for iface, _cfg in fake.applied] == ["eth0"]  # the write still happened
+    assert "hx-redirect" not in {k.lower() for k in headers}
+
+
+def test_the_session_interface_is_read_before_the_address_is_changed(net_server, monkeypatch) -> None:
+    """Applying to the session's own interface is what removes the address the
+    lookup resolves, so asking afterwards answers "unknown" - and the redirect
+    would be suppressed in exactly the single-NIC case it exists for."""
+    import openfollow.web.routes as routes_module
+
+    fake, base = net_server
+    calls: list[str] = []
+
+    def _iface_before_and_after(_environ: str) -> str:
+        # Before the apply the address is still on eth0; afterwards it is gone
+        # from every interface, which is what ``get_iface_for_ip`` reports as "".
+        answer = "" if fake.applied else "eth0"
+        calls.append(answer)
+        return answer
+
+    monkeypatch.setattr(routes_module, "request_local_iface", _iface_before_and_after)
+    _status, _body, headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {
+            "iface": "eth0",
+            "method": "static",
+            "address": "192.168.1.50",
+            "subnet_mask": "255.255.255.0",
+        },
+    )
+    assert len(fake.applied) == 1
+    assert calls[0] == "eth0"  # read while the old address was still up
+    assert "192.168.1.50" in headers.get("hx-redirect", "")
+
+
+def test_apply_with_no_known_session_interface_does_not_redirect(net_server) -> None:
+    """Reached over IPv6, or from an address that is none of this host's, the
+    session interface is unknown. Redirecting on a guess is how the operator
+    ends up somewhere they cannot get back from."""
+    fake, base = net_server
+    fake.session_iface = ""
+    _status, _body, headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {
+            "iface": "eth0",
+            "method": "static",
+            "address": "192.168.1.50",
+            "subnet_mask": "255.255.255.0",
+        },
+    )
+    assert len(fake.applied) == 1
+    assert "hx-redirect" not in {k.lower() for k in headers}
+
+
+def test_the_session_row_names_the_address_it_is_answering(net_server) -> None:
+    """The warning used to claim the operator was connected *over* this
+    interface. It is the address that belongs to the interface, not
+    necessarily the cable - saying so is what makes it checkable."""
+    fake, base = net_server
+    fake.session_iface = "wlan0"
+    fake.session_address = "169.254.32.55"
+    _status, body = _get(base, "/section/network/status")
+    wlan = body.split('data-adv-key="net-iface-wlan0"', 1)[1].split("</details>", 1)[0]
+    eth0 = body.split('data-adv-key="net-iface-eth0"', 1)[1].split("</details>", 1)[0]
+    assert "This session" in wlan
+    # The notice itself, not the badge's tooltip - both carry the address, so
+    # asserting on the body alone passes with the old topology claim in place.
+    notice = wlan.split('class="notice warning"', 1)[1].split("</div>", 1)[0]
+    assert "answering your browser at 169.254.32.55" in notice
+    assert "connected over this interface" not in notice
+    assert "169.254.32.55" in wlan.split("ia-badge session", 1)[1].split(">", 1)[0]
+    assert "This session" not in eth0
+    assert "answering your browser" not in eth0
+
+
+def test_a_rejected_address_stays_out_of_the_summary_line(net_server) -> None:
+    """The fields carry back what was typed so it can be corrected. The
+    summary above them reports what the adapter holds - rendering the rejected
+    value there presents it as live, with the previous prefix appended and an
+    up status dot beside it."""
+    fake, base = net_server
+    _status, body, _headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {
+            "iface": "eth0",
+            "method": "static",
+            "address": "192.168.1.999",
+            "subnet_mask": "255.255.255.0",
+        },
+    )
+    assert fake.applied == []  # validate_apply refused it
+    row = body.split('data-adv-key="net-iface-eth0"', 1)[1].split("</details>", 1)[0]
+    summary = row.split("</summary>", 1)[0]
+    assert "192.168.1.999" not in summary
+    assert "10.0.0.5" in summary  # what the adapter actually holds
+    # ... and the editable field still offers it back for correction.
+    assert 'value="192.168.1.999"' in row.split("</summary>", 1)[1]
+
+
+def test_the_blind_reload_is_armed_only_on_the_session_row(net_server) -> None:
+    """The 6s timer navigates to the address the row was given, and fires when
+    no response has arrived. On a row that is not answering this session an
+    apply slower than the timer would move the browser to an adapter the
+    operator may not be able to reach - the very move the server gate refuses."""
+    fake, base = net_server
+    fake.session_iface = "wlan0"
+    _status, body = _get(base, "/section/network/edit/eth0")
+    eth0 = body.split('data-adv-key="net-iface-eth0"', 1)[1].split("</details>", 1)[0]
+    assert ">Apply<" in eth0  # it is the editable row
+    assert "netScheduleReload" not in eth0
+
+    _status, body = _get(base, "/section/network/edit/wlan0")
+    wlan = body.split('data-adv-key="net-iface-wlan0"', 1)[1].split("</details>", 1)[0]
+    assert "netScheduleReload" in wlan
+
+
+def test_an_editor_warns_when_the_session_interface_is_unknown(net_server) -> None:
+    """Reached over IPv6, or at an address that is none of this host's, no row
+    can be marked - so the caution goes on every editor. Saying nothing is the
+    one outcome that lets the operator cut their own session unwarned."""
+    fake, base = net_server
+    fake.session_iface = ""
+    _status, body = _get(base, "/section/network/edit/eth0")
+    eth0 = body.split('data-adv-key="net-iface-eth0"', 1)[1].split("</details>", 1)[0]
+    assert "may be the one carrying this web session" in eth0
+    # Read-only rows are not about to apply anything, so they stay quiet.
+    wlan = body.split('data-adv-key="net-iface-wlan0"', 1)[1].split("</details>", 1)[0]
+    assert "may be the one carrying this web session" not in wlan
+
+    # With the session placed, the row that owns the address says so instead.
+    fake.session_iface = "eth0"
+    fake.session_address = "10.0.0.5"
+    _status, body = _get(base, "/section/network/edit/eth0")
+    eth0 = body.split('data-adv-key="net-iface-eth0"', 1)[1].split("</details>", 1)[0]
+    assert "may be the one carrying this web session" not in eth0
+    assert "answering your browser at 10.0.0.5" in eth0
+
+
+def test_the_add_vlan_form_submits_rather_than_navigating(net_server) -> None:
+    """The block is its own form with one implicit-submission-blocking field
+    and no submit button of its own - Enter in the VLAN ID would fall through
+    to a native GET on the page URL, creating nothing and losing the entry."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/status")
+    form = body.split('class="ia-vlan-add"', 1)[1].split(">", 1)[0]
+    assert 'hx-post="/section/network/vlan/create"' in form
+    assert 'hx-trigger="submit"' in form
+    assert '<button type="submit" class="save-btn">Create</button>' in body
 
 
 def test_apply_unknown_iface_touches_nothing(net_server) -> None:
@@ -380,6 +616,7 @@ def test_renew_unknown_iface_touches_nothing(net_server) -> None:
 
 def test_apply_dhcp_manual_redirects_to_manual_address(net_server) -> None:
     fake, base = net_server
+    fake.session_iface = "eth0"
     _, _, headers = _post_resp(
         base,
         "/section/network/apply",
@@ -426,7 +663,7 @@ def test_apply_dhcp_returns_view_not_redirect(net_server) -> None:
     assert status == 200
     assert "hx-redirect" not in headers  # DHCP has no known address
     assert "Network settings applied." in body
-    assert "Switch to edit view" in body  # back to the read-only view
+    assert 'data-mode="edit"' not in body  # back to every row read-only
 
 
 def test_apply_router_outside_subnet_rejected_stays_on_edit(net_server) -> None:
@@ -549,7 +786,7 @@ def test_renew_calls_adapter_returns_view(net_server) -> None:
     assert status == 200
     assert fake.renewed == ["eth0"]
     assert "DHCP lease renewed." in body
-    assert "Switch to edit view" in body  # back to the read-only view
+    assert 'data-mode="edit"' not in body  # back to every row read-only
 
 
 def test_renew_failure_surfaces_message(net_server) -> None:
@@ -572,15 +809,38 @@ def test_renew_partial_failures_surfaced(net_server) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_read_only_host_shows_no_switch_link(net_server) -> None:
+def test_read_only_host_offers_no_edit_at_all(net_server) -> None:
     fake, base = net_server
     fake.writable = False
     _, body = _get(base, "/section/network/status")
-    assert "Switch to edit view" not in body
+    assert "/section/network/edit/" not in body  # no per-row Edit button
     assert ">Apply<" not in body
     # Read-only mode bar points the operator at the on-screen menu instead.
     assert 'class="net-mode-pill readonly"' in body
     assert "on-screen Settings menu" in body
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/section/network/edit",  # card-level Edit mode; editing is per row now
+        "/section/network/status/eth0",  # expansion is the browser's, not a route
+    ],
+)
+def test_retired_routes_are_gone(net_server, path: str) -> None:
+    """Left behind they would render a card no control links to - one with an
+    interface made writable by a URL rather than by its own Edit button."""
+    _fake, base = net_server
+    status, _body = _get(base, path)
+    assert status == 404
+
+
+def test_the_method_rerender_endpoint_is_gone(net_server) -> None:
+    """Switching method is client-side: every field is already in the DOM, so
+    a round-trip that discarded unsaved input bought nothing."""
+    _fake, base = net_server
+    status, _body = _post(base, "/section/network", {"iface": "eth0", "method": "static"})
+    assert status in (404, 405)
 
 
 def test_no_provider_renders_unavailable(tmp_path, monkeypatch) -> None:
@@ -691,46 +951,49 @@ def test_status_lists_every_interface(net_server) -> None:
     _fake, base = net_server
     status, body = _get(base, "/section/network/status")
     assert status == 200
-    assert "Interfaces on this station" in body
     assert "<code>eth0</code>" in body
     assert "<code>wlan0</code>" in body
 
 
-def test_active_interface_is_expanded_and_others_offer_configure(net_server) -> None:
-    """One interface is always the current one, so its detail is open; the
-    others carry the button that moves the expansion to them."""
+def test_no_row_is_forced_open_on_an_ordinary_render(net_server) -> None:
+    """Which rows are expanded is the browser's to remember, so a plain render
+    must force none: the 5s poll re-renders this markup, and a forced row would
+    reopen one the operator had closed, every five seconds."""
     _fake, base = net_server
     _status, body = _get(base, "/section/network/status")
-    # eth0 is FakeNetwork's active interface: expanded, so no button of its own.
-    assert "Configure <code>eth0</code>" in body
-    # Assert on the button, not the bare path – the 5s poll also carries the
-    # expanded interface in its URL, so a substring check would match that.
-    assert '/section/network/status/wlan0"' in body
-    buttons = [seg for seg in body.split("<button") if ">Configure</button>" in seg]
-    assert any("/section/network/status/wlan0" in b for b in buttons)
-    assert not any("/section/network/status/eth0" in b for b in buttons)
+    assert "data-adv-force-open" not in body
+    # Each row still carries the key the browser remembers it under.
+    assert 'data-adv-key="net-iface-eth0"' in body
+    assert 'data-adv-key="net-iface-wlan0"' in body
 
 
-def test_view_mode_can_expand_an_interface_read_only(net_server) -> None:
-    """DNS and lease live in the detail, so View mode has to be able to open a
-    row - otherwise reading a value would mean entering Edit mode."""
+def test_every_row_carries_its_own_detail(net_server) -> None:
+    """The editor is rendered per row rather than fetched for one interface at
+    a time, so a row must show its own router / DNS / lease and not the active
+    interface's."""
     _fake, base = net_server
-    status, body = _get(base, "/section/network/status/wlan0")
+    status, body = _get(base, "/section/network/status")
     assert status == 200
-    assert "Configure <code>wlan0</code>" in body
-    assert "disabled" in body
-    assert ">Apply<" not in body
+    wlan = body.split('data-adv-key="net-iface-wlan0"', 1)[1].split("</details>", 1)[0]
+    assert 'value="10.9.9.9"' in wlan  # its own address, not eth0's 10.0.0.5
+    assert 'value="10.9.0.1"' in wlan  # its own router
+    assert 'value="9.9.9.9"' in wlan  # its own DNS
+    eth0 = body.split('data-adv-key="net-iface-eth0"', 1)[1].split("</details>", 1)[0]
+    assert 'value="10.0.0.5"' in eth0
+    assert "1h 00m" in eth0  # its own lease; wlan0 reports none
+    assert "1h 00m" not in wlan
 
 
-def test_configure_expands_the_named_interface(net_server) -> None:
+def test_the_named_interface_is_the_one_opened_and_written(net_server) -> None:
     """The interface is named in the path, so which adapter is being edited
-    can't be ambiguous."""
+    can't be ambiguous - and its row opens itself so the operator sees it."""
     _fake, base = net_server
     status, body = _get(base, "/section/network/edit/wlan0")
     assert status == 200
-    assert "Configure <code>wlan0</code>" in body
-    # ... and the form still carries it to /apply exactly as before.
-    assert 'name="iface" value="wlan0"' in body
+    wlan = body.split('data-adv-key="net-iface-wlan0"', 1)[1].split("</details>", 1)[0]
+    assert "data-adv-force-open" in body.split('data-adv-key="net-iface-wlan0"', 1)[1].split(">", 1)[0]
+    assert 'name="iface" value="wlan0"' in wlan
+    assert ">Apply<" in wlan
 
 
 def test_unknown_interface_falls_back_to_active(net_server) -> None:
@@ -812,25 +1075,61 @@ def test_interface_list_uses_the_richer_provider_when_wired(tmp_path, monkeypatc
 # --------------------------------------------------------------------------- #
 
 
-def test_view_poll_carries_the_expanded_interface(net_server) -> None:
-    """The 5s poll used to GET the iface-less route, so a row opened in View
-    mode collapsed back to the active interface every five seconds and could
-    not be read."""
+def test_the_poll_swaps_the_interface_list_and_nothing_else(net_server) -> None:
+    """Refreshing addresses is the whole of the tick's business.
+
+    Swapping the card wholesale took the operator's own state with it, so the
+    poll had to be held off while the Add VLAN form was open - and a held poll
+    is a card showing addresses that have since moved on.
+    """
     _fake, base = net_server
-    status, body = _get(base, "/section/network/status/wlan0")
+    status, body = _get(base, "/section/network/status")
     assert status == 200
-    assert "/section/network/status/wlan0" in body
-    assert "every 5s" in body
+    # No trigger filter: nothing is left for the poll to wait for.
+    assert 'hx-trigger="every 5s"' in body
+    assert 'hx-select="#net-iface-list" hx-target="#net-iface-list" hx-swap="outerHTML"' in body
+    # Plain path: the poll names no interface, so it can't reopen a closed row.
+    assert 'hx-get="/section/network/status" hx-trigger="every 5s"' in body
 
 
-def test_cancel_returns_to_view_mode_on_the_same_row(net_server) -> None:
-    """Cancel targeted /section/network/edit, which re-rendered the editor –
-    leaving Edit mode with no exit short of a page reload."""
+def test_the_polled_fragment_carries_no_operator_state(net_server) -> None:
+    """The addresses are inside the swapped fragment; everything the operator
+    put on screen themselves is outside it."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/status")
+    swapped = _outer_html(body, 'id="net-iface-list"')
+    assert "net-iface-row" in swapped
+    assert "ia-vlan-add" not in swapped
+    assert "+ Add VLAN" not in swapped
+    assert "ia-legend" not in swapped
+
+
+def test_a_refused_create_keeps_its_reason_and_its_entry_through_the_poll(net_server) -> None:
+    """A refusal leaves the form open with what was typed and a banner saying
+    why. Both sit outside the fragment the poll replaces, so the reason is
+    still on screen five seconds later, beside the entry it is about."""
+    _fake, base = net_server
+    _status, body = _post(
+        base,
+        "/section/network/vlan/create",
+        {"vlan_parent": "wlan0", "vlan_id": "99999"},
+    )
+    assert "between 1 and 4094" in body
+    assert 'hx-select="#net-iface-list"' in body
+    swapped = _outer_html(body, 'id="net-iface-list"')
+    assert "between 1 and 4094" not in swapped
+    assert 'value="99999"' not in swapped
+
+
+def test_cancel_drops_the_card_back_to_read_only(net_server) -> None:
+    """Cancel has to leave Edit; targeting an edit route would re-render the
+    editor and leave no exit short of a page reload. The row itself stays
+    expanded because that is the browser's state, not the server's."""
     _fake, base = net_server
     status, body = _get(base, "/section/network/edit/wlan0")
     assert status == 200
     cancel = body[body.index(">Cancel<") - 400 : body.index(">Cancel<")]
-    assert "/section/network/status/wlan0" in cancel
+    assert '/section/network/status"' in cancel
     assert "/section/network/edit" not in cancel
 
 
@@ -909,6 +1208,7 @@ def test_a_pending_apply_does_not_advise_reconnecting(net_server) -> None:
 def test_a_clean_apply_still_redirects(net_server) -> None:
     """The pending gate must not suppress the normal static-apply redirect."""
     fake, base = net_server
+    fake.session_iface = "eth0"
     fake.apply_result = ApplyResult(ok=True, message="Applied.")
     _status, _body, headers = _post_resp(
         base,
@@ -959,14 +1259,16 @@ def test_a_pending_apply_still_shows_its_warnings(net_server) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_add_vlan_control_only_in_edit_mode(net_server) -> None:
-    """Creating a link is a write, so it follows the same Edit-mode gate as
-    every other write on this card."""
-    _fake, base = net_server
+def test_add_vlan_is_offered_whenever_the_host_is_writable(net_server) -> None:
+    """Creating a link is its own confirmed action, not an edit of some
+    interface - and with editing now per row there is no card-level Edit mode
+    left to gate it behind, which would leave it unreachable."""
+    fake, base = net_server
     _status, view = _get(base, "/section/network/status")
-    assert "+ Add VLAN" not in view
-    _status, edit = _get(base, "/section/network/edit")
-    assert "+ Add VLAN" in edit
+    assert "+ Add VLAN" in view
+    fake.writable = False
+    _status, read_only = _get(base, "/section/network/status")
+    assert "+ Add VLAN" not in read_only
 
 
 def test_add_vlan_control_absent_on_a_backend_without_vlans(net_server) -> None:
@@ -981,8 +1283,43 @@ def test_vlan_rows_carry_their_tag(net_server) -> None:
     fake, base = net_server
     fake.interfaces = ["eth0", "eth0.10"]
     fake.vlans = [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}]
-    _status, body = _get(base, "/section/network/edit")
+    _status, body = _get(base, "/section/network/status")
     assert "VLAN 10" in body
+
+
+def test_a_refused_create_keeps_what_was_entered(net_server) -> None:
+    """The Add VLAN block is hidden until opened, so an error that re-rendered
+    the card closed it and threw away the parent and id - the operator had to
+    retype both to read the message that told them what was wrong."""
+    _fake, base = net_server
+    _status, body = _post(
+        base,
+        "/section/network/vlan/create",
+        {"vlan_parent": "wlan0", "vlan_id": "99999"},
+    )
+    assert "between 1 and 4094" in body
+    form = body.split('class="ia-vlan-add"', 1)[1]
+    assert not form.split(">", 1)[0].strip().startswith("hidden")
+    assert 'value="99999"' in body
+    assert '<option value="wlan0" selected>' in body
+
+
+def test_a_successful_create_closes_the_form_and_edits_nothing(net_server) -> None:
+    """A VLAN write is not an edit of some other adapter: the card comes back
+    read-only with the new row expanded, not with an interface made writable."""
+    fake, base = net_server
+    _status, body = _post(
+        base,
+        "/section/network/vlan/create",
+        {"vlan_parent": "eth0", "vlan_id": "10"},
+    )
+    assert fake.vlans_created == [("eth0", 10)]
+    assert 'data-mode="edit"' not in body
+    form = body.split('class="ia-vlan-add"', 1)[1].split(">", 1)[0]
+    assert "hidden" in form
+    # The new interface's row is the one opened, so it can be given an address.
+    opened = body.split('data-adv-key="net-iface-eth0.10"', 1)[1].split(">", 1)[0]
+    assert "data-adv-force-open" in opened
 
 
 def test_a_vlan_is_not_offered_as_a_parent(net_server) -> None:
@@ -990,7 +1327,7 @@ def test_a_vlan_is_not_offered_as_a_parent(net_server) -> None:
     fake, base = net_server
     fake.interfaces = ["eth0", "eth0.10"]
     fake.vlans = [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}]
-    _status, body = _get(base, "/section/network/edit")
+    _status, body = _get(base, "/section/network/status")
     parent_block = body.split('name="vlan_parent"', 1)[1].split("</select>", 1)[0]
     assert "eth0" in parent_block
     assert "eth0.10" not in parent_block

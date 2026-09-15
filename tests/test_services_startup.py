@@ -719,13 +719,36 @@ def _ifrow(name: str, *, is_up: bool = True, kind: str = "ethernet"):
     return NetworkInterface(name=name, mac="aa:bb", kind=kind, is_up=is_up)
 
 
-def _ifrow_state(iface: str, *, address: str, prefix: int | None, method_value: str):
-    from openfollow.network.adapter import Ipv4Config, Ipv4Method, NetworkState
+def _ifrow_state(
+    iface: str,
+    *,
+    address: str,
+    prefix: int | None,
+    method_value: str,
+    router: str | None = None,
+    dns: tuple[str, ...] = (),
+    lease_seconds: int | None = None,
+):
+    from openfollow.network.adapter import Ipv4Config, Ipv4Method, LeaseInfo, NetworkState
 
     return NetworkState(
         interface=_ifrow(iface),
-        ipv4=Ipv4Config(method=Ipv4Method(method_value), address=address, prefix=prefix),
-        lease=None,
+        ipv4=Ipv4Config(
+            method=Ipv4Method(method_value),
+            address=address,
+            prefix=prefix,
+            router=router,
+            dns=dns,
+        ),
+        lease=None
+        if lease_seconds is None
+        else LeaseInfo(
+            address=address,
+            prefix=prefix,
+            router=router,
+            dns=dns,
+            lease_seconds_remaining=lease_seconds,
+        ),
     )
 
 
@@ -762,6 +785,70 @@ def test_network_interfaces_provider_lists_every_interface(monkeypatch) -> None:
     assert rows["eth1"]["address"] == "10.0.0.9"
     assert rows["eth1"]["method"] == "static"
     assert rows["eth1"]["prefix"] == 16
+
+
+def test_network_interfaces_provider_carries_router_dns_and_lease(monkeypatch) -> None:
+    """The card renders every interface's editor, not just the active one's,
+    and does it off this list. ``get_state`` already returns router / DNS /
+    lease, so dropping them here would cost a second backend read per row."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _FakeAdapter:
+        backend_name = "fake"
+
+        def list_interfaces(self):
+            return [_ifrow("eth0"), _ifrow("eth1")]
+
+        def is_writable(self):
+            return True
+
+        def get_state(self, iface):
+            if iface == "eth0":
+                return _ifrow_state(
+                    iface,
+                    address="192.168.1.5",
+                    prefix=24,
+                    method_value="dhcp",
+                    router="192.168.1.1",
+                    dns=("1.1.1.1", "8.8.8.8"),
+                    lease_seconds=3600,
+                )
+            return _ifrow_state(iface, address="10.0.0.9", prefix=16, method_value="static")
+
+    services._network_adapter = _FakeAdapter()
+    rows = {r["name"]: r for r in services._network_interfaces_provider()}
+    assert rows["eth0"]["router"] == "192.168.1.1"
+    assert rows["eth0"]["dns"] == ["1.1.1.1", "8.8.8.8"]
+    assert rows["eth0"]["lease_display"]
+    # A static interface has no lease and no router of its own here; the keys
+    # are still present so the renderer never has to guess at a missing one.
+    assert rows["eth1"]["router"] == ""
+    assert rows["eth1"]["dns"] == []
+    assert rows["eth1"]["lease_display"] is None
+
+
+def test_network_interfaces_provider_defaults_the_detail_when_state_is_unreadable(monkeypatch) -> None:
+    """A per-interface read can fail without invalidating the rest of the
+    list, and the row still has to carry every key the editor renders."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _FakeAdapter:
+        backend_name = "fake"
+
+        def list_interfaces(self):
+            return [_ifrow("eth0")]
+
+        def is_writable(self):
+            return True
+
+        def get_state(self, iface):
+            raise RuntimeError("backend hiccup")
+
+    services._network_adapter = _FakeAdapter()
+    (row,) = services._network_interfaces_provider()
+    assert row["router"] == ""
+    assert row["dns"] == []
+    assert row["lease_display"] is None
 
 
 def test_network_interfaces_provider_skips_loopback(monkeypatch) -> None:
@@ -809,6 +896,9 @@ def test_network_interfaces_provider_reports_an_addressless_interface(monkeypatc
         "prefix": None,
         "subnet_mask": "",
         "method": "dhcp",
+        "router": "",
+        "dns": [],
+        "lease_display": None,
     }
 
 

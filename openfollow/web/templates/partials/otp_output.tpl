@@ -2,7 +2,7 @@
       hx-post="/section/otp_output" hx-target="#otp-output-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>OTP Output</h2>
-        <span class="section-note">ANSI E1.59 Object Transform Protocol – parallel output alongside PSN</span>
+        <span class="section-note">Object Transform Protocol</span>
     </div>
 
     <div class="group">
@@ -48,11 +48,11 @@
             <div class="field">
                 <label>Source Interface</label>
                 %# Read-only pointer – the pin is edited centrally in
-                %# General > Interface Assignment, alongside every other plane.
+                %# General > Network Interface Assignment, alongside every other plane.
                 <div class="ia-pointer">
                     <span class="ia-pointer-value">{{config.otp_output.source_iface or 'Follows station interface'}}</span>
                     <a class="ia-link" href="#interface-assignment"
-                       onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Interface Assignment</a>
+                       onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Network Interface Assignment</a>
                 </div>
             </div>
         </div>

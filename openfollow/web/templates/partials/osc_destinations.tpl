@@ -6,7 +6,7 @@
 <div id="osc-destinations-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="osc_destinations" data-help="osc_destinations">
  <div class="section-head">
  <h2>OSC Destinations</h2>
- <span class="section-note">Reusable connections (host, port, transport) referenced by transmitters and zones</span>
+ <span class="section-note">Named host, port, and transport targets that transmitters and zones send to</span>
  </div>
 
  <div class="osc-destinations-list">

@@ -156,6 +156,7 @@ All config lives in `config.toml` (auto-reloaded when file changes on disk).
 | `psn_mcast_ip` | `"236.10.10.10"` | PSN multicast group |
 | `psn_source_iface` | `""` | Bind PSN / beacon to this interface **by name**; empty = auto-detect |
 | `web_port` | `80` | Web config UI port |
+| `web_bind_iface` | `""` | Serve the web UI on this interface only, **by name**; empty = every interface. Resolved by `net_utils.resolve_web_bind`, which an explicit `web_bind` address outranks. The **one plane that fails open**: an unresolvable pin serves everywhere and records an advisory, because a silent output is diagnosable from another station and an unreachable config UI is not. Device-local |
 | `web_pin` | `""` | Auth PIN; when non-empty, browser routes require login + cookie (`SameSite=Strict`), peer-to-peer routes require HMAC-signed headers |
 | `update_github_repo` | `"openfollowapp/openfollow"` | `owner/repo` slug the `.deb`-release updater queries for new releases |
 | `update_service_name` | `"openfollow"` | systemd unit restarted after a `.deb` install |
@@ -170,7 +171,7 @@ All config lives in `config.toml` (auto-reloaded when file changes on disk).
 - **CameraConfig:** pos_x/y/z, pitch/yaw/roll, fov
 - **GridConfig:** visible, width, depth, spacing, x_offset, y_offset, z_offset, origin_visible, origin_length, origin_thickness
 - **MarkerConfig:** min_speed, max_speed, move_speed, default_pos_x/y/z, `invert_control_direction` (flips X **and** Y together for *relative* input – keyboard, gamepad, 3D mouse – so an upstage camera's picture matches the controls; applied once in `InputManager.update` via `_oriented`, never on Z, and never on the absolute paths: 2D mouse unprojection and OSC writes), ball_visible, ball_size, transparency, crosshair_visible, crosshair_size, crosshair_color, crosshair_thickness, z_line, z_line_thickness, ground_circle, ground_circle_size, ground_circle_filled, z_display_from_stage
-- **ControllerConfig:** enabled, keyboard_enabled, mouse_enabled, mouse_hysteresis_px, mouse_smoothing, mouse_max_y, mouse_wheel_z_enabled, mouse_wheel_invert, mouse_wheel_z_step, mouse_double_click_reset, deadzone, invert_y, curve, the gamepad button map (`btn_reset`, `btn_source_select`, `btn_speed_up/down`, `btn_move_z_up/down`, `btn_settings`, `btn_next/prev_marker`, …), the keyboard binding map (`key_move_layout`, `key_reset`, `key_speed_up/down`, `key_toggle_help`, `key_toggle_zones`, `key_settings`, …), `move_xy_stick` (no LED fields)
+- **ControllerConfig:** enabled, keyboard_enabled, mouse_enabled, mouse_hysteresis_px, mouse_smoothing, mouse_max_y, mouse_wheel_z_enabled, mouse_wheel_invert, mouse_wheel_z_step, mouse_double_click_reset, deadzone, invert_y, curve, the gamepad button map (`btn_reset`, `btn_speed_up/down`, `btn_move_z_up/down`, `btn_settings`, `btn_next/prev_marker`, …), the keyboard binding map (`key_move_layout`, `key_reset`, `key_speed_up/down`, `key_toggle_help`, `key_toggle_zones`, `key_settings`, …), `move_xy_stick` (no LED fields)
 - **DetectionConfig:** enabled (the **only** detection on/off – the web Tracking control writes it; `True` ⇒ detection runs and drives markers per `pin_mode`), model (default `yolo26n.onnx`; the web Models picker abstracts the five YOLO26 sizes as quality tiers Fastest/Fast/Balanced/Accurate/Most Accurate, pre-shipped with each distribution – see "Pre-shipped detection models"), storage_path (not exposed in the UI; device-local – stripped from config export and preserved-across-import so a path never crosses machines; blank auto-resolves to `/mnt/nvme/openfollow/yolo` when `/mnt/nvme` is a mountpoint, else a `yolo` folder under the working dir – via `resolve_detection_storage_path` in [`video/detection.py`](openfollow/video/detection.py), used by `_prepare_model_path` + the web model-discover/export helpers; set an absolute path in `config.toml` to override), inference_size (hidden in the UI; auto-detected from the model's export), confidence, interval_ms, show_boxes, show_labels, box_color, box_thickness, max_persons, pin_marker_id (`-1` = follow selected marker; used by `replace` mode only), pin_point (`top`|`bottom`), smoothing, prediction, grace_period_ms, pin_mode (`replace`|`assist`, default `assist`; `replace` = Fully Automatic auto-pins one marker, `assist` = AI-Assisted refines **all** controlled markers), assist_radius_m, assist_strength, masks_enabled (master switch for region-of-interest masking, default `False` ⇒ masks inactive even when drawn; `True` ⇒ detection confined to the enabled masks; live-applied via the `/api/detection/masks/enabled` route + staged-config drain), masks (`list[DetectionMaskConfig]`: region-of-interest polygons in normalised 0–1 frame coords; detection confined to the union of enabled masks only when `masks_enabled`, empty = unrestricted; live-applied, no restart). CLAHE preprocessing is always on (no config field). There is no `pin_marker` boolean – `enabled` gates the whole subsystem.
 - **OscConfig:** enabled, port (default 8765), allowed_sender_ips (default `[]` = allow-all + startup WARNING; normalised to `list[str]` by `__post_init__` to survive malformed TOML)
 
@@ -194,7 +195,7 @@ When you add, remove, or change a field on any config dataclass:
 A config change that skips any of these four steps is incomplete, regardless of what the happy path looks like. Code review should reject it.
 
 ### Hot-reload rules (`apply_runtime_config_changes`)
-- **Requires app restart:** **detection** changes the worker can't serve in-process: enabling (`detection.enabled` going `False → True`, because the receiver pipeline must wire the GStreamer appsink into a fresh detector and only `init_video` does that), changing `detection.inference_size` (GStreamer appsink caps are pinned at pipeline build time; live-restamping the worker's `_inference_size` would silently disagree with the appsink resolution), and any detection edit when the detector is missing or unavailable (`_person_detector` is None or `available is False` because the backend never loaded at startup – `reload_config` would silently no-op since the worker thread was never started). `web_port` also stays restart-required (server-restart-in-place is fragile while a request is in flight, rare change)
+- **Requires app restart:** **detection** changes the worker can't serve in-process: enabling (`detection.enabled` going `False → True`, because the receiver pipeline must wire the GStreamer appsink into a fresh detector and only `init_video` does that), changing `detection.inference_size` (GStreamer appsink caps are pinned at pipeline build time; live-restamping the worker's `_inference_size` would silently disagree with the appsink resolution), and any detection edit when the detector is missing or unavailable (`_person_detector` is None or `available is False` because the backend never loaded at startup – `reload_config` would silently no-op since the worker thread was never started). `web_port` and `web_bind_iface` also stay restart-required (the listening socket can't move under a request being served on it; server-restart-in-place is fragile, and both are rare changes). The on-screen Network screen's `Serve web UI on all interfaces` clears the pin and requests the restart itself - it is the documented lockout escape and is deliberately not gated on a writable network backend
 - **Live update (no restart):** **video_source_type and any plugin config field** (auto-detected via `plugin.config_changed()`; the receiver live-swaps the active input plugin in place via `swap_video` → `receiver.swap_input`, transactional with rollback – see [`AppRuntimeServices.swap_video`](openfollow/services.py)), camera, grid, movement (speed limits + default position), marker, controller, **mouse3d** (read thread runs for the handler's lifetime; the block swaps the mapping config and the `enabled` gate is read live in `InputManager.update`), osc, trigger_zones, controlled_marker_ids, viewer_marker_ids, psn_system_name, **psn_source_iface, otp_output, rttrpm_output**, **detection** running-detector cases – on→on (worker drains a staged config between frames; rebuilds the inference session in-thread when model / storage_path changes) and on→off, **window_width / window_height, web_pin**
 - Restart triggered via `_web_commands.request_restart()`, polled in `_check_restart_request()`
 - Saving config with restart-requiring changes triggers an automatic restart via the hot-reload file watcher within ~1 animation frame
@@ -461,7 +462,7 @@ Every binding is a `ControllerConfig` field; the defaults are shown. There is no
 | H | `key_toggle_help` | Toggle help overlay |
 | Z | `key_toggle_zones` | Toggle trigger-zone overlay |
 | Tab | `key_next_marker` | Select next marker |
-| M | `key_settings` | Open the Settings menu (source / interface / network) |
+| M | `key_settings` | Open the Settings menu (source / network / button detection / web UI / restart / about) |
 | N | NDI plugin `hotkey_label` | NDI source selection (NDI source only) |
 | Esc | modal | Close the active overlay |
 
@@ -481,7 +482,7 @@ All bindings are `ControllerConfig` fields; defaults shown.
 - LB / RB (`btn_speed_down` / `btn_speed_up`): adjust move speed
 - LT / RT (`btn_move_z_down` / `btn_move_z_up`): lower / raise marker Z
 - `btn_reset` (default `X`): reset marker to default position
-- `btn_source_select` / `btn_settings` (default `BACK`): source selection / Settings menu
+- `btn_settings` (default `BACK`): Settings menu. (`btn_source_select` is **deprecated and read by nothing** – the direct shortcut was superseded by the Settings menu, and source selection is now raised by the receiver itself when a source fails. It shares `BACK` as its default, which makes the two look bound to one button; only `btn_settings` is wired.)
 - `btn_toggle_help` (default `Y`), `btn_toggle_zones` (default `B`), `btn_next/prev_marker` (DPAD)
 
 ### Gamepad → marker routing (`InputManager._gamepad_marker_id`)
@@ -598,8 +599,8 @@ and "manage X under Y" pointers – goes in that section's **help drawer markdow
 | `/section/general` | POST | Save + apply general settings |
 | `/video-input/ndi/sources` | GET | NDI source `<option>` list (served by the NDI plugin's `web_routes()`) |
 | `/network/interfaces/by_name` | GET | Interface `<option>` list (iface-keyed) |
-| `/section/network/status` | GET | Network read-only view; `/section/network/edit` → editable form |
-| `/section/network` | POST | Re-render edit form on interface/method change – no write |
+| `/section/network/status` | GET | The interface card, every row read-only |
+| `/section/network/edit/<iface>` | GET | Same card with that one interface's row editable |
 | `/section/network/apply` | POST | Validate + write IPv4 config via the privileged adapter |
 | `/section/network/renew` | POST | Renew DHCP lease via the privileged adapter |
 | `/api/info` | GET | JSON: system_name, ip, port |

@@ -3,7 +3,6 @@
 <div id="zone-editor-section" class="section" data-fold-key="zone_editor" data-help="zone_editor" data-template-form="1">
     <div class="section-head">
         <h2>Zone Editor</h2>
-        <span class="section-note">Click to place vertices. Click the first vertex or double-click to close. Click a zone to select it. Drag vertices to move them.</span>
     </div>
 
     <div class="group">
@@ -567,7 +566,6 @@
             }
         }
         html += '      </div>';
-        html += '      <span class="section-note">Click on the canvas to add vertices, drag to move them, click ×  to remove.</span>';
         html += '    </div></div>';
         html += '  </div>';
 

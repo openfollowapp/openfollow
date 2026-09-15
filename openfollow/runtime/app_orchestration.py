@@ -177,12 +177,6 @@ def animate(app: OpenFollowApp) -> None:
     app._check_video_disconnect_banner()
     app._process_input(dt)
 
-    if app._iface_selection_active:
-        now = time.monotonic()
-        if now - app._last_iface_refresh >= 1.0:
-            app._last_iface_refresh = now
-            app._refresh_iface_list()
-
     svc = app._runtime_services
 
     svc.update_video()

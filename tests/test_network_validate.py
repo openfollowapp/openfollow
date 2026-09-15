@@ -300,18 +300,31 @@ class TestVlanValidation:
     def test_rejects_a_duplicate_derived_name(self) -> None:
         assert any("already exists" in e for e in self._errors("eth0", 10))
 
-    def test_rejects_a_name_over_ifnamsiz(self) -> None:
+    def test_accepts_a_parent_whose_name_leaves_no_room_for_the_tag(self) -> None:
+        """A MAC-derived NIC name fills all 15 characters Linux allows, so
+        ``<parent>.<id>`` cannot fit. Refusing meant that adapter could carry
+        no VLAN at all; the parent is truncated to make room instead."""
         errors = validate_vlan_create(
-            "verylongifname",
-            4094,
-            interfaces=("verylongifname",),
+            "enx9c69d3ac16ab",
+            2,
+            interfaces=("enx9c69d3ac16ab",),
         )
-        assert any("longer than" in e for e in errors)
+        assert errors == []
+
+    def test_rejects_a_truncated_name_that_collides(self) -> None:
+        """Truncation is what makes two long-named NICs able to derive the
+        same interface name; the second one has to be refused rather than
+        silently retargeting the first."""
+        errors = validate_vlan_create(
+            "enx9c69d3ac16ab",
+            2,
+            interfaces=("enx9c69d3ac16ab", "enx9c69d3ac16.2"),
+        )
+        assert errors == ["enx9c69d3ac16.2 already exists."]
 
     def test_blank_parent_does_not_also_report_a_name_error(self) -> None:
-        """The derived-name checks need a parent to derive from; reporting
-        'the interface name .20 is too long' on top of 'choose a parent'
-        would be noise."""
+        """The derived-name check needs a parent to derive from; reporting
+        '.20 already exists' on top of 'choose a parent' would be noise."""
         errors = self._errors("", 20)
         assert errors == ["Choose a parent interface."]
 
@@ -322,6 +335,32 @@ class TestVlanInterfaceName:
 
     def test_strips_surrounding_whitespace(self) -> None:
         assert vlan_interface_name("  eth0  ", 10) == "eth0.10"
+
+    @pytest.mark.parametrize(
+        ("parent", "vlan_id", "expected"),
+        [
+            # 15 characters already: every character of the tag has to come
+            # out of the parent.
+            ("enx9c69d3ac16ab", 2, "enx9c69d3ac16.2"),
+            ("enx9c69d3ac16ab", 4094, "enx9c69d3a.4094"),
+            # One over, at the widest tag.
+            ("abcdefghijk", 4094, "abcdefghij.4094"),
+        ],
+    )
+    def test_truncates_the_parent_to_make_room_for_the_tag(self, parent: str, vlan_id: int, expected: str) -> None:
+        assert vlan_interface_name(parent, vlan_id) == expected
+
+    @pytest.mark.parametrize("vlan_id", [1, 42, 999, 4094])
+    @pytest.mark.parametrize("parent", ["eth0", "enx9c69d3ac16ab", "wlp0s20f3"])
+    def test_never_exceeds_what_the_kernel_accepts(self, parent: str, vlan_id: int) -> None:
+        """The length check that used to reject these was removed, so this is
+        what now holds the bound: every name the UI can ask for must fit."""
+        assert len(vlan_interface_name(parent, vlan_id)) <= 15
+
+    def test_keeps_the_tag_when_the_parent_is_sacrificed(self) -> None:
+        """The tag is the part that identifies the VLAN; the parent is read
+        off the profile, so it is the half that can be lost."""
+        assert vlan_interface_name("enx9c69d3ac16ab", 13).endswith(".13")
 
 
 class TestParseVlanId:

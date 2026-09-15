@@ -1685,7 +1685,6 @@ VALID_MOVE_LAYOUTS = ("wasd", "ijkl", "numpad")
 
 _BUTTON_MAPPING_FIELDS = (
     "btn_reset",
-    "btn_source_select",
     "btn_toggle_help",
     "btn_toggle_zones",
     "btn_speed_down",
@@ -1764,7 +1763,6 @@ class ControllerConfig:
     curve: str = "logarithmic"
     # Normal mode button mappings
     btn_reset: str = "X"
-    btn_source_select: str = "BACK"
     btn_toggle_help: str = "Y"
     btn_speed_down: str = "LB"
     btn_speed_up: str = "RB"
@@ -2183,6 +2181,11 @@ class AppConfig:
     # pins the bind; "0.0.0.0" forces all interfaces. The server always also
     # serves loopback so the on-screen browser keeps working.
     web_bind: str = ""
+    # Interface the web UI listens on. Blank = every interface. An explicit
+    # ``web_bind`` address outranks it. Unlike every other plane this one
+    # falls back to the wildcard bind when the pin cannot be resolved: a
+    # silent output is diagnosable, an unreachable config UI is not.
+    web_bind_iface: str = ""
 
     # Web-triggered update settings (signed-.deb GitHub-release installer)
     update_github_repo: str = "openfollowapp/openfollow"
@@ -2256,6 +2259,9 @@ class AppConfig:
         if not isinstance(self.web_bind, str):
             self.web_bind = ""
         self.web_bind = self.web_bind.strip()
+        if not isinstance(self.web_bind_iface, str):
+            self.web_bind_iface = ""
+        self.web_bind_iface = self.web_bind_iface.strip()
         # Strip ``psn_source_iface`` so whitespace doesn't look like a value
         # change each load and trigger a needless rebind cycle.
         if not isinstance(self.psn_source_iface, str):
@@ -2610,29 +2616,14 @@ def _warn_renamed_marker_key(old: str, new: str) -> None:
 def _warn_deprecated_controller_bindings(controller: ControllerConfig) -> None:
     """Emit a one-shot warning for deprecated controller bindings.
 
-    - The ``btn_source_select`` direct-entry shortcut was superseded by
-      the Settings menu (``btn_settings``).
-    - Mode-specific confirm/cancel pairs were consolidated into a single
-      ``btn_menu_confirm`` / ``btn_menu_cancel`` used by every menu.
+    Mode-specific confirm/cancel pairs were consolidated into a single
+    ``btn_menu_confirm`` / ``btn_menu_cancel`` used by every menu.
 
     ``load_config`` is invoked on every hot-reload, so a module-level set
     tracks which fields already warned to keep logs from flooding across
     reloads.
     """
     defaults = ControllerConfig()
-    direct_entry_fields = ("btn_source_select",)
-    for field_name in direct_entry_fields:
-        if field_name in _DEPRECATED_WARNED:
-            continue
-        current = getattr(controller, field_name)
-        if current != getattr(defaults, field_name):
-            logger.warning(
-                "Config field controller.%s=%r is deprecated: direct shortcut "
-                "removed – use the Settings menu (btn_settings, default BACK) instead.",
-                field_name,
-                current,
-            )
-            _DEPRECATED_WARNED.add(field_name)
     confirm_cancel_fields = (
         "btn_settings_confirm",
         "btn_settings_cancel",

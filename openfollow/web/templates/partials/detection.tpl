@@ -64,7 +64,6 @@
           hx-post="/section/detection/tracking" hx-target="#detection-section" hx-swap="outerHTML" hx-trigger="submit">
         <div class="section-head">
             <h2>Tracking <span class="badge-experimental">Experimental</span></h2>
-            <span class="section-note">Turn detection on and choose how it steers your markers.</span>
         </div>
         <div class="row">
             <div class="field">
@@ -176,7 +175,6 @@
           hx-post="/section/detection/models" hx-target="#detection-section" hx-swap="outerHTML" hx-trigger="submit">
         <div class="section-head">
             <h2>Detection Model <span class="badge-experimental">Experimental</span></h2>
-            <span class="section-note">The model that spots people. Higher quality sees better, costs more compute.</span>
         </div>
 
 % tiers = defined('detection_tiers') and detection_tiers or []
@@ -291,7 +289,6 @@
           hx-post="/section/detection/inference" hx-target="#detection-section" hx-swap="outerHTML" hx-trigger="submit">
         <div class="section-head">
             <h2>Sensitivity &amp; Overlay <span class="badge-experimental">Experimental</span></h2>
-            <span class="section-note">Detection sensitivity, and what the camera overlay draws.</span>
         </div>
         <div class="group">
             <h3 class="group-title">Sensitivity</h3>

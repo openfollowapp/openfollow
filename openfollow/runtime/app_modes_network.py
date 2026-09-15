@@ -1,19 +1,24 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Pi network settings screen – interface selection and IPv4 configuration.
+"""On-screen Network screen – how to reach the web UI.
 
-On-device sub-screens (method/iface pickers, field editor) plus the apply/renew
-worker that drives the privileged NetworkAdapter off the main thread."""
+The reachability fallback, not a second copy of the web UI's network config:
+it lists the URL that reaches this station on each interface and offers only
+the actions that restore one. Interface assignment is web-UI only.
+
+Holds the field editor for a static address plus the apply/renew worker that
+drives the privileged NetworkAdapter off the main thread."""
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from openfollow.configuration import save_config
+from openfollow.net_utils import WEB_BIND_ALL
 from openfollow.network.adapter import (
     ApplyResult,
     Ipv4Config,
@@ -23,22 +28,18 @@ from openfollow.network.adapter import (
     is_loopback,
 )
 from openfollow.network.validate import (
+    is_link_local,
     parse_ipv4,
     parse_prefix,
     prefix_to_mask,
     validate_apply,
 )
+from openfollow.runtime import ipv4_digit_grid
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
 
 logger = logging.getLogger(__name__)
-
-_METHOD_LABELS: dict[Ipv4Method, str] = {
-    Ipv4Method.DHCP: "DHCP",
-    Ipv4Method.DHCP_WITH_MANUAL_ADDRESS: "DHCP with manual address",
-    Ipv4Method.STATIC: "Static",
-}
 
 
 def _network_adapter(app: OpenFollowApp) -> NetworkAdapter | None:
@@ -52,6 +53,10 @@ def enter_pi_network(app: OpenFollowApp) -> None:
     app._pi_network_active = True
     app._pi_network_banner = ""
     app._pi_network_busy = False
+    # The screen opens on the URL list every time; a half-typed address from
+    # a previous visit is not what an operator who just lost reachability
+    # needs to see first.
+    app._pi_network_static_edit = False
     _refresh_pi_network_bounded(app)
     # Skip non-selectable header row.
     app._pi_network_index = _first_selectable_index(app)
@@ -62,12 +67,17 @@ def _first_selectable_index(app: OpenFollowApp) -> int:
     for i, row in enumerate(rows):
         if row.get("kind") in _SELECTABLE_KINDS:
             return i
-    return 0  # pragma: no cover - build_pi_network_rows always emits a Back action
+    # Reachable: a station with no interfaces and an unpinned web UI has
+    # nothing to select, and leaves by the cancel button like every other menu.
+    return 0
 
 
 def exit_pi_network(app: OpenFollowApp) -> None:
     app._pi_network_active = False
     app._pi_network_banner = ""
+    # Leaving drops the drill-down, so re-entering opens on the interface list
+    # rather than inside whichever interface was last looked at.
+    app._pi_network_open_iface = ""
     # Bump generation to orphan in-flight worker threads.
     app._pi_network_worker_generation = getattr(app, "_pi_network_worker_generation", 0) + 1
     app._pi_network_busy = False
@@ -76,6 +86,13 @@ def exit_pi_network(app: OpenFollowApp) -> None:
 # Cap how long an interactive screen-entry read can stall the 60 fps loop
 # when an nmcli/dhcpcd backend hangs (each adapter call has an 8 s timeout).
 _ENTRY_READ_BUDGET_S = 2.0
+
+
+_METHOD_LABELS: dict[Ipv4Method, str] = {
+    Ipv4Method.DHCP: "DHCP",
+    Ipv4Method.DHCP_WITH_MANUAL_ADDRESS: "DHCP",
+    Ipv4Method.STATIC: "Static",
+}
 
 
 @dataclass
@@ -87,6 +104,11 @@ class _NetworkSnapshot:
     active_iface: str
     state: NetworkState | None
     pending: Ipv4Config | None
+    # Interface name -> "DHCP" / "Static". Read here rather than in the row
+    # builder: the rows are rebuilt every frame and this costs one adapter
+    # call per interface, which the render loop cannot afford. This read is
+    # already off-thread and budgeted.
+    methods: dict[str, str] = field(default_factory=dict)
 
 
 def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
@@ -103,11 +125,20 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
         active = interfaces[0].name
     state = adapter.get_state(active)
     pending = state.ipv4 if state is not None else Ipv4Config(method=Ipv4Method.DHCP)
-    return _NetworkSnapshot(True, interfaces, active, state, pending)
+    methods: dict[str, str] = {}
+    for iface in interfaces:
+        iface_state = state if iface.name == active else adapter.get_state(iface.name)
+        if iface_state is not None:
+            methods[iface.name] = _METHOD_LABELS.get(iface_state.ipv4.method, "")
+    return _NetworkSnapshot(True, interfaces, active, state, pending, methods)
 
 
 def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> None:
     """Write a read snapshot into the screen cache. Main-thread only."""
+    # The one funnel for every change this screen makes - entry, interface
+    # pick, cancel, and a finished apply / renew - so the address enumeration
+    # it reads is re-taken on the next rebuild rather than waiting out its TTL.
+    app._pi_network_addr_ts = 0.0
     if not snap.has_adapter:
         app._pi_network_state_cache = None
         app._pi_network_pending_config = None
@@ -118,6 +149,7 @@ def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> No
         app._pi_network_pending_config = None
         return
     app._pi_network_active_iface = snap.active_iface
+    app._pi_network_methods = snap.methods
     app._pi_network_state_cache = snap.state
     app._pi_network_pending_config = snap.pending
 
@@ -145,131 +177,372 @@ def _refresh_pi_network_bounded(app: OpenFollowApp) -> None:
         app._pi_network_banner = "Querying network status…"
 
 
+# An address changes on a human timescale; the rows are rebuilt on the frame
+# loop. One enumeration a second is plenty, and an action refreshes it outright.
+_IFACE_ADDR_TTL_S = 1.0
+
 _SELECTABLE_KINDS = {"choice", "text", "action"}
+
+# Interface rows carry their interface name in the key so the dispatcher can
+# recover it without a parallel index into the list it rendered from.
+_IFACE_ROW_PREFIX = "iface:"
+
+
+def _web_server(app: OpenFollowApp) -> Any:
+    return getattr(app, "_web_server", None)
+
+
+def _served_port(app: OpenFollowApp) -> int:
+    """Port the operator should type.
+
+    ``display_port`` over the configured one: an unprivileged station that
+    could not take :80 is serving on the fallback, and this screen exists to
+    hand out an address that answers.
+    """
+    server = _web_server(app)
+    port = getattr(server, "display_port", None) if server is not None else None
+    if port is None:
+        port = getattr(app._config, "web_port", 80)
+    try:
+        return int(port or 80)
+    except (TypeError, ValueError):  # pragma: no cover - __post_init__ coerces this
+        return 80
+
+
+def _web_url_for(app: OpenFollowApp, host: str) -> str:
+    """``http://<host>``, with the port only when it isn't the default 80."""
+    port = _served_port(app)
+    return f"http://{host}" if port == 80 else f"http://{host}:{port}"
+
+
+def _served_bind_host(app: OpenFollowApp) -> str:
+    """The address the web server is **actually** listening on.
+
+    Read from the running server, never derived from the config pin. The pin
+    fails open, so a pin naming a dark interface leaves the UI on the wildcard
+    - and a screen that reported the config would tell an operator that none
+    of their addresses work while every one of them does.
+    """
+    server = _web_server(app)
+    host = str(getattr(server, "bind_host", "") or "") if server is not None else ""
+    if host:
+        return host
+    # No server wired (boot, tests): fall back to what it would bind.
+    from openfollow.net_utils import resolve_web_bind
+
+    cfg = app._config
+    return resolve_web_bind(getattr(cfg, "web_bind", ""), getattr(cfg, "web_bind_iface", ""))[0]
+
+
+def _serves_every_interface(app: OpenFollowApp) -> bool:
+    host = _served_bind_host(app)
+    return not host or host == WEB_BIND_ALL
+
+
+def _mdns_host(app: OpenFollowApp) -> str:
+    """``<hostname>.local``, or "" when the host has no usable name.
+
+    Always the running system's hostname, never the station slug the config
+    asks for: when the rename was skipped, the desired name sends the operator
+    to an address avahi never answers on.
+    """
+    from openfollow.privilege.device_repair import current_hostname
+
+    try:
+        name = current_hostname()
+    except Exception:  # noqa: BLE001 - a hostname lookup must not blank the screen
+        return ""
+    if not name or name == "localhost":
+        return ""
+    return f"{name}.local"
+
+
+def _iface_addresses(app: OpenFollowApp) -> list[tuple[str, str]]:
+    """``(name, address)`` for each interface on the screen, one enumeration.
+
+    The whole row list is rebuilt every frame while the screen is open, so a
+    per-interface lookup would walk every NIC dozens of times a second for
+    data that cannot change between two reads of the same frame.
+
+    Held for :data:`_IFACE_ADDR_TTL_S` for the same reason one frame's reads
+    are shared: this runs on the clock that drives marker state and every
+    output, and an address does not change 60 times a second. Every state
+    change on this screen funnels through :func:`_apply_pi_network_snapshot`,
+    which drops the cache - so an action's result is on screen at once rather
+    than up to an interval late.
+    """
+    from openfollow.net_utils import list_iface_ipv4
+
+    now = time.monotonic()
+    if now - float(getattr(app, "_pi_network_addr_ts", 0.0)) >= _IFACE_ADDR_TTL_S:
+        app._pi_network_addr_cache = dict(list_iface_ipv4())
+        app._pi_network_addr_ts = now
+    addresses: dict[str, str] = getattr(app, "_pi_network_addr_cache", None) or {}
+    return [
+        (name, addresses.get(name, ""))
+        for name in (str(getattr(i, "name", "") or "") for i in getattr(app, "_pi_network_interfaces", []))
+        if name
+    ]
+
+
+def _iface_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[str, object]]:
+    """One row per interface: the URL that reaches this UI there.
+
+    A restricted web UI answers at one address only, so the others say why
+    they won't work instead of showing a URL that would fail. Handing the
+    operator an address that doesn't answer is the one thing this screen must
+    not do - which is why "restricted" is judged from the live bind and not
+    from the pin that asked for it.
+    """
+    everywhere = _serves_every_interface(app)
+    bind_host = _served_bind_host(app)
+    methods = getattr(app, "_pi_network_methods", {}) or {}
+    rows: list[dict[str, object]] = []
+    for name, address in ifaces:
+        # The pill states the one thing worth knowing at a glance, worst first:
+        # anything that breaks reachability outranks how the address was come
+        # by, because that is what the operator is on this screen to find.
+        if not address:
+            pill, warn = "no address", True
+        elif is_link_local(address):
+            pill, warn = "fallback", True
+        elif not everywhere and address != bind_host:
+            pill, warn = "web UI not here", True
+        else:
+            pill, warn = methods.get(name, ""), False
+        rows.append(
+            {
+                "kind": "choice",
+                "key": f"{_IFACE_ROW_PREFIX}{name}",
+                "label": name,
+                "value": address,
+                "pill": pill,
+                "pill_warn": warn,
+                # Confirming this row opens that interface's own screen.
+                "opens": True,
+            }
+        )
+    return rows
+
+
+def _reachability_notices(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[str, object]]:
+    """The states that break reachability without looking broken, station-wide.
+
+    Per-interface trouble is not here: each row carries a pill saying so, and
+    the sentence explaining it belongs on that interface's own screen. Repeating
+    it once per adapter turned the bottom of a five-interface list into a block
+    of warnings that said nothing the rows had not already said.
+
+    What remains is about the station rather than an adapter: a restricted web
+    UI explains why the other rows have no URL, and a pin that missed explains
+    why the UI is reachable everywhere despite the config asking otherwise.
+    """
+    notices: list[dict[str, object]] = []
+    if not _serves_every_interface(app):
+        bind_host = _served_bind_host(app)
+        if bind_host in {address for _name, address in ifaces if address}:
+            notices.append({"kind": "notice", "label": f"Web UI is served only at {bind_host}", "value": ""})
+        else:
+            # The bind is fixed for the life of the process, so an address that
+            # moved under it (a DHCP lease change on the pinned interface)
+            # leaves the UI answering nowhere. Naming it as gone is the
+            # difference between a station that looks dead and one that tells
+            # the operator which action brings it back.
+            notices.append(
+                {
+                    "kind": "notice",
+                    "label": f"Web UI is served at {bind_host}, which no interface has any more - restart to move it",
+                    "value": "",
+                }
+            )
+    else:
+        banner = _web_bind_banner(app)
+        if banner:
+            notices.append({"kind": "notice", "label": banner, "value": ""})
+    return notices
+
+
+def _web_bind_banner(app: OpenFollowApp) -> str:
+    """The runtime's own account of a pin it could not honour, or "".
+
+    One guard covers all three ways this is absent - no server yet, a server
+    without the accessor, and a provider that raises. The banner is decoration
+    on a screen whose job is fixing reachability; none of those may cost it
+    the URLs it exists to show.
+    """
+    try:
+        return str(_web_server(app).get_web_bind_advisory().get("banner", "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _addr_of(pending: Ipv4Config | None, field: str) -> str:
+    if pending is None:
+        return "\u2013"
+    value = getattr(pending, field, None)
+    return str(value) if value else "\u2013"
+
+
+def _prefix_text(pending: Ipv4Config | None) -> str:
+    """The dotted subnet mask - more operators recognise it from router
+    consoles than the CIDR prefix length."""
+    if pending and pending.prefix is not None:
+        mask = prefix_to_mask(pending.prefix)
+        if mask is not None:
+            return mask
+    return "\u2013"
 
 
 def build_pi_network_rows(app: OpenFollowApp) -> list[dict[str, object]]:
-    """Build the sectioned row list for the Pi Network screen.
+    """Rows for the on-screen Network screen: how to reach the web UI.
+
+    This screen is the reachability fallback, not a second copy of the web
+    UI's network config. Interface assignment lives in the web UI; here the
+    question is only "which address do I type", and the actions are the ones
+    that restore an answer to it.
 
     Rows carry a ``kind`` discriminator:
 
     - ``"header"``  – section heading, not selectable
     - ``"display"`` – read-only value, not selectable
-    - ``"choice"``  – selectable; Enter opens a picker (interface, method)
+    - ``"notice"``  – a reachability warning, not selectable
+    - ``"choice"``  – an interface row; confirming it makes that interface
+      the one the actions below name
     - ``"text"``    – selectable; Enter opens the field editor
-    - ``"action"``  – selectable; Enter runs the action (apply / renew / back)
-
-    Method-specific fields are *hidden*, not greyed, to match the Apple
-    Network pane reference: DHCP shows lease-derived values as display
-    rows; Static promotes them to editable text rows; DHCP+manual shows
-    the address as editable, the rest as display.
+    - ``"action"``  – selectable; Enter runs the action
     """
     adapter = _network_adapter(app)
     writable = bool(adapter and adapter.is_writable())
-    state: NetworkState | None = getattr(app, "_pi_network_state_cache", None)
     pending: Ipv4Config | None = getattr(app, "_pi_network_pending_config", None)
-    method = pending.method if pending else Ipv4Method.DHCP
-    interfaces = getattr(app, "_pi_network_interfaces", [])
     busy = bool(getattr(app, "_pi_network_busy", False))
+    static_edit = bool(getattr(app, "_pi_network_static_edit", False))
 
-    def _addr(field: str) -> str:
-        if pending is None:
-            return "–"
-        value = getattr(pending, field, None)
-        return str(value) if value else "–"
+    ifaces = _iface_addresses(app)
+    opened = str(getattr(app, "_pi_network_open_iface", "") or "")
+    if opened:
+        return _iface_detail_rows(
+            app,
+            opened,
+            ifaces,
+            writable=writable,
+            busy=busy,
+            static_edit=static_edit,
+            pending=pending,
+        )
+    return _iface_list_rows(app, ifaces)
 
-    def _prefix_value() -> str:
-        # Render as the dotted subnet mask (``255.255.255.0``) rather
-        # than ``/24`` – more operators recognise the mask form from
-        # router consoles than the CIDR prefix length.
-        if pending and pending.prefix is not None:
-            mask = prefix_to_mask(pending.prefix)
-            if mask is not None:
-                return mask
-        return "–"
 
-    def _dns_at(i: int) -> str:
-        if pending is None or not pending.dns or i >= len(pending.dns):
-            return "–"
-        return pending.dns[i]
+def _iface_list_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[str, object]]:
+    """The first screen: where the station can be reached, and on what.
 
-    rows: list[dict[str, object]] = []
+    Choosing an interface opens its own screen rather than retargeting actions
+    further down this one. An operator cannot be expected to notice that a list
+    formatted as addresses is also the control that decides what the buttons
+    below it will change - and the old screen opened already naming an
+    interface nobody had picked.
+    """
+    rows: list[dict[str, object]] = [{"kind": "header", "label": "Open on a computer on the same network"}]
+    mdns = _mdns_host(app)
+    if mdns:
+        # First, and not selectable: it reaches the station on any interface,
+        # so there is no per-interface screen it could open. It is also the one
+        # line an operator can read out over comms.
+        rows.append({"kind": "display", "key": "mdns", "label": _web_url_for(app, mdns), "value": "any interface"})
 
-    # ---- Interface section --------------------------------------------
-    rows.append({"kind": "header", "label": "Interface"})
-    rows.append(
-        {
-            "kind": "choice" if writable and len(interfaces) > 1 else "display",
-            "key": "interface",
-            "label": "Selected",
-            "value": app._pi_network_active_iface or "–",
-        }
-    )
+    rows.append({"kind": "header", "label": "Interfaces"})
+    rows.extend(_iface_rows(app, ifaces))
+    rows.extend(_reachability_notices(app, ifaces))
 
-    # ---- IPv4 section -------------------------------------------------
-    rows.append({"kind": "header", "label": "IPv4"})
-    rows.append(
-        {
-            "kind": "choice" if writable else "display",
-            "key": "method",
-            "label": "Configure",
-            "value": _METHOD_LABELS.get(method, str(method)),
-        }
-    )
-    # Method-specific fields. Hidden when not relevant to the chosen method.
-    if method == Ipv4Method.STATIC and writable:
-        rows.append({"kind": "text", "key": "address", "label": "IP Address", "value": _addr("address")})
-        rows.append({"kind": "text", "key": "prefix", "label": "Subnet", "value": _prefix_value()})
-        rows.append({"kind": "text", "key": "router", "label": "Router (optional)", "value": _addr("router")})
-    elif method == Ipv4Method.DHCP_WITH_MANUAL_ADDRESS and writable:
-        rows.append({"kind": "text", "key": "address", "label": "IP Address", "value": _addr("address")})
-        rows.append({"kind": "display", "key": "prefix", "label": "Subnet", "value": _prefix_value()})
-        rows.append({"kind": "display", "key": "router", "label": "Router (from lease)", "value": _addr("router")})
+    if _web_ui_is_restricted(app):
+        # The heading comes with the action, not before it: a section whose
+        # only content was a Back button announced a remedy that was not there.
+        rows.append({"kind": "header", "label": "If you still can't reach it"})
+        # Belongs to no single interface, so it stays on this screen.
+        # Deliberately not gated on ``writable``: this writes config, not the
+        # network stack, so it stays available on a host whose addressing this
+        # build cannot manage - which is exactly where a lockout would strand
+        # the operator otherwise.
+        rows.append({"kind": "action", "key": "web_unpin", "label": "Serve web UI on all interfaces", "value": ""})
+    return rows
+
+
+def _iface_detail_rows(
+    app: OpenFollowApp,
+    name: str,
+    ifaces: list[tuple[str, str]],
+    *,
+    writable: bool,
+    busy: bool,
+    static_edit: bool,
+    pending: Ipv4Config | None,
+) -> list[dict[str, object]]:
+    """The second screen: one interface, named in the title, and its actions.
+
+    Every action here acts on ``name``, so none of them repeats it - the title
+    carries the subject, which is what stops the operator having to hold it in
+    their head while they read down a list.
+    """
+    address = next((addr for iface_name, addr in ifaces if iface_name == name), "")
+    rows: list[dict[str, object]] = [{"kind": "header", "label": "Reach it at"}]
+    if not address:
+        rows.append({"kind": "display", "key": "url", "label": "-- no address --", "value": ""})
+    elif not _serves_every_interface(app) and address != _served_bind_host(app):
+        rows.append({"kind": "display", "key": "url", "label": "-- web UI not served here --", "value": address})
     else:
-        # DHCP (or read-only host): show all three as display.
-        rows.append({"kind": "display", "key": "address", "label": "IP Address", "value": _addr("address")})
-        rows.append({"kind": "display", "key": "prefix", "label": "Subnet", "value": _prefix_value()})
-        rows.append({"kind": "display", "key": "router", "label": "Router", "value": _addr("router")})
+        rows.append({"kind": "display", "key": "url", "label": _web_url_for(app, address), "value": "now"})
 
-    # Lease info – only meaningful for DHCP-driven methods.
-    if (
-        method in (Ipv4Method.DHCP, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS)
-        and state is not None
-        and state.lease
-        and state.lease.lease_seconds_remaining is not None
-    ):
-        minutes = max(int(state.lease.lease_seconds_remaining) // 60, 0)
-        rows.append({"kind": "display", "key": "lease_remaining", "label": "Lease", "value": f"{minutes} min"})
-
-    # ---- DNS section --------------------------------------------------
-    rows.append({"kind": "header", "label": "DNS Servers"})
-    dns_kind = "text" if writable else "display"
-    rows.append({"kind": dns_kind, "key": "dns_1", "label": "DNS 1", "value": _dns_at(0)})
-    rows.append({"kind": dns_kind, "key": "dns_2", "label": "DNS 2", "value": _dns_at(1)})
-    rows.append({"kind": dns_kind, "key": "dns_3", "label": "DNS 3", "value": _dns_at(2)})
-
-    # ---- Actions section ----------------------------------------------
-    rows.append({"kind": "header", "label": "Actions"})
-    if writable:
+    if is_link_local(address):
         rows.append(
             {
-                "kind": "action",
-                "key": "apply",
-                "label": "Apply Changes" if not busy else "Working…",
+                "kind": "notice",
+                "label": f"No DHCP server answered, so {name} gave itself {address}. "
+                "Other machines on this network will not reach the station here.",
                 "value": "",
             }
         )
-        if method in (Ipv4Method.DHCP, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS):
-            rows.append(
-                {
-                    "kind": "action",
-                    "key": "renew",
-                    "label": "Renew Lease" if not busy else "Working…",
-                    "value": "",
-                }
-            )
-    rows.append({"kind": "action", "key": "back", "label": "Back", "value": ""})
+
+    rows.append({"kind": "header", "label": "Change this interface"})
+    if not writable:
+        rows.append({"kind": "notice", "label": "This station's addressing cannot be changed from here.", "value": ""})
+    elif static_edit:
+        rows.append({"kind": "text", "key": "address", "label": "IP Address", "value": _addr_of(pending, "address")})
+        rows.append({"kind": "text", "key": "prefix", "label": "Subnet", "value": _prefix_text(pending)})
+        rows.append(
+            {"kind": "text", "key": "router", "label": "Router (optional)", "value": _addr_of(pending, "router")}
+        )
+        rows.append({"kind": "action", "key": "apply", "label": "Working..." if busy else "Apply", "value": ""})
+        rows.append({"kind": "action", "key": "cancel_static", "label": "Cancel", "value": ""})
+    else:
+        rows.append({"kind": "action", "key": "dhcp", "label": "Working..." if busy else "Set to DHCP", "value": ""})
+        rows.append({"kind": "action", "key": "static", "label": "Set a static address...", "value": ""})
+        rows.append(
+            {"kind": "action", "key": "renew", "label": "Working..." if busy else "Renew DHCP lease", "value": ""}
+        )
+
     return rows
+
+
+def _focus_row(app: OpenFollowApp, key: str) -> None:
+    """Put the cursor on ``key``, or on the nearest selectable row.
+
+    Every action that reshapes the list has to call this. The cursor is a
+    bare index into a list that is rebuilt from scratch each frame, so a row
+    appearing or disappearing under it silently moves the highlight onto a
+    different action - and an index past the end leaves Enter a no-op with
+    nothing on screen explaining why.
+    """
+    rows = build_pi_network_rows(app)
+    for i, row in enumerate(rows):
+        if row.get("key") == key and row.get("kind") in _SELECTABLE_KINDS:
+            app._pi_network_index = i
+            return
+    idx = min(max(int(getattr(app, "_pi_network_index", 0)), 0), max(len(rows) - 1, 0))
+    while idx >= 0:
+        if rows[idx].get("kind") in _SELECTABLE_KINDS:
+            app._pi_network_index = idx
+            return
+        idx -= 1
+    app._pi_network_index = _first_selectable_index(app)
 
 
 def _pi_network_move(app: OpenFollowApp, step: int) -> None:
@@ -301,23 +574,155 @@ def _pi_network_confirm(app: OpenFollowApp) -> None:
     row = rows[idx]
     if row.get("kind") not in _SELECTABLE_KINDS:
         return
-    key = row.get("key")
-    # While apply/renew worker is in flight, ignore everything except Back.
-    if getattr(app, "_pi_network_busy", False) and key != "back":
+    key = str(row.get("key") or "")
+    # While the apply/renew worker is in flight, nothing on the screen acts.
+    # Leaving is unaffected: it is the cancel button, which never comes through
+    # here, so a hung screen can always be left.
+    if getattr(app, "_pi_network_busy", False):
         return
-    if key == "back":
-        exit_pi_network(app)
-        app._enter_settings_menu()
-    elif key == "interface":
-        enter_pi_network_iface_picker(app)
-    elif key == "method":
-        enter_pi_network_method_picker(app)
-    elif key in ("address", "prefix", "router", "dns_1", "dns_2", "dns_3"):
-        enter_pi_network_field_edit(app, str(key))
+    if key.startswith(_IFACE_ROW_PREFIX):
+        _open_pi_network_iface(app, key[len(_IFACE_ROW_PREFIX) :])
+    elif key in ("address", "prefix", "router"):
+        enter_pi_network_field_edit(app, key)
+    elif key == "web_unpin":
+        _unpin_web_ui(app)
+    elif key == "dhcp":
+        _set_pi_network_dhcp(app)
+    elif key == "static":
+        _begin_static_edit(app)
+    elif key == "cancel_static":
+        _cancel_static_edit(app)
     elif key == "apply":
         _apply_pi_network(app)
     elif key == "renew":
         _renew_pi_network(app)
+
+
+def _open_pi_network_iface(app: OpenFollowApp, name: str) -> None:
+    """Open ``name``'s own screen.
+
+    Unconditional, unlike the retargeting it replaces: reopening the interface
+    already loaded is a normal navigation step, and refusing it would leave
+    confirm doing nothing on the row the cursor rests on when the screen opens.
+
+    A half-typed static address belongs to the interface it was started on, so
+    opening one drops the editor rather than carrying the values across.
+    """
+    if not name:
+        return
+    app._pi_network_open_iface = name
+    app._pi_network_active_iface = name
+    app._pi_network_static_edit = False
+    _refresh_pi_network_bounded(app)
+    # The first thing that changes something, not the title above it.
+    _focus_row(app, "dhcp")
+
+
+def _close_pi_network_iface(app: OpenFollowApp) -> None:
+    """Return to the interface list, with the cursor back on the row we came from."""
+    name = str(getattr(app, "_pi_network_open_iface", "") or "")
+    app._pi_network_open_iface = ""
+    app._pi_network_static_edit = False
+    _focus_row(app, f"{_IFACE_ROW_PREFIX}{name}" if name else "back")
+
+
+def _leave_pi_network_level(app: OpenFollowApp) -> None:
+    """Cancel backs out one level, so it never skips the list on the way out."""
+    if getattr(app, "_pi_network_open_iface", ""):
+        _close_pi_network_iface(app)
+        return
+    exit_pi_network(app)
+    app._enter_settings_menu()
+
+
+def _web_ui_is_restricted(app: OpenFollowApp) -> bool:
+    """True when the UI answers at one address, or is configured to.
+
+    Covers both pins - the interface name and the older literal ``web_bind``
+    address - and stays true for a pin that has not taken effect yet, so the
+    escape is offered before the restart as well as after it.
+    """
+    cfg = app._config
+    if getattr(cfg, "web_bind", "") or getattr(cfg, "web_bind_iface", ""):
+        return True
+    return not _serves_every_interface(app)
+
+
+def _unpin_web_ui(app: OpenFollowApp) -> None:
+    """Clear the web UI's pins and ask for a restart.
+
+    The lockout escape: with both cleared the UI answers on every interface
+    again. It cannot take effect without a restart because the listening
+    socket is fixed for the life of the server. ``web_bind`` goes too - it
+    outranks the interface pin, so clearing only the latter would leave a
+    literal-address station exactly as unreachable while reporting success.
+    """
+    from openfollow.runtime.app_modes import _persist_config
+
+    cfg = app._config
+    previous = (getattr(cfg, "web_bind", ""), getattr(cfg, "web_bind_iface", ""))
+    if not any(previous):
+        return
+    cfg.web_bind = ""
+    cfg.web_bind_iface = ""
+    if not _persist_config(app):
+        cfg.web_bind, cfg.web_bind_iface = previous
+        app._pi_network_banner = "Could not save - web UI is still pinned."
+        return
+    app._pi_network_banner = "Web UI will serve on all interfaces after the restart."
+    app._web_commands.request_restart()
+    # The row just removed itself, and took its heading with it; without this
+    # the same index is now a different row, and a second tap would run it.
+    # No key to name - the nearest selectable row above is an interface.
+    _focus_row(app, "")
+
+
+def _set_pi_network_dhcp(app: OpenFollowApp) -> None:
+    """Put the selected interface on DHCP. One confirm, no form."""
+    adapter = _network_adapter(app)
+    iface = str(getattr(app, "_pi_network_active_iface", "") or "")
+    if adapter is None or not iface:
+        app._pi_network_banner = "No network adapter available."
+        return
+    if not adapter.is_writable():
+        app._pi_network_banner = "Read-only host - cannot apply."
+        return
+    config = Ipv4Config(method=Ipv4Method.DHCP)
+    app._pi_network_pending_config = config
+    _start_worker(app, lambda: adapter.apply_ipv4(iface, config), "Apply")
+
+
+def _begin_static_edit(app: OpenFollowApp) -> None:
+    """Reveal the static-address fields, seeded from what the interface has.
+
+    Seeding from the current addressing means a venue correcting one octet
+    types one digit, not a whole address on a d-pad.
+    """
+    pending: Ipv4Config | None = getattr(app, "_pi_network_pending_config", None)
+    # ``dns`` carries over untouched. It is not editable here, but the apply
+    # path writes whatever this config holds, so dropping it would silently
+    # clear the interface's nameservers as a side effect of setting an address.
+    app._pi_network_pending_config = Ipv4Config(
+        method=Ipv4Method.STATIC,
+        address=pending.address if pending else None,
+        prefix=pending.prefix if pending else None,
+        router=pending.router if pending else None,
+        dns=pending.dns if pending else (),
+    )
+    app._pi_network_static_edit = True
+    _focus_row(app, "address")
+
+
+def _cancel_static_edit(app: OpenFollowApp) -> None:
+    """Drop the typed values and go back to the interface's real state.
+
+    Bounded, like every other on-screen read: a hung network backend must
+    cost this screen its refresh, not the frame loop that every output
+    depends on.
+    """
+    app._pi_network_static_edit = False
+    _refresh_pi_network_bounded(app)
+    _focus_row(app, "static")
 
 
 def process_pi_network_input(app: OpenFollowApp) -> None:
@@ -336,8 +741,7 @@ def process_pi_network_input(app: OpenFollowApp) -> None:
     if inp.confirm_pressed:
         _pi_network_confirm(app)
     elif inp.cancel_pressed:
-        exit_pi_network(app)
-        app._enter_settings_menu()
+        _leave_pi_network_level(app)
 
 
 def handle_pi_network_key(app: OpenFollowApp, key: str) -> None:
@@ -348,227 +752,7 @@ def handle_pi_network_key(app: OpenFollowApp, key: str) -> None:
     elif key == "Enter":
         _pi_network_confirm(app)
     elif key == "Escape":
-        exit_pi_network(app)
-        app._enter_settings_menu()
-
-
-# ---------------------------------------------------------------------------
-# Interface picker (sub-state of Pi Network)
-# ---------------------------------------------------------------------------
-
-
-def enter_pi_network_iface_picker(app: OpenFollowApp) -> None:
-    app._pi_network_iface_picker_active = True
-    names = [i.name for i in getattr(app, "_pi_network_interfaces", [])]
-    current = getattr(app, "_pi_network_active_iface", "")
-    app._pi_network_iface_picker_index = names.index(current) if current in names else 0
-
-
-def exit_pi_network_iface_picker(app: OpenFollowApp) -> None:
-    app._pi_network_iface_picker_active = False
-
-
-def _pi_network_iface_picker_move(app: OpenFollowApp, step: int) -> None:
-    names = [i.name for i in getattr(app, "_pi_network_interfaces", [])]
-    if not names:
-        return
-    app._pi_network_iface_picker_index = (app._pi_network_iface_picker_index + step) % len(names)
-
-
-def _pi_network_iface_picker_confirm(app: OpenFollowApp) -> None:
-    names = [i.name for i in getattr(app, "_pi_network_interfaces", [])]
-    if not names:
-        exit_pi_network_iface_picker(app)
-        return
-    idx = app._pi_network_iface_picker_index
-    if 0 <= idx < len(names):
-        app._pi_network_active_iface = names[idx]
-        _refresh_pi_network_bounded(app)
-        _apply_as_bind_iface(app, names[idx])
-    exit_pi_network_iface_picker(app)
-
-
-def _apply_as_bind_iface(app: OpenFollowApp, iface: str) -> None:
-    """Bind PSN/mDNS/web sockets to the selected NIC and hot-reload the resolver."""
-    state = getattr(app, "_pi_network_state_cache", None)
-    if state is None or state.ipv4.address is None:
-        return
-    # Defense-in-depth: ``_refresh_pi_network`` already filters loopback
-    # out of the picker, but bail here too in case a caller bypasses
-    # the picker. Rebinding PSN/mDNS/web to 127.0.0.1 would silently
-    # take the device off the show network.
-    if is_loopback(state.interface) or state.ipv4.address.startswith("127."):
-        return
-    new_ip = state.ipv4.address
-    if not new_ip:
-        return
-    if iface == getattr(app._config, "psn_source_iface", ""):
-        return
-    old_iface = app._config.psn_source_iface
-    app._config.psn_source_iface = iface
-    try:
-        app._runtime_services.apply_psn_source_ip_change(new_ip)
-    except Exception as exc:  # noqa: BLE001
-        app._config.psn_source_iface = old_iface
-        # Restore the advisory to the prior iface's state.
-        app._refresh_psn_source_advisory()
-        logger.warning(
-            "Failed to rebind OpenFollow listeners to %s (%s): %s – keeping iface=%r.",
-            iface,
-            new_ip,
-            exc,
-            old_iface,
-        )
-        return
-    try:
-        save_config(app._config, app._config_path)
-        app._config_mtime = app._get_config_mtime()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to persist bind iface change: %s", exc)
-        app._pi_network_banner = "Applied live but failed to save – will revert on restart."
-    # Clear/refresh the stale-iface advisory now the pin is honoured.
-    app._refresh_psn_source_advisory()
-    logger.info(
-        "Network screen rebound OpenFollow listeners to %s (%s, live).",
-        iface,
-        new_ip,
-    )
-
-
-def process_pi_network_iface_picker_input(app: OpenFollowApp) -> None:
-    input_manager = app._input_manager
-    if input_manager is None:
-        return
-    try:
-        inp = input_manager.gamepad_handler.read_settings_menu_input()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Pi network iface picker input error: %s", exc)
-        return
-    if inp.up_pressed:
-        _pi_network_iface_picker_move(app, -1)
-    if inp.down_pressed:
-        _pi_network_iface_picker_move(app, +1)
-    if inp.confirm_pressed:
-        _pi_network_iface_picker_confirm(app)
-    elif inp.cancel_pressed:
-        exit_pi_network_iface_picker(app)
-
-
-def handle_pi_network_iface_picker_key(app: OpenFollowApp, key: str) -> None:
-    if key == "ArrowUp":
-        _pi_network_iface_picker_move(app, -1)
-    elif key == "ArrowDown":
-        _pi_network_iface_picker_move(app, +1)
-    elif key == "Enter":
-        _pi_network_iface_picker_confirm(app)
-    elif key == "Escape":
-        exit_pi_network_iface_picker(app)
-
-
-# ---------------------------------------------------------------------------
-# Method picker (sub-state of Pi Network)
-# ---------------------------------------------------------------------------
-
-
-_METHOD_PICKER_ITEMS: tuple[tuple[Ipv4Method, str], ...] = (
-    (Ipv4Method.DHCP, "DHCP"),
-    (Ipv4Method.DHCP_WITH_MANUAL_ADDRESS, "DHCP with manual address"),
-    (Ipv4Method.STATIC, "Static"),
-)
-
-
-def enter_pi_network_method_picker(app: OpenFollowApp) -> None:
-    app._pi_network_method_picker_active = True
-    pending = getattr(app, "_pi_network_pending_config", None)
-    current_method = pending.method if pending else Ipv4Method.DHCP
-    for i, (method, _) in enumerate(_METHOD_PICKER_ITEMS):
-        if method == current_method:
-            app._pi_network_method_picker_index = i
-            return
-    app._pi_network_method_picker_index = 0
-
-
-def exit_pi_network_method_picker(app: OpenFollowApp) -> None:
-    app._pi_network_method_picker_active = False
-
-
-def method_picker_items() -> tuple[tuple[Ipv4Method, str], ...]:
-    return _METHOD_PICKER_ITEMS
-
-
-def _pi_network_method_picker_move(app: OpenFollowApp, step: int) -> None:
-    total = len(_METHOD_PICKER_ITEMS)
-    app._pi_network_method_picker_index = (app._pi_network_method_picker_index + step) % total
-
-
-def _pi_network_method_picker_confirm(app: OpenFollowApp) -> None:
-    idx = app._pi_network_method_picker_index
-    if not 0 <= idx < len(_METHOD_PICKER_ITEMS):
-        exit_pi_network_method_picker(app)
-        return
-    method, _ = _METHOD_PICKER_ITEMS[idx]
-    pending = getattr(app, "_pi_network_pending_config", None) or Ipv4Config(method=method)
-    # Clear method-irrelevant fields when changing methods; stale prefix/router
-    # from a prior STATIC config would silently override active lease values. DNS is
-    # always editable across all three methods, so it carries over.
-    if method == Ipv4Method.DHCP:
-        # Pure DHCP – operator only owns the DNS override (the
-        # lease drives address / prefix / router).
-        next_address: str | None = None
-        next_prefix: int | None = None
-        next_router: str | None = None
-    elif method == Ipv4Method.DHCP_WITH_MANUAL_ADDRESS:
-        # Operator owns the address; prefix + router come from the
-        # lease. Preserve a previously-typed manual address but drop
-        # any static prefix/router so the lease wins on the apply path.
-        next_address = pending.address
-        next_prefix = None
-        next_router = None
-    else:
-        # STATIC – operator owns every field; carry them all over so
-        # a previously-typed value isn't lost on a Static→Static
-        # method-picker re-confirm.
-        next_address = pending.address
-        next_prefix = pending.prefix
-        next_router = pending.router
-    app._pi_network_pending_config = Ipv4Config(
-        method=method,
-        address=next_address,
-        prefix=next_prefix,
-        router=next_router,
-        dns=pending.dns,
-    )
-    exit_pi_network_method_picker(app)
-
-
-def process_pi_network_method_picker_input(app: OpenFollowApp) -> None:
-    input_manager = app._input_manager
-    if input_manager is None:
-        return
-    try:
-        inp = input_manager.gamepad_handler.read_settings_menu_input()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Pi network method picker input error: %s", exc)
-        return
-    if inp.up_pressed:
-        _pi_network_method_picker_move(app, -1)
-    if inp.down_pressed:
-        _pi_network_method_picker_move(app, +1)
-    if inp.confirm_pressed:
-        _pi_network_method_picker_confirm(app)
-    elif inp.cancel_pressed:
-        exit_pi_network_method_picker(app)
-
-
-def handle_pi_network_method_picker_key(app: OpenFollowApp, key: str) -> None:
-    if key == "ArrowUp":
-        _pi_network_method_picker_move(app, -1)
-    elif key == "ArrowDown":
-        _pi_network_method_picker_move(app, +1)
-    elif key == "Enter":
-        _pi_network_method_picker_confirm(app)
-    elif key == "Escape":
-        exit_pi_network_method_picker(app)
+        _leave_pi_network_level(app)
 
 
 # ---------------------------------------------------------------------------
@@ -592,6 +776,8 @@ _NUMPAD_FIELD_CHARS["KP_Separator"] = "."
 def enter_pi_network_field_edit(app: OpenFollowApp, field: str) -> None:
     app._pi_network_field_edit_active = True
     app._pi_network_field_name = field
+    # Cursor starts on the first digit; it only matters once the d-pad is used.
+    app._pi_network_field_digit_index = 0
     pending: Ipv4Config | None = getattr(app, "_pi_network_pending_config", None)
     if pending is None:
         app._pi_network_field_value = ""
@@ -610,12 +796,6 @@ def enter_pi_network_field_edit(app: OpenFollowApp, field: str) -> None:
             app._pi_network_field_value = ""
     elif field == "router":
         app._pi_network_field_value = pending.router or ""
-    elif field in ("dns_1", "dns_2", "dns_3"):
-        idx = int(field.split("_")[1]) - 1
-        if pending.dns and idx < len(pending.dns):
-            app._pi_network_field_value = pending.dns[idx]
-        else:
-            app._pi_network_field_value = ""
     else:
         app._pi_network_field_value = ""
 
@@ -624,11 +804,12 @@ def exit_pi_network_field_edit(app: OpenFollowApp) -> None:
     app._pi_network_field_edit_active = False
     app._pi_network_field_name = ""
     app._pi_network_field_value = ""
+    app._pi_network_field_digit_index = 0
 
 
 def confirm_pi_network_field_edit(app: OpenFollowApp) -> None:
     field = getattr(app, "_pi_network_field_name", "")
-    value = getattr(app, "_pi_network_field_value", "").strip()
+    value = ipv4_digit_grid.strip_padding(getattr(app, "_pi_network_field_value", "").strip())
     pending: Ipv4Config | None = getattr(app, "_pi_network_pending_config", None)
     if pending is None or not field:
         exit_pi_network_field_edit(app)
@@ -637,7 +818,6 @@ def confirm_pi_network_field_edit(app: OpenFollowApp) -> None:
     new_address = pending.address
     new_prefix = pending.prefix
     new_router = pending.router
-    new_dns = list(pending.dns)
 
     if field == "address":
         canon = parse_ipv4(value) if value else None
@@ -657,25 +837,13 @@ def confirm_pi_network_field_edit(app: OpenFollowApp) -> None:
             app._pi_network_banner = "Invalid router IPv4 address."
             return
         new_router = canon
-    elif field in ("dns_1", "dns_2", "dns_3"):
-        idx = int(field.split("_")[1]) - 1
-        canon = parse_ipv4(value) if value else None
-        if value and canon is None:
-            app._pi_network_banner = "Invalid DNS server address."
-            return
-        while len(new_dns) <= idx:
-            new_dns.append("")
-        new_dns[idx] = canon or ""
-        # Keep positional: blank a middle slot in place, only trim trailing blanks.
-        while new_dns and not new_dns[-1]:
-            new_dns.pop()
 
     app._pi_network_pending_config = Ipv4Config(
         method=pending.method,
         address=new_address,
         prefix=new_prefix,
         router=new_router,
-        dns=tuple(new_dns),
+        dns=pending.dns,
     )
     app._pi_network_banner = ""
     exit_pi_network_field_edit(app)
@@ -702,6 +870,58 @@ def handle_pi_network_field_edit_key(app: OpenFollowApp, key: str) -> None:
         app._pi_network_field_value += key
 
 
+def _expand_prefix_for_grid(app: OpenFollowApp) -> None:
+    """Put the Subnet field in its mask form before the grid touches it.
+
+    That field also accepts a bare prefix length, and ``24`` has no digit grid:
+    read as one it means ``24.0.0.0``, which is not a contiguous mask, so the
+    operator's value would be rewritten under them into one the parser then
+    rejects. ``255.255.255.0`` is the same subnet in the form the grid can edit.
+    """
+    if getattr(app, "_pi_network_field_name", "") != "prefix":
+        return
+    value = getattr(app, "_pi_network_field_value", "").strip()
+    if not value or "." in value:
+        return
+    prefix = parse_prefix(value)
+    mask = prefix_to_mask(prefix) if prefix is not None else None
+    if mask:
+        app._pi_network_field_value = mask
+
+
+def _field_digit_state(app: OpenFollowApp) -> tuple[str, int]:
+    """Current buffer as grid digits, plus the cursor, both bounds-checked."""
+    _expand_prefix_for_grid(app)
+    digits = ipv4_digit_grid.to_grid(getattr(app, "_pi_network_field_value", ""))
+    index = getattr(app, "_pi_network_field_digit_index", 0)
+    return digits, max(0, min(ipv4_digit_grid.DIGIT_SLOTS - 1, index))
+
+
+def _move_field_digit_cursor(app: OpenFollowApp, delta: int) -> None:
+    """Step the cursor, padding the buffer on the way.
+
+    The padding is what gives the cursor a character to sit under, so it has
+    to happen on the first move rather than on the first digit change. Without
+    it an operator navigates blind and meets the cursor for the first time on
+    a digit they have already altered.
+    """
+    digits, index = _field_digit_state(app)
+    app._pi_network_field_value = ipv4_digit_grid.from_grid(digits)
+    app._pi_network_field_digit_index = ipv4_digit_grid.move_cursor(index, delta)
+
+
+def _bump_field_digit(app: OpenFollowApp, delta: int) -> None:
+    """Cycle the digit under the cursor and write the padded value back.
+
+    The buffer keeps its padding from here on: it is what holds the cursor and
+    the character it points at in fixed correspondence, and ``confirm`` strips
+    it again before anything parses the value.
+    """
+    digits, index = _field_digit_state(app)
+    app._pi_network_field_digit_index = index
+    app._pi_network_field_value = ipv4_digit_grid.from_grid(ipv4_digit_grid.bump_digit(digits, index, delta))
+
+
 def process_pi_network_field_edit_input(app: OpenFollowApp) -> None:
     """Gamepad poll for field editor; Cancel backs out."""
     input_manager = app._input_manager
@@ -714,10 +934,20 @@ def process_pi_network_field_edit_input(app: OpenFollowApp) -> None:
         return
     if inp.cancel_pressed:
         cancel_pi_network_field_edit(app)
-    elif inp.confirm_pressed:
+        return
+    if inp.confirm_pressed:
         # Confirm with whatever's in the buffer – the validator will
         # reject and keep the editor open if the value is invalid.
         confirm_pi_network_field_edit(app)
+        return
+    if inp.left_pressed:
+        _move_field_digit_cursor(app, -1)
+    if inp.right_pressed:
+        _move_field_digit_cursor(app, 1)
+    if inp.up_pressed:
+        _bump_field_digit(app, 1)
+    if inp.down_pressed:
+        _bump_field_digit(app, -1)
 
 
 # ---------------------------------------------------------------------------
@@ -732,8 +962,6 @@ def _apply_pi_network(app: OpenFollowApp) -> None:
     if adapter is None or pending is None or not iface:
         app._pi_network_banner = "No network adapter available."
         return
-    # Compact in-place-cleared DNS slots so blanks don't reach nmcli/dhcpcd.
-    pending = replace(pending, dns=tuple(d for d in pending.dns if d))
     errors = validate_apply(pending.method, pending.address, pending.prefix, pending.router, list(pending.dns))
     if errors:
         app._pi_network_banner = errors[0]

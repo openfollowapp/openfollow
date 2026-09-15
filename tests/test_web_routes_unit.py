@@ -1192,6 +1192,87 @@ class TestApplyInterfaceAssignment:
         assert cfg.otp_output.port == 999999
 
 
+class TestWebBindNotice:
+    """The lockout warning for a pinned web UI. The pin is the one plane that
+    fails open, so what the notice promises has to match what the runtime will
+    actually bind - a warning about a lockout that cannot happen sends the
+    operator to undo a pin that is costing them nothing."""
+
+    @staticmethod
+    def _cfg(**kw):
+        from openfollow.configuration import AppConfig
+
+        cfg = AppConfig()
+        for key, value in kw.items():
+            setattr(cfg, key, value)
+        return cfg
+
+    def test_no_pin_says_nothing(self) -> None:
+        cfg = self._cfg(web_bind="", web_bind_iface="")
+        assert routes_module.build_web_bind_notice(cfg, ("0.0.0.0", "none"), 80) == ""
+
+    def test_an_explicit_address_outranks_the_pin_and_says_nothing(self) -> None:
+        cfg = self._cfg(web_bind="10.0.0.5", web_bind_iface="eth1")
+        assert routes_module.build_web_bind_notice(cfg, ("10.0.0.5", "iface"), 80) == ""
+
+    def test_a_resolved_pin_names_the_url_that_will_answer(self) -> None:
+        cfg = self._cfg(web_bind="", web_bind_iface="eth1")
+        notice = routes_module.build_web_bind_notice(cfg, ("10.0.0.9", "iface"), 80)
+        assert "answers only on http://10.0.0.9." in notice
+        assert "Network screen" in notice
+
+    def test_the_port_is_the_one_actually_bound(self) -> None:
+        """A station that could not take :80 is serving on the fallback, and a
+        URL naming the wrong port fails exactly like the wrong address."""
+        cfg = self._cfg(web_bind="", web_bind_iface="eth1")
+        assert "http://10.0.0.9:8080" in routes_module.build_web_bind_notice(cfg, ("10.0.0.9", "iface"), 8080)
+
+    def test_a_down_interface_promises_the_fallback_not_a_lockout(self) -> None:
+        """``resolve_web_bind`` returns the wildcard for a pin it cannot
+        honour, so the UI answers *everywhere* after a restart. Saying it
+        answers only on that interface is the opposite of what will happen."""
+        cfg = self._cfg(web_bind="", web_bind_iface="eth1")
+        notice = routes_module.build_web_bind_notice(cfg, ("0.0.0.0", "down"), 80)
+        assert "After a restart the web UI answers only on" not in notice
+        assert "eth1 has no address" in notice
+        assert "serves the web UI on every interface" in notice
+        # ... and says what would restore the pin, rather than how to undo it.
+        assert "once that interface has an address at startup" in notice
+
+
+class TestRequestLocalAddr:
+    """``request_local_addr`` is the address half: the station address this
+    request was answered on. The Network card names it, because the interface
+    alone reads as a claim about topology the operator can contradict - Linux
+    answers for any of its addresses on whatever interface a request arrives
+    on, so this can be a VLAN's address reached over the untagged LAN."""
+
+    KEY = "openfollow.local_addr"
+
+    def test_returns_the_address_the_connection_was_answered_on(self) -> None:
+        assert routes_module.request_local_addr({self.KEY: "169.254.32.55"}) == "169.254.32.55"
+
+    def test_strips_surrounding_whitespace(self) -> None:
+        assert routes_module.request_local_addr({self.KEY: "  10.0.0.9  "}) == "10.0.0.9"
+
+    @pytest.mark.parametrize("addr", ["", "   ", None])
+    def test_blank_address_is_unknown(self, addr: object) -> None:
+        assert routes_module.request_local_addr({self.KEY: addr}) == ""
+
+    def test_missing_key_is_unknown(self) -> None:
+        assert routes_module.request_local_addr({}) == ""
+
+    def test_loopback_is_unknown(self) -> None:
+        """The on-screen embedded browser, which no interface change can
+        disconnect - naming 127.0.0.1 would invite a pointless warning."""
+        assert routes_module.request_local_addr({self.KEY: "127.0.0.1"}) == ""
+
+    def test_an_ipv6_address_is_returned_as_it_is(self) -> None:
+        """No interface will match it (the lookup is IPv4-only), so the marker
+        stays off - but the address itself is still what answered."""
+        assert routes_module.request_local_addr({self.KEY: "2001:db8::1"}) == "2001:db8::1"
+
+
 class TestRequestLocalIface:
     """``request_local_iface`` answers "which adapter did this operator reach
     us on", which guards them from editing that adapter and dropping their own

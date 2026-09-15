@@ -19,6 +19,8 @@ from openfollow.runtime.app_modes import (
     exit_settings_menu,
     handle_key_press,
     normalize_key,
+    on_screen_mode_active,
+    process_input,
 )
 
 pytestmark = pytest.mark.unit
@@ -260,7 +262,6 @@ class TestSettingsMenu:
                 self._video_receiver = FakeVideoReceiver()
                 self._canvas = FakeCanvas()
                 self._button_detection = None
-                self._iface_selection_active = False
                 self._source_type_selection_active = False
                 self._available_source_types: list[tuple[str, str]] = []
                 self._selected_source_type_index = 0
@@ -273,7 +274,6 @@ class TestSettingsMenu:
                 self._url_editor_revert_type = ""
                 self._browser_active = False
                 self._browser_overlay = None
-                self._iface_entered = False
                 self._source_entered = False
                 self._source_type_entered = False
                 self._url_editor_entered = False
@@ -287,18 +287,11 @@ class TestSettingsMenu:
                 self._pi_network_active_iface = ""
                 self._pi_network_state_cache = None
                 self._pi_network_pending_config = None
-                self._pi_network_iface_picker_active = False
-                self._pi_network_iface_picker_index = 0
-                self._pi_network_method_picker_active = False
-                self._pi_network_method_picker_index = 0
                 self._pi_network_field_edit_active = False
                 self._pi_network_field_name = ""
                 self._pi_network_field_value = ""
                 self._pi_network_banner = ""
                 self._pi_network_busy = False
-
-            def _enter_iface_selection(self) -> None:
-                self._iface_entered = True
 
             def _enter_source_selection(self) -> None:
                 self._source_entered = True
@@ -327,7 +320,7 @@ class TestSettingsMenu:
 
     def test_build_items_disables_button_detection_without_controller(self) -> None:
         app = self._make_app(has_controller=False)
-        labels, enabled, _reasons = build_settings_menu_items(app)
+        labels, enabled, _reasons, _opens = build_settings_menu_items(app)
         assert "Button Detection" in labels
         assert enabled[labels.index("Button Detection")] is False
 
@@ -372,7 +365,6 @@ class TestSettingsMenu:
         assert app._settings_menu_index == 0
         handle_key_press(app, "Enter")
         assert app._pi_network_active is True
-        assert app._iface_entered is False
         assert app._settings_menu_active is False
 
     def test_key_arrow_down_skips_disabled_items(
@@ -499,7 +491,6 @@ class TestSettingsMenu:
         app._settings_menu_index = 0  # Network
         handle_key_press(app, "Enter")
         assert app._pi_network_active is True
-        assert app._iface_entered is False
         assert app._settings_menu_active is False
 
     def test_confirm_change_video_source_enters_picker(self) -> None:
@@ -589,7 +580,6 @@ class TestSourceTypeSelection:
                 # so the source-type guard is the only mode in play.
                 self._button_detection = None
                 self._video_receiver = None
-                self._iface_selection_active = False
                 self._url_editor_active = False
                 self._field_choice_active = False
                 self._url_editor_field_name = ""
@@ -1047,7 +1037,6 @@ class TestSourceTypeSelection:
 
     def test_process_input_routes_to_source_type_handler_when_active(self) -> None:
         from openfollow.configuration import AppConfig
-        from openfollow.runtime import app_modes
 
         called: list[bool] = []
 
@@ -1065,13 +1054,12 @@ class TestSourceTypeSelection:
             _button_detection=None,
             _settings_menu_active=False,
             _video_receiver=None,
-            _iface_selection_active=False,
             _source_type_selection_active=True,
             _field_choice_active=False,
             _config=AppConfig(),
         )
         app._process_source_type_selection_input = lambda: called.append(True)
-        app_modes.process_input(app, 0.01)
+        process_input(app, 0.01)
         assert called == [True]
 
     def test_gamepad_confirm_dispatches_to_app_method(
@@ -1154,7 +1142,6 @@ class TestUrlEditor:
                 self._settings_menu_banner = ""
                 self._swap_calls = swap_calls
                 self._button_detection = None
-                self._iface_selection_active = False
                 self._source_type_selection_active = False
                 self._video_receiver = None
                 self._input_manager = None
@@ -1447,7 +1434,6 @@ class TestUrlEditorInputRouting:
 
     def test_process_input_early_returns_when_editor_active(self) -> None:
         from openfollow.configuration import AppConfig
-        from openfollow.runtime import app_modes
 
         class _KB:
             keys: set[str] = set()
@@ -1455,6 +1441,9 @@ class TestUrlEditorInputRouting:
         class _GP:
             def read_settings_menu_input(self):
                 return SimpleNamespace(cancel_pressed=False)
+
+            def read_settings_toggle(self):
+                return False
 
         class _IM:
             keyboard_handler = _KB()
@@ -1468,18 +1457,16 @@ class TestUrlEditorInputRouting:
             _button_detection=None,
             _settings_menu_active=False,
             _video_receiver=None,
-            _iface_selection_active=False,
             _source_type_selection_active=False,
             _field_choice_active=False,
             _url_editor_active=True,
             _browser_active=False,
             _config=AppConfig(),
         )
-        app_modes.process_input(app, 0.01)
+        process_input(app, 0.01)
 
     def test_process_input_gamepad_cancel_closes_editor(self) -> None:
         from openfollow.configuration import AppConfig
-        from openfollow.runtime import app_modes
 
         class _KB:
             keys: set[str] = set()
@@ -1487,6 +1474,9 @@ class TestUrlEditorInputRouting:
         class _GP:
             def read_settings_menu_input(self):
                 return SimpleNamespace(cancel_pressed=True)
+
+            def read_settings_toggle(self):
+                return False
 
         class _IM:
             keyboard_handler = _KB()
@@ -1502,7 +1492,6 @@ class TestUrlEditorInputRouting:
             _settings_menu_index=0,
             _settings_menu_banner="",
             _video_receiver=None,
-            _iface_selection_active=False,
             _source_type_selection_active=False,
             _field_choice_active=False,
             _url_editor_active=True,
@@ -1515,7 +1504,7 @@ class TestUrlEditorInputRouting:
             "_settings_menu_active",
             True,
         )
-        app_modes.process_input(app, 0.01)
+        process_input(app, 0.01)
         assert app._url_editor_active is False
         assert app._settings_menu_active is True
 
@@ -1551,7 +1540,6 @@ class TestUrlEditorInputRouting:
             _button_detection=None,
             _settings_menu_active=False,
             _video_receiver=None,
-            _iface_selection_active=False,
             _source_type_selection_active=False,
             _field_choice_active=False,
             _url_editor_active=True,
@@ -1750,7 +1738,6 @@ class TestFieldChoicePicker:
                 self._picker_calls: list[dict] = []
                 self._source_selection_calls: list[bool] = []
                 self._button_detection = None
-                self._iface_selection_active = False
                 self._url_editor_active = False
                 self._field_choice_active = False
                 self._url_editor_field_name = ""
@@ -2379,7 +2366,6 @@ class TestLegacyShortcutsRemoved:
                 self._settings_menu_active = False
                 self._settings_menu_index = 0
                 self._button_detection = None
-                self._iface_selection_active = False
                 self._source_type_selection_active = False
                 self._available_source_types: list[tuple[str, str]] = []
                 self._selected_source_type_index = 0
@@ -2397,12 +2383,8 @@ class TestLegacyShortcutsRemoved:
                 self._server = FakeServer()
                 self._selected_id = None
                 self._show_hud_help = False
-                self._iface_entered = False
                 self._source_entered = False
                 self._button_detection_entered = False
-
-            def _enter_iface_selection(self) -> None:
-                self._iface_entered = True
 
             def _enter_source_selection(self) -> None:
                 self._source_entered = True
@@ -2411,11 +2393,6 @@ class TestLegacyShortcutsRemoved:
                 self._button_detection_entered = True
 
         return FakeApp()
-
-    def test_i_key_does_not_enter_iface_selection(self) -> None:
-        app = self._make_app()
-        handle_key_press(app, "i")
-        assert app._iface_entered is False
 
     def test_n_key_does_not_enter_source_selection(self) -> None:
         app = self._make_app()
@@ -2451,7 +2428,6 @@ class TestNormalModeKeyDispatch:
                 self._config = AppConfig()
                 self._settings_menu_active = False
                 self._button_detection = None
-                self._iface_selection_active = False
                 self._source_type_selection_active = False
                 self._available_source_types: list[tuple[str, str]] = []
                 self._selected_source_type_index = 0
@@ -2537,3 +2513,158 @@ class TestPersistConfigHelper:
         monkeypatch.setattr(app_modes, "save_config", _boom)
         app = SimpleNamespace(_config=object(), _config_path="x")
         assert app_modes._persist_config(app) is False
+
+
+def _idle_update_result() -> SimpleNamespace:
+    """Every flag ``process_input`` reads off ``InputManager.update``.
+
+    Spelled out rather than defaulted, so a new flag makes this fail loudly
+    instead of the stub silently answering False for something the real
+    manager would have set.
+    """
+    return SimpleNamespace(
+        settings_open_pressed=False,
+        toggle_help_pressed=False,
+        toggle_zones_pressed=False,
+        next_marker_pressed=False,
+        prev_marker_pressed=False,
+        clear_messages_pressed=False,
+    )
+
+
+class TestTheSettingsButtonClosesEverything:
+    """The button that opens the menus also closes them, from any depth.
+
+    Cancel steps back one level; this leaves outright. Three levels down with
+    something happening on stage, stepping out a screen at a time is not a way
+    out.
+    """
+
+    def _app(self, *, key_down: bool = False, pad_edge: bool = False):
+        from openfollow.configuration import AppConfig
+
+        keys = {"m"} if key_down else set()
+        return SimpleNamespace(
+            _config=AppConfig(),
+            _input_manager=SimpleNamespace(
+                keyboard_handler=SimpleNamespace(keys=keys, clear=lambda: None),
+                gamepad_handler=SimpleNamespace(read_settings_toggle=lambda: pad_edge),
+                update=lambda _dt: pytest.fail("must not run main-mode update while a screen is open"),
+            ),
+            _settings_key_pressed=False,
+            _settings_menu_active=False,
+            _about_active=False,
+            _pi_network_active=False,
+            _pi_network_field_edit_active=False,
+            _pi_network_worker_generation=0,
+            _pi_network_busy=False,
+            _pi_network_banner="",
+            _pi_network_open_iface="",
+            _url_editor_active=False,
+            _field_choice_active=False,
+            _source_type_selection_active=False,
+            _browser_active=False,
+            _button_detection=None,
+            _video_receiver=None,
+            _marker_control_suspended=False,
+        )
+
+    def test_the_keyboard_key_closes_from_three_levels_down(self) -> None:
+        app = self._app(key_down=True)
+        app._settings_menu_active = True
+        app._pi_network_active = True
+        app._pi_network_field_edit_active = True
+        process_input(app, 0.016)
+        assert app._pi_network_field_edit_active is False
+        assert app._pi_network_active is False
+        assert app._settings_menu_active is False
+        assert on_screen_mode_active(app) is False
+
+    def test_the_gamepad_button_closes_too(self) -> None:
+        app = self._app(pad_edge=True)
+        app._settings_menu_active = True
+        process_input(app, 0.016)
+        assert app._settings_menu_active is False
+
+    def test_a_held_key_does_not_reopen_what_it_closed(self) -> None:
+        """The press that closes must not read as a fresh press on the next
+        frame - the menu would flicker instead of closing."""
+        app = self._app(key_down=True)
+        app._settings_menu_active = True
+        process_input(app, 0.016)
+        assert app._settings_menu_active is False
+        # Still held on the next frame.
+        app._input_manager.update = lambda _dt: _idle_update_result()
+        process_input(app, 0.016)
+        assert app._settings_menu_active is False
+
+    def test_holding_the_key_that_opened_a_screen_does_not_close_it(self) -> None:
+        """The other flicker, and the easier one to ship: the press that opened
+        the menu is still held on the next frame, and without the edge guard
+        that frame would close it again."""
+        app = self._app(key_down=True)
+        app._settings_menu_active = True
+        # What the open on the previous frame left behind.
+        app._settings_key_pressed = True
+        app._process_settings_menu_input = lambda: None
+        process_input(app, 0.016)
+        assert app._settings_menu_active is True
+
+    def test_closing_orphans_an_in_flight_network_worker(self) -> None:
+        """``exit_pi_network`` bumps the worker generation; closing by clearing
+        flags instead would let a late apply write to a screen that is gone."""
+        app = self._app(key_down=True)
+        app._pi_network_active = True
+        before = app._pi_network_worker_generation
+        process_input(app, 0.016)
+        assert app._pi_network_worker_generation > before
+
+    def test_every_mode_closes_not_just_the_one_on_top(self) -> None:
+        """Each mode is closed through its own exit, so this also pins that
+        none of them is skipped - a mode left set keeps steering the marker
+        underneath a HUD that looks clear."""
+        app = self._app(key_down=True)
+        app._settings_menu_active = True
+        app._about_active = True
+        app._pi_network_active = True
+        app._pi_network_field_edit_active = True
+        app._url_editor_active = True
+        app._field_choice_active = True
+        app._source_type_selection_active = True
+        app._browser_active = True
+        app._button_detection = object()
+        app._browser_hidden_sink = None
+        app._browser_overlay = None
+        app._field_choice_field_name = "x"
+        app._field_choice_field_label = "X"
+        app._field_choice_options = ["a"]
+        app._field_choice_items = ["a"]
+        app._url_editor_value = "rtsp://x"
+        app._url_editor_field_label = "URL"
+        app._settings_menu_index = 0
+        app._settings_menu_banner = ""
+        closed = SimpleNamespace(called=False)
+        receiver = SimpleNamespace(source_selection_active=True)
+
+        def _deactivate() -> None:
+            # What the real ``receiver_state`` does; a double that only recorded
+            # the call would leave the flag set and hide a mode still open.
+            closed.called = True
+            receiver.source_selection_active = False
+
+        receiver._state = SimpleNamespace(deactivate_source_selection=_deactivate)
+        app._video_receiver = receiver
+        app._enter_settings_menu = lambda **_kw: None
+
+        process_input(app, 0.016)
+
+        assert closed.called is True
+        assert app._button_detection is None
+        assert on_screen_mode_active(app) is False
+
+    def test_nothing_open_means_the_button_still_opens(self) -> None:
+        app = self._app(key_down=True)
+        app._input_manager.update = lambda _dt: _idle_update_result()
+        app._enter_settings_menu = lambda **_kw: setattr(app, "_settings_menu_active", True)
+        process_input(app, 0.016)
+        assert app._settings_menu_active is True

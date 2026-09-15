@@ -1072,6 +1072,47 @@ class TestSettingsMenuInput:
         assert inp.up_pressed is True
         assert inp.confirm_pressed is True
 
+    def test_two_pads_on_one_button_fire_it_once(self, stubbed_pygame) -> None:
+        """Folding each edge in with ``or`` as it is read short-circuits past
+        ``_detect_button_edge`` for the later pads once one reports an edge -
+        and that call is what advances the prev-state. The second pad keeps a
+        stale "was released" and fires the same held press again on the next
+        frame, moving the cursor or editing the digit twice.
+
+        Up rather than left: ``_sync_normal_mode_button_prev`` happens to
+        cover the D-pad horizontals, because ``btn_prev_marker`` /
+        ``btn_next_marker`` default to them - so those two are repaired by
+        accident, and only while nobody rebinds them. Up, down and confirm
+        have nothing covering them.
+        """
+        handler, _ = make_handler(stubbed_pygame)
+        for idx in (0, 1):
+            joy = FakeJoystick(num_buttons=16)
+            joy.press(CONTROLLER_BUTTON_DPAD_UP)
+            joy.press(CONTROLLER_BUTTON_A)
+            handler.joysticks[idx] = joy
+
+        first = handler.read_settings_menu_input()
+        assert first.up_pressed is True
+        assert first.confirm_pressed is True
+
+        # Both still holding: a press already reported is not a new edge.
+        second = handler.read_settings_menu_input()
+        assert second.up_pressed is False
+        assert second.confirm_pressed is False
+
+    def test_two_pads_on_one_button_fire_it_once_in_source_selection(self, stubbed_pygame) -> None:
+        """The source-selection reader folds its edges the same way, off the
+        same prev-state."""
+        handler, _ = make_handler(stubbed_pygame)
+        for idx in (0, 1):
+            joy = FakeJoystick(num_buttons=16)
+            joy.press(CONTROLLER_BUTTON_DPAD_UP)
+            handler.joysticks[idx] = joy
+
+        assert handler.read_source_selection_input().up_pressed is True
+        assert handler.read_source_selection_input().up_pressed is False
+
     def test_sync_refreshes_normal_mode_prev_state(self, stubbed_pygame) -> None:
         handler, _ = make_handler(stubbed_pygame)
         joy = FakeJoystick(num_buttons=16)
@@ -3020,3 +3061,56 @@ class TestStickPrimingAfterDetection:
         assert 0 in handler._stick_unprimed
         handler._cleanup_failed([0])
         assert 0 not in handler._stick_unprimed
+
+
+class TestReadSettingsToggle:
+    """The Settings button read while a screen is open.
+
+    ``update()`` is skipped then, so its ``settings_open_pressed`` never sees
+    the press - this is the read that closes the screen.
+    """
+
+    def test_a_press_reports_an_edge(self, stubbed_pygame) -> None:
+        handler, _ = make_handler(stubbed_pygame)
+        joy = FakeJoystick(num_buttons=16)
+        joy.press(CONTROLLER_BUTTON_BACK)
+        handler.joysticks[0] = joy
+        assert handler.read_settings_toggle() is True
+
+    def test_a_held_button_reports_one_edge_only(self, stubbed_pygame) -> None:
+        """The press that closes a screen must not read as a fresh press on the
+        next frame, or the menu flickers instead of closing."""
+        handler, _ = make_handler(stubbed_pygame)
+        joy = FakeJoystick(num_buttons=16)
+        joy.press(CONTROLLER_BUTTON_BACK)
+        handler.joysticks[0] = joy
+        assert handler.read_settings_toggle() is True
+        assert handler.read_settings_toggle() is False
+
+    def test_an_unpressed_button_is_no_edge(self, stubbed_pygame) -> None:
+        handler, _ = make_handler(stubbed_pygame)
+        handler.joysticks[0] = FakeJoystick(num_buttons=16)
+        assert handler.read_settings_toggle() is False
+
+    def test_no_pads_is_no_edge(self, stubbed_pygame) -> None:
+        handler, _ = make_handler(stubbed_pygame)
+        assert handler.read_settings_toggle() is False
+
+    def test_a_failing_pad_is_dropped_rather_than_raising(self, stubbed_pygame) -> None:
+        """A pad unplugged mid-read must not take the close path down with it -
+        that is the operator's way off a screen."""
+        handler, _ = make_handler(stubbed_pygame)
+
+        class _Failing:
+            def get_button(self, _btn: int) -> int:
+                raise pygame.error("gone")
+
+            def get_numbuttons(self) -> int:
+                return 16
+
+            def get_numhats(self) -> int:
+                return 0
+
+        handler.joysticks[0] = _Failing()
+        assert handler.read_settings_toggle() is False
+        assert 0 not in handler.joysticks

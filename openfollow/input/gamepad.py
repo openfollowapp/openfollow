@@ -177,6 +177,10 @@ class SettingsMenuInput:
 
     up_pressed: bool = False
     down_pressed: bool = False
+    # Left/right move the cursor in the network field editor's digit grid; the
+    # menus themselves are a single column and ignore them.
+    left_pressed: bool = False
+    right_pressed: bool = False
     confirm_pressed: bool = False
     cancel_pressed: bool = False
 
@@ -1407,22 +1411,18 @@ class GamepadHandler:
         to_remove: list[int] = []
         for controller_idx in tuple(self.joysticks):
             try:
-                inp.up_pressed = inp.up_pressed or self._detect_button_edge(
-                    controller_idx,
-                    CONTROLLER_BUTTON_DPAD_UP,
-                )
-                inp.down_pressed = inp.down_pressed or self._detect_button_edge(
-                    controller_idx,
-                    CONTROLLER_BUTTON_DPAD_DOWN,
-                )
-                inp.confirm_pressed = inp.confirm_pressed or self._detect_button_edge(
-                    controller_idx,
-                    self._btn_menu_confirm_id,
-                )
-                inp.cancel_pressed = inp.cancel_pressed or self._detect_button_edge(
-                    controller_idx,
-                    self._btn_menu_cancel_id,
-                )
+                # Read every edge before folding any in - see
+                # ``read_settings_menu_input`` for what ``or`` costs here.
+                edges = {
+                    "up": self._detect_button_edge(controller_idx, CONTROLLER_BUTTON_DPAD_UP),
+                    "down": self._detect_button_edge(controller_idx, CONTROLLER_BUTTON_DPAD_DOWN),
+                    "confirm": self._detect_button_edge(controller_idx, self._btn_menu_confirm_id),
+                    "cancel": self._detect_button_edge(controller_idx, self._btn_menu_cancel_id),
+                }
+                inp.up_pressed = inp.up_pressed or edges["up"]
+                inp.down_pressed = inp.down_pressed or edges["down"]
+                inp.confirm_pressed = inp.confirm_pressed or edges["confirm"]
+                inp.cancel_pressed = inp.cancel_pressed or edges["cancel"]
                 # Refresh normal-mode button/bumper prev-state (update() is
                 # skipped while the picker is open) so closing it doesn't fire a
                 # spurious reset / settings-open / speed change.
@@ -1446,22 +1446,30 @@ class GamepadHandler:
         to_remove: list[int] = []
         for controller_idx in tuple(self.joysticks):
             try:
-                inp.up_pressed = inp.up_pressed or self._detect_button_edge(
-                    controller_idx,
-                    CONTROLLER_BUTTON_DPAD_UP,
-                )
-                inp.down_pressed = inp.down_pressed or self._detect_button_edge(
-                    controller_idx,
-                    CONTROLLER_BUTTON_DPAD_DOWN,
-                )
-                inp.confirm_pressed = inp.confirm_pressed or self._detect_button_edge(
-                    controller_idx,
-                    self._btn_menu_confirm_id,
-                )
-                inp.cancel_pressed = inp.cancel_pressed or self._detect_button_edge(
-                    controller_idx,
-                    self._btn_menu_cancel_id,
-                )
+                # Every edge is read before any is folded in. Folding with
+                # ``or`` in place short-circuits past _detect_button_edge for
+                # the remaining controllers once one of them reports an edge,
+                # and that call is what advances the prev-state: a second pad
+                # holding the same button keeps a stale "was released" and
+                # fires the press a second time on the next frame, moving the
+                # cursor or editing the digit twice. The horizontals happen to
+                # escape it, because the sync below covers whatever
+                # btn_prev/next_marker are bound to - which is not a guarantee
+                # and never covered up, down or confirm.
+                edges = {
+                    "up": self._detect_button_edge(controller_idx, CONTROLLER_BUTTON_DPAD_UP),
+                    "down": self._detect_button_edge(controller_idx, CONTROLLER_BUTTON_DPAD_DOWN),
+                    "left": self._detect_button_edge(controller_idx, CONTROLLER_BUTTON_DPAD_LEFT),
+                    "right": self._detect_button_edge(controller_idx, CONTROLLER_BUTTON_DPAD_RIGHT),
+                    "confirm": self._detect_button_edge(controller_idx, self._btn_menu_confirm_id),
+                    "cancel": self._detect_button_edge(controller_idx, self._btn_menu_cancel_id),
+                }
+                inp.up_pressed = inp.up_pressed or edges["up"]
+                inp.down_pressed = inp.down_pressed or edges["down"]
+                inp.left_pressed = inp.left_pressed or edges["left"]
+                inp.right_pressed = inp.right_pressed or edges["right"]
+                inp.confirm_pressed = inp.confirm_pressed or edges["confirm"]
+                inp.cancel_pressed = inp.cancel_pressed or edges["cancel"]
                 self._sync_normal_mode_button_prev(controller_idx)
             except pygame.error as e:
                 logger.warning("Error reading settings menu input from controller %s: %s", controller_idx, e)
@@ -1470,6 +1478,35 @@ class GamepadHandler:
         self._cleanup_failed(to_remove)
 
         return inp
+
+    def read_settings_toggle(self) -> bool:
+        """Edge on the Settings button, for closing an open screen.
+
+        Separate from ``settings_open_pressed`` in :meth:`update`, which only
+        runs on the HUD: while a screen is up, ``update()`` is skipped, so the
+        open path never sees this press. Reading it here consumes the edge,
+        which is also what stops the same press re-opening what it closed - the
+        prev-state is current by the time the operator is back on the HUD.
+
+        Reads every pad before returning rather than short-circuiting on the
+        first edge: ``_detect_button_edge`` is what advances prev-state, and a
+        pad skipped here keeps a stale "was released" that fires again next
+        frame.
+        """
+        self._pump_events()
+        if not self.joysticks:
+            return False
+        pressed = False
+        to_remove: list[int] = []
+        for controller_idx in tuple(self.joysticks):
+            try:
+                if self._detect_button_edge(controller_idx, self._btn_settings_id):
+                    pressed = True
+            except pygame.error as e:
+                logger.warning("Error reading settings toggle from controller %s: %s", controller_idx, e)
+                to_remove.append(controller_idx)
+        self._cleanup_failed(to_remove)
+        return pressed
 
     def _sync_normal_mode_button_prev(self, controller_idx: int) -> None:
         """Refresh edge-tracked state for normal-mode action buttons without dispatching.

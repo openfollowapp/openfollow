@@ -88,15 +88,12 @@ def patched_passes(monkeypatch):
         "draw_about_overlay_pass",
         "draw_button_detection_overlay_pass",
         "draw_hud_pass",
-        "draw_iface_selection_overlay_pass",
         "draw_settings_overlay_pass",
         "draw_source_selection_overlay_pass",
         "draw_source_type_selection_overlay_pass",
         "draw_url_editor_overlay_pass",
         "draw_field_choice_picker_overlay_pass",
         "draw_pi_network_screen_overlay_pass",
-        "draw_pi_network_iface_picker_overlay_pass",
-        "draw_pi_network_method_picker_overlay_pass",
         "draw_pi_network_field_edit_overlay_pass",
         "draw_detections_pass",
         "draw_grid_pass",
@@ -133,12 +130,6 @@ class TestDrawDispatch:
         renderer.draw(FakeCairo(), 1280, 720)
         assert patched_passes == ["draw_about_overlay_pass"]
 
-    def test_iface_selection_dispatches_iface_overlay(self, patched_passes) -> None:
-        renderer = CairoOverlayRenderer()
-        renderer.state.iface_selection_active = True
-        renderer.draw(FakeCairo(), 1280, 720)
-        assert patched_passes == ["draw_iface_selection_overlay_pass"]
-
     def test_source_type_selection_dispatches_source_type_overlay(self, patched_passes) -> None:
         """Source-type picker renders when source_type_selection_active is set."""
         renderer = CairoOverlayRenderer()
@@ -172,18 +163,6 @@ class TestDrawDispatch:
         renderer.state.pi_network.field_edit_active = True
         renderer.draw(FakeCairo(), 1280, 720)
         assert patched_passes == ["draw_pi_network_field_edit_overlay_pass"]
-
-    def test_pi_network_method_picker_dispatches_method_picker_overlay(self, patched_passes) -> None:
-        renderer = CairoOverlayRenderer()
-        renderer.state.pi_network.method_picker_active = True
-        renderer.draw(FakeCairo(), 1280, 720)
-        assert patched_passes == ["draw_pi_network_method_picker_overlay_pass"]
-
-    def test_pi_network_iface_picker_dispatches_iface_picker_overlay(self, patched_passes) -> None:
-        renderer = CairoOverlayRenderer()
-        renderer.state.pi_network.iface_picker_active = True
-        renderer.draw(FakeCairo(), 1280, 720)
-        assert patched_passes == ["draw_pi_network_iface_picker_overlay_pass"]
 
     def test_pi_network_screen_dispatches_screen_overlay(self, patched_passes) -> None:
         renderer = CairoOverlayRenderer()

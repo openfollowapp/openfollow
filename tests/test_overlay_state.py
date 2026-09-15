@@ -53,7 +53,6 @@ def test_overlay_state_reset_restores_defaults() -> None:
     state.video_source_type = "srt"
     state.source_label = "My Source"
     state.discovered_sources.extend(["A", "B"])
-    state.available_interfaces.extend(["10.0.0.2"])
     state.detection_show_boxes = True
     state.detection_box_color = "#123456"
     # virtual_faders_display must clear on reset to avoid stale entries.
@@ -82,7 +81,6 @@ def test_overlay_state_reset_restores_defaults() -> None:
     assert state.video_source_type == "ndi"
     assert state.source_label == ""
     assert state.discovered_sources == []
-    assert state.available_interfaces == []
     assert state.detection_show_boxes is False
     assert state.detection_box_color == "#808080"
     assert state.unit_system is UnitSystem.METRIC

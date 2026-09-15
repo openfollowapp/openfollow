@@ -44,35 +44,28 @@ class PiNetworkOverlayState:
     rows: list[dict[str, object]] = field(default_factory=list)
     selected_index: int = 0
     active_iface: str = ""
+    # Interface whose own screen is open; "" is the interface list.
+    open_iface: str = ""
     banner: str = ""
-
-    iface_picker_active: bool = False
-    iface_picker_items: list[str] = field(default_factory=list)
-    iface_picker_selected_index: int = 0
-
-    method_picker_active: bool = False
-    method_picker_items: list[str] = field(default_factory=list)
-    method_picker_selected_index: int = 0
 
     field_edit_active: bool = False
     field_label: str = ""
     field_value: str = ""
+    # Character offset of the d-pad cursor within ``field_value``, or -1
+    # when the value is freely typed and the caret belongs at the end.
+    field_caret_offset: int = -1
 
     def reset(self) -> None:
         self.screen_active = False
         self.rows = []
         self.selected_index = 0
         self.active_iface = ""
+        self.open_iface = ""
         self.banner = ""
-        self.iface_picker_active = False
-        self.iface_picker_items.clear()
-        self.iface_picker_selected_index = 0
-        self.method_picker_active = False
-        self.method_picker_items.clear()
-        self.method_picker_selected_index = 0
         self.field_edit_active = False
         self.field_label = ""
         self.field_value = ""
+        self.field_caret_offset = -1
 
 
 @dataclass
@@ -213,10 +206,6 @@ class OverlayState:
     source_selection_title: str = "SELECT SOURCE"
     discovered_sources: list[str] = field(default_factory=list)
     selected_source_index: int = 0
-    # Network interface selection
-    iface_selection_active: bool = False
-    available_interfaces: list[str] = field(default_factory=list)
-    selected_iface_index: int = 0
     # Video source-type selection
     source_type_selection_active: bool = False
     # Each entry: (input_id, display_name) – pre-sorted by display.
@@ -241,6 +230,8 @@ class OverlayState:
     # Per-row disabled-reason override. Empty string
     # falls back to the generic "(unavailable)" suffix in the draw pass.
     settings_items_disabled_reasons: list[str] = field(default_factory=list)
+    # Which entries open another screen rather than acting where they stand.
+    settings_items_submenu: list[bool] = field(default_factory=list)
     settings_selected_index: int = 0
     settings_menu_banner: str = ""
     # About / license screen – read-only, no extra payload.
@@ -345,9 +336,6 @@ class OverlayState:
         self.source_selection_title = "SELECT SOURCE"
         self.discovered_sources.clear()
         self.selected_source_index = 0
-        self.iface_selection_active = False
-        self.available_interfaces.clear()
-        self.selected_iface_index = 0
         self.source_type_selection_active = False
         self.available_source_types.clear()
         self.selected_source_type_index = 0
@@ -363,6 +351,7 @@ class OverlayState:
         self.settings_items.clear()
         self.settings_items_enabled.clear()
         self.settings_items_disabled_reasons.clear()
+        self.settings_items_submenu.clear()
         self.settings_selected_index = 0
         self.settings_menu_banner = ""
         self.about_active = False

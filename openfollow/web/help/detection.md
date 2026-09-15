@@ -12,7 +12,7 @@ Nothing to install: the inference backend (onnxruntime + opencv) is bundled in t
 
 If the backend isn't present (a source checkout, or a base-only build), install it into the app venv: `bash scripts/install-detection.sh` from a checkout, or `bash /usr/share/openfollow/install-detection.sh` on a packaged install.
 
-It checks free space, uses the NVMe when present, and restarts the service. Idempotent. Add `--with-export` on a workstation for the model-export tools (torch + ultralytics) the **Download Model** action uses; those are large, AGPL, and not needed on a show Pi. See https://openfollow.app/docs/detection-install.html.
+It checks free space, uses the NVMe when present, and restarts the service. Idempotent. Add `--with-export` on a workstation for the model-export tools (torch + ultralytics) the **Download Model** action uses; those are large, AGPL, and not needed on a show Pi. **Download Model** also needs an internet connection, because it fetches the YOLO weights before exporting them, so it cannot run on an offline show network: export on a workstation and copy the `.onnx` across. See https://openfollow.app/docs/detection-install.html.
 
 If the red "Detection needs extra components" banner shows, the backend isn't installed; run that command, then reload.
 

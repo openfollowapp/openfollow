@@ -1,7 +1,6 @@
 <div id="detection-mask-editor" class="section" data-fold-key="detection_masks" data-help="detection_mask_editor">
     <div class="section-head">
         <h2>Detection Masks <span class="badge-experimental">Experimental</span></h2>
-        <span class="section-note">Limit detection to regions you draw on the camera image.</span>
     </div>
 
     <div class="dme-master">

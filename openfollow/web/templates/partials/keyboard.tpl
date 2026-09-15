@@ -2,7 +2,6 @@
       hx-post="/section/keyboard" hx-target="#keyboard-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>Keyboard Input</h2>
-        <span class="section-note">Keyboard controls for the on-display UI</span>
     </div>
 
     <div class="group">

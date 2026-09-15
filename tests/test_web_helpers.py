@@ -875,6 +875,33 @@ def test_apply_import_data_preserves_psn_source_iface() -> None:
     assert new.psn_system_name == "Imported"
 
 
+def test_import_cannot_move_this_stations_web_ui() -> None:
+    """An imported pin names a NIC on the exporting box. Adopting it would
+    either dangle or move this station's config UI off the network the
+    operator is on - and the import itself is how they would undo it, so the
+    lockout would be self-sealing.
+
+    No import path writes the field today; this pins that, so wiring it into
+    an importable section has to come with a restore.
+    """
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.web_bind_iface = "eth1"
+
+    new = _apply_import_data(current, {"web_bind_iface": "wlan0", "psn_system_name": "Imported"})
+
+    assert new.web_bind_iface == "eth1"
+    assert new.psn_system_name == "Imported"
+
+
+def test_interface_assignment_web_ui_pin_is_device_local() -> None:
+    """The whole panel is device-local; the new row has to be covered by that
+    same strip or a peer push could repoint this station's own web UI."""
+    scrubbed = strip_device_local_fields("interface_assignment", {"web_bind_iface": "eth1"})
+    assert scrubbed == {}
+
+
 def test_apply_import_data_preserves_detection_storage_path() -> None:
     from openfollow.web.routes import _apply_import_data
 

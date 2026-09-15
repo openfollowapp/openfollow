@@ -1049,23 +1049,19 @@ def test_deprecated_confirm_cancel_fields_warn_on_custom_value(
     assert any("src_btn_confirm" in msg for msg in deprecation_warnings)
 
 
-def test_deprecated_direct_entry_fields_warn_on_custom_value(
+def test_a_config_carrying_the_removed_source_select_binding_still_loads(
     temp_config_path,
-    caplog,
-    monkeypatch,
 ) -> None:
-    # Same ordering-safety reset as the confirm/cancel test above.
-    import openfollow.configuration as cfg_mod
-
-    monkeypatch.setattr(cfg_mod, "_DEPRECATED_WARNED", set())
-    controller = ControllerConfig(
-        btn_source_select="X",
+    """``btn_source_select`` is gone, and stations in the field have it in
+    their ``config.toml``. The loader strips keys that match no field, so such
+    a config must load unchanged rather than raise on an unexpected key."""
+    temp_config_path.write_text(
+        '[controller]\nbtn_source_select = "X"\nbtn_settings = "START"\n',
+        encoding="utf-8",
     )
-    save_config(AppConfig(controller=controller), str(temp_config_path))
-    with caplog.at_level("WARNING", logger="openfollow.configuration"):
-        load_config(str(temp_config_path))
-    messages = [r.message for r in caplog.records]
-    assert any("btn_source_select" in msg and "Settings menu" in msg for msg in messages)
+    cfg = load_config(str(temp_config_path))
+    assert not hasattr(cfg.controller, "btn_source_select")
+    assert cfg.controller.btn_settings == "START"
 
 
 def test_loading_default_config_does_not_emit_deprecation_warnings(
@@ -1617,6 +1613,21 @@ def test_app_config_strips_web_bind_at_construction() -> None:
 def test_app_config_coerces_non_str_web_bind() -> None:
     cfg = AppConfig(web_bind=0)  # type: ignore[arg-type]
     assert cfg.web_bind == ""
+
+
+def test_app_config_strips_web_bind_iface_at_construction() -> None:
+    """Stripped on load so a hand-edited TOML matches the panel's save path -
+    an unstripped ``" eth0 "`` would resolve to no address and read as a
+    down interface."""
+    assert AppConfig(web_bind_iface="  eth0  ").web_bind_iface == "eth0"
+
+
+@pytest.mark.parametrize("bad", [0, None, True, 1.5, ["eth0"], {"iface": "eth0"}])
+def test_app_config_coerces_non_str_web_bind_iface(bad) -> None:
+    """A non-string pin becomes "" (serve everywhere) rather than reaching
+    ``resolve_web_bind``, where it would raise inside the web server's bind."""
+    cfg = AppConfig(web_bind_iface=bad)  # type: ignore[arg-type]
+    assert cfg.web_bind_iface == ""
 
 
 def test_osc_transmitter_config_normalises_leading_slash() -> None:
@@ -4650,10 +4661,9 @@ def test_warn_deprecated_only_fires_once_across_multiple_reloads(
     # suppression.
     monkeypatch.setattr(cfg_mod, "_DEPRECATED_WARNED", set())
 
-    # Write a config that trips BOTH deprecation categories so we observe
-    # the "warn once per field" guard on both.
+    # Write a config that trips the deprecation so we observe the
+    # "warn once per field" guard.
     bad_ctrl = ControllerConfig(
-        btn_source_select="LB",  # direct-entry deprecation
         btn_settings_confirm="X",  # confirm/cancel deprecation
     )
     save_config(AppConfig(controller=bad_ctrl), str(temp_config_path))
@@ -4665,11 +4675,10 @@ def test_warn_deprecated_only_fires_once_across_multiple_reloads(
         load_config(str(temp_config_path))
         second_pass = [r.message for r in caplog.records]
 
-    # First load emits deprecation warnings for both fields.
-    assert any("btn_source_select" in m for m in first_pass)
+    # First load emits the deprecation warning.
     assert any("btn_settings_confirm" in m for m in first_pass)
     # Second load must not re-emit – the module-level set suppresses repeats.
-    assert not any("btn_source_select" in m or "btn_settings_confirm" in m for m in second_pass)
+    assert not any("btn_settings_confirm" in m for m in second_pass)
 
 
 # ---------------------------------------------------------------------------

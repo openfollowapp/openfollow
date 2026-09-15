@@ -463,7 +463,6 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             _as_str, choices=VALID_CURVES, human_error=f"Curve must be one of: {', '.join(VALID_CURVES)}."
         ),
         "btn_reset": _button_rule(),
-        "btn_source_select": _button_rule(),
         "btn_toggle_help": _button_rule(),
         "btn_speed_down": _button_rule(),
         "btn_speed_up": _button_rule(),

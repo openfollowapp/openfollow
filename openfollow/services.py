@@ -1119,7 +1119,13 @@ class AppRuntimeServices:
             # Moves the membership on the live socket. The listener is not
             # touched: only the group follows the interface, so restarting it
             # would drop every subscription hanging off it for nothing.
-            self._osc_service.set_multicast_iface(address)
+            #
+            # A refused join has to raise. The observer reads a returning apply
+            # as success - it clears the outage, logs that the output resumed
+            # and starts the poll again with no backoff - so swallowing the
+            # False would retry once a second forever while reporting health.
+            if not self._osc_service.set_multicast_iface(address):
+                raise OSError(f"could not join the OSC multicast group via {address}")
 
         def _current_osc_input() -> str | None:
             status = self._osc_service.listener_status()

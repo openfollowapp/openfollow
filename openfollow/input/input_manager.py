@@ -52,9 +52,9 @@ def resolve_osc_multicast_iface(listen_iface: str, station_iface: str) -> str | 
     The listener itself is unaffected either way: it binds every interface, so
     unicast and broadcast keep arriving while the group is unavailable.
     """
-    from openfollow.net_utils import resolve_listen_bind
+    from openfollow.net_utils import resolve_multicast_iface
 
-    address, status = resolve_listen_bind(listen_iface, station_iface)
+    address, status = resolve_multicast_iface(listen_iface, station_iface)
     return None if status == "down" else address
 
 

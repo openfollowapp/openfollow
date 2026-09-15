@@ -1456,6 +1456,34 @@ def test_osc_input_plane_resubscribes_and_unsubscribes_in_place(monkeypatch) -> 
     assert service.listener_status()["multicast_joined"] is True
 
 
+def test_osc_input_plane_raises_when_the_membership_is_refused(monkeypatch) -> None:
+    """A refused join must reach the observer as a failure.
+
+    ``apply`` returning normally is how the observer is told the plane is well:
+    it clears the outage, logs that the output resumed, and polls on with no
+    backoff. Swallowing the refusal would retry once a second for the length of
+    the show while every surface reported health.
+    """
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    services._app._config.osc.listen_iface = "eth1"
+    service = _RecordingOscService()
+    service.join_ok = False
+    plane = _osc_plane(services, service)
+
+    with pytest.raises(OSError):
+        plane.apply("10.0.0.9")
+
+
+def test_osc_input_plane_does_not_raise_on_a_successful_move(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    services._app._config.osc.listen_iface = "eth1"
+    plane = _osc_plane(services, _RecordingOscService())
+
+    plane.apply("10.0.0.9")
+
+
 def test_clearing_the_station_pin_repoints_an_inheriting_membership(monkeypatch) -> None:
     """The observer cannot cover this: clearing Station default leaves the
     plane unpinned, so it stops being followed while the socket still holds a

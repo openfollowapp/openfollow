@@ -1116,9 +1116,10 @@ class AppRuntimeServices:
                 self._app._otp_server.stop()
 
         def _apply_osc_input(address: str) -> None:
-            # Moves the membership on the live socket. The listener is not
-            # touched: only the group follows the interface, so restarting it
-            # would drop every subscription hanging off it for nothing.
+            # Rebinds the listener so the group follows the interface. The
+            # membership cannot be dropped once the address it was taken on is
+            # gone - the kernel calls that drop a success and releases nothing
+            # - so closing the socket is what releases it.
             #
             # A refused join has to raise. The observer reads a returning apply
             # as success - it clears the outage, logs that the output resumed

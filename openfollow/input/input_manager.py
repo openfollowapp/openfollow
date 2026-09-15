@@ -42,6 +42,27 @@ logger = logging.getLogger(__name__)
 _IDENTIFY_FLASH_S = 3.0
 
 
+def _resolve_osc_bind_host(listen_iface: str, station_iface: str) -> str | None:
+    """Address the OSC listener should bind, or None when it must stay down.
+
+    None means an interface is pinned but currently has no address. Binding the
+    wildcard instead would accept OSC from every network the pin exists to
+    exclude, so the listener stays stopped until the interface returns - the
+    same contract the sending planes hold.
+    """
+    from openfollow.net_utils import plane_source_iface, resolve_listen_bind
+
+    bind_host, status = resolve_listen_bind(listen_iface, station_iface)
+    if status == "down":
+        logger.error(
+            "Configured OSC listen interface '%s' has no address; OSC input stays down "
+            "until it returns (it will not listen on another interface).",
+            plane_source_iface(listen_iface, station_iface),
+        )
+        return None
+    return bind_host
+
+
 def _oriented(vx: float, vy: float, invert: bool) -> tuple[float, float]:
     """Flip X/Y for an upstage camera, whose view is 180° from the stage axes.
 
@@ -123,6 +144,7 @@ class InputManager:
         self._refresh_slots()
 
         osc_cfg = app._config.osc
+        osc_bind_host = _resolve_osc_bind_host(osc_cfg.listen_iface, app._config.psn_source_iface)
         # Marker-position OSC input flows through the unified OSC
         # service. The adapter subscribes to /marker/* on the shared
         # service and exposes the same flush_updates() shape the rest of
@@ -133,8 +155,9 @@ class InputManager:
                 port=osc_cfg.port,
                 allowed_sender_ips=list(osc_cfg.allowed_sender_ips),
                 multicast_group=osc_cfg.multicast_group,
+                bind_host=osc_bind_host,
             )
-            if osc_cfg.enabled
+            if osc_cfg.enabled and osc_bind_host is not None
             else None
         )
         if self.osc_handler is not None:
@@ -605,6 +628,7 @@ class InputManager:
         allowed_sender_ips: list[str] | None = None,
         *,
         multicast_group: str = "",
+        listen_iface: str = "",
     ) -> None:
         """Stop the current OSC handler (if any) and start a new one if enabled.
 
@@ -621,12 +645,14 @@ class InputManager:
         if self.osc_handler is not None:
             self.osc_handler.stop()
             self.osc_handler = None
-        if enabled:
+        bind_host = _resolve_osc_bind_host(listen_iface, self.app._config.psn_source_iface)
+        if enabled and bind_host is not None:
             self.osc_handler = OscMarkerAdapter(
                 self.app._runtime_services._osc_service,
                 port=port,
                 allowed_sender_ips=list(allowed_sender_ips or []),
                 multicast_group=multicast_group,
+                bind_host=bind_host,
             )
             try:
                 self.osc_handler.start()

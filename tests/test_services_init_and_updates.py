@@ -3406,6 +3406,7 @@ class TestDiagnosticsIoProviders:
         through; idle service → the default (stopped) shape."""
         assert services._osc_listener_status_provider() == {
             "port": None,
+            "bind_host": "",
             "multicast_group": "",
             "multicast_joined": False,
             "allowed_sender_ips": [],

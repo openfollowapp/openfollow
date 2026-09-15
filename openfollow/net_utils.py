@@ -181,6 +181,29 @@ def resolve_plane_source_ip(
     return "", "none"
 
 
+def resolve_listen_bind(pin: str, station_iface: str = "") -> tuple[str, ResolveStatus]:
+    """Resolve an inbound listener's bind address, failing **closed**.
+
+    The receive-side counterpart of :func:`resolve_plane_source_ip`, and it
+    differs in one arm: with nothing configured anywhere the result is the
+    wildcard (``("", "none")``), not the auto-detected primary. A sender with
+    no pin has to pick one address; a listener does not, and binding it to the
+    primary would silently stop accepting traffic sent to every other local
+    address on the box.
+
+    A configured interface with no address yields ``("", "down")``, and the
+    caller must leave the listener stopped - binding the wildcard instead would
+    accept traffic from the networks the pin exists to exclude.
+    """
+    configured = plane_source_iface(pin, station_iface)
+    if not configured:
+        return "", "none"
+    resolved = get_iface_ipv4(configured)
+    if resolved:
+        return resolved, "iface" if pin else "station"
+    return "", "down"
+
+
 WEB_BIND_ALL = "0.0.0.0"
 
 

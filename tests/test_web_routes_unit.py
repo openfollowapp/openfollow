@@ -933,6 +933,19 @@ class TestStripDeviceLocalFields:
         assert scrubbed["enabled"] is True
         assert scrubbed["system_number"] == 3
 
+    def test_osc_section_drops_listen_iface(self) -> None:
+        """The listener pin names a NIC on THIS box. Copied to a peer it would
+        either dangle or resolve to a different network there and take that
+        station's receiver off the one it was on."""
+        scrubbed = strip_device_local_fields(
+            "osc",
+            {"enabled": True, "port": 8765, "listen_iface": "eth1"},
+        )
+        assert "listen_iface" not in scrubbed
+        # Non-device-local OSC fields pass through untouched.
+        assert scrubbed["enabled"] is True
+        assert scrubbed["port"] == 8765
+
     def test_video_source_section_drops_selected_media(self) -> None:
         """The Media Gallery selection is a device-local media id – the file
         lives only on this host. A broadcast/import of the ``video_source``
@@ -1110,6 +1123,42 @@ class TestInterfaceAssignmentRows:
             assert rows[label]["key"] == ""
             assert rows[label]["address"] == "192.168.1.5"
 
+    def test_osc_input_row_follows_the_station_by_default(self, monkeypatch) -> None:
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+        cfg = AppConfig(psn_source_iface="eth0")
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        osc = rows["OSC input"]
+        assert osc["key"] == "osc.listen_iface"
+        assert osc["blank"] == "station"
+        assert osc["editable"] is True
+        assert osc["address"] == "192.168.1.5"
+
+    def test_osc_input_row_shows_its_own_pin(self, monkeypatch) -> None:
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+        cfg = AppConfig(psn_source_iface="eth0")
+        cfg.osc.listen_iface = "eth1"
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        assert rows["OSC input"]["address"] == "10.0.0.9"
+
+    def test_osc_input_row_reads_all_interfaces_when_nothing_is_pinned(self, monkeypatch) -> None:
+        """The row has to say what the listener does, and unpinned it answers
+        everywhere. Naming the auto-detected primary would read as a restriction
+        the socket does not have, hiding every other address OSC still arrives
+        at."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        cfg = AppConfig(psn_source_iface="")
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        assert rows["OSC input"]["address"] == "All interfaces"
+
+    def test_osc_input_row_reports_a_down_pin(self, monkeypatch) -> None:
+        """Fails closed, and says so: the listener is stopped, so an address
+        here would claim reception that isn't happening."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        cfg = AppConfig(psn_source_iface="eth0")
+        cfg.osc.listen_iface = "eth9"
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        assert rows["OSC input"]["address"] == "eth9 is down"
+
     def test_every_editable_row_maps_to_a_known_target(self, monkeypatch) -> None:
         """Guards the panel against growing a control the save path can't
         write – the row list and the target map have to stay in step."""
@@ -1143,6 +1192,13 @@ class TestApplyInterfaceAssignment:
         )
         assert cfg.psn_source_iface == "eth0"
         assert cfg.otp_output.source_iface == "eth1"
+
+    def test_writes_the_osc_listener_pin(self) -> None:
+        """The panel is the only editing surface for this field, so a save that
+        skipped it would leave the row visibly set and the socket unmoved."""
+        cfg = AppConfig()
+        apply_section_data(cfg, "interface_assignment", {"osc.listen_iface": "  eth1 "})
+        assert cfg.osc.listen_iface == "eth1"
 
     def test_absent_key_leaves_current_value(self) -> None:
         cfg = AppConfig(psn_source_iface="eth0")

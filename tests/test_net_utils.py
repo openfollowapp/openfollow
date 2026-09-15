@@ -581,6 +581,83 @@ class TestResolvePlaneSourceIp:
         assert resolve_plane_source_ip("", "eth0") == ("", "down")
 
 
+class TestResolveListenBind:
+    """``resolve_listen_bind(pin, station_iface)`` resolves an inbound
+    listener's bind address. It follows the same pin/station inheritance as the
+    sending planes and fails closed the same way, and differs in exactly one
+    arm: nothing configured is the wildcard, not the auto-detected primary."""
+
+    @staticmethod
+    def _ifaces(monkeypatch, spec: dict[str, list[tuple[int, str]]]) -> None:
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: _fake_addrs(spec),
+        )
+
+    def test_nothing_configured_binds_every_interface(self, monkeypatch) -> None:
+        """The arm that separates this from ``resolve_plane_source_ip``. A
+        sender with no pin has to choose one address; a listener does not, and
+        taking the primary would stop it accepting traffic addressed to every
+        other address on the box - a silent narrowing nobody configured."""
+        self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.5")]})
+        monkeypatch.setattr(
+            net_utils_module,
+            "get_primary_local_ipv4",
+            lambda default="": "192.168.1.5",
+        )
+        assert net_utils_module.resolve_listen_bind("", "") == ("", "none")
+
+    def test_pin_wins_over_station(self, monkeypatch) -> None:
+        self._ifaces(
+            monkeypatch,
+            {
+                "eth0": [(socket.AF_INET, "192.168.1.5")],
+                "eth1": [(socket.AF_INET, "10.0.0.9")],
+            },
+        )
+        assert net_utils_module.resolve_listen_bind("eth1", "eth0") == ("10.0.0.9", "iface")
+
+    def test_blank_pin_follows_the_station(self, monkeypatch) -> None:
+        """The chosen default: an operator who put this station on one network
+        gets its receiver there too, without a second setting to find."""
+        self._ifaces(
+            monkeypatch,
+            {
+                "eth0": [(socket.AF_INET, "192.168.1.5")],
+                "eth1": [(socket.AF_INET, "10.0.0.9")],
+            },
+        )
+        assert net_utils_module.resolve_listen_bind("", "eth0") == ("192.168.1.5", "station")
+
+    @pytest.mark.parametrize(
+        ("pin", "station"),
+        [
+            ("eth9", "eth0"),
+            ("", "eth9"),
+        ],
+    )
+    def test_a_configured_interface_with_no_address_is_down(self, monkeypatch, pin: str, station: str) -> None:
+        """Fails closed, through either route into the pin. Binding the
+        wildcard instead would accept OSC from every network the pin exists to
+        keep the station off."""
+        self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.5")]})
+        monkeypatch.setattr(
+            net_utils_module,
+            "get_primary_local_ipv4",
+            lambda default="": "172.16.4.20",
+        )
+        assert net_utils_module.resolve_listen_bind(pin, station) == ("", "down")
+
+    def test_a_new_address_on_the_configured_interface_is_followed(self, monkeypatch) -> None:
+        """Only the interface is fixed; a fresh DHCP lease on it is not a
+        reason to stop listening."""
+        self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.5")]})
+        assert net_utils_module.resolve_listen_bind("eth0", "") == ("192.168.1.5", "iface")
+        self._ifaces(monkeypatch, {"eth0": [(socket.AF_INET, "192.168.1.77")]})
+        assert net_utils_module.resolve_listen_bind("eth0", "") == ("192.168.1.77", "iface")
+
+
 class TestPlaneSourceIface:
     def test_pin_wins(self) -> None:
         assert net_utils_module.plane_source_iface("eth1", "eth0") == "eth1"

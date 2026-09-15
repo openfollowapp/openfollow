@@ -46,12 +46,16 @@ class OscMarkerAdapter:
         port: int = 8765,
         allowed_sender_ips: list[str] | None = None,
         multicast_group: str = "",
+        bind_host: str = "",
     ) -> None:
         self._service = service
         self._port = port
         self._allowed_ips = list(allowed_sender_ips or [])
         # Optional multicast group the listener joins.
         self._multicast_group = multicast_group
+        # Local address to bind; empty = every interface. Already resolved from
+        # the interface pin by the caller, so a down interface never reaches here.
+        self._bind_host = bind_host
         self._lock = threading.Lock()
         self._pending: dict[int, dict[str, float]] = {}
         self._started = False
@@ -80,6 +84,7 @@ class OscMarkerAdapter:
                 self._port,
                 allowed_ips=self._allowed_ips,
                 multicast_group=self._multicast_group,
+                bind_host=self._bind_host,
             )
         except OSError:
             # Bind failed; unsubscribe and allow retry on restart.

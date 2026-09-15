@@ -24,6 +24,7 @@ fills in:
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -138,11 +139,13 @@ class _FakeOscHandler:
         port: int,
         allowed_sender_ips: list[str] | None = None,
         multicast_group: str = "",
+        bind_host: str = "",
     ) -> None:
         self.service = service
         self.port = port
         self.allowed_sender_ips = list(allowed_sender_ips or [])
         self.multicast_group = multicast_group
+        self.bind_host = bind_host
         self.started = False
         self.stopped = False
         _FakeOscHandler.instances.append(self)
@@ -547,6 +550,72 @@ class TestMulticastGroup:
         app = _DummyApp(osc_enabled=True)
         InputManager(app)
         assert _FakeOscHandler.instances[0].multicast_group == "239.20.20.20"
+
+
+class TestListenIface:
+    """``osc.listen_iface`` resolves to a bind address before it reaches the
+    adapter, and a pin with no address stops the listener rather than letting
+    it fall back to the wildcard."""
+
+    @staticmethod
+    def _ifaces(monkeypatch, spec: dict[str, str]) -> None:
+        import openfollow.net_utils as net_utils_module
+
+        monkeypatch.setattr(net_utils_module, "get_iface_ipv4", lambda name: spec.get(name, ""))
+
+    def test_unpinned_binds_every_interface(self) -> None:
+        """Nothing configured anywhere keeps today's behaviour - the listener
+        answers at every address the station has."""
+        app = _DummyApp(osc_enabled=True)
+        InputManager(app)
+        assert _FakeOscHandler.instances[0].bind_host == ""
+
+    def test_pin_resolves_to_its_address(self, monkeypatch) -> None:
+        self._ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+        app = _DummyApp(osc_enabled=True)
+        app._config.osc.listen_iface = "eth1"
+        InputManager(app)
+        assert _FakeOscHandler.instances[0].bind_host == "10.0.0.9"
+
+    def test_blank_pin_follows_the_station_interface(self, monkeypatch) -> None:
+        """The chosen default. A station put on one network receives OSC there
+        without a second setting to find."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _DummyApp(osc_enabled=True)
+        app._config.psn_source_iface = "eth0"
+        InputManager(app)
+        assert _FakeOscHandler.instances[0].bind_host == "192.168.1.5"
+
+    def test_a_down_pin_leaves_the_listener_stopped(self, monkeypatch, caplog) -> None:
+        """Fails closed. Binding the wildcard instead would accept OSC from
+        every network the pin exists to keep the station off - and it would do
+        it silently, which is the part that matters."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _DummyApp(osc_enabled=True)
+        app._config.osc.listen_iface = "eth9"
+        with caplog.at_level(logging.ERROR):
+            manager = InputManager(app)
+        assert manager.osc_handler is None
+        assert _FakeOscHandler.instances == []
+        assert any("eth9" in r.getMessage() for r in caplog.records)
+
+    def test_restart_osc_threads_the_pin(self, monkeypatch) -> None:
+        self._ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+        app = _DummyApp(osc_enabled=False)
+        manager = InputManager(app)
+        manager.restart_osc(enabled=True, port=9001, listen_iface="eth1")
+        assert _FakeOscHandler.instances[0].bind_host == "10.0.0.9"
+
+    def test_restart_osc_onto_a_down_pin_stops_the_listener(self, monkeypatch) -> None:
+        """Live-applying a pin whose interface is absent must not leave the old
+        listener running on the interface the operator moved away from."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _DummyApp(osc_enabled=True)
+        manager = InputManager(app)
+        first = _FakeOscHandler.instances[0]
+        manager.restart_osc(enabled=True, port=9001, listen_iface="eth9")
+        assert manager.osc_handler is None
+        assert first.stopped is True
 
 
 # --------------------------------------------------------------------------- #

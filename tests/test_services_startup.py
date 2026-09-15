@@ -1330,6 +1330,115 @@ def test_a_down_plane_reports_down_not_another_interface(monkeypatch) -> None:
     assert resolved["OTP output"] == ("", "down", "eth_gone")
 
 
+class _RecordingInputManager:
+    """Stands in for ``InputManager`` on the observer's OSC plane.
+
+    Models the real restart contract rather than only recording the call: a
+    disabled restart drops the handler, so ``current`` can tell a running
+    listener from a stopped one the way the real pair does.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[bool, str]] = []
+        self.running = True
+
+    def restart_osc(
+        self,
+        enabled: bool,
+        port: int,
+        allowed_sender_ips: list[str] | None = None,
+        *,
+        multicast_group: str = "",
+        listen_iface: str = "",
+    ) -> None:
+        self.calls.append((enabled, listen_iface))
+        self.running = enabled
+
+
+def test_osc_input_plane_follows_its_own_and_the_station_interface(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+    services._app._config.psn_source_iface = "eth0"
+    services._app._config.osc.listen_iface = "eth1"
+
+    resolved = {p.label: p.resolve() for p in services._build_network_planes()}
+    assert resolved["OSC input"] == ("10.0.0.9", "iface", "eth1")
+
+    services._app._config.osc.listen_iface = ""
+    resolved = {p.label: p.resolve() for p in services._build_network_planes()}
+    assert resolved["OSC input"] == ("192.168.1.5", "station", "eth0")
+
+
+def test_an_unpinned_osc_listener_is_not_a_plane(monkeypatch) -> None:
+    """With nothing pinned the listener binds every interface by design, so
+    there is no interface for the observer to follow. Treating it as a plane
+    would suspend a working listener the moment auto-detect found nothing."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {})
+    services._app._config.psn_source_iface = ""
+    services._app._config.osc.listen_iface = ""
+
+    osc = next(p for p in services._build_network_planes() if p.label == "OSC input")
+    assert osc.enabled() is False
+
+
+def test_a_disabled_osc_input_is_not_a_plane(monkeypatch) -> None:
+    """A switched-off receiver is not broken, so it must not alert."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "eth0"
+    services._app._config.osc.enabled = False
+
+    osc = next(p for p in services._build_network_planes() if p.label == "OSC input")
+    assert osc.enabled() is False
+
+
+def test_osc_input_plane_reports_the_live_bind_not_the_pin(monkeypatch) -> None:
+    """``current`` drives the observer's "already correct" short-circuit. Read
+    from the config it would report an address the listener never took, and a
+    stopped listener would read as running."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    osc = next(p for p in services._build_network_planes() if p.label == "OSC input")
+    assert osc.current() is None
+
+    service = services._osc_service
+    monkeypatch.setattr(
+        service,
+        "listener_status",
+        lambda: {"port": 8765, "bind_host": "10.0.0.9"},
+    )
+    assert osc.current() == "10.0.0.9"
+
+
+def test_osc_input_plane_restarts_and_suspends_the_listener(monkeypatch) -> None:
+    """Recovery is the whole reason this plane exists: a pinned listener left
+    stopped at boot would never come back when the interface returned."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    services._app._config.osc.listen_iface = "eth1"
+    manager = _RecordingInputManager()
+    services._app._input_manager = manager
+
+    osc = next(p for p in services._build_network_planes() if p.label == "OSC input")
+    osc.suspend()
+    assert manager.calls[-1] == (False, "eth1")
+    assert manager.running is False
+
+    osc.apply("10.0.0.9")
+    assert manager.calls[-1] == (True, "eth1")
+    assert manager.running is True
+
+
+def test_osc_input_plane_tolerates_no_input_manager(monkeypatch) -> None:
+    """The observer polls from housekeeping, which runs before the input
+    subsystem exists and after a failed init - neither may raise."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._input_manager = None
+    osc = next(p for p in services._build_network_planes() if p.label == "OSC input")
+    osc.suspend()
+    osc.apply("10.0.0.9")
+
+
 def test_suspending_psn_stops_both_directions(monkeypatch) -> None:
     """Leaving the receiver joined on a dead address would keep viewer markers
     showing stale positions."""

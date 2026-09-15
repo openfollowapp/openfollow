@@ -30,6 +30,16 @@ The **address** is allowed to change. If the interface is on DHCP and comes back
 
 Following the station interface includes stopping with it. When the station interface has no address, peer discovery and marker-name sync go quiet until it returns, the same as every pinned row above – a station that kept announcing itself would put its name, version and web address on a network you did not choose. Unless you have pinned it yourself, the web UI stays reachable on every interface throughout, so the station is still there to browse to; it just stops appearing in other stations' peer lists.
 
+## OSC input
+
+Which interface the station listens for OSC on. Left blank it follows Station default, so on a single-adapter station there is nothing to set.
+
+Pinning it does two things. OSC sent to the station's **other** addresses is no longer received - only the pinned interface's address answers. And the multicast group, if one is set, is joined on that interface alone.
+
+The multicast part is worth knowing even if you never pin this row. Unpinned, the group is joined on whichever interface the system picks, and that choice can land differently from one restart to the next. On a station with one network that makes no difference. On a station with several, pinning is what makes it the same every time.
+
+Broadcast and unicast to the pinned address keep working as before; it is reception at the station's other addresses that stops.
+
 ## Web UI
 
 This page. Left blank it answers on every interface, which is what you want on almost every station – it is how you reach the box, not something the show depends on.

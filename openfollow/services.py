@@ -1061,8 +1061,8 @@ class AppRuntimeServices:
     def _build_network_planes(self) -> list[Plane]:
         """Every plane the observer follows, in report order.
 
-        Later PRs add a row each (web UI, OSC in, RTTrPM, OSC destinations,
-        video input); each is one entry here and needs no observer changes.
+        Later PRs add a row each (web UI, RTTrPM, OSC destinations, video
+        input); each is one entry here and needs no observer changes.
         """
         from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
 
@@ -1115,6 +1115,43 @@ class AppRuntimeServices:
             if self._app._otp_server is not None:
                 self._app._otp_server.stop()
 
+        def _restart_osc_input(*, enabled: bool) -> None:
+            manager = self._app._input_manager
+            if manager is None:
+                return
+            cfg = self._app._config.osc
+            manager.restart_osc(
+                enabled,
+                cfg.port,
+                allowed_sender_ips=list(cfg.allowed_sender_ips),
+                multicast_group=cfg.multicast_group,
+                listen_iface=cfg.listen_iface,
+            )
+
+        def _apply_osc_input(_address: str) -> None:
+            # Re-resolved inside ``restart_osc``, so the listener binds the
+            # address this poll just observed.
+            _restart_osc_input(enabled=True)
+
+        def _current_osc_input() -> str | None:
+            service = self._osc_service
+            status = service.listener_status()
+            # A stopped listener reports no port; its bind address is then the
+            # cleared "" rather than a wildcard it is actually serving.
+            return None if status["port"] is None else str(status["bind_host"])
+
+        def _suspend_osc_input() -> None:
+            _restart_osc_input(enabled=False)
+
+        def _osc_input_pinned() -> bool:
+            # Unpinned, the listener binds every interface by design, so there
+            # is no interface for the observer to follow and nothing that going
+            # away should stop. Only a pin - its own or the station's - makes it
+            # a plane.
+            cfg = self._app._config.osc
+            pinned = plane_source_iface(cfg.listen_iface, self._app._config.psn_source_iface)
+            return bool(cfg.enabled and pinned)
+
         return [
             Plane(
                 label="PSN",
@@ -1132,6 +1169,14 @@ class AppRuntimeServices:
                 # A switched-off output is not broken; alerting on it would put
                 # a second fault on the HUD for a protocol nobody enabled.
                 enabled=lambda: self._app._config.otp_output.enabled,
+            ),
+            Plane(
+                label="OSC input",
+                resolve=_resolver(lambda: self._app._config.osc.listen_iface, is_station=False),
+                current=_current_osc_input,
+                apply=_apply_osc_input,
+                suspend=_suspend_osc_input,
+                enabled=_osc_input_pinned,
             ),
         ]
 

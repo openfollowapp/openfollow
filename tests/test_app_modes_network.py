@@ -110,6 +110,7 @@ def _make_app(adapter: _FakeAdapter | None = None) -> SimpleNamespace:
         _pi_network_index=0,
         _pi_network_interfaces=[],
         _pi_network_active_iface="",
+        _pi_network_open_iface="",
         _pi_network_state_cache=None,
         _pi_network_pending_config=None,
         _pi_network_static_edit=False,
@@ -149,15 +150,37 @@ def _make_app(adapter: _FakeAdapter | None = None) -> SimpleNamespace:
     return app
 
 
+def _row_index(app: SimpleNamespace, key: str) -> int | None:
+    rows = anm.build_pi_network_rows(app)
+    return next((i for i, r in enumerate(rows) if r.get("key") == key), None)
+
+
+def _open_iface(app: SimpleNamespace, name: str = "") -> None:
+    """Drill into an interface's own screen, where its actions live."""
+    anm._open_pi_network_iface(app, name or app._pi_network_active_iface)
+
+
 def _confirm_key(app: SimpleNamespace, key: str) -> None:
     """Put the cursor on the row carrying ``key`` and confirm it.
 
     Going through the rendered rows (rather than calling the action helper
     directly) is what keeps these tests honest about the row actually being
     reachable, which is the thing a reframe can silently break.
+
+    Per-interface actions sit one level in, so a key absent from the list
+    screen is looked for inside the interface that screen would open - and
+    still fails loudly if it is nowhere, rather than quietly drilling until
+    something matches.
     """
-    rows = anm.build_pi_network_rows(app)
-    app._pi_network_index = next(i for i, r in enumerate(rows) if r.get("key") == key)
+    index = _row_index(app, key)
+    if index is None:
+        if key.startswith(anm._IFACE_ROW_PREFIX):
+            anm._close_pi_network_iface(app)
+        elif not getattr(app, "_pi_network_open_iface", ""):
+            _open_iface(app)
+        index = _row_index(app, key)
+    assert index is not None, f"no reachable row carries the key {key!r}"
+    app._pi_network_index = index
     anm._pi_network_confirm(app)
 
 
@@ -177,8 +200,11 @@ class TestPiNetworkScreen:
         kinds = [r.get("kind") for r in rows]
         keys = [r.get("key") for r in rows if r.get("key")]
         assert "header" in kinds
-        assert "dhcp" in keys
+        assert "iface:eth0" in keys
         assert "back" in keys
+        # The per-interface actions live on that interface's own screen.
+        _open_iface(app, "eth0")
+        assert "dhcp" in [r.get("key") for r in anm.build_pi_network_rows(app) if r.get("key")]
 
     def test_back_returns_to_settings(self) -> None:
         """Back from the Network screen goes straight to Settings;
@@ -1027,6 +1053,59 @@ class TestApplyEdgeCases:
         assert "warn-1" in app._pi_network_banner
 
 
+class TestTheDrillDownCoversItsEdges:
+    """Paths the two-screen shape introduced, each reachable on a real station."""
+
+    def test_a_read_only_host_says_so_instead_of_offering_actions(self) -> None:
+        """A dhcpcd station cannot be addressed from here. Silently dropping
+        the actions would leave a screen whose only content is a URL and a way
+        out, with nothing saying why."""
+        app = _make_app(_FakeAdapter(writable=False))
+        anm.enter_pi_network(app)
+        _open_iface(app, "eth0")
+        rows = anm.build_pi_network_rows(app)
+        assert any("cannot be changed" in str(r.get("label", "")) for r in rows)
+        assert [r for r in rows if r.get("key") in {"dhcp", "static", "renew"}] == []
+        # Still leaveable.
+        assert any(r.get("key") == "back_to_list" for r in rows)
+
+    def test_opening_no_interface_is_a_noop(self) -> None:
+        """The rows are rebuilt every frame, so a name can go away between the
+        render the cursor was placed against and the confirm that follows."""
+        app = _make_app()
+        anm.enter_pi_network(app)
+        anm._open_pi_network_iface(app, "")
+        assert app._pi_network_open_iface == ""
+
+    def test_cancel_inside_an_interface_returns_to_the_list(self) -> None:
+        """Backing out of a sub-screen must not skip the level above it and
+        drop the operator into Settings."""
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _open_iface(app, "eth0")
+        anm.handle_pi_network_key(app, "Escape")
+        assert app._pi_network_open_iface == ""
+        assert app._pi_network_active is True
+
+    def test_cancel_on_the_list_leaves_the_screen(self) -> None:
+        app = _make_app()
+        anm.enter_pi_network(app)
+        anm.handle_pi_network_key(app, "Escape")
+        assert app._pi_network_active is False
+
+    def test_focusing_a_row_that_is_gone_falls_back_to_the_nearest_above(self) -> None:
+        """Every reshape re-seats the cursor by key, and a key can be absent -
+        an index left past the end leaves confirm doing nothing with nothing on
+        screen explaining why."""
+        app = _make_app()
+        anm.enter_pi_network(app)
+        rows = anm.build_pi_network_rows(app)
+        app._pi_network_index = len(rows) - 1
+        anm._focus_row(app, "no-such-row")
+        landed = anm.build_pi_network_rows(app)[app._pi_network_index]
+        assert landed.get("kind") in anm._SELECTABLE_KINDS
+
+
 class TestBusyShortCircuit:
     """While an apply/renew worker is in flight, ignore confirm except for Back,
     and never let a late worker mutate state after the operator exits the screen."""
@@ -1034,6 +1113,7 @@ class TestBusyShortCircuit:
     def test_confirm_ignored_while_busy_except_back(self) -> None:
         app = _make_app()
         anm.enter_pi_network(app)
+        _open_iface(app)
         rows = anm.build_pi_network_rows(app)
         # Land on the Set-to-static row, which would normally reveal the
         # address fields.
@@ -1041,10 +1121,14 @@ class TestBusyShortCircuit:
         app._pi_network_busy = True
         anm._pi_network_confirm(app)
         assert app._pi_network_static_edit is False
-        # Back stays live so the operator can leave a hung screen.
-        back_idx = next(i for i, r in enumerate(rows) if r.get("key") == "back")
+        # Both ways out stay live, so a hung interface screen can be left and
+        # then the screen itself - a busy station must never trap the operator
+        # one level down.
+        back_idx = next(i for i, r in enumerate(rows) if r.get("key") == "back_to_list")
         app._pi_network_index = back_idx
         anm._pi_network_confirm(app)
+        assert app._pi_network_open_iface == ""
+        _confirm_key(app, "back")
         assert app._pi_network_active is False
 
     def test_late_worker_drops_result_after_exit(self) -> None:
@@ -1143,10 +1227,7 @@ class TestConfirmDispatchEachRow:
     """Cover the per-key branches inside _pi_network_confirm."""
 
     def _confirm_row_by_key(self, app, key: str) -> None:
-        rows = anm.build_pi_network_rows(app)
-        idx = next(i for i, r in enumerate(rows) if r.get("key") == key)
-        app._pi_network_index = idx
-        anm._pi_network_confirm(app)
+        _confirm_key(app, key)
 
     def test_enter_on_address_opens_field_editor(self) -> None:
         from openfollow.network.adapter import Ipv4Config, Ipv4Method
@@ -1418,6 +1499,26 @@ def _labels(app) -> list[str]:
     return [str(r.get("label", "")) for r in anm.build_pi_network_rows(app)]
 
 
+def _detail_labels(app, name: str) -> list[str]:
+    """Labels on ``name``'s own screen, which is where its URL lives.
+
+    The list screen names interfaces and their addresses; the URL an operator
+    types belongs to the interface, so it is shown on the screen that is about
+    that interface.
+    """
+    _open_iface(app, name)
+    return _labels(app)
+
+
+def _list_values(app) -> dict[str, str]:
+    """Interface list rows as ``{name: value}``."""
+    return {
+        str(r.get("label")): str(r.get("value"))
+        for r in anm.build_pi_network_rows(app)
+        if str(r.get("key", "")).startswith(anm._IFACE_ROW_PREFIX)
+    }
+
+
 class TestTheScreenAnswersHowToReachTheWebUi:
     """The screen exists to hand the operator an address that works.
 
@@ -1429,8 +1530,8 @@ class TestTheScreenAnswersHowToReachTheWebUi:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5", "wlan0": "172.16.4.20"})
         app = _make_app()
         anm.enter_pi_network(app)
-        assert "http://192.168.1.5" in _labels(app)
-        assert "http://172.16.4.20" in _labels(app)
+        assert "http://192.168.1.5" in _detail_labels(app, "eth0")
+        assert "http://172.16.4.20" in _detail_labels(app, "wlan0")
 
     def test_a_non_default_port_is_part_of_the_url(self, monkeypatch) -> None:
         """An operator types what is on the screen; a URL missing the port
@@ -1440,7 +1541,7 @@ class TestTheScreenAnswersHowToReachTheWebUi:
         app._config.web_port = 8080
         app._web_server = _FakeWebServer(display_port=8080)
         anm.enter_pi_network(app)
-        assert "http://192.168.1.5:8080" in _labels(app)
+        assert "http://192.168.1.5:8080" in _detail_labels(app, "eth0")
 
     def test_the_url_carries_the_port_that_actually_bound(self, monkeypatch) -> None:
         """An unprivileged station that could not take :80 is serving on the
@@ -1451,15 +1552,16 @@ class TestTheScreenAnswersHowToReachTheWebUi:
         app._config.web_port = 80
         app._web_server = _FakeWebServer(display_port=8080)
         anm.enter_pi_network(app)
-        assert "http://192.168.1.5:8080" in _labels(app)
-        assert "http://192.168.1.5" not in _labels(app)
+        labels = _detail_labels(app, "eth0")
+        assert "http://192.168.1.5:8080" in labels
+        assert "http://192.168.1.5" not in labels
 
     def test_an_interface_with_no_address_says_so_instead_of_a_url(self, monkeypatch) -> None:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         app = _make_app()
         anm.enter_pi_network(app)
-        wlan = next(r for r in anm.build_pi_network_rows(app) if r.get("value") == "wlan0")
-        assert wlan["label"] == "-- no address --"
+        assert _list_values(app)["wlan0"] == "no address"
+        assert "-- no address --" in _detail_labels(app, "wlan0")
 
     def test_a_pinned_web_ui_shows_a_url_only_where_it_answers(self, monkeypatch) -> None:
         """Listing every address while the UI answers on one is how an
@@ -1469,9 +1571,8 @@ class TestTheScreenAnswersHowToReachTheWebUi:
         app._config.web_bind_iface = "wlan0"
         app._web_server = _FakeWebServer(bind_host="172.16.4.20")
         anm.enter_pi_network(app)
-        rows = {str(r.get("value")): str(r.get("label")) for r in anm.build_pi_network_rows(app)}
-        assert rows["wlan0"] == "http://172.16.4.20"
-        assert rows["eth0"] == "-- web UI not served here --"
+        assert "http://172.16.4.20" in _detail_labels(app, "wlan0")
+        assert "-- web UI not served here --" in _detail_labels(app, "eth0")
 
     def test_the_mdns_name_leads_and_is_not_selectable(self, monkeypatch) -> None:
         """It reaches the station on any interface and is the line an operator
@@ -1507,7 +1608,7 @@ class TestTheScreenAnswersHowToReachTheWebUi:
         monkeypatch.setattr("openfollow.privilege.device_repair.current_hostname", _boom)
         app = _make_app()
         anm.enter_pi_network(app)
-        assert "http://192.168.1.5" in _labels(app)
+        assert "http://192.168.1.5" in _detail_labels(app, "eth0")
 
 
 class TestTheScreenCallsOutWhatBreaksReachability:
@@ -1618,10 +1719,16 @@ class TestFixReachabilityActions:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5", "wlan0": "172.16.4.20"})
         app = _make_app()
         anm.enter_pi_network(app)
-        assert any(label == "Set eth0 to DHCP" for label in _labels(app))
+        _open_iface(app, "eth0")
+        assert app._pi_network_open_iface == "eth0"
+        # The screen is titled after the interface, so its actions do not
+        # repeat the name - which is what stopped them reading as a sentence
+        # about whichever interface came to mind.
+        assert any(label == "Set to DHCP" for label in _labels(app))
 
         _confirm_key(app, "iface:wlan0")
-        assert any(label == "Set wlan0 to DHCP" for label in _labels(app))
+        assert app._pi_network_open_iface == "wlan0"
+        assert any(label == "Set to DHCP" for label in _labels(app))
 
     def test_switching_interface_drops_a_half_typed_address(self, monkeypatch) -> None:
         """The typed values belong to the interface they were started on;
@@ -1644,7 +1751,7 @@ class TestFixReachabilityActions:
         _confirm_key(app, "static")
 
         _confirm_key(app, "iface:eth0")
-        assert app._pi_network_static_edit is True
+        assert app._pi_network_static_edit is False
 
     def test_cancel_leaves_the_static_editor(self, monkeypatch) -> None:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
@@ -1719,8 +1826,8 @@ class TestDefensivePathsOnTheReachabilityScreen:
             NetworkInterface(name="", mac=None, kind=None, is_up=True),
             NetworkInterface(name="eth0", mac="aa:bb", kind="ethernet", is_up=True),
         ]
-        values = [r.get("value") for r in anm.build_pi_network_rows(app) if r.get("kind") == "choice"]
-        assert values == ["eth0"]
+        labels = [r.get("label") for r in anm.build_pi_network_rows(app) if r.get("kind") == "choice"]
+        assert labels == ["eth0"]
 
     def test_unpinning_an_already_unpinned_ui_writes_nothing(self, monkeypatch) -> None:
         """The row is only offered while pinned, so reaching this means the
@@ -1773,10 +1880,9 @@ class TestTheScreenReportsTheLiveBindNotThePin:
         app._web_server = _FakeWebServer(bind_host="0.0.0.0")
         anm.enter_pi_network(app)
 
-        rows = {str(r.get("value")): str(r.get("label")) for r in anm.build_pi_network_rows(app)}
-        assert rows["eth0"] == "http://192.168.1.5"
-        assert rows["wlan0"] == "http://172.16.4.20"
-        assert "-- web UI not served here --" not in rows.values()
+        assert "http://192.168.1.5" in _detail_labels(app, "eth0")
+        assert "http://172.16.4.20" in _detail_labels(app, "wlan0")
+        assert "-- web UI not served here --" not in _detail_labels(app, "eth0")
 
     def test_a_pin_that_missed_is_explained_rather_than_hidden(self, monkeypatch) -> None:
         """Serving everywhere contradicts the config, so the screen carries
@@ -1801,9 +1907,8 @@ class TestTheScreenReportsTheLiveBindNotThePin:
         app._web_server = _FakeWebServer(bind_host="192.168.1.5")
         anm.enter_pi_network(app)
 
-        rows = {str(r.get("value")): str(r.get("label")) for r in anm.build_pi_network_rows(app)}
-        assert rows["eth0"] == "http://192.168.1.5"
-        assert rows["wlan0"] == "-- web UI not served here --"
+        assert "http://192.168.1.5" in _detail_labels(app, "eth0")
+        assert "-- web UI not served here --" in _detail_labels(app, "wlan0")
 
     def test_a_literal_bind_address_is_cleared_by_the_escape(self, monkeypatch) -> None:
         """Clearing only the interface pin would leave this station exactly
@@ -1877,15 +1982,29 @@ class TestTheCursorSurvivesRowsAppearingAndDisappearing:
 
         anm._pi_network_confirm(app)
 
-        assert self._key_under_cursor(app) == "dhcp"
+        assert self._key_under_cursor(app) == "back"
         adapter = app._runtime_services.network_adapter
         assert adapter.apply_calls == []
 
-    def test_switching_interface_keeps_the_cursor_on_that_interface(self, monkeypatch) -> None:
+    def test_opening_an_interface_lands_on_its_first_action(self, monkeypatch) -> None:
+        """Not on the title above them: the cursor belongs on the first row
+        that changes something, or confirm does nothing on arrival."""
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5", "wlan0": "172.16.4.20"})
         app = _make_app()
         anm.enter_pi_network(app)
         _confirm_key(app, "iface:wlan0")
+        assert app._pi_network_open_iface == "wlan0"
+        assert self._key_under_cursor(app) == "dhcp"
+
+    def test_backing_out_returns_the_cursor_to_the_interface_it_came_from(self, monkeypatch) -> None:
+        """Otherwise a station with five adapters drops the operator at the top
+        of the list every time they look inside one."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5", "wlan0": "172.16.4.20"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _confirm_key(app, "iface:wlan0")
+        _confirm_key(app, "back_to_list")
+        assert app._pi_network_open_iface == ""
         assert self._key_under_cursor(app) == "iface:wlan0"
 
 
@@ -2017,7 +2136,7 @@ class TestTheAdvisoryNeverBlanksTheScreen:
         app._web_server = _Boom()
         anm.enter_pi_network(app)
 
-        assert "http://192.168.1.5" in _labels(app)
+        assert "http://192.168.1.5" in _detail_labels(app, "eth0")
         assert _rows_by_kind(app, "notice") == []
 
     def test_a_server_without_the_advisory_is_tolerated(self, monkeypatch) -> None:
@@ -2028,7 +2147,7 @@ class TestTheAdvisoryNeverBlanksTheScreen:
         app._web_server = SimpleNamespace(bind_host="0.0.0.0", display_port=80)
         anm.enter_pi_network(app)
 
-        assert "http://192.168.1.5" in _labels(app)
+        assert "http://192.168.1.5" in _detail_labels(app, "eth0")
 
     def test_no_server_at_all_falls_back_to_the_configured_bind(self, monkeypatch) -> None:
         """Before ``init_web_server`` runs there is nothing to read, so the
@@ -2039,7 +2158,7 @@ class TestTheAdvisoryNeverBlanksTheScreen:
         app._web_server = None
         anm.enter_pi_network(app)
 
-        assert "http://192.168.1.5" in _labels(app)
+        assert "http://192.168.1.5" in _detail_labels(app, "eth0")
 
 
 class TestTheDpadCursorIsVisibleBeforeItChangesAnything:

@@ -348,6 +348,10 @@ class OpenFollowApp:
         self._pi_network_index: int = 0
         self._pi_network_interfaces: list[_NetworkInterface] = []
         self._pi_network_active_iface: str = ""
+        # Which interface's own screen is open; "" is the interface list.
+        # Separate from ``_pi_network_active_iface``, which says whose state is
+        # loaded from the adapter and has to stay set for the static editor.
+        self._pi_network_open_iface: str = ""
         # Interface-address enumeration for the screen's rows, held briefly so
         # the frame loop isn't walking every NIC on every tick.
         self._pi_network_addr_cache: dict[str, str] = {}

@@ -73,6 +73,9 @@ def _first_selectable_index(app: OpenFollowApp) -> int:
 def exit_pi_network(app: OpenFollowApp) -> None:
     app._pi_network_active = False
     app._pi_network_banner = ""
+    # Leaving drops the drill-down, so re-entering opens on the interface list
+    # rather than inside whichever interface was last looked at.
+    app._pi_network_open_iface = ""
     # Bump generation to orphan in-flight worker threads.
     app._pi_network_worker_generation = getattr(app, "_pi_network_worker_generation", 0) + 1
     app._pi_network_busy = False
@@ -276,12 +279,12 @@ def _iface_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[
     rows: list[dict[str, object]] = []
     for name, address in ifaces:
         if not address:
-            label = "-- no address --"
+            value = "no address"
         elif not everywhere and address != bind_host:
-            label = "-- web UI not served here --"
+            value = f"{address} - web UI not here"
         else:
-            label = _web_url_for(app, address)
-        rows.append({"kind": "choice", "key": f"{_IFACE_ROW_PREFIX}{name}", "label": label, "value": name})
+            value = address
+        rows.append({"kind": "choice", "key": f"{_IFACE_ROW_PREFIX}{name}", "label": name, "value": value})
     return rows
 
 
@@ -375,55 +378,100 @@ def build_pi_network_rows(app: OpenFollowApp) -> list[dict[str, object]]:
     writable = bool(adapter and adapter.is_writable())
     pending: Ipv4Config | None = getattr(app, "_pi_network_pending_config", None)
     busy = bool(getattr(app, "_pi_network_busy", False))
-    active = str(getattr(app, "_pi_network_active_iface", "") or "")
     static_edit = bool(getattr(app, "_pi_network_static_edit", False))
 
-    rows: list[dict[str, object]] = [{"kind": "header", "label": "Open on a computer on the same network"}]
-
     ifaces = _iface_addresses(app)
+    opened = str(getattr(app, "_pi_network_open_iface", "") or "")
+    if opened:
+        return _iface_detail_rows(
+            app,
+            opened,
+            ifaces,
+            writable=writable,
+            busy=busy,
+            static_edit=static_edit,
+            pending=pending,
+        )
+    return _iface_list_rows(app, ifaces)
+
+
+def _iface_list_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[str, object]]:
+    """The first screen: where the station can be reached, and on what.
+
+    Choosing an interface opens its own screen rather than retargeting actions
+    further down this one. An operator cannot be expected to notice that a list
+    formatted as addresses is also the control that decides what the buttons
+    below it will change - and the old screen opened already naming an
+    interface nobody had picked.
+    """
+    rows: list[dict[str, object]] = [{"kind": "header", "label": "Open on a computer on the same network"}]
     mdns = _mdns_host(app)
     if mdns:
         # First, and not selectable: it reaches the station on any interface,
-        # so there is no per-interface action it could drive. It is also the
-        # one line an operator can read out over comms.
+        # so there is no per-interface screen it could open. It is also the one
+        # line an operator can read out over comms.
         rows.append({"kind": "display", "key": "mdns", "label": _web_url_for(app, mdns), "value": "any interface"})
+
+    rows.append({"kind": "header", "label": "Interfaces"})
     rows.extend(_iface_rows(app, ifaces))
     rows.extend(_reachability_notices(app, ifaces))
 
-    rows.append({"kind": "header", "label": "Fix reachability"})
+    rows.append({"kind": "header", "label": "If you still can't reach it"})
     if _web_ui_is_restricted(app):
+        # Belongs to no single interface, so it stays on this screen.
         # Deliberately not gated on ``writable``: this writes config, not the
         # network stack, so it stays available on a host whose addressing this
         # build cannot manage - which is exactly where a lockout would strand
         # the operator otherwise.
         rows.append({"kind": "action", "key": "web_unpin", "label": "Serve web UI on all interfaces", "value": ""})
-    if writable and active:
-        if static_edit:
-            rows.append(
-                {"kind": "text", "key": "address", "label": "IP Address", "value": _addr_of(pending, "address")}
-            )
-            rows.append({"kind": "text", "key": "prefix", "label": "Subnet", "value": _prefix_text(pending)})
-            rows.append(
-                {"kind": "text", "key": "router", "label": "Router (optional)", "value": _addr_of(pending, "router")}
-            )
-            rows.append(
-                {"kind": "action", "key": "apply", "label": "Working…" if busy else f"Apply to {active}", "value": ""}
-            )
-            rows.append({"kind": "action", "key": "cancel_static", "label": "Cancel", "value": ""})
-        else:
-            rows.append(
-                {"kind": "action", "key": "dhcp", "label": "Working…" if busy else f"Set {active} to DHCP", "value": ""}
-            )
-            rows.append({"kind": "action", "key": "static", "label": f"Set {active} to a static address…", "value": ""})
-            rows.append(
-                {
-                    "kind": "action",
-                    "key": "renew",
-                    "label": "Working…" if busy else f"Renew DHCP lease on {active}",
-                    "value": "",
-                }
-            )
     rows.append({"kind": "action", "key": "back", "label": "Back", "value": ""})
+    return rows
+
+
+def _iface_detail_rows(
+    app: OpenFollowApp,
+    name: str,
+    ifaces: list[tuple[str, str]],
+    *,
+    writable: bool,
+    busy: bool,
+    static_edit: bool,
+    pending: Ipv4Config | None,
+) -> list[dict[str, object]]:
+    """The second screen: one interface, named in the title, and its actions.
+
+    Every action here acts on ``name``, so none of them repeats it - the title
+    carries the subject, which is what stops the operator having to hold it in
+    their head while they read down a list.
+    """
+    address = next((addr for iface_name, addr in ifaces if iface_name == name), "")
+    rows: list[dict[str, object]] = [{"kind": "header", "label": "Reach it at"}]
+    if not address:
+        rows.append({"kind": "display", "key": "url", "label": "-- no address --", "value": ""})
+    elif not _serves_every_interface(app) and address != _served_bind_host(app):
+        rows.append({"kind": "display", "key": "url", "label": "-- web UI not served here --", "value": address})
+    else:
+        rows.append({"kind": "display", "key": "url", "label": _web_url_for(app, address), "value": "now"})
+
+    rows.append({"kind": "header", "label": "Change this interface"})
+    if not writable:
+        rows.append({"kind": "notice", "label": "This station's addressing cannot be changed from here.", "value": ""})
+    elif static_edit:
+        rows.append({"kind": "text", "key": "address", "label": "IP Address", "value": _addr_of(pending, "address")})
+        rows.append({"kind": "text", "key": "prefix", "label": "Subnet", "value": _prefix_text(pending)})
+        rows.append(
+            {"kind": "text", "key": "router", "label": "Router (optional)", "value": _addr_of(pending, "router")}
+        )
+        rows.append({"kind": "action", "key": "apply", "label": "Working..." if busy else "Apply", "value": ""})
+        rows.append({"kind": "action", "key": "cancel_static", "label": "Cancel", "value": ""})
+    else:
+        rows.append({"kind": "action", "key": "dhcp", "label": "Working..." if busy else "Set to DHCP", "value": ""})
+        rows.append({"kind": "action", "key": "static", "label": "Set a static address...", "value": ""})
+        rows.append(
+            {"kind": "action", "key": "renew", "label": "Working..." if busy else "Renew DHCP lease", "value": ""}
+        )
+
+    rows.append({"kind": "action", "key": "back_to_list", "label": "Back to interfaces", "value": ""})
     return rows
 
 
@@ -480,14 +528,18 @@ def _pi_network_confirm(app: OpenFollowApp) -> None:
     if row.get("kind") not in _SELECTABLE_KINDS:
         return
     key = str(row.get("key") or "")
-    # While apply/renew worker is in flight, ignore everything except Back.
-    if getattr(app, "_pi_network_busy", False) and key != "back":
+    # While the apply/renew worker is in flight, ignore everything except the
+    # ways out - both of them, since a hung screen is most likely reached from
+    # inside an interface, where the way out is "Back to interfaces".
+    if getattr(app, "_pi_network_busy", False) and key not in ("back", "back_to_list"):
         return
     if key == "back":
         exit_pi_network(app)
         app._enter_settings_menu()
     elif key.startswith(_IFACE_ROW_PREFIX):
-        _select_pi_network_iface(app, key[len(_IFACE_ROW_PREFIX) :])
+        _open_pi_network_iface(app, key[len(_IFACE_ROW_PREFIX) :])
+    elif key == "back_to_list":
+        _close_pi_network_iface(app)
     elif key in ("address", "prefix", "router"):
         enter_pi_network_field_edit(app, key)
     elif key == "web_unpin":
@@ -504,19 +556,41 @@ def _pi_network_confirm(app: OpenFollowApp) -> None:
         _renew_pi_network(app)
 
 
-def _select_pi_network_iface(app: OpenFollowApp, name: str) -> None:
-    """Make ``name`` the interface the Fix-reachability actions name.
+def _open_pi_network_iface(app: OpenFollowApp, name: str) -> None:
+    """Open ``name``'s own screen.
 
-    A half-typed static address belongs to the interface it was started on,
-    so switching interfaces drops the editor rather than carrying the values
-    across to a different adapter.
+    Unconditional, unlike the retargeting it replaces: reopening the interface
+    already loaded is a normal navigation step, and refusing it would leave
+    confirm doing nothing on the row the cursor rests on when the screen opens.
+
+    A half-typed static address belongs to the interface it was started on, so
+    opening one drops the editor rather than carrying the values across.
     """
-    if not name or name == getattr(app, "_pi_network_active_iface", ""):
+    if not name:
         return
+    app._pi_network_open_iface = name
     app._pi_network_active_iface = name
     app._pi_network_static_edit = False
     _refresh_pi_network_bounded(app)
-    _focus_row(app, f"{_IFACE_ROW_PREFIX}{name}")
+    # The first thing that changes something, not the title above it.
+    _focus_row(app, "dhcp")
+
+
+def _close_pi_network_iface(app: OpenFollowApp) -> None:
+    """Return to the interface list, with the cursor back on the row we came from."""
+    name = str(getattr(app, "_pi_network_open_iface", "") or "")
+    app._pi_network_open_iface = ""
+    app._pi_network_static_edit = False
+    _focus_row(app, f"{_IFACE_ROW_PREFIX}{name}" if name else "back")
+
+
+def _leave_pi_network_level(app: OpenFollowApp) -> None:
+    """Cancel backs out one level, so it never skips the list on the way out."""
+    if getattr(app, "_pi_network_open_iface", ""):
+        _close_pi_network_iface(app)
+        return
+    exit_pi_network(app)
+    app._enter_settings_menu()
 
 
 def _web_ui_is_restricted(app: OpenFollowApp) -> bool:
@@ -557,7 +631,7 @@ def _unpin_web_ui(app: OpenFollowApp) -> None:
     app._web_commands.request_restart()
     # The row just removed itself; without this the same index is now the
     # next action down, and a second Enter tap would run it.
-    _focus_row(app, "dhcp")
+    _focus_row(app, "back")
 
 
 def _set_pi_network_dhcp(app: OpenFollowApp) -> None:
@@ -624,8 +698,7 @@ def process_pi_network_input(app: OpenFollowApp) -> None:
     if inp.confirm_pressed:
         _pi_network_confirm(app)
     elif inp.cancel_pressed:
-        exit_pi_network(app)
-        app._enter_settings_menu()
+        _leave_pi_network_level(app)
 
 
 def handle_pi_network_key(app: OpenFollowApp, key: str) -> None:
@@ -636,8 +709,7 @@ def handle_pi_network_key(app: OpenFollowApp, key: str) -> None:
     elif key == "Enter":
         _pi_network_confirm(app)
     elif key == "Escape":
-        exit_pi_network(app)
-        app._enter_settings_menu()
+        _leave_pi_network_level(app)
 
 
 # ---------------------------------------------------------------------------

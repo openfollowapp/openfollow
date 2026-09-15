@@ -322,6 +322,7 @@ def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
         target.rows = build_pi_network_rows(app)
         target.selected_index = int(getattr(app, "_pi_network_index", 0))
         target.active_iface = str(getattr(app, "_pi_network_active_iface", ""))
+        target.open_iface = str(getattr(app, "_pi_network_open_iface", ""))
         target.banner = str(getattr(app, "_pi_network_banner", ""))
     target.field_edit_active = bool(getattr(app, "_pi_network_field_edit_active", False))
     if target.field_edit_active:

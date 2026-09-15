@@ -1701,8 +1701,10 @@ def draw_pi_network_screen(
     while data rows sit indented below them.
     """
     net = state.pi_network
-    pad = _confirm_cancel_hint(state, "opens", "goes back")
-    subtitle = f"D-pad or arrows to move. {pad}." if pad else "Arrows to move, Enter to open, Esc to leave."
+    # Confirm opens an interface on the list and runs an action inside one, so
+    # the hint has to follow the level rather than describe one of them wrongly.
+    pad = _confirm_cancel_hint(state, "selects" if net.open_iface else "opens", "goes back")
+    subtitle = f"D-pad or arrows to move. {pad}." if pad else "Arrows to move, Enter to select, Esc to go back."
     panel_w = min(w * 0.62, 880.0)
     panel_h = min(h * 0.92, 760.0)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
@@ -1710,7 +1712,7 @@ def draw_pi_network_screen(
         cr,
         w,
         h,
-        title="NETWORK",
+        title=net.open_iface.upper() if net.open_iface else "NETWORK",
         subtitle=subtitle,
         panel_w=panel_w,
         panel_h=panel_h,

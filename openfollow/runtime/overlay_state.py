@@ -44,6 +44,8 @@ class PiNetworkOverlayState:
     rows: list[dict[str, object]] = field(default_factory=list)
     selected_index: int = 0
     active_iface: str = ""
+    # Interface whose own screen is open; "" is the interface list.
+    open_iface: str = ""
     banner: str = ""
 
     field_edit_active: bool = False
@@ -58,6 +60,7 @@ class PiNetworkOverlayState:
         self.rows = []
         self.selected_index = 0
         self.active_iface = ""
+        self.open_iface = ""
         self.banner = ""
         self.field_edit_active = False
         self.field_label = ""

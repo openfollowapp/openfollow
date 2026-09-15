@@ -354,7 +354,7 @@ def build_help_sections(
                 "Esc: Back one screen",
             ]
             if settings_key:
-                keyboard.append(f"{_key_label(settings_key)}: Close")
+                keyboard.append(f"{_key_label(settings_key)}: Close Menu")
         if controller_connected:
             controller = [
                 "D-Pad Up/Down: Navigate",
@@ -362,7 +362,7 @@ def build_help_sections(
                 f"{_btn('menu_cancel', 'B')}: Back one screen",
             ]
             if settings_btn:
-                controller.append(f"{settings_btn}: Close")
+                controller.append(f"{settings_btn}: Close Menu")
     sections: HelpSections = []
     if keyboard:
         sections.append(("Keyboard", keyboard))

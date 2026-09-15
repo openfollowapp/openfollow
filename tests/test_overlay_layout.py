@@ -337,8 +337,8 @@ def test_the_settings_help_lists_both_ways_out() -> None:
         keyboard_labels={"settings": "m"},
     )
     section_dict = dict(sections)
-    assert any(line == "M: Close" for line in section_dict["Keyboard"])
-    assert any(line == "Back: Close" for line in section_dict["Controller"])
+    assert any(line == "M: Close Menu" for line in section_dict["Keyboard"])
+    assert any(line == "Back: Close Menu" for line in section_dict["Controller"])
 
 
 def test_an_unbound_close_button_is_not_promised() -> None:

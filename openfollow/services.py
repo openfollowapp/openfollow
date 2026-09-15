@@ -1115,42 +1115,33 @@ class AppRuntimeServices:
             if self._app._otp_server is not None:
                 self._app._otp_server.stop()
 
-        def _restart_osc_input(*, enabled: bool) -> None:
-            manager = self._app._input_manager
-            if manager is None:
-                return
-            cfg = self._app._config.osc
-            manager.restart_osc(
-                enabled,
-                cfg.port,
-                allowed_sender_ips=list(cfg.allowed_sender_ips),
-                multicast_group=cfg.multicast_group,
-                listen_iface=cfg.listen_iface,
-            )
-
-        def _apply_osc_input(_address: str) -> None:
-            # Re-resolved inside ``restart_osc``, so the listener binds the
-            # address this poll just observed.
-            _restart_osc_input(enabled=True)
+        def _apply_osc_input(address: str) -> None:
+            # Moves the membership on the live socket. The listener is not
+            # touched: only the group follows the interface, so restarting it
+            # would drop every subscription hanging off it for nothing.
+            self._osc_service.set_multicast_iface(address)
 
         def _current_osc_input() -> str | None:
-            service = self._osc_service
-            status = service.listener_status()
-            # A stopped listener reports no port; its bind address is then the
-            # cleared "" rather than a wildcard it is actually serving.
-            return None if status["port"] is None else str(status["bind_host"])
+            status = self._osc_service.listener_status()
+            if not status["multicast_joined"]:
+                return None
+            iface = status["multicast_iface"]
+            return None if iface is None else str(iface)
 
         def _suspend_osc_input() -> None:
-            _restart_osc_input(enabled=False)
+            self._osc_service.set_multicast_iface(None)
 
         def _osc_input_pinned() -> bool:
-            # Unpinned, the listener binds every interface by design, so there
-            # is no interface for the observer to follow and nothing that going
-            # away should stop. Only a pin - its own or the station's - makes it
-            # a plane.
+            # Three things have to be true before this is a plane. Unpinned, the
+            # membership is the routing table's to choose and there is no
+            # interface to follow; with no group configured the pin governs
+            # nothing; and with no listener running there is no socket to move a
+            # membership on, so polling would retry once a second forever
+            # against a port that is in use.
             cfg = self._app._config.osc
             pinned = plane_source_iface(cfg.listen_iface, self._app._config.psn_source_iface)
-            return bool(cfg.enabled and pinned)
+            listening = self._osc_service.listener_status()["port"] is not None
+            return bool(cfg.enabled and cfg.multicast_group and pinned and listening)
 
         return [
             Plane(
@@ -1974,6 +1965,16 @@ class AppRuntimeServices:
         otp_cfg = self._app._config.otp_output
         if self._app._otp_server is not None and otp_cfg.enabled and not otp_cfg.source_iface:
             self.apply_otp_output_change(otp_cfg)
+
+        # The OSC membership inherits the station pin the same way, and the
+        # observer cannot cover it: clearing the Station default row leaves the
+        # plane unpinned, so it stops being followed while the socket still
+        # holds a membership on the interface that was just given up.
+        osc_cfg = self._app._config.osc
+        if osc_cfg.enabled and osc_cfg.multicast_group and not osc_cfg.listen_iface:
+            from openfollow.input.input_manager import resolve_osc_multicast_iface
+
+            self._osc_service.set_multicast_iface(resolve_osc_multicast_iface("", self._app._config.psn_source_iface))
 
     def suspend_psn_planes(self) -> None:
         """Stop PSN output and input because the station interface has no address.

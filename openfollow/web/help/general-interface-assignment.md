@@ -32,13 +32,13 @@ Following the station interface includes stopping with it. When the station inte
 
 ## OSC input
 
-Which interface the station listens for OSC on. Left blank it follows Station default, so on a single-adapter station there is nothing to set.
+Which interface the station takes its OSC **multicast** subscription on. Left blank it follows Station default, so on a single-adapter station there is nothing to set. It does nothing unless a multicast group is set under OSC Input, and the row says so.
 
-Pinning it does two things. OSC sent to the station's **other** addresses is no longer received - only the pinned interface's address answers. And the multicast group, if one is set, is joined on that interface alone.
+Subscribing to a group is per-interface. Left to itself the system picks one, and it can pick differently from one restart to the next - so on a station with several networks, OSC sent to the group arrives after one restart and not after the next. Pinning the row is what makes it the same every time. On a station with one network there is nothing to pick and the row changes nothing.
 
-The multicast part is worth knowing even if you never pin this row. Unpinned, the group is joined on whichever interface the system picks, and that choice can land differently from one restart to the next. On a station with one network that makes no difference. On a station with several, pinning is what makes it the same every time.
+If the pinned interface has no address, the station holds no subscription at all rather than taking one on a different network, and the Address column says so. It subscribes again on its own when the interface comes back.
 
-Broadcast and unicast to the pinned address keep working as before; it is reception at the station's other addresses that stops.
+This row does **not** change which addresses OSC is accepted at. Ordinary OSC sent straight to the station, and OSC sent to the subnet broadcast address, arrive on every interface whatever this row is set to - that is how the listener has to be bound for multicast to work at all. To restrict who may send, use **Allowed sender IPs** under OSC Input.
 
 ## Web UI
 

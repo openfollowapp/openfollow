@@ -1140,24 +1140,41 @@ class TestInterfaceAssignmentRows:
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OSC input"]["address"] == "10.0.0.9"
 
-    def test_osc_input_row_reads_all_interfaces_when_nothing_is_pinned(self, monkeypatch) -> None:
-        """The row has to say what the listener does, and unpinned it answers
-        everywhere. Naming the auto-detected primary would read as a restriction
-        the socket does not have, hiding every other address OSC still arrives
-        at."""
+    def test_osc_input_row_names_no_interface_when_nothing_is_pinned(self, monkeypatch) -> None:
+        """Unpinned there is no interface to name - the routing table picks one
+        per membership. Naming the auto-detected primary would read as a
+        restriction the socket does not have."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         cfg = AppConfig(psn_source_iface="")
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
-        assert rows["OSC input"]["address"] == "All interfaces"
+        assert rows["OSC input"]["address"] == "Default interface"
+
+    def test_osc_input_row_says_when_the_pin_governs_nothing(self, monkeypatch) -> None:
+        """The pin moves a multicast membership. With no group configured there
+        is no membership, so an address here would imply the row was doing
+        something to a listener it does not touch."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        cfg = AppConfig(psn_source_iface="eth0")
+        cfg.osc.multicast_group = ""
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        assert rows["OSC input"]["address"] == "No multicast group"
 
     def test_osc_input_row_reports_a_down_pin(self, monkeypatch) -> None:
-        """Fails closed, and says so: the listener is stopped, so an address
-        here would claim reception that isn't happening."""
+        """Fails closed on the group: no membership is held, so an address here
+        would claim a subscription that does not exist."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         cfg = AppConfig(psn_source_iface="eth0")
         cfg.osc.listen_iface = "eth9"
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OSC input"]["address"] == "eth9 is down"
+
+    def test_an_inheriting_osc_row_agrees_with_the_station_row(self, monkeypatch) -> None:
+        """Both read one resolution. A second NIC walk could disagree with the
+        row above if an address moves mid-render."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        cfg = AppConfig(psn_source_iface="eth0")
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        assert rows["OSC input"]["address"] == rows["Station default"]["address"]
 
     def test_every_editable_row_maps_to_a_known_target(self, monkeypatch) -> None:
         """Guards the panel against growing a control the save path can't

@@ -184,9 +184,10 @@ port = 8765
 # Optional IPv4 multicast group (224.0.0.0–239.255.255.255) the inbound
 # listener joins. Empty = off; unicast + subnet broadcast always received.
 multicast_group = "239.20.20.20"
-# Interface the listener binds, by name. Empty follows psn_source_iface, and
-# a station on auto-detect listens on every interface. Pinned, OSC sent to the
-# station's other addresses is no longer received.
+# Interface the multicast membership above is taken on, by name. Empty follows
+# psn_source_iface, and a station on auto-detect leaves the choice to the
+# routing table. Unicast and broadcast reception is unaffected - the listener
+# binds every interface regardless, which is what multicast requires.
 listen_iface = ""
 
 # OSC-driven operator messages shown on the video overlay. Senders push to

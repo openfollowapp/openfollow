@@ -796,8 +796,8 @@ def test_listener_status_defaults_when_stopped() -> None:
     svc = OscService()
     assert svc.listener_status() == {
         "port": None,
-        "bind_host": "",
         "multicast_group": "",
+        "multicast_iface": "",
         "multicast_joined": False,
         "allowed_sender_ips": [],
     }
@@ -1079,12 +1079,23 @@ def test_start_listener_rebinds_on_group_change(monkeypatch: pytest.MonkeyPatch)
 def test_join_multicast_group_pins_the_membership_to_an_interface() -> None:
     """The defect this exists to close. ``INADDR_ANY`` does not subscribe
     everywhere - the kernel picks one interface by routing table, which is why
-    an unpinned listener joined a different adapter from one restart to the
-    next. A resolved address must reach the mreq verbatim."""
+    an unpinned listener took the group on a different adapter from one restart
+    to the next. A resolved address must reach the mreq verbatim."""
     sock = _RecordingSocket()
     assert service_module._join_multicast_group(sock, "239.1.2.3", 9000, iface_ip="10.0.0.9") is True
     _level, _optname, value = sock.opts[0]
     assert value == socket.inet_aton("239.1.2.3") + socket.inet_aton("10.0.0.9")
+
+
+def test_join_multicast_group_declines_a_down_pin(caplog: pytest.LogCaptureFixture) -> None:
+    """``None`` is "an interface is pinned and has no address". Falling through
+    to INADDR_ANY there would subscribe on a network the operator excluded,
+    which is the whole thing the pin prevents."""
+    sock = _RecordingSocket()
+    with caplog.at_level(logging.ERROR):
+        assert service_module._join_multicast_group(sock, "239.1.2.3", 9000, iface_ip=None) is False
+    assert sock.opts == []
+    assert any("will not take the group on another one" in r.getMessage() for r in caplog.records)
 
 
 def test_join_multicast_group_failure_names_the_interface(caplog: pytest.LogCaptureFixture) -> None:
@@ -1096,48 +1107,59 @@ def test_join_multicast_group_failure_names_the_interface(caplog: pytest.LogCapt
     assert any("10.0.0.9" in r.getMessage() for r in caplog.records)
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
-def test_restart_listener_binds_the_given_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A pinned listener answers at that address only. Loopback stands in for a
-    real NIC: the assertion is that the value reaches the socket, not which
-    interface a CI host happens to have."""
-    svc = OscService()
-    monkeypatch.setattr(service_module, "_join_multicast_group", lambda *a, **kw: None)
-    bind_free_udp_port(lambda p: svc.restart_listener(port=p, allowed_ips=(), bind_host="127.0.0.1"))
-    try:
-        assert svc._listener.socket.getsockname()[0] == "127.0.0.1"
-        assert svc.listener_status()["bind_host"] == "127.0.0.1"
-    finally:
-        svc.shutdown()
+def test_leave_multicast_group_drops_the_membership_it_holds() -> None:
+    """Repinning has to leave first: memberships accumulate per interface, so a
+    socket that only joined would keep receiving the group on the interface the
+    operator just moved it off."""
+    sock = _RecordingSocket()
+    service_module._leave_multicast_group(sock, "239.1.2.3", 9000, iface_ip="10.0.0.9")
+    level, optname, value = sock.opts[0]
+    assert (level, optname) == (socket.IPPROTO_IP, socket.IP_DROP_MEMBERSHIP)
+    assert value == socket.inet_aton("239.1.2.3") + socket.inet_aton("10.0.0.9")
+
+
+def test_leave_multicast_group_is_a_noop_when_nothing_is_held() -> None:
+    sock = _RecordingSocket()
+    service_module._leave_multicast_group(sock, "239.1.2.3", 9000, iface_ip=None)
+    assert sock.opts == []
+
+
+def test_leave_multicast_group_swallows_oserror() -> None:
+    """Best-effort: a membership the kernel has already dropped must not stop
+    the rejoin that follows it."""
+    sock = _RecordingSocket(raise_oserror=True)
+    service_module._leave_multicast_group(sock, "239.1.2.3", 9000, iface_ip="10.0.0.9")
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
-def test_restart_listener_unpinned_binds_every_interface(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The default has to stay the wildcard: a station that pinned nothing
-    keeps answering OSC at every address it had before."""
+def test_listener_always_binds_every_interface(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The load-bearing rule. A socket bound to one unicast address receives no
+    multicast and no broadcast at all - the kernel matches a datagram's
+    destination against the bound address, and a group address is neither -
+    while ``IP_ADD_MEMBERSHIP`` still reports success, so the failure is
+    silent. The pin must never reach the bind."""
     svc = OscService()
-    monkeypatch.setattr(service_module, "_join_multicast_group", lambda *a, **kw: None)
-    bind_free_udp_port(lambda p: svc.restart_listener(port=p, allowed_ips=()))
+    monkeypatch.setattr(service_module, "_join_multicast_group", lambda *a, **kw: True)
+    bind_free_udp_port(
+        lambda p: svc.restart_listener(
+            port=p,
+            allowed_ips=(),
+            multicast_group="239.1.2.3",
+            multicast_iface="127.0.0.1",
+        )
+    )
     try:
-        # Wildcard in whichever family the host gives an empty host string -
-        # the assertion is that it is not pinned to one address, not which
-        # family this runner happens to prefer.
         assert svc._listener.socket.getsockname()[0] in ("0.0.0.0", "::")
-        assert svc.listener_status()["bind_host"] == ""
     finally:
         svc.shutdown()
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
-def test_restart_listener_joins_the_group_on_the_bound_interface(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Bind and join must agree. A socket pinned to one interface that then
-    subscribed via INADDR_ANY would still take the group from whichever one the
-    routing table chose."""
+def test_restart_listener_joins_the_group_on_the_pinned_interface(monkeypatch: pytest.MonkeyPatch) -> None:
     svc = OscService()
-    joins: list[str] = []
+    joins: list[str | None] = []
     monkeypatch.setattr(
         service_module,
         "_join_multicast_group",
@@ -1148,62 +1170,250 @@ def test_restart_listener_joins_the_group_on_the_bound_interface(monkeypatch: py
             port=p,
             allowed_ips=(),
             multicast_group="239.1.2.3",
-            bind_host="127.0.0.1",
+            multicast_iface="10.0.0.9",
         )
     )
     try:
-        assert joins == ["127.0.0.1"]
+        assert joins == ["10.0.0.9"]
+        status = svc.listener_status()
+        assert status["multicast_iface"] == "10.0.0.9"
+        assert status["multicast_joined"] is True
     finally:
         svc.shutdown()
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
-def test_start_listener_rebinds_on_bind_host_change(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The pin belongs in the idempotency key. Without it, repinning the
-    listener is a no-op and it keeps answering on the interface the operator
-    just moved it off."""
+def test_set_multicast_iface_moves_the_membership_without_restarting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The observer calls this once a second while an interface is away, so it
+    has to be a pair of socket options, not a listener restart - a restart
+    would drop every subscription hanging off the listener each time."""
     svc = OscService()
-    monkeypatch.setattr(service_module, "_join_multicast_group", lambda *a, **kw: None)
-    port = bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=()))
-    first = svc._listener
+    events: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        service_module,
+        "_join_multicast_group",
+        lambda sock, group, port, *, iface_ip="": events.append(("join", iface_ip)) or (iface_ip is not None),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "_leave_multicast_group",
+        lambda sock, group, port, *, iface_ip="": events.append(("leave", iface_ip)),
+    )
+    bind_free_udp_port(
+        lambda p: svc.restart_listener(
+            port=p,
+            allowed_ips=(),
+            multicast_group="239.1.2.3",
+            multicast_iface="10.0.0.9",
+        )
+    )
+    listener = svc._listener
     try:
-        svc.start_listener(port, allowed_ips=(), bind_host="127.0.0.1")
-        assert svc._listener is not first
-        assert svc._listener_bind_host == "127.0.0.1"
+        assert svc.set_multicast_iface("10.0.0.20") is True
+        assert events[-2:] == [("leave", "10.0.0.9"), ("join", "10.0.0.20")]
+        assert svc._listener is listener  # moved in place, not restarted
+        assert svc.listener_status()["multicast_iface"] == "10.0.0.20"
     finally:
         svc.shutdown()
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
-def test_start_listener_idempotent_with_same_bind_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The other half: an unchanged pin must not tear the socket down, or every
-    unrelated config save would drop inbound OSC for a moment."""
+def test_set_multicast_iface_none_leaves_the_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    """What a pinned interface going down has to mean: hold no membership
+    rather than one on an interface the operator excluded. The listener keeps
+    running, so unicast and broadcast are unaffected."""
     svc = OscService()
-    monkeypatch.setattr(service_module, "_join_multicast_group", lambda *a, **kw: None)
-    port = bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=(), bind_host="127.0.0.1"))
+    events: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        service_module,
+        "_join_multicast_group",
+        lambda sock, group, port, *, iface_ip="": events.append(("join", iface_ip)) or (iface_ip is not None),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "_leave_multicast_group",
+        lambda sock, group, port, *, iface_ip="": events.append(("leave", iface_ip)),
+    )
+    bind_free_udp_port(
+        lambda p: svc.restart_listener(
+            port=p,
+            allowed_ips=(),
+            multicast_group="239.1.2.3",
+            multicast_iface="10.0.0.9",
+        )
+    )
+    try:
+        assert svc.set_multicast_iface(None) is False
+        assert ("leave", "10.0.0.9") in events
+        assert ("join", None) not in events
+        status = svc.listener_status()
+        assert status["multicast_iface"] is None
+        assert status["multicast_joined"] is False
+        assert status["port"] is not None  # still listening
+    finally:
+        svc.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
+def test_set_multicast_iface_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Called every poll while the interface is healthy, so an unchanged pin
+    must not churn the membership."""
+    svc = OscService()
+    events: list[str] = []
+    monkeypatch.setattr(
+        service_module,
+        "_join_multicast_group",
+        lambda sock, group, port, *, iface_ip="": events.append("join") or True,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "_leave_multicast_group",
+        lambda sock, group, port, *, iface_ip="": events.append("leave"),
+    )
+    bind_free_udp_port(
+        lambda p: svc.restart_listener(
+            port=p,
+            allowed_ips=(),
+            multicast_group="239.1.2.3",
+            multicast_iface="10.0.0.9",
+        )
+    )
+    try:
+        events.clear()
+        assert svc.set_multicast_iface("10.0.0.9") is True
+        assert events == []
+    finally:
+        svc.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
+def test_set_multicast_iface_rejoins_from_holding_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The recovery path. Coming back from a down pin there is no membership to
+    leave, and attempting one would log a spurious failure every time an
+    interface returned."""
+    svc = OscService()
+    events: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        service_module,
+        "_join_multicast_group",
+        lambda sock, group, port, *, iface_ip="": events.append(("join", iface_ip)) or (iface_ip is not None),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "_leave_multicast_group",
+        lambda sock, group, port, *, iface_ip="": events.append(("leave", iface_ip)),
+    )
+    bind_free_udp_port(
+        lambda p: svc.restart_listener(
+            port=p,
+            allowed_ips=(),
+            multicast_group="239.1.2.3",
+            multicast_iface=None,
+        )
+    )
+    try:
+        events.clear()
+        assert svc.set_multicast_iface("10.0.0.9") is True
+        assert events == [("join", "10.0.0.9")]  # no leave: nothing was held
+    finally:
+        svc.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
+def test_set_multicast_iface_does_not_record_over_a_newer_listener(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The membership is moved outside the lock, so a ``restart_listener`` can
+    land in between. Recording unconditionally would stamp this call's
+    interface onto the new socket's state, which never joined it."""
+    svc = OscService()
+    replacement = object()
+
+    def _join_and_swap(sock: object, group: str, port: int, *, iface_ip: str | None = "") -> bool:
+        # Stand in for a concurrent restart publishing its own listener.
+        svc._listener = replacement
+        return True
+
+    monkeypatch.setattr(service_module, "_join_multicast_group", lambda *a, **kw: True)
+    monkeypatch.setattr(service_module, "_leave_multicast_group", lambda *a, **kw: None)
+    bind_free_udp_port(
+        lambda p: svc.restart_listener(
+            port=p,
+            allowed_ips=(),
+            multicast_group="239.1.2.3",
+            multicast_iface="10.0.0.9",
+        )
+    )
+    original = svc._listener
+    try:
+        monkeypatch.setattr(service_module, "_join_multicast_group", _join_and_swap)
+        svc.set_multicast_iface("10.0.0.20")
+        assert svc._listener is replacement
+        # The older generation's result was discarded, not written over the new one.
+        assert svc.listener_status()["multicast_iface"] == "10.0.0.9"
+    finally:
+        svc._listener = original
+        svc.shutdown()
+
+
+def test_set_multicast_iface_without_a_listener_is_a_noop() -> None:
+    """The observer polls from housekeeping; a listener that never bound has no
+    socket to move a membership on."""
+    svc = OscService()
+    assert svc.set_multicast_iface("10.0.0.9") is False
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
+def test_set_multicast_iface_without_a_group_is_a_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no group configured the pin governs nothing."""
+    svc = OscService()
+    bind_free_udp_port(lambda p: svc.restart_listener(port=p, allowed_ips=()))
+    try:
+        assert svc.set_multicast_iface("10.0.0.9") is False
+        assert svc.listener_status()["multicast_iface"] == ""
+    finally:
+        svc.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
+def test_start_listener_moves_the_membership_without_rebinding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pin change alone must not tear the socket down - the bind does not
+    depend on it, and a rebind would drop inbound OSC for the gap."""
+    svc = OscService()
+    monkeypatch.setattr(service_module, "_join_multicast_group", lambda *a, **kw: True)
+    monkeypatch.setattr(service_module, "_leave_multicast_group", lambda *a, **kw: None)
+    port = bind_free_udp_port(
+        lambda p: svc.start_listener(p, allowed_ips=(), multicast_group="239.1.2.3", multicast_iface="10.0.0.9")
+    )
     first = svc._listener
     try:
-        svc.start_listener(port, allowed_ips=(), bind_host="127.0.0.1")
+        svc.start_listener(port, allowed_ips=(), multicast_group="239.1.2.3", multicast_iface="10.0.0.20")
         assert svc._listener is first
+        assert svc.listener_status()["multicast_iface"] == "10.0.0.20"
     finally:
         svc.shutdown()
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
-def test_stop_listener_clears_the_bind_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``listener_status`` is read by diagnostics and by the observer's
-    ``current``; a stale address there would read as a running listener."""
+def test_stop_listener_clears_the_membership(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``listener_status`` drives diagnostics and the observer's ``current``; a
+    stale interface there would read as a live membership."""
     svc = OscService()
-    monkeypatch.setattr(service_module, "_join_multicast_group", lambda *a, **kw: None)
-    bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=(), bind_host="127.0.0.1"))
+    monkeypatch.setattr(service_module, "_join_multicast_group", lambda *a, **kw: True)
+    bind_free_udp_port(
+        lambda p: svc.start_listener(p, allowed_ips=(), multicast_group="239.1.2.3", multicast_iface="10.0.0.9")
+    )
     svc.stop_listener()
     assert svc.listener_status() == {
         "port": None,
-        "bind_host": "",
         "multicast_group": "",
+        "multicast_iface": "",
         "multicast_joined": False,
         "allowed_sender_ips": [],
     }

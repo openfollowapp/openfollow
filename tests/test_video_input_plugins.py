@@ -219,6 +219,22 @@ class TestConfigRoundTrip:
         for name in form:
             assert after[name] == before[name]
 
+    def test_apply_config_fields_restores_the_default_for_a_null_string(self, plugin: type[VideoInputBase]) -> None:
+        """A web form always delivers a string, but the JSON config API passes
+        a decoded ``null`` straight through. Coercing it would store the text
+        "None" as the stream URL or the NDI source name."""
+        cfg = AppConfig()
+        str_fields = [f for f in plugin.config_fields() if f.type is str]
+        if not str_fields:
+            pytest.skip("Plugin has no string fields")
+        for field in str_fields:
+            setattr(cfg, field.name, "value-to-be-cleared")
+
+        plugin.apply_config_fields(cfg, {f.name: None for f in str_fields})
+
+        for field in str_fields:
+            assert getattr(cfg, field.name) == field.default
+
     def test_config_changed_false_for_identical_configs(self, plugin: type[VideoInputBase]) -> None:
         cfg = AppConfig()
         assert plugin.config_changed(cfg, cfg) is False

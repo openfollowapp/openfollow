@@ -732,6 +732,23 @@ _MONTHS = {
     m: i
     for i, m in enumerate(("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), start=1)
 }
+# Days before the 1st of each month in a non-leap year. journalctl's short
+# format carries no year, so a leap day cannot be resolved: Feb 29 and Mar 1
+# both land on the same ordinal, which under-reports one gap by a day and can
+# never invent one.
+_DAYS_BEFORE_MONTH = (0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
+# Forward step that earns a marker. A station logs continuously, so anything
+# past a few hours inside one boot is either a clock correction or a real gap
+# in the journal - both worth pointing at, neither worth guessing between.
+_CLOCK_JUMP_FORWARD_S = 6 * 3600
+# Slack for lines sharing a second, or arriving a beat out of order.
+_CLOCK_STEP_BACK_S = 2
+# A backwards step this large is the calendar wrapping into a new year, which
+# the year-less timestamp format cannot distinguish from a correction. It reads
+# forwards to a human (Dec 31 -> Jan 1), so it gets no marker.
+_YEAR_WRAP_S = 300 * 86400
+# journalctl's own boot separator, e.g. "-- Boot 9b9ec076... --".
+_BOOT_MARKER_RE = re.compile(r"^-{2,}\s*Boot\b", re.IGNORECASE)
 # Longest repeating cycle the collapser will look for. A reconnect loop is a
 # handful of lines; searching further costs more than it saves and risks
 # folding together two genuinely different stretches that happen to rhyme.
@@ -808,6 +825,25 @@ def _log_line_stamp(line: str) -> tuple[int, int, int] | None:
     return month, day, hh * 3600 + mm * 60 + ss
 
 
+def _stamp_seconds(stamp: tuple[int, int, int]) -> int:
+    """Seconds since the start of a notional non-leap year."""
+    month, day, seconds = stamp
+    return (_DAYS_BEFORE_MONTH[month - 1] + day - 1) * 86400 + seconds
+
+
+def _discontinuity_note(previous: tuple[int, int, int], current: tuple[int, int, int]) -> str | None:
+    """The marker for a step between two timestamps, or ``None`` if ordinary."""
+    delta = _stamp_seconds(current) - _stamp_seconds(previous)
+    if delta <= -_YEAR_WRAP_S:
+        return None
+    if delta < -_CLOCK_STEP_BACK_S:
+        return "  [... timestamps step backwards here - the clock moved, or the log source changed]"
+    if delta < _CLOCK_JUMP_FORWARD_S:
+        return None
+    size = f"~{delta // 86400} day(s)" if delta >= 86400 else f"~{delta // 3600} hour(s)"
+    return f"  [... timestamps jump {size} forward here - a clock correction, or a gap in the journal]"
+
+
 def annotate_log_discontinuities(lines: list[str]) -> list[str]:
     """Mark where the log's own timestamps stop running forwards.
 
@@ -815,20 +851,27 @@ def annotate_log_discontinuities(lines: list[str]) -> list[str]:
     corrected minutes later, so a single boot's journal can jump weeks forward
     in the middle. Without a marker that reads as an out-of-order log and the
     reader silently distrusts the whole section.
+
+    A marker that fired on every midnight would do the same damage in reverse,
+    so the step is measured on real day ordinals and has to clear
+    ``_CLOCK_JUMP_FORWARD_S``. A reboot is skipped outright: the journal marks
+    it, and a station powered off overnight resumes hours later with nothing
+    having gone wrong.
     """
     out: list[str] = []
     previous: tuple[int, int, int] | None = None
+    across_boot = False
     for line in lines:
+        if _BOOT_MARKER_RE.match(line.strip()):
+            across_boot = True
         stamp = _log_line_stamp(line)
-        if stamp is not None and previous is not None:
-            prev_days = previous[0] * 31 + previous[1]
-            days = stamp[0] * 31 + stamp[1]
-            if days < prev_days or (days == prev_days and stamp[2] < previous[2] - 1):
-                out.append("  [... timestamps step backwards here - the clock moved, or the log source changed]")
-            elif days - prev_days >= 1:
-                out.append(f"  [... timestamps jump ~{days - prev_days} day(s) forward here - the clock was corrected]")
         if stamp is not None:
+            if previous is not None and not across_boot:
+                note = _discontinuity_note(previous, stamp)
+                if note is not None:
+                    out.append(note)
             previous = stamp
+            across_boot = False
         out.append(line)
     return out
 

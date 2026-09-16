@@ -3635,7 +3635,7 @@ def test_annotate_log_discontinuities_marks_a_forward_clock_jump() -> None:
     ]
     annotated = diag.annotate_log_discontinuities(lines)
     assert len(annotated) == 4
-    assert "timestamps jump ~16 day(s) forward here" in annotated[2]
+    assert "timestamps jump ~15 day(s) forward here" in annotated[2]
 
 
 def test_annotate_log_discontinuities_marks_a_backwards_step() -> None:
@@ -3645,6 +3645,41 @@ def test_annotate_log_discontinuities_marks_a_backwards_step() -> None:
     ]
     annotated = diag.annotate_log_discontinuities(lines)
     assert "timestamps step backwards here" in annotated[1]
+
+
+@pytest.mark.parametrize(
+    ("earlier", "later", "what"),
+    [
+        ("Sep 14 23:59:59", "Sep 15 00:00:01", "an ordinary midnight"),
+        ("Feb 28 23:00:00", "Mar 01 01:00:00", "an ordinary month boundary"),
+        ("Dec 31 23:59:00", "Jan 01 00:01:00", "the year wrapping"),
+        ("Sep 14 01:00:00", "Sep 14 03:00:00", "a two-hour quiet spell"),
+    ],
+)
+def test_annotate_log_discontinuities_stays_quiet_on_ordinary_time(earlier: str, later: str, what: str) -> None:
+    """A marker that fired on every midnight would destroy the trust it exists
+    to create - the reader learns to skip it, and then skips the real one.
+    Naive month*31 arithmetic marked every midnight, called Feb 28 -> Mar 1 a
+    four-day jump, and read the new year as time running backwards."""
+    lines = [f"{earlier} host of[1]: one", f"{later} host of[1]: two"]
+    assert diag.annotate_log_discontinuities(lines) == lines, what
+
+
+def test_annotate_log_discontinuities_skips_a_reboot() -> None:
+    """The journal marks a boot, and a station powered off overnight resumes
+    hours later with nothing having gone wrong."""
+    lines = [
+        "Sep 14 21:00:00 host of[1]: before shutdown",
+        "-- Boot 9b9ec0760a244035813f842a6a988798 --",
+        "Sep 20 08:00:00 host of[1]: after power-on",
+    ]
+    assert diag.annotate_log_discontinuities(lines) == lines
+
+
+def test_annotate_log_discontinuities_reports_a_sub_day_jump_in_hours() -> None:
+    lines = ["Sep 14 01:00:00 host of[1]: one", "Sep 14 10:00:00 host of[1]: two"]
+    annotated = diag.annotate_log_discontinuities(lines)
+    assert "timestamps jump ~9 hour(s) forward here" in annotated[1]
 
 
 def test_annotate_log_discontinuities_leaves_a_monotonic_log_alone() -> None:

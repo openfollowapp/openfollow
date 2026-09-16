@@ -10,9 +10,11 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from openfollow.uri_redaction import redact_uri, strip_uri_userinfo
+from openfollow.video.failure import ConnectionPhase
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
+    PhaseReporter,
     ReconnectPolicy,
     SourceEndpoint,
     VideoInputBase,
@@ -58,6 +60,7 @@ class RtspInput(VideoInputBase):
 
     input_id = "rtsp"
     display_name = "RTSP"
+    source_element_name = "rtspsrc"
 
     # -- Declarations ---------------------------------------------------------
 
@@ -252,6 +255,21 @@ class RtspInput(VideoInputBase):
         """RTSP: force zero latency for minimal delay."""
         pipeline.set_latency(0)
         logger.info("Pipeline ASYNC_DONE (RTSP) -- latency forced to 0")
+
+    def observe_progress(self, pipeline: Any, report: PhaseReporter) -> None:
+        """Report the SDP: the server answered and described its media."""
+        rtspsrc = pipeline.get_by_name("rtspsrc")
+        if rtspsrc is None:
+            return
+
+        def _on_sdp(_element: Any, _sdp: Any) -> None:
+            report(ConnectionPhase.TRANSPORT_UP)
+            report(ConnectionPhase.STREAM_DESCRIBED)
+
+        try:
+            rtspsrc.connect("on-sdp", _on_sdp)
+        except Exception:
+            logger.debug("rtspsrc has no on-sdp signal on this GStreamer build", exc_info=True)
 
     # -- Web UI ---------------------------------------------------------------
 

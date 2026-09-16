@@ -89,6 +89,7 @@ class NdiInput(VideoInputBase):
 
     input_id = "ndi"
     display_name = "NDI®"
+    source_element_name = "ndisrc"
 
     # -- Declarations ---------------------------------------------------------
 

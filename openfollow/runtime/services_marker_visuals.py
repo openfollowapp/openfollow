@@ -424,7 +424,7 @@ def build_marker_visual_state(
 
     video_receiver = app._video_receiver
     status_marker = video_receiver.status_marker
-    # Read the four status fields as one consistent unit – separate property
+    # Read the status fields as one consistent unit – separate property
     # reads could each catch a different _update generation and render a mixed
     # HUD line (e.g. connected=True with a stale reconnect error).
     status = status_marker.snapshot()

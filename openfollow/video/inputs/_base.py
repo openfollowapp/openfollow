@@ -18,7 +18,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from openfollow.video.failure import ConnectionPhase
+
 logger = logging.getLogger(__name__)
+
+PhaseReporter = Callable[[ConnectionPhase], None]
 
 
 def coerce_positive_int(value: Any, default: int) -> int:
@@ -122,6 +126,11 @@ class VideoInputBase(ABC):
     input_id: str = ""  # unique ID, e.g. "ndi"
     display_name: str = ""  # human-readable, e.g. "NDI"
 
+    # Instance name (not factory name) of the element that first produces bytes
+    # from the source; the receiver probes it to tell "never reached" from
+    # "reached, sent nothing usable". ``None`` = no such boundary.
+    source_element_name: str | None = None
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         if cls.input_id == "" and not getattr(cls, "__abstractmethods__", None):
@@ -223,6 +232,11 @@ class VideoInputBase(ABC):
 
     def on_caps_changed(self, width: int, height: int) -> None:  # noqa: B027 – intentional optional hook
         """Called when video resolution is detected from caps-changed."""
+
+    def observe_progress(self, pipeline: Any, report: PhaseReporter) -> None:  # noqa: B027 – intentional optional hook
+        """Report progress only this plugin can see, by wiring *pipeline*'s
+        signals to *report*. The receiver keeps the furthest phase, so a
+        repeated or out-of-order report is harmless."""
 
     @classmethod
     def discover_sources(cls, timeout: float = 2.0) -> list[str]:

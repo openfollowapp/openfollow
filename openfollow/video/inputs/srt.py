@@ -35,6 +35,7 @@ class SrtInput(VideoInputBase):
 
     input_id = "srt"
     display_name = "SRT"
+    source_element_name = "srtsrc"
 
     # -- Declarations ---------------------------------------------------------
 

@@ -271,6 +271,8 @@ Each plugin declares:
 - `web_ui_html()` → HTML fragment for the web settings form
 - `web_routes()` → additional HTTP endpoints (e.g. `/video-input/ndi/sources`)
 - `is_available()` → `(bool, reason)`; defaults to `(True, "")`. Override when the plugin needs an OS or GStreamer element that isn't universally present (e.g. `v4l2src` on Linux, `avfvideosrc` on macOS, the `ndisrc` plugin from gst-plugin-ndi).
+- `source_element_name` → the **instance name** of the element that first produces bytes from the source (`"rtspsrc"`, `"udpsrc"`, `"media_source"`, …), or `None` for an input with no such boundary. The receiver probes it for the first buffer → `DATA_ARRIVING`. `TestSourceElementDeclaration` in [`tests/test_video_input_plugins.py`](tests/test_video_input_plugins.py) builds each plugin's pipeline and asserts the name resolves, so a rename inside `create_pipeline` can't silently detach the probe
+- `observe_progress(pipeline, report)` → optional; report protocol progress only that plugin can see. RTSP wires `rtspsrc::on-sdp` → `TRANSPORT_UP` + `STREAM_DESCRIBED`. The receiver keeps the furthest phase reported, so a duplicate or out-of-order report is harmless
 
 ### Receiver (`video/receiver.py`) – generic orchestrator
 Delegates protocol-specific work to the active plugin. Retains shared infrastructure:
@@ -279,6 +281,7 @@ Delegates protocol-specific work to the active plugin. Retains shared infrastruc
 - Shared gtksink management (detach/reattach across pipeline switches)
 - Connection timeout, reconnection scheduling (driven by plugin's `ReconnectPolicy`)
 - First-frame / caps detection via downstream pad probes (`_on_pad_event` for the caps event, `_on_sink_buffer` → `_handle_video_connected` on the first buffer) – replaces the old `cairooverlay` caps-changed signal
+- Source-byte observation: `_attach_source_probe()` puts a one-shot buffer probe on the plugin's `source_element_name`. Attached **per pipeline** (the source element is rebuilt on every reconnect), unlike the sink probes which attach once for the shared sink's lifetime. A source with no static `src` pad (`rtspsrc`) is followed via `pad-added`
 - Source discovery scheduling (calls plugin's `discover_sources()`)
 - Source selection state management (generic, checks `InputCapabilities.has_source_selection`)
 
@@ -306,6 +309,40 @@ srtsrc → pre_queue → decodebin → post_queue → videoconvert → shared_vi
 `rtsp_user` / `rtsp_password` / `srt_passphrase` are rendered as a login block under each plugin's URL (password inputs) and drive the element properties directly. The URL's own credential is **stripped before** `location` / `uri` is handed over – `rtspsrc` tries URL userinfo first and only then falls back to `user-id` / `user-pw`, so leaving it in would let a stale URL credential outrank the form. Blank fields leave the existing URL-userinfo path working untouched.
 
 `ConfigField(strip=False)` marks a credential so the web-save path keeps its edge whitespace, where every other string field is trimmed: the whitespace can be part of the secret and is invisible in a password field, so trimming it fails authentication with nothing on screen to explain why.
+
+### Video failure taxonomy (`video/failure.py`)
+
+Four outcomes that all presented as the same "no video received after 8s":
+**nothing ever answered**, **it answered but sent no media**, **media arrives
+but never decodes**, and **it was flowing and stopped**. Each sends the
+operator to different equipment.
+
+`ConnectionPhase` (`STARTING` → `TRANSPORT_UP` → `STREAM_DESCRIBED` →
+`DATA_ARRIVING` → `DECODING`) records how far an attempt got. `DATA_ARRIVING`
+is the load-bearing one (bytes out of the source element, which every protocol
+has), and `ReceiverStateMachine.note_phase` keeps the **furthest** reached
+because the probes fire from different threads and arrive out of order.
+
+`classify_failure(phase, domain, code, message, was_connected)` names the
+failure, and the phase is what decides an ambiguous error: the same
+`GstResourceError.OPEN_READ` is `UNREACHABLE` before any bytes arrive and
+`STALLED` after them. A known domain carrying a code with no rule (the generic
+`FAILED = 1`) stays `UNKNOWN` rather than landing in a neighbouring bucket.
+
+**Classify before `_reset_video_flow_state`.** `_schedule_reconnect` clears the
+phase and `video_flow_detected` it classifies from, so the verdict is computed
+at the top of that method; computing it afterwards reads every failure as a
+cold start.
+
+One module owns the enum and both text maps so the five surfaces that render
+them cannot drift. `VideoFailure` values are a **wire interface** –
+`/api/stats` publishes `video.failure` for support tooling, so renaming a
+member breaks a consumer's matching.
+
+Sentences **describe the observation and stop**; remedies belong in the website
+docs. `where` must already be redacted – it reaches the HUD and the PIN-exempt
+`/section/statistics`. `UNKNOWN` renders **no** sentence on any surface: it
+would sit above the element's own wording and contradict it.
 
 ### Placeholder pipeline vs source state
 The "No Signal" placeholder is a black `videotestsrc` pinned at 1920x1080 @ 30 that feeds the **shared** sink, and both sink probes are attached once for that sink's lifetime – so its caps reach the same writer the real source uses. `ReceiverStateMachine.set_resolution` / `set_source_framerate` therefore refuse while `is_placeholder_pipeline`, mirroring `mark_frame_received`, and `_create_placeholder_pipeline` calls `clear_source_caps()` rather than writing its own geometry in. **Do not publish placeholder caps as source state**: `video.resolution` / `source_fps` are what the Statistics panel reports as the feed's own, and what `update_video` shapes the window from – a source that has never delivered a frame would otherwise present as a working 1080p feed and pin the window to 16:9 for the session.

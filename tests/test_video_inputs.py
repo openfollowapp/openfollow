@@ -8,9 +8,10 @@ import logging
 
 import pytest
 
-from openfollow.runtime.receiver_bus import ReceiverBusHandler
+from openfollow.runtime.receiver_bus import BusError, ReceiverBusHandler
 from openfollow.runtime.receiver_pipeline import ReceiverPipelineAssembler
 from openfollow.runtime.receiver_state import ReceiverStateMachine
+from openfollow.video.failure import ConnectionPhase
 from openfollow.video.inputs import get_registry
 from openfollow.video.inputs._base import ReconnectPolicy
 from openfollow.video.inputs.ndi import NdiInput
@@ -236,8 +237,10 @@ def test_receiver_bus_handler_dispatches_core_message_types() -> None:
             return self._name
 
     class FakeError:
-        def __init__(self, message: str) -> None:
+        def __init__(self, message: str, domain: str = "gst-resource-error-quark", code: int = 5) -> None:
             self.message = message
+            self.domain = domain
+            self.code = code
 
     class FakeMessage:
         def __init__(self, msg_type: str, src_name: str = "shared_videosink") -> None:
@@ -253,7 +256,7 @@ def test_receiver_bus_handler_dispatches_core_message_types() -> None:
             return None, FakeGst.State.PLAYING, None
 
     async_calls: list[object] = []
-    errors: list[str] = []
+    errors: list[BusError] = []
     eos_calls: list[bool] = []
     segment_msgs: list[object] = []
     pipeline = object()
@@ -278,7 +281,9 @@ def test_receiver_bus_handler_dispatches_core_message_types() -> None:
     handler.handle_message(None, FakeMessage(FakeGst.MessageType.STATE_CHANGED))
 
     assert async_calls == [pipeline]
-    assert errors == ["boom"]
+    # domain + code are carried, not formatted away: they are what separates a
+    # rejected login from an unreachable host.
+    assert errors == [BusError(message="boom", domain="gst-resource-error-quark", code=5, debug="debug")]
     assert eos_calls == [True]
     assert segment_msgs == [seg]  # the message is forwarded so the receiver can filter by src
 
@@ -662,3 +667,36 @@ def test_inputs_that_dial_nothing_report_no_endpoint() -> None:
             continue
         config = {field.name: field.default for field in plugin.config_fields()}
         assert plugin.source_endpoint(config) is None, input_id
+
+
+def test_receiver_state_machine_keeps_the_furthest_phase_reached() -> None:
+    """Probes fire from separate streaming threads and land out of order; a
+    lesser late one must not reclassify a live feed as never reached."""
+    state = ReceiverStateMachine(reconnect_delay=1.0)
+    assert state.phase == ConnectionPhase.STARTING
+
+    state.note_phase(ConnectionPhase.DATA_ARRIVING)
+    state.note_phase(ConnectionPhase.TRANSPORT_UP)  # arrives late, means less
+    assert state.phase == ConnectionPhase.DATA_ARRIVING
+
+
+def test_receiver_state_machine_reaches_decoding_on_a_real_frame() -> None:
+    state = ReceiverStateMachine(reconnect_delay=1.0)
+    state.mark_frame_received()
+    assert state.phase == ConnectionPhase.DECODING
+
+
+def test_receiver_state_machine_placeholder_frames_do_not_advance_the_phase() -> None:
+    """The "No Signal" picture is our own black frame, not the source."""
+    state = ReceiverStateMachine(reconnect_delay=1.0)
+    state.set_placeholder_pipeline(True)
+    state.mark_frame_received()
+    assert state.phase == ConnectionPhase.STARTING
+
+
+def test_receiver_state_machine_resets_the_phase_for_the_next_attempt() -> None:
+    """Each attempt is classified on its own evidence."""
+    state = ReceiverStateMachine(reconnect_delay=1.0)
+    state.mark_frame_received()
+    state.reset_video_flow()
+    assert state.phase == ConnectionPhase.STARTING

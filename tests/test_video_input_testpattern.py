@@ -86,7 +86,7 @@ class TestResolveStageAsset:
 class TestGreyChain:
     def test_builds_grey_chain(self) -> None:
         pipeline = _build({"testpattern_selected_media": media_store.DEFAULT_GREY_ID})
-        src = pipeline.get_by_name("videotestsrc")
+        src = pipeline.get_by_name("media_source")
         assert src is not None
         assert src.properties["pattern"] == "solid-color"
         assert src.properties["foreground-color"] == 0xFF808080
@@ -121,7 +121,7 @@ class TestImageChain:
         jpg.write_bytes(b"fake")
         monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
         pipeline = _build({"testpattern_selected_media": media_store.DEFAULT_STAGE_ID})
-        assert pipeline.get_by_name("imagefilesrc").properties["location"] == str(jpg)
+        assert pipeline.get_by_name("media_source").properties["location"] == str(jpg)
         assert pipeline.get_by_name("imagedecode") is not None
         assert pipeline.get_by_name("image_imagefreeze") is not None
         assert pipeline.get_by_name("image_scale_caps") is not None
@@ -144,7 +144,7 @@ class TestImageChain:
         img.write_bytes(b"jpeg")
         monkeypatch.setattr(media_store, "resolve", lambda mid: _user_item("0123456789abcdef", "image", img))
         pipeline = _build({"testpattern_selected_media": "0123456789abcdef"})
-        assert pipeline.get_by_name("imagefilesrc").properties["location"] == str(img)
+        assert pipeline.get_by_name("media_source").properties["location"] == str(img)
         assert pipeline.get_by_name("image_imagefreeze") is not None
 
     def test_user_image_requires_jpegdec(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -187,7 +187,7 @@ class TestImageChain:
         monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
         pipeline = _build({"testpattern_selected_media": "ffffffffffffffff"})
         # Rendered the Stage default image chain, not a blank/error pipeline.
-        assert pipeline.get_by_name("imagefilesrc").properties["location"] == str(jpg)
+        assert pipeline.get_by_name("media_source").properties["location"] == str(jpg)
 
 
 # --------------------------------------------------------------------------- #
@@ -203,7 +203,7 @@ class TestClipChain:
         plugin = MediaGalleryInput()
         pipeline = _build({"testpattern_selected_media": "0123456789abcdef"}, plugin=plugin)
 
-        assert pipeline.get_by_name("clipfilesrc").properties["location"] == str(clip)
+        assert pipeline.get_by_name("media_source").properties["location"] == str(clip)
         assert pipeline.get_by_name("clipdecode") is not None
         assert pipeline.get_by_name("clip_scale_caps") is not None
         assert pipeline.get_by_name("convert") is not None

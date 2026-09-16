@@ -6,12 +6,26 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, NamedTuple
+
+
+class BusError(NamedTuple):
+    """A GStreamer error with the identity needed to classify it.
+
+    ``message`` wording varies by element and GStreamer version; ``domain`` +
+    ``code`` are the stable pair, so they are carried rather than formatted away.
+    """
+
+    message: str
+    domain: str = ""
+    code: int = 0
+    debug: str = ""
+
 
 MessageCallback = Callable[[Any, Any], None]
 PipelineProvider = Callable[[], Any | None]
 AsyncDoneHandler = Callable[[Any], None]
-ErrorHandler = Callable[[str], None]
+ErrorHandler = Callable[[BusError], None]
 EosHandler = Callable[[], None]
 SegmentDoneHandler = Callable[[Any], None]
 BoolProvider = Callable[[], bool]
@@ -98,9 +112,14 @@ class ReceiverBusHandler:
 
         if msg_type == self._gst.MessageType.ERROR:
             err, debug = message.parse_error()
-            error_msg = err.message if err else "Unknown error"
-            self._logger.error("GStreamer error: %s (%s)", error_msg, debug)
-            self._on_error(error_msg)
+            error = BusError(
+                message=(getattr(err, "message", "") or "Unknown error") if err else "Unknown error",
+                domain=str(getattr(err, "domain", "") or ""),
+                code=int(getattr(err, "code", 0) or 0),
+                debug=str(debug or ""),
+            )
+            self._logger.error("GStreamer error: %s [%s:%d] (%s)", error.message, error.domain, error.code, error.debug)
+            self._on_error(error)
             return
 
         if msg_type == self._gst.MessageType.EOS:

@@ -2,7 +2,7 @@
 # Copyright (C) 2026 OpenFollow Project
 """NDI connection status tracking with reconnection state and listener callbacks.
 
-``NdiStatusMarker`` publishes the four status fields as one immutable
+``NdiStatusMarker`` publishes the status fields as one immutable
 ``_StatusSnapshot`` via a GIL-atomic assignment so readers never see a mixed
 state; writers serialize on a lock, reads are lock-free.
 """
@@ -16,12 +16,13 @@ from enum import Enum, auto
 from typing import NamedTuple
 
 from openfollow.uri_redaction import redact_uris_in_text
+from openfollow.video.failure import VideoFailure
 
 logger = logging.getLogger(__name__)
 
 # Signature for status-change listeners.
 StatusCallback = Callable[
-    ["ConnectionStatus", str, int, str],  # status, source_name, attempt, error
+    ["ConnectionStatus", str, int, str, VideoFailure],  # status, source_name, attempt, error, failure
     None,
 ]
 
@@ -36,7 +37,7 @@ class ConnectionStatus(Enum):
 
 
 class _StatusSnapshot(NamedTuple):
-    """Immutable view of the four status fields, published as a unit.
+    """Immutable view of the status fields, published as a unit.
 
     ``error_message`` is rendered on the projected HUD and served from
     ``/api/stats``, and the two writers that accept free text are handed
@@ -49,6 +50,9 @@ class _StatusSnapshot(NamedTuple):
     source_name: str
     reconnect_attempt: int
     error_message: str
+    # What stopped the connection; ``error_message`` keeps the element's own
+    # wording alongside it.
+    failure: VideoFailure = VideoFailure.NONE
 
     @property
     def is_connected(self) -> bool:
@@ -58,7 +62,7 @@ class _StatusSnapshot(NamedTuple):
 class NdiStatusMarker:
     """Tracks NDI connection status and notifies listeners of changes.
 
-    The four status fields are kept in a single immutable ``_StatusSnapshot``
+    The status fields are kept in a single immutable ``_StatusSnapshot``
     and published with one GIL-atomic attribute assignment, so a reader on the
     ``update_marker_visuals`` tick always sees a self-consistent set – never a
     mix where ``is_connected`` is from the new state while ``error_message`` is
@@ -70,7 +74,7 @@ class NdiStatusMarker:
     """
 
     def __init__(self) -> None:
-        self._state = _StatusSnapshot(ConnectionStatus.DISCONNECTED, "", 0, "")
+        self._state = _StatusSnapshot(ConnectionStatus.DISCONNECTED, "", 0, "", VideoFailure.NONE)
         self._callbacks: list[StatusCallback] = []
         self._lock = threading.Lock()
         # Serializes the publish + callback dispatch of one transition so two
@@ -96,11 +100,15 @@ class NdiStatusMarker:
         return self._state.error_message
 
     @property
+    def failure(self) -> VideoFailure:
+        return self._state.failure
+
+    @property
     def is_connected(self) -> bool:
         return self._state.is_connected
 
     def snapshot(self) -> _StatusSnapshot:
-        """Return all four status fields as one consistent unit.
+        """Return every status field as one consistent unit.
 
         Readers that need more than one field (e.g. the marker-visuals tick
         reading ``is_connected`` + ``reconnect_attempt`` + ``error_message``)
@@ -125,31 +133,37 @@ class NdiStatusMarker:
     def set_connecting(self, source_name: str) -> None:
         """Transition to CONNECTING state.
 
-        A pending error is kept only while *actively reconnecting* – a fresh
-        connect (prior DISCONNECTED/CONNECTED) starts with a clean message so
-        the HUD doesn't show "connecting…" next to a leftover failure string
+        A pending error and its classification are kept only while *actively
+        reconnecting* – a fresh connect (prior DISCONNECTED/CONNECTED) starts
+        clean, so the HUD doesn't show "connecting…" next to a leftover failure
         from a previous attempt.
         """
 
         def derive(prior: _StatusSnapshot) -> _StatusSnapshot:
-            error = prior.error_message if prior.status == ConnectionStatus.RECONNECTING else ""
-            return _StatusSnapshot(ConnectionStatus.CONNECTING, source_name, 0, error)
+            reconnecting = prior.status == ConnectionStatus.RECONNECTING
+            error = prior.error_message if reconnecting else ""
+            failure = prior.failure if reconnecting else VideoFailure.NONE
+            return _StatusSnapshot(ConnectionStatus.CONNECTING, source_name, 0, error, failure)
 
         self._update(derive)
 
     def set_connected(self, source_name: str) -> None:
         """Transition to CONNECTED state."""
-        self._update(lambda _prior: _StatusSnapshot(ConnectionStatus.CONNECTED, source_name, 0, ""))
+        self._update(lambda _prior: _StatusSnapshot(ConnectionStatus.CONNECTED, source_name, 0, "", VideoFailure.NONE))
 
-    def set_disconnected(self, error_message: str = "") -> None:
+    def set_disconnected(self, error_message: str = "", *, failure: VideoFailure = VideoFailure.NONE) -> None:
         """Transition to DISCONNECTED state."""
         error = redact_uris_in_text(error_message)
-        self._update(lambda prior: _StatusSnapshot(ConnectionStatus.DISCONNECTED, prior.source_name, 0, error))
+        self._update(lambda prior: _StatusSnapshot(ConnectionStatus.DISCONNECTED, prior.source_name, 0, error, failure))
 
-    def set_reconnecting(self, attempt: int, error_message: str = "") -> None:
+    def set_reconnecting(
+        self, attempt: int, error_message: str = "", *, failure: VideoFailure = VideoFailure.NONE
+    ) -> None:
         """Transition to RECONNECTING state with attempt counter."""
         error = redact_uris_in_text(error_message)
-        self._update(lambda prior: _StatusSnapshot(ConnectionStatus.RECONNECTING, prior.source_name, attempt, error))
+        self._update(
+            lambda prior: _StatusSnapshot(ConnectionStatus.RECONNECTING, prior.source_name, attempt, error, failure)
+        )
 
     def _update(self, derive: Callable[[_StatusSnapshot], _StatusSnapshot]) -> None:
         """Publish the derived state as a unit and notify callbacks on change.
@@ -166,16 +180,16 @@ class NdiStatusMarker:
                 prior = self._state
                 new_state = derive(prior)
                 changed = new_state != prior
-                self._state = new_state  # GIL-atomic publish – readers see all four together
+                self._state = new_state  # GIL-atomic publish – readers see every field together
                 callbacks = list(self._callbacks)
 
             if not changed:
                 return
             # Fire outside _lock so a slow / re-entrant callback can't stall
             # readers (lock-free) or block another writer from publishing.
-            status, source_name, attempt, error = new_state
+            status, source_name, attempt, error, failure = new_state
             for callback in callbacks:
                 try:
-                    callback(status, source_name, attempt, error)
+                    callback(status, source_name, attempt, error, failure)
                 except Exception:
                     logger.debug("Status callback error", exc_info=True)

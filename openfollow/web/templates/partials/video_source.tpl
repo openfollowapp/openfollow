@@ -5,6 +5,15 @@
         <span class="section-note">Camera input and live preview</span>
     </div>
 
+% # This is the form the fix gets typed into, so it says what failed. Already
+% # credential-free - the status marker redacts on the way in.
+% video_failure = str(defined("video_failure") and video_failure or "none")
+% video_failure_text = str(defined("video_failure_text") and video_failure_text or "")
+% show_failure = bool(video_failure_text) and video_failure not in ("none", "unknown")
+% if show_failure:
+    <div class="notice error" role="status" aria-live="polite" aria-atomic="true">{{video_failure_text}}</div>
+% end
+
     <div class="group">
         <div class="row">
             <div class="field">

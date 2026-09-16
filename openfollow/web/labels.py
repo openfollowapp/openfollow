@@ -51,3 +51,22 @@ def pretty_label(value: object) -> str:
         else:
             out.append(word[:1].upper() + word[1:].lower())
     return " ".join(out)
+
+
+def video_signal_label(connected: bool, failure: str) -> str:
+    """Label the Video panel's signal state by what went wrong.
+
+    An unrecognised token degrades to the plain state rather than raising: a
+    stats payload from a newer build must not take the panel down.
+    """
+    from openfollow.video.failure import VideoFailure, failure_chip
+
+    if connected:
+        return "Connected"
+    try:
+        classified = VideoFailure(failure)
+    except ValueError:
+        return "Disconnected"
+    if classified in (VideoFailure.NONE, VideoFailure.UNKNOWN):
+        return "Disconnected"
+    return failure_chip(classified)

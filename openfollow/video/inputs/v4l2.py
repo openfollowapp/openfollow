@@ -152,6 +152,7 @@ class V4l2Input(VideoInputBase):
 
     input_id = "v4l2"
     display_name = "USB Camera"
+    source_element_name = "v4l2src"
 
     # -- Declarations ---------------------------------------------------
 

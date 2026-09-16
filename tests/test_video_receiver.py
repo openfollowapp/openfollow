@@ -38,8 +38,18 @@ from typing import Any
 
 import pytest
 
+from openfollow.runtime.receiver_bus import BusError
 from openfollow.video import receiver as receiver_mod
 from openfollow.video.connection_status import ConnectionStatus
+from openfollow.video.failure import (
+    RESOURCE_DOMAIN,
+    RESOURCE_NOT_AUTHORIZED,
+    RESOURCE_OPEN_READ,
+    STREAM_CODEC_NOT_FOUND,
+    STREAM_DOMAIN,
+    ConnectionPhase,
+    VideoFailure,
+)
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -84,6 +94,7 @@ class FakePadProbeType:
 
 class FakePadProbeReturn:
     OK = "ok"
+    REMOVE = "remove"
 
 
 class FakeElementFactory:
@@ -254,6 +265,7 @@ class FakeInput:
 
     input_id = "fake"
     display_name = "Fake"
+    source_element_name: str | None = None
 
     # Defaults – override per-test via subclass.
     _available: tuple[bool, str] = (True, "")
@@ -316,6 +328,7 @@ class FakeInput:
         super().__init__()
         self.cleanup_calls = 0
         self.async_done_calls = 0
+        self.progress_reporters: list[Any] = []
         self.segment_done_calls = 0
         self.discover_results: list[list[str]] | None = None
         self.discover_calls: list[float] = []
@@ -339,6 +352,11 @@ class FakeInput:
         self.segment_done_calls += 1
         return True
 
+    def observe_progress(self, pipeline: Any, report: Any) -> None:
+        # Hand the reporter to the test so it can drive protocol progress the
+        # way a real plugin's signal handler would.
+        self.progress_reporters.append(report)
+
     def cleanup(self) -> None:
         self.cleanup_calls += 1
 
@@ -361,6 +379,7 @@ class FakeInputAlt:
 
     input_id = "fake_alt"
     display_name = "FakeAlt"
+    source_element_name: str | None = None
 
     _available: tuple[bool, str] = (True, "")
     _capabilities = InputCapabilities(
@@ -423,6 +442,7 @@ class FakeInputAlt:
         super().__init__()
         self.cleanup_calls = 0
         self.async_done_calls = 0
+        self.progress_reporters: list[Any] = []
 
     def create_pipeline(
         self,
@@ -438,6 +458,9 @@ class FakeInputAlt:
 
     def on_bus_async_done(self, pipeline: Any) -> None:
         self.async_done_calls += 1
+
+    def observe_progress(self, pipeline: Any, report: Any) -> None:
+        self.progress_reporters.append(report)
 
     def cleanup(self) -> None:
         self.cleanup_calls += 1
@@ -1612,7 +1635,7 @@ class TestBusHandling:
     ) -> None:
         r = _make_receiver(input_config={"fake_source": "cam-1"})
         r._state.connected = True
-        r._handle_bus_error("network down")
+        r._handle_bus_error(BusError("network down"))
         assert r._state.connected is False
         assert fake_glib.timers
 
@@ -4244,3 +4267,311 @@ class TestRecoveryTimerOverrides:
         assert r._last_frame_monotonic == stale
         assert r._do_watchdog() is False
         assert r._state.reconnect_source_id is not None
+
+
+# --------------------------------------------------------------------------- #
+# Failure diagnosis: how far it got decides what the operator is told
+# --------------------------------------------------------------------------- #
+
+
+class TestFailureDiagnosis:
+    """The four outcomes an operator has to tell apart, which all produced the
+    identical "no video received after 8s" before this."""
+
+    def _receiver(self) -> receiver_mod.GstNativeSinkReceiver:
+        return _make_receiver(input_config={"fake_source": "cam-1"})
+
+    def test_a_nothing_ever_answered_is_unreachable(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = self._receiver()
+        r._handle_bus_error(BusError("Could not open resource for reading", RESOURCE_DOMAIN, RESOURCE_OPEN_READ))
+        assert r.status_marker.failure == VideoFailure.UNREACHABLE
+
+    def test_b_transport_up_but_no_media_is_no_data(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """Answered and described its media, then sent none. Same silence as A."""
+        r = self._receiver()
+        r._state.note_phase(ConnectionPhase.STREAM_DESCRIBED)
+        r._on_connection_timeout()
+        assert r.status_marker.failure == VideoFailure.NO_DATA
+
+    def test_c_media_arrives_but_never_decodes(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = self._receiver()
+        r._state.note_phase(ConnectionPhase.DATA_ARRIVING)
+        r._handle_bus_error(BusError("no decoder", STREAM_DOMAIN, STREAM_CODEC_NOT_FOUND))
+        assert r.status_marker.failure == VideoFailure.UNSUPPORTED_FORMAT
+
+    def test_d_a_feed_that_was_working_and_stopped_is_stalled(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        """Frames flowed, then stopped, with no error posted at all - only the
+        watchdog notices, and only the phase makes it a dropout."""
+        monkeypatch.setattr(FakeInput, "_reconnect_policy", replace(FakeInput._reconnect_policy, stall_timeout=2.0))
+        r = self._receiver()
+        r._state.mark_frame_received()  # a real frame reached the sink
+        r._state.connected = True
+        r._last_frame_monotonic = time.monotonic() - 3.0
+
+        assert r._do_watchdog() is False  # fired and disarmed
+        assert r.status_marker.failure == VideoFailure.STALLED
+
+    def test_the_same_gstreamer_error_before_and_after_video_differ(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """One error, two verdicts, decided only by how far the attempt got."""
+        error = BusError("Could not read from resource", RESOURCE_DOMAIN, RESOURCE_OPEN_READ)
+
+        cold = self._receiver()
+        cold._handle_bus_error(error)
+
+        warm = self._receiver()
+        warm._state.mark_frame_received()
+        warm._handle_bus_error(error)
+
+        assert cold.status_marker.failure == VideoFailure.UNREACHABLE
+        assert warm.status_marker.failure == VideoFailure.STALLED
+
+    def test_classification_survives_the_reconnect_reset(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """``_schedule_reconnect`` clears the phase it classifies from; a verdict
+        computed after that reset reads every failure as a cold start."""
+        r = self._receiver()
+        r._state.mark_frame_received()
+        r._schedule_reconnect("dropped")
+
+        assert r._state.phase == ConnectionPhase.STARTING  # reset happened
+        assert r.status_marker.failure == VideoFailure.STALLED  # verdict predates it
+
+    def test_a_connect_clears_the_previous_failure(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = self._receiver()
+        r._handle_bus_error(BusError("boom", RESOURCE_DOMAIN, RESOURCE_OPEN_READ))
+        assert r.status_marker.failure != VideoFailure.NONE
+
+        r._state.mark_frame_received()
+        r._handle_video_connected()
+        assert r.status_marker.failure == VideoFailure.NONE
+
+    def test_an_unconfigured_source_says_so_rather_than_unreachable(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """Nothing was dialled, so nothing failed to answer."""
+        r = _make_receiver(input_config={"fake_source": ""})
+        assert r.status_marker.failure == VideoFailure.NOT_CONFIGURED
+
+
+class TestSourceByteObservation:
+    """The probe that makes "never reached" separable from "reached, sent
+    nothing" - the one observation the whole taxonomy turns on."""
+
+    def test_no_declared_source_element_leaves_the_phase_alone(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline = FakePipeline()
+        r._attach_source_probe()
+        assert r._state.phase == ConnectionPhase.STARTING
+
+    def test_a_static_src_pad_gets_a_one_shot_buffer_probe(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(FakeInput, "source_element_name", "fakesrc", raising=False)
+        element = FakeElement(name="fakesrc")
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline = FakePipeline(elements={"fakesrc": element})
+
+        r._attach_source_probe()
+        pad = element.get_static_pad("src")
+        assert [cb.__name__ for _type, cb in pad.probes] == ["_on_source_buffer"]
+
+        result = r._on_source_buffer(pad, object())
+        assert r._state.phase == ConnectionPhase.DATA_ARRIVING
+        # One byte is the whole signal; the sink probe carries the per-frame work.
+        assert result == fake_gst.PadProbeReturn.REMOVE
+
+    def test_a_dynamic_pad_source_is_followed_via_pad_added(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        """rtspsrc has no src pad until the server describes the stream."""
+        monkeypatch.setattr(FakeInput, "source_element_name", "fakesrc", raising=False)
+        element = _DynamicPadElement("fakesrc")
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline = FakePipeline(elements={"fakesrc": element})
+
+        r._attach_source_probe()
+        assert [name for name, _cb in element.connected] == ["pad-added"]
+
+        late_pad = FakePad("src_0")
+        element.connected[0][1](element, late_pad)
+        assert [cb.__name__ for _type, cb in late_pad.probes] == ["_on_source_buffer"]
+
+    def test_a_missing_element_is_survivable(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        monkeypatch.setattr(FakeInput, "source_element_name", "absent", raising=False)
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline = FakePipeline()
+        r._attach_source_probe()  # must not raise
+        assert r._state.phase == ConnectionPhase.STARTING
+
+    def test_a_build_without_the_signal_is_survivable(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        """Losing the observation must not cost the pipeline."""
+        monkeypatch.setattr(FakeInput, "source_element_name", "fakesrc", raising=False)
+        element = _DynamicPadElement("fakesrc", connect_raises=TypeError("unknown signal"))
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline = FakePipeline(elements={"fakesrc": element})
+
+        r._attach_source_probe()  # must not raise
+        assert r._state.phase == ConnectionPhase.STARTING
+
+    def test_a_plugin_hook_that_raises_does_not_cost_the_pipeline(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        """A protocol nicety failing must not leave the station with no video."""
+
+        def _boom(self, pipeline, report) -> None:
+            raise RuntimeError("signal wiring failed")
+
+        monkeypatch.setattr(FakeInput, "observe_progress", _boom, raising=False)
+        FakeInput.create_pipeline_result = FakePipeline(elements={"shared_videosink": FakeElement("shared_videosink")})
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+
+        r.create_pipeline()
+
+        assert r._pipeline is not None
+        assert r._state.is_placeholder_pipeline is False
+
+    def test_the_phase_is_readable_from_outside(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """``/api/stats`` publishes it for support, so it is not private state."""
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        assert r.connection_phase == ConnectionPhase.STARTING
+
+        r._state.note_phase(ConnectionPhase.DATA_ARRIVING)
+        assert r.connection_phase == ConnectionPhase.DATA_ARRIVING
+
+
+class _DynamicPadElement:
+    """A source whose ``src`` pad does not exist until the peer answers."""
+
+    def __init__(self, name: str, *, connect_raises: Exception | None = None) -> None:
+        self._name = name
+        self._connect_raises = connect_raises
+        self.connected: list[tuple[str, Callable]] = []
+
+    def get_name(self) -> str:
+        return self._name
+
+    def get_static_pad(self, _name: str) -> None:
+        return None
+
+    def connect(self, signal: str, callback: Callable) -> None:
+        if self._connect_raises is not None:
+            raise self._connect_raises
+        self.connected.append((signal, callback))
+
+
+class TestTheDiagnosisSurvivesToTheStateTheOperatorSees:
+    """Every path that ends in a visible "no video" state carries a reading.
+
+    A classification computed during retries and dropped at the terminal state
+    is worse than none: the panel reverts to a bare "Disconnected" and
+    ``/api/stats`` publishes "Video is arriving." beside ``connected: false``.
+    """
+
+    def test_giving_up_keeps_the_diagnosis_from_the_attempts(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._handle_bus_error(BusError("Unauthorized", RESOURCE_DOMAIN, RESOURCE_NOT_AUTHORIZED))
+        assert r.status_marker.failure == VideoFailure.UNAUTHORIZED
+
+        r._state.reconnect_attempt = r._reconnect_policy.max_attempts
+        r._do_reconnect()
+
+        assert r.status_marker.status == ConnectionStatus.DISCONNECTED
+        assert r.status_marker.failure == VideoFailure.UNAUTHORIZED
+
+    def test_an_unavailable_backend_is_not_reported_as_unreachable(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        """Nothing was dialled; the plugin cannot run on this host at all."""
+        monkeypatch.setattr(FakeInput, "_available", (False, "v4l2src is Linux-only"))
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+
+        r.create_pipeline()
+
+        assert r.status_marker.failure == VideoFailure.UNKNOWN
+        assert "Linux-only" in r.status_marker.error_message
+
+    def test_a_pipeline_that_cannot_be_built_is_not_reported_as_unreachable(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        FakeInput.create_pipeline_raises = RuntimeError("rtspsrc GStreamer element not found")
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+
+        r.create_pipeline()
+
+        assert r.status_marker.failure == VideoFailure.UNKNOWN
+        assert "rtspsrc" in r.status_marker.error_message
+
+    def test_a_pipeline_that_cannot_be_started_is_not_reported_as_unreachable(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        """``set_state(PLAYING)`` failing is a local fault - no packet left the
+        box, so "Nothing answered at rtsp://..." names the wrong equipment."""
+        FakeInput.create_pipeline_result = FakePipeline(
+            set_state_returns={FakeState.PLAYING: FakeStateChangeReturn.FAILURE},
+            bus=FakeBus(pop_message=None),
+        )
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+
+        r.play()
+
+        assert r.status_marker.failure == VideoFailure.UNKNOWN
+
+    def test_a_local_fault_that_follows_a_working_feed_is_still_local(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        """The override wins over the phase: the phase describes a connection,
+        and this failure never got as far as making one."""
+        FakeInput.create_pipeline_result = FakePipeline(
+            set_state_returns={FakeState.PLAYING: FakeStateChangeReturn.FAILURE},
+            bus=FakeBus(pop_message=None),
+        )
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._state.mark_frame_received()
+
+        r.play()
+
+        assert r.status_marker.failure == VideoFailure.UNKNOWN
+
+    def test_a_start_failure_classifies_from_the_error_on_the_bus(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """A failed ``set_state`` leaves the real error on the bus rather than
+        posting it. Flattening it to a string loses the only fields that can
+        tell a rejected login from an unreachable host."""
+
+        class _Err:
+            message = "Could not open resource for reading and writing."
+            domain = RESOURCE_DOMAIN
+            code = RESOURCE_NOT_AUTHORIZED
+
+        class _Msg:
+            @staticmethod
+            def parse_error() -> tuple[_Err, str]:
+                return _Err(), "gstrtspsrc.c(7469): Unauthorized (401)"
+
+        FakeInput.create_pipeline_result = FakePipeline(
+            set_state_returns={FakeState.PLAYING: FakeStateChangeReturn.FAILURE},
+            bus=FakeBus(pop_message=_Msg()),
+        )
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+
+        r.play()
+
+        assert r.status_marker.failure == VideoFailure.UNAUTHORIZED
+
+
+class TestRefusalReachesTheClassifier:
+    """GStreamer puts the OS wording in the debug string, so a receiver that
+    forwarded only ``message`` left REFUSED unreachable for every plugin."""
+
+    def test_a_refusal_in_the_debug_string_classifies_as_refused(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._handle_bus_error(
+            BusError(
+                message="Could not open resource for reading and writing.",
+                domain=RESOURCE_DOMAIN,
+                code=RESOURCE_OPEN_READ,
+                debug="gstrtspsrc.c(7469): gst_rtspsrc_send (): Connection refused",
+            )
+        )
+        assert r.status_marker.failure == VideoFailure.REFUSED

@@ -2,6 +2,8 @@
 
 Where OpenFollow receives its video feed – every detection, overlay, and position output depends on it. Saving rebuilds the pipeline within about a second; markers and PSN output keep running during the rebuild.
 
+When the last attempt failed, a red line at the top of the section names what went wrong – nothing answered, the login was rejected, the source sent no video, and so on. **Live Statistics → Video** lists what each one means and carries the pipeline's own wording underneath it.
+
 ## Source Type
 
 Pick the protocol or device for your setup; the fields below update to match.

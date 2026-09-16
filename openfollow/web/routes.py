@@ -800,13 +800,17 @@ def _run_package_command(
     return rc, "\n".join(tail)
 
 
-def _build_input_template_data(cfg: AppConfig) -> dict[str, Any]:
+def _build_input_template_data(cfg: AppConfig, video_stats: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Build template variables for plugin-driven video source UI.
 
     Hides plugins whose ``is_available()`` returns False so picker dropdowns
     only show inputs that can actually run on the current host (e.g. the V4L2
     "USB Camera" plugin is hidden on macOS, where AVFoundation is offered
     instead).
+
+    Every render of the Video Source partial goes through here, so the live
+    failure travels with it rather than depending on each call site to
+    remember. ``video_stats`` is ``/api/stats``'s ``video`` section.
     """
     from openfollow.video.inputs import get_available_registry
 
@@ -816,9 +820,12 @@ def _build_input_template_data(cfg: AppConfig) -> dict[str, Any]:
     for iid, cls in sorted(registry.items()):
         values = cls.get_config_field_values(cfg)
         input_html_fragments[iid] = cls.web_ui_html(values)
+    video = dict(video_stats or {})
     return {
         "available_inputs": available_inputs,
         "input_html_fragments": input_html_fragments,
+        "video_failure": video.get("failure") or "none",
+        "video_failure_text": video.get("failure_text") or "",
     }
 
 
@@ -4121,7 +4128,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "config": cfg,
             "saved": saved,
         }
-        data.update(_build_input_template_data(cfg))
+        data.update(_build_input_template_data(cfg, server.get_runtime_stats().get("video")))
         return template("partials/video_source", **data)
 
     def _load_config_for_edit() -> AppConfig:
@@ -4347,7 +4354,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(config),
             psn_source_advisory=server.get_psn_source_advisory(),
-            **_build_input_template_data(config),
+            **_build_input_template_data(config, server.get_runtime_stats().get("video")),
         )
 
     @app.get("/section/overview")
@@ -4834,7 +4841,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             extra["local_ips"] = _get_local_ips()
             extra["psn_source_advisory"] = server.get_psn_source_advisory()
         elif name == "video_source":
-            extra.update(_build_input_template_data(config))
+            extra.update(_build_input_template_data(config, server.get_runtime_stats().get("video")))
         elif name in ("controller", "gamepad"):
             extra["button_names"] = sorted(VALID_BUTTON_NAMES)
             extra["detection_started"] = server.is_button_detection_active()

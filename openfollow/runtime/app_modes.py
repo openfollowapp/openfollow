@@ -17,6 +17,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from openfollow.configuration import save_config
+from openfollow.video.failure import VideoFailure, failure_sentence
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -1567,11 +1568,15 @@ def _video_disconnect_banner_text(app: OpenFollowApp) -> str:
     source_label = (getattr(status, "source_name", "") if status else "") or ""
     error = (getattr(status, "error_message", "") if status else "") or ""
     attempt = int(getattr(status, "reconnect_attempt", 0) or 0)
+    failure = getattr(status, "failure", VideoFailure.NONE) if status else VideoFailure.NONE
 
     parts: list[str] = [f"Video source ({source_type}) is not available"]
     if source_label:
         parts[0] += f" – {source_label}"
     parts[0] += "."
+    # UNKNOWN's sentence would contradict the error line right beside it.
+    if failure not in (VideoFailure.NONE, VideoFailure.UNKNOWN):
+        parts.append(failure_sentence(failure, where=source_label))
     if error:
         parts.append(f"Error: {error}.")
     if attempt > 0:

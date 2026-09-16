@@ -160,9 +160,9 @@ class TestVideoFailureBanner:
         assert self._ERROR in self._banner()
 
     def test_the_reason_is_shown_verbatim(self) -> None:
-        """No mapping to friendlier categories: a wrong mapping is worse than a
-        blunt string, and the raw text is what separates "connection refused"
-        from "no such NDI source"."""
+        """The element's own wording survives alongside the classification. It
+        is what a support bundle gets read against, and it carries detail no
+        twelve-member enum can - the failing element, the line, the code."""
         raw = "gstrtspsrc.c(7469): gst_rtspsrc_send (): Unauthorized (401)"
         assert raw in self._banner(error_message=raw)
 
@@ -282,3 +282,72 @@ def test_a_credential_in_the_receiver_error_never_reaches_the_banner() -> None:
     # Still the answer the operator needs.
     assert "192.168.0.182:554/video/stream1" in panel
     assert "Reconnect attempt 2." in panel
+
+
+class TestVideoFailureClassification:
+    """The classification leads the banner: it names which piece of equipment to
+    go and look at, where "Could not open resource for reading" does not."""
+
+    def _panel_for(self, **video: Any) -> str:
+        payload: dict[str, Any] = {"connected": False}
+        payload.update(video)
+        return _panel(_render(video=payload), "Video")
+
+    def test_the_sentence_leads_and_the_raw_text_follows(self) -> None:
+        panel = self._panel_for(
+            failure="unreachable",
+            failure_text="Nothing answered at 192.0.2.10:554.",
+            error_message="Could not open resource for reading",
+        )
+        assert panel.index("Nothing answered at 192.0.2.10:554.") < panel.index("Could not open resource for reading")
+
+    def test_the_signal_state_names_the_failure(self) -> None:
+        panel = self._panel_for(failure="unauthorized", failure_text="192.0.2.10:554 rejected the login.")
+        assert "Login rejected" in panel
+        assert _row(panel, "Signal") == "Login rejected"
+
+    def test_a_connected_feed_reads_as_connected(self) -> None:
+        panel = _panel(_render(video=_connected(failure="none")), "Video")
+        assert _row(panel, "Signal") == "Connected"
+
+    @pytest.mark.parametrize("failure", ["none", "unknown"])
+    def test_an_unclassified_failure_contributes_no_sentence(self, failure: str) -> None:
+        """Its sentence would sit above the element's wording and contradict it."""
+        panel = self._panel_for(
+            failure=failure,
+            failure_text="Video from X failed for a reason this station does not recognise.",
+            error_message="v4l2src is Linux-only",
+        )
+        assert "does not recognise" not in panel
+        assert "v4l2src is Linux-only" in panel
+        assert _row(panel, "Signal") == "Disconnected"
+
+    def test_a_failure_token_from_a_newer_build_degrades(self) -> None:
+        """A live provider's dict; an unknown token must not take the panel down."""
+        panel = self._panel_for(failure="teleported_away", error_message="boom")
+        assert _row(panel, "Signal") == "Disconnected"
+
+    def test_the_sentence_alone_still_raises_the_banner(self) -> None:
+        """A classified failure with no element text is still a failure."""
+        panel = self._panel_for(failure="not_configured", failure_text="No video source is configured.")
+        assert 'class="notice error"' in panel
+        assert "No video source is configured." in panel
+
+    def test_the_sentence_is_escaped(self) -> None:
+        body = _render(
+            video={"connected": False, "failure": "unreachable", "failure_text": "<script>alert(1)</script>"}
+        )
+        assert "<script>alert" not in body
+
+    def test_a_changed_classification_is_reannounced(self) -> None:
+        """The preserved node is keyed by what it says, sentence included."""
+
+        def alert_id(**video: Any) -> str:
+            panel = self._panel_for(**video)
+            start = panel.index('<div id="video-error-')
+            return panel[start + len('<div id="') : panel.index('"', start + len('<div id="'))]
+
+        same_text = {"error_message": "Could not open resource for reading"}
+        unreachable = alert_id(failure="unreachable", failure_text="Nothing answered at X.", **same_text)
+        refused = alert_id(failure="refused", failure_text="X refused the connection.", **same_text)
+        assert unreachable != refused

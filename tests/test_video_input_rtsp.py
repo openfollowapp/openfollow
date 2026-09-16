@@ -546,3 +546,50 @@ def test_source_endpoint_is_none_when_no_host_is_configured(url: str) -> None:
     """The wildcard placeholder every URL field ships with names no host to
     reach, so it has to read as unconfigured rather than as a failed address."""
     assert RtspInput.source_endpoint({"rtsp_url": url}) is None
+
+
+class TestObserveProgress:
+    """RTSP is the one protocol whose middle step is observable: a camera that
+    connects then sends no media looks exactly like one never reached, and the
+    SDP arriving between the two is visible only to ``rtspsrc``."""
+
+    def _wire(self, *, pipeline=None) -> tuple[list, FakeElement]:
+        rtspsrc = FakeElement("rtspsrc")
+        pipeline = pipeline or FakePipeline("rtsp-sink")
+        pipeline.elements.append(rtspsrc)
+        reported: list = []
+        RtspInput().observe_progress(pipeline, reported.append)
+        return reported, rtspsrc
+
+    def test_the_sdp_is_what_gets_watched(self) -> None:
+        _reported, rtspsrc = self._wire()
+        assert [name for name, _cb in rtspsrc.signals] == ["on-sdp"]
+
+    def test_an_sdp_reports_the_server_answered_and_described_its_media(self) -> None:
+        from openfollow.video.failure import ConnectionPhase
+
+        reported, rtspsrc = self._wire()
+        _name, callback = rtspsrc.signals[0]
+        callback(rtspsrc, object())
+
+        assert reported == [ConnectionPhase.TRANSPORT_UP, ConnectionPhase.STREAM_DESCRIBED]
+
+    def test_nothing_is_reported_before_the_server_answers(self) -> None:
+        reported, _rtspsrc = self._wire()
+        assert reported == []
+
+    def test_a_pipeline_without_rtspsrc_is_survivable(self) -> None:
+        reported: list = []
+        RtspInput().observe_progress(FakePipeline("empty"), reported.append)
+        assert reported == []
+
+    def test_a_build_without_the_signal_is_survivable(self) -> None:
+        """Losing the detail must not cost the pipeline."""
+
+        class _NoSignals(FakeElement):
+            def connect(self, signal: str, callback: object) -> None:
+                raise TypeError("unknown signal")
+
+        pipeline = FakePipeline("rtsp-sink")
+        pipeline.elements.append(_NoSignals("rtspsrc"))
+        RtspInput().observe_progress(pipeline, lambda _phase: None)  # must not raise

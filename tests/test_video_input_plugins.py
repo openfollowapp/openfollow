@@ -437,3 +437,52 @@ class TestApplyConfigFieldsFloatBranch:
         self._apply(ns, cfg, {"v4l2_framerate": "definitely-not-a-float"})
         # The except (TypeError, ValueError): pass arm fires.
         assert cfg.v4l2_framerate == before
+
+
+# --------------------------------------------------------------------------- #
+# Source-byte observation
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("plugin", _plugin_params())
+class TestSourceElementDeclaration:
+    """``source_element_name`` is a claim about the built pipeline.
+
+    A rename inside ``create_pipeline`` would silently detach the receiver's
+    probe, leaving every failure classified from a phase that never advances.
+    """
+
+    def test_declared_source_element_is_actually_built(self, plugin: type[VideoInputBase]) -> None:
+        name = plugin.source_element_name
+        if name is None:
+            pytest.skip("Input declares no source element")
+
+        available, _reason = plugin.is_available()
+        if not available:
+            pytest.skip("Backend is not available on this host")
+
+        from unittest.mock import patch
+
+        from tests._fake_gst import FakeElement, make_fake_gst
+
+        fake = make_fake_gst()
+        sink = FakeElement("shared_videosink")
+        config = {f.name: f.default for f in plugin.config_fields()}
+        with patch("gi.repository.Gst", fake):
+            try:
+                pipeline = plugin().create_pipeline(
+                    config=config,
+                    sink=sink,
+                    build_overlay_tail=lambda *a: None,
+                    prepare_sink=lambda: sink,
+                )
+            except Exception as exc:  # pragma: no cover - a build failure is its own plugin test
+                pytest.skip(f"{plugin.input_id} cannot build a default pipeline hermetically: {exc}")
+
+        assert pipeline.get_by_name(name) is not None, (
+            f"{plugin.input_id} declares source_element_name={name!r} but builds no element with that name"
+        )
+
+    def test_declared_name_is_not_blank(self, plugin: type[VideoInputBase]) -> None:
+        name = plugin.source_element_name
+        assert name is None or (name and name == name.strip())

@@ -1,5 +1,5 @@
 % import hashlib
-% from openfollow.web.labels import pretty_label
+% from openfollow.web.labels import pretty_label, video_signal_label
 % system = stats.get("system", {})
 % video = stats.get("video", {})
 % resolution = video.get("resolution", {})
@@ -12,7 +12,8 @@
 % tracking_enabled = bool(tracking.get("enabled"))
 % tracking_running = bool(tracking.get("running"))
 % tracking_missing = tracking.get("missing_deps") or []
-% video_state = "Connected" if video_connected else "Disconnected"
+% # Named by what failed: "Disconnected" sends an operator nowhere.
+% video_state = video_signal_label(video_connected, str(video.get("failure") or "none"))
 % # Keyed off the connection, not off a falsy figure: a placeholder ("No Signal")
 % # pipeline publishes no geometry and no rate, while a connected variable-rate
 % # source legitimately advertises 0 fps and must not read as "not connected".
@@ -20,17 +21,17 @@
 % input_h = resolution.get("height", 0)
 % input_resolution = ("%dx%d" % (input_w, input_h)) if video_connected and input_w and input_h else "N/A"
 % source_fps_text = ("%.1f fps" % video.get("source_fps", 0.0)) if video_connected else "N/A"
-% # The receiver knows exactly why a source failed. Shown verbatim: the
-% # difference between "Connection refused" and "no such NDI source" is the
-% # difference between checking the network and checking the encoder, and any
-% # mapping we invented would be wrong often enough to cost more than it saves.
-% # Already credential-free - the status marker redacts on the way in, which
-% # matters because this partial is exempt from the web PIN.
+% # Both are credential-free - the status marker redacts on the way in, and
+% # this partial is exempt from the web PIN.
 % video_error = str(video.get("error_message") or "")
-% show_video_error = bool(video_error) and not video_connected
+% # The classification leads; the element's own wording stays under it.
+% # "unknown" contributes no sentence - it would contradict that line.
+% video_failure = str(video.get("failure") or "none")
+% video_failure_text = str(video.get("failure_text") or "") if video_failure not in ("none", "unknown") else ""
+% show_video_error = bool(video_error or video_failure_text) and not video_connected
 % # Identifies the node by what it says, so the 1 Hz poll below re-uses the
 % # existing element while the reason is unchanged (see the banner's comment).
-% video_error_token = hashlib.sha256(video_error.encode("utf-8")).hexdigest()[:12]
+% video_error_token = hashlib.sha256((video_failure_text + video_error).encode("utf-8")).hexdigest()[:12]
 % reconnect_attempt = video.get("reconnect_attempt") or 0
 % output_resolution = system.get("output_resolution")
 % output_text = ("%dx%d" % (output_resolution["width"], output_resolution["height"])) if output_resolution else "N/A (no display)"
@@ -84,7 +85,10 @@
             %# have a screen reader repeating the failure without pause. Keeping
             %# the node means it announces once, on the reason changing.
             <div id="video-error-{{video_error_token}}" hx-preserve="true"
-                 role="alert" aria-live="assertive" aria-atomic="true">{{video_error}}</div>
+                 role="alert" aria-live="assertive" aria-atomic="true">{{video_failure_text or video_error}}</div>
+%     if video_failure_text and video_error:
+            <div class="notice-sub">{{video_error}}</div>
+%     end
 %     if reconnect_attempt:
             %# Outside the preserved node: the count moves with every retry, and
             %# it is progress on a failure already announced, not a new one.

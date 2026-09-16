@@ -1157,3 +1157,66 @@ class TestProcessInputAndKeyDispatchShortCircuit:
         app._normalize_key = app_modes.normalize_key
         app_modes.on_key_down(app, {"key": "2"})
         assert app._selected_id == 10  # marker pick did NOT fire
+
+
+class TestVideoDisconnectBannerNamesTheFailure:
+    """What an operator reads on the projector when the picture never arrives.
+    The raw GStreamer text alone does not say which box is at fault."""
+
+    def _banner(self, *, failure, source_name="192.0.2.10:554", error="Could not open resource") -> str:
+        from types import SimpleNamespace
+
+        from openfollow.configuration import AppConfig
+        from openfollow.runtime import app_modes
+
+        cfg = AppConfig()
+        cfg.video_source_type = "rtsp"
+        app = SimpleNamespace(
+            _config=cfg,
+            _video_receiver=SimpleNamespace(
+                status_marker=SimpleNamespace(
+                    source_name=source_name,
+                    error_message=error,
+                    reconnect_attempt=0,
+                    failure=failure,
+                )
+            ),
+        )
+        return app_modes._video_disconnect_banner_text(app)
+
+    def test_the_classification_is_carried(self) -> None:
+        from openfollow.video.failure import VideoFailure
+
+        assert "Nothing answered at 192.0.2.10:554." in self._banner(failure=VideoFailure.UNREACHABLE)
+
+    def test_the_raw_error_survives_beside_it(self) -> None:
+        """Support reads the element's own words; they are not replaced."""
+        from openfollow.video.failure import VideoFailure
+
+        banner = self._banner(failure=VideoFailure.UNAUTHORIZED)
+        assert "rejected the login" in banner
+        assert "Could not open resource" in banner
+
+    def test_an_unclassified_failure_adds_no_sentence(self) -> None:
+        """Its sentence would contradict the error text printed after it."""
+        from openfollow.video.failure import VideoFailure
+
+        banner = self._banner(failure=VideoFailure.UNKNOWN, error="v4l2src is Linux-only")
+        assert "does not recognise" not in banner
+        assert "v4l2src is Linux-only" in banner
+
+    def test_a_status_marker_without_a_failure_field_is_survivable(self) -> None:
+        """The banner reads the marker defensively, as it does every field."""
+        from types import SimpleNamespace
+
+        from openfollow.configuration import AppConfig
+        from openfollow.runtime import app_modes
+
+        cfg = AppConfig()
+        app = SimpleNamespace(
+            _config=cfg,
+            _video_receiver=SimpleNamespace(
+                status_marker=SimpleNamespace(source_name="cam", error_message="boom", reconnect_attempt=0)
+            ),
+        )
+        assert "boom" in app_modes._video_disconnect_banner_text(app)

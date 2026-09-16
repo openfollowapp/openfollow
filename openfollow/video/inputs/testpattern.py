@@ -66,6 +66,9 @@ class MediaGalleryInput(VideoInputBase):
 
     input_id = "testpattern"
     display_name = "Media Gallery"
+    # All three media kinds (default pattern, stored image, stored clip) name
+    # their source element the same, so this one lookup covers every selection.
+    source_element_name = "media_source"
 
     def __init__(self) -> None:
         super().__init__()
@@ -138,7 +141,7 @@ class MediaGalleryInput(VideoInputBase):
         """``videotestsrc → capsfilter → videoconvert``. Returns the convert tail."""
         from gi.repository import Gst
 
-        src = Gst.ElementFactory.make("videotestsrc", "videotestsrc")
+        src = Gst.ElementFactory.make("videotestsrc", "media_source")
         if src is None:
             raise RuntimeError("videotestsrc GStreamer element not found")
         src.set_property("pattern", "solid-color")
@@ -177,7 +180,7 @@ class MediaGalleryInput(VideoInputBase):
             asset_path, decoder_name = item.path, "jpegdec"
         logger.info("Media Gallery image: %s (%s)", Path(asset_path).name, decoder_name)
 
-        src = Gst.ElementFactory.make("filesrc", "imagefilesrc")
+        src = Gst.ElementFactory.make("filesrc", "media_source")
         if src is None:
             raise RuntimeError("filesrc GStreamer element not found")
         src.set_property("location", str(asset_path))
@@ -226,7 +229,7 @@ class MediaGalleryInput(VideoInputBase):
         """
         from gi.repository import Gst
 
-        src = Gst.ElementFactory.make("filesrc", "clipfilesrc")
+        src = Gst.ElementFactory.make("filesrc", "media_source")
         if src is None:
             raise RuntimeError("filesrc GStreamer element not found")
         src.set_property("location", str(path))

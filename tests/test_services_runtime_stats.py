@@ -26,6 +26,7 @@ import pytest
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig
 from openfollow.services import AppRuntimeServices
+from openfollow.video.failure import ConnectionPhase, VideoFailure
 
 pytestmark = pytest.mark.unit
 
@@ -74,7 +75,7 @@ class _FakeOverlayRenderer:
 class _FakeStatusMarker:
     """Models the real marker, including that readers take one snapshot.
 
-    ``NdiStatusMarker`` publishes its four fields as an immutable unit and
+    ``NdiStatusMarker`` publishes its fields as an immutable unit and
     requires multi-field readers to go through ``snapshot()``; a fake that also
     answered bare property reads would let that contract be broken silently.
     """
@@ -83,6 +84,7 @@ class _FakeStatusMarker:
     is_connected: bool = True
     reconnect_attempt: int = 2
     error_message: str = "prev reset"
+    failure: VideoFailure = VideoFailure.UNAUTHORIZED
 
     def snapshot(self) -> _FakeStatusMarker:
         return self
@@ -95,6 +97,7 @@ class _FakeReceiver:
         self.source_name = "CAM1"
         self.source_selection_active = False
         self.source_framerate = 59.94
+        self.connection_phase = ConnectionPhase.DECODING
 
 
 class _FakeDetector:
@@ -337,6 +340,12 @@ class TestPublishRuntimeStats:
         assert video["connected"] is True
         assert video["resolution"] == {"width": 1920, "height": 1080}
         assert video["source_fps"] == pytest.approx(59.94)
+        # Machine-readable for support tooling, plus the sentence the panel and
+        # the HUD both render, so the two cannot describe the same failure
+        # differently.
+        assert video["failure"] == "unauthorized"
+        assert video["failure_text"] == "CAM1 rejected the login."
+        assert video["phase"] == "decoding"
 
     def test_receiver_absent_uses_default_video_shape(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -351,6 +360,11 @@ class TestPublishRuntimeStats:
         assert video["pipeline_state"] == "disconnected"
         assert video["connected"] is False
         assert video["resolution"] == {"width": 0, "height": 0}
+        # Same keys either way: a consumer must not have to branch on whether a
+        # receiver happened to exist when the snapshot was taken.
+        assert video["failure"] == "none"
+        assert video["failure_text"] == ""
+        assert video["phase"] == "starting"
 
     def test_controller_counts_aggregate_mapped_vs_connected(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -647,12 +661,14 @@ class _TearingStatusMarker:
             is_connected=True,
             reconnect_attempt=0,
             error_message="",
+            failure=VideoFailure.NONE,
         ),
         SimpleNamespace(
             status=SimpleNamespace(name="DISCONNECTED"),
             is_connected=False,
             reconnect_attempt=3,
             error_message="Unauthorized",
+            failure=VideoFailure.UNAUTHORIZED,
         ),
     )
 

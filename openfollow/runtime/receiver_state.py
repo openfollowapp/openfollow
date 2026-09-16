@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from openfollow.video.failure import ConnectionPhase
 from openfollow.video.inputs._base import ReconnectPolicy
 
 
@@ -29,6 +30,7 @@ class ReceiverStateMachine:
 
         self.connected = False
         self.video_flow_detected = False
+        self.phase = ConnectionPhase.STARTING
         self.resolution: tuple[int, int] = (0, 0)
         self.source_framerate: float = 0.0
         self.is_placeholder_pipeline = False
@@ -38,7 +40,18 @@ class ReceiverStateMachine:
     def reset_video_flow(self) -> None:
         self.connected = False
         self.video_flow_detected = False
+        self.phase = ConnectionPhase.STARTING
         self.clear_source_caps()
+
+    def note_phase(self, phase: ConnectionPhase) -> None:
+        """Record that the connection reached *phase*, keeping the furthest.
+
+        Probes fire from separate streaming threads and arrive out of order; a
+        lesser late observation must not walk a live feed back to a
+        reachability failure.
+        """
+        if phase > self.phase:
+            self.phase = phase
 
     def clear_source_caps(self) -> None:
         """Forget the negotiated resolution / frame rate of the last source."""
@@ -85,6 +98,7 @@ class ReceiverStateMachine:
         if self.is_placeholder_pipeline:
             return False
         self.video_flow_detected = True
+        self.note_phase(ConnectionPhase.DECODING)
         if not self.connected:
             self.connected = True
             return True

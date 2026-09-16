@@ -482,7 +482,15 @@ def collect_uplink(p: DiagnosticsProviders) -> list[str]:
         verdict = "no uplink observed"
 
     cadence = float(status.get("cadence_s", 0.0) or 0.0)
-    cadence_note = "periodic backstop" if status.get("online") else "retry - no cycle has reached the network"
+    if status.get("online"):
+        cadence_note = "periodic backstop"
+    elif not status.get("cycles"):
+        # Distinct from a failed attempt: during the startup delay the worker
+        # has simply not run yet, and saying it failed to reach anything would
+        # be an accusation the record does not support.
+        cadence_note = "retry - no cycle has run yet"
+    else:
+        cadence_note = "retry - no cycle has reached the network"
     reason = str(status.get("last_reason") or "-")
     rows = [
         f"  Verdict:            {verdict}",

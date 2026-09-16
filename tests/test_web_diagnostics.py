@@ -3475,6 +3475,14 @@ def test_collect_uplink_reports_no_uplink_with_the_retry_cadence() -> None:
     assert "unreachable 42 s ago - TimeoutError: timed out" in joined
 
 
+def test_collect_uplink_separates_not_run_yet_from_not_reached() -> None:
+    """During the startup delay no cycle has run, and reporting that as a
+    failure to reach anything is an accusation the record cannot support."""
+    status = _uplink(cycles=0, last_cycle_age_s=None, last_reason="")
+    joined = "\n".join(diag.collect_uplink(diag.DiagnosticsProviders(online_sync_status=lambda: status)))
+    assert "no cycle has run yet" in joined
+
+
 def test_collect_uplink_reports_a_reachable_uplink() -> None:
     status = _uplink(
         online=True,

@@ -304,14 +304,22 @@ class OnlineSyncWorker:
         def age(at: float | None) -> float | None:
             return None if at is None else max(0.0, now - at)
 
-        def target(item: TargetHealth) -> dict[str, Any]:
+        def target(item: TargetHealth, enabled: bool, name: str) -> dict[str, Any]:
+            # Before the first cycle there is nothing recorded but the startup
+            # delay is long enough to download a bundle inside, and the empty
+            # record would otherwise read as "both checks disabled" on a
+            # station where both are on. The configuration is known even then,
+            # so the row reports it and keeps the outcome as never attempted.
+            never_run = item.outcome == OUTCOME_NEVER
             return {
-                "enabled": item.enabled,
-                "target": item.target,
+                "enabled": enabled if never_run else item.enabled,
+                "target": name if never_run else item.target,
                 "outcome": item.outcome,
                 "detail": item.detail,
                 "age_s": age(item.at),
             }
+
+        cfg = self._config_provider()
 
         return {
             "online": health.online,
@@ -319,8 +327,8 @@ class OnlineSyncWorker:
             "last_reason": health.last_reason,
             "last_cycle_age_s": age(health.last_cycle_at),
             "cycles": health.cycles,
-            "time_sync": target(health.time_sync),
-            "update_check": target(health.update_check),
+            "time_sync": target(health.time_sync, bool(cfg.auto_time_sync), str(cfg.time_sync_server)),
+            "update_check": target(health.update_check, bool(cfg.auto_update_check), str(cfg.update_github_repo)),
         }
 
     # ----- actions -------------------------------------------------------
@@ -370,12 +378,23 @@ class OnlineSyncWorker:
                 detail=f"clock within {drift:.2f}s of NTP; not set",
                 at=self._now(),
             )
-        self._set_clock(self._broker, round(epoch))
+        # ``set_system_clock`` returns False - never raises - when the
+        # ``system.set_clock`` grant is absent or was revoked since the cached
+        # state was read, or when the command itself fails. Reaching the
+        # server is still the connectivity fact the uplink section reports, so
+        # the outcome stands and only the detail changes; saying "clock set"
+        # regardless would put a plain untruth in the bundle.
+        applied = self._set_clock(self._broker, round(epoch))
+        detail = (
+            f"clock set (drift was {drift:.1f}s)"
+            if applied
+            else f"answered, but the clock was NOT set (drift {drift:.1f}s; needs the system.set_clock grant)"
+        )
         return TargetHealth(
             enabled=True,
             target=server,
             outcome=OUTCOME_REACHED,
-            detail=f"clock set (drift was {drift:.1f}s)",
+            detail=detail,
             at=self._now(),
         )
 

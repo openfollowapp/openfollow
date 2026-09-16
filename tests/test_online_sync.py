@@ -727,16 +727,6 @@ def test_health_reports_an_implausible_epoch_as_reached() -> None:
     assert "implausible epoch" in health["time_sync"]["detail"]
 
 
-def test_health_reports_a_clock_that_was_set() -> None:
-    w = _worker(
-        cfg=_cfg(auto_update_check=False),
-        ntp_query=lambda _s, _t: 1_735_700_000.0,
-        wall=lambda: 1_700_000_000.0,
-    )
-    w._run_cycle("startup")
-    assert "clock set (drift was" in w.health()["time_sync"]["detail"]
-
-
 def test_health_reports_up_to_date() -> None:
     w = _worker(cfg=_cfg(auto_time_sync=False), update_check=lambda *_a, **_k: {"available": False})
     w._run_cycle("startup")
@@ -749,3 +739,64 @@ def test_health_truncates_a_long_error_detail() -> None:
     w = _worker(cfg=_cfg(auto_update_check=False), ntp_query=_raiser(OSError("x" * 500)))
     w._run_cycle("startup")
     assert len(w.health()["time_sync"]["detail"]) == 200
+
+
+def test_health_reports_the_configured_targets_before_any_cycle() -> None:
+    """The startup delay is long enough to download a bundle inside it. An
+    empty record read as "both checks disabled" on a station where both are
+    on, because the renderer keys that verdict on the enabled flags."""
+    w = _worker(cfg=_cfg(time_sync_server="ptbtime1.ptb.de", update_github_repo="owner/repo"))
+    health = w.health()
+    assert health["cycles"] == 0
+    assert health["time_sync"]["outcome"] == "never attempted"
+    assert health["time_sync"]["enabled"] is True
+    assert health["time_sync"]["target"] == "ptbtime1.ptb.de"
+    assert health["update_check"]["enabled"] is True
+    assert health["update_check"]["target"] == "owner/repo"
+
+
+def test_health_reports_disabled_checks_before_any_cycle() -> None:
+    w = _worker(cfg=_cfg(auto_time_sync=False, auto_update_check=False))
+    health = w.health()
+    assert health["time_sync"]["enabled"] is False
+    assert health["update_check"]["enabled"] is False
+
+
+def test_health_keeps_a_recorded_row_over_the_live_config() -> None:
+    """Once a cycle has run, the row describes what that cycle actually did -
+    a config edited afterwards must not rewrite history."""
+    w = _worker(cfg=_cfg(auto_update_check=False), ntp_query=_raiser(TimeoutError("x")))
+    w._run_cycle("startup")
+    health = w.health()
+    assert health["time_sync"]["outcome"] == "unreachable"
+    assert health["update_check"]["outcome"] == "not attempted"
+    assert health["update_check"]["enabled"] is False
+
+
+def test_health_says_so_when_the_clock_could_not_be_set() -> None:
+    """``set_system_clock`` returns False - it never raises - when the
+    ``system.set_clock`` grant is absent or was revoked since the cached state
+    was read. Reaching the server is still the connectivity fact, but
+    reporting "clock set" regardless would put a plain untruth in the bundle."""
+    w = _worker(
+        cfg=_cfg(auto_update_check=False),
+        ntp_query=lambda _s, _t: 1_735_700_000.0,
+        wall=lambda: 1_700_000_000.0,
+        set_clock=lambda _b, _e: False,
+    )
+    w._run_cycle("startup")
+    health = w.health()
+    assert health["time_sync"]["outcome"] == "reached"  # connectivity is unchanged
+    assert "NOT set" in health["time_sync"]["detail"]
+    assert "system.set_clock grant" in health["time_sync"]["detail"]
+
+
+def test_health_reports_a_clock_that_was_actually_set() -> None:
+    w = _worker(
+        cfg=_cfg(auto_update_check=False),
+        ntp_query=lambda _s, _t: 1_735_700_000.0,
+        wall=lambda: 1_700_000_000.0,
+        set_clock=lambda _b, _e: True,
+    )
+    w._run_cycle("startup")
+    assert "clock set (drift was" in w.health()["time_sync"]["detail"]

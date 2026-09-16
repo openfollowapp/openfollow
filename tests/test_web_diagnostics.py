@@ -3299,8 +3299,9 @@ def _stats(**overrides: Any) -> dict[str, Any]:
         },
         "playback": {
             "frame_count_total": 100,
-            "effective_fps": 59.9,
-            "recent_effective_fps": 59.8,
+            "avg_frame_ms": 1.5,
+            "recent_avg_frame_ms": 1.4,
+            "slow_frame_threshold_ms": 20.0,
             "recent_slow_frame_percent": 0.1,
             "seconds_since_last_frame": 0.01,
             "stale_after_s": 1.0,
@@ -3322,6 +3323,22 @@ def _stats(**overrides: Any) -> dict[str, Any]:
     }
     base.update(overrides)
     return base
+
+
+def test_runtime_state_reports_frame_work_not_a_throughput_rate() -> None:
+    """``effective_fps`` divides the frame count by summed frame *work* time, so a
+    loop that idles between ticks publishes a figure far above the rate it runs
+    at (a 1.5 ms frame reads as ~667 fps on a 60 Hz tick). Printing it beside the
+    frame count invites the reader to take it as the frame rate."""
+    stats = _stats()
+    stats["playback"] = dict(stats["playback"], avg_frame_ms=1.5, recent_avg_frame_ms=1.4)
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    line = next(row for row in rows if "frame work" in row)
+
+    assert "1.5 ms avg" in line
+    assert "recent 1.4 ms" in line
+    assert "over 20.0 ms" in line  # the published slow threshold, never a literal
+    assert "fps" not in "\n".join(row for row in rows if "Frame loop" not in row and "source framerate" not in row)
 
 
 def test_collect_runtime_state_reports_not_wired() -> None:

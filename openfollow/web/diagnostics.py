@@ -472,10 +472,13 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
     rows.append("  Frame loop:")
     rows.append(f"    state                 {clock}")
     rows.append(f"    frames total          {playback.get('frame_count_total', 0)}")
+    # Not a frame rate: the published fps is work-time throughput, so a loop idling
+    # between frames reads far above the tick it actually runs at.
     rows.append(
-        f"    effective fps         {float(playback.get('effective_fps', 0.0) or 0.0):.1f} "
-        f"(recent {float(playback.get('recent_effective_fps', 0.0) or 0.0):.1f}), "
-        f"slow {float(playback.get('recent_slow_frame_percent', 0.0) or 0.0):.1f}%"
+        f"    frame work            {float(playback.get('avg_frame_ms', 0.0) or 0.0):.1f} ms avg "
+        f"(recent {float(playback.get('recent_avg_frame_ms', 0.0) or 0.0):.1f} ms), "
+        f"slow {float(playback.get('recent_slow_frame_percent', 0.0) or 0.0):.1f}% "
+        f"over {float(playback.get('slow_frame_threshold_ms', 0.0) or 0.0):.1f} ms"
     )
 
     tracking = stats.get("tracking") or {}

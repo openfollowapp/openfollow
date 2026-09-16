@@ -228,3 +228,72 @@ class TestRedactUrisInText:
     def test_credential_free_text_is_untouched(self) -> None:
         line = "INFO video: RTSP source: rtsp://192.168.0.182:554/stream1 (latency=0)"
         assert redact_uris_in_text(line) == line
+
+
+# ---------------------------------------------------------------------------
+# An ``@`` that is not userinfo
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("uri", "expected"),
+    [
+        (
+            "srt://10.0.0.5:1600?passphrase=Sh@w2026",
+            "srt://10.0.0.5:1600?passphrase=***",
+        ),
+        (
+            "srt://10.0.0.5:1600?streamid=live@stage&latency=125",
+            "srt://10.0.0.5:1600?streamid=***&latency=125",
+        ),
+    ],
+)
+def test_redact_uri_keeps_the_host_when_the_at_is_inside_a_query_value(uri: str, expected: str) -> None:
+    """A passphrase holding an ``@`` is ordinary - operators pick show names
+    like ``Sh@w2026``. Treating that ``@`` as possible userinfo collapsed the
+    whole URI to ``srt://***``, so the HUD label, ``/api/stats``, the
+    Statistics panel and the bundle all lost the address, while the query
+    masking that already handles it correctly never ran."""
+    assert redact_uri(uri) == expected
+
+
+def test_redact_uri_still_fails_closed_on_an_at_in_the_path() -> None:
+    """Narrowing the check to authority-and-path must not narrow it further:
+    a ``/`` in a password puts the rest in the path, and nothing distinguishes
+    that from a genuine path ``@``, so the unprovable case stays closed."""
+    assert redact_uri("rtsp://operator:pa/ss@cam.local:554/stream") == "rtsp://***"
+
+
+def test_redact_uris_in_text_strips_a_password_containing_a_slash() -> None:
+    """The scheme rule stops at the first ``/`` and the schemeless rule
+    excludes one, so this shape reached the bundle verbatim - and it arrives
+    through GStreamer's own ``location`` debug string, on exactly the auth
+    failure that makes an operator send us a bundle."""
+    text = "gstrtspsrc.c(9070): location=rtsp://operator:pa/ss@cam.local:554/stream failed"
+    redacted = redact_uris_in_text(text)
+    assert "pa/ss" not in redacted
+    assert "operator" not in redacted
+    assert "rtsp://cam.local:554/stream" in redacted
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "location=rtsp://cam.local:554/path@with@at",
+        "location=rtsp://cam.local/p@th",
+        "location=http://host:8080/a@b/c",
+    ],
+)
+def test_redact_uris_in_text_leaves_a_path_at_alone(text: str) -> None:
+    """A numeric port says the authority is a real host, so the ``@`` is in a
+    path. Deleting the run would strip the address out of a log line that has
+    no credential in it at all."""
+    assert redact_uris_in_text(text) == text
+
+
+def test_redact_uris_in_text_handles_two_uris_on_one_line() -> None:
+    text = "from rtsp://u:pa/ss@cam1/s to rtsp://cam2:554/x"
+    redacted = redact_uris_in_text(text)
+    assert "pa/ss" not in redacted
+    assert "rtsp://cam1/s" in redacted
+    assert "rtsp://cam2:554/x" in redacted

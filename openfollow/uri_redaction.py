@@ -53,6 +53,31 @@ _SCHEMELESS_USERINFO_IN_TEXT_RE = re.compile(
     r"(?<![\w@.+-])[^\s:@/?#]+:[^\s@/?#]*@(?=[^\s@/?#]*\.[^\s@/?#]|[^\s@/?#]+/)",
 )
 
+# ``scheme://user:pa/ss@host`` in free text - a password holding an unencoded
+# ``/``. The scheme rule above stops at the first ``/`` and the schemeless rule
+# excludes one, so this shape slipped past both and published the credential
+# verbatim, while ``redact_uri`` on the same string fails closed.
+#
+# Catching it needs a run that crosses slashes, which also spans an ordinary
+# ``@`` in a path, so the authority decides which it is: a numeric port
+# (``cam.local:554/p@th``) is a real host and is left alone, anything else in
+# that position (``operator:pa/ss@cam.local``) is userinfo and goes.
+_SCHEME_RUN_TO_AT_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)([^\s?#]*)@")
+
+
+def _strip_scheme_userinfo_across_slash(text: str) -> str:
+    """Drop ``scheme://user:pa/ss@`` runs the authority shows to be userinfo."""
+
+    def _replace(match: re.Match[str]) -> str:
+        scheme, run = match.group(1), match.group(2)
+        _host, sep, port = run.partition("/")[0].partition(":")
+        if sep and not port.isdigit():
+            return scheme
+        return match.group(0)
+
+    return _SCHEME_RUN_TO_AT_RE.sub(_replace, text)
+
+
 # A secret query value in free text, running to the next separator.
 _SECRET_QUERY_IN_TEXT_RE = re.compile(
     r"(?i)([?&](?:" + "|".join(sorted(_REDACTED_QUERY_KEYS)) + r")=)[^&\s\"'<>]*",
@@ -130,7 +155,12 @@ def redact_uri(uri: str) -> str:
     """
     stripped = strip_uri_userinfo(uri)
     scheme, sep, rest = stripped.partition("://")
-    if sep and "@" in rest:
+    # Only the authority and path can still be hiding userinfo. An ``@`` past
+    # the ``?`` belongs to a query *value* - an SRT ``?passphrase=Sh@w2026`` -
+    # which the masking below removes without discarding the host, so letting
+    # it trip the fail-closed branch cost the reader the address and gained
+    # nothing.
+    if sep and "@" in rest.partition("?")[0].partition("#")[0]:
         # Userinfo survived the parse. A ``/`` in a password puts it in the
         # path (``rtsp://user:pa/ss@cam/s`` splits as netloc ``user:pa``), and
         # nothing distinguishes that from a genuine ``@`` in a path. Since this
@@ -157,7 +187,8 @@ def redact_uris_in_text(text: str) -> str:
     there and the condition that makes an operator send us a bundle.
     """
     text = _USERINFO_IN_TEXT_RE.sub(r"\1", text)
-    # After the scheme rule, a ``scheme://`` URI has no userinfo left, so this
+    text = _strip_scheme_userinfo_across_slash(text)
+    # After the scheme rules, a ``scheme://`` URI has no userinfo left, so this
     # only ever sees the schemeless form.
     text = _SCHEMELESS_USERINFO_IN_TEXT_RE.sub("", text)
     return _SECRET_QUERY_IN_TEXT_RE.sub(r"\g<1>" + REDACTION, text)

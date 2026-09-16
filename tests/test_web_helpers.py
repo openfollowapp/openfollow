@@ -3100,3 +3100,58 @@ def test_active_source_endpoint_lets_a_plugin_failure_surface(monkeypatch) -> No
         diagnostics.DiagnosticsProviders(source_endpoint=lambda: _active_source_endpoint(cfg))
     )
     assert "bad url" in "\n".join(rows)
+
+
+# ---------------------------------------------------------------------------
+# Config file provenance
+# ---------------------------------------------------------------------------
+
+
+def test_config_file_paths_resolves_a_relative_catalog_against_the_config_dir() -> None:
+    """The app resolves it that way, so reporting the raw relative value would
+    name a file that exists only if the reader shares our working directory."""
+    from types import SimpleNamespace
+
+    from openfollow.configuration import AppConfig
+    from openfollow.web.routes import _config_file_paths
+
+    cfg = AppConfig()
+    cfg.markers_catalog_path = "markers.toml"
+    server = SimpleNamespace(config_path="/etc/openfollow/config.toml")
+    assert _config_file_paths(server, cfg) == [
+        "/etc/openfollow/config.toml",
+        "/etc/openfollow/markers.toml",
+    ]
+
+
+def test_config_file_paths_keeps_an_absolute_catalog_as_configured() -> None:
+    from types import SimpleNamespace
+
+    from openfollow.configuration import AppConfig
+    from openfollow.web.routes import _config_file_paths
+
+    cfg = AppConfig()
+    cfg.markers_catalog_path = "/var/lib/openfollow/markers.toml"
+    server = SimpleNamespace(config_path="/etc/openfollow/config.toml")
+    assert _config_file_paths(server, cfg)[1] == "/var/lib/openfollow/markers.toml"
+
+
+def test_config_file_paths_falls_back_to_the_default_catalog_name() -> None:
+    from types import SimpleNamespace
+
+    from openfollow.configuration import AppConfig
+    from openfollow.web.routes import _config_file_paths
+
+    cfg = AppConfig()
+    cfg.markers_catalog_path = ""
+    server = SimpleNamespace(config_path="/etc/openfollow/config.toml")
+    assert _config_file_paths(server, cfg)[1] == "/etc/openfollow/markers.toml"
+
+
+def test_detection_models_dir_points_at_the_models_subdirectory() -> None:
+    from openfollow.configuration import AppConfig
+    from openfollow.web.routes import _detection_models_dir
+
+    cfg = AppConfig()
+    cfg.detection.storage_path = "/mnt/nvme/openfollow/yolo"
+    assert _detection_models_dir(cfg) == "/mnt/nvme/openfollow/yolo/models"

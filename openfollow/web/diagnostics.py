@@ -181,6 +181,11 @@ class DiagnosticsProviders:
     # when this input dials nothing (a local camera, a listener, discovery).
     source_endpoint: Callable[[], dict[str, Any] | None] | None = None
 
+    # Absolute paths of the files the station's configuration is read from.
+    config_file_paths: Callable[[], list[str]] | None = None
+    # The resolved ``<storage>/models`` directory detection loads from.
+    detection_models_dir: Callable[[], str] | None = None
+
     config_redacted_toml: Callable[[], str] | None = None
     config_diff_from_defaults: Callable[[], list[str]] | None = None
 
@@ -267,6 +272,68 @@ def _run(
     else:
         out = result.stderr or ""
     return result.returncode, out.rstrip()
+
+
+# Elements no single input plugin owns, each named with what stops working
+# when it is missing. Universally present ones (queue, videoconvert) are left
+# out: listing what cannot plausibly be absent buries what can.
+_SHARED_GST_ELEMENTS: tuple[tuple[str, str], ...] = (
+    ("gtksink", "video output"),
+    ("appsink", "detection, preview and wizard snapshots"),
+    ("valve", "snapshot gating"),
+    ("decodebin", "SRT / RTSP / RTP decode"),
+    ("rtpjitterbuffer", "RTP input"),
+    ("jpegenc", "wizard snapshots and the web preview"),
+    ("imagefreeze", "still images in the Media Gallery"),
+    ("webpdec", "WebP media in the Media Gallery"),
+    ("videotestsrc", "the No Signal placeholder"),
+)
+
+# Decoders, in the order the pipeline prefers them. Absence is not a fault -
+# which one is present is the answer to "why is this Pi dropping frames".
+_DECODER_ELEMENTS: tuple[str, ...] = ("v4l2h264dec", "v4l2h265dec", "avdec_h264", "openh264dec")
+
+# ``vcgencmd get_throttled`` bit meanings. The low bits are live, the high
+# ones latch since boot - an operator chasing an intermittent freeze needs the
+# latched ones, which is the whole reason to read this.
+_THROTTLE_BITS: tuple[tuple[int, str], ...] = (
+    (0, "under-voltage NOW"),
+    (1, "ARM frequency capped NOW"),
+    (2, "currently throttled"),
+    (3, "soft temperature limit active"),
+    (16, "under-voltage has occurred since boot"),
+    (17, "ARM frequency capping has occurred since boot"),
+    (18, "throttling has occurred since boot"),
+    (19, "soft temperature limit has occurred since boot"),
+)
+
+
+def describe_file(path: Path) -> str:
+    """``<size> B, modified <when>`` for a file, or why it cannot be read."""
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        return f"[unavailable: {exc.strerror or exc}]"
+    when = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(timespec="seconds")
+    return f"{stat.st_size} B, modified {when}"
+
+
+def decode_throttled(raw: str) -> str:
+    """Render a ``vcgencmd get_throttled`` reading as the flags it stands for.
+
+    ``throttled=0x50005`` is not something an operator reads, and it is the
+    answer to the freezes and dropped USB devices that an undervolted supply
+    causes.
+    """
+    _, _, value = raw.strip().partition("=")
+    try:
+        bits = int(value, 16)
+    except ValueError:
+        return f"[unavailable: unrecognised reading {raw.strip()!r}]"
+    if bits == 0:
+        return "none (no under-voltage or throttling, now or since boot)"
+    flags = [label for bit, label in _THROTTLE_BITS if bits & (1 << bit)]
+    return f"{value} - {'; '.join(flags)}" if flags else f"{value} - no known flag set"
 
 
 # ---------------------------------------------------------------------------
@@ -836,6 +903,25 @@ def redact_config_secrets(toml_text: str) -> str:
     return "\n".join(out)
 
 
+def _collect_config_provenance(p: DiagnosticsProviders) -> list[str]:
+    """Which files this configuration came from, and when they last changed.
+
+    Answers two questions the dump itself cannot: whether a save actually
+    landed, and whether the station is still running the image defaults.
+    """
+    if p.config_file_paths is None:
+        return []
+    paths, err = _safely_value(p.config_file_paths, "config_file_paths", [])
+    if err is not None:
+        return ["", f"  Config files: {err}"]
+    rows = ["", "  Config files:"]
+    for raw in paths or []:
+        path = Path(str(raw))
+        rows.append(f"    {path.name:<18}{path}")
+        rows.append(f"    {'':<18}{describe_file(path)}")
+    return rows
+
+
 def collect_config(p: DiagnosticsProviders) -> list[str]:
     rows: list[str] = []
     if p.config_redacted_toml is None:
@@ -850,6 +936,7 @@ def collect_config(p: DiagnosticsProviders) -> list[str]:
     for line in text.splitlines():
         rows.append(f"  {line}")
     rows.append("  ----- end effective config -----")
+    rows.extend(_collect_config_provenance(p))
     if p.config_diff_from_defaults is not None:
         rows.append("")
         rows.append("  Diff vs defaults:")
@@ -1086,6 +1173,35 @@ def annotate_log_discontinuities(lines: list[str]) -> list[str]:
     return out
 
 
+# Kernel messages worth surfacing beside the application log. The unit's own
+# journal cannot show them, so a failing supply, a USB device dropping off the
+# bus or the OOM killer reads as an unexplained application fault.
+_KERNEL_PATTERNS: tuple[str, ...] = ("Under-voltage", "over-current", "USB disconnect", "Out of memory", "oom-kill")
+_KERNEL_EXTRACT_TIMEOUT_S = 6.0
+_KERNEL_EXTRACT_MAX_LINES = 40
+
+
+def collect_kernel_extract(timeout_s: float = _KERNEL_EXTRACT_TIMEOUT_S) -> list[str]:
+    """Hardware-level events from the kernel log, filtered and bounded."""
+    rc, out = _run(
+        ["journalctl", "-k", "--since", "-24h", "--no-pager", "-o", "short"],
+        timeout_s=timeout_s,
+    )
+    if rc != 0:
+        return ["", f"  Kernel log (last 24h): {out if out.startswith('[unavailable') else f'[unavailable: {out}]'}"]
+    matched = [line for line in out.splitlines() if any(pattern in line for pattern in _KERNEL_PATTERNS)]
+    rows = ["", "  Kernel log (last 24h, power / USB / OOM only):"]
+    if not matched:
+        rows.append("    [none]")
+        return rows
+    dropped = len(matched) - _KERNEL_EXTRACT_MAX_LINES
+    for line in matched[-_KERNEL_EXTRACT_MAX_LINES:]:
+        rows.append(f"    {redact_log_line(line)}")
+    if dropped > 0:
+        rows.append(f"    [... {dropped} earlier matching line(s) not shown]")
+    return rows
+
+
 def collect_recent_failures(
     p: DiagnosticsProviders,
     log_collector: Callable[[], tuple[str, list[str]]],
@@ -1129,6 +1245,7 @@ def collect_recent_failures(
             else:
                 rows.append("  [no WARNING/ERROR/CRITICAL lines in window]")
             rows.append("  ----- end failure extract -----")
+    rows.extend(collect_kernel_extract())
     if p.worker_thread_tracebacks is not None:
         rows.append("")
         rows.append("  Last worker-thread tracebacks:")
@@ -1371,6 +1488,70 @@ def collect_runtime_versions(
     rows.append(f"  GTK 3                        {_gtk3_version(cap())}")
     ndi = "present" if importlib.util.find_spec("NDIlib") else "[not present]"
     rows.append(f"  libndi                       {ndi}")
+    rows.append(f"  openfollow package           {_installed_package_version(cap())}")
+    return rows
+
+
+def _installed_package_version(timeout_s: float) -> str:
+    """The installed ``.deb`` version against the code actually running.
+
+    They part company the moment an update installs and the service is not
+    restarted, and every other line in the bundle then describes the old
+    build while the operator reads the new version number off the release
+    notes.
+    """
+    rc, out = _run(["dpkg-query", "-W", "-f=${Version}", "openfollow"], timeout_s=timeout_s)
+    if rc != 0:
+        return f"running {openfollow.__version__} (not a .deb install)"
+    installed = out.strip()
+    running = openfollow.__version__
+    if installed == running:
+        return f"{installed} installed, and running"
+    return f"MISMATCH: {installed} installed, {running} running - the service has not restarted since the update"
+
+
+def collect_video_capability() -> list[str]:
+    """Which video inputs this station can actually offer, and why not.
+
+    The picker hides a backend whose element is missing, so "NDI is not in the
+    list" and "NDI is broken" look identical from a screenshot. Each plugin
+    already answers this for itself through ``is_available`` - this reports
+    what it says rather than keeping a second list that can drift.
+    """
+    rows: list[str] = []
+    try:
+        from openfollow.video.inputs import get_registry  # noqa: PLC0415
+
+        registry = get_registry()
+    except Exception as exc:  # noqa: BLE001
+        return [f"  [unavailable: input registry: {exc!r}]"]
+
+    rows.append("  Video inputs:")
+    for input_id, plugin in sorted(registry.items()):
+        try:
+            available, reason = plugin.is_available()
+        except Exception as exc:  # noqa: BLE001
+            available, reason = False, f"is_available raised: {exc!r}"
+        state = "available" if available else f"unavailable - {reason}"
+        rows.append(f"    {input_id:<14}{state}")
+
+    try:
+        import gi  # noqa: PLC0415
+
+        gi.require_version("Gst", "1.0")
+        from gi.repository import Gst  # noqa: PLC0415
+
+        Gst.init(None)
+    except Exception as exc:  # noqa: BLE001
+        rows.append(f"  GStreamer elements: [unavailable: {exc!r}]")
+        return rows
+
+    rows.append("  Shared GStreamer elements:")
+    for name, used_for in _SHARED_GST_ELEMENTS:
+        present = "present" if Gst.ElementFactory.find(name) else "MISSING"
+        rows.append(f"    {name:<18}{present:<9}({used_for})")
+    found = [name for name in _DECODER_ELEMENTS if Gst.ElementFactory.find(name)]
+    rows.append(f"  Video decoders:       {', '.join(found) if found else 'none of the expected decoders'}")
     return rows
 
 
@@ -1389,7 +1570,7 @@ _DETECTION_DISTRIBUTIONS: tuple[tuple[str, str], ...] = (
 )
 
 
-def collect_detection_stack() -> list[str]:
+def collect_detection_stack(p: DiagnosticsProviders | None = None) -> list[str]:
     rows: list[str] = []
     for dist, _mod in _DETECTION_DISTRIBUTIONS:
         try:
@@ -1405,6 +1586,34 @@ def collect_detection_stack() -> list[str]:
             rows.append(f"  onnxruntime providers        {', '.join(providers)}")
         except Exception as exc:  # noqa: BLE001
             rows.append(f"  onnxruntime providers        [unavailable: {exc!r}]")
+    rows.extend(_collect_detection_models(p))
+    return rows
+
+
+def _collect_detection_models(p: DiagnosticsProviders | None) -> list[str]:
+    """The model files actually present in the storage directory.
+
+    The storage breakdown reports that directory's *size*; "detection will not
+    start" is a question about which model is in it and whether the configured
+    one is among them.
+    """
+    if p is None or p.detection_models_dir is None:
+        return ["  models                       [not applicable: storage provider not wired]"]
+    raw, err = _safely_value(p.detection_models_dir, "detection_models_dir", "")
+    if err is not None:
+        return [f"  models                       {err}"]
+    directory = Path(str(raw or ""))
+    rows = [f"  models directory             {directory}"]
+    try:
+        entries = sorted(directory.glob("*.onnx"))
+    except OSError as exc:
+        rows.append(f"  models                       [unavailable: {exc.strerror or exc}]")
+        return rows
+    if not entries:
+        rows.append("  models                       [none present]")
+        return rows
+    for entry in entries:
+        rows.append(f"    {entry.name:<27}{describe_file(entry)}")
     return rows
 
 
@@ -1756,6 +1965,19 @@ def collect_storage_breakdown(
 # E6. System health ---------------------------------------------------------
 
 
+def _collect_throttle_state() -> str:
+    """Raspberry Pi under-voltage and throttling flags.
+
+    Temperature and fan speed are already here, and neither shows an
+    inadequate supply - which presents as random freezes and USB devices
+    dropping out, not as heat.
+    """
+    rc, out = _run(["vcgencmd", "get_throttled"], timeout_s=2.0)
+    if rc != 0:
+        return out if out.startswith("[unavailable") else f"[unavailable: {out}]"
+    return decode_throttled(out)
+
+
 def collect_system_health() -> list[str]:
     import psutil  # noqa: PLC0415
 
@@ -1765,6 +1987,7 @@ def collect_system_health() -> list[str]:
         f"  boot time (UTC)              {datetime.fromtimestamp(bt, tz=timezone.utc).isoformat(timespec='seconds')}"
     )
     rows.append(f"  uptime                       {(time.time() - bt) / 3600:.1f} h")
+    rows.append(f"  throttling                   {_collect_throttle_state()}")
     # ``sensors_temperatures`` doesn't exist on macOS at all
     # (``AttributeError``); on Linux it can be empty / Permission
     # Denied. Treat all three as the same "unavailable" case.
@@ -2412,6 +2635,7 @@ class DiagnosticsBundle:
     c_config: list[str] = field(default_factory=list)
     d_failures: list[str] = field(default_factory=list)
     e1_runtime: list[str] = field(default_factory=list)
+    e1b_video: list[str] = field(default_factory=list)
     e2_detection: list[str] = field(default_factory=list)
     e3_os: list[str] = field(default_factory=list)
     e4_cpu: list[str] = field(default_factory=list)
@@ -2438,6 +2662,7 @@ _BUNDLE_SECTIONS: tuple[tuple[str, str], ...] = (
     ("C. Effective config", "c_config"),
     ("D. Recent failures", "d_failures"),
     ("E1. Runtime / versions", "e1_runtime"),
+    ("E1b. Video capability", "e1b_video"),
     ("E2. Person detection stack", "e2_detection"),
     ("E3. Operating system", "e3_os"),
     ("E4. CPU", "e4_cpu"),
@@ -2514,7 +2739,8 @@ def collect_bundle(
         "c_config": lambda: collect_config(p),
         "d_failures": lambda: collect_recent_failures(p, log_collector_fn, failure_collector_fn),
         "e1_runtime": lambda: collect_runtime_versions(repo_root, budget_s=remaining(_RUNTIME_SECTION_BUDGET_S)),
-        "e2_detection": collect_detection_stack,
+        "e1b_video": collect_video_capability,
+        "e2_detection": lambda: collect_detection_stack(p),
         "e3_os": collect_os,
         "e4_cpu": collect_cpu,
         "e5_memdisk": lambda: collect_memory_disk(extra_paths=extra_storage_paths),

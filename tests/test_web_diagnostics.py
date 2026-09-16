@@ -833,10 +833,13 @@ def test_collect_recent_failures_extract_window_label_is_source_aware() -> None:
         lambda: ("journalctl", ["[INFO] ok"]),
         lambda: ("in-memory ring buffer (journalctl unavailable)", ["[ERROR] boom"]),
     )
-    joined = "\n".join(rows)
-    assert "last 24h" not in joined
-    assert "this process (ring buffer)" in joined
-    assert "source: in-memory ring buffer (journalctl unavailable)" in joined
+    # Anchored to the extract's own header line: the section carries other
+    # windows (the kernel extract has its own), and matching the phrase
+    # anywhere made this fail on an unrelated addition.
+    label = next(line for line in rows if line.strip().startswith("Failure extract"))
+    assert "last 24h" not in label
+    assert "this process (ring buffer)" in label
+    assert "source: in-memory ring buffer (journalctl unavailable)" in label
 
 
 def test_collect_recent_failures_failure_extract_empty_window() -> None:
@@ -4165,6 +4168,241 @@ def test_collect_source_reachability_names_an_unregistered_source_type() -> None
     rows = diag.collect_source_reachability(diag.DiagnosticsProviders(source_endpoint=lambda: endpoint))
     assert "no-such-plugin -> (none)" in rows[0]
     assert "not a registered video input" in rows[1]
+
+
+# ---------------------------------------------------------------------------
+# Local probes: capability, models, provenance, throttling, kernel log
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("throttled=0x0", "none (no under-voltage or throttling, now or since boot)"),
+        ("throttled=0x1", "0x1 - under-voltage NOW"),
+        ("throttled=0x80000", "0x80000 - soft temperature limit has occurred since boot"),
+    ],
+)
+def test_decode_throttled_names_the_flags(raw: str, expected: str) -> None:
+    """``throttled=0x50005`` is not something an operator reads, and it is the
+    answer to the freezes and dropped USB devices an inadequate supply causes."""
+    assert diag.decode_throttled(raw) == expected
+
+
+def test_decode_throttled_separates_live_flags_from_latched_ones() -> None:
+    """The high bits latch since boot, which is what an intermittent fault
+    leaves behind once the symptom has passed."""
+    decoded = diag.decode_throttled("throttled=0x50005")
+    assert "under-voltage NOW" in decoded
+    assert "under-voltage has occurred since boot" in decoded
+
+
+@pytest.mark.parametrize("raw", ["garbage", "throttled=", "throttled=0xzz"])
+def test_decode_throttled_rejects_an_unreadable_value(raw: str) -> None:
+    assert "unavailable" in diag.decode_throttled(raw)
+
+
+def test_decode_throttled_reports_an_unknown_bit_without_inventing_a_meaning() -> None:
+    assert diag.decode_throttled("throttled=0x100") == "0x100 - no known flag set"
+
+
+def test_collect_throttle_state_is_unavailable_without_vcgencmd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every probe has to degrade off-platform; there is no vcgencmd on macOS."""
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (-1, "[unavailable: vcgencmd not found]"))
+    assert "unavailable" in diag._collect_throttle_state()
+
+
+def test_collect_throttle_state_wraps_a_bare_failure_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (1, "VCHI initialization failed"))
+    assert diag._collect_throttle_state() == "[unavailable: VCHI initialization failed]"
+
+
+def test_describe_file_reports_size_and_mtime(tmp_path: Path) -> None:
+    target = tmp_path / "config.toml"
+    target.write_text("x" * 42)
+    described = diag.describe_file(target)
+    assert described.startswith("42 B, modified ")
+
+
+def test_describe_file_reports_why_it_cannot_be_read(tmp_path: Path) -> None:
+    assert "unavailable" in diag.describe_file(tmp_path / "absent.toml")
+
+
+def test_collect_video_capability_reports_each_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ "NDI is not in the picker" and "NDI is broken" look identical from a
+    screenshot, because the picker hides an unavailable backend."""
+    rows = diag.collect_video_capability()
+    joined = "\n".join(rows)
+    assert "Video inputs:" in joined
+    assert "rtsp" in joined
+    # Each plugin answers for itself, so an unavailable one carries its reason.
+    assert any("unavailable - " in row for row in rows) or all("available" in row for row in rows[1:9])
+
+
+def test_collect_video_capability_survives_a_plugin_that_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openfollow.video.inputs import get_registry
+
+    plugin = get_registry()["rtsp"]
+    monkeypatch.setattr(plugin, "is_available", classmethod(lambda cls: (_ for _ in ()).throw(RuntimeError("boom"))))
+    joined = "\n".join(diag.collect_video_capability())
+    assert "is_available raised" in joined
+
+
+def test_collect_video_capability_reports_an_unreadable_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    import openfollow.video.inputs as inputs_module
+
+    monkeypatch.setattr(inputs_module, "get_registry", lambda: (_ for _ in ()).throw(RuntimeError("registry gone")))
+    assert "input registry" in diag.collect_video_capability()[0]
+
+
+def test_collect_detection_models_lists_what_is_on_disk(tmp_path: Path) -> None:
+    """The storage breakdown reports the directory's size; "detection will not
+    start" is a question about which model is in it."""
+    (tmp_path / "yolo26n.onnx").write_bytes(b"x" * 10)
+    (tmp_path / "notes.txt").write_text("ignored")
+    rows = diag._collect_detection_models(diag.DiagnosticsProviders(detection_models_dir=lambda: str(tmp_path)))
+    joined = "\n".join(rows)
+    assert "yolo26n.onnx" in joined
+    assert "notes.txt" not in joined
+
+
+def test_collect_detection_models_reports_an_empty_store(tmp_path: Path) -> None:
+    rows = diag._collect_detection_models(diag.DiagnosticsProviders(detection_models_dir=lambda: str(tmp_path)))
+    assert any("[none present]" in row for row in rows)
+
+
+def test_collect_detection_models_reports_an_unwired_provider() -> None:
+    assert "not applicable" in diag._collect_detection_models(diag.DiagnosticsProviders())[0]
+    assert "not applicable" in diag._collect_detection_models(None)[0]
+
+
+def test_collect_detection_models_survives_a_raising_provider() -> None:
+    def _boom() -> str:
+        raise RuntimeError("storage exploded")
+
+    rows = diag._collect_detection_models(diag.DiagnosticsProviders(detection_models_dir=_boom))
+    assert "storage exploded" in rows[0]
+
+
+def test_config_provenance_reports_each_file(tmp_path: Path) -> None:
+    """Answers whether a save landed, and whether the station is still on the
+    image defaults - neither of which the dump itself can show."""
+    config = tmp_path / "config.toml"
+    config.write_text("x = 1")
+    rows = diag._collect_config_provenance(
+        diag.DiagnosticsProviders(config_file_paths=lambda: [str(config), str(tmp_path / "markers.toml")])
+    )
+    joined = "\n".join(rows)
+    assert str(config) in joined
+    assert "5 B, modified " in joined
+    assert "unavailable" in joined  # the absent catalog
+
+
+def test_config_provenance_is_absent_when_unwired() -> None:
+    assert diag._collect_config_provenance(diag.DiagnosticsProviders()) == []
+
+
+def test_config_provenance_survives_a_raising_provider() -> None:
+    def _boom() -> list[str]:
+        raise RuntimeError("paths exploded")
+
+    rows = diag._collect_config_provenance(diag.DiagnosticsProviders(config_file_paths=_boom))
+    assert "paths exploded" in rows[1]
+
+
+def test_kernel_extract_keeps_only_hardware_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The unit's own journal cannot show these, so a failing supply or a USB
+    device dropping off the bus reads as an unexplained application fault."""
+    monkeypatch.setattr(
+        diag,
+        "_run",
+        lambda *_a, **_k: (
+            0,
+            "kernel: Under-voltage detected! (0x50005)\n"
+            "kernel: usb 1-1: USB disconnect, device number 4\n"
+            "kernel: random: crng init done\n",
+        ),
+    )
+    rows = diag.collect_kernel_extract()
+    joined = "\n".join(rows)
+    assert "Under-voltage detected" in joined
+    assert "USB disconnect" in joined
+    assert "crng init done" not in joined
+
+
+def test_kernel_extract_reports_a_quiet_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, "kernel: nothing interesting\n"))
+    assert any("[none]" in row for row in diag.collect_kernel_extract())
+
+
+def test_kernel_extract_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A station that has been browning out for a day would otherwise paste
+    thousands of identical lines into the bundle."""
+    noisy = "\n".join(f"kernel: Under-voltage detected! ({n})" for n in range(200))
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, noisy))
+    rows = diag.collect_kernel_extract()
+    assert len(rows) == diag._KERNEL_EXTRACT_MAX_LINES + 3  # blank, header, lines, "N earlier"
+    assert "160 earlier matching line(s) not shown" in rows[-1]
+
+
+def test_kernel_extract_is_unavailable_without_journalctl(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (-1, "[unavailable: journalctl not found]"))
+    assert "unavailable" in "\n".join(diag.collect_kernel_extract())
+
+
+def test_kernel_extract_redacts_a_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        diag,
+        "_run",
+        lambda *_a, **_k: (0, "kernel: USB disconnect while rtsp://u:pw@cam/s was open"),
+    )
+    assert "pw" not in "\n".join(diag.collect_kernel_extract()).replace("no-pw", "")
+
+
+def test_installed_package_version_reports_a_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, openfollow.__version__))
+    assert diag._installed_package_version(1.0) == f"{openfollow.__version__} installed, and running"
+
+
+def test_installed_package_version_flags_an_unrestarted_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The two part company the moment an update installs and the service is
+    not restarted, and every other line then describes the old build."""
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, "9.9.9"))
+    reported = diag._installed_package_version(1.0)
+    assert "MISMATCH" in reported
+    assert "has not restarted" in reported
+
+
+def test_installed_package_version_handles_a_source_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (-1, "[unavailable: dpkg-query not found]"))
+    assert "not a .deb install" in diag._installed_package_version(1.0)
+
+
+def test_collect_throttle_state_decodes_a_reading(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, "throttled=0x50005"))
+    assert "under-voltage NOW" in diag._collect_throttle_state()
+
+
+def test_collect_video_capability_reports_gstreamer_being_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The input table still renders; only the element probe is lost."""
+    import gi
+
+    monkeypatch.setattr(gi, "require_version", lambda *_a, **_k: (_ for _ in ()).throw(ValueError("no Gst")))
+    rows = diag.collect_video_capability()
+    joined = "\n".join(rows)
+    assert "Video inputs:" in joined
+    assert "GStreamer elements: [unavailable" in joined
+
+
+def test_collect_detection_models_reports_an_unreadable_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def _boom(self: Path, _pattern: str) -> Any:
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "glob", _boom)
+    rows = diag._collect_detection_models(diag.DiagnosticsProviders(detection_models_dir=lambda: str(tmp_path)))
+    assert "Permission denied" in rows[-1]
 
 
 def test_describe_address_reachability_prefers_the_lowest_metric(

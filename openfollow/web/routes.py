@@ -2727,6 +2727,27 @@ def _active_source_endpoint(cfg: AppConfig) -> dict[str, Any] | None:
     }
 
 
+def _config_file_paths(server: ConfigWebServer, cfg: AppConfig) -> list[str]:
+    """The files this station's configuration is read from, absolute.
+
+    The catalog path resolves against ``config.toml``'s directory, the same
+    rule the app applies - reporting the raw relative value would name a file
+    that exists only if the reader happens to share our working directory.
+    """
+    config_path = Path(server.config_path)
+    catalog = Path(cfg.markers_catalog_path or "markers.toml")
+    if not catalog.is_absolute():
+        catalog = config_path.parent / catalog
+    return [str(config_path), str(catalog)]
+
+
+def _detection_models_dir(cfg: AppConfig) -> str:
+    """The ``models`` directory detection actually loads from."""
+    from openfollow.video.detection import resolve_detection_storage_path  # noqa: PLC0415 - import cost off module load
+
+    return str(Path(resolve_detection_storage_path(cfg.detection.storage_path)).expanduser() / "models")
+
+
 def _build_diagnostics_providers(
     server: ConfigWebServer,
     cfg: AppConfig,
@@ -2793,6 +2814,8 @@ def _build_diagnostics_providers(
         runtime_stats=server.get_runtime_stats,
         online_sync_status=server.online_sync_status_provider,
         source_endpoint=lambda: _active_source_endpoint(cfg),
+        config_file_paths=lambda: _config_file_paths(server, cfg),
+        detection_models_dir=lambda: _detection_models_dir(cfg),
         config_diff_from_defaults=lambda: _config_diff_from_defaults(cfg),
         request_semaphore_rejections=(lambda: server.request_semaphore_rejections),
         detection_install_state=server.get_detection_install_status,

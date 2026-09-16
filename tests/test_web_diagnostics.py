@@ -4469,6 +4469,38 @@ def test_kernel_extract_reports_a_quiet_log(monkeypatch: pytest.MonkeyPatch) -> 
     assert any("[none]" in row for row in diag.collect_kernel_extract())
 
 
+def test_kernel_extract_keeps_the_newest_lines_and_reads_forwards(monkeypatch: pytest.MonkeyPatch) -> None:
+    """journalctl hands back newest-first, so capping with the tail of that
+    list keeps the OLDEST matches and hides what is happening now - on a board
+    browning out continuously the extract froze 45 minutes in the past."""
+    newest_first = [f"kernel: hwmon hwmon3: Undervoltage detected! (minute {n})" for n in range(120, 0, -1)]
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, "\n".join(newest_first) + "\n"))
+    rows = diag.collect_kernel_extract()
+    shown = [r for r in rows if "Undervoltage" in r]
+
+    assert len(shown) == diag._KERNEL_EXTRACT_MAX_LINES
+    assert "(minute 120)" in shown[-1]  # the newest survives the cap
+    assert f"(minute {120 - diag._KERNEL_EXTRACT_MAX_LINES + 1})" in shown[0]
+    assert "(minute 1)" not in "\n".join(shown)  # the oldest is what gets dropped
+    assert any(f"{120 - diag._KERNEL_EXTRACT_MAX_LINES} earlier matching line(s)" in r for r in rows)
+
+
+def test_kernel_extract_asks_journalctl_for_newest_first() -> None:
+    """The cap above is only correct against a known order, and ``-n`` alone
+    does not pin one."""
+    seen: list[list[str]] = []
+
+    def _capture(argv: list[str], **_k: object) -> tuple[int, str]:
+        seen.append(argv)
+        return 0, ""
+
+    import unittest.mock
+
+    with unittest.mock.patch.object(diag, "_run", _capture):
+        diag.collect_kernel_extract()
+    assert "-r" in seen[0]
+
+
 def test_kernel_extract_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     """A station that has been browning out for a day would otherwise paste
     thousands of identical lines into the bundle."""

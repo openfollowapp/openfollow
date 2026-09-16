@@ -1217,6 +1217,9 @@ def collect_kernel_extract(timeout_s: float = _KERNEL_EXTRACT_TIMEOUT_S) -> list
             "short",
             "--grep",
             _KERNEL_GREP,
+            # ``-r`` pins newest-first rather than inheriting whatever order
+            # ``-n`` yields, so the cap below can keep the right end.
+            "-r",
             "-n",
             str(_KERNEL_EXTRACT_MAX_LINES * 4),
         ],
@@ -1235,7 +1238,7 @@ def collect_kernel_extract(timeout_s: float = _KERNEL_EXTRACT_TIMEOUT_S) -> list
         rows.append("    [none]")
         return rows
     dropped = len(matched) - _KERNEL_EXTRACT_MAX_LINES
-    for line in matched[-_KERNEL_EXTRACT_MAX_LINES:]:
+    for line in reversed(matched[:_KERNEL_EXTRACT_MAX_LINES]):
         rows.append(f"    {redact_log_line(line)}")
     if dropped > 0:
         rows.append(f"    [... {dropped} earlier matching line(s) not shown]")

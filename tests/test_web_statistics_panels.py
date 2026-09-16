@@ -264,7 +264,7 @@ def test_a_credential_in_the_receiver_error_never_reaches_the_banner() -> None:
     marker = NdiStatusMarker()
     marker.set_reconnecting(
         2,
-        "Could not open resource for reading rtsp://operator:hunter2@192.168.0.182:554/profile2/media.smp",
+        "Could not open resource for reading rtsp://operator:hunter2@192.168.0.182:554/video/stream1",
     )
     # Exactly what ``publish_runtime_stats`` copies into the snapshot.
     panel = _panel(
@@ -280,5 +280,5 @@ def test_a_credential_in_the_receiver_error_never_reaches_the_banner() -> None:
     assert "hunter2" not in panel
     assert "operator:" not in panel
     # Still the answer the operator needs.
-    assert "192.168.0.182:554/profile2/media.smp" in panel
+    assert "192.168.0.182:554/video/stream1" in panel
     assert "Reconnect attempt 2." in panel

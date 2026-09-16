@@ -142,11 +142,11 @@ class TestStripUriQueryKey:
 class TestRedactUrisInText:
     def test_strips_a_credential_from_a_gstreamer_error(self) -> None:
         out = redact_uris_in_text(
-            "Could not open resource for reading rtsp://operator:hunter2@192.168.0.182:554/profile2/media.smp"
+            "Could not open resource for reading rtsp://operator:hunter2@192.168.0.182:554/video/stream1"
         )
         assert "hunter2" not in out
         assert "operator:" not in out
-        assert "rtsp://192.168.0.182:554/profile2/media.smp" in out
+        assert "rtsp://192.168.0.182:554/video/stream1" in out
 
     def test_two_adjacent_uris_are_each_redacted(self) -> None:
         """A greedy run-to-end-of-line match would swallow both URIs as one and

@@ -120,14 +120,14 @@ class TestRtspCredentials:
     def test_credentials_drive_the_element_properties(self) -> None:
         src = self._rtspsrc(
             {
-                "rtsp_url": "rtsp://192.168.0.182:554/profile2/media.smp",
+                "rtsp_url": "rtsp://192.168.0.182:554/video/stream1",
                 "rtsp_user": "operator",
                 "rtsp_password": "hunter2",
             }
         )
         assert src.properties["user-id"] == "operator"
         assert src.properties["user-pw"] == "hunter2"
-        assert src.properties["location"] == "rtsp://192.168.0.182:554/profile2/media.smp"
+        assert src.properties["location"] == "rtsp://192.168.0.182:554/video/stream1"
 
     @pytest.mark.parametrize("password", ["p@ss:word/1", "with spaces", "  padded  "])
     def test_password_reaches_the_element_verbatim(self, password: str) -> None:

@@ -561,7 +561,7 @@ def test_api_diagnostics_log_tail_redacts_stream_credentials(live_server) -> Non
 
     logging.getLogger("openfollow.test.redact").error(
         "GStreamer error: Unauthorized (Could not open resource for reading "
-        "rtsp://operator:hunter2@192.168.0.182:554/profile2/media.smp)",
+        "rtsp://operator:hunter2@192.168.0.182:554/video/stream1)",
     )
     logging.getLogger("openfollow.test.redact").error(
         "srt://10.0.0.5:5000?passphrase=topsecret&latency=125 failed",
@@ -570,7 +570,7 @@ def test_api_diagnostics_log_tail_redacts_stream_credentials(live_server) -> Non
     assert status == 200
     assert "hunter2" not in body
     assert "topsecret" not in body
-    assert "192.168.0.182:554/profile2/media.smp" in body
+    assert "192.168.0.182:554/video/stream1" in body
     assert "latency=125" in body
 
 

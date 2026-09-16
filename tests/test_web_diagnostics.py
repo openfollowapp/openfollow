@@ -333,14 +333,14 @@ def test_redact_config_secrets_strips_credentials_fused_into_a_url() -> None:
     """An operator told to put the password in the URL must not then have it
     printed back in a bundle we ask them to attach to a public issue."""
     out = diag.redact_config_secrets(
-        'rtsp_url = "rtsp://operator:hunter2@192.168.0.182:554/profile2/media.smp"\n'
+        'rtsp_url = "rtsp://operator:hunter2@192.168.0.182:554/video/stream1"\n'
         'srt_host = "srt://10.0.0.5:5000?passphrase=topsecret&latency=125"'
     )
     assert "hunter2" not in out
     assert "topsecret" not in out
     # Everything that is not the credential survives, or the dump stops being
     # useful for diagnosing the connection it describes.
-    assert "192.168.0.182:554/profile2/media.smp" in out
+    assert "192.168.0.182:554/video/stream1" in out
     assert "latency=125" in out
 
 
@@ -426,7 +426,7 @@ _GST_AUTH_ERROR = (
     "2026-09-12 10:04:11 [ERROR] openfollow.runtime.receiver_bus: GStreamer error: "
     "Unauthorized (gstrtspsrc.c(7469): gst_rtspsrc_send (): "
     "/GstPipeline:rtsp-sink/GstRTSPSrc:rtspsrc: Could not open resource for reading "
-    "rtsp://operator:hunter2@192.168.0.182:554/profile2/media.smp)"
+    "rtsp://operator:hunter2@192.168.0.182:554/video/stream1)"
 )
 
 
@@ -435,7 +435,7 @@ def test_redact_log_line_strips_a_credential_from_a_gstreamer_error() -> None:
     assert "hunter2" not in out
     assert "operator:" not in out
     # The line has to stay diagnosable: host, path and reason all survive.
-    assert "rtsp://192.168.0.182:554/profile2/media.smp" in out
+    assert "rtsp://192.168.0.182:554/video/stream1" in out
     assert "Unauthorized" in out
 
 
@@ -664,7 +664,7 @@ def test_collect_recent_failures_redacts_credentials_across_every_log_surface() 
     joined = "\n".join(rows)
     assert "hunter2" not in joined
     assert "topsecret" not in joined
-    assert joined.count("192.168.0.182:554/profile2/media.smp") == 2
+    assert joined.count("192.168.0.182:554/video/stream1") == 2
 
 
 def test_collect_recent_failures_redacts_signatures_in_worker_traceback() -> None:

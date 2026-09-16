@@ -339,7 +339,7 @@ class TestErrorMessageRedaction:
     _GST_AUTH_ERROR = (
         "Unauthorized – gstrtspsrc.c(7469): gst_rtspsrc_send (): "
         "Could not open resource for reading "
-        "rtsp://operator:hunter2@192.168.0.182:554/profile2/media.smp"
+        "rtsp://operator:hunter2@192.168.0.182:554/video/stream1"
     )
 
     def test_reconnecting_redacts_a_credential(self) -> None:
@@ -347,7 +347,7 @@ class TestErrorMessageRedaction:
         marker.set_reconnecting(1, self._GST_AUTH_ERROR)
         assert "hunter2" not in marker.error_message
         # Still diagnosable: host, path and reason survive.
-        assert "192.168.0.182:554/profile2/media.smp" in marker.error_message
+        assert "192.168.0.182:554/video/stream1" in marker.error_message
         assert "Unauthorized" in marker.error_message
 
     def test_disconnected_redacts_a_credential(self) -> None:

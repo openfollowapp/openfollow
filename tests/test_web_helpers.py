@@ -426,7 +426,7 @@ class TestStreamCredentialRoundTrip:
             "video_source",
             {
                 "video_source_type": "rtsp",
-                "rtsp_url": "rtsp://192.168.0.182:554/profile2/media.smp",
+                "rtsp_url": "rtsp://192.168.0.182:554/video/stream1",
                 "rtsp_user": "  operator  ",
                 "rtsp_password": "p@ss:word/1",
             },
@@ -2986,10 +2986,10 @@ def test_config_diff_from_defaults_strips_userinfo_from_a_uri_field() -> None:
     from openfollow.web.routes import _config_diff_from_defaults
 
     cfg = AppConfig()
-    cfg.rtsp_url = "rtsp://admin:hunter2@198.51.100.10:554/profile2/media.smp"
+    cfg.rtsp_url = "rtsp://admin:hunter2@198.51.100.10:554/video/stream1"
     joined = "\n".join(_config_diff_from_defaults(cfg))
     assert "hunter2" not in joined
-    assert "rtsp://198.51.100.10:554/profile2/media.smp" in joined
+    assert "rtsp://198.51.100.10:554/video/stream1" in joined
 
 
 def test_config_diff_from_defaults_bounds_a_long_value() -> None:
@@ -3024,7 +3024,7 @@ def test_active_source_endpoint_resolves_through_the_plugin_registry() -> None:
 
     cfg = AppConfig()
     cfg.video_source_type = "rtsp"
-    cfg.rtsp_url = "rtsp://198.51.100.10:554/profile2/media.smp"
+    cfg.rtsp_url = "rtsp://198.51.100.10:554/video/stream1"
     assert _active_source_endpoint(cfg) == {
         "host": "198.51.100.10",
         "port": 554,

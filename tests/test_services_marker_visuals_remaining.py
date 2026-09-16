@@ -37,6 +37,7 @@ from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 from openfollow.runtime.services_detection_pin import get_or_create_manual_marker
 from openfollow.runtime.services_marker_visuals import build_marker_visual_state
 from openfollow.runtime_metrics import OverlayStatePool
+from openfollow.video.failure import VideoFailure
 from tests._fake_cairo import FakeCairo, FakeRenderer
 
 pytestmark = pytest.mark.unit
@@ -123,6 +124,7 @@ class _FakeVideoReceiver:
                 is_connected=True,
                 reconnect_attempt=0,
                 error_message="",
+                failure=VideoFailure.NONE,
             ),
         )
         self.source_name = "NDI://CAM"

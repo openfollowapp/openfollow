@@ -30,6 +30,9 @@ class ReceiverStateMachine:
 
         self.connected = False
         self.video_flow_detected = False
+        # Latches on the first real frame and survives reconnect attempts, so a
+        # feed that dropped is not re-diagnosed as one that was never there.
+        self.had_video = False
         self.phase = ConnectionPhase.STARTING
         self.resolution: tuple[int, int] = (0, 0)
         self.source_framerate: float = 0.0
@@ -38,10 +41,23 @@ class ReceiverStateMachine:
         self.was_connected_before_selection = False
 
     def reset_video_flow(self) -> None:
+        """Start a fresh connection attempt.
+
+        ``had_video`` deliberately survives: it describes the *feed*, not the
+        attempt, so a retry that fails is still reported as a feed that dropped
+        rather than one that was never reachable.
+        """
         self.connected = False
         self.video_flow_detected = False
         self.phase = ConnectionPhase.STARTING
         self.clear_source_caps()
+
+    def forget_video_history(self) -> None:
+        """Drop the evidence a feed ever worked, because the source changed.
+
+        Nothing about the old source's history describes the new one.
+        """
+        self.had_video = False
 
     def note_phase(self, phase: ConnectionPhase) -> None:
         """Record that the connection reached *phase*, keeping the furthest.
@@ -98,6 +114,7 @@ class ReceiverStateMachine:
         if self.is_placeholder_pipeline:
             return False
         self.video_flow_detected = True
+        self.had_video = True
         self.note_phase(ConnectionPhase.DECODING)
         if not self.connected:
             self.connected = True

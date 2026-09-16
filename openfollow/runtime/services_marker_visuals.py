@@ -25,6 +25,7 @@ from openfollow.runtime.services_detection_pin import is_assist_controlled
 from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.runtime_metrics import OverlayStatePool
 from openfollow.units import UnitSystem
+from openfollow.video.failure import VideoFailure, failure_chip, failure_sentence
 
 # Same pattern ``GridConfig.__post_init__`` enforces. Duplicated here rather
 # than imported from configuration.py so this module doesn't reach into the
@@ -433,6 +434,14 @@ def build_marker_visual_state(
     state.source_label = video_receiver.source_name
     state.reconnect_attempt = status.reconnect_attempt
     state.error_message = status.error_message
+    state.video_failure = status.failure.value
+    # UNKNOWN contributes no sentence anywhere: it would sit beside the
+    # element's own wording and contradict it.
+    state.video_failure_text = (
+        ""
+        if status.failure in (VideoFailure.NONE, VideoFailure.UNKNOWN)
+        else failure_sentence(status.failure, where=video_receiver.source_name)
+    )
     state.source_selection_active = video_receiver.source_selection_active
     state.discovered_sources = video_receiver.discovered_sources
     state.selected_source_index = video_receiver.selected_source_index
@@ -759,6 +768,15 @@ def build_marker_visual_state(
     # fader-bus path: boot / mid-restart windows have no flags dict yet,
     # which we surface as "no warnings" rather than crashing the overlay.
     flags_dict = getattr(runtime_services, "_status_flags", None) if runtime_services is not None else None
+    if flags_dict is not None:
+        # The chip alone: a badge row holds ~40 characters, and the sentence
+        # plus the element's wording are already on the Settings box and the
+        # web UI. NOT_CONFIGURED is a setup state, not a fault to alarm on.
+        flags_dict["video_failure"] = (
+            ("error", f"Video: {failure_chip(status.failure)}")
+            if status.failure not in (VideoFailure.NONE, VideoFailure.NOT_CONFIGURED)
+            else None
+        )
     if flags_dict:
         # ``dict`` insertion order preserves the order subsystems
         # registered their slots; surface flags in that order so

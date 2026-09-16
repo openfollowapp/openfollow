@@ -12,6 +12,7 @@ from openfollow.video.failure import (
     RESOURCE_NOT_AUTHORIZED,
     RESOURCE_NOT_FOUND,
     RESOURCE_OPEN_READ,
+    RESOURCE_SETTINGS,
     STREAM_CODEC_NOT_FOUND,
     STREAM_DECODE,
     STREAM_DEMUX,
@@ -276,3 +277,53 @@ class TestDemonstratedFlowOutranksAnUnreadableError:
     @pytest.mark.parametrize("domain", [RESOURCE_DOMAIN, STREAM_DOMAIN, "some-other-quark"])
     def test_an_unknown_code_with_no_progress_stays_unknown(self, domain: str) -> None:
         assert classify_failure(phase=ConnectionPhase.STARTING, domain=domain, code=999) == VideoFailure.UNKNOWN
+
+
+class TestAnEmptySdpIsNotAGenericSettingsFailure:
+    """Verified against a real camera: asking an RTSP server for a path it does
+    not serve gets a session description listing no media, not a 404. It
+    reaches us as ``RESOURCE_SETTINGS``, which on its own says nothing.
+    """
+
+    _MESSAGE = "Could not get/set settings from/on resource."
+    _SDP_DEBUG = "gstrtspsrc.c(8357): gst_rtspsrc_setup_streams_start (): SDP contains no streams"
+
+    def test_an_empty_sdp_names_the_path(self) -> None:
+        assert (
+            classify_failure(
+                phase=ConnectionPhase.STARTING,
+                domain=RESOURCE_DOMAIN,
+                code=RESOURCE_SETTINGS,
+                message=self._MESSAGE,
+                debug=self._SDP_DEBUG,
+            )
+            == VideoFailure.STREAM_NOT_FOUND
+        )
+
+    def test_an_unrelated_settings_failure_is_not_claimed(self) -> None:
+        """The code is generic; only the wording makes it a missing stream."""
+        assert (
+            classify_failure(
+                phase=ConnectionPhase.STARTING,
+                domain=RESOURCE_DOMAIN,
+                code=RESOURCE_SETTINGS,
+                message=self._MESSAGE,
+                debug="could not set property on element",
+            )
+            == VideoFailure.UNKNOWN
+        )
+
+    def test_it_reads_the_path_not_a_dropped_feed(self) -> None:
+        """Repointing at a bad path on a camera that was working must describe
+        the new path, not the old feed's history."""
+        assert (
+            classify_failure(
+                phase=ConnectionPhase.STARTING,
+                domain=RESOURCE_DOMAIN,
+                code=RESOURCE_SETTINGS,
+                message=self._MESSAGE,
+                debug=self._SDP_DEBUG,
+                was_connected=True,
+            )
+            == VideoFailure.STREAM_NOT_FOUND
+        )

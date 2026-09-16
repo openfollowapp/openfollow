@@ -195,6 +195,11 @@ class OverlayState:
     source_label: str = ""
     reconnect_attempt: int = 0
     error_message: str = ""
+    # What stopped the feed, and the operator sentence for it. The sentence is
+    # what the web UI leads with, so the device says the same thing rather than
+    # only the element's wording.
+    video_failure: str = "none"
+    video_failure_text: str = ""
     # Source selection (generic – driven by plugin capabilities)
     source_selection_active: bool = False
     source_selection_title: str = "SELECT SOURCE"
@@ -325,6 +330,8 @@ class OverlayState:
         self.source_label = ""
         self.reconnect_attempt = 0
         self.error_message = ""
+        self.video_failure = "none"
+        self.video_failure_text = ""
         self.source_selection_active = False
         self.source_selection_title = "SELECT SOURCE"
         self.discovered_sources.clear()

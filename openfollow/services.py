@@ -2723,9 +2723,17 @@ class AppRuntimeServices:
             # together to decide whether to raise the failure banner.
             status = receiver.status_marker.snapshot()
             width, height = receiver.resolution
+            # Only a classified failure gets a sentence. NONE's ("Video is
+            # arriving.") would otherwise be published beside ``connected:
+            # false`` during a connect attempt, and UNKNOWN's contradicts the
+            # element wording next to it - the same rule every renderer applies.
             # ``source_name`` is already credential-free; this route is exempt
             # from the web PIN.
-            failure_text = failure_sentence(status.failure, where=receiver.source_name)
+            failure_text = (
+                ""
+                if status.failure in (VideoFailure.NONE, VideoFailure.UNKNOWN)
+                else failure_sentence(status.failure, where=receiver.source_name)
+            )
             video_snapshot = {
                 "source_type": cfg.video_source_type,
                 "source_label": receiver.source_name,

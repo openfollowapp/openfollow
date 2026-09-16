@@ -19,7 +19,8 @@ import pytest
 from openfollow.runtime.overlay_draw_style import COLOR_DANGER, COLOR_OK
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.runtime.overlay_status_badge import (
-    _BADGE_WIDTH,
+    _BADGE_MAX_WIDTH,
+    _BADGE_MIN_WIDTH,
     _MAX_VISIBLE_ROWS,
     _ROW_HEIGHT,
     _ROW_SPACING,
@@ -45,8 +46,19 @@ def _state_with_flags(*flags: tuple[str, ...]) -> OverlayState:
     return state
 
 
-def _badge_x(frame_w: int) -> float:
-    return frame_w - _BADGE_WIDTH - _GUTTER
+def _badge_x(cr: FakeCairo) -> float:
+    """The stack's left edge, read from what was drawn.
+
+    The badge sizes to its content, so the tests read the geometry back rather
+    than recomputing the renderer's own width rule and proving nothing.
+    ``draw_rounded_rect`` opens at ``x + radius``, the leftmost move_to of any
+    row.
+    """
+    return min(mx for mx, _y in cr.move_tos) - _ROW_RADIUS
+
+
+def _badge_width(cr: FakeCairo, frame_w: int) -> float:
+    return frame_w - _badge_x(cr) - _GUTTER
 
 
 def _row_top_ys(cr: FakeCairo, badge_x: float) -> list[float]:
@@ -148,7 +160,7 @@ class TestMultipleFlags:
         state = _state_with_flags(("a", "first"), ("b", "second"))
         frame_w = 1920
         draw_status_badge(FakeRenderer(state=state), cr, state, frame_w, 1080)
-        ys = _row_top_ys(cr, _badge_x(frame_w))
+        ys = _row_top_ys(cr, _badge_x(cr))
         assert len(ys) == 2
         assert ys[0] == float(_TOP_OFFSET)
         assert ys[1] == ys[0] + _ROW_HEIGHT + _ROW_SPACING
@@ -212,6 +224,46 @@ class TestPositioning:
         state = _state_with_flags(("a", "below stats"))
         frame_w = 1920
         draw_status_badge(FakeRenderer(state=state), cr, state, frame_w, 1080)
-        first_y = _row_top_ys(cr, _badge_x(frame_w))[0]
+        first_y = _row_top_ys(cr, _badge_x(cr))[0]
         assert first_y == float(_TOP_OFFSET)
         assert first_y > 34
+
+
+class TestTheStackFitsItsContent:
+    """A fixed 280 px box around "Video: Unreachable" was mostly empty. The
+    stack sizes to its widest row instead, within bounds that keep a one-word
+    row readable and a long one from crossing the frame."""
+
+    def _render(self, *flags: tuple[str, ...]) -> tuple[FakeCairo, float]:
+        cr = FakeCairo()
+        frame_w = 1920
+        draw_status_badge(FakeRenderer(), cr, _state_with_flags(*flags), frame_w, 1080)
+        return cr, _badge_width(cr, frame_w)
+
+    def test_a_short_row_gets_a_short_box(self) -> None:
+        _cr, narrow = self._render(("video_failure", "Video: Stalled"))
+        _cr2, wide = self._render(("midi", "MIDI patch missing on 3 bindings, check the mapping"))
+        assert narrow < wide
+
+    def test_it_never_collapses_below_the_minimum(self) -> None:
+        _cr, width = self._render(("x", "!"))
+        assert width >= _BADGE_MIN_WIDTH
+
+    def test_it_never_exceeds_the_maximum(self) -> None:
+        _cr, width = self._render(("x", "a stupendously long warning " * 12))
+        assert width <= _BADGE_MAX_WIDTH
+
+    def test_every_row_shares_one_width(self) -> None:
+        """A ragged stack reads as several widgets rather than one."""
+        cr, _w = self._render(("a", "Video: Unreachable"), ("b", "MIDI patch missing on 3 bindings"))
+        lefts = {round(mx, 3) for mx, _y in cr.move_tos}
+        # Row backgrounds all open at the same x; a ragged stack would add more
+        # distinct left edges than the three per-row offsets (rect/glyph/text).
+        assert len(lefts) <= 3
+
+    def test_the_overflow_tail_is_measured_too(self) -> None:
+        """The tail is a row like any other and must not be clipped by a width
+        chosen without it."""
+        rows = [(f"k{i}", "short") for i in range(_MAX_VISIBLE_ROWS + 3)]
+        _cr, width = self._render(*rows)
+        assert width >= _BADGE_MIN_WIDTH

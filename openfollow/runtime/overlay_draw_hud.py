@@ -515,11 +515,14 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
         cursor_y,
         content_w,
     )
-    # Single error surface: banner takes priority (auto-open path
-    # passes a structured message including source + GStreamer error),
-    # falling back to a raw ``error_message`` if the operator opened
-    # Settings manually while video was already in an error state.
-    error_text = state.settings_menu_banner or state.error_message
+    # Single error surface: banner takes priority (auto-open path passes a
+    # structured message including source + GStreamer error). Opening Settings
+    # manually falls back to the same pair the web UI shows - the sentence
+    # naming what failed, then the element's own wording - because the raw
+    # message alone was half of what the browser was reporting.
+    error_text = state.settings_menu_banner or " ".join(
+        part for part in (state.video_failure_text, state.error_message) if part
+    )
     if error_text:
         cursor_y = _draw_settings_error_box(
             renderer,
@@ -983,7 +986,7 @@ def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: 
     # so operators glancing at the HUD spot the failure even when
     # they don't have the Settings menu open. Matches the trigger
     # condition for the Settings menu's red-bordered error box.
-    in_error = bool(state.settings_menu_banner or state.error_message)
+    in_error = bool(state.settings_menu_banner or state.error_message or state.video_failure_text)
     if in_error:
         draw_rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, 11)
         cr.set_source_rgba(

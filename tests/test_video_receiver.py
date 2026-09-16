@@ -4575,3 +4575,52 @@ class TestRefusalReachesTheClassifier:
             )
         )
         assert r.status_marker.failure == VideoFailure.REFUSED
+
+
+class TestAFeedThatDroppedIsNeverReportedAsNeverReachable:
+    """Found on hardware, not in the unit suite.
+
+    A camera decoding 1920x1080 was pulled mid-stream. The stall watchdog
+    classified it STALLED correctly, then the very next reconnect attempt
+    reclassified it UNREACHABLE - because ``_reset_video_flow_state`` clears
+    the evidence between attempts. The operator was told nothing answered,
+    about a camera that had been on screen a second earlier.
+    """
+
+    def _receiver(self) -> receiver_mod.GstNativeSinkReceiver:
+        return _make_receiver(input_config={"fake_source": "cam-1"})
+
+    def test_the_verdict_survives_the_retry_that_follows_it(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = self._receiver()
+        r._state.mark_frame_received()  # the feed was decoding
+
+        r._schedule_reconnect("Stream stalled (no frames received)")
+        assert r.status_marker.failure == VideoFailure.STALLED
+
+        # The retry fails the way an unreachable host does. It must not
+        # redescribe a feed that demonstrably worked.
+        r._handle_bus_error(BusError("Could not open resource", RESOURCE_DOMAIN, RESOURCE_OPEN_READ))
+        assert r.status_marker.failure == VideoFailure.STALLED
+
+    def test_repeated_retries_never_drift_to_unreachable(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = self._receiver()
+        r._state.mark_frame_received()
+
+        for _ in range(5):
+            r._handle_bus_error(BusError("Could not open resource", RESOURCE_DOMAIN, RESOURCE_OPEN_READ))
+            assert r.status_marker.failure != VideoFailure.UNREACHABLE
+
+    def test_a_source_that_never_worked_still_reads_as_unreachable(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """The latch must not make every failure a stall."""
+        r = self._receiver()
+        r._handle_bus_error(BusError("Could not open resource", RESOURCE_DOMAIN, RESOURCE_OPEN_READ))
+        assert r.status_marker.failure == VideoFailure.UNREACHABLE
+
+    def test_repointing_the_input_forgets_the_old_feed(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """A new source inherits nothing from the old one's history."""
+        r = self._receiver()
+        r._state.mark_frame_received()
+        assert r._state.had_video is True
+
+        r.set_source("cam-2")
+        assert r._state.had_video is False

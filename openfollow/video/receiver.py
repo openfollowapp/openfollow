@@ -444,6 +444,7 @@ class GstNativeSinkReceiver:
             self._discovery_thread = None
         self._null_transition_current_pipeline(swap_label="swap_input")
         self._reset_video_flow_state()
+        self._state.forget_video_history()
         self._state.reset_reconnect_backoff()
         self._state.deactivate_source_selection()
         self._input.cleanup()
@@ -770,6 +771,7 @@ class GstNativeSinkReceiver:
             logger.warning("set_source: prior pipeline did not reach NULL – aborting source change")
             return
         self._reset_video_flow_state()
+        self._state.forget_video_history()
 
         source_label = self._input.get_source_label(self._input_config)
         if self._has_configured_source():
@@ -984,7 +986,10 @@ class GstNativeSinkReceiver:
             code=error.code if error else 0,
             message=error.message if error else "",
             debug=error.debug if error else "",
-            was_connected=self._state.video_flow_detected,
+            # The feed's history, not this attempt's: the reset between retries
+            # clears ``video_flow_detected``, and a retry failing after a feed
+            # dropped must not be re-diagnosed as a source never reached.
+            was_connected=self._state.had_video,
         )
 
     def _schedule_reconnect(

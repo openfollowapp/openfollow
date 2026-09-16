@@ -330,9 +330,17 @@ failure, and the phase is what decides an ambiguous error: the same
 `FAILED = 1`) stays `UNKNOWN` rather than landing in a neighbouring bucket.
 
 **Classify before `_reset_video_flow_state`.** `_schedule_reconnect` clears the
-phase and `video_flow_detected` it classifies from, so the verdict is computed
-at the top of that method; computing it afterwards reads every failure as a
-cold start.
+phase it classifies from, so the verdict is computed at the top of that method;
+computing it afterwards reads every failure as a cold start.
+
+**"Did video ever flow" is the discriminator, not the phase alone.** The phase
+describes the *current attempt* and is reset before every retry, so
+`ReceiverStateMachine.had_video` latches on the first real frame and survives
+`reset_video_flow`; only `forget_video_history` (a source change) clears it.
+Hardware found this: a camera pulled mid-stream was classified `STALLED`
+correctly and then reclassified `UNREACHABLE` by the very next retry, telling
+the operator nothing answered about a camera that had been on screen a second
+earlier.
 
 One module owns the enum and both text maps so the five surfaces that render
 them cannot drift. `VideoFailure` values are a **wire interface** –
@@ -343,6 +351,19 @@ Sentences **describe the observation and stop**; remedies belong in the website
 docs. `where` must already be redacted – it reaches the HUD and the PIN-exempt
 `/section/statistics`. `UNKNOWN` renders **no** sentence on any surface: it
 would sit above the element's own wording and contradict it.
+
+**On-device surfaces:** the top-right status badge carries the *chip* only
+(`_status_flags["video_failure"]`, ~40 characters per row); the Settings error
+box and the web banner both carry the sentence **plus** the element's own
+wording, which is what support reads against.
+
+**GStreamer does not report everything the taxonomy can express.** Verified
+against a real camera on 1.26: `rtspsrc` reports a refused connection as
+`Failed to connect. (Generic error)` with the errno discarded, so `REFUSED` is
+not reachable over RTSP; and a bad path comes back as
+`gst-resource-error-quark:13` with `SDP contains no streams`, not
+`RESOURCE_NOT_FOUND`. Check what the element actually emits before adding a
+mapping - a code that looks obvious from the enum may never be sent.
 
 ### Placeholder pipeline vs source state
 The "No Signal" placeholder is a black `videotestsrc` pinned at 1920x1080 @ 30 that feeds the **shared** sink, and both sink probes are attached once for that sink's lifetime – so its caps reach the same writer the real source uses. `ReceiverStateMachine.set_resolution` / `set_source_framerate` therefore refuse while `is_placeholder_pipeline`, mirroring `mark_frame_received`, and `_create_placeholder_pipeline` calls `clear_source_caps()` rather than writing its own geometry in. **Do not publish placeholder caps as source state**: `video.resolution` / `source_fps` are what the Statistics panel reports as the feed's own, and what `update_video` shapes the window from – a source that has never delivered a frame would otherwise present as a working 1080p feed and pin the window to 16:9 for the session.

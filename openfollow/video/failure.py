@@ -62,6 +62,7 @@ RESOURCE_BUSY = 4
 RESOURCE_OPEN_READ = 5
 RESOURCE_OPEN_READ_WRITE = 7
 RESOURCE_READ = 9
+RESOURCE_SETTINGS = 13
 RESOURCE_NOT_AUTHORIZED = 15
 
 # ``GstStreamError``.
@@ -79,6 +80,11 @@ _DECODE_CODES = frozenset({STREAM_DECODE, STREAM_DEMUX})
 # wording, and matching that text is the only way to separate "nothing
 # answered" from "something answered no".
 _REFUSED_MARKERS = ("connection refused", "econnrefused")
+
+# An RTSP server that has nothing at the requested path answers with a session
+# description listing no media rather than a 404, which reaches us as a generic
+# settings failure. The wording is gstrtspsrc's own, not a camera's.
+_EMPTY_SDP_MARKERS = ("sdp contains no streams", "no streams in sdp")
 
 _CHIPS: dict[VideoFailure, str] = {
     VideoFailure.NONE: "OK",
@@ -148,6 +154,11 @@ def classify_failure(
     # The OS-level wording ("Connection refused") reaches us in the debug
     # string, not the message, so both are searched.
     text = f"{message}\n{debug}".lower()
+    # "Did video ever flow on this feed" is the one discriminator, and it is
+    # deliberately not the phase alone: the phase describes the current attempt
+    # and is reset before each retry, so a dropped feed retrying would otherwise
+    # be redescribed as a source that was never reachable.
+    flowing = was_connected or phase >= ConnectionPhase.DATA_ARRIVING
 
     if domain == RESOURCE_DOMAIN:
         if code == RESOURCE_NOT_AUTHORIZED:
@@ -156,18 +167,18 @@ def classify_failure(
             return VideoFailure.STREAM_NOT_FOUND
         if code == RESOURCE_BUSY:
             return VideoFailure.DEVICE_UNAVAILABLE
+        if code == RESOURCE_SETTINGS and any(marker in text for marker in _EMPTY_SDP_MARKERS):
+            return VideoFailure.STREAM_NOT_FOUND
         if code in _OPEN_CODES:
             if any(marker in text for marker in _REFUSED_MARKERS):
                 return VideoFailure.REFUSED
-            return VideoFailure.STALLED if phase >= ConnectionPhase.DATA_ARRIVING else VideoFailure.UNREACHABLE
+            return VideoFailure.STALLED if flowing else VideoFailure.UNREACHABLE
 
     if domain == STREAM_DOMAIN:
         if code in _FORMAT_CODES:
             return VideoFailure.UNSUPPORTED_FORMAT
         if code in _DECODE_CODES:
             return VideoFailure.DECODE_ERROR
-
-    flowing = was_connected or phase >= ConnectionPhase.DATA_ARRIVING
 
     if domain or code:
         # An error with no rule cannot undo what was watched happening: a

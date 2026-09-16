@@ -27,6 +27,7 @@ from openfollow.runtime.services_marker_visuals import (
 )
 from openfollow.runtime_metrics import OverlayStatePool
 from openfollow.units import UnitSystem
+from openfollow.video.failure import VideoFailure
 
 pytestmark = pytest.mark.unit
 
@@ -895,7 +896,9 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
     )
     video_receiver = SimpleNamespace(
         status_marker=SimpleNamespace(
-            snapshot=lambda: SimpleNamespace(is_connected=False, reconnect_attempt=0, error_message="")
+            snapshot=lambda: SimpleNamespace(
+                is_connected=False, reconnect_attempt=0, error_message="", failure=VideoFailure.NONE
+            )
         ),
         source_name="",
         source_selection_active=False,
@@ -981,3 +984,44 @@ class TestBuildMarkerVisualStateTornRead:
 
         assert state.lens_k1 == -0.15
         assert state.lens_k2 == 0.04
+
+
+class TestVideoFailureReachesTheTopRightBadge:
+    """An operator glancing at the projected HUD gets the verdict without
+    opening a menu. The badge row holds ~40 characters, so it carries the chip;
+    the sentence and the element's wording stay on the surfaces with room."""
+
+    def _flags_after(self, failure: VideoFailure) -> dict:
+        app = _make_visual_app(_TornMarker([(0.0, 0.0, 0.0)]), controlled=False)
+        app._video_receiver.status_marker = SimpleNamespace(
+            snapshot=lambda: SimpleNamespace(
+                is_connected=failure is VideoFailure.NONE,
+                reconnect_attempt=0,
+                error_message="",
+                failure=failure,
+            )
+        )
+        flags: dict = {}
+        app._runtime_services = SimpleNamespace(_status_flags=flags)
+        build_marker_visual_state(
+            app,
+            overlay_state_pool=OverlayStatePool(),
+            system_stats=None,
+            person_detector=None,
+            cam_params_buffer=np.zeros(7),
+            dt=1.0 / 60.0,
+        )
+        return flags
+
+    def test_a_failure_raises_a_badge_row(self) -> None:
+        assert self._flags_after(VideoFailure.UNREACHABLE)["video_failure"] == ("error", "Video: Unreachable")
+
+    def test_the_row_names_the_failure_not_just_that_there_is_one(self) -> None:
+        assert self._flags_after(VideoFailure.UNAUTHORIZED)["video_failure"] == ("error", "Video: Login rejected")
+
+    def test_a_healthy_feed_clears_the_row(self) -> None:
+        assert self._flags_after(VideoFailure.NONE)["video_failure"] is None
+
+    def test_an_unconfigured_source_is_not_alarmed_about(self) -> None:
+        """Nothing is broken; the operator has not finished setting up."""
+        assert self._flags_after(VideoFailure.NOT_CONFIGURED)["video_failure"] is None

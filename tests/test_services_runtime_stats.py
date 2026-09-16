@@ -835,3 +835,39 @@ class TestDeviceFigures:
         self._prime(services, hud_fps=59.75, canvas=_WrongShapeCanvas())
         snap = self._publish(services, monkeypatch)
         assert snap["system"]["output_resolution"] is None
+
+
+class TestTheSentenceNeverContradictsTheState:
+    """``failure_text`` is published for support tooling to read literally."""
+
+    def _video(self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, failure: VideoFailure) -> dict:
+        receiver = _FakeReceiver()
+        receiver.status_marker.failure = failure
+        receiver.status_marker.is_connected = failure is VideoFailure.NONE
+        TestPublishRuntimeStats._prime(self, services, receiver=receiver)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        services.publish_runtime_stats(force=True)
+        return services.get_runtime_stats_snapshot()["video"]
+
+    def test_a_connect_attempt_does_not_claim_video_is_arriving(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Seen live: mid-swap the marker reads NONE while the feed is down,
+        and the payload asserted "Video is arriving." beside connected=false."""
+        video = self._video(services, monkeypatch, VideoFailure.NONE)
+        assert video["failure_text"] == ""
+
+    def test_an_unreadable_failure_publishes_no_sentence(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        video = self._video(services, monkeypatch, VideoFailure.UNKNOWN)
+        assert video["failure_text"] == ""
+        assert video["failure"] == "unknown"
+
+    def test_a_classified_failure_still_publishes_one(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        video = self._video(services, monkeypatch, VideoFailure.UNREACHABLE)
+        assert video["failure_text"] == "Nothing answered at CAM1."

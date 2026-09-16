@@ -2230,3 +2230,52 @@ class TestPerFrameCaches:
         st.button_labels = {"reset": "Y"}  # a rebind
         hud._help_sections_for(renderer, "settings", st)
         assert modes == ["normal", "settings", "settings"]
+
+
+class TestVideoFailureReachesTheDeviceSurfaces:
+    """The classification has to reach the operator standing at the machine.
+
+    The browser led with the sentence naming what failed and put the element's
+    wording under it; the device's own error box carried only the raw wording,
+    which is half of what the browser was reporting.
+    """
+
+    def _state(self, *, sentence: str, error: str = "") -> OverlayState:
+        state = OverlayState()
+        state.settings_menu_active = True
+        state.video_failure_text = sentence
+        state.error_message = error
+        return state
+
+    def _drawn(self, state: OverlayState) -> str:
+        cr = FakeCairo()
+        draw_settings_menu(FakeRenderer(), cr, state, 1920, 1080)
+        # The box word-wraps, so a sentence arrives as several show_text calls.
+        return " ".join(cr.show_text_strings())
+
+    def test_the_box_carries_the_sentence_and_the_element_wording(self) -> None:
+        drawn = self._drawn(
+            self._state(
+                sentence="Nothing answered at 192.0.2.10:554.",
+                error="Could not open resource for reading and writing.",
+            )
+        )
+        assert "Nothing answered at 192.0.2.10:554." in drawn
+        assert "Could not open resource for reading and writing." in drawn
+
+    def test_an_auto_opened_banner_still_wins(self) -> None:
+        """The startup path composes its own message; it must not be doubled."""
+        state = self._state(sentence="Nothing answered at X.", error="raw")
+        state.settings_menu_banner = "Video source (rtsp) is not available."
+        drawn = self._drawn(state)
+
+        assert "Video source (rtsp) is not available." in drawn
+        assert "Nothing answered at X." not in drawn
+
+    def test_a_healthy_feed_draws_no_error_box(self) -> None:
+        assert "ERROR" not in self._drawn(self._state(sentence="", error=""))
+
+    def test_a_classified_failure_alone_still_raises_the_box(self) -> None:
+        """Our own watchdog often fires before GStreamer posts anything, so
+        there is a verdict and no element wording at all."""
+        assert "ERROR" in self._drawn(self._state(sentence="Video from X stopped arriving."))

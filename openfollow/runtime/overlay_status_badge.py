@@ -21,12 +21,25 @@ _MAX_VISIBLE_ROWS = 4
 # Vertical offset below system-stats panel.
 _TOP_OFFSET = 10 + 24 + 6
 
-# Fixed width to prevent reflow as warnings come/go.
-_BADGE_WIDTH = 280.0
+# The stack sizes to its widest row, clamped: narrow enough that a single short
+# verdict ("Video: Unreachable") is not mostly empty box, wide enough that a row
+# stays readable, and capped so a long one truncates instead of crossing the
+# frame. Every row shares the width so the stack reads as one column.
+_BADGE_MIN_WIDTH = 132.0
+_BADGE_MAX_WIDTH = 280.0
 _ROW_HEIGHT = 22.0
 _ROW_SPACING = 4.0
 _ICON_PAD = 8.0
 _TEXT_PAD = 24.0  # icon column reserved on the left
+# Font the rows are drawn in; measuring has to match or the fit is wrong.
+_ROW_FONT_SIZE = 10.0
+
+
+def _badge_width(renderer: Any, cr: Any, messages: list[str]) -> float:
+    """Width that fits the widest message, clamped to the badge bounds."""
+    renderer._set_ui_font(cr, _ROW_FONT_SIZE, bold=True)
+    widest = max((cr.text_extents(m).width for m in messages), default=0.0)
+    return min(_BADGE_MAX_WIDTH, max(_BADGE_MIN_WIDTH, widest + _TEXT_PAD + _ICON_PAD))
 
 
 def draw_status_badge(
@@ -43,7 +56,11 @@ def draw_status_badge(
     visible = state.status_flags[:_MAX_VISIBLE_ROWS]
     overflow = len(state.status_flags) - len(visible)
 
-    badge_x = w - _BADGE_WIDTH - 10.0
+    messages = [message for _key, message, _severity in visible]
+    if overflow > 0:
+        messages.append(f"+{overflow} more")
+    badge_w = _badge_width(renderer, cr, messages)
+    badge_x = w - badge_w - 10.0
     cursor_y = float(_TOP_OFFSET)
 
     for _key, message, severity in visible:
@@ -52,7 +69,7 @@ def draw_status_badge(
             cr,
             badge_x,
             cursor_y,
-            _BADGE_WIDTH,
+            badge_w,
             _ROW_HEIGHT,
             message,
             severity,
@@ -69,7 +86,7 @@ def draw_status_badge(
             cr,
             badge_x,
             cursor_y,
-            _BADGE_WIDTH,
+            badge_w,
             _ROW_HEIGHT,
             f"+{overflow} more",
             tail_severity,
@@ -126,7 +143,7 @@ def _draw_warning_row(
         cr.fill()
 
     # Message text – bold, truncated.
-    renderer._set_ui_font(cr, 10, bold=True)
+    renderer._set_ui_font(cr, _ROW_FONT_SIZE, bold=True)
     cr.set_source_rgb(*COLOR_TEXT)
     text_x = x + _TEXT_PAD
     text_max_w = w - _TEXT_PAD - _ICON_PAD

@@ -3158,7 +3158,7 @@ def test_read_default_routes_returns_gateway_and_interface(tmp_path: Path) -> No
         "eth0\t00000000\t010200C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"
         "eth0\t006433C6\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n",
     )
-    assert diag.read_default_routes(path) == [("eth0", "192.0.2.1")]
+    assert diag.read_default_routes(path) == [("eth0", "192.0.2.1", 100)]
 
 
 def test_read_default_routes_distinguishes_absent_table_from_no_route(tmp_path: Path) -> None:
@@ -3234,7 +3234,7 @@ def test_collect_network_interfaces_renders_each_default_route(monkeypatch: pyte
     )
     monkeypatch.setattr(psutil, "net_if_addrs", lambda: {})
     path = _route_file(tmp_path, "eth0\t00000000\t010200C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n")
-    assert "  Default route:  via 192.0.2.1 on eth0" in diag.collect_network_interfaces(path)
+    assert "  Default route:  via 192.0.2.1 on eth0 (metric 100)" in diag.collect_network_interfaces(path)
 
 
 def test_collect_network_interfaces_survives_unreadable_addresses(
@@ -3814,7 +3814,7 @@ def test_describe_address_reachability_names_the_gateway_when_there_is_one(
     )
     path = _route_file(tmp_path, "eth0\t00000000\t010200C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n")
     rows = diag.describe_address_reachability("198.51.100.10", path)
-    assert "routed via 192.0.2.1 on eth0 (route 0.0.0.0/0)" in rows[0]
+    assert "routed via 192.0.2.1 on eth0 (route 0.0.0.0/0, metric 100)" in rows[0]
 
 
 def test_describe_address_reachability_handles_an_unreadable_route_table(
@@ -4069,7 +4069,7 @@ def test_describe_address_reachability_follows_a_destination_specific_route(
     )
     path = _route_file(tmp_path, "eth0\t006433C6\t010200C0\t0003\t0\t0\t100\t00FFFFFF\t0\t0\t0\n")
     rows = diag.describe_address_reachability("198.51.100.10", path)
-    assert "routed via 192.0.2.1 on eth0 (route 198.51.100.0/24)" in rows[0]
+    assert "routed via 192.0.2.1 on eth0 (route 198.51.100.0/24, metric 100)" in rows[0]
 
 
 def test_describe_address_reachability_prefers_the_longest_prefix(
@@ -4165,3 +4165,54 @@ def test_collect_source_reachability_names_an_unregistered_source_type() -> None
     rows = diag.collect_source_reachability(diag.DiagnosticsProviders(source_endpoint=lambda: endpoint))
     assert "no-such-plugin -> (none)" in rows[0]
     assert "not a registered video input" in rows[1]
+
+
+def test_describe_address_reachability_prefers_the_lowest_metric(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The kernel picks the longest prefix, then the lowest metric. A
+    multi-homed station really does carry several default routes - the test Pi
+    has three - and ignoring the metric names whichever the table happened to
+    list first. The fixture is deliberately worst-first so list order cannot
+    be what produces the right answer.
+    """
+    _addrs(monkeypatch, {})
+    path = _route_file(
+        tmp_path,
+        "eth0\t00000000\t01B2A8C0\t0003\t0\t0\t102\t00000000\t0\t0\t0\n"
+        "enxB\t00000000\t01B2A8C0\t0003\t0\t0\t101\t00000000\t0\t0\t0\n"
+        "enxA\t00000000\t01B2A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n",
+    )
+    rows = diag.describe_address_reachability("198.51.100.10", path)
+    assert "on enxA" in rows[0]
+    assert "metric 100" in rows[0]
+
+
+def test_describe_address_reachability_still_prefers_prefix_over_metric(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Metric only breaks ties: a specific route wins over a default even when
+    the default has the better metric."""
+    _addrs(monkeypatch, {})
+    path = _route_file(
+        tmp_path,
+        "eth0\t00000000\t01B2A8C0\t0003\t0\t0\t1\t00000000\t0\t0\t0\n"
+        "enxB\t006433C6\t02B2A8C0\t0003\t0\t0\t900\t00FFFFFF\t0\t0\t0\n",
+    )
+    rows = diag.describe_address_reachability("198.51.100.10", path)
+    assert "on enxB" in rows[0]
+    assert "198.51.100.0/24" in rows[0]
+
+
+def test_read_default_routes_orders_by_metric(tmp_path: Path) -> None:
+    path = _route_file(
+        tmp_path,
+        "eth0\t00000000\t01B2A8C0\t0003\t0\t0\t102\t00000000\t0\t0\t0\n"
+        "enxA\t00000000\t01B2A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n",
+    )
+    assert [iface for iface, _gw, _metric in diag.read_default_routes(path) or []] == ["enxA", "eth0"]
+
+
+def test_read_routes_skips_a_row_with_an_unreadable_metric(tmp_path: Path) -> None:
+    path = _route_file(tmp_path, "eth0\t00000000\t01B2A8C0\t0003\t0\t0\tNOTANUM\t00000000\t0\t0\t0\n")
+    assert diag.read_routes(path) == []

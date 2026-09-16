@@ -635,10 +635,13 @@ def describe_address_reachability(address: str, route_path: Path | None = None) 
     matches = [route for route in routes if target in route[1]]
     if not matches:
         return [f"{indent}NOT on any local subnet, and no route covers it"]
-    iface, network, gateway = max(matches, key=lambda route: route[1].prefixlen)
+    # The kernel picks the longest prefix, then the lowest metric. Ignoring
+    # the metric names whichever route the table happened to list first, which
+    # on a multi-homed station is the wrong interface as often as not.
+    iface, network, gateway, metric = min(matches, key=lambda route: (-route[1].prefixlen, route[3]))
     if gateway == "0.0.0.0":  # noqa: S104 - comparison, not a bind
         return [f"{indent}not on this station's own subnet, but {network} is directly connected on {iface}"]
-    return [f"{indent}not on any local subnet; routed via {gateway} on {iface} (route {network})"]
+    return [f"{indent}not on any local subnet; routed via {gateway} on {iface} (route {network}, metric {metric})"]
 
 
 def probe_tcp_connect(address: str, port: int, timeout_s: float = _CONNECT_TIMEOUT_S) -> str:
@@ -1822,8 +1825,8 @@ def netmask_prefix_len(netmask: str) -> int | None:
     return prefix
 
 
-def read_routes(route_path: Path | None = None) -> list[tuple[str, ipaddress.IPv4Network, str]] | None:
-    """Every IPv4 route as ``(interface, destination network, gateway)``.
+def read_routes(route_path: Path | None = None) -> list[tuple[str, ipaddress.IPv4Network, str, int]] | None:
+    """Every IPv4 route as ``(interface, destination network, gateway, metric)``.
 
     ``None`` means the table could not be read (no ``/proc`` on macOS), which
     the caller reports as unknown - distinct from ``[]``, a host that really
@@ -1838,29 +1841,35 @@ def read_routes(route_path: Path | None = None) -> list[tuple[str, ipaddress.IPv
         text = (route_path or _PROC_NET_ROUTE).read_text()
     except OSError:
         return None
-    routes: list[tuple[str, ipaddress.IPv4Network, str]] = []
+    routes: list[tuple[str, ipaddress.IPv4Network, str, int]] = []
     for line in text.splitlines()[1:]:
         fields = line.split()
         if len(fields) < 8:
             continue
-        iface, dest_hex, gw_hex, mask_hex = fields[0], fields[1], fields[2], fields[7]
+        iface, dest_hex, gw_hex, metric_raw, mask_hex = fields[0], fields[1], fields[2], fields[6], fields[7]
         try:
             destination = socket.inet_ntoa(int(dest_hex, 16).to_bytes(4, "little"))
             gateway = socket.inet_ntoa(int(gw_hex, 16).to_bytes(4, "little"))
             mask = socket.inet_ntoa(int(mask_hex, 16).to_bytes(4, "little"))
             network = ipaddress.IPv4Network(f"{destination}/{mask}", strict=False)
+            metric = int(metric_raw)
         except (ValueError, OverflowError):
             continue
-        routes.append((iface, network, gateway))
+        routes.append((iface, network, gateway, metric))
     return routes
 
 
-def read_default_routes(route_path: Path | None = None) -> list[tuple[str, str]] | None:
-    """``(interface, gateway)`` per IPv4 *default* route, in kernel order."""
+def read_default_routes(route_path: Path | None = None) -> list[tuple[str, str, int]] | None:
+    """``(interface, gateway, metric)`` per IPv4 default route, best first.
+
+    Sorted by metric, the order the kernel would try them: a multi-homed
+    station has several and they are not a set of equals.
+    """
     routes = read_routes(route_path)
     if routes is None:
         return None
-    return [(iface, gateway) for iface, network, gateway in routes if network.prefixlen == 0 and gateway != "0.0.0.0"]
+    defaults = [r for r in routes if r[1].prefixlen == 0 and r[2] != "0.0.0.0"]
+    return [(iface, gateway, metric) for iface, _net, gateway, metric in sorted(defaults, key=lambda r: r[3])]
 
 
 def collect_network_interfaces(route_path: Path | None = None) -> list[str]:
@@ -1903,8 +1912,8 @@ def collect_network_interfaces(route_path: Path | None = None) -> list[str]:
     elif not routes:
         rows.append("  Default route:  none (nothing routes off-subnet)")
     else:
-        for iface, gateway in routes:
-            rows.append(f"  Default route:  via {gateway} on {iface}")
+        for iface, gateway, metric in routes:
+            rows.append(f"  Default route:  via {gateway} on {iface} (metric {metric})")
     return rows
 
 

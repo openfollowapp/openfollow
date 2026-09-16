@@ -366,5 +366,71 @@ def test_redact_uris_in_text_still_strips_userinfo_before_an_ipv6_host() -> None
 
 
 def test_redact_uris_in_text_leaves_an_unclosed_bracket_alone() -> None:
-    """A malformed authority is not a licence to delete the line."""
-    assert redact_uris_in_text("location=rtsp://[bad/p@th") == "location=rtsp://[bad/p@th"
+    """A malformed authority is not a licence to delete the line.
+
+    The address has to carry colons: ``[bad`` passes this even with the
+    bracket guard removed entirely, because the colon test it is guarding
+    never fires. An unterminated literal is precisely where that test did its
+    damage.
+    """
+    text = "location=rtsp://[2001:db8::1/p@th"
+    assert redact_uris_in_text(text) == text
+
+
+# ---------------------------------------------------------------------------
+# A password can scatter itself into the query too
+# ---------------------------------------------------------------------------
+
+
+def test_redact_uri_fails_closed_on_a_question_mark_inside_a_password() -> None:
+    """``rtsp://user:pa?ss@cam/stream`` parses with the rest of the credential
+    in the query string, where it matches no key we mask and would be rejoined
+    verbatim. Third spelling of one ambiguity, after ``/`` into the path and
+    ``#`` into the fragment."""
+    assert redact_uri("rtsp://user:pa?ss@cam.local/stream") == "rtsp://***"
+
+
+def test_redact_uri_still_keeps_the_host_for_an_at_inside_a_masked_value() -> None:
+    """The narrowing this guards must not swallow the case it exists for."""
+    assert redact_uri("srt://10.0.0.5:1600?passphrase=Sh@w2026") == "srt://10.0.0.5:1600?passphrase=***"
+
+
+def test_redact_uri_masks_only_the_secret_among_several_parameters() -> None:
+    assert redact_uri("srt://h:1600?latency=125&passphrase=a@b") == "srt://h:1600?latency=125&passphrase=***"
+
+
+# ---------------------------------------------------------------------------
+# Rule order and run boundaries in free text
+# ---------------------------------------------------------------------------
+
+
+def test_redact_uris_in_text_strips_a_password_holding_both_an_at_and_a_slash() -> None:
+    """The first-slash rule truncates such a password at the ``/`` and leaves
+    nothing with a colon behind it, so whichever rule sees the run first has
+    to be the one that can read the whole of it."""
+    redacted = redact_uris_in_text("location=rtsp://operator:p@a/ss@cam/s")
+    assert "p@a/ss" not in redacted
+    assert "operator" not in redacted
+    assert "rtsp://cam/s" in redacted
+
+
+def test_redact_uris_in_text_judges_each_uri_on_its_own_authority() -> None:
+    """Only whitespace used to end a run, so two URIs separated by anything
+    else were spanned as one and the first authority decided for both."""
+    redacted = redact_uris_in_text("rtsp://cam.local:554/a@b,rtsp://user:pa/ss@cam2/s")
+    assert "user:pa/ss" not in redacted
+    assert "rtsp://cam.local:554/a@b" in redacted  # clean, left intact
+    assert "rtsp://cam2/s" in redacted
+
+
+def test_redact_uris_in_text_does_not_delete_a_clean_uri_behind_a_dirty_one() -> None:
+    redacted = redact_uris_in_text("rtsp://u:pa/ss@cam1/s,rtsp://cam2:554/p@th")
+    assert "u:pa/ss" not in redacted
+    assert "rtsp://cam1/s" in redacted
+    assert "rtsp://cam2:554/p@th" in redacted
+
+
+def test_redact_uris_in_text_still_strips_userinfo_without_a_colon() -> None:
+    """The cross-slash rule declines this one (no colon to judge), so it has
+    to still reach the simpler rule that runs after it."""
+    assert redact_uris_in_text("location=rtsp://user@host/s") == "location=rtsp://host/s"

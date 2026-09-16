@@ -337,8 +337,11 @@ class OnlineSyncWorker:
         """Sync the clock from NTP and report what happened.
 
         "Reached" means the server answered, whether or not the clock needed
-        moving; a host that cannot set its clock at all reports a skip, not a
-        failure, because it never asked the network anything.
+        moving. A host with no way to set its clock - not Linux, or no broker -
+        skips without asking the network anything. One that lacks only the
+        grant still asks: the answer is what proves the server reachable, which
+        the uplink verdict is built from, and the detail names the missing
+        grant. Do not gate the query on the grant to make the two cases match.
         """
         server = str(cfg.time_sync_server)
         if not self._can_set_clock or self._broker is None:

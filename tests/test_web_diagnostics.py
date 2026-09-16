@@ -4381,6 +4381,37 @@ def test_kernel_extract_keeps_only_hardware_events(monkeypatch: pytest.MonkeyPat
     assert "crng init done" not in joined
 
 
+def test_kernel_extract_catches_the_pi5_undervoltage_spelling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verbatim from a Pi 5 on a failing PSU. hwmon writes "Undervoltage" with
+    no hyphen where the Pi 4 firmware path writes "Under-voltage", so a filter
+    carrying one spelling reports a browning-out board as a quiet log."""
+    monkeypatch.setattr(
+        diag,
+        "_run",
+        lambda *_a, **_k: (
+            0,
+            "kernel: hwmon hwmon3: Undervoltage detected!\n"
+            "kernel: hwmon hwmon3: Voltage normalised\n"
+            "kernel: random: crng init done\n",
+        ),
+    )
+    rows = diag.collect_kernel_extract()
+    joined = "\n".join(rows)
+
+    assert "Undervoltage detected!" in joined
+    assert "Voltage normalised" in joined  # one dip vs a board browning out
+    assert "crng init done" not in joined
+    assert "[none]" not in joined
+
+
+def test_kernel_grep_pattern_is_case_insensitive_on_its_own() -> None:
+    """journalctl only infers case-insensitivity for an all-lowercase pattern,
+    and ours is not - so the flag has to travel inside the pattern or the
+    journal-side filter silently disagrees with the Python-side one."""
+    assert diag._KERNEL_GREP.startswith("(?i)")
+    assert diag._KERNEL_LINE_RE.search("HWMON: UNDERVOLTAGE DETECTED!") is not None
+
+
 def test_kernel_extract_reports_a_quiet_log(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, "kernel: nothing interesting\n"))
     assert any("[none]" in row for row in diag.collect_kernel_extract())

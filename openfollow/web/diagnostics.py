@@ -1179,12 +1179,27 @@ def annotate_log_discontinuities(lines: list[str]) -> list[str]:
 # Kernel messages worth surfacing beside the application log. The unit's own
 # journal cannot show them, so a failing supply, a USB device dropping off the
 # bus or the OOM killer reads as an unexplained application fault.
-_KERNEL_PATTERNS: tuple[str, ...] = ("Under-voltage", "over-current", "USB disconnect", "Out of memory", "oom-kill")
+# Spelling varies by driver, not by severity: a Pi 4 logs "Under-voltage
+# detected!" from the firmware path and a Pi 5 "Undervoltage detected!" from
+# hwmon, so an exact phrase silently exempts whichever board it was not copied
+# from. The recovery line earns its place by separating one dip from a board
+# browning out continuously.
+_KERNEL_PATTERNS: tuple[str, ...] = (
+    "under-?voltage",
+    "voltage normali[sz]ed",
+    "over-?current",
+    "USB disconnect",
+    "Out of memory",
+    "oom-kill",
+)
 # Handed to ``journalctl --grep`` so the match happens in the journal rather
 # than by buffering a day of kernel messages through this process - a browning
 # out Pi logs continuously, and the unfiltered read timed out having produced
-# nothing while spending the section's whole budget.
-_KERNEL_GREP = "|".join(_KERNEL_PATTERNS)
+# nothing while spending the section's whole budget. ``(?i)`` travels with the
+# pattern because journalctl only infers case-insensitivity for an all-lowercase
+# one, which these are not.
+_KERNEL_GREP = "(?i)" + "|".join(_KERNEL_PATTERNS)
+_KERNEL_LINE_RE = re.compile("|".join(_KERNEL_PATTERNS), re.IGNORECASE)
 _KERNEL_EXTRACT_TIMEOUT_S = 6.0
 _KERNEL_EXTRACT_MAX_LINES = 40
 
@@ -1214,7 +1229,7 @@ def collect_kernel_extract(timeout_s: float = _KERNEL_EXTRACT_TIMEOUT_S) -> list
         # matched, which is the healthy station - reporting that as a broken
         # probe (and with an empty reason) said the opposite of the truth.
         return ["", "  Kernel log (last 24h, power / USB / OOM only):", "    [none]"]
-    matched = [line for line in out.splitlines() if any(pattern in line for pattern in _KERNEL_PATTERNS)]
+    matched = [line for line in out.splitlines() if _KERNEL_LINE_RE.search(line)]
     rows = ["", "  Kernel log (last 24h, power / USB / OOM only):"]
     if not matched:
         rows.append("    [none]")

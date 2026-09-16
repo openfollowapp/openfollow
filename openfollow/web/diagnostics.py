@@ -1177,6 +1177,11 @@ def annotate_log_discontinuities(lines: list[str]) -> list[str]:
 # journal cannot show them, so a failing supply, a USB device dropping off the
 # bus or the OOM killer reads as an unexplained application fault.
 _KERNEL_PATTERNS: tuple[str, ...] = ("Under-voltage", "over-current", "USB disconnect", "Out of memory", "oom-kill")
+# Handed to ``journalctl --grep`` so the match happens in the journal rather
+# than by buffering a day of kernel messages through this process - a browning
+# out Pi logs continuously, and the unfiltered read timed out having produced
+# nothing while spending the section's whole budget.
+_KERNEL_GREP = "|".join(_KERNEL_PATTERNS)
 _KERNEL_EXTRACT_TIMEOUT_S = 6.0
 _KERNEL_EXTRACT_MAX_LINES = 40
 
@@ -1184,7 +1189,19 @@ _KERNEL_EXTRACT_MAX_LINES = 40
 def collect_kernel_extract(timeout_s: float = _KERNEL_EXTRACT_TIMEOUT_S) -> list[str]:
     """Hardware-level events from the kernel log, filtered and bounded."""
     rc, out = _run(
-        ["journalctl", "-k", "--since", "-24h", "--no-pager", "-o", "short"],
+        [
+            "journalctl",
+            "-k",
+            "--since",
+            "-24h",
+            "--no-pager",
+            "-o",
+            "short",
+            "--grep",
+            _KERNEL_GREP,
+            "-n",
+            str(_KERNEL_EXTRACT_MAX_LINES * 4),
+        ],
         timeout_s=timeout_s,
     )
     if rc != 0:
@@ -1206,6 +1223,7 @@ def collect_recent_failures(
     p: DiagnosticsProviders,
     log_collector: Callable[[], tuple[str, list[str]]],
     failure_collector: Callable[[], tuple[str, list[str]]] | None = None,
+    kernel_collector: Callable[[], list[str]] | None = None,
 ) -> list[str]:
     """Collect recent log lines and optionally a severity-filtered extract.
 
@@ -1245,7 +1263,7 @@ def collect_recent_failures(
             else:
                 rows.append("  [no WARNING/ERROR/CRITICAL lines in window]")
             rows.append("  ----- end failure extract -----")
-    rows.extend(collect_kernel_extract())
+    rows.extend((kernel_collector or collect_kernel_extract)())
     if p.worker_thread_tracebacks is not None:
         rows.append("")
         rows.append("  Last worker-thread tracebacks:")
@@ -1492,6 +1510,18 @@ def collect_runtime_versions(
     return rows
 
 
+def _normalise_package_version(version: str) -> str:
+    """A Debian version reduced to what compares against a PEP 440 one.
+
+    ``build-deb.sh`` rewrites a pre-release for Debian's sort order - ``rc``
+    becomes ``~rc``, so the wheel's ``0.4.2rc3`` ships as ``0.4.2~rc3`` - and a
+    raw equality then reports every rc build as a mismatch. An epoch is
+    Debian's alone and never appears upstream.
+    """
+    _, _, without_epoch = version.strip().rpartition(":")
+    return (without_epoch or version.strip()).replace("~", "").lower()
+
+
 def _installed_package_version(timeout_s: float) -> str:
     """The installed ``.deb`` version against the code actually running.
 
@@ -1500,14 +1530,25 @@ def _installed_package_version(timeout_s: float) -> str:
     build while the operator reads the new version number off the release
     notes.
     """
+    running = openfollow.__version__
+    if shutil.which("dpkg-query") is None:
+        return f"running {running} (not a .deb install)"
     rc, out = _run(["dpkg-query", "-W", "-f=${Version}", "openfollow"], timeout_s=timeout_s)
     if rc != 0:
-        return f"running {openfollow.__version__} (not a .deb install)"
+        # ``_run`` folds a missing binary, a timeout and a launch error into
+        # one sentinel, and dpkg-query exits non-zero for an unknown package
+        # too. Only the last of those means "not a .deb install", so the rest
+        # report what went wrong rather than asserting a packaging state.
+        if "no packages found" in out.lower():
+            return f"running {running} (openfollow is not installed as a .deb)"
+        return f"running {running} (installed version unavailable: {out})"
     installed = out.strip()
-    running = openfollow.__version__
-    if installed == running:
+    if _normalise_package_version(installed) == _normalise_package_version(running):
         return f"{installed} installed, and running"
-    return f"MISMATCH: {installed} installed, {running} running - the service has not restarted since the update"
+    return (
+        f"MISMATCH: {installed} installed, {running} running - "
+        "an update that installed without a service restart looks like this"
+    )
 
 
 def collect_video_capability() -> list[str]:
@@ -1590,6 +1631,14 @@ def collect_detection_stack(p: DiagnosticsProviders | None = None) -> list[str]:
     return rows
 
 
+def _list_model_files(directory: Path) -> tuple[list[Path], str | None]:
+    """``(models, error)`` for a storage directory, never raising."""
+    try:
+        return sorted(directory.glob("*.onnx")), None
+    except OSError as exc:
+        return [], str(exc.strerror or exc)
+
+
 def _collect_detection_models(p: DiagnosticsProviders | None) -> list[str]:
     """The model files actually present in the storage directory.
 
@@ -1604,10 +1653,17 @@ def _collect_detection_models(p: DiagnosticsProviders | None) -> list[str]:
         return [f"  models                       {err}"]
     directory = Path(str(raw or ""))
     rows = [f"  models directory             {directory}"]
-    try:
-        entries = sorted(directory.glob("*.onnx"))
-    except OSError as exc:
-        rows.append(f"  models                       [unavailable: {exc.strerror or exc}]")
+    # Same hazard the storage section bounds for the same path: an
+    # operator-configured storage_path can be a stale NFS/CIFS/USB mount,
+    # where a glob blocks the WSGI worker in D-state and repeated downloads
+    # take the web UI down with them.
+    listed = _bounded_probe(partial(_list_model_files, directory), _STAT_PROBE_TIMEOUT_S, None)
+    if listed is None:
+        rows.append("  models                       [unavailable: listing timed out (stale mount?)]")
+        return rows
+    entries, error = listed
+    if error is not None:
+        rows.append(f"  models                       [unavailable: {error}]")
         return rows
     if not entries:
         rows.append("  models                       [none present]")
@@ -2727,6 +2783,13 @@ def collect_bundle(
             timeout_s=remaining(_FAILURE_EXTRACT_TIMEOUT_S),
         )
 
+    def kernel_collector_fn() -> list[str]:
+        # Clamped to what is left of the bundle's budget, like the failure
+        # extract beside it: a fixed timeout here pushes the later sections
+        # into "[skipped]" on exactly the struggling station whose kernel log
+        # is worth reading.
+        return collect_kernel_extract(timeout_s=remaining(_KERNEL_EXTRACT_TIMEOUT_S))
+
     # Every section that runs more than one probe takes the remaining budget
     # explicitly; the single-probe ones are bound by the deadline check alone.
     collectors: dict[str, Callable[[], list[str]]] = {
@@ -2737,7 +2800,12 @@ def collect_bundle(
         "a5_source_reach": lambda: collect_source_reachability(p),
         "b_discovery": lambda: collect_discovery(p),
         "c_config": lambda: collect_config(p),
-        "d_failures": lambda: collect_recent_failures(p, log_collector_fn, failure_collector_fn),
+        "d_failures": lambda: collect_recent_failures(
+            p,
+            log_collector_fn,
+            failure_collector_fn,
+            kernel_collector_fn,
+        ),
         "e1_runtime": lambda: collect_runtime_versions(repo_root, budget_s=remaining(_RUNTIME_SECTION_BUDGET_S)),
         "e1b_video": collect_video_capability,
         "e2_detection": lambda: collect_detection_stack(p),

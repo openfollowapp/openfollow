@@ -2730,15 +2730,14 @@ def _active_source_endpoint(cfg: AppConfig) -> dict[str, Any] | None:
 def _config_file_paths(server: ConfigWebServer, cfg: AppConfig) -> list[str]:
     """The files this station's configuration is read from, absolute.
 
-    The catalog path resolves against ``config.toml``'s directory, the same
-    rule the app applies - reporting the raw relative value would name a file
-    that exists only if the reader happens to share our working directory.
+    The catalog path goes through the same resolver the rest of the web layer
+    uses. Restating the rule here would leave the bundle reporting the mtime
+    of a file the app does not read the day that rule changes.
     """
-    config_path = Path(server.config_path)
-    catalog = Path(cfg.markers_catalog_path or "markers.toml")
-    if not catalog.is_absolute():
-        catalog = config_path.parent / catalog
-    return [str(config_path), str(catalog)]
+    return [
+        str(Path(server.config_path)),
+        _resolve_marker_catalog_path(server.config_path, cfg.markers_catalog_path),
+    ]
 
 
 def _detection_models_dir(cfg: AppConfig) -> str:

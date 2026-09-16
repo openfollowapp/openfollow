@@ -4228,15 +4228,45 @@ def test_describe_file_reports_why_it_cannot_be_read(tmp_path: Path) -> None:
     assert "unavailable" in diag.describe_file(tmp_path / "absent.toml")
 
 
-def test_collect_video_capability_reports_each_input(monkeypatch: pytest.MonkeyPatch) -> None:
+def _capability_verdicts(rows: list[str]) -> dict[str, str]:
+    """Parse the input table out of the section, the way a reader reads it."""
+    verdicts: dict[str, str] = {}
+    for row in rows[rows.index("  Video inputs:") + 1 :]:
+        if not row.startswith("    "):
+            break
+        input_id, _, state = row.strip().partition(" ")
+        verdicts[input_id] = state.strip()
+    return verdicts
+
+
+def test_collect_video_capability_gives_every_input_a_definite_verdict() -> None:
     """ "NDI is not in the picker" and "NDI is broken" look identical from a
-    screenshot, because the picker hides an unavailable backend."""
-    rows = diag.collect_video_capability()
-    joined = "\n".join(rows)
-    assert "Video inputs:" in joined
-    assert "rtsp" in joined
-    # Each plugin answers for itself, so an unavailable one carries its reason.
-    assert any("unavailable - " in row for row in rows) or all("available" in row for row in rows[1:9])
+    screenshot, because the picker hides an unavailable backend.
+
+    Asserted by parsing the table, not by substring: "available" is a
+    substring of "unavailable", so the obvious phrasing of this check passes
+    whatever the collector produced.
+    """
+    from openfollow.video.inputs import get_registry
+
+    verdicts = _capability_verdicts(diag.collect_video_capability())
+    assert set(verdicts) == set(get_registry())
+    for input_id, state in verdicts.items():
+        assert state == "available" or state.startswith("unavailable - "), (input_id, state)
+
+
+def test_collect_video_capability_carries_the_plugins_own_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unavailable backend with no reason sends the reader back to the
+    source they could not read in the first place."""
+    from openfollow.video.inputs import get_registry
+
+    monkeypatch.setattr(
+        get_registry()["rtsp"],
+        "is_available",
+        classmethod(lambda cls: (False, "gst-plugin-rtsp is not installed")),
+    )
+    verdicts = _capability_verdicts(diag.collect_video_capability())
+    assert verdicts["rtsp"] == "unavailable - gst-plugin-rtsp is not installed"
 
 
 def test_collect_video_capability_survives_a_plugin_that_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4360,6 +4390,7 @@ def test_kernel_extract_redacts_a_credential(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_installed_package_version_reports_a_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diag.shutil, "which", lambda _name: "/usr/bin/dpkg-query")
     monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, openfollow.__version__))
     assert diag._installed_package_version(1.0) == f"{openfollow.__version__} installed, and running"
 
@@ -4367,14 +4398,17 @@ def test_installed_package_version_reports_a_match(monkeypatch: pytest.MonkeyPat
 def test_installed_package_version_flags_an_unrestarted_update(monkeypatch: pytest.MonkeyPatch) -> None:
     """The two part company the moment an update installs and the service is
     not restarted, and every other line then describes the old build."""
+    monkeypatch.setattr(diag.shutil, "which", lambda _name: "/usr/bin/dpkg-query")
     monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, "9.9.9"))
     reported = diag._installed_package_version(1.0)
     assert "MISMATCH" in reported
-    assert "has not restarted" in reported
+    # Phrased as the likely cause rather than asserted as the only one: a
+    # half-finished install or a hand-placed wheel looks the same from here.
+    assert "without a service restart" in reported
 
 
 def test_installed_package_version_handles_a_source_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (-1, "[unavailable: dpkg-query not found]"))
+    monkeypatch.setattr(diag.shutil, "which", lambda _name: None)
     assert "not a .deb install" in diag._installed_package_version(1.0)
 
 
@@ -4403,6 +4437,97 @@ def test_collect_detection_models_reports_an_unreadable_directory(
     monkeypatch.setattr(Path, "glob", _boom)
     rows = diag._collect_detection_models(diag.DiagnosticsProviders(detection_models_dir=lambda: str(tmp_path)))
     assert "Permission denied" in rows[-1]
+
+
+@pytest.mark.parametrize(
+    ("installed", "running"),
+    [
+        ("0.4.2~rc3", "0.4.2rc3"),  # build-deb.sh rewrites rc for Debian's sort order
+        ("0.4.2~b1", "0.4.2b1"),
+        ("1:0.4.2", "0.4.2"),  # an epoch is Debian's alone
+        ("0.4.2", "0.4.2"),
+    ],
+)
+def test_installed_package_version_accepts_the_debian_spelling(
+    monkeypatch: pytest.MonkeyPatch, installed: str, running: str
+) -> None:
+    """Every pre-release install reported a false MISMATCH: the wheel says
+    ``0.4.2rc3`` and the package it was built into says ``0.4.2~rc3``."""
+    monkeypatch.setattr(diag.shutil, "which", lambda _name: "/usr/bin/dpkg-query")
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, installed))
+    monkeypatch.setattr(diag.openfollow, "__version__", running)
+    assert "MISMATCH" not in diag._installed_package_version(1.0)
+
+
+def test_installed_package_version_separates_a_probe_failure_from_a_source_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_run`` folds a missing binary, a timeout and a launch error into one
+    sentinel, so a budget-exhausted probe on a real .deb station reported
+    itself as a source checkout."""
+    monkeypatch.setattr(diag.shutil, "which", lambda _name: "/usr/bin/dpkg-query")
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (-1, "[unavailable: timed out after 0.0s]"))
+    reported = diag._installed_package_version(0.0)
+    assert "not a .deb install" not in reported
+    assert "installed version unavailable" in reported
+
+
+def test_installed_package_version_reports_an_unpackaged_station(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diag.shutil, "which", lambda _name: "/usr/bin/dpkg-query")
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (1, "dpkg-query: no packages found matching openfollow"))
+    assert "not installed as a .deb" in diag._installed_package_version(1.0)
+
+
+def test_installed_package_version_skips_the_probe_without_dpkg(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _must_not_run(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("dpkg-query must not be invoked when it is absent")
+
+    monkeypatch.setattr(diag.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(diag, "_run", _must_not_run)
+    assert "not a .deb install" in diag._installed_package_version(1.0)
+
+
+def test_collect_detection_models_does_not_hang_on_a_stale_mount(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The storage section bounds this same operator-configured path: a glob
+    on a stale mount blocks the WSGI worker in D-state, and repeated downloads
+    take the web UI down with it."""
+    monkeypatch.setattr(diag, "_bounded_probe", lambda _fn, _timeout, timeout_value: timeout_value)
+    rows = diag._collect_detection_models(diag.DiagnosticsProviders(detection_models_dir=lambda: str(tmp_path)))
+    assert "listing timed out (stale mount?)" in rows[-1]
+
+
+def test_kernel_extract_filters_in_the_journal_not_in_this_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A browning-out Pi logs continuously; reading a day of kernel messages
+    to filter them here timed out having produced nothing, and spent the
+    section's whole budget doing it."""
+    seen: dict[str, Any] = {}
+
+    def _capture(cmd: list[str], **kwargs: Any) -> tuple[int, str]:
+        seen["cmd"] = cmd
+        seen["timeout"] = kwargs.get("timeout_s")
+        return 0, ""
+
+    monkeypatch.setattr(diag, "_run", _capture)
+    diag.collect_kernel_extract(timeout_s=3.0)
+    assert "--grep" in seen["cmd"]
+    assert seen["cmd"][seen["cmd"].index("--grep") + 1] == diag._KERNEL_GREP
+    assert "-n" in seen["cmd"]
+    assert seen["timeout"] == 3.0
+
+
+def test_recent_failures_uses_the_injected_kernel_collector() -> None:
+    """Injected so the bundle can clamp it to what is left of the budget - a
+    fixed timeout here pushes the later sections into "[skipped]" on exactly
+    the struggling station whose kernel log is worth reading."""
+    rows = diag.collect_recent_failures(
+        diag.DiagnosticsProviders(),
+        lambda: ("journalctl", ["[INFO] ok"]),
+        None,
+        lambda: ["  KERNEL SECTION"],
+    )
+    assert "  KERNEL SECTION" in rows
 
 
 def test_describe_address_reachability_prefers_the_lowest_metric(

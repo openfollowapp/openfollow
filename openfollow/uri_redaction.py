@@ -65,12 +65,32 @@ _SCHEMELESS_USERINFO_IN_TEXT_RE = re.compile(
 _SCHEME_RUN_TO_AT_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)([^\s?#]*)@")
 
 
+def _is_bracketed_ipv6_authority(authority: str) -> bool:
+    """True for ``[2001:db8::1]`` or ``[2001:db8::1]:554``.
+
+    Userinfo cannot appear inside the brackets, so only what follows them
+    could be one - and that has to be a port, or nothing.
+    """
+    if not authority.startswith("["):
+        return False
+    _inside, closed, tail = authority.partition("]")
+    if not closed:
+        return False
+    return not tail or (tail.startswith(":") and tail[1:].isdigit())
+
+
 def _strip_scheme_userinfo_across_slash(text: str) -> str:
     """Drop ``scheme://user:pa/ss@`` runs the authority shows to be userinfo."""
 
     def _replace(match: re.Match[str]) -> str:
         scheme, run = match.group(1), match.group(2)
-        _host, sep, port = run.partition("/")[0].partition(":")
+        authority = run.partition("/")[0]
+        if _is_bracketed_ipv6_authority(authority):
+            # Every IPv6 literal is full of colons, so the port test below
+            # reads one as a password and eats a URI that never carried a
+            # credential at all.
+            return match.group(0)
+        _host, sep, port = authority.partition(":")
         if sep and not port.isdigit():
             return scheme
         return match.group(0)
@@ -154,26 +174,34 @@ def redact_uri(uri: str) -> str:
     it describes.
     """
     stripped = strip_uri_userinfo(uri)
-    scheme, sep, rest = stripped.partition("://")
-    # Only the authority and path can still be hiding userinfo. An ``@`` past
-    # the ``?`` belongs to a query *value* - an SRT ``?passphrase=Sh@w2026`` -
-    # which the masking below removes without discarding the host, so letting
-    # it trip the fail-closed branch cost the reader the address and gained
-    # nothing.
-    if sep and "@" in rest.partition("?")[0].partition("#")[0]:
-        # Userinfo survived the parse. A ``/`` in a password puts it in the
-        # path (``rtsp://user:pa/ss@cam/s`` splits as netloc ``user:pa``), and
-        # nothing distinguishes that from a genuine ``@`` in a path. Since this
-        # feeds the HUD label, our own logging and the bundle's config dump,
-        # the unprovable case fails closed rather than printing the secret.
-        return f"{scheme}://{REDACTION}"
+    scheme, sep, _rest = stripped.partition("://")
     head, query, hash_sep, fragment = _split_query(stripped)
+    # The query string is the one place an ``@`` is provably not a credential:
+    # an SRT ``?passphrase=Sh@w2026`` is masked below, host and all. Anywhere
+    # else it is unprovable and fails closed. That includes the fragment: a
+    # ``#`` inside a password puts the rest of the secret there
+    # (``rtsp://user:pa#ss@cam/s`` parses as netloc ``user:pa``) exactly as a
+    # ``/`` puts it in the path, and this feeds the HUD label, our own logging
+    # and the bundle's config dump.
+    if sep and ("@" in head.partition("://")[2] or "@" in fragment):
+        return f"{scheme}://{REDACTION}"
     if not query:
         return stripped
     masked = []
+    masked_a_secret = False
     for part in query.split("&"):
         key, eq, _value = part.partition("=")
-        masked.append(f"{key}={REDACTION}" if eq and key.lower() in _REDACTED_QUERY_KEYS else part)
+        if eq and key.lower() in _REDACTED_QUERY_KEYS:
+            masked.append(f"{key}={REDACTION}")
+            masked_a_secret = True
+        else:
+            masked.append(part)
+    if masked_a_secret and fragment:
+        # The same ambiguity one step on: ``?passphrase=show#act2026`` is a
+        # passphrase containing a ``#`` as readily as a value plus a fragment,
+        # and printing the tail publishes half the secret. The separator stays
+        # so the reader can see something was dropped.
+        return f"{head}?{'&'.join(masked)}{hash_sep}{REDACTION}"
     return f"{head}?{'&'.join(masked)}{hash_sep}{fragment}"
 
 

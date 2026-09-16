@@ -891,6 +891,18 @@ class AppRuntimeServices:
         )
         self._online_sync.start()
 
+    def _online_sync_status_provider(self) -> dict[str, Any]:
+        """Uplink observation for the diagnostics bundle.
+
+        Dereferenced lazily: ``init_web_server`` runs before
+        ``init_online_sync``, so the worker does not exist yet when the web
+        server is constructed. ``{}`` reads as "not wired" in the bundle.
+        """
+        worker = getattr(self, "_online_sync", None)
+        if worker is None:
+            return {}
+        return dict(worker.health())
+
     def _resolve_web_bind(self) -> str:
         """Resolve the web UI listen address.
 
@@ -1871,6 +1883,8 @@ class AppRuntimeServices:
             local_ip=self._resolved_source_ip(),
             local_ip_provider=self._resolved_source_ip,
             runtime_stats_provider=self.get_runtime_stats_snapshot,
+            crash_restarts_provider=lambda: int(getattr(self._app, "_crash_restarts", 0)),
+            online_sync_status_provider=self._online_sync_status_provider,
             preview_snapshot_provider=self._preview_provider.get_snapshot,
             zone_state_provider=self._get_zone_states_snapshot,
             zone_diagnostics_provider=self._get_zone_diagnostics_snapshot,

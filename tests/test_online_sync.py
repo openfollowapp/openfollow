@@ -582,3 +582,170 @@ def test_run_swallows_startup_cycle_exception() -> None:
     w._maybe_cycle = _maybe  # type: ignore[method-assign]
     w._run()  # must not raise; loop still reached
     assert seq == ["startup", "maybe"]
+
+
+# ---------------------------------------------------------------------------
+# health() – the passive uplink observation the bundle reports
+# ---------------------------------------------------------------------------
+
+
+class _MonoClock:
+    """Injectable monotonic clock, so ages are asserted exactly."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _raiser(exc: Exception) -> Any:
+    def _raise(*_args: Any, **_kwargs: Any) -> Any:
+        raise exc
+
+    return _raise
+
+
+def test_health_starts_as_never_attempted() -> None:
+    """Before the first cycle there is no observation at all, and that must not
+    read as "offline" - nothing has asked the network anything yet."""
+    health = _worker().health()
+    assert health["cycles"] == 0
+    assert health["last_cycle_age_s"] is None
+    assert health["time_sync"]["outcome"] == "never attempted"
+    assert health["update_check"]["outcome"] == "never attempted"
+    assert health["time_sync"]["age_s"] is None
+
+
+def test_health_reports_both_targets_unreachable() -> None:
+    w = _worker(
+        ntp_query=_raiser(TimeoutError("timed out")),
+        update_check=_raiser(OSError("Network is unreachable")),
+    )
+    w._run_cycle("retry")
+    health = w.health()
+    assert health["online"] is False
+    assert health["time_sync"]["outcome"] == "unreachable"
+    assert health["time_sync"]["detail"] == "TimeoutError: timed out"
+    assert health["update_check"]["outcome"] == "unreachable"
+    assert health["cycles"] == 1
+    assert health["last_reason"] == "retry"
+
+
+def test_health_reports_reached_with_what_happened() -> None:
+    w = _worker(
+        ntp_query=lambda _s, _t: 1_735_700_000.0,
+        update_check=lambda *_a, **_k: {"available": True, "latest": "0.4.3"},
+    )
+    w._run_cycle("startup")
+    health = w.health()
+    assert health["online"] is True
+    assert health["time_sync"]["outcome"] == "reached"
+    assert "not set" in health["time_sync"]["detail"]
+    assert health["update_check"]["detail"] == "update available: 0.4.3"
+
+
+def test_health_ages_run_on_the_monotonic_clock() -> None:
+    """This worker *moves the wall clock*, so an age computed across a
+    successful sync would be fiction - the very window most likely to be read."""
+    clock = _MonoClock()
+    w = _worker(now=clock, ntp_query=_raiser(TimeoutError("x")), update_check=_raiser(OSError("y")))
+    w._run_cycle("startup")
+    clock.advance(42.0)
+    health = w.health()
+    assert health["last_cycle_age_s"] == pytest.approx(42.0)
+    assert health["time_sync"]["age_s"] == pytest.approx(42.0)
+
+
+def test_health_cadence_follows_the_online_verdict() -> None:
+    """``retry`` means no cycle has reached the network this session, which is
+    what makes a "no uplink" reading trustworthy rather than merely stale."""
+    reachable = {"ok": False}
+
+    def _update(*_a: Any, **_k: Any) -> dict[str, Any]:
+        if not reachable["ok"]:
+            raise OSError("Network is unreachable")
+        return {"available": False}
+
+    w = _worker(cfg=_cfg(auto_time_sync=False), update_check=_update)
+    w._run_cycle("startup")
+    assert w.health()["cadence_s"] == 300.0
+    # Driven through a real cycle rather than by poking ``_online``: the
+    # cadence is published with the rest of the snapshot, so a test that set
+    # the flag directly would assert on a state the worker cannot reach.
+    reachable["ok"] = True
+    w._run_cycle("retry")
+    assert w.health()["cadence_s"] == 24 * 3600.0
+
+
+def test_health_marks_disabled_checks_as_not_attempted() -> None:
+    w = _worker(cfg=_cfg(auto_time_sync=False, auto_update_check=False))
+    w._run_cycle("startup")
+    health = w.health()
+    assert health["time_sync"]["outcome"] == "not attempted"
+    assert health["time_sync"]["detail"] == "auto_time_sync is off"
+    assert health["update_check"]["detail"] == "auto_update_check is off"
+
+
+def test_health_marks_a_host_that_cannot_set_its_clock_as_not_attempted() -> None:
+    """The skip happens before any NTP packet is sent, so it says nothing about
+    the network."""
+    w = _worker(can_set_clock=False, cfg=_cfg(auto_update_check=False))
+    w._run_cycle("startup")
+    health = w.health()
+    assert health["time_sync"]["outcome"] == "not attempted"
+    assert "clock-set unavailable" in health["time_sync"]["detail"]
+
+
+def test_a_skipped_target_does_not_decide_the_online_verdict() -> None:
+    """Regression: a host that cannot set its clock, with the update check off,
+    left ``_online`` False forever - so it retried every 5 minutes having made
+    no request at all, and reported itself offline on a working network."""
+    w = _worker(can_set_clock=False, cfg=_cfg(auto_update_check=False))
+    w._online = True
+    w._run_cycle("periodic")
+    assert w._online is True  # nothing attempted -> verdict untouched
+
+
+def test_health_reports_a_blank_repo_as_not_attempted() -> None:
+    w = _worker(cfg=_cfg(auto_time_sync=False, update_github_repo="  "))
+    w._run_cycle("startup")
+    assert w.health()["update_check"]["outcome"] == "not attempted"
+    assert "no update_github_repo" in w.health()["update_check"]["detail"]
+
+
+def test_health_reports_an_implausible_epoch_as_reached() -> None:
+    """The server answered, which is the connectivity fact. Ignoring what it
+    said is not a network failure."""
+    w = _worker(cfg=_cfg(auto_update_check=False), ntp_query=lambda _s, _t: 1.0)
+    w._run_cycle("startup")
+    health = w.health()
+    assert health["time_sync"]["outcome"] == "reached"
+    assert "implausible epoch" in health["time_sync"]["detail"]
+
+
+def test_health_reports_a_clock_that_was_set() -> None:
+    w = _worker(
+        cfg=_cfg(auto_update_check=False),
+        ntp_query=lambda _s, _t: 1_735_700_000.0,
+        wall=lambda: 1_700_000_000.0,
+    )
+    w._run_cycle("startup")
+    assert "clock set (drift was" in w.health()["time_sync"]["detail"]
+
+
+def test_health_reports_up_to_date() -> None:
+    w = _worker(cfg=_cfg(auto_time_sync=False), update_check=lambda *_a, **_k: {"available": False})
+    w._run_cycle("startup")
+    assert "up to date" in w.health()["update_check"]["detail"]
+
+
+def test_health_truncates_a_long_error_detail() -> None:
+    """Error text lands in an artefact attached to public issues; an unbounded
+    exception string would take the section with it."""
+    w = _worker(cfg=_cfg(auto_update_check=False), ntp_query=_raiser(OSError("x" * 500)))
+    w._run_cycle("startup")
+    assert len(w.health()["time_sync"]["detail"]) == 200

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import platform
+import socket
 import subprocess
 import threading
 import time
@@ -3047,9 +3048,35 @@ def _io_server(**overrides: Any) -> Any:
         "midi_port_names_provider": lambda: ["nanoKONTROL2"],
         "camera_names_provider": lambda: ["USB Capture HDMI"],
         "get_privilege_capability_states": lambda: {},
+        "crash_restarts_provider": lambda: 0,
+        "online_sync_status_provider": lambda: {},
+        "get_runtime_stats": lambda: {},
+        "get_detection_install_status": lambda: {},
     }
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+# ``worker_thread_tracebacks`` has no recorder behind it: nothing in the
+# runtime captures a thread's last traceback, so the builder leaves it unwired
+# and the collector renders its "[not applicable]" sentinel. Every other
+# declared provider must be passed.
+_PROVIDERS_UNWIRED_BY_DESIGN = {"worker_thread_tracebacks"}
+
+
+def test_build_diagnostics_providers_passes_every_declared_provider() -> None:
+    """A provider the builder forgets is dark code: the collector for it ships,
+    renders nothing, and no test notices. Four shipped that way (restart count,
+    config diff, detection install job, runtime stats), so the wiring is pinned
+    as a set rather than one assertion per field, which only covers the ones
+    somebody remembered to assert."""
+    import dataclasses
+
+    from openfollow.web.routes import _build_diagnostics_providers
+
+    providers = _build_diagnostics_providers(_io_server(), SimpleNamespace(web_port=8080))
+    unwired = {f.name for f in dataclasses.fields(providers) if getattr(providers, f.name) is None}
+    assert unwired == _PROVIDERS_UNWIRED_BY_DESIGN
 
 
 def test_build_diagnostics_providers_wires_io_fields() -> None:
@@ -3084,3 +3111,569 @@ def test_build_diagnostics_providers_gamepad_names_none_when_unwired() -> None:
     # "subsystem not available" footer note meaningful).
     assert providers.gamepad_names is None
     assert providers.gamepad_runtime is None
+
+
+# ---------------------------------------------------------------------------
+# E7 – interface addressing and the default route
+# ---------------------------------------------------------------------------
+
+
+_ROUTE_HEADER = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
+
+
+def _route_file(tmp_path: Path, body: str) -> Path:
+    path = tmp_path / "route"
+    path.write_text(_ROUTE_HEADER + body)
+    return path
+
+
+@pytest.mark.parametrize(
+    ("netmask", "expected"),
+    [("255.255.255.0", 24), ("255.255.0.0", 16), ("255.255.255.255", 32), ("0.0.0.0", 0)],
+)
+def test_ipv4_prefix_len_converts_dotted_quad(netmask: str, expected: int) -> None:
+    assert diag.ipv4_prefix_len(netmask) == expected
+
+
+@pytest.mark.parametrize("netmask", ["nonsense", "", "255.255.255", "256.0.0.0"])
+def test_ipv4_prefix_len_rejects_unparseable_mask(netmask: str) -> None:
+    """A mask we can't read must not fabricate a prefix – the caller prints the
+    raw netmask instead, which is still true."""
+    assert diag.ipv4_prefix_len(netmask) is None
+
+
+def test_read_default_routes_returns_gateway_and_interface(tmp_path: Path) -> None:
+    """Little-endian hex, as the kernel writes it: 0101A8C0 is 192.168.1.1."""
+    path = _route_file(
+        tmp_path,
+        "eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"
+        "eth0\t0001A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n",
+    )
+    assert diag.read_default_routes(path) == [("eth0", "192.168.1.1")]
+
+
+def test_read_default_routes_distinguishes_absent_table_from_no_route(tmp_path: Path) -> None:
+    """``None`` (can't read the table, e.g. macOS) must not read as ``[]``
+    (host genuinely has no way off its subnet) – the bundle says different
+    things about a camera on another network in those two cases."""
+    assert diag.read_default_routes(tmp_path / "missing") is None
+    assert diag.read_default_routes(_route_file(tmp_path, "")) == []
+
+
+def test_read_default_routes_skips_rows_that_are_not_usable_defaults(tmp_path: Path) -> None:
+    path = _route_file(
+        tmp_path,
+        "short\tline\n"  # fewer than 4 fields
+        "eth0\t0001A8C0\t0101A8C0\t0003\t0\t0\t0\t0\t0\t0\t0\n"  # not the default route
+        "eth0\t00000000\t0101A8C0\t0001\t0\t0\t0\t0\t0\t0\t0\n"  # RTF_GATEWAY clear
+        "eth0\t00000000\tZZZZ\t0003\t0\t0\t0\t0\t0\t0\t0\n"  # unparseable gateway
+        "eth0\t00000000\tFFFFFFFFFF\t0003\t0\t0\t0\t0\t0\t0\t0\n",  # wider than four octets
+    )
+    assert diag.read_default_routes(path) == []
+
+
+def test_collect_network_interfaces_reports_prefix_and_default_route(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The bundle that prompted this reported ``eth0 192.168.3.5`` and nothing
+    else, so a camera on 192.168.1.100 read as a normal address on a healthy
+    interface. Prefix plus default route is what makes it off-subnet."""
+    import psutil
+
+    monkeypatch.setattr(
+        psutil,
+        "net_if_stats",
+        lambda: {"eth0": SimpleNamespace(isup=True, speed=1000, mtu=1500, duplex=2)},
+    )
+    monkeypatch.setattr(
+        psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [
+                SimpleNamespace(family=socket.AF_INET, address="192.168.3.5", netmask="255.255.255.0"),
+                SimpleNamespace(family=socket.AF_INET6, address="fe80::1", netmask=None),
+            ]
+        },
+    )
+    rows = diag.collect_network_interfaces(_route_file(tmp_path, ""))
+    joined = "\n".join(rows)
+    assert "ipv4 192.168.3.5/24" in joined
+    assert "fe80::1" not in joined
+    assert "Default route:  none" in joined
+
+
+def test_collect_network_interfaces_falls_back_to_raw_netmask(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import psutil
+
+    monkeypatch.setattr(
+        psutil, "net_if_stats", lambda: {"eth0": SimpleNamespace(isup=True, speed=0, mtu=1500, duplex=0)}
+    )
+    monkeypatch.setattr(
+        psutil,
+        "net_if_addrs",
+        lambda: {"eth0": [SimpleNamespace(family=socket.AF_INET, address="10.0.0.2", netmask="not-a-mask")]},
+    )
+    rows = diag.collect_network_interfaces(_route_file(tmp_path, ""))
+    assert "ipv4 10.0.0.2 netmask=not-a-mask" in "\n".join(rows)
+
+
+def test_collect_network_interfaces_renders_each_default_route(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import psutil
+
+    monkeypatch.setattr(
+        psutil, "net_if_stats", lambda: {"eth0": SimpleNamespace(isup=True, speed=0, mtu=1500, duplex=1)}
+    )
+    monkeypatch.setattr(psutil, "net_if_addrs", lambda: {})
+    path = _route_file(tmp_path, "eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n")
+    assert "  Default route:  via 192.168.1.1 on eth0" in diag.collect_network_interfaces(path)
+
+
+def test_collect_network_interfaces_survives_unreadable_addresses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Losing addresses must not lose the link table with it."""
+    import psutil
+
+    monkeypatch.setattr(
+        psutil, "net_if_stats", lambda: {"eth0": SimpleNamespace(isup=True, speed=0, mtu=1500, duplex=2)}
+    )
+
+    def _boom() -> dict[str, Any]:
+        raise OSError("no permission")
+
+    monkeypatch.setattr(psutil, "net_if_addrs", _boom)
+    joined = "\n".join(diag.collect_network_interfaces(_route_file(tmp_path, "")))
+    assert "addresses unavailable" in joined
+    assert "eth0" in joined
+
+
+def test_collect_network_interfaces_reports_unreadable_stats(monkeypatch: pytest.MonkeyPatch) -> None:
+    import psutil
+
+    def _boom() -> dict[str, Any]:
+        raise OSError("nope")
+
+    monkeypatch.setattr(psutil, "net_if_stats", _boom)
+    assert "unavailable" in diag.collect_network_interfaces()[0]
+
+
+def test_collect_network_interfaces_marks_route_table_unreadable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import psutil
+
+    monkeypatch.setattr(psutil, "net_if_stats", lambda: {})
+    monkeypatch.setattr(psutil, "net_if_addrs", lambda: {})
+    rows = diag.collect_network_interfaces(tmp_path / "absent")
+    assert "[unavailable: kernel route table not readable]" in rows[0]
+
+
+# ---------------------------------------------------------------------------
+# A3 – runtime state
+# ---------------------------------------------------------------------------
+
+
+def _stats(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "video": {
+            "source_type": "rtsp",
+            "source_label": "rtsp://cam.local:554/s",
+            "pipeline_state": "connected",
+            "connected": True,
+            "reconnect_attempt": 0,
+            "error_message": "",
+            "resolution": {"width": 1920, "height": 1080},
+            "source_fps": 25.0,
+        },
+        "playback": {
+            "frame_count_total": 100,
+            "effective_fps": 59.9,
+            "recent_effective_fps": 59.8,
+            "recent_slow_frame_percent": 0.1,
+            "seconds_since_last_frame": 0.01,
+            "stale_after_s": 1.0,
+            "stalled": False,
+        },
+        "tracking": {
+            "enabled": False,
+            "available": False,
+            "running": False,
+            "model": "yolo26n.onnx",
+            "inference_count": 0,
+            "inference_hz": 0.0,
+            "inference_avg_ms": 0.0,
+            "inference_errors": 0,
+            "missing_deps": [],
+        },
+        "controllers": {"connected_count": 1, "mapped_count": 1},
+        "system": {"output_resolution": {"width": 1920, "height": 1080}},
+    }
+    base.update(overrides)
+    return base
+
+
+def test_collect_runtime_state_reports_not_wired() -> None:
+    assert "not wired" in diag.collect_runtime_state(diag.DiagnosticsProviders())[0]
+
+
+def test_collect_runtime_state_survives_a_raising_provider() -> None:
+    """The snapshot is a live dict from a running provider. A bundle that
+    aborts because telemetry hiccuped is worse than one without telemetry."""
+
+    def _boom() -> dict[str, Any]:
+        raise RuntimeError("stats exploded")
+
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=_boom))
+    assert "stats exploded" in "\n".join(rows)
+
+
+def test_collect_runtime_state_renders_an_empty_snapshot() -> None:
+    """Every field read through ``.get`` with a default: a snapshot missing a
+    key renders a blank field, it does not raise."""
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=dict))
+    joined = "\n".join(rows)
+    assert "Video:" in joined
+    assert "- (no canvas)" in joined
+
+
+def test_collect_runtime_state_reports_a_healthy_feed() -> None:
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=_stats))
+    joined = "\n".join(rows)
+    assert "1920x1080" in joined
+    assert "25.0 fps" in joined
+    assert "last error            (none)" in joined
+    assert "running (last frame 0.01s ago)" in joined
+    assert "1 connected, 1 mapped to a marker" in joined
+
+
+def test_collect_runtime_state_reports_the_reconnect_loop() -> None:
+    """The ticket's signature: no frames, an error, a retry count."""
+    stats = _stats(
+        video={
+            "source_type": "rtsp",
+            "source_label": "rtsp://cam.local:554/s",
+            "pipeline_state": "reconnecting",
+            "connected": False,
+            "reconnect_attempt": 2,
+            "error_message": "No video received (connection timeout)",
+            "resolution": {"width": 0, "height": 0},
+            "source_fps": 0.0,
+        }
+    )
+    joined = "\n".join(diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats)))
+    assert "reconnect attempt 2" in joined
+    assert "No video received (connection timeout)" in joined
+    assert "- (no source frames yet)" in joined
+
+
+def test_collect_runtime_state_redacts_a_credential_in_the_source_label() -> None:
+    """Plugins are expected to redact their own labels, but this is the file
+    operators attach to public issues – a plugin that forgets must not be the
+    leak."""
+    stats = _stats(video=dict(_stats()["video"], source_label="rtsp://admin:hunter2@cam/s"))
+    joined = "\n".join(diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats)))
+    assert "hunter2" not in joined
+    assert "rtsp://cam/s" in joined
+
+
+def test_collect_runtime_state_redacts_a_credential_in_the_error_message() -> None:
+    stats = _stats(video=dict(_stats()["video"], error_message="failed: rtsp://admin:hunter2@cam/s"))
+    joined = "\n".join(diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats)))
+    assert "hunter2" not in joined
+
+
+@pytest.mark.parametrize(
+    ("playback", "expected"),
+    [
+        ({"stalled": True, "seconds_since_last_frame": 12.4, "stale_after_s": 1.0}, "STALLED for 12.4s"),
+        ({"stalled": True, "seconds_since_last_frame": None, "stale_after_s": 1.0}, "STALLED"),
+        ({"stalled": False, "seconds_since_last_frame": 4.0, "stale_after_s": 1.0}, "STALLED for 4.0s"),
+        ({"stalled": False, "seconds_since_last_frame": None, "stale_after_s": 1.0}, "starting"),
+    ],
+)
+def test_collect_runtime_state_describes_the_frame_clock(playback: dict[str, Any], expected: str) -> None:
+    """A headless station's outputs keep transmitting a frozen position, and
+    nothing else in the bundle distinguishes that from a healthy one. The age
+    decides, not the flag: the watchdog shares the loop it watches, so a block
+    inside one callback stops both and leaves the flag False."""
+    stats = _stats(playback=playback)
+    joined = "\n".join(diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats)))
+    assert expected in joined
+
+
+def test_collect_runtime_state_lists_missing_detection_dependencies() -> None:
+    stats = _stats(tracking=dict(_stats()["tracking"], missing_deps=["onnxruntime"]))
+    joined = "\n".join(diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats)))
+    assert "missing deps          onnxruntime" in joined
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, "-"),
+        ({"width": 0, "height": 0}, "- (no source frames yet)"),
+        ({"width": 1280, "height": 720}, "1280x720"),
+    ],
+)
+def test_fmt_resolution(value: Any, expected: str) -> None:
+    assert diag._fmt_resolution(value) == expected
+
+
+# ---------------------------------------------------------------------------
+# A4 – uplink status
+# ---------------------------------------------------------------------------
+
+
+def _uplink(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "online": False,
+        "cadence_s": 300.0,
+        "last_reason": "retry",
+        "last_cycle_age_s": 42.0,
+        "cycles": 17,
+        "time_sync": {
+            "enabled": True,
+            "target": "ptbtime1.ptb.de",
+            "outcome": "unreachable",
+            "detail": "TimeoutError: timed out",
+            "age_s": 42.0,
+        },
+        "update_check": {
+            "enabled": True,
+            "target": "openfollowapp/openfollow",
+            "outcome": "unreachable",
+            "detail": "URLError: Network is unreachable",
+            "age_s": 42.0,
+        },
+    }
+    base.update(overrides)
+    return base
+
+
+def test_collect_uplink_reports_not_wired() -> None:
+    assert "not wired" in diag.collect_uplink(diag.DiagnosticsProviders())[0]
+
+
+def test_collect_uplink_reports_worker_not_running() -> None:
+    """``{}`` is what the lazy provider returns before the worker exists."""
+    assert "not running" in diag.collect_uplink(diag.DiagnosticsProviders(online_sync_status=dict))[0]
+
+
+def test_collect_uplink_survives_a_raising_provider() -> None:
+    def _boom() -> dict[str, Any]:
+        raise RuntimeError("worker exploded")
+
+    assert "worker exploded" in "\n".join(diag.collect_uplink(diag.DiagnosticsProviders(online_sync_status=_boom)))
+
+
+def test_collect_uplink_reports_no_uplink_with_the_retry_cadence() -> None:
+    """``retry`` cadence is the single most diagnostic field: it means no cycle
+    has ever reached the network this session, so the reading is fresh."""
+    joined = "\n".join(diag.collect_uplink(diag.DiagnosticsProviders(online_sync_status=_uplink)))
+    assert "Verdict:            no uplink observed" in joined
+    assert "every 300 s (retry - no cycle has reached the network)" in joined
+    assert "unreachable 42 s ago - TimeoutError: timed out" in joined
+
+
+def test_collect_uplink_reports_a_reachable_uplink() -> None:
+    status = _uplink(
+        online=True,
+        cadence_s=86400.0,
+        last_reason="periodic",
+        time_sync={
+            "enabled": True,
+            "target": "ptbtime1.ptb.de",
+            "outcome": "reached",
+            "detail": "clock set (drift was 1339228.0s)",
+            "age_s": 3.0,
+        },
+        update_check={
+            "enabled": True,
+            "target": "openfollowapp/openfollow",
+            "outcome": "reached",
+            "detail": "up to date (running 0.4.2)",
+            "age_s": 3.0,
+        },
+    )
+    joined = "\n".join(diag.collect_uplink(diag.DiagnosticsProviders(online_sync_status=lambda: status)))
+    assert "Verdict:            internet reachable" in joined
+    assert "periodic backstop" in joined
+
+
+def test_collect_uplink_separates_no_observation_from_no_uplink() -> None:
+    """With both checks off nothing was ever asked, and reporting that as
+    offline would be a guess about a network nobody queried."""
+    status = _uplink(
+        time_sync={
+            "enabled": False,
+            "target": "ptbtime1.ptb.de",
+            "outcome": "not attempted",
+            "detail": "",
+            "age_s": None,
+        },
+        update_check={"enabled": False, "target": "o/r", "outcome": "not attempted", "detail": "", "age_s": None},
+        last_cycle_age_s=None,
+    )
+    joined = "\n".join(diag.collect_uplink(diag.DiagnosticsProviders(online_sync_status=lambda: status)))
+    assert "not observed (both checks disabled)" in joined
+    assert "never" in joined
+
+
+def test_collect_uplink_reports_enabled_but_not_yet_attempted() -> None:
+    """Enabled and skipped is still no observation: a host that cannot set its
+    clock never sends an NTP packet, so it has learned nothing about the LAN."""
+    status = _uplink(
+        time_sync={
+            "enabled": True,
+            "target": "ptbtime1.ptb.de",
+            "outcome": "not attempted",
+            "detail": "clock-set unavailable on this host",
+            "age_s": None,
+        },
+        update_check={
+            "enabled": False,
+            "target": "o/r",
+            "outcome": "not attempted",
+            "detail": "auto_update_check is off",
+            "age_s": None,
+        },
+    )
+    joined = "\n".join(diag.collect_uplink(diag.DiagnosticsProviders(online_sync_status=lambda: status)))
+    assert "not observed yet" in joined
+
+
+@pytest.mark.parametrize(("age", "expected"), [(None, "never"), ("x", "never"), (41.6, "42 s ago")])
+def test_fmt_age(age: Any, expected: str) -> None:
+    assert diag._fmt_age(age) == expected
+
+
+# ---------------------------------------------------------------------------
+# Section D – folding repeated log blocks, marking clock discontinuities
+# ---------------------------------------------------------------------------
+
+
+def _journal(stamp: str, text: str) -> str:
+    return f"Sep 14 {stamp} host openfollow[2052]: {stamp[-8:]} {text}"
+
+
+def test_normalise_log_line_ignores_timestamp_and_pid() -> None:
+    a = "Sep 14 21:20:09 host openfollow[2052]: 21:20:09 [WARNING] x: no video"
+    b = "Sep 14 21:28:24 host openfollow[9999]: 21:28:24 [WARNING] x: no video"
+    assert diag.normalise_log_line(a) == diag.normalise_log_line(b)
+
+
+def test_normalise_log_line_keeps_numbers_that_distinguish_messages() -> None:
+    """Only the journal's own noise is stripped. An attempt counter is the
+    message, and folding attempt 1 into attempt 2 would erase the loop's shape."""
+    a = "Sep 14 21:20:09 host of[1]: Reconnecting pipeline (attempt 1)"
+    b = "Sep 14 21:20:19 host of[1]: Reconnecting pipeline (attempt 2)"
+    assert diag.normalise_log_line(a) != diag.normalise_log_line(b)
+
+
+def test_collapse_repeated_blocks_folds_a_reconnect_cycle() -> None:
+    """A failing source repeats a *cycle*, not a line: the bundle that prompted
+    this was 381 kB of the same three-line loop. Collapsing only adjacent
+    identical lines would have left it untouched."""
+    lines: list[str] = []
+    for minute in range(20, 26):
+        lines += [
+            _journal(f"21:{minute}:00", "Reconnecting pipeline (attempt 0)..."),
+            _journal(f"21:{minute}:01", "RTSP pipeline started"),
+            _journal(f"21:{minute}:09", "no video received after 8s"),
+        ]
+    tail = _journal("21:30:00", "Placeholder pipeline started")
+    lines.append(tail)
+
+    folded = diag.collapse_repeated_blocks(lines)
+
+    assert len(folded) == 5
+    assert folded[:3] == lines[:3]  # first pass kept verbatim, timestamps intact
+    assert "3-line block above repeated 5 more time(s)" in folded[3]
+    assert folded[4] == tail
+
+
+def test_collapse_repeated_blocks_folds_a_single_repeating_line() -> None:
+    lines = [_journal(f"21:00:0{i}", "no video received after 8s") for i in range(5)]
+    folded = diag.collapse_repeated_blocks(lines)
+    assert len(folded) == 2
+    assert "the line above repeated 4 more time(s)" in folded[1]
+
+
+def test_collapse_repeated_blocks_leaves_a_varied_tail_alone() -> None:
+    lines = [_journal(f"21:00:0{i}", f"event {i}") for i in range(6)]
+    assert diag.collapse_repeated_blocks(lines) == lines
+
+
+def test_collapse_repeated_blocks_prefers_the_shortest_period() -> None:
+    """A 1-line cycle also matches as a 2-line one at half the count; the
+    shorter period is the honest description of what repeated."""
+    lines = [_journal(f"21:00:0{i}", "same") for i in range(4)]
+    folded = diag.collapse_repeated_blocks(lines)
+    assert "the line above repeated 3 more time(s)" in folded[1]
+
+
+def test_collapse_repeated_blocks_respects_the_period_cap() -> None:
+    """Past the cap a long stretch is left intact rather than folded against a
+    period we never searched for."""
+    block = [_journal(f"21:00:0{i}", f"step {i}") for i in range(4)]
+    lines = block + block
+    assert diag.collapse_repeated_blocks(lines, max_period=3) == lines
+    assert len(diag.collapse_repeated_blocks(lines, max_period=4)) == 5
+
+
+def test_collapse_repeated_blocks_handles_no_lines() -> None:
+    assert diag.collapse_repeated_blocks([]) == []
+
+
+def test_annotate_log_discontinuities_marks_a_forward_clock_jump() -> None:
+    """A station with no RTC boots at whatever was last recorded and is
+    corrected minutes later, so one boot's journal can jump weeks mid-file."""
+    lines = [
+        "Aug 29 22:58:13 host of[1]: starting",
+        "Aug 29 22:58:26 host of[1]: sudo date -s",
+        "Sep 14 21:18:42 host of[1]: System clock set from trusted time source",
+    ]
+    annotated = diag.annotate_log_discontinuities(lines)
+    assert len(annotated) == 4
+    assert "timestamps jump ~16 day(s) forward here" in annotated[2]
+
+
+def test_annotate_log_discontinuities_marks_a_backwards_step() -> None:
+    lines = [
+        "Sep 14 21:18:42 host of[1]: after sync",
+        "Aug 29 22:58:13 host of[1]: an older boot's tail",
+    ]
+    annotated = diag.annotate_log_discontinuities(lines)
+    assert "timestamps step backwards here" in annotated[1]
+
+
+def test_annotate_log_discontinuities_leaves_a_monotonic_log_alone() -> None:
+    lines = [
+        "Sep 14 21:18:42 host of[1]: one",
+        "Sep 14 21:18:43 host of[1]: two",
+        "Sep 14 21:19:00 host of[1]: three",
+    ]
+    assert diag.annotate_log_discontinuities(lines) == lines
+
+
+def test_annotate_log_discontinuities_ignores_lines_without_a_stamp() -> None:
+    """The ring-buffer fallback has no journal prefix, and journalctl's own
+    ``-- Boot ... --`` markers have none either."""
+    lines = [
+        "Sep 14 21:18:42 host of[1]: one",
+        "-- Boot 9b9ec0760a244035813f842a6a988798 --",
+        "Sep 14 21:18:43 host of[1]: two",
+    ]
+    assert diag.annotate_log_discontinuities(lines) == lines
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "no prefix at all",
+        "Xxx 14 21:18:42 host of[1]: bad month",
+        "Sep 14 21:18:6a host of[1]: bad seconds",  # not a digit group, so no prefix matches
+    ],
+)
+def test_log_line_stamp_rejects_unparseable_prefixes(line: str) -> None:
+    assert diag._log_line_stamp(line) is None

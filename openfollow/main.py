@@ -45,7 +45,11 @@ def main() -> None:
 
         app: OpenFollowApp | None = None
         try:
-            app = OpenFollowApp(config_path=config_path, log_ring=log_ring)
+            app = OpenFollowApp(
+                config_path=config_path,
+                log_ring=log_ring,
+                crash_restarts=len(restart_times),
+            )
             app.run()
             break  # Clean exit
         except KeyboardInterrupt:

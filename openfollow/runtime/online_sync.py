@@ -21,6 +21,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from openfollow.runtime.deb_update import check_for_update
@@ -66,6 +67,49 @@ def _is_real_ip(ip: str) -> bool:
     except ValueError:
         return False
     return not (addr.is_loopback or addr.is_link_local or addr.is_unspecified)
+
+
+# Outcomes a target can report. "never attempted" is the startup state and
+# "not attempted" a deliberate skip (disabled, or no clock-set grant); neither
+# says anything about the network, and folding them into "unreachable" is what
+# made a host that never sent a packet report itself as offline.
+OUTCOME_NEVER = "never attempted"
+OUTCOME_SKIPPED = "not attempted"
+OUTCOME_REACHED = "reached"
+OUTCOME_UNREACHABLE = "unreachable"
+
+
+@dataclass(frozen=True)
+class TargetHealth:
+    """Last attempt against one online-sync target."""
+
+    enabled: bool = False
+    target: str = ""
+    outcome: str = OUTCOME_NEVER
+    detail: str = ""
+    at: float | None = None  # monotonic, so a clock correction can't skew ages
+
+    @property
+    def attempted(self) -> bool:
+        """True only when network I/O actually happened."""
+        return self.outcome in (OUTCOME_REACHED, OUTCOME_UNREACHABLE)
+
+
+@dataclass(frozen=True)
+class OnlineSyncHealth:
+    """One cycle's outcome, published as a unit.
+
+    Immutable and replaced wholesale on every cycle, so the diagnostics thread
+    reading it can never see one target's result paired with another's
+    timestamp - the same publish-a-snapshot rule the video status marker uses.
+    """
+
+    online: bool = False
+    last_reason: str = ""
+    last_cycle_at: float | None = None
+    cycles: int = 0
+    time_sync: TargetHealth = field(default_factory=TargetHealth)
+    update_check: TargetHealth = field(default_factory=TargetHealth)
 
 
 class OnlineSyncWorker:
@@ -127,6 +171,7 @@ class OnlineSyncWorker:
         self._thread: threading.Thread | None = None
         self._last_ip: str | None = None
         self._last_cycle_monotonic: float | None = None
+        self._health = OnlineSyncHealth()
         # Whether the last cycle reached the network. Drives the retry-vs-daily
         # cadence: retry every few minutes until online, then relax to daily.
         self._online = False
@@ -206,49 +251,148 @@ class OnlineSyncWorker:
         self._last_cycle_monotonic = self._now()
         cfg = self._config_provider()
         logger.debug("online-sync cycle (%s)", reason)
-        reached = False
         # NTP first so the clock is correct before the HTTPS update check.
-        if cfg.auto_time_sync:
-            reached = self._sync_time(cfg) or reached
-        if cfg.auto_update_check:
-            reached = self._check_update(cfg) or reached
-        # Only a cycle that actually attempted network work updates the online
-        # verdict; a both-flags-off cycle leaves the retry cadence alone.
-        if cfg.auto_time_sync or cfg.auto_update_check:
-            self._online = reached
+        time_sync = (
+            self._sync_time(cfg)
+            if cfg.auto_time_sync
+            else TargetHealth(
+                enabled=False,
+                target=str(cfg.time_sync_server),
+                outcome=OUTCOME_SKIPPED,
+                detail="auto_time_sync is off",
+            )
+        )
+        update_check = (
+            self._check_update(cfg)
+            if cfg.auto_update_check
+            else TargetHealth(
+                enabled=False,
+                target=str(cfg.update_github_repo),
+                outcome=OUTCOME_SKIPPED,
+                detail="auto_update_check is off",
+            )
+        )
+        # Only targets that actually reached the network decide the verdict. A
+        # skipped one says nothing about connectivity, and counting it as a
+        # failure pinned a host that never sent a packet to the retry cadence
+        # for the life of the process.
+        attempts = [h for h in (time_sync, update_check) if h.attempted]
+        if attempts:
+            self._online = any(h.outcome == OUTCOME_REACHED for h in attempts)
+        self._health = OnlineSyncHealth(
+            online=self._online,
+            last_reason=reason,
+            last_cycle_at=self._last_cycle_monotonic,
+            cycles=self._health.cycles + 1,
+            time_sync=time_sync,
+            update_check=update_check,
+        )
+
+    # ----- health --------------------------------------------------------
+
+    def health(self) -> dict[str, Any]:
+        """Uplink observation for the diagnostics bundle.
+
+        Passive: it reports what the cycles above already learned and sends
+        nothing itself. Ages resolve against this worker's own monotonic clock
+        at read time - wall-clock deltas are meaningless here, since this is
+        the worker that moves the wall clock.
+        """
+        health = self._health
+        now = self._now()
+
+        def age(at: float | None) -> float | None:
+            return None if at is None else max(0.0, now - at)
+
+        def target(item: TargetHealth) -> dict[str, Any]:
+            return {
+                "enabled": item.enabled,
+                "target": item.target,
+                "outcome": item.outcome,
+                "detail": item.detail,
+                "age_s": age(item.at),
+            }
+
+        return {
+            "online": health.online,
+            "cadence_s": self._periodic_interval if health.online else self._retry_interval,
+            "last_reason": health.last_reason,
+            "last_cycle_age_s": age(health.last_cycle_at),
+            "cycles": health.cycles,
+            "time_sync": target(health.time_sync),
+            "update_check": target(health.update_check),
+        }
 
     # ----- actions -------------------------------------------------------
 
-    def _sync_time(self, cfg: AppConfig) -> bool:
-        """Sync the clock from NTP. Returns True if the NTP server was reached
-        (whether or not the clock needed setting), False if it couldn't be
-        reached or clock-set isn't available on this host."""
+    def _sync_time(self, cfg: AppConfig) -> TargetHealth:
+        """Sync the clock from NTP and report what happened.
+
+        "Reached" means the server answered, whether or not the clock needed
+        moving; a host that cannot set its clock at all reports a skip, not a
+        failure, because it never asked the network anything.
+        """
+        server = str(cfg.time_sync_server)
         if not self._can_set_clock or self._broker is None:
-            return False
+            return TargetHealth(
+                enabled=True,
+                target=server,
+                outcome=OUTCOME_SKIPPED,
+                detail="clock-set unavailable on this host (not Linux, or no privilege grant)",
+            )
         try:
-            epoch = self._ntp_query(cfg.time_sync_server, self._ntp_timeout)
+            epoch = self._ntp_query(server, self._ntp_timeout)
         except Exception as exc:
             logger.debug("NTP query failed: %s", exc)
-            return False
+            return TargetHealth(
+                enabled=True,
+                target=server,
+                outcome=OUTCOME_UNREACHABLE,
+                detail=f"{type(exc).__name__}: {exc}"[:200],
+                at=self._now(),
+            )
         if not is_plausible_epoch(epoch):
             logger.debug("NTP returned an implausible epoch (%s); ignoring.", epoch)
-            return True
+            return TargetHealth(
+                enabled=True,
+                target=server,
+                outcome=OUTCOME_REACHED,
+                detail=f"answered with an implausible epoch ({epoch}); ignored",
+                at=self._now(),
+            )
         drift = abs(epoch - self._wall_now())
         if drift < DRIFT_THRESHOLD_S:
             logger.debug("Clock within %.1fs of NTP (drift %.2fs); not setting.", DRIFT_THRESHOLD_S, drift)
-            return True
+            return TargetHealth(
+                enabled=True,
+                target=server,
+                outcome=OUTCOME_REACHED,
+                detail=f"clock within {drift:.2f}s of NTP; not set",
+                at=self._now(),
+            )
         self._set_clock(self._broker, round(epoch))
-        return True
+        return TargetHealth(
+            enabled=True,
+            target=server,
+            outcome=OUTCOME_REACHED,
+            detail=f"clock set (drift was {drift:.1f}s)",
+            at=self._now(),
+        )
 
-    def _check_update(self, cfg: AppConfig) -> bool:
-        """Check GitHub for a newer release. Returns True if GitHub was reached,
-        False on offline / API error / bad config."""
+    def _check_update(self, cfg: AppConfig) -> TargetHealth:
+        """Check GitHub for a newer release and report what happened."""
+        repo_label = str(getattr(cfg, "update_github_repo", ""))
         try:
             # Inside the try so a malformed (non-string) update_github_repo can't
             # raise past here and abort the cycle uncaught.
             repo = cfg.update_github_repo.strip()
             if not repo:
-                return False
+                return TargetHealth(
+                    enabled=True,
+                    target=repo_label,
+                    outcome=OUTCOME_SKIPPED,
+                    detail="no update_github_repo configured",
+                )
             info = self._update_check(
                 repo,
                 self._version,
@@ -257,9 +401,24 @@ class OnlineSyncWorker:
         except Exception as exc:
             # Offline / API error / bad config – leave any prior known state untouched.
             logger.debug("Update check failed: %s", exc)
-            return False
+            return TargetHealth(
+                enabled=True,
+                target=repo_label,
+                outcome=OUTCOME_UNREACHABLE,
+                detail=f"{type(exc).__name__}: {exc}"[:200],
+                at=self._now(),
+            )
         if info.get("available"):
-            self._web_commands.set_update_available(str(info.get("latest", "")))
+            latest = str(info.get("latest", ""))
+            self._web_commands.set_update_available(latest)
+            detail = f"update available: {latest}"
         else:
             self._web_commands.set_update_available("")
-        return True
+            detail = f"up to date (running {self._version})"
+        return TargetHealth(
+            enabled=True,
+            target=repo_label,
+            outcome=OUTCOME_REACHED,
+            detail=detail,
+            at=self._now(),
+        )

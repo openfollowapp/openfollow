@@ -50,11 +50,15 @@ class _FakeApp:
         # tore down each exited generation (the restart-leak fix).
         self.services_generations: list[_FakeRuntimeServices] = []
         self._runtime_services = _FakeRuntimeServices()
+        # Crash-restart count handed to each construction, so a test can assert
+        # the breaker's tally is what reaches the app (and thus the bundle).
+        self.crash_restarts_seen: list[int] = []
 
-    def __call__(self, config_path: str, *, log_ring: object = None) -> _FakeApp:
+    def __call__(self, config_path: str, *, log_ring: object = None, crash_restarts: int = 0) -> _FakeApp:
         # log_ring is forwarded by main.py for the diagnostics bundle's journalctl fallback.
         # The test fake just records the construction; the kwarg is captured but not exercised.
         self._call_log.append(config_path)
+        self.crash_restarts_seen.append(crash_restarts)
         self._runtime_services = _FakeRuntimeServices(self._raise_on_shutdown)
         self.services_generations.append(self._runtime_services)
         return self
@@ -111,13 +115,13 @@ def patched_main(monkeypatch):
             "setup_logging",
             lambda **kw: None,
         )
-        return call_log, clock
+        return call_log, clock, fake_app
 
     return _install
 
 
 def test_clean_exit_runs_once_with_default_config(patched_main) -> None:
-    call_log, clock = patched_main(behaviours=[lambda: None], times=[0.0])
+    call_log, clock, _fake_app = patched_main(behaviours=[lambda: None], times=[0.0])
 
     main_module.main()
 
@@ -126,7 +130,7 @@ def test_clean_exit_runs_once_with_default_config(patched_main) -> None:
 
 
 def test_cli_forwards_positional_config_path(patched_main) -> None:
-    call_log, _ = patched_main(
+    call_log, _clock, _fake_app = patched_main(
         behaviours=[lambda: None],
         times=[0.0],
         argv=["openfollow", "/tmp/custom.toml"],
@@ -141,7 +145,7 @@ def test_keyboard_interrupt_exits_without_restart(patched_main) -> None:
     def _raise():
         raise KeyboardInterrupt
 
-    call_log, clock = patched_main(behaviours=[_raise], times=[0.0])
+    call_log, clock, _fake_app = patched_main(behaviours=[_raise], times=[0.0])
 
     main_module.main()
 
@@ -164,7 +168,7 @@ def test_crash_triggers_restart_then_clean_exit(patched_main) -> None:
     def _raise_once():
         raise RuntimeError("boom")
 
-    call_log, clock = patched_main(
+    call_log, clock, _fake_app = patched_main(
         behaviours=[_raise_once, lambda: None],
         times=[100.0, 100.1],
     )
@@ -195,11 +199,11 @@ def test_constructor_crash_skips_teardown_and_restarts(monkeypatch) -> None:
     finally must skip the teardown (no AttributeError) and still restart."""
     calls = {"n": 0}
 
-    def _flaky_ctor(config_path: str, *, log_ring: object = None):
+    def _flaky_ctor(config_path: str, *, log_ring: object = None, crash_restarts: int = 0):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("ctor boom")
-        return _FakeApp([lambda: None], [])(config_path, log_ring=log_ring)
+        return _FakeApp([lambda: None], [])(config_path, log_ring=log_ring, crash_restarts=crash_restarts)
 
     clock = _FakeClock([100.0, 100.1])
     monkeypatch.setattr(main_module, "OpenFollowApp", _flaky_ctor)
@@ -245,7 +249,7 @@ def test_circuit_breaker_exits_after_max_restarts_in_window(patched_main) -> Non
     behaviours = [_always_crash] * main_module._MAX_RESTARTS
     times = [float(i) for i in range(main_module._MAX_RESTARTS * 2 + 2)]
 
-    call_log, _ = patched_main(behaviours=behaviours, times=times)
+    call_log, _clock, _fake_app = patched_main(behaviours=behaviours, times=times)
 
     with pytest.raises(SystemExit) as excinfo:
         main_module.main()
@@ -271,7 +275,7 @@ def test_old_restart_timestamps_are_pruned(patched_main) -> None:
         base = i * 400.0
         times.extend([base, base + 0.1])
 
-    call_log, _ = patched_main(behaviours=behaviours, times=times)
+    call_log, _clock, _fake_app = patched_main(behaviours=behaviours, times=times)
 
     # Should NOT raise SystemExit – each prior restart is pruned out.
     main_module.main()
@@ -320,3 +324,21 @@ def test_forward_wall_clock_jump_does_not_defeat_breaker(monkeypatch) -> None:
     # Breaker tripped on the _MAX_RESTARTS crashes; the clean behaviour after
     # them is never reached.
     assert len(call_log) == main_module._MAX_RESTARTS
+
+
+def test_crash_restart_count_reaches_each_app_generation(patched_main) -> None:
+    """The circuit breaker already counts respawns; nothing carried the tally
+    into the app, so a station that had silently crashed and restarted read
+    exactly like a healthy one in every section of a diagnostics bundle."""
+    _call_log, _clock, fake_app = patched_main(
+        behaviours=[
+            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+            lambda: (_ for _ in ()).throw(RuntimeError("boom again")),
+            lambda: None,
+        ],
+        times=[0.0, 1.0, 2.0, 3.0],
+    )
+    main_module.main()
+    # First generation is a cold start; each later one carries the count of
+    # crashes that preceded it.
+    assert fake_app.crash_restarts_seen == [0, 1, 2]

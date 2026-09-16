@@ -2724,6 +2724,7 @@ def _build_diagnostics_providers(
         web_port_display=lambda: server.display_port,
         process_uptime_s=lambda: _format_uptime(server.process_uptime_s),
         process_pid=os.getpid,
+        restart_count=server.crash_restarts_provider,
         beacon_sender_health=lambda: {
             "alive": server.beacon_sender.is_alive,
             "consecutive_errors": server.beacon_sender.consecutive_errors,
@@ -2752,7 +2753,11 @@ def _build_diagnostics_providers(
         config_redacted_toml=lambda: diagnostics.redact_config_secrets(
             _config_to_toml(cfg),
         ),
+        runtime_stats=server.get_runtime_stats,
+        online_sync_status=server.online_sync_status_provider,
+        config_diff_from_defaults=lambda: _config_diff_from_defaults(cfg),
         request_semaphore_rejections=(lambda: server.request_semaphore_rejections),
+        detection_install_state=server.get_detection_install_status,
         # Per-capability privilege state in the bundle.
         privilege_states=server.get_privilege_capability_states,
         # Live SDL gamepad snapshot (backend / GUID / calibration-match).
@@ -2777,6 +2782,50 @@ def _monotonic_age(ts: float) -> str:
     if ts <= 0.0:
         return "never"
     return f"{max(0.0, time.monotonic() - ts):.1f}s"
+
+
+# A differing container (zone list, fader bank, destination table) can be
+# arbitrarily long, and the diff exists to be skimmed - past this it is
+# summarised rather than printed, so one edited list cannot swamp the section
+# the way the full dump it sits under already does.
+_CONFIG_DIFF_VALUE_MAX = 100
+
+
+def _render_config_value(value: Any) -> str:
+    """Render one config value for the defaults diff, bounded in length."""
+    rendered = json.dumps(value) if isinstance(value, str) else repr(value)
+    if len(rendered) > _CONFIG_DIFF_VALUE_MAX:
+        return f"{rendered[:_CONFIG_DIFF_VALUE_MAX]}... (+{len(rendered) - _CONFIG_DIFF_VALUE_MAX} chars)"
+    return rendered
+
+
+def _walk_config_diff(current: Any, default: Any, path: str) -> list[str]:
+    """Recurse two ``asdict`` trees, yielding one line per differing leaf."""
+    if isinstance(current, dict) and isinstance(default, dict):
+        lines: list[str] = []
+        for key in current:
+            child = f"{path}.{key}" if path else str(key)
+            # A key absent from the defaults tree is a leaf either way: there
+            # is nothing to recurse against, so compare the whole subtree.
+            lines.extend(_walk_config_diff(current[key], default.get(key), child))
+        return lines
+    if current == default:
+        return []
+    leaf = path.rsplit(".", 1)[-1]
+    shown = diagnostics.redact_config_value(leaf, _render_config_value(current))
+    was = diagnostics.redact_config_value(leaf, _render_config_value(default))
+    return [f"{path} = {shown}  (default {was})"]
+
+
+def _config_diff_from_defaults(cfg: AppConfig) -> list[str]:
+    """Every field of ``cfg`` that differs from a freshly constructed one.
+
+    Section C prints ~300 lines of effective config; what triage needs from it
+    is the handful of values this operator actually changed. Credentials go
+    through the same redaction as the dump - a diff that printed them would
+    reopen the leak the dump closed.
+    """
+    return _walk_config_diff(asdict(cfg), asdict(AppConfig()), "")
 
 
 def _config_to_toml(cfg: AppConfig) -> str:

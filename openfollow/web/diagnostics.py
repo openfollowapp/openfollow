@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import importlib.util
+import ipaddress
 import json
 import logging
 import os
@@ -157,6 +158,17 @@ class DiagnosticsProviders:
     beacon_receiver_health: Callable[[], dict[str, Any]] | None = None
     known_peers: Callable[[], list[dict[str, Any]]] | None = None
     iface_ip: Callable[[], str] | None = None
+
+    # Live runtime telemetry - the same snapshot ``/api/stats`` and the
+    # Statistics page read. The bundle carried host, config and logs but
+    # nothing about whether the app was *working*, so triage needed a second
+    # artefact nobody thinks to attach.
+    runtime_stats: Callable[[], dict[str, Any]] | None = None
+
+    # Passive uplink observation: what the online-sync worker's own NTP and
+    # GitHub attempts already learned. Reports, never probes - so it adds no
+    # outbound path of its own.
+    online_sync_status: Callable[[], dict[str, Any]] | None = None
 
     config_redacted_toml: Callable[[], str] | None = None
     config_diff_from_defaults: Callable[[], list[str]] | None = None
@@ -332,6 +344,157 @@ def _safely_value(
         return default, f"[unavailable: {label}: {exc!r}]"
 
 
+def _fmt_resolution(res: Any) -> str:
+    """``WxH``, or a dash when nothing has been negotiated yet."""
+    if not isinstance(res, dict):
+        return "-"
+    width, height = int(res.get("width", 0) or 0), int(res.get("height", 0) or 0)
+    return f"{width}x{height}" if width > 0 and height > 0 else "- (no source frames yet)"
+
+
+def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
+    """Video, frame loop, detection and controllers, from the live snapshot.
+
+    Every value here is read through ``.get`` with a default: this is a live
+    dict from a running provider, not a fixed schema, and a bundle that aborts
+    because one key moved is worse than one reporting a blank field.
+    """
+    if p.runtime_stats is None:
+        return ["  [not applicable: runtime stats provider not wired]"]
+    stats, err = _safely_value(p.runtime_stats, "runtime_stats", {})
+    if err is not None:
+        return [f"  {err}"]
+    stats = stats or {}
+    rows: list[str] = []
+
+    video = stats.get("video") or {}
+    # Defence in depth: plugin labels and GStreamer error text are expected to
+    # arrive redacted, but this is the artefact operators attach to public
+    # issues, so a plugin that forgets must not be the leak.
+    label = redact_uris_in_text(str(video.get("source_label") or video.get("source_type") or "-"))
+    rows.append("  Video:")
+    rows.append(f"    source                {video.get('source_type', '?')} ({label})")
+    attempt = int(video.get("reconnect_attempt", 0) or 0)
+    signal = f"{video.get('pipeline_state', '?')} (connected={bool(video.get('connected'))})"
+    rows.append(f"    signal                {signal}{f', reconnect attempt {attempt}' if attempt else ''}")
+    error = redact_uris_in_text(str(video.get("error_message") or ""))
+    rows.append(f"    last error            {error or '(none)'}")
+    rows.append(f"    input resolution      {_fmt_resolution(video.get('resolution'))}")
+    rows.append(f"    source framerate      {float(video.get('source_fps', 0.0) or 0.0):.1f} fps")
+
+    playback = stats.get("playback") or {}
+    stale_after = float(playback.get("stale_after_s", 0.0) or 0.0)
+    age = playback.get("seconds_since_last_frame")
+    if playback.get("stalled") or (isinstance(age, (int, float)) and stale_after and age >= stale_after):
+        clock = f"STALLED for {float(age):.1f}s" if isinstance(age, (int, float)) else "STALLED"
+    elif age is None:
+        clock = "starting (no frame completed yet)"
+    else:
+        clock = f"running (last frame {float(age):.2f}s ago)"
+    rows.append("  Frame loop:")
+    rows.append(f"    state                 {clock}")
+    rows.append(f"    frames total          {playback.get('frame_count_total', 0)}")
+    rows.append(
+        f"    effective fps         {float(playback.get('effective_fps', 0.0) or 0.0):.1f} "
+        f"(recent {float(playback.get('recent_effective_fps', 0.0) or 0.0):.1f}), "
+        f"slow {float(playback.get('recent_slow_frame_percent', 0.0) or 0.0):.1f}%"
+    )
+
+    tracking = stats.get("tracking") or {}
+    rows.append("  Person detection:")
+    rows.append(
+        f"    state                 enabled={bool(tracking.get('enabled'))} "
+        f"available={bool(tracking.get('available'))} running={bool(tracking.get('running'))} "
+        f"model={tracking.get('model', '?')}"
+    )
+    rows.append(
+        f"    inference             {tracking.get('inference_count', 0)} runs at "
+        f"{float(tracking.get('inference_hz', 0.0) or 0.0):.1f} Hz, "
+        f"avg {float(tracking.get('inference_avg_ms', 0.0) or 0.0):.1f} ms, "
+        f"errors {tracking.get('inference_errors', 0)}"
+    )
+    missing = tracking.get("missing_deps") or []
+    rows.append(f"    missing deps          {', '.join(missing) if missing else '(none)'}")
+
+    controllers = stats.get("controllers") or {}
+    rows.append(
+        f"  Controllers:            {controllers.get('connected_count', 0)} connected, "
+        f"{controllers.get('mapped_count', 0)} mapped to a marker"
+    )
+    system = stats.get("system") or {}
+    out_res = system.get("output_resolution")
+    rows.append(f"  Output resolution:      {_fmt_resolution(out_res) if out_res else '- (no canvas)'}")
+    return rows
+
+
+def _fmt_age(age: Any) -> str:
+    """``42 s ago`` for a float age, ``never`` for ``None``."""
+    if not isinstance(age, (int, float)):
+        return "never"
+    return f"{float(age):.0f} s ago"
+
+
+def _uplink_target_rows(label: str, target: dict[str, Any]) -> list[str]:
+    enabled = "enabled" if target.get("enabled") else "disabled"
+    name = str(target.get("target") or "-")
+    detail = str(target.get("detail") or "")
+    outcome = str(target.get("outcome") or "never attempted")
+    age = _fmt_age(target.get("age_s"))
+    second = f"{outcome} {age}" if target.get("age_s") is not None else outcome
+    return [
+        f"  {label:<20}{enabled}, {name}",
+        f"  {'':<20}{second}{f' - {detail}' if detail else ''}",
+    ]
+
+
+def collect_uplink(p: DiagnosticsProviders) -> list[str]:
+    """Whether this station has internet, from attempts it already made.
+
+    Reuses the online-sync worker's own NTP and GitHub release checks rather
+    than probing: those run on startup, on IP change and on a timer anyway, so
+    the answer costs nothing and the bundle stays free of outbound traffic.
+
+    Staleness is self-limiting in the direction that matters. A station that
+    has never reached the network retries every few minutes, so its reading is
+    always fresh; only a station that *did* have an uplink can show an old
+    "reached", and the age is printed beside it either way.
+    """
+    if p.online_sync_status is None:
+        return ["  [not applicable: online-sync worker not wired]"]
+    status, err = _safely_value(p.online_sync_status, "online_sync_status", {})
+    if err is not None:
+        return [f"  {err}"]
+    status = status or {}
+    if not status:
+        return ["  [not applicable: online-sync worker not running]"]
+
+    time_sync = status.get("time_sync") or {}
+    update_check = status.get("update_check") or {}
+    attempted = any((t.get("age_s") is not None) for t in (time_sync, update_check))
+    if not attempted:
+        disabled = not (time_sync.get("enabled") or update_check.get("enabled"))
+        # No observation is not the same as no uplink, and saying "offline"
+        # here would be an outright guess about a network nobody asked about.
+        verdict = "not observed (both checks disabled)" if disabled else "not observed yet"
+    elif status.get("online"):
+        verdict = "internet reachable"
+    else:
+        verdict = "no uplink observed"
+
+    cadence = float(status.get("cadence_s", 0.0) or 0.0)
+    cadence_note = "periodic backstop" if status.get("online") else "retry - no cycle has reached the network"
+    reason = str(status.get("last_reason") or "-")
+    rows = [
+        f"  Verdict:            {verdict}",
+        f"  Cadence:            every {cadence:.0f} s ({cadence_note})",
+        f"  Last cycle:         {_fmt_age(status.get('last_cycle_age_s'))} "
+        f"(reason: {reason}, cycle {status.get('cycles', 0)})",
+    ]
+    rows.extend(_uplink_target_rows("Time sync:", time_sync))
+    rows.extend(_uplink_target_rows("Update check:", update_check))
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Section B – discovery / peers
 # ---------------------------------------------------------------------------
@@ -421,6 +584,21 @@ def _redact_toml_uri(raw_value: str) -> str:
         if len(text) >= 2 and text.startswith(quote) and text.endswith(quote):
             return f"{quote}{redact_uri(text[1:-1])}{quote}"
     return '"***"'
+
+
+def redact_config_value(key: str, rendered: str) -> str:
+    """Redact one already-rendered scalar, keyed by its config field name.
+
+    The line-based :func:`redact_config_secrets` cannot be reused where a
+    value is not alone on a TOML line (the defaults diff pairs two of them),
+    so both share these key sets and this policy instead of growing a second,
+    driftable one.
+    """
+    if key in _SECRET_CONFIG_KEYS:
+        return "(empty)" if rendered.strip() in ('""', "''", "") else "***"
+    if key in _URI_CONFIG_KEYS:
+        return _redact_toml_uri(rendered)
+    return rendered
 
 
 def redact_config_secrets(toml_text: str) -> str:
@@ -542,6 +720,119 @@ def _is_failure_line(line: str) -> bool:
     return not any(rx.search(line) for rx in _BENIGN_FAILURE_RES)
 
 
+# Journal noise stripped before two log lines are compared for repetition:
+# the ``MMM DD HH:MM:SS`` prefix journalctl adds, the ``[pid]`` of the emitting
+# process, and the application's own ``HH:MM:SS``. Everything else - including
+# any number that distinguishes one attempt from the next - is significant and
+# is left alone, so "attempt 1" never collapses into "attempt 2".
+_LOG_DATE_PREFIX_RE = re.compile(r"^[A-Z][a-z]{2} +\d{1,2} +\d{2}:\d{2}:\d{2} +")
+_LOG_CLOCK_RE = re.compile(r"\b\d{2}:\d{2}:\d{2}(?:\.\d+)?\b")
+_LOG_PID_RE = re.compile(r"\[\d+\]")
+_MONTHS = {
+    m: i
+    for i, m in enumerate(("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), start=1)
+}
+# Longest repeating cycle the collapser will look for. A reconnect loop is a
+# handful of lines; searching further costs more than it saves and risks
+# folding together two genuinely different stretches that happen to rhyme.
+_MAX_REPEAT_PERIOD = 24
+
+
+def normalise_log_line(line: str) -> str:
+    """A log line reduced to what makes it the *same message* as another."""
+    stripped = _LOG_DATE_PREFIX_RE.sub("", line.strip())
+    stripped = _LOG_PID_RE.sub("[]", stripped)
+    return _LOG_CLOCK_RE.sub("", stripped)
+
+
+def collapse_repeated_blocks(lines: list[str], *, max_period: int = _MAX_REPEAT_PERIOD) -> list[str]:
+    """Fold a repeating run of log lines down to one instance plus a count.
+
+    A failing network source does not repeat one line, it repeats a *cycle* -
+    connect, wait, time out, schedule, reconnect - so collapsing only adjacent
+    identical lines leaves the tail almost untouched. This finds the shortest
+    period that repeats from the current position and keeps the first pass
+    verbatim, timestamps included.
+
+    Deliberately no time span in the summary: the window this most often folds
+    is the one where the station's clock was corrected mid-log, so any duration
+    computed across it would be fiction. The kept pass and the line after the
+    fold both carry their real timestamps.
+    """
+    keys = [normalise_log_line(line) for line in lines]
+    out: list[str] = []
+    i = 0
+    total = len(lines)
+    while i < total:
+        best_period = 0
+        best_repeats = 0
+        for period in range(1, min(max_period, (total - i) // 2) + 1):
+            repeats = 0
+            while (
+                i + (repeats + 2) * period <= total
+                and keys[i + repeats * period : i + (repeats + 1) * period]
+                == keys[i + (repeats + 1) * period : i + (repeats + 2) * period]
+            ):
+                repeats += 1
+            # Prefer the shortest period that repeats at all: a 2-line cycle
+            # seen 20 times would also match as a 4-line cycle seen 10 times,
+            # and the shorter one is the honest description.
+            if repeats > 0:
+                best_period, best_repeats = period, repeats
+                break
+        if best_period == 0:
+            out.append(lines[i])
+            i += 1
+            continue
+        out.extend(lines[i : i + best_period])
+        noun = "line" if best_period == 1 else f"{best_period}-line block"
+        out.append(f"  [... the {noun} above repeated {best_repeats} more time(s), folded]")
+        i += best_period * (best_repeats + 1)
+    return out
+
+
+def _log_line_stamp(line: str) -> tuple[int, int, int] | None:
+    """``(month, day, seconds-of-day)`` from a journal prefix, else ``None``."""
+    m = _LOG_DATE_PREFIX_RE.match(line.strip())
+    if m is None:
+        return None
+    parts = m.group(0).split()
+    month = _MONTHS.get(parts[0])
+    if month is None:
+        return None
+    # The regex already pinned day and time to digit groups, so no conversion
+    # here can fail - an abbreviation that is not a month name is the only way
+    # a matching prefix can still be unreadable.
+    day = int(parts[1])
+    hh, mm, ss = (int(x) for x in parts[2].split(":"))
+    return month, day, hh * 3600 + mm * 60 + ss
+
+
+def annotate_log_discontinuities(lines: list[str]) -> list[str]:
+    """Mark where the log's own timestamps stop running forwards.
+
+    A station with no RTC boots at whatever the filesystem last recorded and is
+    corrected minutes later, so a single boot's journal can jump weeks forward
+    in the middle. Without a marker that reads as an out-of-order log and the
+    reader silently distrusts the whole section.
+    """
+    out: list[str] = []
+    previous: tuple[int, int, int] | None = None
+    for line in lines:
+        stamp = _log_line_stamp(line)
+        if stamp is not None and previous is not None:
+            prev_days = previous[0] * 31 + previous[1]
+            days = stamp[0] * 31 + stamp[1]
+            if days < prev_days or (days == prev_days and stamp[2] < previous[2] - 1):
+                out.append("  [... timestamps step backwards here - the clock moved, or the log source changed]")
+            elif days - prev_days >= 1:
+                out.append(f"  [... timestamps jump ~{days - prev_days} day(s) forward here - the clock was corrected]")
+        if stamp is not None:
+            previous = stamp
+        out.append(line)
+    return out
+
+
 def collect_recent_failures(
     p: DiagnosticsProviders,
     log_collector: Callable[[], tuple[str, list[str]]],
@@ -563,8 +854,8 @@ def collect_recent_failures(
     else:
         rows.append(f"  Log source: {src}")
         rows.append("  ----- begin log tail -----")
-        for line in log_lines:
-            rows.append(f"  {redact_log_line(line)}")
+        rendered = [f"  {redact_log_line(line)}" for line in log_lines]
+        rows.extend(collapse_repeated_blocks(annotate_log_discontinuities(rendered)))
         rows.append("  ----- end log tail -----")
     if failure_collector is not None:
         rows.append("")
@@ -580,8 +871,8 @@ def collect_recent_failures(
             rows.append(f"  Failure extract (WARNING+, {window}, source: {fsrc}):")
             rows.append("  ----- begin failure extract -----")
             if failure_lines:
-                for line in failure_lines:
-                    rows.append(f"  {redact_log_line(line)}")
+                rendered = [f"  {redact_log_line(line)}" for line in failure_lines]
+                rows.extend(collapse_repeated_blocks(rendered))
             else:
                 rows.append("  [no WARNING/ERROR/CRITICAL lines in window]")
             rows.append("  ----- end failure extract -----")
@@ -1261,7 +1552,60 @@ def collect_system_health() -> list[str]:
 # E7. Network interfaces ----------------------------------------------------
 
 
-def collect_network_interfaces() -> list[str]:
+_PROC_NET_ROUTE = Path("/proc/net/route")
+
+
+def ipv4_prefix_len(netmask: str) -> int | None:
+    """Prefix length for a dotted-quad netmask, ``None`` when unparseable."""
+    try:
+        return ipaddress.IPv4Network(f"0.0.0.0/{netmask}").prefixlen
+    except ValueError:
+        return None
+
+
+def read_default_routes(route_path: Path = _PROC_NET_ROUTE) -> list[tuple[str, str]] | None:
+    """``(interface, gateway)`` per IPv4 default route, in kernel order.
+
+    Reads the kernel table rather than asking the network backend: the backend
+    reports what is *configured*, while "can this station reach that camera" is
+    a question about what the kernel does with the packet. ``None`` means the
+    table could not be read (no ``/proc`` on macOS), which the caller renders
+    as unknown - distinct from ``[]``, which means the host genuinely has no
+    default route.
+    """
+    try:
+        text = route_path.read_text()
+    except OSError:
+        return None
+    routes: list[tuple[str, str]] = []
+    for line in text.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        iface, dest_hex, gw_hex, flags_hex = fields[0], fields[1], fields[2], fields[3]
+        if dest_hex != "00000000":
+            continue
+        try:
+            flags = int(flags_hex, 16)
+            gateway = socket.inet_ntoa(int(gw_hex, 16).to_bytes(4, "little"))
+        except (ValueError, OverflowError):
+            continue
+        if not flags & 0x2:  # RTF_GATEWAY
+            continue
+        routes.append((iface, gateway))
+    return routes
+
+
+def collect_network_interfaces(route_path: Path = _PROC_NET_ROUTE) -> list[str]:
+    """Interface table plus the addressing a reachability question needs.
+
+    The link fields alone ("eth0 is up at 1000Mb") cannot answer the most
+    common support question - why a station does not reach a camera, a console
+    or a peer. That needs the prefix, which says whether the target is on-link,
+    and the default route, which says whether anything would carry a packet off
+    this subnet. Both were absent, so a bundle from a station addressed
+    192.168.3.5/24 looking for a camera on 192.168.1.100 read as healthy.
+    """
     import psutil  # noqa: PLC0415
 
     rows: list[str] = []
@@ -1270,11 +1614,30 @@ def collect_network_interfaces() -> list[str]:
         stats = psutil.net_if_stats()
     except Exception as exc:  # noqa: BLE001
         return [f"  [unavailable: net_if_stats: {exc!r}]"]
+    try:
+        addrs = psutil.net_if_addrs()
+    except Exception as exc:  # noqa: BLE001
+        addrs = {}
+        rows.append(f"  [addresses unavailable: net_if_addrs: {exc!r}]")
     for nic, st in stats.items():
         rows.append(
             f"  {nic:<14}isup={st.isup} speed={st.speed}Mb mtu={st.mtu} "
             f"duplex={duplex_label.get(int(st.duplex), str(st.duplex))}"
         )
+        for addr in addrs.get(nic, ()):
+            if addr.family != socket.AF_INET:
+                continue
+            prefix = ipv4_prefix_len(addr.netmask) if addr.netmask else None
+            suffix = f"/{prefix}" if prefix is not None else f" netmask={addr.netmask}"
+            rows.append(f"  {'':<14}ipv4 {addr.address}{suffix}")
+    routes = read_default_routes(route_path)
+    if routes is None:
+        rows.append("  Default route:  [unavailable: kernel route table not readable]")
+    elif not routes:
+        rows.append("  Default route:  none (nothing routes off-subnet)")
+    else:
+        for iface, gateway in routes:
+            rows.append(f"  Default route:  via {gateway} on {iface}")
     return rows
 
 
@@ -1766,6 +2129,8 @@ class DiagnosticsBundle:
     redactions_applied: str = ""
     a_service: list[str] = field(default_factory=list)
     a2_osc_multicast: list[str] = field(default_factory=list)
+    a3_runtime_state: list[str] = field(default_factory=list)
+    a4_uplink: list[str] = field(default_factory=list)
     b_discovery: list[str] = field(default_factory=list)
     c_config: list[str] = field(default_factory=list)
     d_failures: list[str] = field(default_factory=list)
@@ -1789,6 +2154,8 @@ class DiagnosticsBundle:
 _BUNDLE_SECTIONS: tuple[tuple[str, str], ...] = (
     ("A. Service / port", "a_service"),
     ("A2. OSC multicast group status", "a2_osc_multicast"),
+    ("A3. Runtime state", "a3_runtime_state"),
+    ("A4. Uplink status", "a4_uplink"),
     ("B. Discovery / peers", "b_discovery"),
     ("C. Effective config", "c_config"),
     ("D. Recent failures", "d_failures"),
@@ -1862,6 +2229,8 @@ def collect_bundle(
     collectors: dict[str, Callable[[], list[str]]] = {
         "a_service": lambda: collect_service(p),
         "a2_osc_multicast": lambda: collect_osc_multicast(p),
+        "a3_runtime_state": lambda: collect_runtime_state(p),
+        "a4_uplink": lambda: collect_uplink(p),
         "b_discovery": lambda: collect_discovery(p),
         "c_config": lambda: collect_config(p),
         "d_failures": lambda: collect_recent_failures(p, log_collector_fn, failure_collector_fn),

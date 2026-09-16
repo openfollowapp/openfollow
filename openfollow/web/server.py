@@ -126,6 +126,8 @@ class ConfigWebServer:
         local_ip: str = "",
         local_ip_provider: Callable[[], str] | None = None,
         runtime_stats_provider: Callable[[], dict[str, Any]] | None = None,
+        crash_restarts_provider: Callable[[], int] | None = None,
+        online_sync_status_provider: (Callable[[], dict[str, Any]] | None) = None,
         preview_snapshot_provider: Callable[[], bytes | None] | None = None,
         zone_state_provider: Callable[[], list[tuple[int, bool, int]]] | None = None,
         zone_diagnostics_provider: (Callable[[int], dict[str, Any] | None] | None) = None,
@@ -207,6 +209,8 @@ class ConfigWebServer:
         self._local_ip_refresh_ts = 0.0  # monotonic; throttles _refresh_local_ip
         self._command_queue = command_queue or WebCommandQueue()
         self._runtime_stats_provider = runtime_stats_provider
+        self.crash_restarts_provider = crash_restarts_provider
+        self.online_sync_status_provider = online_sync_status_provider
         self._preview_snapshot_provider = preview_snapshot_provider
         self._zone_state_provider = zone_state_provider
         self._zone_diagnostics_provider = zone_diagnostics_provider

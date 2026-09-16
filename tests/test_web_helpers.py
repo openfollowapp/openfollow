@@ -2929,3 +2929,85 @@ def test_mouse_bool_fields_includes_wheel_checkboxes_off_macos(monkeypatch) -> N
     fields = routes._mouse_bool_fields()
     assert "mouse_wheel_z_enabled" in fields
     assert "mouse_wheel_invert" in fields
+
+
+# ---------------------------------------------------------------------------
+# Config diff vs defaults (diagnostics section C)
+# ---------------------------------------------------------------------------
+
+
+def test_config_diff_from_defaults_is_empty_for_a_fresh_config() -> None:
+    from openfollow.configuration import AppConfig
+    from openfollow.web.routes import _config_diff_from_defaults
+
+    assert _config_diff_from_defaults(AppConfig()) == []
+
+
+def test_config_diff_from_defaults_names_each_changed_field() -> None:
+    """Section C prints ~300 lines of effective config; the handful of values
+    an operator actually changed is what triage reads."""
+    from openfollow.configuration import AppConfig
+    from openfollow.web.routes import _config_diff_from_defaults
+
+    cfg = AppConfig()
+    cfg.video_source_type = "rtsp"
+    cfg.controlled_marker_ids = [1, 2]
+    lines = _config_diff_from_defaults(cfg)
+    assert 'video_source_type = "rtsp"  (default "testpattern")' in lines
+    assert "controlled_marker_ids = [1, 2]  (default [])" in lines
+
+
+def test_config_diff_from_defaults_walks_nested_sections() -> None:
+    from openfollow.configuration import AppConfig
+    from openfollow.web.routes import _config_diff_from_defaults
+
+    cfg = AppConfig()
+    default_pitch = AppConfig().camera.pitch
+    cfg.camera.pitch = default_pitch - 20.0
+    assert [line for line in _config_diff_from_defaults(cfg) if line.startswith("camera.pitch =")]
+
+
+def test_config_diff_from_defaults_redacts_a_credential_field() -> None:
+    """The diff must not reopen the leak the dump closed - it is the same
+    artefact, attached to the same public issues."""
+    from openfollow.configuration import AppConfig
+    from openfollow.web.routes import _config_diff_from_defaults
+
+    cfg = AppConfig()
+    cfg.rtsp_password = "hunter2"
+    lines = _config_diff_from_defaults(cfg)
+    joined = "\n".join(lines)
+    assert "hunter2" not in joined
+    assert "rtsp_password = ***  (default (empty))" in lines
+
+
+def test_config_diff_from_defaults_strips_userinfo_from_a_uri_field() -> None:
+    from openfollow.configuration import AppConfig
+    from openfollow.web.routes import _config_diff_from_defaults
+
+    cfg = AppConfig()
+    cfg.rtsp_url = "rtsp://admin:hunter2@192.168.1.100:554/profile2/media.smp"
+    joined = "\n".join(_config_diff_from_defaults(cfg))
+    assert "hunter2" not in joined
+    assert "rtsp://192.168.1.100:554/profile2/media.smp" in joined
+
+
+def test_config_diff_from_defaults_bounds_a_long_value() -> None:
+    """One edited zone list must not swamp the section the diff exists to make
+    skimmable."""
+    from openfollow.configuration import AppConfig
+    from openfollow.web.routes import _config_diff_from_defaults
+
+    cfg = AppConfig()
+    cfg.psn_system_name = "x" * 400
+    line = next(line for line in _config_diff_from_defaults(cfg) if line.startswith("psn_system_name"))
+    assert "chars)" in line
+    assert len(line) < 300
+
+
+def test_config_diff_from_defaults_reports_a_key_absent_from_defaults() -> None:
+    """A subtree with no counterpart in a fresh config has nothing to recurse
+    against, so it is compared whole rather than silently skipped."""
+    from openfollow.web.routes import _walk_config_diff
+
+    assert _walk_config_diff({"added": {"a": 1}}, {}, "") == ["added = {'a': 1}  (default None)"]

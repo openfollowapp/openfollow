@@ -225,9 +225,15 @@ class OpenFollowApp:
         config_path: str = "config.toml",
         *,
         log_ring: RingBufferLogHandler | None = None,
+        crash_restarts: int = 0,
     ) -> None:
         self._config_path: str = os.path.abspath(config_path)
         self._log_ring = log_ring
+        # Crash-respawns already counted by the supervisor's circuit breaker
+        # when it built this generation. Surfaced in the diagnostics bundle:
+        # a station that has silently respawned several times reads exactly
+        # like a healthy one in every other section.
+        self._crash_restarts: int = crash_restarts
         bootstrap_config_if_missing(self._config_path)
         self._config: AppConfig = load_config(self._config_path)
         self._bootstrap_station_identity()

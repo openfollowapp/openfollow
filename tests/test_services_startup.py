@@ -7,6 +7,8 @@ and state providers, privilege-broker wiring, and the network apply/renew handle
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 import openfollow.services as services_module
@@ -681,3 +683,34 @@ def test_handle_network_renew_no_adapter(monkeypatch) -> None:
     services._network_adapter = None
     result = services._handle_network_renew("eth0")
     assert result.ok is False and "No network adapter" in result.message
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics providers wired into the web server
+# ---------------------------------------------------------------------------
+
+
+def test_online_sync_status_provider_reports_nothing_before_the_worker_exists(monkeypatch) -> None:
+    """``init_web_server`` runs before ``init_online_sync``, so the provider is
+    handed to the server while the worker is still absent. It has to read as
+    "not wired" rather than raise on a bundle downloaded during startup."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    assert services._online_sync_status_provider() == {}
+
+
+def test_online_sync_status_provider_returns_the_workers_health(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._online_sync = SimpleNamespace(health=lambda: {"online": True, "cycles": 3})
+    assert services._online_sync_status_provider() == {"online": True, "cycles": 3}
+
+
+def test_online_sync_status_provider_copies_the_health_mapping(monkeypatch) -> None:
+    """The worker publishes an immutable snapshot; the dict built from it is
+    still handed across a thread boundary, so the provider does not share one
+    the caller could mutate."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    live = {"online": False}
+    services._online_sync = SimpleNamespace(health=lambda: live)
+    handed_out = services._online_sync_status_provider()
+    handed_out["online"] = True
+    assert live == {"online": False}

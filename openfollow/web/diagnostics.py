@@ -2081,9 +2081,14 @@ def collect_system_health() -> list[str]:
         if not temps:
             rows.append("  temperatures                 [unavailable: not exposed by this OS]")
         else:
+            # A Pi exposes one unlabelled reading per chip, so the chip name in
+            # the brackets is the only name there is - a placeholder for the
+            # absent label reads as a failed lookup.
             for label, temp_items in temps.items():
-                vals = ", ".join(f"{i.label or 'n/a'}={i.current:.1f}°C" for i in temp_items)
-                rows.append(f"  temp[{label:<20}] {vals}")
+                vals = ", ".join(
+                    f"{i.label}={i.current:.1f}°C" if i.label else f"{i.current:.1f}°C" for i in temp_items
+                )
+                rows.append(f"  {f'temp[{label}]':<29}{vals}")
     except Exception as exc:  # noqa: BLE001
         rows.append(f"  temperatures                 [unavailable: {exc!r}]")
     try:
@@ -2092,8 +2097,8 @@ def collect_system_health() -> list[str]:
             rows.append("  fans                         [unavailable: not exposed]")
         else:
             for label, fan_items in fans.items():
-                vals = ", ".join(f"{i.label or 'n/a'}={i.current} rpm" for i in fan_items)
-                rows.append(f"  fans[{label:<20}] {vals}")
+                vals = ", ".join(f"{i.label}={i.current} rpm" if i.label else f"{i.current} rpm" for i in fan_items)
+                rows.append(f"  {f'fans[{label}]':<29}{vals}")
     except Exception as exc:  # noqa: BLE001
         rows.append(f"  fans                         [unavailable: {exc!r}]")
     try:

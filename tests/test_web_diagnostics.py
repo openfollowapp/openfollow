@@ -2313,6 +2313,58 @@ def test_collect_system_health_with_temperatures(monkeypatch) -> None:
     assert "cpu=42.5°C" in joined
 
 
+def test_system_health_unlabelled_sensors_read_as_readings(monkeypatch) -> None:
+    """A Pi reports one unlabelled entry per chip, so the chip name in the
+    brackets is the only name there is. Standing an "n/a" where the label
+    would go reads as a failed lookup beside a perfectly good temperature."""
+    from collections import namedtuple
+
+    import psutil
+
+    Temp = namedtuple("Temp", ["label", "current", "high", "critical"])
+    Fan = namedtuple("Fan", ["label", "current"])
+    monkeypatch.setattr(
+        psutil,
+        "sensors_temperatures",
+        lambda: {"cpu_thermal": [Temp(label="", current=63.4, high=110, critical=110)]},
+        raising=False,
+    )
+    monkeypatch.setattr(psutil, "sensors_fans", lambda: {"pwmfan": [Fan(label="", current=5711)]}, raising=False)
+    rows = diag.collect_system_health()
+    joined = "\n".join(rows)
+
+    assert "n/a" not in joined
+    assert any(r.startswith("  temp[cpu_thermal]") and r.rstrip().endswith("63.4\u00b0C") for r in rows)
+    assert any(r.startswith("  fans[pwmfan]") and r.rstrip().endswith("5711 rpm") for r in rows)
+
+
+def test_system_health_keeps_a_label_where_the_chip_reports_one(monkeypatch) -> None:
+    """Multi-core x86 chips label each reading, and those names distinguish
+    entries the chip name cannot - dropping them unconditionally would merge
+    several readings into one indistinguishable list."""
+    from collections import namedtuple
+
+    import psutil
+
+    Temp = namedtuple("Temp", ["label", "current", "high", "critical"])
+    monkeypatch.setattr(
+        psutil,
+        "sensors_temperatures",
+        lambda: {
+            "coretemp": [
+                Temp(label="Core 0", current=42.5, high=80, critical=90),
+                Temp(label="Core 1", current=44.0, high=80, critical=90),
+            ]
+        },
+        raising=False,
+    )
+    rows = diag.collect_system_health()
+    line = next(r for r in rows if r.startswith("  temp[coretemp]"))
+
+    assert "Core 0=42.5\u00b0C" in line
+    assert "Core 1=44.0\u00b0C" in line
+
+
 def test_collect_system_health_temperatures_empty(monkeypatch) -> None:
     """``sensors_temperatures()`` returning an empty dict (Linux
     container / VM with no sensor exposure) and the macOS no-attr

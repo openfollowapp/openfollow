@@ -467,3 +467,22 @@ class TestGetSourceLabel:
 
     def test_label_uses_default_for_missing_config(self) -> None:
         assert SrtInput.get_source_label({}) == "SRT srt://0.0.0.0:5000"
+
+
+# ---------------------------------------------------------------------------
+# source_endpoint – drives the diagnostics reachability section
+# ---------------------------------------------------------------------------
+
+
+def test_source_endpoint_marks_srt_as_not_connect_probeable() -> None:
+    """SRT caller mode dials out, but over UDP - a connect() there puts no
+    packet on the wire, so reporting "connected" would be a lie. The address
+    analysis still applies."""
+    endpoint = SrtInput.source_endpoint({"srt_host": "srt://10.0.0.5:1600"})
+    assert endpoint is not None
+    assert (endpoint.host, endpoint.port) == ("10.0.0.5", 1600)
+    assert endpoint.connection_oriented is False
+
+
+def test_source_endpoint_is_none_for_the_wildcard_default() -> None:
+    assert SrtInput.source_endpoint({"srt_host": "srt://0.0.0.0:5000"}) is None

@@ -3011,3 +3011,61 @@ def test_config_diff_from_defaults_reports_a_key_absent_from_defaults() -> None:
     from openfollow.web.routes import _walk_config_diff
 
     assert _walk_config_diff({"added": {"a": 1}}, {}, "") == ["added = {'a': 1}  (default None)"]
+
+
+# ---------------------------------------------------------------------------
+# Active video-source endpoint (diagnostics reachability section)
+# ---------------------------------------------------------------------------
+
+
+def test_active_source_endpoint_resolves_through_the_plugin_registry() -> None:
+    from openfollow.configuration import AppConfig
+    from openfollow.web.routes import _active_source_endpoint
+
+    cfg = AppConfig()
+    cfg.video_source_type = "rtsp"
+    cfg.rtsp_url = "rtsp://192.168.1.100:554/profile2/media.smp"
+    assert _active_source_endpoint(cfg) == {
+        "host": "192.168.1.100",
+        "port": 554,
+        "connection_oriented": True,
+        "source_type": "rtsp",
+    }
+
+
+def test_active_source_endpoint_is_none_for_a_local_source() -> None:
+    from openfollow.configuration import AppConfig
+    from openfollow.web.routes import _active_source_endpoint
+
+    cfg = AppConfig()
+    cfg.video_source_type = "testpattern"
+    assert _active_source_endpoint(cfg) is None
+
+
+def test_active_source_endpoint_is_none_for_an_unknown_source_type() -> None:
+    """A hand-edited config can name a plugin that is not installed; the
+    bundle still has to render."""
+    from openfollow.configuration import AppConfig
+    from openfollow.web.routes import _active_source_endpoint
+
+    cfg = AppConfig()
+    cfg.video_source_type = "no-such-plugin"
+    assert _active_source_endpoint(cfg) is None
+
+
+def test_active_source_endpoint_swallows_a_raising_plugin(monkeypatch) -> None:
+    """A third-party plugin's parser must not be able to fail the download of
+    the bundle that would diagnose it."""
+    from openfollow.configuration import AppConfig
+    from openfollow.video.inputs import get_registry
+    from openfollow.web.routes import _active_source_endpoint
+
+    plugin = get_registry()["rtsp"]
+
+    def _boom(_config):
+        raise ValueError("bad url")
+
+    monkeypatch.setattr(plugin, "source_endpoint", _boom)
+    cfg = AppConfig()
+    cfg.video_source_type = "rtsp"
+    assert _active_source_endpoint(cfg) is None

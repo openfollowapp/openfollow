@@ -89,6 +89,24 @@ class InputCapabilities:
     force_zero_latency: bool = False  # force pipeline latency to 0 on ASYNC_DONE
 
 
+@dataclass(frozen=True)
+class SourceEndpoint:
+    """The remote host an input dials out to, for reachability triage.
+
+    Only inputs that *connect somewhere* have one. A camera plugged into this
+    box, a listener waiting for packets, and a discovery-by-name protocol all
+    return ``None`` - there is no address whose reachability could be the
+    problem.
+    """
+
+    host: str
+    port: int
+    # A connect() probe only proves something where the kernel handshakes.
+    # SRT rides UDP, where connect() puts no packet on the wire, so the
+    # address analysis is the whole answer for it.
+    connection_oriented: bool = True
+
+
 class VideoInputBase(ABC):
     """Abstract base for video input plugins.
 
@@ -215,6 +233,17 @@ class VideoInputBase(ABC):
     def get_web_route_handler(self, name: str) -> Callable[..., Any] | None:
         """Return the handler callable for a declared web route."""
         return getattr(self, name, None)
+
+    @classmethod
+    def source_endpoint(cls, config: dict[str, Any]) -> SourceEndpoint | None:
+        """The remote host this input dials, or ``None`` if it dials nothing.
+
+        Drives the diagnostics bundle's reachability section. Default ``None``
+        is correct for every local-device input, for a listener, and for
+        discovery-by-name - so a new plugin opts in rather than having to
+        remember to opt out.
+        """
+        return None
 
     @classmethod
     def get_source_label(cls, config: dict[str, Any]) -> str:

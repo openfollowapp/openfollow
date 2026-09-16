@@ -40,6 +40,12 @@ from openfollow.uri_redaction import redact_uri, redact_uris_in_text
 
 logger = logging.getLogger(__name__)
 
+# The kernel's IPv4 route table. Read directly rather than asked of the
+# network backend: the backend reports what is *configured*, and "can this
+# station reach that address" is a question about what the kernel will do
+# with the packet.
+_PROC_NET_ROUTE = Path("/proc/net/route")
+
 _T = TypeVar("_T")
 
 # Cap each stat-style probe (os.stat / os.statvfs / psutil.disk_usage). These
@@ -169,6 +175,11 @@ class DiagnosticsProviders:
     # GitHub attempts already learned. Reports, never probes - so it adds no
     # outbound path of its own.
     online_sync_status: Callable[[], dict[str, Any]] | None = None
+
+    # The remote host the active video input dials, as
+    # ``{"host", "port", "connection_oriented", "source_type"}`` - or ``None``
+    # when this input dials nothing (a local camera, a listener, discovery).
+    source_endpoint: Callable[[], dict[str, Any] | None] | None = None
 
     config_redacted_toml: Callable[[], str] | None = None
     config_diff_from_defaults: Callable[[], list[str]] | None = None
@@ -500,6 +511,145 @@ def collect_uplink(p: DiagnosticsProviders) -> list[str]:
     ]
     rows.extend(_uplink_target_rows("Time sync:", time_sync))
     rows.extend(_uplink_target_rows("Update check:", update_check))
+    return rows
+
+
+# Bounded because both run inside a bundle download. ``getaddrinfo`` takes no
+# timeout argument, so a LAN with no resolver hangs it indefinitely - it goes on
+# a daemon thread we stop waiting for. Together they cap the section at ~2.5 s.
+_DNS_TIMEOUT_S = 1.0
+_CONNECT_TIMEOUT_S = 1.5
+
+
+def resolve_host_bounded(host: str, timeout_s: float = _DNS_TIMEOUT_S) -> tuple[str | None, str]:
+    """``(address, note)`` for a host, without ever blocking indefinitely."""
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        return host, ""
+
+    resolved: list[str] = []
+
+    def _lookup() -> None:
+        try:
+            infos = socket.getaddrinfo(host, None, family=socket.AF_INET)
+        except OSError:
+            return
+        if infos:
+            resolved.append(str(infos[0][4][0]))
+
+    worker = threading.Thread(target=_lookup, daemon=True, name="diag-dns")
+    worker.start()
+    worker.join(timeout_s)
+    if worker.is_alive():
+        return None, f"DNS lookup timed out after {timeout_s:.1f} s"
+    if not resolved:
+        return None, "DNS lookup failed (name does not resolve here)"
+    return resolved[0], f"resolves to {resolved[0]}"
+
+
+def describe_address_reachability(address: str, route_path: Path | None = None) -> list[str]:
+    """Whether a packet to ``address`` has anywhere to go from this station.
+
+    Pure local computation - interface addresses and the kernel route table.
+    This is the part that answers the question a bundle could not: an address
+    on no local subnet, with no default route, is unreachable no matter what
+    the camera is doing.
+    """
+    import psutil  # noqa: PLC0415
+
+    try:
+        target = ipaddress.ip_address(address)
+    except ValueError:
+        return [f"  {'':<20}[unavailable: {address!r} is not an IPv4/IPv6 address]"]
+
+    rows: list[str] = []
+    try:
+        addrs = psutil.net_if_addrs()
+    except Exception as exc:  # noqa: BLE001
+        return [f"  {'':<20}[unavailable: net_if_addrs: {exc!r}]"]
+
+    on_subnet: list[str] = []
+    for nic, entries in addrs.items():
+        for entry in entries:
+            if entry.family != socket.AF_INET or not entry.netmask:
+                continue
+            try:
+                network = ipaddress.ip_network(f"{entry.address}/{entry.netmask}", strict=False)
+            except ValueError:
+                continue
+            if target in network:
+                on_subnet.append(f"{nic} {entry.address}/{network.prefixlen}")
+
+    if on_subnet:
+        rows.append(f"  {'':<20}on-link via {', '.join(on_subnet)}")
+        return rows
+
+    routes = read_default_routes(route_path)
+    if routes is None:
+        rows.append(f"  {'':<20}not on any local subnet; default route unknown (route table unreadable)")
+    elif not routes:
+        rows.append(f"  {'':<20}NOT on any local subnet, and this station has no default route")
+    else:
+        via = ", ".join(f"{gateway} on {iface}" for iface, gateway in routes)
+        rows.append(f"  {'':<20}not on any local subnet; would be routed via {via}")
+    return rows
+
+
+def probe_tcp_connect(address: str, port: int, timeout_s: float = _CONNECT_TIMEOUT_S) -> str:
+    """One bounded TCP connect. Never raises; the outcome is the return value."""
+    try:
+        with socket.create_connection((address, port), timeout=timeout_s):
+            return f"connected in under {timeout_s:.1f} s"
+    except TimeoutError:
+        return f"no response within {timeout_s:.1f} s (unreachable or filtered)"
+    except OSError as exc:
+        return f"{type(exc).__name__}: {exc}"[:160]
+
+
+def collect_source_reachability(p: DiagnosticsProviders) -> list[str]:
+    """Can this station reach the host its video input is pointed at?
+
+    The question behind most "it works in VLC" reports, and the one a bundle
+    could not answer: VLC runs on a laptop that sits on the camera's network,
+    and the station often does not.
+    """
+    if p.source_endpoint is None:
+        return ["  [not applicable: video input provider not wired]"]
+    endpoint, err = _safely_value(p.source_endpoint, "source_endpoint", None)
+    if err is not None:
+        return [f"  {err}"]
+    if not endpoint:
+        return ["  [not applicable: this video input dials no remote host]"]
+
+    host = str(endpoint.get("host", ""))
+    port = int(endpoint.get("port", 0) or 0)
+    source_type = str(endpoint.get("source_type", "?"))
+    rows = [f"  Configured source:  {source_type} -> {host}:{port}"]
+
+    address, note = resolve_host_bounded(host)
+    if note:
+        rows.append(f"  {'':<20}{note}")
+    if address is None:
+        return rows
+
+    rows.extend(describe_address_reachability(address))
+
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:  # pragma: no cover - resolve_host_bounded only returns parseable addresses
+        return rows
+    if not parsed.is_private:
+        rows.append(f"  {'':<20}WARNING: {address} is a public internet address. The probe below")
+        rows.append(f"  {'':<20}         leaves the show LAN. No stream data is sent or received.")
+
+    if not endpoint.get("connection_oriented", True):
+        rows.append(f"  {'':<20}not probed: this transport rides UDP, where a connect proves nothing")
+        return rows
+    outcome = probe_tcp_connect(address, port)
+    rows.append(f"  {'TCP probe:':<20}{address}:{port} - {outcome}")
     return rows
 
 
@@ -1603,9 +1753,6 @@ def collect_system_health() -> list[str]:
 # E7. Network interfaces ----------------------------------------------------
 
 
-_PROC_NET_ROUTE = Path("/proc/net/route")
-
-
 def ipv4_prefix_len(netmask: str) -> int | None:
     """Prefix length for a dotted-quad netmask, ``None`` when unparseable."""
     try:
@@ -1614,7 +1761,7 @@ def ipv4_prefix_len(netmask: str) -> int | None:
         return None
 
 
-def read_default_routes(route_path: Path = _PROC_NET_ROUTE) -> list[tuple[str, str]] | None:
+def read_default_routes(route_path: Path | None = None) -> list[tuple[str, str]] | None:
     """``(interface, gateway)`` per IPv4 default route, in kernel order.
 
     Reads the kernel table rather than asking the network backend: the backend
@@ -1624,8 +1771,11 @@ def read_default_routes(route_path: Path = _PROC_NET_ROUTE) -> list[tuple[str, s
     as unknown - distinct from ``[]``, which means the host genuinely has no
     default route.
     """
+    # Resolved here rather than as a default argument: a default binds the
+    # module attribute at import, which silently ignores a test (or a future
+    # caller) that points the module at another table.
     try:
-        text = route_path.read_text()
+        text = (route_path or _PROC_NET_ROUTE).read_text()
     except OSError:
         return None
     routes: list[tuple[str, str]] = []
@@ -1647,7 +1797,7 @@ def read_default_routes(route_path: Path = _PROC_NET_ROUTE) -> list[tuple[str, s
     return routes
 
 
-def collect_network_interfaces(route_path: Path = _PROC_NET_ROUTE) -> list[str]:
+def collect_network_interfaces(route_path: Path | None = None) -> list[str]:
     """Interface table plus the addressing a reachability question needs.
 
     The link fields alone ("eth0 is up at 1000Mb") cannot answer the most
@@ -2182,6 +2332,7 @@ class DiagnosticsBundle:
     a2_osc_multicast: list[str] = field(default_factory=list)
     a3_runtime_state: list[str] = field(default_factory=list)
     a4_uplink: list[str] = field(default_factory=list)
+    a5_source_reach: list[str] = field(default_factory=list)
     b_discovery: list[str] = field(default_factory=list)
     c_config: list[str] = field(default_factory=list)
     d_failures: list[str] = field(default_factory=list)
@@ -2207,6 +2358,7 @@ _BUNDLE_SECTIONS: tuple[tuple[str, str], ...] = (
     ("A2. OSC multicast group status", "a2_osc_multicast"),
     ("A3. Runtime state", "a3_runtime_state"),
     ("A4. Uplink status", "a4_uplink"),
+    ("A5. Video source reachability", "a5_source_reach"),
     ("B. Discovery / peers", "b_discovery"),
     ("C. Effective config", "c_config"),
     ("D. Recent failures", "d_failures"),
@@ -2282,6 +2434,7 @@ def collect_bundle(
         "a2_osc_multicast": lambda: collect_osc_multicast(p),
         "a3_runtime_state": lambda: collect_runtime_state(p),
         "a4_uplink": lambda: collect_uplink(p),
+        "a5_source_reach": lambda: collect_source_reachability(p),
         "b_discovery": lambda: collect_discovery(p),
         "c_config": lambda: collect_config(p),
         "d_failures": lambda: collect_recent_failures(p, log_collector_fn, failure_collector_fn),

@@ -646,3 +646,19 @@ def test_receiver_pipeline_assembler_builds_placeholder_pipeline() -> None:
     videotestsrc = pipeline.get_by_name("videotestsrc")
     assert videotestsrc is not None
     assert videotestsrc.properties["pattern"] == 2
+
+
+def test_inputs_that_dial_nothing_report_no_endpoint() -> None:
+    """The default is ``None`` so a new plugin opts in rather than having to
+    remember to opt out: a local camera, a listener and discovery-by-name have
+    no address whose reachability could be the problem. RTP is in this list
+    deliberately - ``udpsrc`` *binds* its address, so it is a local bind, not
+    a host to reach."""
+    from openfollow.video.inputs import get_registry
+
+    dial_out = {"rtsp", "srt"}
+    for input_id, plugin in get_registry().items():
+        if input_id in dial_out:
+            continue
+        config = {field.name: field.default for field in plugin.config_fields()}
+        assert plugin.source_endpoint(config) is None, input_id

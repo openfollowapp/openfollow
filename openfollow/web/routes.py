@@ -2690,6 +2690,34 @@ def _written_offer_html() -> str | None:
     return _rendered_doc_html("WRITTEN_OFFER.md")
 
 
+def _active_source_endpoint(cfg: AppConfig) -> dict[str, Any] | None:
+    """The remote host the configured video input dials, for the bundle.
+
+    Resolved through the plugin registry so a new input answers for itself.
+    A plugin that dials nothing - a local camera, a listener, discovery by
+    name - returns ``None`` and the section says so rather than inventing an
+    address to test.
+    """
+    from openfollow.video.inputs import get_registry  # noqa: PLC0415 - import cost stays off module load
+
+    plugin = get_registry().get(cfg.video_source_type)
+    if plugin is None:
+        return None
+    try:
+        endpoint = plugin.source_endpoint(plugin.get_config_field_values(cfg))
+    except Exception:
+        logger.debug("source_endpoint failed for %s", cfg.video_source_type, exc_info=True)
+        return None
+    if endpoint is None:
+        return None
+    return {
+        "host": endpoint.host,
+        "port": endpoint.port,
+        "connection_oriented": endpoint.connection_oriented,
+        "source_type": cfg.video_source_type,
+    }
+
+
 def _build_diagnostics_providers(
     server: ConfigWebServer,
     cfg: AppConfig,
@@ -2755,6 +2783,7 @@ def _build_diagnostics_providers(
         ),
         runtime_stats=server.get_runtime_stats,
         online_sync_status=server.online_sync_status_provider,
+        source_endpoint=lambda: _active_source_endpoint(cfg),
         config_diff_from_defaults=lambda: _config_diff_from_defaults(cfg),
         request_semaphore_rejections=(lambda: server.request_semaphore_rejections),
         detection_install_state=server.get_detection_install_status,

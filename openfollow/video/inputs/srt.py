@@ -13,6 +13,7 @@ from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
     ReconnectPolicy,
+    SourceEndpoint,
     VideoInputBase,
 )
 
@@ -243,6 +244,20 @@ class SrtInput(VideoInputBase):
         )
 
     # -- Config ---------------------------------------------------------------
+
+    @classmethod
+    def source_endpoint(cls, config: dict[str, Any]) -> SourceEndpoint | None:
+        # Caller mode dials out, but over UDP - so the address analysis stands
+        # and a connect probe would prove nothing.
+        from openfollow.video.inputs.rtsp import _endpoint_from_url
+
+        endpoint: SourceEndpoint | None = _endpoint_from_url(
+            str(config.get("srt_host", "") or ""),
+            scheme="srt",
+            default_port=5000,
+            connection_oriented=False,
+        )
+        return endpoint
 
     @classmethod
     def get_source_label(cls, config: dict[str, Any]) -> str:

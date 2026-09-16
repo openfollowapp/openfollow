@@ -7,16 +7,41 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 from openfollow.uri_redaction import redact_uri, strip_uri_userinfo
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
     ReconnectPolicy,
+    SourceEndpoint,
     VideoInputBase,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _endpoint_from_url(
+    url: str, *, scheme: str, default_port: int, connection_oriented: bool = True
+) -> SourceEndpoint | None:
+    """``SourceEndpoint`` for a configured URL, or ``None`` if it names no host.
+
+    The wildcard placeholder every URL field ships with (``0.0.0.0``) names no
+    host to reach, so it reads as unconfigured rather than as an address that
+    failed.
+    """
+    raw = url.strip()
+    if not raw:
+        return None
+    parts = urlsplit(raw if "://" in raw else f"{scheme}://{raw}")
+    host = parts.hostname or ""
+    if not host or host == "0.0.0.0":  # noqa: S104 - comparison, not a bind
+        return None
+    try:
+        port = parts.port or default_port
+    except ValueError:  # malformed port in a hand-edited URL
+        port = default_port
+    return SourceEndpoint(host=host, port=port, connection_oriented=connection_oriented)
 
 
 class RtspInput(VideoInputBase):
@@ -249,6 +274,10 @@ class RtspInput(VideoInputBase):
         )
 
     # -- Config ---------------------------------------------------------------
+
+    @classmethod
+    def source_endpoint(cls, config: dict[str, Any]) -> SourceEndpoint | None:
+        return _endpoint_from_url(str(config.get("rtsp_url", "") or ""), scheme="rtsp", default_port=554)
 
     @classmethod
     def get_source_label(cls, config: dict[str, Any]) -> str:

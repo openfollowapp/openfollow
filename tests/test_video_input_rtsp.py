@@ -507,3 +507,32 @@ class TestOnBusAsyncDone:
 class TestGetSourceLabel:
     def test_label_returns_url(self) -> None:
         assert RtspInput.get_source_label({"rtsp_url": "rtsp://cam/stream"}) == "rtsp://cam/stream"
+
+
+# ---------------------------------------------------------------------------
+# source_endpoint – drives the diagnostics reachability section
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("rtsp://192.168.1.100:554/profile2/media.smp", ("192.168.1.100", 554)),
+        ("rtsp://cam.local/stream", ("cam.local", 554)),  # default port
+        ("cam.local:8554/stream", ("cam.local", 8554)),  # schemeless shorthand
+        ("rtsp://admin:pw@192.168.1.100:554/s", ("192.168.1.100", 554)),  # credentials ignored
+        ("rtsp://cam.local:notaport/s", ("cam.local", 554)),  # hand-edited garbage port
+    ],
+)
+def test_source_endpoint_parses_a_configured_url(url: str, expected: tuple[str, int]) -> None:
+    endpoint = RtspInput.source_endpoint({"rtsp_url": url})
+    assert endpoint is not None
+    assert (endpoint.host, endpoint.port) == expected
+    assert endpoint.connection_oriented is True
+
+
+@pytest.mark.parametrize("url", ["", "   ", "rtsp://0.0.0.0:554/stream"])
+def test_source_endpoint_is_none_when_no_host_is_configured(url: str) -> None:
+    """The wildcard placeholder every URL field ships with names no host to
+    reach, so it has to read as unconfigured rather than as a failed address."""
+    assert RtspInput.source_endpoint({"rtsp_url": url}) is None

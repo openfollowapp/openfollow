@@ -3154,4 +3154,8 @@ def test_detection_models_dir_points_at_the_models_subdirectory() -> None:
 
     cfg = AppConfig()
     cfg.detection.storage_path = "/mnt/nvme/openfollow/yolo"
-    assert _detection_models_dir(cfg) == "/mnt/nvme/openfollow/yolo/models"
+    cfg.detection.model = "yolo26n.onnx"
+    assert _detection_models_dir(cfg) == {
+        "dir": "/mnt/nvme/openfollow/yolo/models",
+        "configured": "yolo26n.onnx",
+    }

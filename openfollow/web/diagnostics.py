@@ -183,8 +183,8 @@ class DiagnosticsProviders:
 
     # Absolute paths of the files the station's configuration is read from.
     config_file_paths: Callable[[], list[str]] | None = None
-    # The resolved ``<storage>/models`` directory detection loads from.
-    detection_models_dir: Callable[[], str] | None = None
+    # ``{"dir": <resolved <storage>/models>, "configured": <model filename>}``.
+    detection_models_dir: Callable[[], dict[str, str]] | None = None
 
     config_redacted_toml: Callable[[], str] | None = None
     config_diff_from_defaults: Callable[[], list[str]] | None = None
@@ -1204,8 +1204,13 @@ def collect_kernel_extract(timeout_s: float = _KERNEL_EXTRACT_TIMEOUT_S) -> list
         ],
         timeout_s=timeout_s,
     )
-    if rc != 0:
+    if rc != 0 and out.strip():
         return ["", f"  Kernel log (last 24h): {out if out.startswith('[unavailable') else f'[unavailable: {out}]'}"]
+    if rc != 0:
+        # ``journalctl --grep`` exits non-zero with no output when nothing
+        # matched, which is the healthy station - reporting that as a broken
+        # probe (and with an empty reason) said the opposite of the truth.
+        return ["", "  Kernel log (last 24h, power / USB / OOM only):", "    [none]"]
     matched = [line for line in out.splitlines() if any(pattern in line for pattern in _KERNEL_PATTERNS)]
     rows = ["", "  Kernel log (last 24h, power / USB / OOM only):"]
     if not matched:
@@ -1648,10 +1653,12 @@ def _collect_detection_models(p: DiagnosticsProviders | None) -> list[str]:
     """
     if p is None or p.detection_models_dir is None:
         return ["  models                       [not applicable: storage provider not wired]"]
-    raw, err = _safely_value(p.detection_models_dir, "detection_models_dir", "")
+    info, err = _safely_value(p.detection_models_dir, "detection_models_dir", {})
     if err is not None:
         return [f"  models                       {err}"]
-    directory = Path(str(raw or ""))
+    info = info or {}
+    directory = Path(str(info.get("dir") or ""))
+    configured = str(info.get("configured") or "")
     rows = [f"  models directory             {directory}"]
     # Same hazard the storage section bounds for the same path: an
     # operator-configured storage_path can be a stale NFS/CIFS/USB mount,
@@ -1667,9 +1674,13 @@ def _collect_detection_models(p: DiagnosticsProviders | None) -> list[str]:
         return rows
     if not entries:
         rows.append("  models                       [none present]")
-        return rows
     for entry in entries:
-        rows.append(f"    {entry.name:<27}{describe_file(entry)}")
+        marker = "  <- configured" if entry.name == configured else ""
+        rows.append(f"    {entry.name:<27}{describe_file(entry)}{marker}")
+    if configured and configured not in {entry.name for entry in entries}:
+        # The list alone leaves the reader to cross-reference section C. This
+        # is the "why will detection not start" answer, so it is stated.
+        rows.append(f"  configured model             {configured} is NOT in this directory")
     return rows
 
 
@@ -2175,8 +2186,10 @@ def collect_network_interfaces(route_path: Path | None = None) -> list[str]:
         addrs = {}
         rows.append(f"  [addresses unavailable: net_if_addrs: {exc!r}]")
     for nic, st in stats.items():
+        # A USB adapter's name (enx9c69d3af4e98) is longer than the column, so
+        # a bare width ran it straight into the next field.
         rows.append(
-            f"  {nic:<14}isup={st.isup} speed={st.speed}Mb mtu={st.mtu} "
+            f"  {nic:<14} isup={st.isup} speed={st.speed}Mb mtu={st.mtu} "
             f"duplex={duplex_label.get(int(st.duplex), str(st.duplex))}"
         )
         for addr in addrs.get(nic, ()):

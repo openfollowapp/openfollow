@@ -4290,14 +4290,18 @@ def test_collect_detection_models_lists_what_is_on_disk(tmp_path: Path) -> None:
     start" is a question about which model is in it."""
     (tmp_path / "yolo26n.onnx").write_bytes(b"x" * 10)
     (tmp_path / "notes.txt").write_text("ignored")
-    rows = diag._collect_detection_models(diag.DiagnosticsProviders(detection_models_dir=lambda: str(tmp_path)))
+    rows = diag._collect_detection_models(
+        diag.DiagnosticsProviders(detection_models_dir=lambda: {"dir": str(tmp_path), "configured": ""})
+    )
     joined = "\n".join(rows)
     assert "yolo26n.onnx" in joined
     assert "notes.txt" not in joined
 
 
 def test_collect_detection_models_reports_an_empty_store(tmp_path: Path) -> None:
-    rows = diag._collect_detection_models(diag.DiagnosticsProviders(detection_models_dir=lambda: str(tmp_path)))
+    rows = diag._collect_detection_models(
+        diag.DiagnosticsProviders(detection_models_dir=lambda: {"dir": str(tmp_path), "configured": ""})
+    )
     assert any("[none present]" in row for row in rows)
 
 
@@ -4435,7 +4439,9 @@ def test_collect_detection_models_reports_an_unreadable_directory(
         raise OSError(13, "Permission denied")
 
     monkeypatch.setattr(Path, "glob", _boom)
-    rows = diag._collect_detection_models(diag.DiagnosticsProviders(detection_models_dir=lambda: str(tmp_path)))
+    rows = diag._collect_detection_models(
+        diag.DiagnosticsProviders(detection_models_dir=lambda: {"dir": str(tmp_path), "configured": ""})
+    )
     assert "Permission denied" in rows[-1]
 
 
@@ -4494,7 +4500,9 @@ def test_collect_detection_models_does_not_hang_on_a_stale_mount(
     on a stale mount blocks the WSGI worker in D-state, and repeated downloads
     take the web UI down with it."""
     monkeypatch.setattr(diag, "_bounded_probe", lambda _fn, _timeout, timeout_value: timeout_value)
-    rows = diag._collect_detection_models(diag.DiagnosticsProviders(detection_models_dir=lambda: str(tmp_path)))
+    rows = diag._collect_detection_models(
+        diag.DiagnosticsProviders(detection_models_dir=lambda: {"dir": str(tmp_path), "configured": ""})
+    )
     assert "listing timed out (stale mount?)" in rows[-1]
 
 
@@ -4579,3 +4587,55 @@ def test_read_default_routes_orders_by_metric(tmp_path: Path) -> None:
 def test_read_routes_skips_a_row_with_an_unreadable_metric(tmp_path: Path) -> None:
     path = _route_file(tmp_path, "eth0\t00000000\t01B2A8C0\t0003\t0\t0\tNOTANUM\t00000000\t0\t0\t0\n")
     assert diag.read_routes(path) == []
+
+
+def test_collect_detection_models_flags_a_configured_model_that_is_absent(tmp_path: Path) -> None:
+    """Found on a real station: the config named a model no longer on disk.
+    Listing the directory leaves the reader to cross-reference section C, and
+    this is the "why will detection not start" answer, so it is stated."""
+    (tmp_path / "yolo26n.onnx").write_bytes(b"x")
+    rows = diag._collect_detection_models(
+        diag.DiagnosticsProviders(detection_models_dir=lambda: {"dir": str(tmp_path), "configured": "yolov8n.onnx"})
+    )
+    assert any("yolov8n.onnx is NOT in this directory" in row for row in rows)
+
+
+def test_collect_detection_models_marks_the_configured_model(tmp_path: Path) -> None:
+    (tmp_path / "yolo26n.onnx").write_bytes(b"x")
+    rows = diag._collect_detection_models(
+        diag.DiagnosticsProviders(detection_models_dir=lambda: {"dir": str(tmp_path), "configured": "yolo26n.onnx"})
+    )
+    assert any(row.strip().startswith("yolo26n.onnx") and "<- configured" in row for row in rows)
+    assert not any("NOT in this directory" in row for row in rows)
+
+
+def test_kernel_extract_reads_no_matches_as_quiet_not_broken(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``journalctl --grep`` exits non-zero with no output when nothing
+    matched - the healthy station. Reporting that as a failed probe, with an
+    empty reason, said the opposite of the truth on every clean box."""
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (1, ""))
+    rows = diag.collect_kernel_extract()
+    assert any("[none]" in row for row in rows)
+    assert not any("unavailable" in row for row in rows)
+
+
+def test_kernel_extract_still_reports_a_real_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (1, "Failed to open journal: Permission denied"))
+    assert "Permission denied" in "\n".join(diag.collect_kernel_extract())
+
+
+def test_collect_network_interfaces_separates_a_long_name_from_its_fields(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A USB adapter's name is longer than the column, and a bare width ran it
+    into the next field: ``enx9c69d3af4e98isup=True``."""
+    import psutil
+
+    monkeypatch.setattr(
+        psutil,
+        "net_if_stats",
+        lambda: {"enx9c69d3af4e98": SimpleNamespace(isup=True, speed=1000, mtu=1500, duplex=2)},
+    )
+    monkeypatch.setattr(psutil, "net_if_addrs", lambda: {})
+    rows = diag.collect_network_interfaces(_route_file(tmp_path, ""))
+    assert "enx9c69d3af4e98 isup=True" in rows[0]

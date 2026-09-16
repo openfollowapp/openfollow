@@ -2740,11 +2740,12 @@ def _config_file_paths(server: ConfigWebServer, cfg: AppConfig) -> list[str]:
     ]
 
 
-def _detection_models_dir(cfg: AppConfig) -> str:
-    """The ``models`` directory detection actually loads from."""
+def _detection_models_dir(cfg: AppConfig) -> dict[str, str]:
+    """Where detection loads models from, and which one it is configured for."""
     from openfollow.video.detection import resolve_detection_storage_path  # noqa: PLC0415 - import cost off module load
 
-    return str(Path(resolve_detection_storage_path(cfg.detection.storage_path)).expanduser() / "models")
+    directory = Path(resolve_detection_storage_path(cfg.detection.storage_path)).expanduser() / "models"
+    return {"dir": str(directory), "configured": str(cfg.detection.model or "")}
 
 
 def _build_diagnostics_providers(

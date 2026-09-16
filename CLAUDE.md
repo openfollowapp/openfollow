@@ -44,6 +44,31 @@ See `docs/PROJECT_STRUCTURE.md` for layout.
   or rewrite the sentence. This applies everywhere: code comments, docstrings,
   UI strings, templates, help text, and Markdown.
 
+## Support cases in public artefacts
+
+Issues, pull requests, commit messages, code comments, tests and docs are
+public and permanent. **Never carry a specific operator's details into them.**
+That means no IP addresses, hostnames, station names, stream URLs, ports,
+config dumps or log excerpts taken from a real report, and no wording that
+identifies the report itself ("the bundle from X", a ticket title, a date that
+pins it).
+
+Write the **failure class**, not the case:
+
+- Not "the station was on 192.168.3.5/24 looking for a camera on
+  192.168.1.100", but "a station addressed on one subnet, with the camera on
+  another and no route between them".
+- Not "the 381 kB bundle from that unit", but "a bundle dominated by one
+  repeating reconnect cycle".
+- Where an example address genuinely helps a reader, invent one from the
+  documentation ranges (RFC 5737 `192.0.2.0/24`, `198.51.100.0/24`,
+  `203.0.113.0/24`; RFC 3849 `2001:db8::/32`).
+
+The class is what a reader needs, and it ages better: the next person hitting
+the same fault does not have the same address. Diagnostics bundles attached to
+reports stay in the support channel and are never quoted verbatim in the
+tracker.
+
 ## Commit messages
 
 Use [Conventional Commits](https://www.conventionalcommits.org):

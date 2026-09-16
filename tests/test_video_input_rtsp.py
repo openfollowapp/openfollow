@@ -517,11 +517,10 @@ class TestGetSourceLabel:
 @pytest.mark.parametrize(
     ("url", "expected"),
     [
-        ("rtsp://192.168.1.100:554/profile2/media.smp", ("192.168.1.100", 554)),
+        ("rtsp://198.51.100.10:554/stream", ("198.51.100.10", 554)),
         ("rtsp://cam.local/stream", ("cam.local", 554)),  # default port
         ("cam.local:8554/stream", ("cam.local", 8554)),  # schemeless shorthand
-        ("rtsp://admin:pw@192.168.1.100:554/s", ("192.168.1.100", 554)),  # credentials ignored
-        ("rtsp://cam.local:notaport/s", ("cam.local", 554)),  # hand-edited garbage port
+        ("rtsp://admin:pw@198.51.100.10:554/s", ("198.51.100.10", 554)),  # credentials ignored
     ],
 )
 def test_source_endpoint_parses_a_configured_url(url: str, expected: tuple[str, int]) -> None:
@@ -529,6 +528,17 @@ def test_source_endpoint_parses_a_configured_url(url: str, expected: tuple[str, 
     assert endpoint is not None
     assert (endpoint.host, endpoint.port) == expected
     assert endpoint.connection_oriented is True
+
+
+@pytest.mark.parametrize("url", ["rtsp://cam.local:notaport/s", "rtsp://cam.local:99999/s"])
+def test_source_endpoint_flags_an_unusable_port_instead_of_defaulting(url: str) -> None:
+    """An omitted port means "the default"; a malformed or out-of-range one
+    means the URL is unusable and GStreamer will fail on it. Substituting 554
+    would have diagnostics probe an endpoint the pipeline never opens."""
+    endpoint = RtspInput.source_endpoint({"rtsp_url": url})
+    assert endpoint is not None
+    assert endpoint.port == 0
+    assert "not a usable number" in endpoint.problem
 
 
 @pytest.mark.parametrize("url", ["", "   ", "rtsp://0.0.0.0:554/stream"])

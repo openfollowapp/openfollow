@@ -698,7 +698,7 @@ def test_as_ip_list_accepts_comma_separated_string() -> None:
 
 
 def test_as_ip_list_accepts_json_list() -> None:
-    assert _as_ip_list(["192.168.1.1", "fe80::1"], []) == ["192.168.1.1", "fe80::1"]
+    assert _as_ip_list(["192.0.2.1", "fe80::1"], []) == ["192.0.2.1", "fe80::1"]
 
 
 def test_as_ip_list_drops_invalid_entries_silently() -> None:
@@ -2533,7 +2533,7 @@ def test_send_config_import_to_peer_returns_true_on_http_200(monkeypatch) -> Non
     monkeypatch.setattr(routes_mod.urllib.request, "urlopen", _fake_urlopen)
 
     ok = routes_mod._send_config_import_to_peer(
-        "192.168.1.5",
+        "198.51.100.5",
         8000,
         {"camera": {"pos_x": 1.0}},
         expected_port=8000,
@@ -2542,7 +2542,7 @@ def test_send_config_import_to_peer_returns_true_on_http_200(monkeypatch) -> Non
     # Exact path the peer's bottle dispatcher expects – drift here would
     # break peer broadcasts silently (the receiver would 404 and the
     # import would never apply).
-    assert captured["url"] == "http://192.168.1.5:8000/api/config/import?skip_restart=1"
+    assert captured["url"] == "http://198.51.100.5:8000/api/config/import?skip_restart=1"
     assert captured["timeout"] == 10
     assert b'"camera"' in captured["body"]
 
@@ -2986,10 +2986,10 @@ def test_config_diff_from_defaults_strips_userinfo_from_a_uri_field() -> None:
     from openfollow.web.routes import _config_diff_from_defaults
 
     cfg = AppConfig()
-    cfg.rtsp_url = "rtsp://admin:hunter2@192.168.1.100:554/profile2/media.smp"
+    cfg.rtsp_url = "rtsp://admin:hunter2@198.51.100.10:554/profile2/media.smp"
     joined = "\n".join(_config_diff_from_defaults(cfg))
     assert "hunter2" not in joined
-    assert "rtsp://192.168.1.100:554/profile2/media.smp" in joined
+    assert "rtsp://198.51.100.10:554/profile2/media.smp" in joined
 
 
 def test_config_diff_from_defaults_bounds_a_long_value() -> None:
@@ -3024,12 +3024,13 @@ def test_active_source_endpoint_resolves_through_the_plugin_registry() -> None:
 
     cfg = AppConfig()
     cfg.video_source_type = "rtsp"
-    cfg.rtsp_url = "rtsp://192.168.1.100:554/profile2/media.smp"
+    cfg.rtsp_url = "rtsp://198.51.100.10:554/profile2/media.smp"
     assert _active_source_endpoint(cfg) == {
-        "host": "192.168.1.100",
+        "host": "198.51.100.10",
         "port": 554,
         "connection_oriented": True,
         "source_type": "rtsp",
+        "problem": "",
     }
 
 
@@ -3042,22 +3043,45 @@ def test_active_source_endpoint_is_none_for_a_local_source() -> None:
     assert _active_source_endpoint(cfg) is None
 
 
-def test_active_source_endpoint_is_none_for_an_unknown_source_type() -> None:
-    """A hand-edited config can name a plugin that is not installed; the
-    bundle still has to render."""
+def test_active_source_endpoint_reports_an_unknown_source_type_as_a_fault() -> None:
+    """A hand-edited config can name a plugin that is not installed. That is
+    not the same as "this input dials nothing", and reporting it as such hid
+    the actual fault behind a reassuring line."""
     from openfollow.configuration import AppConfig
     from openfollow.web.routes import _active_source_endpoint
 
     cfg = AppConfig()
     cfg.video_source_type = "no-such-plugin"
-    assert _active_source_endpoint(cfg) is None
+    endpoint = _active_source_endpoint(cfg)
+    assert endpoint is not None
+    assert "not a registered video input" in endpoint["problem"]
 
 
-def test_active_source_endpoint_swallows_a_raising_plugin(monkeypatch) -> None:
-    """A third-party plugin's parser must not be able to fail the download of
-    the bundle that would diagnose it."""
+def test_active_source_endpoint_reports_an_unusable_port_rather_than_a_default() -> None:
+    """Substituting 554 would have the bundle probe - and possibly report
+    success for - an endpoint the pipeline never opens."""
+    from openfollow.configuration import AppConfig
+    from openfollow.web.routes import _active_source_endpoint
+
+    cfg = AppConfig()
+    cfg.video_source_type = "rtsp"
+    cfg.rtsp_url = "rtsp://cam.local:notaport/stream"
+    endpoint = _active_source_endpoint(cfg)
+    assert endpoint is not None
+    assert endpoint["port"] == 0
+    assert "port is not a usable number" in endpoint["problem"]
+
+
+def test_active_source_endpoint_lets_a_plugin_failure_surface(monkeypatch) -> None:
+    """A parser that raises is a failure, not an absence. Swallowing it here
+    made the section say the input dials no remote host, which is a lie; the
+    collector wraps this provider and reports it as unavailable instead, so
+    the bundle still never raises."""
+    import pytest as _pytest
+
     from openfollow.configuration import AppConfig
     from openfollow.video.inputs import get_registry
+    from openfollow.web import diagnostics
     from openfollow.web.routes import _active_source_endpoint
 
     plugin = get_registry()["rtsp"]
@@ -3068,4 +3092,11 @@ def test_active_source_endpoint_swallows_a_raising_plugin(monkeypatch) -> None:
     monkeypatch.setattr(plugin, "source_endpoint", _boom)
     cfg = AppConfig()
     cfg.video_source_type = "rtsp"
-    assert _active_source_endpoint(cfg) is None
+    with _pytest.raises(ValueError, match="bad url"):
+        _active_source_endpoint(cfg)
+
+    # ...and the bundle renders it rather than aborting.
+    rows = diagnostics.collect_source_reachability(
+        diagnostics.DiagnosticsProviders(source_endpoint=lambda: _active_source_endpoint(cfg))
+    )
+    assert "bad url" in "\n".join(rows)

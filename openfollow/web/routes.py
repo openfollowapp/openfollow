@@ -2702,12 +2702,20 @@ def _active_source_endpoint(cfg: AppConfig) -> dict[str, Any] | None:
 
     plugin = get_registry().get(cfg.video_source_type)
     if plugin is None:
-        return None
-    try:
-        endpoint = plugin.source_endpoint(plugin.get_config_field_values(cfg))
-    except Exception:
-        logger.debug("source_endpoint failed for %s", cfg.video_source_type, exc_info=True)
-        return None
+        # Not the same as "this input dials nothing": the configured source
+        # type does not exist here, which is itself the fault to report.
+        return {
+            "host": "",
+            "port": 0,
+            "connection_oriented": False,
+            "source_type": cfg.video_source_type,
+            "problem": f"{cfg.video_source_type!r} is not a registered video input on this station",
+        }
+    # A plugin parser that raises is a failure, not an absence. It propagates
+    # to the collector's ``_safely_value``, which reports it as unavailable
+    # and keeps the bundle's never-raise contract - swallowing it here made
+    # the section say the input dials no remote host, which is a lie.
+    endpoint = plugin.source_endpoint(plugin.get_config_field_values(cfg))
     if endpoint is None:
         return None
     return {
@@ -2715,6 +2723,7 @@ def _active_source_endpoint(cfg: AppConfig) -> dict[str, Any] | None:
         "port": endpoint.port,
         "connection_oriented": endpoint.connection_oriented,
         "source_type": cfg.video_source_type,
+        "problem": endpoint.problem,
     }
 
 

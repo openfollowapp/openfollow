@@ -105,6 +105,10 @@ class SourceEndpoint:
     # SRT rides UDP, where connect() puts no packet on the wire, so the
     # address analysis is the whole answer for it.
     connection_oriented: bool = True
+    # Set when the configured source names a host but cannot be dialled as
+    # written. Reported instead of an analysis, because every figure derived
+    # from a repaired URL would describe an endpoint the pipeline never opens.
+    problem: str = ""
 
 
 class VideoInputBase(ABC):

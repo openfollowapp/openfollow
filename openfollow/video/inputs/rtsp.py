@@ -39,8 +39,17 @@ def _endpoint_from_url(
         return None
     try:
         port = parts.port or default_port
-    except ValueError:  # malformed port in a hand-edited URL
-        port = default_port
+    except ValueError:
+        # An omitted port means "the default"; a malformed or out-of-range one
+        # means the URL is unusable, and GStreamer will fail on it. Quietly
+        # substituting the default would have diagnostics probe - and possibly
+        # report success for - an endpoint the pipeline never opens.
+        return SourceEndpoint(
+            host=host,
+            port=0,
+            connection_oriented=connection_oriented,
+            problem="the URL's port is not a usable number",
+        )
     return SourceEndpoint(host=host, port=port, connection_oriented=connection_oriented)
 
 

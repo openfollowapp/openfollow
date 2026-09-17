@@ -126,11 +126,14 @@ class TestClassification:
             # progress that says nothing, so the verdict stays UNKNOWN rather
             # than guessing a neighbouring bucket.
             (ConnectionPhase.STARTING, RESOURCE_DOMAIN, 1, "", False, VideoFailure.UNKNOWN),
-            # But once video was demonstrably flowing, the unknown code cannot
+            # Source bytes are not proof video flowed, so an unreadable code
+            # alongside them still says nothing.
+            (ConnectionPhase.DATA_ARRIVING, STREAM_DOMAIN, 1, "", False, VideoFailure.UNKNOWN),
+            # But once video was demonstrably decoding, the unknown code cannot
             # undo that: ``GST_STREAM_ERROR_FAILED`` / "Internal data stream
             # error" is the commonest dropout there is, and reporting it as
             # "Failed" hides the one fact we are sure of.
-            (ConnectionPhase.DATA_ARRIVING, STREAM_DOMAIN, 1, "", False, VideoFailure.STALLED),
+            (ConnectionPhase.DECODING, STREAM_DOMAIN, 1, "", False, VideoFailure.STALLED),
             (ConnectionPhase.STARTING, STREAM_DOMAIN, 1, "", True, VideoFailure.STALLED),
         ],
     )
@@ -327,3 +330,59 @@ class TestAnEmptySdpIsNotAGenericSettingsFailure:
             )
             == VideoFailure.STREAM_NOT_FOUND
         )
+
+
+class TestSourceBytesAreNotDecodedVideo:
+    """``DATA_ARRIVING`` is bytes out of the source element. A feed carrying a
+    payload this station cannot decode produces them just as readily as a
+    working one, so it is not evidence that video ever arrived.
+    """
+
+    def test_bytes_without_a_frame_never_reads_as_a_stall(self) -> None:
+        """Otherwise a feed that never showed a picture is reported as one that
+        "stopped arriving"."""
+        assert classify_failure(phase=ConnectionPhase.DATA_ARRIVING) == VideoFailure.NO_DATA
+
+    def test_a_decoded_frame_does(self) -> None:
+        assert classify_failure(phase=ConnectionPhase.DECODING) == VideoFailure.STALLED
+
+    def test_the_latch_counts_even_from_a_reset_phase(self) -> None:
+        """The retry resets the phase; ``had_video`` is what survives it."""
+        assert classify_failure(phase=ConnectionPhase.STARTING, was_connected=True) == VideoFailure.STALLED
+
+    @pytest.mark.parametrize(
+        ("phase", "expected"),
+        [
+            (ConnectionPhase.STARTING, VideoFailure.UNREACHABLE),
+            (ConnectionPhase.TRANSPORT_UP, VideoFailure.NO_DATA),
+            (ConnectionPhase.STREAM_DESCRIBED, VideoFailure.NO_DATA),
+            (ConnectionPhase.DATA_ARRIVING, VideoFailure.NO_DATA),
+            (ConnectionPhase.DECODING, VideoFailure.STALLED),
+        ],
+    )
+    def test_the_open_failure_ladder_matches_the_silent_one(
+        self, phase: ConnectionPhase, expected: VideoFailure
+    ) -> None:
+        """A read/open failure and plain silence describe the same progress, so
+        they must not disagree about what that progress means."""
+        assert classify_failure(phase=phase, domain=RESOURCE_DOMAIN, code=RESOURCE_OPEN_READ) == expected
+        assert classify_failure(phase=phase) == expected
+
+    def test_no_data_is_reachable_without_the_rtsp_sdp_hook(self) -> None:
+        """Only RTSP reports TRANSPORT_UP / STREAM_DESCRIBED. Every other input
+        jumps STARTING to DATA_ARRIVING, so NO_DATA has to be reachable from
+        there or it is unreachable for SRT, RTP, NDI and every local device."""
+        assert classify_failure(phase=ConnectionPhase.DATA_ARRIVING) == VideoFailure.NO_DATA
+
+
+class TestNotFoundDoesNotClaimSomethingAnswered:
+    """``RESOURCE_NOT_FOUND`` comes from an absent v4l2 / libcamera /
+    AVFoundation device and a deleted Media Gallery file as readily as from an
+    RTSP path, and neither of those answered anything.
+    """
+
+    @pytest.mark.parametrize("where", ["rtsp://192.0.2.10:554/no/such/stream", "/dev/video0", "Stage.webm"])
+    def test_the_sentence_holds_for_every_producer(self, where: str) -> None:
+        sentence = failure_sentence(VideoFailure.STREAM_NOT_FOUND, where=where)
+        assert where in sentence
+        assert "answered" not in sentence

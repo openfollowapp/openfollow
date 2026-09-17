@@ -4123,12 +4123,19 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         *,
         saved: bool = False,
     ) -> Any:
-        """Render the Video Source section."""
+        """Render the Video Source section.
+
+        The save response carries no failure: the swap is asynchronous, so the
+        live verdict at this instant still describes the source the operator
+        just replaced. The section does not poll, so naming the old URL would
+        leave it on screen until a page reload - reading as if the fix failed.
+        """
+        video = None if saved else server.get_runtime_stats().get("video")
         data: dict[str, Any] = {
             "config": cfg,
             "saved": saved,
         }
-        data.update(_build_input_template_data(cfg, server.get_runtime_stats().get("video")))
+        data.update(_build_input_template_data(cfg, video))
         return template("partials/video_source", **data)
 
     def _load_config_for_edit() -> AppConfig:

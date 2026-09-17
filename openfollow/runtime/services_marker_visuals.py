@@ -434,7 +434,6 @@ def build_marker_visual_state(
     state.source_label = video_receiver.source_name
     state.reconnect_attempt = status.reconnect_attempt
     state.error_message = status.error_message
-    state.video_failure = status.failure.value
     # UNKNOWN contributes no sentence anywhere: it would sit beside the
     # element's own wording and contradict it.
     state.video_failure_text = (

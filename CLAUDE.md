@@ -333,10 +333,16 @@ failure, and the phase is what decides an ambiguous error: the same
 phase it classifies from, so the verdict is computed at the top of that method;
 computing it afterwards reads every failure as a cold start.
 
-**"Did video ever flow" is the discriminator, not the phase alone.** The phase
+**"Did a decoded frame ever reach the sink" is the discriminator.** The phase
 describes the *current attempt* and is reset before every retry, so
 `ReceiverStateMachine.had_video` latches on the first real frame and survives
 `reset_video_flow`; only `forget_video_history` (a source change) clears it.
+`DECODING` counts as the same evidence (only `mark_frame_received` sets it);
+**`DATA_ARRIVING` does not** - that is bytes out of the source element, which a
+feed carrying an undecodable payload produces just as readily, and treating the
+two alike reports "stopped arriving" about a feed that never arrived. Because
+only RTSP reports `TRANSPORT_UP` / `STREAM_DESCRIBED`, `DATA_ARRIVING` is also
+the only route to `NO_DATA` for every other input.
 Hardware found this: a camera pulled mid-stream was classified `STALLED`
 correctly and then reclassified `UNREACHABLE` by the very next retry, telling
 the operator nothing answered about a camera that had been on screen a second

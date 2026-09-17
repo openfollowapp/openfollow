@@ -109,7 +109,10 @@ _SENTENCES: dict[VideoFailure, str] = {
     VideoFailure.UNREACHABLE: "Nothing answered at {where}.",
     VideoFailure.REFUSED: "{where} refused the connection.",
     VideoFailure.UNAUTHORIZED: "{where} rejected the login.",
-    VideoFailure.STREAM_NOT_FOUND: "{where} answered, but has no stream at that path.",
+    # Not "answered, but ...": the same code comes from a v4l2 / libcamera /
+    # AVFoundation device that is absent and from a Media Gallery file that was
+    # deleted, neither of which answered anything.
+    VideoFailure.STREAM_NOT_FOUND: "{where} was not found.",
     VideoFailure.NO_DATA: "{where} answered, but sent no video.",
     VideoFailure.UNSUPPORTED_FORMAT: "Video is arriving from {where} in a format this station cannot decode.",
     VideoFailure.DECODE_ERROR: "Video is arriving from {where}, but it cannot be decoded.",
@@ -137,6 +140,27 @@ def failure_sentence(failure: VideoFailure, *, where: str = "") -> str:
     return template.format(where=where.strip() or _ANONYMOUS_SOURCE)
 
 
+def _saw_video(phase: ConnectionPhase, was_connected: bool) -> bool:
+    """Whether a decoded frame ever reached the sink on this feed.
+
+    ``DECODING`` counts because only ``mark_frame_received`` sets it, but
+    ``DATA_ARRIVING`` does not: that is bytes out of the *source element*, which
+    a feed carrying an undecodable payload produces just as readily. Treating
+    those as the same evidence tells an operator a feed "stopped arriving" when
+    it never arrived.
+    """
+    return was_connected or phase >= ConnectionPhase.DECODING
+
+
+def _silence_verdict(phase: ConnectionPhase, saw_video: bool) -> VideoFailure:
+    """How far it got, when nothing readable says why it stopped."""
+    if saw_video:
+        return VideoFailure.STALLED
+    if phase >= ConnectionPhase.TRANSPORT_UP:
+        return VideoFailure.NO_DATA
+    return VideoFailure.UNREACHABLE
+
+
 def classify_failure(
     *,
     phase: ConnectionPhase,
@@ -154,11 +178,7 @@ def classify_failure(
     # The OS-level wording ("Connection refused") reaches us in the debug
     # string, not the message, so both are searched.
     text = f"{message}\n{debug}".lower()
-    # "Did video ever flow on this feed" is the one discriminator, and it is
-    # deliberately not the phase alone: the phase describes the current attempt
-    # and is reset before each retry, so a dropped feed retrying would otherwise
-    # be redescribed as a source that was never reachable.
-    flowing = was_connected or phase >= ConnectionPhase.DATA_ARRIVING
+    saw_video = _saw_video(phase, was_connected)
 
     if domain == RESOURCE_DOMAIN:
         if code == RESOURCE_NOT_AUTHORIZED:
@@ -172,7 +192,7 @@ def classify_failure(
         if code in _OPEN_CODES:
             if any(marker in text for marker in _REFUSED_MARKERS):
                 return VideoFailure.REFUSED
-            return VideoFailure.STALLED if flowing else VideoFailure.UNREACHABLE
+            return _silence_verdict(phase, saw_video)
 
     if domain == STREAM_DOMAIN:
         if code in _FORMAT_CODES:
@@ -186,11 +206,6 @@ def classify_failure(
         # code GStreamer attached to it (``GST_STREAM_ERROR_FAILED`` /
         # "Internal data stream error" is the commonest dropout there is).
         # Without that evidence the error really does say nothing.
-        return VideoFailure.STALLED if flowing else VideoFailure.UNKNOWN
+        return VideoFailure.STALLED if saw_video else VideoFailure.UNKNOWN
 
-    # No error to read, so the phase is the whole story.
-    if flowing:
-        return VideoFailure.STALLED
-    if phase >= ConnectionPhase.TRANSPORT_UP:
-        return VideoFailure.NO_DATA
-    return VideoFailure.UNREACHABLE
+    return _silence_verdict(phase, saw_video)

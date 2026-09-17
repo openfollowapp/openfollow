@@ -4628,3 +4628,54 @@ class TestAFeedThatDroppedIsNeverReportedAsNeverReachable:
 
         r.set_source("cam-2")
         assert r._state.had_video is False
+
+
+class TestProgressIsNotDiagnosedAsFailure:
+    """``_schedule_reconnect`` classifies whatever it is handed, and one caller
+    uses it to *resume* rather than to report a fault."""
+
+    def test_leaving_source_selection_publishes_no_verdict(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """Cancelling the NDI picker restarts the previous source. Nothing has
+        been attempted, so "Nothing answered at ..." names a failure that has
+        not happened - and it would reach the HUD badge."""
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._state.enter_source_selection()
+        r._state.was_connected_before_selection = False
+
+        r.exit_source_selection()
+
+        assert r.status_marker.failure == VideoFailure.NONE
+        assert r.status_marker.error_message == ""
+
+
+class TestTheTerminalStateIsOneGeneration:
+    """``set_connected`` fires from a GStreamer streaming thread, so composing
+    the give-up state from separate property reads can mix two of them."""
+
+    def test_the_reason_failure_and_phase_come_from_one_snapshot(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._handle_bus_error(BusError("Unauthorized", RESOURCE_DOMAIN, RESOURCE_NOT_AUTHORIZED))
+
+        # A marker that changes on every bare property read but is stable
+        # through snapshot() - the two reading styles are distinguishable.
+        stable = r.status_marker.snapshot()
+        reads: list[str] = []
+
+        def _explode(_name: str) -> object:
+            reads.append(_name)
+            raise AssertionError(f"terminal state read {_name} outside snapshot()")
+
+        monkeypatch.setattr(type(r.status_marker), "failure", property(lambda _s: _explode("failure")), raising=True)
+        monkeypatch.setattr(type(r.status_marker), "phase", property(lambda _s: _explode("phase")), raising=True)
+        monkeypatch.setattr(
+            type(r.status_marker), "error_message", property(lambda _s: _explode("error_message")), raising=True
+        )
+
+        r._state.reconnect_attempt = r._reconnect_policy.max_attempts
+        r._do_reconnect()
+
+        assert reads == []
+        assert r.status_marker.snapshot().failure == stable.failure

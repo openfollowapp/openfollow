@@ -93,3 +93,25 @@ class TestEveryRenderPathCarriesTheKeys:
         from openfollow.web.routes import _build_input_template_data
 
         assert _build_input_template_data(AppConfig(), None)["video_failure"] == "none"
+
+
+class TestTheSaveResponseDoesNotNameTheOldSource:
+    """The swap is asynchronous and the section does not poll.
+
+    Rendering the live verdict into the save response names the URL the
+    operator has just replaced, and it stays there until a page reload - so a
+    correct fix reads as though it failed.
+    """
+
+    def test_a_save_carries_no_failure(self) -> None:
+        from openfollow.web.routes import _build_input_template_data
+
+        stale = {"failure": "unreachable", "failure_text": "Nothing answered at 192.0.2.10:554."}
+        saved = _build_input_template_data(AppConfig(), None)  # what the save path now passes
+        live = _build_input_template_data(AppConfig(), stale)
+
+        assert saved["video_failure_text"] == ""
+        assert live["video_failure_text"] == stale["failure_text"]
+
+    def test_the_section_renders_clean_after_a_save(self) -> None:
+        assert _NOTICE not in _render(saved=True, video_failure="none", video_failure_text="")

@@ -854,12 +854,14 @@ class GstNativeSinkReceiver:
         if self._state.restore_connection_after_selection():
             self._status_marker.set_connected(source_label)
         elif source_label:
-            # No message: this is progress, not a failure. Passing one would
-            # store it as the error, and an input with ``max_attempts=1`` (NDI)
-            # falls back on the very next attempt and would publish
-            # "Reconnecting to previous source" as the terminal reason - saying
-            # it is still trying at the moment it gave up.
-            self._schedule_reconnect()
+            # No message and no verdict: this is progress, not a failure.
+            # A message would be stored as the error, and an input with
+            # ``max_attempts=1`` (NDI) falls back on the very next attempt and
+            # would publish "Reconnecting to previous source" as the terminal
+            # reason - saying it is still trying at the moment it gave up. A
+            # classification would be just as wrong: nothing has been tried yet,
+            # so there is nothing to diagnose.
+            self._schedule_reconnect(failure=VideoFailure.NONE)
         else:
             self._status_marker.set_disconnected("Source selection cancelled")
 
@@ -1085,7 +1087,11 @@ class GstNativeSinkReceiver:
             # reports "Unauthorized (401)" on every attempt, and replacing that
             # with "No RTSP connection" discards the whole diagnosis for a
             # sentence that says no more than the Signal row already does.
-            reason = self._status_marker.error_message or f"No {self._input.display_name} connection"
+            # One generation: ``set_connected`` fires from a GStreamer streaming
+            # thread, so three property reads could compose the terminal state
+            # out of two different ones.
+            prior = self._status_marker.snapshot()
+            reason = prior.error_message or f"No {self._input.display_name} connection"
             if self._input_caps.has_source_selection:
                 # Clear primary config field for selection-based inputs.
                 if self._input.config_fields():
@@ -1097,9 +1103,7 @@ class GstNativeSinkReceiver:
             # Carry the classification for the same reason ``reason`` is carried:
             # giving up is not a new diagnosis, and this is the state the
             # operator is left staring at.
-            self._status_marker.set_disconnected(
-                reason, failure=self._status_marker.failure, phase=self._status_marker.phase
-            )
+            self._status_marker.set_disconnected(reason, failure=prior.failure, phase=prior.phase)
 
             self._create_placeholder_pipeline()
             if self._input_caps.has_source_discovery:

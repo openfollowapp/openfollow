@@ -694,9 +694,20 @@ def test_receiver_state_machine_placeholder_frames_do_not_advance_the_phase() ->
     assert state.phase == ConnectionPhase.STARTING
 
 
-def test_receiver_state_machine_resets_the_phase_for_the_next_attempt() -> None:
-    """Each attempt is classified on its own evidence."""
+def test_receiver_state_machine_keeps_the_phase_across_attempts() -> None:
+    """The phase describes the feed, not the attempt. A retry knows nothing, so
+    resetting it here would redescribe a dropped feed as never reachable."""
     state = ReceiverStateMachine(reconnect_delay=1.0)
     state.mark_frame_received()
+
     state.reset_video_flow()
+
+    assert state.video_flow_detected is False  # attempt state cleared
+    assert state.phase == ConnectionPhase.DECODING  # feed history kept
+
+
+def test_receiver_state_machine_forgets_the_phase_on_a_source_change() -> None:
+    state = ReceiverStateMachine(reconnect_delay=1.0)
+    state.mark_frame_received()
+    state.forget_video_history()
     assert state.phase == ConnectionPhase.STARTING

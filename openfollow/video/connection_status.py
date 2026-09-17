@@ -143,18 +143,23 @@ class NdiStatusMarker:
     def set_connecting(self, source_name: str) -> None:
         """Transition to CONNECTING state.
 
-        A pending error and its classification are kept only while *actively
-        reconnecting* – a fresh connect (prior DISCONNECTED/CONNECTED) starts
-        clean, so the HUD doesn't show "connecting…" next to a leftover failure
-        from a previous attempt.
+        A standing diagnosis is kept: an input that has given up retries on the
+        heal timer every few seconds, and each of those attempts would otherwise
+        blank the verdict for as long as it runs, flickering the failure off
+        every surface that polls. It is cleared by a real connect, or by a
+        source change, which re-initialises the marker.
         """
 
         def derive(prior: _StatusSnapshot) -> _StatusSnapshot:
-            reconnecting = prior.status == ConnectionStatus.RECONNECTING
-            error = prior.error_message if reconnecting else ""
-            failure = prior.failure if reconnecting else VideoFailure.NONE
-            phase = prior.phase if reconnecting else ConnectionPhase.STARTING
-            return _StatusSnapshot(ConnectionStatus.CONNECTING, source_name, 0, error, failure, phase)
+            # Mid-episode, or a standing verdict that nothing has yet replaced.
+            # A source change clears the verdict itself (``set_disconnected``
+            # with no failure), so anything still set here is current.
+            carry = prior.status == ConnectionStatus.RECONNECTING or prior.failure is not VideoFailure.NONE
+            if not carry:
+                return _StatusSnapshot(ConnectionStatus.CONNECTING, source_name, 0, "", VideoFailure.NONE)
+            return _StatusSnapshot(
+                ConnectionStatus.CONNECTING, source_name, 0, prior.error_message, prior.failure, prior.phase
+            )
 
         self._update(derive)
 

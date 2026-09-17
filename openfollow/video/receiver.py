@@ -259,6 +259,19 @@ class GstNativeSinkReceiver:
         """Return the active source label."""
         return self._input.get_source_label(self._input_config)
 
+    @property
+    def dials_out(self) -> bool:
+        """Whether this input connects to a remote host at all.
+
+        A listener, a local capture device and a discovery-by-name protocol all
+        connect nowhere, so nothing can have failed to answer them.
+        """
+        try:
+            return self._input.source_endpoint(self._input_config) is not None
+        except Exception:
+            logger.debug("Could not read %s source endpoint", self._input.display_name, exc_info=True)
+            return False
+
     def _has_configured_source(self) -> bool:
         """Return True when the active input has a non-empty primary source value."""
         fields = self._input.config_fields()
@@ -976,17 +989,13 @@ class GstNativeSinkReceiver:
     # -- Reconnection ---------------------------------------------------------
 
     def _classify(self, error: BusError | None) -> VideoFailure:
-        """Name the current failure from how far this attempt got."""
+        """Name the current failure from how far this feed has ever got."""
         return classify_failure(
             phase=self._state.phase,
             domain=error.domain if error else "",
             code=error.code if error else 0,
             message=error.message if error else "",
             debug=error.debug if error else "",
-            # The feed's history, not this attempt's: the reset between retries
-            # clears ``video_flow_detected``, and a retry failing after a feed
-            # dropped must not be re-diagnosed as a source never reached.
-            was_connected=self._state.had_video,
         )
 
     def _schedule_reconnect(

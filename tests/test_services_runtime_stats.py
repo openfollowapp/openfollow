@@ -98,6 +98,7 @@ class _FakeReceiver:
         self.source_name = "CAM1"
         self.source_selection_active = False
         self.source_framerate = 59.94
+        self.dials_out = True
 
 
 class _FakeDetector:

@@ -82,13 +82,13 @@ class TestNdiStatusMarker:
         marker.set_connecting("Cam")
         assert marker.error_message == ""
 
-    def test_connecting_after_disconnect_error_starts_clean(self) -> None:
-        """A disconnect error must NOT bleed into the next fresh connect – only
-        an active RECONNECTING episode keeps the pending error."""
+    def test_connecting_after_an_unclassified_disconnect_starts_clean(self) -> None:
+        """An unclassified disconnect is not a standing diagnosis, so it does
+        not bleed into the next connect."""
         marker = NdiStatusMarker()
         marker.set_disconnected("Signal lost")
         assert marker.error_message == "Signal lost"
-        marker.set_connecting("Cam")  # fresh connect (prior was DISCONNECTED)
+        marker.set_connecting("Cam")
         assert marker.status == ConnectionStatus.CONNECTING
         assert marker.error_message == ""
 
@@ -396,12 +396,25 @@ class TestFailureClassificationIsCarried:
         assert marker.error_message == "no route"
         assert marker.failure == VideoFailure.UNREACHABLE
 
-    def test_a_fresh_connect_does_not_inherit_a_stale_classification(self) -> None:
+    def test_a_standing_verdict_outlives_the_heal_retry(self) -> None:
+        """An input that has given up retries on the heal timer every few
+        seconds. Clearing here blanked the failure on every polling surface for
+        the length of each attempt, flickering it off and back on."""
         marker = NdiStatusMarker()
         marker.set_disconnected("Signal lost", failure=VideoFailure.STALLED)
-        marker.set_connecting("Cam")  # prior was DISCONNECTED, not a retry
-        assert marker.error_message == ""
+        marker.set_connecting("Cam")
+        assert marker.failure == VideoFailure.STALLED
+        assert marker.error_message == "Signal lost"
+
+    def test_a_source_change_is_what_clears_it(self) -> None:
+        """Repointing the input publishes an unclassified disconnect, and that
+        is the point the old verdict stops being current."""
+        marker = NdiStatusMarker()
+        marker.set_disconnected("Signal lost", failure=VideoFailure.STALLED)
+        marker.set_disconnected()  # what swap_input / set_source publish
+        marker.set_connecting("Cam")
         assert marker.failure == VideoFailure.NONE
+        assert marker.error_message == ""
 
     def test_callbacks_receive_the_classification(self) -> None:
         seen: list[VideoFailure] = []
@@ -445,10 +458,11 @@ class TestThePhaseTravelsWithTheVerdict:
         marker.set_connecting("Cam")
         assert marker.phase == ConnectionPhase.DECODING
 
-    def test_a_fresh_connect_starts_from_nothing(self) -> None:
+    def test_a_source_change_starts_the_phase_from_nothing(self) -> None:
         marker = NdiStatusMarker()
         marker.set_disconnected("old", failure=VideoFailure.STALLED, phase=ConnectionPhase.DECODING)
-        marker.set_connecting("Cam")  # prior was DISCONNECTED, not a retry
+        marker.set_disconnected()  # what swap_input / set_source publish
+        marker.set_connecting("Cam")
         assert marker.phase == ConnectionPhase.STARTING
 
     def test_it_rides_in_the_same_snapshot_as_the_verdict(self) -> None:

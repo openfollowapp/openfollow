@@ -2732,7 +2732,7 @@ class AppRuntimeServices:
             failure_text = (
                 ""
                 if status.failure in (VideoFailure.NONE, VideoFailure.UNKNOWN)
-                else failure_sentence(status.failure, where=receiver.source_name)
+                else failure_sentence(status.failure, where=receiver.source_name, dials_out=receiver.dials_out)
             )
             video_snapshot = {
                 "source_type": cfg.video_source_type,

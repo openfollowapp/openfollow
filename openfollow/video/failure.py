@@ -121,6 +121,14 @@ _SENTENCES: dict[VideoFailure, str] = {
     VideoFailure.UNKNOWN: "Video from {where} failed for a reason this station does not recognise.",
 }
 
+# An input that dials nothing - a listener waiting for packets, a local capture
+# device, a discovery-by-name protocol - was never in a position to be answered,
+# so the two sentences that presume a request get a wording that does not.
+_NO_DIAL_SENTENCES: dict[VideoFailure, str] = {
+    VideoFailure.UNREACHABLE: "No video has arrived from {where}.",
+    VideoFailure.NO_DATA: "Data is arriving from {where}, but no video.",
+}
+
 # Keeps every sentence readable where the caller has no endpoint to name.
 _ANONYMOUS_SOURCE = "the video source"
 
@@ -130,26 +138,17 @@ def failure_chip(failure: VideoFailure) -> str:
     return _CHIPS.get(failure, _CHIPS[VideoFailure.UNKNOWN])
 
 
-def failure_sentence(failure: VideoFailure, *, where: str = "") -> str:
+def failure_sentence(failure: VideoFailure, *, where: str = "", dials_out: bool = True) -> str:
     """One sentence naming what was observed, for an operator.
 
     ``where`` MUST already be redacted: it reaches the HUD and the PIN-exempt
-    stats route.
+    stats route. ``dials_out`` is False for an input that connects nowhere, so
+    the wording does not report that nothing "answered" a request never made.
     """
     template = _SENTENCES.get(failure, _SENTENCES[VideoFailure.UNKNOWN])
+    if not dials_out:
+        template = _NO_DIAL_SENTENCES.get(failure, template)
     return template.format(where=where.strip() or _ANONYMOUS_SOURCE)
-
-
-def _saw_video(phase: ConnectionPhase, was_connected: bool) -> bool:
-    """Whether a decoded frame ever reached the sink on this feed.
-
-    ``DECODING`` counts because only ``mark_frame_received`` sets it, but
-    ``DATA_ARRIVING`` does not: that is bytes out of the *source element*, which
-    a feed carrying an undecodable payload produces just as readily. Treating
-    those as the same evidence tells an operator a feed "stopped arriving" when
-    it never arrived.
-    """
-    return was_connected or phase >= ConnectionPhase.DECODING
 
 
 def _silence_verdict(phase: ConnectionPhase, saw_video: bool) -> VideoFailure:
@@ -168,17 +167,23 @@ def classify_failure(
     code: int = 0,
     message: str = "",
     debug: str = "",
-    was_connected: bool = False,
 ) -> VideoFailure:
     """Name the failure from how far we got and what GStreamer said.
 
-    The phase decides an ambiguous error: the same "could not open resource" is
-    a routing fault before any bytes arrive and a dropout after them.
+    *phase* is how far this **feed** has ever reached, not the attempt that
+    just failed: the attempt is torn down and retried, and a retry knows
+    nothing. The same "could not open resource" is a routing fault on a feed
+    that never produced a byte and a dropout on one that was decoding.
+
+    Only ``DECODING`` is evidence that video *arrived* - nothing but a decoded
+    frame reaching the sink sets it. ``DATA_ARRIVING`` is bytes out of the
+    source element, which a feed carrying an undecodable payload produces just
+    as readily, so it means "it answered", not "it worked".
     """
     # The OS-level wording ("Connection refused") reaches us in the debug
     # string, not the message, so both are searched.
     text = f"{message}\n{debug}".lower()
-    saw_video = _saw_video(phase, was_connected)
+    saw_video = phase >= ConnectionPhase.DECODING
 
     if domain == RESOURCE_DOMAIN:
         if code == RESOURCE_NOT_AUTHORIZED:

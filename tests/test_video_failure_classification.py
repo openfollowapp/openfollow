@@ -44,18 +44,17 @@ class TestPhaseOrdering:
 
 class TestClassification:
     @pytest.mark.parametrize(
-        ("phase", "domain", "code", "message", "was_connected", "expected"),
+        ("phase", "domain", "code", "message", "expected"),
         [
             # The three the operator most needs told apart, and the observation
             # that separates them: how far the connection got.
-            (ConnectionPhase.STARTING, RESOURCE_DOMAIN, RESOURCE_OPEN_READ, "", False, VideoFailure.UNREACHABLE),
-            (ConnectionPhase.STREAM_DESCRIBED, "", 0, "", False, VideoFailure.NO_DATA),
+            (ConnectionPhase.STARTING, RESOURCE_DOMAIN, RESOURCE_OPEN_READ, "", VideoFailure.UNREACHABLE),
+            (ConnectionPhase.STREAM_DESCRIBED, "", 0, "", VideoFailure.NO_DATA),
             (
                 ConnectionPhase.DATA_ARRIVING,
                 STREAM_DOMAIN,
                 STREAM_DECODE,
                 "",
-                False,
                 VideoFailure.DECODE_ERROR,
             ),
             # Credentials and paths are answers, not silence - the far end
@@ -65,7 +64,6 @@ class TestClassification:
                 RESOURCE_DOMAIN,
                 RESOURCE_NOT_AUTHORIZED,
                 "",
-                False,
                 VideoFailure.UNAUTHORIZED,
             ),
             (
@@ -73,7 +71,6 @@ class TestClassification:
                 RESOURCE_DOMAIN,
                 RESOURCE_NOT_FOUND,
                 "",
-                False,
                 VideoFailure.STREAM_NOT_FOUND,
             ),
             # A refusal is an open failure whose text carries the OS wording.
@@ -82,18 +79,16 @@ class TestClassification:
                 RESOURCE_DOMAIN,
                 RESOURCE_OPEN_READ,
                 "Could not open resource: Connection refused",
-                False,
                 VideoFailure.REFUSED,
             ),
             # Same domain and code as the unreachable case above; only the
             # phase differs, and it changes the verdict.
-            (ConnectionPhase.DECODING, RESOURCE_DOMAIN, RESOURCE_OPEN_READ, "", True, VideoFailure.STALLED),
+            (ConnectionPhase.DECODING, RESOURCE_DOMAIN, RESOURCE_OPEN_READ, "", VideoFailure.STALLED),
             (
                 ConnectionPhase.DATA_ARRIVING,
                 STREAM_DOMAIN,
                 STREAM_CODEC_NOT_FOUND,
                 "",
-                False,
                 VideoFailure.UNSUPPORTED_FORMAT,
             ),
             (
@@ -101,7 +96,6 @@ class TestClassification:
                 STREAM_DOMAIN,
                 STREAM_TYPE_NOT_FOUND,
                 "",
-                False,
                 VideoFailure.UNSUPPORTED_FORMAT,
             ),
             (
@@ -109,32 +103,31 @@ class TestClassification:
                 STREAM_DOMAIN,
                 STREAM_WRONG_TYPE,
                 "",
-                False,
                 VideoFailure.UNSUPPORTED_FORMAT,
             ),
-            (ConnectionPhase.DATA_ARRIVING, STREAM_DOMAIN, STREAM_DEMUX, "", False, VideoFailure.DECODE_ERROR),
+            (ConnectionPhase.DATA_ARRIVING, STREAM_DOMAIN, STREAM_DEMUX, "", VideoFailure.DECODE_ERROR),
             # A local capture device held by another program.
-            (ConnectionPhase.STARTING, RESOURCE_DOMAIN, RESOURCE_BUSY, "", False, VideoFailure.DEVICE_UNAVAILABLE),
+            (ConnectionPhase.STARTING, RESOURCE_DOMAIN, RESOURCE_BUSY, "", VideoFailure.DEVICE_UNAVAILABLE),
             # Silence with no error at all: the phase is the whole story.
-            (ConnectionPhase.STARTING, "", 0, "", False, VideoFailure.UNREACHABLE),
-            (ConnectionPhase.TRANSPORT_UP, "", 0, "", False, VideoFailure.NO_DATA),
-            (ConnectionPhase.DECODING, "", 0, "", True, VideoFailure.STALLED),
+            (ConnectionPhase.STARTING, "", 0, "", VideoFailure.UNREACHABLE),
+            (ConnectionPhase.TRANSPORT_UP, "", 0, "", VideoFailure.NO_DATA),
+            (ConnectionPhase.DECODING, "", 0, "", VideoFailure.STALLED),
             # An error we have no rule for stays honest rather than guessing.
-            (ConnectionPhase.STARTING, "some-other-quark", 42, "", False, VideoFailure.UNKNOWN),
+            (ConnectionPhase.STARTING, "some-other-quark", 42, "", VideoFailure.UNKNOWN),
             # A known domain can still carry a code we have no rule for (the
             # generic ``FAILED = 1`` both enums start with). With no evidence of
             # progress that says nothing, so the verdict stays UNKNOWN rather
             # than guessing a neighbouring bucket.
-            (ConnectionPhase.STARTING, RESOURCE_DOMAIN, 1, "", False, VideoFailure.UNKNOWN),
+            (ConnectionPhase.STARTING, RESOURCE_DOMAIN, 1, "", VideoFailure.UNKNOWN),
             # Source bytes are not proof video flowed, so an unreadable code
             # alongside them still says nothing.
-            (ConnectionPhase.DATA_ARRIVING, STREAM_DOMAIN, 1, "", False, VideoFailure.UNKNOWN),
+            (ConnectionPhase.DATA_ARRIVING, STREAM_DOMAIN, 1, "", VideoFailure.UNKNOWN),
             # But once video was demonstrably decoding, the unknown code cannot
             # undo that: ``GST_STREAM_ERROR_FAILED`` / "Internal data stream
             # error" is the commonest dropout there is, and reporting it as
             # "Failed" hides the one fact we are sure of.
-            (ConnectionPhase.DECODING, STREAM_DOMAIN, 1, "", False, VideoFailure.STALLED),
-            (ConnectionPhase.STARTING, STREAM_DOMAIN, 1, "", True, VideoFailure.STALLED),
+            (ConnectionPhase.DECODING, STREAM_DOMAIN, 1, "", VideoFailure.STALLED),
+            (ConnectionPhase.DECODING, STREAM_DOMAIN, 1, "", VideoFailure.STALLED),
         ],
     )
     def test_observation_maps_to_failure(
@@ -143,13 +136,9 @@ class TestClassification:
         domain: str,
         code: int,
         message: str,
-        was_connected: bool,
         expected: VideoFailure,
     ) -> None:
-        assert (
-            classify_failure(phase=phase, domain=domain, code=code, message=message, was_connected=was_connected)
-            == expected
-        )
+        assert classify_failure(phase=phase, domain=domain, code=code, message=message) == expected
 
     def test_open_failure_before_and_after_data_differ(self) -> None:
         """The distinction the whole taxonomy exists for. Identical GStreamer
@@ -165,8 +154,8 @@ class TestClassification:
     def test_a_connection_that_carried_video_never_reads_as_unreachable(self) -> None:
         """Telling an operator the camera cannot be reached, about a camera
         that was on screen a second ago, sends them to the wrong equipment."""
-        for phase in ConnectionPhase:
-            failure = classify_failure(phase=phase, was_connected=True)
+        for domain, code in (("", 0), (RESOURCE_DOMAIN, RESOURCE_OPEN_READ), ("some-quark", 1)):
+            failure = classify_failure(phase=ConnectionPhase.DECODING, domain=domain, code=code)
             assert failure != VideoFailure.UNREACHABLE
 
     def test_refusal_is_detected_case_insensitively(self) -> None:
@@ -272,10 +261,7 @@ class TestDemonstratedFlowOutranksAnUnreadableError:
 
     @pytest.mark.parametrize("domain", [RESOURCE_DOMAIN, STREAM_DOMAIN, "some-other-quark"])
     def test_an_unknown_code_after_video_flowed_is_a_stall(self, domain: str) -> None:
-        assert (
-            classify_failure(phase=ConnectionPhase.DECODING, domain=domain, code=999, was_connected=True)
-            == VideoFailure.STALLED
-        )
+        assert classify_failure(phase=ConnectionPhase.DECODING, domain=domain, code=999) == VideoFailure.STALLED
 
     @pytest.mark.parametrize("domain", [RESOURCE_DOMAIN, STREAM_DOMAIN, "some-other-quark"])
     def test_an_unknown_code_with_no_progress_stays_unknown(self, domain: str) -> None:
@@ -317,16 +303,14 @@ class TestAnEmptySdpIsNotAGenericSettingsFailure:
         )
 
     def test_it_reads_the_path_not_a_dropped_feed(self) -> None:
-        """Repointing at a bad path on a camera that was working must describe
-        the new path, not the old feed's history."""
+        """A named cause outranks how far the feed once got."""
         assert (
             classify_failure(
-                phase=ConnectionPhase.STARTING,
+                phase=ConnectionPhase.DECODING,
                 domain=RESOURCE_DOMAIN,
                 code=RESOURCE_SETTINGS,
                 message=self._MESSAGE,
                 debug=self._SDP_DEBUG,
-                was_connected=True,
             )
             == VideoFailure.STREAM_NOT_FOUND
         )
@@ -346,9 +330,10 @@ class TestSourceBytesAreNotDecodedVideo:
     def test_a_decoded_frame_does(self) -> None:
         assert classify_failure(phase=ConnectionPhase.DECODING) == VideoFailure.STALLED
 
-    def test_the_latch_counts_even_from_a_reset_phase(self) -> None:
-        """The retry resets the phase; ``had_video`` is what survives it."""
-        assert classify_failure(phase=ConnectionPhase.STARTING, was_connected=True) == VideoFailure.STALLED
+    def test_the_phase_is_the_feeds_history_not_the_attempts(self) -> None:
+        """A retry knows nothing, so the caller passes how far the *feed* ever
+        got; ``STARTING`` therefore means this feed never produced a byte."""
+        assert classify_failure(phase=ConnectionPhase.STARTING) == VideoFailure.UNREACHABLE
 
     @pytest.mark.parametrize(
         ("phase", "expected"),
@@ -386,3 +371,33 @@ class TestNotFoundDoesNotClaimSomethingAnswered:
         sentence = failure_sentence(VideoFailure.STREAM_NOT_FOUND, where=where)
         assert where in sentence
         assert "answered" not in sentence
+
+
+class TestAnInputThatDialsNothingIsNotDescribedAsUnanswered:
+    """Seen on hardware: an RTP listener with no sender reported "Nothing
+    answered at RTP 0.0.0.0:5004", naming this station's own listening port as
+    a host that failed to reply. A listener, a local capture device and a
+    discovery-by-name source all connect nowhere.
+    """
+
+    @pytest.mark.parametrize("failure", [VideoFailure.UNREACHABLE, VideoFailure.NO_DATA])
+    def test_the_wording_presumes_no_request(self, failure: VideoFailure) -> None:
+        sentence = failure_sentence(failure, where="RTP 0.0.0.0:5004", dials_out=False)
+        assert "answered" not in sentence
+        assert "RTP 0.0.0.0:5004" in sentence
+
+    @pytest.mark.parametrize("failure", [VideoFailure.UNREACHABLE, VideoFailure.NO_DATA])
+    def test_a_dialling_input_keeps_the_stronger_wording(self, failure: VideoFailure) -> None:
+        """ "Nothing answered" is the useful fact when we did dial somewhere."""
+        assert "answered" in failure_sentence(failure, where="rtsp://192.0.2.10:554/s")
+
+    def test_only_the_request_shaped_sentences_change(self) -> None:
+        """A stall and a decode error describe what was observed either way."""
+        for failure in (VideoFailure.STALLED, VideoFailure.DECODE_ERROR, VideoFailure.STREAM_NOT_FOUND):
+            assert failure_sentence(failure, where="X") == failure_sentence(failure, where="X", dials_out=False)
+
+    def test_every_failure_still_reads_as_a_sentence_without_a_dial(self) -> None:
+        for failure in VideoFailure:
+            sentence = failure_sentence(failure, where="X", dials_out=False)
+            assert sentence.endswith(".")
+            assert "{" not in sentence

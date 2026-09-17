@@ -1576,7 +1576,7 @@ def _video_disconnect_banner_text(app: OpenFollowApp) -> str:
     parts[0] += "."
     # UNKNOWN's sentence would contradict the error line right beside it.
     if failure not in (VideoFailure.NONE, VideoFailure.UNKNOWN):
-        parts.append(failure_sentence(failure, where=source_label))
+        parts.append(failure_sentence(failure, where=source_label, dials_out=getattr(receiver, "dials_out", True)))
     if error:
         parts.append(f"Error: {error}.")
     if attempt > 0:

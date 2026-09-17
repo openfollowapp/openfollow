@@ -54,6 +54,7 @@ from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
     ReconnectPolicy,
+    SourceEndpoint,
 )
 
 pytestmark = pytest.mark.unit
@@ -357,6 +358,10 @@ class FakeInput:
         # way a real plugin's signal handler would.
         self.progress_reporters.append(report)
 
+    @classmethod
+    def source_endpoint(cls, config: dict[str, Any]) -> SourceEndpoint | None:
+        return None
+
     def cleanup(self) -> None:
         self.cleanup_calls += 1
 
@@ -461,6 +466,10 @@ class FakeInputAlt:
 
     def observe_progress(self, pipeline: Any, report: Any) -> None:
         self.progress_reporters.append(report)
+
+    @classmethod
+    def source_endpoint(cls, config: dict[str, Any]) -> SourceEndpoint | None:
+        return None
 
     def cleanup(self) -> None:
         self.cleanup_calls += 1
@@ -4328,14 +4337,16 @@ class TestFailureDiagnosis:
         assert warm.status_marker.failure == VideoFailure.STALLED
 
     def test_classification_survives_the_reconnect_reset(self, fake_gst, fake_glib, fake_input_cls) -> None:
-        """``_schedule_reconnect`` clears the phase it classifies from; a verdict
-        computed after that reset reads every failure as a cold start."""
+        """The per-attempt state is torn down between retries; the feed's
+        phase is what has to outlive it, or every retry reads as a cold
+        start."""
         r = self._receiver()
         r._state.mark_frame_received()
         r._schedule_reconnect("dropped")
 
-        assert r._state.phase == ConnectionPhase.STARTING  # reset happened
-        assert r.status_marker.failure == VideoFailure.STALLED  # verdict predates it
+        assert r._state.video_flow_detected is False  # attempt state reset
+        assert r._state.phase == ConnectionPhase.DECODING  # feed history survived
+        assert r.status_marker.failure == VideoFailure.STALLED
 
     def test_a_connect_clears_the_previous_failure(self, fake_gst, fake_glib, fake_input_cls) -> None:
         r = self._receiver()
@@ -4430,16 +4441,18 @@ class TestSourceByteObservation:
         assert r._state.is_placeholder_pipeline is False
 
     def test_the_phase_is_published_with_the_verdict_it_explains(self, fake_gst, fake_glib, fake_input_cls) -> None:
-        """Read off live state instead, every failure reports ``starting``:
-        the attempt is reset before the next retry. Support then sees a stall
-        described as a connection that never began."""
+        """Seen on hardware: a feed pulled mid-stream published ``stalled``
+        with ``phase: starting``, because each retry republished its own
+        freshly-reset phase. The published value has to be the feed's."""
         r = _make_receiver(input_config={"fake_source": "cam-1"})
-        r._state.note_phase(ConnectionPhase.DATA_ARRIVING)
+        r._state.mark_frame_received()
 
-        r._schedule_reconnect("boom")
+        r._schedule_reconnect("stalled")
+        assert r.status_marker.phase == ConnectionPhase.DECODING
 
-        assert r._state.phase == ConnectionPhase.STARTING  # live state moved on
-        assert r.status_marker.phase == ConnectionPhase.DATA_ARRIVING  # verdict kept it
+        # The retry that follows knows nothing, and must not overwrite it.
+        r._handle_bus_error(BusError("Could not open resource", RESOURCE_DOMAIN, RESOURCE_OPEN_READ))
+        assert r.status_marker.phase == ConnectionPhase.DECODING
 
 
 class _DynamicPadElement:
@@ -4624,10 +4637,10 @@ class TestAFeedThatDroppedIsNeverReportedAsNeverReachable:
         """A new source inherits nothing from the old one's history."""
         r = self._receiver()
         r._state.mark_frame_received()
-        assert r._state.had_video is True
+        assert r._state.phase == ConnectionPhase.DECODING
 
         r.set_source("cam-2")
-        assert r._state.had_video is False
+        assert r._state.phase == ConnectionPhase.STARTING
 
 
 class TestProgressIsNotDiagnosedAsFailure:
@@ -4679,3 +4692,28 @@ class TestTheTerminalStateIsOneGeneration:
 
         assert reads == []
         assert r.status_marker.snapshot().failure == stable.failure
+
+
+class TestWhetherTheInputDialsAnywhere:
+    """Picks the wording for failures that would otherwise report that nothing
+    "answered" a request the input never made."""
+
+    def test_an_input_with_a_remote_endpoint_dials_out(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        monkeypatch.setattr(
+            FakeInput, "source_endpoint", classmethod(lambda _cls, _cfg: SourceEndpoint(host="h", port=554))
+        )
+        assert _make_receiver(input_config={"fake_source": "cam-1"}).dials_out is True
+
+    def test_a_listener_or_local_device_does_not(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """``source_endpoint`` is None by default, which is correct for every
+        local device, every listener and discovery-by-name."""
+        assert _make_receiver(input_config={"fake_source": "cam-1"}).dials_out is False
+
+    def test_a_plugin_that_raises_is_survivable(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        """This runs on the stats path; a plugin bug must not take it down."""
+
+        def _boom(_cls, _cfg):
+            raise RuntimeError("bad url")
+
+        monkeypatch.setattr(FakeInput, "source_endpoint", classmethod(_boom))
+        assert _make_receiver(input_config={"fake_source": "cam-1"}).dials_out is False

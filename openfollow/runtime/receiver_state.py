@@ -30,9 +30,9 @@ class ReceiverStateMachine:
 
         self.connected = False
         self.video_flow_detected = False
-        # Latches on the first real frame and survives reconnect attempts, so a
-        # feed that dropped is not re-diagnosed as one that was never there.
-        self.had_video = False
+        # The furthest this *feed* has ever reached, not this attempt. Survives
+        # reconnects so a feed that dropped is not re-diagnosed as one that was
+        # never there; only a source change clears it.
         self.phase = ConnectionPhase.STARTING
         self.resolution: tuple[int, int] = (0, 0)
         self.source_framerate: float = 0.0
@@ -43,24 +43,23 @@ class ReceiverStateMachine:
     def reset_video_flow(self) -> None:
         """Start a fresh connection attempt.
 
-        ``had_video`` deliberately survives: it describes the *feed*, not the
-        attempt, so a retry that fails is still reported as a feed that dropped
-        rather than one that was never reachable.
+        ``phase`` deliberately survives: it describes the *feed*, not the
+        attempt, so a retry that fails is still reported by how far the feed
+        got rather than as a source that was never reachable.
         """
         self.connected = False
         self.video_flow_detected = False
-        self.phase = ConnectionPhase.STARTING
         self.clear_source_caps()
 
     def forget_video_history(self) -> None:
-        """Drop the evidence a feed ever worked, because the source changed.
+        """Drop how far the old feed got, because the source changed.
 
         Nothing about the old source's history describes the new one.
         """
-        self.had_video = False
+        self.phase = ConnectionPhase.STARTING
 
     def note_phase(self, phase: ConnectionPhase) -> None:
-        """Record that the connection reached *phase*, keeping the furthest.
+        """Record that the feed reached *phase*, keeping the furthest.
 
         Probes fire from separate streaming threads and arrive out of order; a
         lesser late observation must not walk a live feed back to a
@@ -114,7 +113,6 @@ class ReceiverStateMachine:
         if self.is_placeholder_pipeline:
             return False
         self.video_flow_detected = True
-        self.had_video = True
         self.note_phase(ConnectionPhase.DECODING)
         if not self.connected:
             self.connected = True

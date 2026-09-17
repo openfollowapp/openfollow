@@ -439,7 +439,11 @@ def build_marker_visual_state(
     state.video_failure_text = (
         ""
         if status.failure in (VideoFailure.NONE, VideoFailure.UNKNOWN)
-        else failure_sentence(status.failure, where=video_receiver.source_name)
+        else failure_sentence(
+            status.failure,
+            where=video_receiver.source_name,
+            dials_out=getattr(video_receiver, "dials_out", True),
+        )
     )
     state.source_selection_active = video_receiver.source_selection_active
     state.discovered_sources = video_receiver.discovered_sources

@@ -333,16 +333,25 @@ failure, and the phase is what decides an ambiguous error: the same
 phase it classifies from, so the verdict is computed at the top of that method;
 computing it afterwards reads every failure as a cold start.
 
-**"Did a decoded frame ever reach the sink" is the discriminator.** The phase
-describes the *current attempt* and is reset before every retry, so
-`ReceiverStateMachine.had_video` latches on the first real frame and survives
-`reset_video_flow`; only `forget_video_history` (a source change) clears it.
-`DECODING` counts as the same evidence (only `mark_frame_received` sets it);
-**`DATA_ARRIVING` does not** - that is bytes out of the source element, which a
-feed carrying an undecodable payload produces just as readily, and treating the
-two alike reports "stopped arriving" about a feed that never arrived. Because
-only RTSP reports `TRANSPORT_UP` / `STREAM_DESCRIBED`, `DATA_ARRIVING` is also
-the only route to `NO_DATA` for every other input.
+**`ReceiverStateMachine.phase` is the furthest the *feed* ever reached, not the
+attempt.** It survives `reset_video_flow` (which clears only per-attempt state
+like `video_flow_detected`) and is cleared solely by `forget_video_history` on a
+source change. A retry knows nothing, so classifying or publishing from a
+per-attempt phase redescribes every dropped feed as one that was never
+reachable - which is exactly what hardware showed, twice: first as a `STALLED`
+verdict overwritten by the next retry's `UNREACHABLE`, then as `stalled`
+published alongside `phase: starting`.
+
+There is deliberately **one** such concept. An earlier shape had a separate
+`had_video` latch beside a per-attempt phase, and the two disagreed on the
+device the moment a retry landed.
+
+**Only `DECODING` is evidence video arrived** - nothing but `mark_frame_received`
+sets it. `DATA_ARRIVING` is bytes out of the source element, which a feed
+carrying an undecodable payload produces just as readily, so it means "it
+answered", not "it worked". Because only RTSP reports `TRANSPORT_UP` /
+`STREAM_DESCRIBED`, `DATA_ARRIVING` is also the only route to `NO_DATA` for
+every other input.
 Hardware found this: a camera pulled mid-stream was classified `STALLED`
 correctly and then reclassified `UNREACHABLE` by the very next retry, telling
 the operator nothing answered about a camera that had been on screen a second
@@ -358,12 +367,9 @@ docs. `where` must already be redacted – it reaches the HUD and the PIN-exempt
 `/section/statistics`. `UNKNOWN` renders **no** sentence on any surface: it
 would sit above the element's own wording and contradict it.
 
-**The phase is published with the verdict it explains, not read live.**
-`_StatusSnapshot` carries it, captured in `_schedule_reconnect` before the
-reset. A live read reports `starting` for every failure - on hardware that
-described a feed which had been decoding a second earlier as a connection that
-never began - and publishing it separately from `failure` would let a reader
-pair one generation's phase with another's verdict.
+**The phase is published inside `_StatusSnapshot`, with the verdict it
+explains.** Publishing it separately from `failure` would let a reader pair one
+generation's phase with another's verdict.
 
 **On-device surfaces:** the top-right status badge carries the *chip* only
 (`_status_flags["video_failure"]`, ~40 characters per row); the Settings error

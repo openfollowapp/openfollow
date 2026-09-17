@@ -324,11 +324,14 @@ is the load-bearing one (bytes out of the source element, which every protocol
 has), and `ReceiverStateMachine.note_phase` keeps the **furthest** reached
 because the probes fire from different threads and arrive out of order.
 
-`classify_failure(phase, domain, code, message, was_connected)` names the
-failure, and the phase is what decides an ambiguous error: the same
+`classify_failure(phase, domain, code, message, debug)` names the failure, and
+the phase is what decides an ambiguous error: the same
 `GstResourceError.OPEN_READ` is `UNREACHABLE` before any bytes arrive and
-`STALLED` after them. A known domain carrying a code with no rule (the generic
-`FAILED = 1`) stays `UNKNOWN` rather than landing in a neighbouring bucket.
+`STALLED` after them. **`debug` is not optional detail** - the refusal marker
+and the empty-SDP marker both live in GStreamer's debug string, not its message,
+so a caller that drops it discards the evidence the mapping depends on. A known
+domain carrying a code with no rule (the generic `FAILED = 1`) stays `UNKNOWN`
+rather than landing in a neighbouring bucket.
 
 **Classify before `_reset_video_flow_state`.** `_schedule_reconnect` clears the
 phase it classifies from, so the verdict is computed at the top of that method;
@@ -383,10 +386,13 @@ would sit above the element's own wording and contradict it.
 explains.** Publishing it separately from `failure` would let a reader pair one
 generation's phase with another's verdict.
 
-**On-device surfaces:** the top-right status badge carries the *chip* only
-(`_status_flags["video_failure"]`, ~40 characters per row); the Settings error
-box and the web banner both carry the sentence **plus** the element's own
-wording, which is what support reads against.
+**Surfaces:** the top-right status badge carries the *chip* only
+(`_status_flags["video_failure"]`, ~40 characters per row). The Settings error
+box and both web boxes carry the **sentence plus the action**, and never the
+element's own wording - every renderer uses `failure_text or error_message`, so
+the raw text appears only when there is no classification to replace it. It
+stays in `/api/stats` and the diagnostics bundle, which is what support reads
+against.
 
 **GStreamer does not report everything the taxonomy can express.** Verified on
 the bench against 1.26: a bad RTSP path comes back as

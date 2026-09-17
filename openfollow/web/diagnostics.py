@@ -455,6 +455,19 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
     attempt = int(video.get("reconnect_attempt", 0) or 0)
     signal = f"{video.get('pipeline_state', '?')} (connected={bool(video.get('connected'))})"
     rows.append(f"    signal                {signal}{f', reconnect attempt {attempt}' if attempt else ''}")
+    # The classification, not just the element's wording: this is the artefact
+    # attached to a report, and the verdict is the part that says which piece of
+    # equipment to look at. The phase is how far the feed ever got, which is
+    # what the verdict was formed from.
+    failure = str(video.get("failure") or "none")
+    if failure != "none":
+        rows.append(f"    failure               {failure} (phase: {video.get('phase', '?')})")
+        reading = redact_uris_in_text(str(video.get("failure_text") or ""))
+        if reading:
+            rows.append(f"    reading               {reading}")
+        action = str(video.get("failure_action") or "")
+        if action:
+            rows.append(f"    suggested             {action}")
     error = redact_uris_in_text(str(video.get("error_message") or ""))
     rows.append(f"    last error            {error or '(none)'}")
     rows.append(f"    input resolution      {_fmt_resolution(video.get('resolution'))}")

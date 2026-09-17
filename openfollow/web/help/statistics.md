@@ -6,26 +6,26 @@ A read-only panel on the Overview tab that refreshes every second. Use it to con
 
 State of the active camera source.
 
-When the source fails, a red banner at the top of the panel names what went wrong, followed by the pipeline's own wording – `Unauthorized`, `Connection refused`, a missing source name – word for word, plus the retry count while retries are still running. Passwords are stripped from both.
+When the source fails, a red banner at the top of the panel gives two lines: what the station saw, then the one thing to try. Passwords are stripped from both. The pipeline's own wording (`Could not open resource for reading and writing.`) is not shown - it names the same fault in terms nothing can be done with. It is in the diagnostics bundle, which is what to attach to a report.
 
 The first line is the station's reading of how far the connection got before it stopped, which is what separates faults that look identical from here:
 
 - **Unreachable** – nothing answered. The address, the route or the cabling.
 - **Refused** – something answered and said no. The host is there; the port is not open.
 - **Login rejected** – the source answered and refused the credentials.
-- **Not found** – the source answered, but has nothing at that path.
-- **No video** – the source answered and described its stream, then sent none. Typically a blocked media path rather than a blocked connection.
+- **Not found** – nothing was there under that path, name or device.
+- **No video** – it answered, and no video reached this station. Typically a blocked media path, or a format nothing here can decode.
 - **Unsupported** / **Decode error** – video is arriving; this station cannot turn it into pictures.
 - **Stalled** – video was arriving and stopped.
 - **Device busy** – a local capture device another program is holding.
 - **Not configured** – no source has been set.
-- **Failed** – the pipeline reported something this station has no reading for. The wording beneath it is the whole story.
+- **Failed** – the pipeline reported something this station has no reading for. Here, and only here, its own wording is shown instead, because it is the whole story. **Signal** reads `Disconnected` for this case rather than inventing a label.
 
 - **Source** – the configured source name or type (for example the RTSP URL label or NDI source name). Confirms which input the pipeline is reading from.
-- **Signal** – `Connected` with a live feed. Otherwise it carries the reading above rather than a bare `Disconnected`, so the state names which piece of equipment is involved. The panel header chip mirrors this.
+- **Signal** – `Connected` with a live feed. Otherwise it carries the reading above rather than a bare `Disconnected`, so the state names which piece of equipment is involved; an unrecognised failure stays `Disconnected`. The panel header chip mirrors this.
 - **Input resolution** – pixel dimensions (width × height) of the frames arriving from the source. `N/A` until one actually connects; the *No Signal* picture is generated here and reports no geometry of its own.
 - **Frame Rate (source)** – frame rate the source advertises. `N/A` while nothing is connected, for the same reason.
-- **Pipeline** – the connection attempt in more detail: `Connecting`, `Reconnecting`, `Connected`, or `Disconnected` once the retries have run out. It is what separates a source still retrying from one that has given up; Signal reads `Disconnected` for both.
+- **Pipeline** – the connection attempt in more detail: `Connecting`, `Reconnecting`, `Connected`, or `Disconnected` once the retries have run out. It is where retry state lives: the banner deliberately carries no attempt counter, because a figure that changes every few seconds moves the box without telling you anything.
 
 ## Device
 

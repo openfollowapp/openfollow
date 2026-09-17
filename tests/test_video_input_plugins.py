@@ -468,16 +468,16 @@ class TestSourceElementDeclaration:
         fake = make_fake_gst()
         sink = FakeElement("shared_videosink")
         config = {f.name: f.default for f in plugin.config_fields()}
+        # No try/except: swallowing a build failure would turn a regression in
+        # ``create_pipeline`` into a skipped test, and this contract would pass
+        # without ever checking the declared element.
         with patch("gi.repository.Gst", fake):
-            try:
-                pipeline = plugin().create_pipeline(
-                    config=config,
-                    sink=sink,
-                    build_overlay_tail=lambda *a: None,
-                    prepare_sink=lambda: sink,
-                )
-            except Exception as exc:  # pragma: no cover - a build failure is its own plugin test
-                pytest.skip(f"{plugin.input_id} cannot build a default pipeline hermetically: {exc}")
+            pipeline = plugin().create_pipeline(
+                config=config,
+                sink=sink,
+                build_overlay_tail=lambda *a: None,
+                prepare_sink=lambda: sink,
+            )
 
         assert pipeline.get_by_name(name) is not None, (
             f"{plugin.input_id} declares source_element_name={name!r} but builds no element with that name"

@@ -97,6 +97,7 @@ from openfollow.templates.writer import (
 from openfollow.units import UnitSystem, parse_length, parse_speed
 from openfollow.web import diagnostics, peer_auth
 from openfollow.web._md import render_help_markdown
+from openfollow.web.labels import video_error_token
 from openfollow.web.login_throttle import LoginThrottle
 
 logger = logging.getLogger(__name__)
@@ -4400,14 +4401,19 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         video = server.get_runtime_stats().get("video") or {}
         failure_text = str(video.get("failure_text") or "")
         error_message = str(video.get("error_message") or "")
-        if str(video.get("failure") or "none") == "none" or not (failure_text or error_message):
+        # Keyed on what there is to show, not on whether a classification
+        # exists: several receiver paths publish an error with no verdict, and
+        # Statistics renders that raw text. Dropping it here would leave this
+        # box empty while the other said something.
+        if not (failure_text or error_message):
             return ""
-        token = hashlib.sha256((failure_text + error_message).encode("utf-8")).hexdigest()[:12]
+        action = str(video.get("failure_action") or "")
+        token = video_error_token(failure_text, error_message, action)
         return template(
             "partials/video_error_box",
             failure_text=failure_text,
             error_message=error_message,
-            action=str(video.get("failure_action") or ""),
+            action=action,
             token=token,
             scope="source",
             assertive=False,

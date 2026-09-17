@@ -612,6 +612,20 @@ class GstNativeSinkReceiver:
             logger.debug("Cannot observe source bytes from %r", name, exc_info=True)
 
     def _on_source_pad_added(self, _element: Any, pad: Any) -> None:
+        """Probe a late-arriving source pad, if it is the video one.
+
+        ``rtspsrc`` exposes one pad per SDP media track, and the RTSP plugin
+        deliberately links only the video track. Probing every pad would let an
+        audio-first or audio-only stream advance the phase on audio bytes, so a
+        timeout would then be diagnosed as video that arrived and failed to
+        decode. Caps we cannot read yet carry no media field; probe those rather
+        than miss the only pad we get.
+        """
+        caps = pad.get_current_caps() or pad.query_caps(None)
+        caps_str = caps.to_string() if caps is not None else ""
+        if "media=(string)" in caps_str and "media=(string)video" not in caps_str:
+            logger.debug("Not observing non-video source pad %s (%s)", pad.get_name(), caps_str)
+            return
         pad.add_probe(Gst.PadProbeType.BUFFER, self._on_source_buffer)
 
     def _on_source_buffer(self, _pad: Any, _info: Any) -> int:

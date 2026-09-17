@@ -4771,3 +4771,68 @@ def test_collect_network_interfaces_separates_a_long_name_from_its_fields(
     monkeypatch.setattr(psutil, "net_if_addrs", lambda: {})
     rows = diag.collect_network_interfaces(_route_file(tmp_path, ""))
     assert "enx9c69d3af4e98 isup=True" in rows[0]
+
+
+def test_collect_runtime_state_carries_the_failure_diagnosis() -> None:
+    """The bundle is what an operator attaches to a report. Recording only the
+    element's wording discards the part that says which piece of equipment to
+    go and look at, and the phase it was judged from."""
+    stats = {
+        "video": {
+            "source_type": "rtsp",
+            "source_label": "rtsp://192.0.2.10:554/main",
+            "connected": False,
+            "pipeline_state": "reconnecting",
+            "failure": "unauthorized",
+            "phase": "stream_described",
+            "failure_text": "rtsp://192.0.2.10:554/main rejected the login.",
+            "failure_action": "Check the username and password under Video Source.",
+            "error_message": "Unauthorized (401)",
+        }
+    }
+    joined = "\n".join(diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats)))
+
+    assert "failure               unauthorized (phase: stream_described)" in joined
+    assert "rejected the login." in joined
+    assert "Check the username and password under Video Source." in joined
+    # The element's own wording stays too: the bundle is where it belongs.
+    assert "Unauthorized (401)" in joined
+
+
+def test_collect_runtime_state_omits_the_diagnosis_for_a_healthy_feed() -> None:
+    joined = "\n".join(diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=_stats)))
+    assert "failure  " not in joined
+    assert "suggested" not in joined
+
+
+def test_collect_runtime_state_redacts_a_credential_in_the_reading() -> None:
+    """``failure_text`` embeds the source label, and this file is public."""
+    stats = {
+        "video": {
+            "failure": "unreachable",
+            "failure_text": "Nothing answered at rtsp://operator:hunter2@192.0.2.10:554/main.",
+        }
+    }
+    joined = "\n".join(diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats)))
+    assert "hunter2" not in joined
+
+
+def test_collect_runtime_state_records_an_unreadable_failure_without_inventing_one() -> None:
+    """``unknown`` carries no sentence and no useful advice, but the token and
+    the phase are still worth recording - they say the station classified
+    nothing, which is itself the finding."""
+    stats = {
+        "video": {
+            "failure": "unknown",
+            "phase": "starting",
+            "failure_text": "",
+            "failure_action": "",
+            "error_message": "v4l2src is Linux-only",
+        }
+    }
+    joined = "\n".join(diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats)))
+
+    assert "failure               unknown (phase: starting)" in joined
+    assert "reading  " not in joined
+    assert "suggested" not in joined
+    assert "v4l2src is Linux-only" in joined

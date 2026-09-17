@@ -70,3 +70,17 @@ def video_signal_label(connected: bool, failure: str) -> str:
     if classified in (VideoFailure.NONE, VideoFailure.UNKNOWN):
         return "Disconnected"
     return failure_chip(classified)
+
+
+def video_error_token(failure_text: str, error_message: str, action: str) -> str:
+    """Identify the failure box by what it actually displays.
+
+    ``hx-preserve`` keys on this id. Hashing text the box hides (the pipeline's
+    own wording, shown only when there is no classification) re-inserts the node
+    on changes nobody sees, re-announcing the alert; omitting the action leaves
+    stale text when only the advice changes.
+    """
+    import hashlib
+
+    shown = (failure_text or error_message) + "\x00" + action
+    return hashlib.sha256(shown.encode("utf-8")).hexdigest()[:12]

@@ -1,5 +1,5 @@
 % import hashlib
-% from openfollow.web.labels import pretty_label, video_signal_label
+% from openfollow.web.labels import pretty_label, video_error_token, video_signal_label
 % system = stats.get("system", {})
 % video = stats.get("video", {})
 % resolution = video.get("resolution", {})
@@ -32,7 +32,7 @@
 % show_video_error = bool(video_error or video_failure_text) and not video_connected
 % # Identifies the node by what it says, so the 1 Hz poll below re-uses the
 % # existing element while the reason is unchanged (see the banner's comment).
-% video_error_token = hashlib.sha256((video_failure_text + video_error).encode("utf-8")).hexdigest()[:12]
+% video_error_token = video_error_token(video_failure_text, video_error, video_failure_action)
 % output_resolution = system.get("output_resolution")
 % output_text = ("%dx%d" % (output_resolution["width"], output_resolution["height"])) if output_resolution else "N/A (no display)"
 % tracking_state = "Off"

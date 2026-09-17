@@ -172,10 +172,6 @@ _ACTIONS: dict[VideoFailure, str] = {
 # Per kind, for the two failures whose default advice presumes a host we dialled.
 # Anything not listed falls back to ``_ACTIONS``, which holds for every kind.
 _KIND_ACTIONS: dict[SourceKind, dict[VideoFailure, str]] = {
-    SourceKind.NAMED: {
-        VideoFailure.UNREACHABLE: "Check the source is running and visible to this station on the network.",
-        VideoFailure.NO_DATA: "Check the source is sending video, not audio only.",
-    },
     SourceKind.LISTENER: {
         VideoFailure.UNREACHABLE: "Check the sender is transmitting to this address and port.",
         VideoFailure.NO_DATA: "Check the sender is transmitting the encoding configured on this station.",
@@ -183,6 +179,14 @@ _KIND_ACTIONS: dict[SourceKind, dict[VideoFailure, str]] = {
     SourceKind.LOCAL: {
         VideoFailure.UNREACHABLE: "Check the device is connected, and not held by another program.",
         VideoFailure.NO_DATA: "Check the device is producing a signal in the format configured for it.",
+        # The same code arrives from an absent capture device and a deleted
+        # media file, neither of which has a stream path to correct.
+        VideoFailure.STREAM_NOT_FOUND: "Check the device or file selected under Video Source still exists.",
+    },
+    SourceKind.NAMED: {
+        VideoFailure.UNREACHABLE: "Check the source is running and visible to this station on the network.",
+        VideoFailure.NO_DATA: "Check the source is sending video, not audio only.",
+        VideoFailure.STREAM_NOT_FOUND: "Check the source is still published under that name.",
     },
 }
 

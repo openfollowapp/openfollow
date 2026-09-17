@@ -151,12 +151,30 @@ class FakeElement:
 
 
 class FakePad:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, caps: str = "") -> None:
         self._name = name
+        self._caps = caps
         self.probes: list[tuple[str, Callable]] = []
+
+    def get_name(self) -> str:
+        return self._name
 
     def add_probe(self, probe_type: Any, callback: Callable) -> None:
         self.probes.append((probe_type, callback))
+
+    def get_current_caps(self) -> FakeCaps | None:
+        return FakeCaps(self._caps) if self._caps else None
+
+    def query_caps(self, _filter: Any) -> FakeCaps | None:
+        return FakeCaps(self._caps) if self._caps else None
+
+
+class FakeCaps:
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def to_string(self) -> str:
+        return self._value
 
 
 class FakeBus:
@@ -4720,3 +4738,49 @@ class TestTheInputDeclaresWhatItGetsVideoFrom:
 
         remote = {i for i, c in get_registry().items() if c.source_kind is SourceKind.REMOTE}
         assert remote == {"rtsp", "srt"}
+
+
+class TestOnlyTheVideoPadIsObserved:
+    """``rtspsrc`` exposes one pad per SDP media track.
+
+    The RTSP plugin links only the video one. Probing every pad would let an
+    audio-first or audio-only stream advance the phase on audio bytes, so a
+    timeout would then read as video that arrived and failed to decode.
+    """
+
+    def _receiver_with_dynamic_source(self, monkeypatch) -> tuple[Any, Any]:
+        monkeypatch.setattr(FakeInput, "source_element_name", "fakesrc", raising=False)
+        element = _DynamicPadElement("fakesrc")
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline = FakePipeline(elements={"fakesrc": element})
+        r._attach_source_probe()
+        return r, element.connected[0][1]
+
+    def test_an_audio_pad_is_not_probed(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        r, on_pad_added = self._receiver_with_dynamic_source(monkeypatch)
+        audio = FakePad("recv_rtp_src_1", caps="application/x-rtp, media=(string)audio, encoding-name=(string)PCMA")
+
+        on_pad_added(None, audio)
+
+        assert audio.probes == []
+        assert r._state.phase == ConnectionPhase.STARTING
+
+    def test_the_video_pad_is(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        _r, on_pad_added = self._receiver_with_dynamic_source(monkeypatch)
+        video = FakePad("recv_rtp_src_0", caps="application/x-rtp, media=(string)video, encoding-name=(string)H264")
+
+        on_pad_added(None, video)
+
+        assert [cb.__name__ for _t, cb in video.probes] == ["_on_source_buffer"]
+
+    def test_unreadable_caps_are_probed_rather_than_skipped(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        """Caps not yet negotiated carry no media field. Skipping those would
+        miss the only pad some sources ever expose."""
+        _r, on_pad_added = self._receiver_with_dynamic_source(monkeypatch)
+        unknown = FakePad("src_0")
+
+        on_pad_added(None, unknown)
+
+        assert unknown.probes

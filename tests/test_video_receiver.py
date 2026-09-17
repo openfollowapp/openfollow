@@ -4784,3 +4784,39 @@ class TestOnlyTheVideoPadIsObserved:
         on_pad_added(None, unknown)
 
         assert unknown.probes
+
+
+class TestTheSourceSocketReportsItsOwnSilence:
+    """``udpsrc.timeout`` makes the element say nothing has arrived, instead of
+    our watchdog inferring it seconds later.
+
+    The receiver passes no verdict with it: the element supplies the timing,
+    the feed's phase supplies the meaning.
+    """
+
+    def test_silence_before_anything_arrived_reads_as_never_reached(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+
+        r._handle_element_timeout("GstUDPSrcTimeout")
+
+        assert r.status_marker.failure == VideoFailure.UNREACHABLE
+        assert r._state.connected is False
+
+    def test_silence_after_a_feed_was_decoding_reads_as_a_stall(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._state.mark_frame_received()
+
+        r._handle_element_timeout("GstUDPSrcTimeout")
+
+        assert r.status_marker.failure == VideoFailure.STALLED
+
+    def test_silence_on_the_placeholder_is_ignored(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """The No Signal picture is ours; its socket has nothing to report and
+        must not drive the real pipeline's diagnosis."""
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._state.set_placeholder_pipeline(True)
+
+        r._handle_element_timeout("GstUDPSrcTimeout")
+
+        assert r.status_marker.failure == VideoFailure.NONE
+        assert not fake_glib.timers  # no reconnect scheduled

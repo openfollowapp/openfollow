@@ -163,6 +163,7 @@ class GstNativeSinkReceiver:
             on_error=self._handle_bus_error,
             on_eos=self._handle_bus_eos,
             on_segment_done=self._handle_bus_segment_done,
+            on_element_timeout=self._handle_element_timeout,
             is_placeholder_pipeline=lambda: self._state.is_placeholder_pipeline,
             get_input_display_name=lambda: self._input.display_name,
         )
@@ -945,6 +946,19 @@ class GstNativeSinkReceiver:
             return
         self._state.mark_disconnected()
         self._schedule_reconnect("End of stream")
+
+    def _handle_element_timeout(self, _name: str) -> None:
+        """The source element reports nothing has arrived at its socket.
+
+        No verdict is passed: the element tells us *when*, and how far the feed
+        got tells us *what*. A listener that never received a packet classifies
+        as unreachable; one whose packets stopped after decoding is a stall.
+        Placeholder pipelines are ignored, as they are everywhere else.
+        """
+        if self._state.is_placeholder_pipeline:
+            return
+        self._state.mark_disconnected()
+        self._schedule_reconnect("No packets received at the source socket")
 
     def _handle_bus_segment_done(self, message: Any) -> None:
         # Drives a looping input's gapless loop. GstPipeline aggregates the

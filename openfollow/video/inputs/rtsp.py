@@ -22,6 +22,12 @@ from openfollow.video.inputs._base import (
 
 logger = logging.getLogger(__name__)
 
+# ``rtspsrc`` reports in microseconds. Both defaults outlast our connection
+# timeout (20 s and 5 s against 8 s), so the element is silently torn down
+# before it can say why it failed.
+_TCP_TIMEOUT_US = 5_000_000
+_UDP_RETRY_TIMEOUT_US = 2_000_000
+
 
 def _endpoint_from_url(
     url: str, *, scheme: str, default_port: int, connection_oriented: bool = True
@@ -91,7 +97,11 @@ class RtspInput(VideoInputBase):
             min_delay=0.5,
             max_delay=3.0,
             backoff_multiplier=1.5,
-            connection_timeout=8.0,
+            # Room for the element's own sequence to finish and report: a UDP
+            # attempt that falls back to TCP costs _UDP_RETRY_TIMEOUT_US plus
+            # _TCP_TIMEOUT_US, and killing it mid-fallback is what produced a
+            # bare "no video received" for every RTSP fault.
+            connection_timeout=12.0,
             fallback_to_selection=True,
             heal_interval=5.0,
             stall_timeout=3.0,
@@ -161,6 +171,11 @@ class RtspInput(VideoInputBase):
         if user or password:
             rtspsrc.set_property("user-id", user)
             rtspsrc.set_property("user-pw", password)
+        # The element must give up before our watchdog does, or its error is
+        # never posted and the failure is classified from the phase alone.
+        # Defaults are 20 s TCP and 5 s UDP-to-TCP against our 8 s.
+        rtspsrc.set_property("tcp-timeout", _TCP_TIMEOUT_US)
+        rtspsrc.set_property("timeout", _UDP_RETRY_TIMEOUT_US)
         rtspsrc.set_property("latency", 0)
         rtspsrc.set_property("drop-on-latency", True)
         rtspsrc.set_property("buffer-mode", 0)  # none – lowest latency

@@ -27,6 +27,7 @@ PipelineProvider = Callable[[], Any | None]
 AsyncDoneHandler = Callable[[Any], None]
 ErrorHandler = Callable[[BusError], None]
 EosHandler = Callable[[], None]
+ElementTimeoutHandler = Callable[[str], None]
 SegmentDoneHandler = Callable[[Any], None]
 BoolProvider = Callable[[], bool]
 TextProvider = Callable[[], str]
@@ -46,6 +47,7 @@ class ReceiverBusHandler:
         is_placeholder_pipeline: BoolProvider,
         get_input_display_name: TextProvider,
         on_segment_done: SegmentDoneHandler | None = None,
+        on_element_timeout: ElementTimeoutHandler | None = None,
     ) -> None:
         self._gst = gst
         self._logger = logger
@@ -54,6 +56,7 @@ class ReceiverBusHandler:
         self._on_error = on_error
         self._on_eos = on_eos
         self._on_segment_done = on_segment_done or (lambda _message: None)
+        self._on_element_timeout = on_element_timeout or (lambda _name: None)
         self._is_placeholder_pipeline = is_placeholder_pipeline
         self._get_input_display_name = get_input_display_name
         # Handler id from ``bus.connect("message", ...)`` so teardown can
@@ -131,8 +134,28 @@ class ReceiverBusHandler:
             self._on_segment_done(message)
             return
 
+        if msg_type == self._gst.MessageType.ELEMENT:
+            self._handle_element(message)
+            return
+
         if msg_type == self._gst.MessageType.STATE_CHANGED:
             self._handle_state_changed(message)
+
+    def _handle_element(self, message: Any) -> None:
+        """Forward an element's own silence report.
+
+        ``udpsrc`` posts ``GstUDPSrcTimeout`` when nothing has arrived at the
+        socket for its configured window. That is the element saying what our
+        watchdog would otherwise have to infer, sooner and with certainty.
+        """
+        structure = message.get_structure()
+        if structure is None:
+            return
+        name = structure.get_name()
+        if name != "GstUDPSrcTimeout":
+            return
+        self._logger.warning("No packets at the source socket (%s)", name)
+        self._on_element_timeout(name)
 
     def _handle_state_changed(self, message: Any) -> None:
         if message.src.get_name() not in ("videosink", "shared_videosink"):

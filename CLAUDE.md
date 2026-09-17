@@ -409,10 +409,22 @@ none of which can be refused. Aligning the per-protocol timeouts (and
 `srt auto-reconnect=false`) is the change that would decide whether it can ever
 fire; until then the member ships unreachable and its text match is dead.
 
-**SRT currently cannot report why it failed.** `auto-reconnect` swallows every
-connect failure, so a wrong host, a closed port and a wrong passphrase all reach
-the operator as the same connection timeout. No amount of classification fixes
-that from this side of the element.
+**The element must give up before our watchdog does.** Its defaults do not:
+`rtspsrc.tcp-timeout` is 20 s and `srtsrc.auto-reconnect` retries forever, both
+against an 8 s `connection_timeout`, so the pipeline was torn down before it
+could say why. RTSP now sets 5 s / 2 s against a 12 s budget (room for a
+UDP-to-TCP fallback to finish), SRT turns internal retry off, and `udpsrc.timeout`
+is 3 s so the socket reports its own silence instead of our watchdog inferring
+it. `TestTheElementGivesUpFirst` checks the rule against the properties each
+plugin actually sets, so a new plugin cannot reintroduce it.
+
+**SRT still cannot report *why*, only *that*.** With `auto-reconnect` off a real
+error reaches the bus in ~3 s instead of nothing at all, but an unresponsive
+listener, a wrong passphrase, a closed port and an unroutable host are all
+`gst-resource-error-quark:9` with `Connection timeout (16)`. That is libsrt's
+design at the caller - telling one from another for the passphrase case would be
+an oracle - not a gap in the taxonomy. Do not add a mapping that pretends
+otherwise.
 
 ### Placeholder pipeline vs source state
 The "No Signal" placeholder is a black `videotestsrc` pinned at 1920x1080 @ 30 that feeds the **shared** sink, and both sink probes are attached once for that sink's lifetime – so its caps reach the same writer the real source uses. `ReceiverStateMachine.set_resolution` / `set_source_framerate` therefore refuse while `is_placeholder_pipeline`, mirroring `mark_frame_received`, and `_create_placeholder_pipeline` calls `clear_source_caps()` rather than writing its own geometry in. **Do not publish placeholder caps as source state**: `video.resolution` / `source_fps` are what the Statistics panel reports as the feed's own, and what `update_video` shapes the window from – a source that has never delivered a frame would otherwise present as a working 1080p feed and pin the window to 16:9 for the session.

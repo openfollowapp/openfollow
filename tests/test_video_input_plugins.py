@@ -486,3 +486,74 @@ class TestSourceElementDeclaration:
     def test_declared_name_is_not_blank(self, plugin: type[VideoInputBase]) -> None:
         name = plugin.source_element_name
         assert name is None or (name and name == name.strip())
+
+
+# --------------------------------------------------------------------------- #
+# Element timeouts vs our own
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("plugin", _plugin_params())
+class TestTheElementGivesUpFirst:
+    """Our watchdog must outlast the element's own clock, or its error is never
+    posted and the failure gets classified from the phase alone.
+
+    This is how every RTSP fault came to read as one line: ``rtspsrc`` waits 20 s
+    on a TCP connect by default, and we tore the pipeline down at 8 s. The rule
+    is checked against the properties each plugin actually sets, so a future
+    plugin cannot reintroduce it quietly.
+    """
+
+    # Properties whose value is a deadline the element applies to itself, and
+    # the divisor that brings each into seconds.
+    _TIMEOUT_PROPERTIES = {
+        "tcp-timeout": 1_000_000,  # rtspsrc, microseconds
+        "timeout": None,  # unit differs per element, resolved below
+    }
+    _TIMEOUT_UNITS = {"rtspsrc": 1_000_000, "udpsrc": 1_000_000_000, "srtsrc": 1_000_000}
+
+    def _built(self, plugin: type[VideoInputBase]):
+        from unittest.mock import patch
+
+        from tests._fake_gst import FakeElement, make_fake_gst
+
+        available, _reason = plugin.is_available()
+        if not available:
+            pytest.skip("Backend is not available on this host")
+        fake = make_fake_gst()
+        sink = FakeElement("shared_videosink")
+        config = {f.name: f.default for f in plugin.config_fields()}
+        with patch("gi.repository.Gst", fake):
+            return plugin().create_pipeline(
+                config=config, sink=sink, build_overlay_tail=lambda *a: None, prepare_sink=lambda: sink
+            )
+
+    def test_every_element_deadline_is_shorter_than_our_connection_timeout(self, plugin: type[VideoInputBase]) -> None:
+        pipeline = self._built(plugin)
+        budget = plugin.reconnect_policy().connection_timeout
+        if budget <= 0:
+            pytest.skip("Input has no connection timeout to outlast")
+
+        for element in pipeline.elements:
+            unit = self._TIMEOUT_UNITS.get(element.name)
+            if unit is None:
+                continue
+            for prop, value in element.properties.items():
+                if prop not in self._TIMEOUT_PROPERTIES or not isinstance(value, int) or value <= 0:
+                    continue
+                seconds = value / unit
+                assert seconds < budget, (
+                    f"{plugin.input_id}: {element.name}.{prop} is {seconds:.1f}s against a "
+                    f"{budget:.1f}s connection timeout, so we tear it down before it reports"
+                )
+
+    def test_a_network_input_does_not_retry_behind_our_back(self, plugin: type[VideoInputBase]) -> None:
+        """An element that reconnects internally never posts the failure, so the
+        receiver's own retry layer has nothing to classify."""
+        pipeline = self._built(plugin)
+        for element in pipeline.elements:
+            if "auto-reconnect" in element.properties:
+                assert element.properties["auto-reconnect"] is False, (
+                    f"{plugin.input_id}: {element.name} retries internally, so a connect failure "
+                    "is swallowed and every cause reads as one timeout"
+                )

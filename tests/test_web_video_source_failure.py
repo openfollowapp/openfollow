@@ -43,12 +43,15 @@ class TestVideoSourceFailureNotice:
     def test_a_healthy_source_shows_no_notice(self) -> None:
         assert _NOTICE not in _render(video_failure="none", video_failure_text="")
 
-    @pytest.mark.parametrize("failure", ["none", "unknown"])
-    def test_an_unclassified_failure_shows_no_notice(self, failure: str) -> None:
-        """No second line here carries the element's wording, so a bare
-        unreadable verdict is worse than nothing."""
-        body = _render(video_failure=failure, video_failure_text="Video from X failed for a reason we don't know.")
-        assert _NOTICE not in body
+    def test_an_unclassified_failure_still_shows_the_element_wording(self) -> None:
+        """``unknown`` contributes no sentence, but the raw text is the whole
+        diagnosis for a local fault and is what the operator needs here."""
+        body = _render(video_failure="unknown", video_failure_text="", video_error_message="v4l2src is Linux-only")
+        assert _NOTICE in body
+        assert "v4l2src is Linux-only" in body
+
+    def test_a_healthy_source_shows_no_notice_even_with_stale_text(self) -> None:
+        assert _NOTICE not in _render(video_failure="none", video_failure_text="", video_error_message="")
 
     def test_the_section_renders_without_the_keys_at_all(self) -> None:
         """A caller with no runtime stats must still get a usable form."""
@@ -115,3 +118,60 @@ class TestTheSaveResponseDoesNotNameTheOldSource:
 
     def test_the_section_renders_clean_after_a_save(self) -> None:
         assert _NOTICE not in _render(saved=True, video_failure="none", video_failure_text="")
+
+
+class TestItIsTheSameBoxAsLiveStatistics:
+    """An operator opens Camera & Grid first when the picture is missing. A
+    reduced banner there means the fuller one on another tab is the real
+    answer, which is exactly the hunt this PR set out to remove.
+    """
+
+    def test_it_carries_the_next_step_too(self) -> None:
+        body = _render(
+            video_failure="unreachable",
+            video_failure_text="Nothing answered at 192.0.2.10:554.",
+            video_failure_action="Check the camera is powered and on this network.",
+            video_error_message="Could not open resource for reading and writing.",
+        )
+        assert "Nothing answered at 192.0.2.10:554." in body
+        assert "Check the camera is powered and on this network." in body
+        assert "Could not open resource" not in body
+
+    def test_its_element_id_does_not_collide_with_the_statistics_box(self) -> None:
+        """Both boxes render on the same page. A repeated id makes
+        ``hx-preserve`` resolve to whichever came first, so the Statistics poll
+        moved this box's node out from under it once a second."""
+        body = _render(
+            video_failure="unreachable",
+            video_failure_text="Nothing answered at X.",
+            video_error_message="Could not open resource.",
+        )
+        assert 'id="video-error-source-' in body
+        assert 'id="video-error-stats-' not in body
+
+
+class TestTheBoxAppearsWithoutAReload:
+    """A page already open when the feed fails showed nothing on this tab.
+
+    The section does not re-render on its own, so the box only existed on a
+    fresh load - which is not how an operator meets a failure.
+    """
+
+    def test_the_box_is_polled(self) -> None:
+        body = _render(video_failure="unreachable", video_failure_text="Nothing answered at X.")
+        assert 'hx-get="/section/video_source/failure"' in body
+        assert 'hx-trigger="every 3s"' in body
+
+    def test_the_poll_target_exists_even_while_healthy(self) -> None:
+        """Nothing to swap into means the box can never appear later."""
+        body = _render(video_failure="none", video_failure_text="")
+        assert 'id="video-source-failure"' in body
+
+    def test_the_form_is_not_inside_the_polled_region(self) -> None:
+        """Swapping the form would discard a half-typed URL or password - the
+        exact thing the operator is on this tab to fix."""
+        body = _render(video_failure="unreachable", video_failure_text="Nothing answered at X.")
+        start = body.index('id="video-source-failure"')
+        region = body[start : body.index("</div>", start)]
+        for field in ('name="rtsp_url"', 'name="video_source_type"', 'name="rtsp_password"'):
+            assert field not in region

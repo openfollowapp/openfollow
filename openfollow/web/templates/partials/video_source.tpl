@@ -5,14 +5,30 @@
         <span class="section-note">Camera input and live preview</span>
     </div>
 
-% # This is the form the fix gets typed into, so it says what failed. Already
-% # credential-free - the status marker redacts on the way in.
+% # This is the form the fix gets typed into, and the tab an operator opens
+% # first when the picture is missing, so it carries the same box Live
+% # Statistics does rather than a reduced version. Already credential-free -
+% # the status marker redacts on the way in.
+% import hashlib
 % video_failure = str(defined("video_failure") and video_failure or "none")
 % video_failure_text = str(defined("video_failure_text") and video_failure_text or "")
-% show_failure = bool(video_failure_text) and video_failure not in ("none", "unknown")
+% video_error_message = str(defined("video_error_message") and video_error_message or "")
+% video_failure_action = str(defined("video_failure_action") and video_failure_action or "")
+% show_failure = video_failure not in ("none",) and bool(video_failure_text or video_error_message)
+%# Polled on its own so a failure that starts while this page is open still
+%# shows up. Only the box is swapped - re-rendering the form would discard
+%# whatever the operator is part-way through typing, which is what they came
+%# here to do.
+<div id="video-source-failure"
+     hx-get="/section/video_source/failure"
+     hx-trigger="every 3s"
+     hx-target="this"
+     hx-swap="innerHTML">
 % if show_failure:
-    <div class="notice error" role="status" aria-live="polite" aria-atomic="true">{{video_failure_text}}</div>
+%     token = hashlib.sha256((video_failure_text + video_error_message).encode("utf-8")).hexdigest()[:12]
+%     include('partials/video_error_box.tpl', failure_text=video_failure_text, error_message=video_error_message, action=video_failure_action, token=token, scope='source', assertive=False)
 % end
+</div>
 
     <div class="group">
         <div class="row">

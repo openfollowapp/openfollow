@@ -1555,34 +1555,33 @@ def _video_disconnect_banner_text(app: OpenFollowApp) -> str:
     """Compose the Settings-menu banner that replaces the old "No
     Signal" overlay.
 
-    Carries every field the prior overlay surfaced – source type,
-    source label / URL, reconnect-attempt count, and the receiver's
-    error message – concatenated into a single string. The Settings
-    menu's red-bordered error box renders this with bold body text
-    and greedy word-wrap (no ellipsis truncation), so the full
-    diagnostic stays readable even for long error messages.
+    The Settings menu's red-bordered error box renders this with bold
+    body text and greedy word-wrap (no ellipsis truncation), so a long
+    message stays readable.
+
+    The reconnect count is deliberately absent, as it is in the web
+    boxes: it changes on every attempt, and a figure that moves on a
+    projected screen draws the eye without telling an operator
+    anything they can act on.
     """
     source_type = app._config.video_source_type
     receiver = app._video_receiver
     status = getattr(receiver, "status_marker", None) if receiver else None
     source_label = (getattr(status, "source_name", "") if status else "") or ""
     error = (getattr(status, "error_message", "") if status else "") or ""
-    attempt = int(getattr(status, "reconnect_attempt", 0) or 0)
     failure = getattr(status, "failure", VideoFailure.NONE) if status else VideoFailure.NONE
 
-    parts: list[str] = [f"Video source ({source_type}) is not available"]
-    if source_label:
-        parts[0] += f" – {source_label}"
-    parts[0] += "."
-    # UNKNOWN's sentence would contradict the error line right beside it.
+    dials_out = getattr(receiver, "dials_out", True)
+    # The sentence already names the source, so a "Video source (rtsp) is not
+    # available - <url>" headline above it only repeated the address. With no
+    # classification the pipeline's own wording is all there is, and it stands
+    # in for the sentence rather than sitting beside it.
     if failure not in (VideoFailure.NONE, VideoFailure.UNKNOWN):
-        parts.append(failure_sentence(failure, where=source_label, dials_out=getattr(receiver, "dials_out", True)))
+        return failure_sentence(failure, where=source_label, dials_out=dials_out)
     if error:
-        parts.append(f"Error: {error}.")
-    if attempt > 0:
-        parts.append(f"Reconnect attempt {attempt}.")
-    parts.append("Switch source type or edit the URL to recover.")
-    return " ".join(parts)
+        return error
+    label = f" – {source_label}" if source_label else ""
+    return f"Video source ({source_type}) is not available{label}."
 
 
 def check_video_disconnect_banner(app: OpenFollowApp) -> None:

@@ -484,6 +484,42 @@ def test_statistics_partial_renders(live_server) -> None:
     assert status == 200
 
 
+def test_video_source_failure_fragment_is_empty_while_healthy(live_server) -> None:
+    """The Camera & Grid tab polls this every few seconds. With no failure it
+    must swap in nothing, not an empty red box."""
+    _, base = live_server
+    status, body = _get(base, "/section/video_source/failure")
+    assert status == 200
+    assert body.strip() == ""
+
+
+def test_video_source_failure_fragment_carries_the_box(live_server, monkeypatch) -> None:
+    """The fragment is what makes a failure appear on a page that was already
+    open; the section itself never re-renders."""
+    server, base = live_server
+    monkeypatch.setattr(
+        server,
+        "get_runtime_stats",
+        lambda: {
+            "video": {
+                "failure": "unreachable",
+                "failure_text": "Nothing answered at 192.0.2.10:554.",
+                "failure_action": "Check the camera is powered.",
+                "error_message": "Could not open resource.",
+            }
+        },
+    )
+    status, body = _get(base, "/section/video_source/failure")
+
+    assert status == 200
+    assert "Nothing answered at 192.0.2.10:554." in body
+    assert "Check the camera is powered." in body
+    # Its own id namespace, or the Statistics poll steals the node.
+    assert 'id="video-error-source-' in body
+    # The pipeline's own wording is not shown where there is a classification.
+    assert "Could not open resource." not in body
+
+
 def test_unknown_section_returns_404(live_server) -> None:
     _, base = live_server
     status, _ = _get(base, "/section/nonexistent")

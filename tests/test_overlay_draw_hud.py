@@ -18,6 +18,7 @@ by public entry point so each section reads as an independent spec:
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -59,6 +60,7 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_virtual_fader_card,
     draw_virtual_faders,
 )
+from openfollow.runtime.overlay_draw_style import COLOR_DANGER_TEXT
 from openfollow.runtime.overlay_state import (
     ButtonDetectionState,
     MarkerOverlayData,
@@ -2240,10 +2242,11 @@ class TestVideoFailureReachesTheDeviceSurfaces:
     which is half of what the browser was reporting.
     """
 
-    def _state(self, *, sentence: str, error: str = "") -> OverlayState:
+    def _state(self, *, sentence: str, error: str = "", action: str = "") -> OverlayState:
         state = OverlayState()
         state.settings_menu_active = True
         state.video_failure_text = sentence
+        state.video_failure_action = action
         state.error_message = error
         return state
 
@@ -2253,15 +2256,25 @@ class TestVideoFailureReachesTheDeviceSurfaces:
         # The box word-wraps, so a sentence arrives as several show_text calls.
         return " ".join(cr.show_text_strings())
 
-    def test_the_box_carries_the_sentence_and_the_element_wording(self) -> None:
+    def test_the_box_carries_the_sentence_and_the_next_step(self) -> None:
+        """Both halves: what the station saw, and the one thing to try. The
+        pipeline's own wording is not here - there is nothing an operator on a
+        dark stage can do with "could not open resource for reading"."""
         drawn = self._drawn(
             self._state(
                 sentence="Nothing answered at 192.0.2.10:554.",
                 error="Could not open resource for reading and writing.",
+                action="Check the camera is powered and on this network.",
             )
         )
         assert "Nothing answered at 192.0.2.10:554." in drawn
-        assert "Could not open resource for reading and writing." in drawn
+        assert "Check the camera is powered and on this network." in drawn
+        assert "Could not open resource" not in drawn
+
+    def test_the_element_wording_stands_in_when_there_is_no_sentence(self) -> None:
+        """A local fault has no classification, so its raw text is the message."""
+        drawn = self._drawn(self._state(sentence="", error="v4l2src is Linux-only", action="Check Video Source."))
+        assert "v4l2src is Linux-only" in drawn
 
     def test_an_auto_opened_banner_still_wins(self) -> None:
         """The startup path composes its own message; it must not be doubled."""
@@ -2279,3 +2292,51 @@ class TestVideoFailureReachesTheDeviceSurfaces:
         """Our own watchdog often fires before GStreamer posts anything, so
         there is a verdict and no element wording at all."""
         assert "ERROR" in self._drawn(self._state(sentence="Video from X stopped arriving."))
+
+
+class TestTheDeviceBoxMatchesTheBrowser:
+    """An operator comparing the projected screen against a laptop must see one
+    message, not two versions of it. Same two weights, same colours as the web
+    UI's ``.notice.error`` and its ``.notice-sub``.
+    """
+
+    def _draws(self) -> FakeCairo:
+        cr = FakeCairo()
+        state = OverlayState()
+        state.settings_menu_active = True
+        state.video_failure_text = "Nothing answered at 192.0.2.10:554."
+        state.video_failure_action = "Check the camera is powered and on this network."
+        draw_settings_menu(FakeRenderer(), cr, state, 1920, 1080)
+        return cr
+
+    def _find(self, cr: FakeCairo, needle: str) -> Any:
+        matches = cr.find_texts(needle)
+        assert matches, f"{needle!r} was not drawn"
+        return matches[0]
+
+    def test_the_observation_carries_the_emphasis(self) -> None:
+        assert self._find(self._draws(), "Nothing answered").bold is True
+
+    def test_the_next_step_is_lighter_but_the_same_size(self) -> None:
+        """Weight and opacity carry the subordination. A smaller face costs
+        legibility on a projected screen for a distinction already made."""
+        cr = self._draws()
+        lead = self._find(cr, "Nothing answered")
+        action = self._find(cr, "Check the camera")
+        assert action.bold is False
+        assert lead.bold is True
+        assert action.font_size == lead.font_size
+
+    def test_both_use_the_web_failure_colour(self) -> None:
+        """``#ffd7d7``; the device drew body text in the ordinary near-white,
+        so the same failure looked like a different kind of message."""
+        cr = self._draws()
+        for needle in ("Nothing answered", "Check the camera"):
+            rgba = self._find(cr, needle).rgba
+            assert rgba[:3] == pytest.approx(COLOR_DANGER_TEXT, abs=0.002)
+
+    def test_the_source_is_named_once(self) -> None:
+        """The sentence already carries the address; a headline above it
+        printed the same URL a second line later."""
+        cr = self._draws()
+        assert len(cr.find_texts("192.0.2.10:554")) == 1

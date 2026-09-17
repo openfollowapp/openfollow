@@ -19,6 +19,7 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_BG_BASE,
     COLOR_BORDER_SOFT,
     COLOR_DANGER,
+    COLOR_DANGER_TEXT,
     COLOR_OK,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
@@ -520,14 +521,13 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
     # manually falls back to the same pair the web UI shows - the sentence
     # naming what failed, then the element's own wording - because the raw
     # message alone was half of what the browser was reporting.
-    error_text = state.settings_menu_banner or " ".join(
-        part for part in (state.video_failure_text, state.error_message) if part
-    )
+    error_text = state.settings_menu_banner or state.video_failure_text or state.error_message
     if error_text:
         cursor_y = _draw_settings_error_box(
             renderer,
             cr,
             error_text,
+            state.video_failure_action,
             content_x,
             cursor_y,
             content_w,
@@ -620,18 +620,35 @@ def _draw_settings_error_box(
     renderer: Any,
     cr: Any,
     message: str,
+    action: str,
     x: float,
     y: float,
     w: float,
 ) -> float:
-    """Render red-bordered error box for Settings modal."""
+    """Render the red-bordered failure box for the Settings modal.
+
+    Two weights, matching the web UI's ``.notice.error`` and its
+    ``.notice-sub``: what the station saw carries the emphasis, the step to try
+    sits under it, lighter and smaller. Same colours as the browser, so an
+    operator comparing the screen against a laptop sees one message.
+    """
     label = "ERROR"
     pad = 12.0
     title_size = 11.0
     body_size = 13.0
+    # Same size as the observation, per the web ``.notice-sub``: weight and
+    # opacity carry the subordination, and a smaller face on a projected screen
+    # costs legibility the distinction is not worth.
+    action_size = body_size
     body_lines = _wrap_error_message(renderer, cr, message, w - 2 * pad, body_size)
     body_line_h = body_size + 6.0
-    body_h = body_line_h * len(body_lines)
+    action_lines = (
+        _wrap_error_message(renderer, cr, action, w - 2 * pad, action_size, bold=False) if action.strip() else []
+    )
+    action_line_h = action_size + 6.0
+    body_h = body_line_h * len(body_lines) + action_line_h * len(action_lines)
+    if action_lines:
+        body_h += 4.0
     card_h = pad * 2 + title_size + 6.0 + body_h
 
     # Subtle red wash inside, hard red border outside.
@@ -654,12 +671,21 @@ def _draw_settings_error_box(
     cr.show_text(label)
 
     renderer._set_ui_font(cr, body_size, bold=True)
-    cr.set_source_rgb(*COLOR_TEXT)
+    cr.set_source_rgb(*COLOR_DANGER_TEXT)
     line_y = y + pad + title_size + 6.0 + body_size
     for line in body_lines:
         cr.move_to(x + pad, line_y)
         cr.show_text(line)
         line_y += body_line_h
+
+    if action_lines:
+        line_y += 4.0
+        renderer._set_ui_font(cr, action_size, bold=False)
+        cr.set_source_rgba(*COLOR_DANGER_TEXT, 0.8)
+        for line in action_lines:
+            cr.move_to(x + pad, line_y)
+            cr.show_text(line)
+            line_y += action_line_h
     return y + card_h + 10.0
 
 

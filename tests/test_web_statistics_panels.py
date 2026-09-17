@@ -203,14 +203,19 @@ class TestVideoFailureBanner:
         body = _render(video={"connected": False, "error_message": "<script>alert(1)</script>"})
         assert "<script>alert" not in body
 
-    def test_retry_progress_is_shown_while_reconnecting(self) -> None:
-        """A source working through its backoff and one that has given up read
-        identically without this, and they call for different responses."""
-        assert "Reconnect attempt 3." in self._banner(reconnect_attempt=3)
-
-    @pytest.mark.parametrize("attempt", [0, None])
-    def test_no_retry_line_when_not_retrying(self, attempt: Any) -> None:
+    @pytest.mark.parametrize("attempt", [0, 3, None])
+    def test_the_retry_count_is_not_in_the_box(self, attempt: Any) -> None:
+        """It changed on every attempt, which both resized the box and made it
+        flicker under the poll. The Pipeline row below distinguishes a source
+        still retrying from one that has given up, without anything moving."""
         assert "Reconnect attempt" not in self._banner(reconnect_attempt=attempt)
+
+    def test_the_panel_still_says_whether_it_is_retrying(self) -> None:
+        panel = _panel(
+            _render(video={"connected": False, "error_message": self._ERROR, "pipeline_state": "reconnecting"}),
+            "Video",
+        )
+        assert _row(panel, "Pipeline") == "Reconnecting"
 
 
 class TestVideoFailureBannerIsNotReannounced:
@@ -281,7 +286,6 @@ def test_a_credential_in_the_receiver_error_never_reaches_the_banner() -> None:
     assert "operator:" not in panel
     # Still the answer the operator needs.
     assert "192.168.0.182:554/video/stream1" in panel
-    assert "Reconnect attempt 2." in panel
 
 
 class TestVideoFailureClassification:
@@ -293,13 +297,15 @@ class TestVideoFailureClassification:
         payload.update(video)
         return _panel(_render(video=payload), "Video")
 
-    def test_the_sentence_leads_and_the_raw_text_follows(self) -> None:
+    def test_the_sentence_leads_and_the_next_step_follows(self) -> None:
         panel = self._panel_for(
             failure="unreachable",
             failure_text="Nothing answered at 192.0.2.10:554.",
-            error_message="Could not open resource for reading",
+            failure_action="Check the camera is powered and on this network.",
         )
-        assert panel.index("Nothing answered at 192.0.2.10:554.") < panel.index("Could not open resource for reading")
+        assert panel.index("Nothing answered at 192.0.2.10:554.") < panel.index(
+            "Check the camera is powered and on this network."
+        )
 
     def test_the_signal_state_names_the_failure(self) -> None:
         panel = self._panel_for(failure="unauthorized", failure_text="192.0.2.10:554 rejected the login.")
@@ -351,3 +357,106 @@ class TestVideoFailureClassification:
         unreachable = alert_id(failure="unreachable", failure_text="Nothing answered at X.", **same_text)
         refused = alert_id(failure="refused", failure_text="X refused the connection.", **same_text)
         assert unreachable != refused
+
+
+class TestTheBoxIsStableUnderThePoll:
+    """The panel is re-swapped every second. Anything in the box that changes,
+    or that sits outside the preserved node, is rebuilt on each swap and reads
+    as a flicker.
+    """
+
+    def _rows(self, attempt: Any) -> int:
+        panel = _panel(
+            _render(
+                video={
+                    "connected": False,
+                    "failure": "unreachable",
+                    "failure_text": "Nothing answered at X.",
+                    "failure_action": "Check the camera.",
+                    "reconnect_attempt": attempt,
+                }
+            ),
+            "Video",
+        )
+        return panel.count('class="notice-sub"')
+
+    def test_the_row_count_is_the_same_retrying_or_not(self) -> None:
+        assert self._rows(3) == self._rows(0) == 1
+
+    def test_everything_sits_inside_the_preserved_node(self) -> None:
+        """``hx-preserve`` keeps only the keyed node. A detail line outside it
+        is rebuilt on every swap even when the text has not changed."""
+        panel = _panel(
+            _render(
+                video={
+                    "connected": False,
+                    "failure": "unreachable",
+                    "failure_text": "Nothing answered at X.",
+                    "failure_action": "Check the camera.",
+                }
+            ),
+            "Video",
+        )
+        start = panel.index("hx-preserve")
+        preserved = panel[start : panel.index("</div>\n        </div>", start)]
+        assert "Nothing answered at X." in preserved
+        assert "Check the camera." in preserved
+
+    def test_the_node_id_is_unchanged_while_the_failure_is(self) -> None:
+        """A moving id defeats the preserve and re-inserts the node each poll."""
+
+        def token(attempt: int) -> str:
+            panel = _panel(
+                _render(
+                    video={
+                        "connected": False,
+                        "failure": "unreachable",
+                        "failure_text": "Nothing answered at X.",
+                        "error_message": "Could not open resource.",
+                        "reconnect_attempt": attempt,
+                    }
+                ),
+                "Video",
+            )
+            start = panel.index('<div id="video-error-')
+            return panel[start : panel.index('"', start + len('<div id="'))]
+
+        assert token(1) == token(2) == token(0)
+
+
+class TestThePipelineWordingIsEvidenceNotTheMessage:
+    """ "Could not open resource for reading and writing." reads to an operator
+    as a second, unrelated fault - permissions, a disk - when it is the same one
+    already named in plain terms above it. It stays reachable because it is what
+    a support conversation quotes, but it does not lead.
+    """
+
+    def _panel_for(self, **video: Any) -> str:
+        payload: dict[str, Any] = {"connected": False}
+        payload.update(video)
+        return _panel(_render(video=payload), "Video")
+
+    def test_it_says_what_was_seen_then_what_to_try(self) -> None:
+        panel = self._panel_for(
+            failure="unreachable",
+            failure_text="Nothing answered at 192.0.2.10:554.",
+            failure_action="Check the camera is powered and on this network.",
+            error_message="Could not open resource for reading and writing.",
+        )
+        assert panel.index("Nothing answered at 192.0.2.10:554.") < panel.index(
+            "Check the camera is powered and on this network."
+        )
+
+    def test_the_pipeline_wording_is_not_shown(self) -> None:
+        panel = self._panel_for(
+            failure="unreachable",
+            failure_text="Nothing answered at X.",
+            failure_action="Check the camera.",
+            error_message="Could not open resource for reading and writing.",
+        )
+        assert "Could not open resource" not in panel
+
+    def test_the_wording_stands_in_when_there_is_no_classification(self) -> None:
+        """A local fault has no sentence, so the raw text is the whole message."""
+        panel = self._panel_for(failure="unknown", error_message="v4l2src is Linux-only")
+        assert "v4l2src is Linux-only" in panel

@@ -22,6 +22,7 @@ from openfollow.video.failure import (
     ConnectionPhase,
     VideoFailure,
     classify_failure,
+    failure_action,
     failure_chip,
     failure_sentence,
 )
@@ -401,3 +402,70 @@ class TestAnInputThatDialsNothingIsNotDescribedAsUnanswered:
             sentence = failure_sentence(failure, where="X", dials_out=False)
             assert sentence.endswith(".")
             assert "{" not in sentence
+
+
+class TestEveryFailureOffersSomethingToDo:
+    """An operator reading a projected screen mid-show needs the next step, not
+    the pipeline's own wording. The action is a separate field from the
+    sentence so the two never blur: one is what the station saw, the other is
+    what the operator is being asked to do.
+    """
+
+    def test_every_failure_that_is_one_has_an_action(self) -> None:
+        for failure in VideoFailure:
+            if failure is VideoFailure.NONE:
+                continue
+            assert failure_action(failure).endswith(".")
+
+    def test_a_healthy_feed_asks_for_nothing(self) -> None:
+        assert failure_action(VideoFailure.NONE) == ""
+
+    def test_the_action_is_one_line_not_a_procedure(self) -> None:
+        """Anything longer belongs in the website docs, which cannot be opened
+        from the stage."""
+        for failure in VideoFailure:
+            action = failure_action(failure)
+            assert action.count(".") <= 2
+            assert len(action) <= 110
+
+    def test_it_names_the_setting_not_a_click_path(self) -> None:
+        """Wording has to hold on the projected screen too, where there is no
+        tab to click."""
+        for failure in VideoFailure:
+            assert "click" not in failure_action(failure).lower()
+
+    @pytest.mark.parametrize("failure", [VideoFailure.UNREACHABLE, VideoFailure.NO_DATA])
+    def test_a_listener_is_not_told_to_check_a_camera_it_never_dialled(self, failure: VideoFailure) -> None:
+        assert failure_action(failure, dials_out=False) != failure_action(failure)
+        assert "sender" in failure_action(failure, dials_out=False)
+
+    def test_the_sentence_still_carries_no_remedy(self) -> None:
+        """The separation is the point: a reader quoting the observation into a
+        support thread should not carry our advice with it."""
+        for failure in VideoFailure:
+            sentence = failure_sentence(failure, where="192.0.2.10:554").lower()
+            for instruction in ("check the", "please ", "make sure", "you should"):
+                assert instruction not in sentence
+
+
+class TestNoSentenceClaimsWhatTheFarEndDid:
+    """What a camera did is not observable from here.
+
+    "answered, but sent no video" asserted the camera sent nothing, when it may
+    have been sending into a blocked media path - half of what the action asks
+    the operator to check. Only what reached this station is ours to state.
+    """
+
+    @pytest.mark.parametrize("dials_out", [True, False])
+    def test_no_sentence_asserts_the_far_end_transmitted_or_did_not(self, dials_out: bool) -> None:
+        for failure in VideoFailure:
+            sentence = failure_sentence(failure, where="X", dials_out=dials_out).lower()
+            for claim in ("sent no", "is not sending", "stopped sending", "sends no"):
+                assert claim not in sentence, f"{failure.name} claims what the far end did"
+
+    def test_a_stall_is_phrased_as_arrival_not_as_sending(self) -> None:
+        """We observe our own receive side; the camera may still be running."""
+        assert failure_sentence(VideoFailure.STALLED, where="X") == "Video from X stopped arriving."
+
+    def test_the_no_data_sentence_names_this_station_as_the_observer(self) -> None:
+        assert "this station did not receive" in failure_sentence(VideoFailure.NO_DATA, where="X")

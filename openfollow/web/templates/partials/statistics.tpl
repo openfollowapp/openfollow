@@ -27,12 +27,12 @@
 % # The classification leads; the element's own wording stays under it.
 % # "unknown" contributes no sentence - it would contradict that line.
 % video_failure = str(video.get("failure") or "none")
+% video_failure_action = str(video.get("failure_action") or "")
 % video_failure_text = str(video.get("failure_text") or "") if video_failure not in ("none", "unknown") else ""
 % show_video_error = bool(video_error or video_failure_text) and not video_connected
 % # Identifies the node by what it says, so the 1 Hz poll below re-uses the
 % # existing element while the reason is unchanged (see the banner's comment).
 % video_error_token = hashlib.sha256((video_failure_text + video_error).encode("utf-8")).hexdigest()[:12]
-% reconnect_attempt = video.get("reconnect_attempt") or 0
 % output_resolution = system.get("output_resolution")
 % output_text = ("%dx%d" % (output_resolution["width"], output_resolution["height"])) if output_resolution else "N/A (no display)"
 % tracking_state = "Off"
@@ -79,22 +79,7 @@
             <span class="stat-chip {{'ok' if video_connected else 'off'}}">{{video_state}}</span>
         </div>
 % if show_video_error:
-        <div class="notice error">
-            %# ``hx-preserve`` keyed on the message: this partial is re-swapped
-            %# every second, and a freshly inserted role="alert" each time would
-            %# have a screen reader repeating the failure without pause. Keeping
-            %# the node means it announces once, on the reason changing.
-            <div id="video-error-{{video_error_token}}" hx-preserve="true"
-                 role="alert" aria-live="assertive" aria-atomic="true">{{video_failure_text or video_error}}</div>
-%     if video_failure_text and video_error:
-            <div class="notice-sub">{{video_error}}</div>
-%     end
-%     if reconnect_attempt:
-            %# Outside the preserved node: the count moves with every retry, and
-            %# it is progress on a failure already announced, not a new one.
-            <div class="notice-sub">Reconnect attempt {{reconnect_attempt}}.</div>
-%     end
-        </div>
+%     include('partials/video_error_box.tpl', failure_text=video_failure_text, error_message=video_error, action=video_failure_action, token=video_error_token, scope='stats', assertive=True)
 % end
         <dl class="metric-list">
             <div class="metric-row">

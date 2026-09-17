@@ -362,8 +362,19 @@ them cannot drift. `VideoFailure` values are a **wire interface** –
 `/api/stats` publishes `video.failure` for support tooling, so renaming a
 member breaks a consumer's matching.
 
-Sentences **describe the observation and stop**; remedies belong in the website
-docs. `where` must already be redacted – it reaches the HUD and the PIN-exempt
+Sentences state **only what this station observed**, never what the far end
+did. "answered, but sent no video" asserted the camera sent nothing when it may
+have been sending into a blocked path; a stall is "stopped arriving", not
+"stopped sending". Sentences otherwise **describe the observation and stop**,
+and `failure_action` carries
+**one short next step** beside them - two fields, never blurred into one, so a
+reader quoting the observation into a support thread does not carry our advice
+with it. Anything longer than a line belongs in the website docs, which an
+operator on a stage cannot open. The pipeline's own wording ("Could not open
+resource for reading and writing.") is **not** shown to an operator: it reads as
+a second, unrelated fault and nothing can be done with it. It stays in
+`/api/stats` and the diagnostics bundle, and stands in for the sentence only
+where there is no classification at all. `where` must already be redacted – it reaches the HUD and the PIN-exempt
 `/section/statistics`. `UNKNOWN` renders **no** sentence on any surface: it
 would sit above the element's own wording and contradict it.
 

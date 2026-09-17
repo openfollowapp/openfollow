@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from openfollow.runtime import webkit_browser
+from openfollow.video.failure import VideoFailure
 
 pytestmark = pytest.mark.unit
 
@@ -769,6 +770,7 @@ class TestVideoDisconnectBanner:
                 source_name="",
                 error_message="",
                 reconnect_attempt=0,
+                failure=VideoFailure.NONE,
             )
         receiver = SimpleNamespace(
             connected=connected,
@@ -927,6 +929,7 @@ class TestVideoDisconnectBanner:
             connected=False,
             was_connected=False,
             status_marker=SimpleNamespace(
+                failure=VideoFailure.UNREACHABLE,
                 source_name="rtsp://10.0.0.5/stream",
                 error_message="Connection refused",
                 reconnect_attempt=3,
@@ -935,10 +938,12 @@ class TestVideoDisconnectBanner:
         app_modes.check_video_disconnect_banner(app)
         assert len(app._opened) == 1
         banner = app._opened[0]["banner"]
-        assert "rtsp" in banner
-        assert "rtsp://10.0.0.5/stream" in banner
-        assert "Connection refused" in banner
-        assert "Reconnect attempt 3" in banner
+        # The banner is the lead line only, as in the web box: the classified
+        # sentence already names the source, so a headline repeating the URL
+        # above it was printing the address twice. The next step is drawn
+        # separately, from ``OverlayState.video_failure_action``.
+        assert banner == "Nothing answered at rtsp://10.0.0.5/stream."
+        assert "Reconnect attempt" not in banner
         assert app._video_disconnect_banner_shown is True
         assert app._video_disconnect_menu_open is True
 
@@ -1047,6 +1052,7 @@ class TestVideoDisconnectBanner:
             source_type="rtsp",
             banner="Video source (ndi) is not available. ...",
             status_marker=SimpleNamespace(
+                failure=VideoFailure.UNREACHABLE,
                 source_name="rtsp://10.0.0.5/stream",
                 error_message="Connection refused",
                 reconnect_attempt=0,
@@ -1054,8 +1060,7 @@ class TestVideoDisconnectBanner:
         )
         app_modes.check_video_disconnect_banner(app)
         assert app._exited == []  # menu stays open
-        assert "(rtsp)" in app._settings_menu_banner
-        assert "Connection refused" in app._settings_menu_banner
+        assert app._settings_menu_banner == "Nothing answered at rtsp://10.0.0.5/stream."
         assert "(ndi)" not in app._settings_menu_banner
 
     def test_no_close_when_menu_not_auto_opened(self) -> None:
@@ -1189,13 +1194,14 @@ class TestVideoDisconnectBannerNamesTheFailure:
 
         assert "Nothing answered at 192.0.2.10:554." in self._banner(failure=VideoFailure.UNREACHABLE)
 
-    def test_the_raw_error_survives_beside_it(self) -> None:
-        """Support reads the element's own words; they are not replaced."""
+    def test_the_pipeline_wording_is_not_in_the_banner(self) -> None:
+        """Matching the web box: the classification is the message, and the
+        element's own wording has nothing an operator can act on."""
         from openfollow.video.failure import VideoFailure
 
         banner = self._banner(failure=VideoFailure.UNAUTHORIZED)
         assert "rejected the login" in banner
-        assert "Could not open resource" in banner
+        assert "Could not open resource" not in banner
 
     def test_an_unclassified_failure_adds_no_sentence(self) -> None:
         """Its sentence would contradict the error text printed after it."""

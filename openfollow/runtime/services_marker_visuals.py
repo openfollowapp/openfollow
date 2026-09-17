@@ -25,7 +25,7 @@ from openfollow.runtime.services_detection_pin import is_assist_controlled
 from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.runtime_metrics import OverlayStatePool
 from openfollow.units import UnitSystem
-from openfollow.video.failure import VideoFailure, failure_chip, failure_sentence
+from openfollow.video.failure import VideoFailure, failure_action, failure_chip, failure_sentence
 
 # Same pattern ``GridConfig.__post_init__`` enforces. Duplicated here rather
 # than imported from configuration.py so this module doesn't reach into the
@@ -436,6 +436,11 @@ def build_marker_visual_state(
     state.error_message = status.error_message
     # UNKNOWN contributes no sentence anywhere: it would sit beside the
     # element's own wording and contradict it.
+    state.video_failure_action = (
+        ""
+        if status.failure is VideoFailure.NONE
+        else failure_action(status.failure, dials_out=getattr(video_receiver, "dials_out", True))
+    )
     state.video_failure_text = (
         ""
         if status.failure in (VideoFailure.NONE, VideoFailure.UNKNOWN)

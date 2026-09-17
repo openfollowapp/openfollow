@@ -826,6 +826,8 @@ def _build_input_template_data(cfg: AppConfig, video_stats: Mapping[str, Any] | 
         "input_html_fragments": input_html_fragments,
         "video_failure": video.get("failure") or "none",
         "video_failure_text": video.get("failure_text") or "",
+        "video_error_message": video.get("error_message") or "",
+        "video_failure_action": video.get("failure_action") or "",
     }
 
 
@@ -4386,6 +4388,30 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def get_statistics() -> Any:
         """Get the live runtime statistics partial."""
         return template("partials/statistics", stats=server.get_runtime_stats())
+
+    @app.get("/section/video_source/failure")
+    def get_video_source_failure() -> Any:
+        """Just the video failure box, for the Camera & Grid tab to poll.
+
+        Only the box: re-swapping the Video Source form would discard whatever
+        the operator is part-way through typing into the URL or password
+        fields, which is precisely what they are there to do when it fails.
+        """
+        video = server.get_runtime_stats().get("video") or {}
+        failure_text = str(video.get("failure_text") or "")
+        error_message = str(video.get("error_message") or "")
+        if str(video.get("failure") or "none") == "none" or not (failure_text or error_message):
+            return ""
+        token = hashlib.sha256((failure_text + error_message).encode("utf-8")).hexdigest()[:12]
+        return template(
+            "partials/video_error_box",
+            failure_text=failure_text,
+            error_message=error_message,
+            action=str(video.get("failure_action") or ""),
+            token=token,
+            scope="source",
+            assertive=False,
+        )
 
     @app.get("/section/general/network_state")
     def get_general_network_state() -> Any:

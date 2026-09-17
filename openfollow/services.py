@@ -49,7 +49,7 @@ from openfollow.runtime.services_marker_visuals import (
 from openfollow.runtime_metrics import FrameMetrics, OverlayStatePool
 from openfollow.scene.camera import Camera
 from openfollow.system_stats import SystemStatsCollector
-from openfollow.video.failure import ConnectionPhase, VideoFailure, failure_sentence
+from openfollow.video.failure import ConnectionPhase, VideoFailure, failure_action, failure_sentence
 from openfollow.video.overlay import CairoOverlayRenderer
 from openfollow.video.receiver import GstNativeSinkReceiver, gst_runtime_available
 from openfollow.window import GtkNativeSinkWindow
@@ -2710,6 +2710,7 @@ class AppRuntimeServices:
             "error_message": "",
             "failure": VideoFailure.NONE.value,
             "failure_text": "",
+            "failure_action": "",
             "phase": ConnectionPhase.STARTING.name.lower(),
             "resolution": {"width": 0, "height": 0},
             "source_selection_active": False,
@@ -2743,6 +2744,11 @@ class AppRuntimeServices:
                 "error_message": status.error_message,
                 "failure": status.failure.value,
                 "failure_text": failure_text,
+                "failure_action": (
+                    ""
+                    if status.failure is VideoFailure.NONE
+                    else failure_action(status.failure, dials_out=receiver.dials_out)
+                ),
                 # The phase the verdict was formed at, not the in-flight one:
                 # the attempt is reset before each retry, so a live read
                 # reports every failure as a cold start.

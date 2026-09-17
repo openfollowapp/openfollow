@@ -199,6 +199,7 @@ class OverlayState:
     # it, so the device says the same thing rather than only the element's
     # wording.
     video_failure_text: str = ""
+    video_failure_action: str = ""
     # Source selection (generic – driven by plugin capabilities)
     source_selection_active: bool = False
     source_selection_title: str = "SELECT SOURCE"
@@ -330,6 +331,7 @@ class OverlayState:
         self.reconnect_attempt = 0
         self.error_message = ""
         self.video_failure_text = ""
+        self.video_failure_action = ""
         self.source_selection_active = False
         self.source_selection_title = "SELECT SOURCE"
         self.discovered_sources.clear()

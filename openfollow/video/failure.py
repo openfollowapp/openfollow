@@ -15,6 +15,7 @@ __all__ = [
     "ConnectionPhase",
     "VideoFailure",
     "classify_failure",
+    "failure_action",
     "failure_chip",
     "failure_sentence",
 ]
@@ -113,7 +114,10 @@ _SENTENCES: dict[VideoFailure, str] = {
     # AVFoundation device that is absent and from a Media Gallery file that was
     # deleted, neither of which answered anything.
     VideoFailure.STREAM_NOT_FOUND: "{where} was not found.",
-    VideoFailure.NO_DATA: "{where} answered, but sent no video.",
+    # Not "sent no video": what the far end did is not observable from here.
+    # The camera may be sending into a blocked media path, which is half of
+    # what the accompanying action asks the operator to check.
+    VideoFailure.NO_DATA: "{where} answered, but this station did not receive video from it.",
     VideoFailure.UNSUPPORTED_FORMAT: "Video is arriving from {where} in a format this station cannot decode.",
     VideoFailure.DECODE_ERROR: "Video is arriving from {where}, but it cannot be decoded.",
     VideoFailure.STALLED: "Video from {where} stopped arriving.",
@@ -126,7 +130,34 @@ _SENTENCES: dict[VideoFailure, str] = {
 # so the two sentences that presume a request get a wording that does not.
 _NO_DIAL_SENTENCES: dict[VideoFailure, str] = {
     VideoFailure.UNREACHABLE: "No video has arrived from {where}.",
-    VideoFailure.NO_DATA: "Data is arriving from {where}, but no video.",
+    VideoFailure.NO_DATA: "Data is arriving from {where}, but no video could be decoded from it.",
+}
+
+# One short next step per failure, kept separate from the sentence so the two
+# never blur: the sentence is what was observed, this is what to do about it.
+# One line, never a procedure - anything longer belongs in the website docs,
+# which an operator mid-show cannot open.
+_ACTIONS: dict[VideoFailure, str] = {
+    VideoFailure.NONE: "",
+    VideoFailure.NOT_CONFIGURED: "Choose a source under Video Source.",
+    VideoFailure.UNREACHABLE: (
+        "Check the camera is powered and on this network, or correct the address under Video Source."
+    ),
+    VideoFailure.REFUSED: "Check the port, and that the camera's stream is switched on.",
+    VideoFailure.UNAUTHORIZED: "Check the username and password under Video Source.",
+    VideoFailure.STREAM_NOT_FOUND: "Check the stream path matches the camera's settings.",
+    VideoFailure.NO_DATA: "Check the camera is sending, and that nothing blocks its media path.",
+    VideoFailure.UNSUPPORTED_FORMAT: "Set the camera to a codec this station can decode, such as H.264.",
+    VideoFailure.DECODE_ERROR: "Check the camera's encoder settings, or lower its bitrate.",
+    VideoFailure.STALLED: "Check the camera and the network link between it and this station.",
+    VideoFailure.DEVICE_UNAVAILABLE: "Close any other program using this device.",
+    VideoFailure.UNKNOWN: "Check the settings under Video Source, or download a diagnostics bundle.",
+}
+
+# An input that dials nothing is not waiting on a host it can be told to check.
+_NO_DIAL_ACTIONS: dict[VideoFailure, str] = {
+    VideoFailure.UNREACHABLE: "Check the sender is transmitting to this address and port.",
+    VideoFailure.NO_DATA: "Check the sender is transmitting the encoding configured on this station.",
 }
 
 # Keeps every sentence readable where the caller has no endpoint to name.
@@ -158,6 +189,19 @@ def _silence_verdict(phase: ConnectionPhase, saw_video: bool) -> VideoFailure:
     if phase >= ConnectionPhase.TRANSPORT_UP:
         return VideoFailure.NO_DATA
     return VideoFailure.UNREACHABLE
+
+
+def failure_action(failure: VideoFailure, *, dials_out: bool = True) -> str:
+    """The one thing to try next, or ``""`` when there is nothing to suggest.
+
+    Deliberately not folded into :func:`failure_sentence`: an operator reading a
+    projected screen needs to separate what the station saw from what they are
+    being asked to do, and a reader quoting the observation into a support
+    thread should not carry our advice with it.
+    """
+    if not dials_out and failure in _NO_DIAL_ACTIONS:
+        return _NO_DIAL_ACTIONS[failure]
+    return _ACTIONS.get(failure, _ACTIONS[VideoFailure.UNKNOWN])
 
 
 def classify_failure(

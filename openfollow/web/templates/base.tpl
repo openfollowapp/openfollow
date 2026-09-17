@@ -1057,7 +1057,6 @@
  .notice .notice-sub {
  margin-top: 4px;
  font-weight: 400;
- font-size: 0.85rem;
  opacity: 0.8;
  }
  .update-notice {

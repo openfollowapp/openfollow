@@ -2743,7 +2743,10 @@ class AppRuntimeServices:
                 "error_message": status.error_message,
                 "failure": status.failure.value,
                 "failure_text": failure_text,
-                "phase": receiver.connection_phase.name.lower(),
+                # The phase the verdict was formed at, not the in-flight one:
+                # the attempt is reset before each retry, so a live read
+                # reports every failure as a cold start.
+                "phase": status.phase.name.lower(),
                 "resolution": {"width": int(width), "height": int(height)},
                 "source_selection_active": bool(receiver.source_selection_active),
                 "source_fps": float(getattr(receiver, "source_framerate", 0.0)),

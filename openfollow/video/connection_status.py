@@ -16,7 +16,7 @@ from enum import Enum, auto
 from typing import NamedTuple
 
 from openfollow.uri_redaction import redact_uris_in_text
-from openfollow.video.failure import VideoFailure
+from openfollow.video.failure import ConnectionPhase, VideoFailure
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,10 @@ class _StatusSnapshot(NamedTuple):
     # What stopped the connection; ``error_message`` keeps the element's own
     # wording alongside it.
     failure: VideoFailure = VideoFailure.NONE
+    # How far the attempt got when ``failure`` was decided. It travels with the
+    # verdict rather than being read off live state, which is reset for the next
+    # attempt and would report every failure as a cold start.
+    phase: ConnectionPhase = ConnectionPhase.STARTING
 
     @property
     def is_connected(self) -> bool:
@@ -74,7 +78,9 @@ class NdiStatusMarker:
     """
 
     def __init__(self) -> None:
-        self._state = _StatusSnapshot(ConnectionStatus.DISCONNECTED, "", 0, "", VideoFailure.NONE)
+        self._state = _StatusSnapshot(
+            ConnectionStatus.DISCONNECTED, "", 0, "", VideoFailure.NONE, ConnectionPhase.STARTING
+        )
         self._callbacks: list[StatusCallback] = []
         self._lock = threading.Lock()
         # Serializes the publish + callback dispatch of one transition so two
@@ -102,6 +108,10 @@ class NdiStatusMarker:
     @property
     def failure(self) -> VideoFailure:
         return self._state.failure
+
+    @property
+    def phase(self) -> ConnectionPhase:
+        return self._state.phase
 
     @property
     def is_connected(self) -> bool:
@@ -143,26 +153,48 @@ class NdiStatusMarker:
             reconnecting = prior.status == ConnectionStatus.RECONNECTING
             error = prior.error_message if reconnecting else ""
             failure = prior.failure if reconnecting else VideoFailure.NONE
-            return _StatusSnapshot(ConnectionStatus.CONNECTING, source_name, 0, error, failure)
+            phase = prior.phase if reconnecting else ConnectionPhase.STARTING
+            return _StatusSnapshot(ConnectionStatus.CONNECTING, source_name, 0, error, failure, phase)
 
         self._update(derive)
 
     def set_connected(self, source_name: str) -> None:
         """Transition to CONNECTED state."""
-        self._update(lambda _prior: _StatusSnapshot(ConnectionStatus.CONNECTED, source_name, 0, "", VideoFailure.NONE))
+        # A connected feed has by definition reached DECODING - that is what
+        # made it connected.
+        self._update(
+            lambda _prior: _StatusSnapshot(
+                ConnectionStatus.CONNECTED, source_name, 0, "", VideoFailure.NONE, ConnectionPhase.DECODING
+            )
+        )
 
-    def set_disconnected(self, error_message: str = "", *, failure: VideoFailure = VideoFailure.NONE) -> None:
+    def set_disconnected(
+        self,
+        error_message: str = "",
+        *,
+        failure: VideoFailure = VideoFailure.NONE,
+        phase: ConnectionPhase = ConnectionPhase.STARTING,
+    ) -> None:
         """Transition to DISCONNECTED state."""
         error = redact_uris_in_text(error_message)
-        self._update(lambda prior: _StatusSnapshot(ConnectionStatus.DISCONNECTED, prior.source_name, 0, error, failure))
+        self._update(
+            lambda prior: _StatusSnapshot(ConnectionStatus.DISCONNECTED, prior.source_name, 0, error, failure, phase)
+        )
 
     def set_reconnecting(
-        self, attempt: int, error_message: str = "", *, failure: VideoFailure = VideoFailure.NONE
+        self,
+        attempt: int,
+        error_message: str = "",
+        *,
+        failure: VideoFailure = VideoFailure.NONE,
+        phase: ConnectionPhase = ConnectionPhase.STARTING,
     ) -> None:
         """Transition to RECONNECTING state with attempt counter."""
         error = redact_uris_in_text(error_message)
         self._update(
-            lambda prior: _StatusSnapshot(ConnectionStatus.RECONNECTING, prior.source_name, attempt, error, failure)
+            lambda prior: _StatusSnapshot(
+                ConnectionStatus.RECONNECTING, prior.source_name, attempt, error, failure, phase
+            )
         )
 
     def _update(self, derive: Callable[[_StatusSnapshot], _StatusSnapshot]) -> None:
@@ -187,7 +219,7 @@ class NdiStatusMarker:
                 return
             # Fire outside _lock so a slow / re-entrant callback can't stall
             # readers (lock-free) or block another writer from publishing.
-            status, source_name, attempt, error, failure = new_state
+            status, source_name, attempt, error, failure, _phase = new_state
             for callback in callbacks:
                 try:
                     callback(status, source_name, attempt, error, failure)

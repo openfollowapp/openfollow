@@ -4429,13 +4429,17 @@ class TestSourceByteObservation:
         assert r._pipeline is not None
         assert r._state.is_placeholder_pipeline is False
 
-    def test_the_phase_is_readable_from_outside(self, fake_gst, fake_glib, fake_input_cls) -> None:
-        """``/api/stats`` publishes it for support, so it is not private state."""
+    def test_the_phase_is_published_with_the_verdict_it_explains(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """Read off live state instead, every failure reports ``starting``:
+        the attempt is reset before the next retry. Support then sees a stall
+        described as a connection that never began."""
         r = _make_receiver(input_config={"fake_source": "cam-1"})
-        assert r.connection_phase == ConnectionPhase.STARTING
-
         r._state.note_phase(ConnectionPhase.DATA_ARRIVING)
-        assert r.connection_phase == ConnectionPhase.DATA_ARRIVING
+
+        r._schedule_reconnect("boom")
+
+        assert r._state.phase == ConnectionPhase.STARTING  # live state moved on
+        assert r.status_marker.phase == ConnectionPhase.DATA_ARRIVING  # verdict kept it
 
 
 class _DynamicPadElement:

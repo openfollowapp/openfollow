@@ -255,11 +255,6 @@ class GstNativeSinkReceiver:
         return self._status_marker
 
     @property
-    def connection_phase(self) -> ConnectionPhase:
-        """How far the current connection attempt got."""
-        return self._state.phase
-
-    @property
     def source_name(self) -> str:
         """Return the active source label."""
         return self._input.get_source_label(self._input_config)
@@ -1002,8 +997,10 @@ class GstNativeSinkReceiver:
         # Classify first: ``_reset_video_flow_state`` below clears the phase and
         # flow flag this reads. An explicit *failure* is for faults on this
         # station, which never dialled anything and so cannot be classified from
-        # how far a connection got.
+        # how far a connection got. The phase is captured here for the same
+        # reason, and published with the verdict it explains.
         failure = self._classify(error) if failure is None else failure
+        phase = self._state.phase
         self._cancel_connection_timeout()
         self._cancel_reconnect()
         self._cancel_heal()
@@ -1019,7 +1016,7 @@ class GstNativeSinkReceiver:
                 self._pipeline = None
 
         schedule = self._state.build_reconnect_schedule(self._reconnect_policy)
-        self._status_marker.set_reconnecting(schedule.attempt, error_message, failure=failure)
+        self._status_marker.set_reconnecting(schedule.attempt, error_message, failure=failure, phase=phase)
 
         max_attempts = self._reconnect_policy.max_attempts
         logger.info(
@@ -1100,7 +1097,9 @@ class GstNativeSinkReceiver:
             # Carry the classification for the same reason ``reason`` is carried:
             # giving up is not a new diagnosis, and this is the state the
             # operator is left staring at.
-            self._status_marker.set_disconnected(reason, failure=self._status_marker.failure)
+            self._status_marker.set_disconnected(
+                reason, failure=self._status_marker.failure, phase=self._status_marker.phase
+            )
 
             self._create_placeholder_pipeline()
             if self._input_caps.has_source_discovery:

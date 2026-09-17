@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from openfollow.video.connection_status import ConnectionStatus, NdiStatusMarker
-from openfollow.video.failure import VideoFailure
+from openfollow.video.failure import ConnectionPhase, VideoFailure
 
 pytestmark = pytest.mark.unit
 
@@ -418,3 +418,43 @@ class TestFailureClassificationIsCarried:
         marker.set_disconnected("timeout", failure=VideoFailure.UNREACHABLE)
         marker.set_disconnected("timeout", failure=VideoFailure.NO_DATA)
         assert events == [VideoFailure.UNREACHABLE, VideoFailure.NO_DATA]
+
+
+class TestThePhaseTravelsWithTheVerdict:
+    """``/api/stats`` publishes ``video.phase`` for support to read.
+
+    Read off live receiver state it was useless: the attempt is reset before
+    every retry, so on hardware every disconnected reading came back
+    ``starting`` - including a feed that had been decoding a second earlier.
+    """
+
+    def test_a_failure_keeps_the_phase_it_was_judged_at(self) -> None:
+        marker = NdiStatusMarker()
+        marker.set_reconnecting(1, "boom", failure=VideoFailure.STALLED, phase=ConnectionPhase.DECODING)
+        assert marker.snapshot().phase == ConnectionPhase.DECODING
+
+    def test_a_connected_feed_reports_decoding(self) -> None:
+        """Reaching DECODING is what made it connected."""
+        marker = NdiStatusMarker()
+        marker.set_connected("Cam")
+        assert marker.phase == ConnectionPhase.DECODING
+
+    def test_it_survives_the_retry_inside_a_reconnect_episode(self) -> None:
+        marker = NdiStatusMarker()
+        marker.set_reconnecting(1, "boom", failure=VideoFailure.STALLED, phase=ConnectionPhase.DECODING)
+        marker.set_connecting("Cam")
+        assert marker.phase == ConnectionPhase.DECODING
+
+    def test_a_fresh_connect_starts_from_nothing(self) -> None:
+        marker = NdiStatusMarker()
+        marker.set_disconnected("old", failure=VideoFailure.STALLED, phase=ConnectionPhase.DECODING)
+        marker.set_connecting("Cam")  # prior was DISCONNECTED, not a retry
+        assert marker.phase == ConnectionPhase.STARTING
+
+    def test_it_rides_in_the_same_snapshot_as_the_verdict(self) -> None:
+        """Published separately, a reader could pair one generation's phase
+        with another's failure - the mix ``snapshot()`` exists to prevent."""
+        marker = NdiStatusMarker()
+        marker.set_reconnecting(2, "x", failure=VideoFailure.NO_DATA, phase=ConnectionPhase.STREAM_DESCRIBED)
+        snap = marker.snapshot()
+        assert (snap.failure, snap.phase) == (VideoFailure.NO_DATA, ConnectionPhase.STREAM_DESCRIBED)

@@ -352,6 +352,13 @@ docs. `where` must already be redacted – it reaches the HUD and the PIN-exempt
 `/section/statistics`. `UNKNOWN` renders **no** sentence on any surface: it
 would sit above the element's own wording and contradict it.
 
+**The phase is published with the verdict it explains, not read live.**
+`_StatusSnapshot` carries it, captured in `_schedule_reconnect` before the
+reset. A live read reports `starting` for every failure - on hardware that
+described a feed which had been decoding a second earlier as a connection that
+never began - and publishing it separately from `failure` would let a reader
+pair one generation's phase with another's verdict.
+
 **On-device surfaces:** the top-right status badge carries the *chip* only
 (`_status_flags["video_failure"]`, ~40 characters per row); the Settings error
 box and the web banner both carry the sentence **plus** the element's own

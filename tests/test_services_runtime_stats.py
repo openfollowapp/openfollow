@@ -85,6 +85,7 @@ class _FakeStatusMarker:
     reconnect_attempt: int = 2
     error_message: str = "prev reset"
     failure: VideoFailure = VideoFailure.UNAUTHORIZED
+    phase: ConnectionPhase = ConnectionPhase.DECODING
 
     def snapshot(self) -> _FakeStatusMarker:
         return self
@@ -97,7 +98,6 @@ class _FakeReceiver:
         self.source_name = "CAM1"
         self.source_selection_active = False
         self.source_framerate = 59.94
-        self.connection_phase = ConnectionPhase.DECODING
 
 
 class _FakeDetector:
@@ -662,6 +662,7 @@ class _TearingStatusMarker:
             reconnect_attempt=0,
             error_message="",
             failure=VideoFailure.NONE,
+            phase=ConnectionPhase.DECODING,
         ),
         SimpleNamespace(
             status=SimpleNamespace(name="DISCONNECTED"),
@@ -669,6 +670,7 @@ class _TearingStatusMarker:
             reconnect_attempt=3,
             error_message="Unauthorized",
             failure=VideoFailure.UNAUTHORIZED,
+            phase=ConnectionPhase.STREAM_DESCRIBED,
         ),
     )
 

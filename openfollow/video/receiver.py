@@ -14,7 +14,7 @@ from openfollow.runtime.receiver_bus import BusError, ReceiverBusHandler
 from openfollow.runtime.receiver_pipeline import ReceiverPipelineAssembler
 from openfollow.runtime.receiver_state import ReceiverStateMachine
 from openfollow.video.connection_status import NdiStatusMarker
-from openfollow.video.failure import ConnectionPhase, VideoFailure, classify_failure
+from openfollow.video.failure import ConnectionPhase, SourceKind, VideoFailure, classify_failure
 from openfollow.video.inputs import get_input_class
 from openfollow.video.inputs._base import InputCapabilities, ReconnectPolicy
 
@@ -260,17 +260,9 @@ class GstNativeSinkReceiver:
         return self._input.get_source_label(self._input_config)
 
     @property
-    def dials_out(self) -> bool:
-        """Whether this input connects to a remote host at all.
-
-        A listener, a local capture device and a discovery-by-name protocol all
-        connect nowhere, so nothing can have failed to answer them.
-        """
-        try:
-            return self._input.source_endpoint(self._input_config) is not None
-        except Exception:
-            logger.debug("Could not read %s source endpoint", self._input.display_name, exc_info=True)
-            return False
+    def source_kind(self) -> SourceKind:
+        """What this input gets its video from, for wording its failures."""
+        return self._input.source_kind
 
     def _has_configured_source(self) -> bool:
         """Return True when the active input has a non-empty primary source value."""

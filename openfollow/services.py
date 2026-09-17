@@ -2728,12 +2728,17 @@ class AppRuntimeServices:
             # arriving.") would otherwise be published beside ``connected:
             # false`` during a connect attempt, and UNKNOWN's contradicts the
             # element wording next to it - the same rule every renderer applies.
-            # ``source_name`` is already credential-free; this route is exempt
+            #
+            # The name comes from the snapshot, not the live receiver: falling
+            # back to the source picker clears the selection from the input's
+            # config, so a live read loses which source failed and the sentence
+            # degrades to "the video source". The snapshot kept the name it had
+            # when it connected. Already credential-free; this route is exempt
             # from the web PIN.
             failure_text = (
                 ""
                 if status.failure in (VideoFailure.NONE, VideoFailure.UNKNOWN)
-                else failure_sentence(status.failure, where=receiver.source_name, dials_out=receiver.dials_out)
+                else failure_sentence(status.failure, where=status.source_name, kind=receiver.source_kind)
             )
             video_snapshot = {
                 "source_type": cfg.video_source_type,
@@ -2747,7 +2752,7 @@ class AppRuntimeServices:
                 "failure_action": (
                     ""
                     if status.failure is VideoFailure.NONE
-                    else failure_action(status.failure, dials_out=receiver.dials_out)
+                    else failure_action(status.failure, kind=receiver.source_kind)
                 ),
                 # The phase the verdict was formed at, not the in-flight one:
                 # the attempt is reset before each retry, so a live read

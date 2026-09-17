@@ -20,6 +20,7 @@ from openfollow.video.failure import (
     STREAM_TYPE_NOT_FOUND,
     STREAM_WRONG_TYPE,
     ConnectionPhase,
+    SourceKind,
     VideoFailure,
     classify_failure,
     failure_action,
@@ -383,7 +384,7 @@ class TestAnInputThatDialsNothingIsNotDescribedAsUnanswered:
 
     @pytest.mark.parametrize("failure", [VideoFailure.UNREACHABLE, VideoFailure.NO_DATA])
     def test_the_wording_presumes_no_request(self, failure: VideoFailure) -> None:
-        sentence = failure_sentence(failure, where="RTP 0.0.0.0:5004", dials_out=False)
+        sentence = failure_sentence(failure, where="RTP 0.0.0.0:5004", kind=SourceKind.LISTENER)
         assert "answered" not in sentence
         assert "RTP 0.0.0.0:5004" in sentence
 
@@ -395,11 +396,13 @@ class TestAnInputThatDialsNothingIsNotDescribedAsUnanswered:
     def test_only_the_request_shaped_sentences_change(self) -> None:
         """A stall and a decode error describe what was observed either way."""
         for failure in (VideoFailure.STALLED, VideoFailure.DECODE_ERROR, VideoFailure.STREAM_NOT_FOUND):
-            assert failure_sentence(failure, where="X") == failure_sentence(failure, where="X", dials_out=False)
+            assert failure_sentence(failure, where="X") == failure_sentence(
+                failure, where="X", kind=SourceKind.LISTENER
+            )
 
     def test_every_failure_still_reads_as_a_sentence_without_a_dial(self) -> None:
         for failure in VideoFailure:
-            sentence = failure_sentence(failure, where="X", dials_out=False)
+            sentence = failure_sentence(failure, where="X", kind=SourceKind.LISTENER)
             assert sentence.endswith(".")
             assert "{" not in sentence
 
@@ -435,9 +438,20 @@ class TestEveryFailureOffersSomethingToDo:
             assert "click" not in failure_action(failure).lower()
 
     @pytest.mark.parametrize("failure", [VideoFailure.UNREACHABLE, VideoFailure.NO_DATA])
-    def test_a_listener_is_not_told_to_check_a_camera_it_never_dialled(self, failure: VideoFailure) -> None:
-        assert failure_action(failure, dials_out=False) != failure_action(failure)
-        assert "sender" in failure_action(failure, dials_out=False)
+    def test_each_kind_is_told_to_check_something_it_actually_has(self, failure: VideoFailure) -> None:
+        """An NDI source has no address or port, a USB camera has no sender,
+        and a listener has no camera to power on. One shared line would name a
+        setting that three of the four cannot find."""
+        actions = {kind: failure_action(failure, kind=kind) for kind in SourceKind}
+        assert len(set(actions.values())) == len(SourceKind)
+        # None of the three non-dialling kinds is sent looking for an address
+        # or port: only a listener has one the operator configured.
+        for kind in (SourceKind.NAMED, SourceKind.LOCAL):
+            assert "address" not in actions[kind]
+            assert "port" not in actions[kind]
+        # A local device has no sender to check.
+        assert "sender" not in actions[SourceKind.LOCAL]
+        assert "sender" in actions[SourceKind.LISTENER]
 
     def test_the_sentence_still_carries_no_remedy(self) -> None:
         """The separation is the point: a reader quoting the observation into a
@@ -456,10 +470,10 @@ class TestNoSentenceClaimsWhatTheFarEndDid:
     the operator to check. Only what reached this station is ours to state.
     """
 
-    @pytest.mark.parametrize("dials_out", [True, False])
-    def test_no_sentence_asserts_the_far_end_transmitted_or_did_not(self, dials_out: bool) -> None:
+    @pytest.mark.parametrize("kind", list(SourceKind))
+    def test_no_sentence_asserts_the_far_end_transmitted_or_did_not(self, kind: SourceKind) -> None:
         for failure in VideoFailure:
-            sentence = failure_sentence(failure, where="X", dials_out=dials_out).lower()
+            sentence = failure_sentence(failure, where="X", kind=kind).lower()
             for claim in ("sent no", "is not sending", "stopped sending", "sends no"):
                 assert claim not in sentence, f"{failure.name} claims what the far end did"
 

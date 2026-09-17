@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
+from openfollow.video.failure import SourceKind
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -57,6 +58,7 @@ class RtpInput(VideoInputBase):
     input_id = "rtp"
     display_name = "RTP"
     source_element_name = "udpsrc"
+    source_kind = SourceKind.LISTENER
 
     # -- Declarations ---------------------------------------------------------
 

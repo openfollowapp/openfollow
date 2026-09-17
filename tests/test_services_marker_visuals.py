@@ -897,7 +897,11 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
     video_receiver = SimpleNamespace(
         status_marker=SimpleNamespace(
             snapshot=lambda: SimpleNamespace(
-                is_connected=False, reconnect_attempt=0, error_message="", failure=VideoFailure.NONE
+                is_connected=False,
+                reconnect_attempt=0,
+                error_message="",
+                failure=VideoFailure.NONE,
+                source_name="",
             )
         ),
         source_name="",
@@ -999,6 +1003,7 @@ class TestVideoFailureReachesTheTopRightBadge:
                 reconnect_attempt=0,
                 error_message="",
                 failure=failure,
+                source_name="CAM1",
             )
         )
         flags: dict = {}

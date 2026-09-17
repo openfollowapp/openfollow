@@ -25,7 +25,14 @@ from openfollow.runtime.services_detection_pin import is_assist_controlled
 from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.runtime_metrics import OverlayStatePool
 from openfollow.units import UnitSystem
-from openfollow.video.failure import VideoFailure, failure_action, failure_chip, failure_sentence
+from openfollow.video.failure import SourceKind, VideoFailure, failure_action, failure_chip, failure_sentence
+
+
+def _receiver_kind(video_receiver: Any) -> SourceKind:
+    """The active input's source kind, tolerant of a boot-window receiver."""
+    kind = getattr(video_receiver, "source_kind", None)
+    return kind if isinstance(kind, SourceKind) else SourceKind.REMOTE
+
 
 # Same pattern ``GridConfig.__post_init__`` enforces. Duplicated here rather
 # than imported from configuration.py so this module doesn't reach into the
@@ -439,15 +446,18 @@ def build_marker_visual_state(
     state.video_failure_action = (
         ""
         if status.failure is VideoFailure.NONE
-        else failure_action(status.failure, dials_out=getattr(video_receiver, "dials_out", True))
+        else failure_action(status.failure, kind=_receiver_kind(video_receiver))
     )
     state.video_failure_text = (
         ""
         if status.failure in (VideoFailure.NONE, VideoFailure.UNKNOWN)
         else failure_sentence(
+            # The snapshot's name, not the live one: falling back to the source
+            # picker clears the selection, and a live read would degrade the
+            # sentence to "the video source" at the moment it matters most.
             status.failure,
-            where=video_receiver.source_name,
-            dials_out=getattr(video_receiver, "dials_out", True),
+            where=status.source_name,
+            kind=_receiver_kind(video_receiver),
         )
     )
     state.source_selection_active = video_receiver.source_selection_active

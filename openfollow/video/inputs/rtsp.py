@@ -10,7 +10,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from openfollow.uri_redaction import redact_uri, strip_uri_userinfo
-from openfollow.video.failure import ConnectionPhase
+from openfollow.video.failure import ConnectionPhase, SourceKind
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -61,6 +61,7 @@ class RtspInput(VideoInputBase):
     input_id = "rtsp"
     display_name = "RTSP"
     source_element_name = "rtspsrc"
+    source_kind = SourceKind.REMOTE
 
     # -- Declarations ---------------------------------------------------------
 

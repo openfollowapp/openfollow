@@ -15,6 +15,7 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+from openfollow.video.failure import SourceKind
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -63,6 +64,7 @@ class PiCamInput(VideoInputBase):
     input_id = "picam"
     display_name = "Pi Camera"
     source_element_name = "libcamerasrc"
+    source_kind = SourceKind.LOCAL
 
     # -- Declarations ---------------------------------------------------------
 

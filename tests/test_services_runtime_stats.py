@@ -26,7 +26,7 @@ import pytest
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig
 from openfollow.services import AppRuntimeServices
-from openfollow.video.failure import ConnectionPhase, VideoFailure
+from openfollow.video.failure import ConnectionPhase, SourceKind, VideoFailure
 
 pytestmark = pytest.mark.unit
 
@@ -86,6 +86,7 @@ class _FakeStatusMarker:
     error_message: str = "prev reset"
     failure: VideoFailure = VideoFailure.UNAUTHORIZED
     phase: ConnectionPhase = ConnectionPhase.DECODING
+    source_name: str = "CAM1"
 
     def snapshot(self) -> _FakeStatusMarker:
         return self
@@ -98,7 +99,7 @@ class _FakeReceiver:
         self.source_name = "CAM1"
         self.source_selection_active = False
         self.source_framerate = 59.94
-        self.dials_out = True
+        self.source_kind = SourceKind.REMOTE
 
 
 class _FakeDetector:
@@ -874,3 +875,32 @@ class TestTheSentenceNeverContradictsTheState:
     ) -> None:
         video = self._video(services, monkeypatch, VideoFailure.UNREACHABLE)
         assert video["failure_text"] == "Nothing answered at CAM1."
+
+
+class TestTheSentenceNamesTheSourceThatFailed:
+    """Seen on a real NDI camera: the box read "Video from the video source
+    stopped arriving" about a named source that had been on screen.
+
+    Falling back to the picker clears the selection from the input's config, so
+    a live read loses the name at the moment it matters most. The snapshot kept
+    what it had when it connected.
+    """
+
+    def test_it_uses_the_name_the_verdict_was_published_with(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver = _FakeReceiver()
+        receiver.status_marker.failure = VideoFailure.STALLED
+        receiver.status_marker.is_connected = False
+        receiver.status_marker.source_name = "AIDA NDI POV (HX-Stream)"
+        receiver.source_name = ""  # what the picker fallback leaves behind
+        TestPublishRuntimeStats._prime(self, services, receiver=receiver)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        video = services.get_runtime_stats_snapshot()["video"]
+
+        assert "AIDA NDI POV (HX-Stream)" in video["failure_text"]
+        assert "the video source" not in video["failure_text"]

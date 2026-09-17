@@ -20,6 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from openfollow.video.failure import SourceKind
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -69,6 +70,7 @@ class MediaGalleryInput(VideoInputBase):
     # All three media kinds (default pattern, stored image, stored clip) name
     # their source element the same, so this one lookup covers every selection.
     source_element_name = "media_source"
+    source_kind = SourceKind.LOCAL
 
     def __init__(self) -> None:
         super().__init__()

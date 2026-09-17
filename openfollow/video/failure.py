@@ -13,6 +13,7 @@ from enum import Enum, IntEnum
 
 __all__ = [
     "ConnectionPhase",
+    "SourceKind",
     "VideoFailure",
     "classify_failure",
     "failure_action",
@@ -34,6 +35,20 @@ class ConnectionPhase(IntEnum):
     STREAM_DESCRIBED = 2
     DATA_ARRIVING = 3
     DECODING = 4
+
+
+class SourceKind(Enum):
+    """What kind of thing an input gets its video from.
+
+    Picks the wording for the failures whose advice would otherwise name
+    something the operator cannot find: an NDI source has no address or port, a
+    USB camera has no sender, and a listener has no camera to power on.
+    """
+
+    REMOTE = "remote"  # dials a host: rtsp, srt
+    NAMED = "named"  # finds a source by name on the network: ndi
+    LISTENER = "listener"  # waits for packets at an address: rtp
+    LOCAL = "local"  # hardware or a file on this box: v4l2, avf, picam, media
 
 
 class VideoFailure(Enum):
@@ -154,10 +169,21 @@ _ACTIONS: dict[VideoFailure, str] = {
     VideoFailure.UNKNOWN: "Check the settings under Video Source, or download a diagnostics bundle.",
 }
 
-# An input that dials nothing is not waiting on a host it can be told to check.
-_NO_DIAL_ACTIONS: dict[VideoFailure, str] = {
-    VideoFailure.UNREACHABLE: "Check the sender is transmitting to this address and port.",
-    VideoFailure.NO_DATA: "Check the sender is transmitting the encoding configured on this station.",
+# Per kind, for the two failures whose default advice presumes a host we dialled.
+# Anything not listed falls back to ``_ACTIONS``, which holds for every kind.
+_KIND_ACTIONS: dict[SourceKind, dict[VideoFailure, str]] = {
+    SourceKind.NAMED: {
+        VideoFailure.UNREACHABLE: "Check the source is running and visible to this station on the network.",
+        VideoFailure.NO_DATA: "Check the source is sending video, not audio only.",
+    },
+    SourceKind.LISTENER: {
+        VideoFailure.UNREACHABLE: "Check the sender is transmitting to this address and port.",
+        VideoFailure.NO_DATA: "Check the sender is transmitting the encoding configured on this station.",
+    },
+    SourceKind.LOCAL: {
+        VideoFailure.UNREACHABLE: "Check the device is connected, and not held by another program.",
+        VideoFailure.NO_DATA: "Check the device is producing a signal in the format configured for it.",
+    },
 }
 
 # Keeps every sentence readable where the caller has no endpoint to name.
@@ -169,15 +195,15 @@ def failure_chip(failure: VideoFailure) -> str:
     return _CHIPS.get(failure, _CHIPS[VideoFailure.UNKNOWN])
 
 
-def failure_sentence(failure: VideoFailure, *, where: str = "", dials_out: bool = True) -> str:
+def failure_sentence(failure: VideoFailure, *, where: str = "", kind: SourceKind = SourceKind.REMOTE) -> str:
     """One sentence naming what was observed, for an operator.
 
     ``where`` MUST already be redacted: it reaches the HUD and the PIN-exempt
-    stats route. ``dials_out`` is False for an input that connects nowhere, so
-    the wording does not report that nothing "answered" a request never made.
+    stats route. Anything but ``REMOTE`` connects nowhere, so the wording does
+    not report that nothing "answered" a request never made.
     """
     template = _SENTENCES.get(failure, _SENTENCES[VideoFailure.UNKNOWN])
-    if not dials_out:
+    if kind is not SourceKind.REMOTE:
         template = _NO_DIAL_SENTENCES.get(failure, template)
     return template.format(where=where.strip() or _ANONYMOUS_SOURCE)
 
@@ -191,16 +217,21 @@ def _silence_verdict(phase: ConnectionPhase, saw_video: bool) -> VideoFailure:
     return VideoFailure.UNREACHABLE
 
 
-def failure_action(failure: VideoFailure, *, dials_out: bool = True) -> str:
+def failure_action(failure: VideoFailure, *, kind: SourceKind = SourceKind.REMOTE) -> str:
     """The one thing to try next, or ``""`` when there is nothing to suggest.
 
     Deliberately not folded into :func:`failure_sentence`: an operator reading a
     projected screen needs to separate what the station saw from what they are
     being asked to do, and a reader quoting the observation into a support
     thread should not carry our advice with it.
+
+    ``kind`` keeps the advice inside the operator's own vocabulary. Telling them
+    to check an address and port for an NDI source, which has neither, sends
+    them looking for a setting that does not exist.
     """
-    if not dials_out and failure in _NO_DIAL_ACTIONS:
-        return _NO_DIAL_ACTIONS[failure]
+    per_kind = _KIND_ACTIONS.get(kind, {})
+    if failure in per_kind:
+        return per_kind[failure]
     return _ACTIONS.get(failure, _ACTIONS[VideoFailure.UNKNOWN])
 
 

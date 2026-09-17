@@ -17,7 +17,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from openfollow.configuration import save_config
-from openfollow.video.failure import VideoFailure, failure_sentence
+from openfollow.video.failure import SourceKind, VideoFailure, failure_sentence
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -1571,13 +1571,13 @@ def _video_disconnect_banner_text(app: OpenFollowApp) -> str:
     error = (getattr(status, "error_message", "") if status else "") or ""
     failure = getattr(status, "failure", VideoFailure.NONE) if status else VideoFailure.NONE
 
-    dials_out = getattr(receiver, "dials_out", True)
+    kind = getattr(receiver, "source_kind", SourceKind.REMOTE)
     # The sentence already names the source, so a "Video source (rtsp) is not
     # available - <url>" headline above it only repeated the address. With no
     # classification the pipeline's own wording is all there is, and it stands
     # in for the sentence rather than sitting beside it.
     if failure not in (VideoFailure.NONE, VideoFailure.UNKNOWN):
-        return failure_sentence(failure, where=source_label, dials_out=dials_out)
+        return failure_sentence(failure, where=source_label, kind=kind)
     if error:
         return error
     label = f" – {source_label}" if source_label else ""

@@ -14,6 +14,7 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+from openfollow.video.failure import SourceKind
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -117,6 +118,7 @@ class AvfInput(VideoInputBase):
     input_id = "avf"
     display_name = "USB Camera (AVFoundation)"
     source_element_name = "avfvideosrc"
+    source_kind = SourceKind.LOCAL
 
     # -- Declarations ---------------------------------------------------
 

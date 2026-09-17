@@ -12,6 +12,7 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+from openfollow.video.failure import SourceKind
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -153,6 +154,7 @@ class V4l2Input(VideoInputBase):
     input_id = "v4l2"
     display_name = "USB Camera"
     source_element_name = "v4l2src"
+    source_kind = SourceKind.LOCAL
 
     # -- Declarations ---------------------------------------------------
 

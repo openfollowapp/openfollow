@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from openfollow.video.failure import ConnectionPhase
+from openfollow.video.failure import ConnectionPhase, SourceKind
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +130,12 @@ class VideoInputBase(ABC):
     # from the source; the receiver probes it to tell "never reached" from
     # "reached, sent nothing usable". ``None`` = no such boundary.
     source_element_name: str | None = None
+
+    # What this input gets its video from, which picks the wording of the
+    # advice an operator is given. ``LOCAL`` is the conservative default: it
+    # names no address, port or sender, so a plugin that forgets to declare
+    # cannot point at a setting that does not exist.
+    source_kind: SourceKind = SourceKind.LOCAL
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

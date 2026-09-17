@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 from openfollow.uri_redaction import redact_uri, strip_uri_query_key
+from openfollow.video.failure import SourceKind
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -36,6 +37,7 @@ class SrtInput(VideoInputBase):
     input_id = "srt"
     display_name = "SRT"
     source_element_name = "srtsrc"
+    source_kind = SourceKind.REMOTE
 
     # -- Declarations ---------------------------------------------------------
 

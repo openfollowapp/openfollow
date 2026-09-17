@@ -48,6 +48,7 @@ from openfollow.video.failure import (
     STREAM_CODEC_NOT_FOUND,
     STREAM_DOMAIN,
     ConnectionPhase,
+    SourceKind,
     VideoFailure,
 )
 from openfollow.video.inputs._base import (
@@ -4694,26 +4695,28 @@ class TestTheTerminalStateIsOneGeneration:
         assert r.status_marker.snapshot().failure == stable.failure
 
 
-class TestWhetherTheInputDialsAnywhere:
-    """Picks the wording for failures that would otherwise report that nothing
-    "answered" a request the input never made."""
+class TestTheInputDeclaresWhatItGetsVideoFrom:
+    """Picks the wording for failures whose advice would otherwise name a
+    setting the operator cannot find."""
 
-    def test_an_input_with_a_remote_endpoint_dials_out(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
-        monkeypatch.setattr(
-            FakeInput, "source_endpoint", classmethod(lambda _cls, _cfg: SourceEndpoint(host="h", port=554))
-        )
-        assert _make_receiver(input_config={"fake_source": "cam-1"}).dials_out is True
+    def test_the_receiver_reports_the_active_plugin_s_kind(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(FakeInput, "source_kind", SourceKind.NAMED, raising=False)
+        assert _make_receiver(input_config={"fake_source": "cam-1"}).source_kind is SourceKind.NAMED
 
-    def test_a_listener_or_local_device_does_not(self, fake_gst, fake_glib, fake_input_cls) -> None:
-        """``source_endpoint`` is None by default, which is correct for every
-        local device, every listener and discovery-by-name."""
-        assert _make_receiver(input_config={"fake_source": "cam-1"}).dials_out is False
+    def test_every_registered_plugin_declares_one(self) -> None:
+        """A plugin that forgets falls back to LOCAL, which names no address,
+        port or sender - so the worst case is vague, never wrong."""
+        from openfollow.video.inputs import get_registry
 
-    def test_a_plugin_that_raises_is_survivable(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
-        """This runs on the stats path; a plugin bug must not take it down."""
+        for plugin in get_registry().values():
+            assert isinstance(plugin.source_kind, SourceKind)
 
-        def _boom(_cls, _cfg):
-            raise RuntimeError("bad url")
+    def test_only_the_inputs_that_dial_a_host_are_remote(self) -> None:
+        """REMOTE is what selects "Nothing answered at X", which is false for
+        anything that never sent a request."""
+        from openfollow.video.inputs import get_registry
 
-        monkeypatch.setattr(FakeInput, "source_endpoint", classmethod(_boom))
-        assert _make_receiver(input_config={"fake_source": "cam-1"}).dials_out is False
+        remote = {i for i, c in get_registry().items() if c.source_kind is SourceKind.REMOTE}
+        assert remote == {"rtsp", "srt"}

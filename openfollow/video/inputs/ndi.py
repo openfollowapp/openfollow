@@ -17,6 +17,7 @@ import os
 from collections.abc import Callable
 from typing import Any
 
+from openfollow.video.failure import SourceKind
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -90,6 +91,7 @@ class NdiInput(VideoInputBase):
     input_id = "ndi"
     display_name = "NDI®"
     source_element_name = "ndisrc"
+    source_kind = SourceKind.NAMED
 
     # -- Declarations ---------------------------------------------------------
 

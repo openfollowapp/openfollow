@@ -376,13 +376,25 @@ generation's phase with another's verdict.
 box and the web banner both carry the sentence **plus** the element's own
 wording, which is what support reads against.
 
-**GStreamer does not report everything the taxonomy can express.** Verified
-against a real camera on 1.26: `rtspsrc` reports a refused connection as
-`Failed to connect. (Generic error)` with the errno discarded, so `REFUSED` is
-not reachable over RTSP; and a bad path comes back as
+**GStreamer does not report everything the taxonomy can express.** Verified on
+the bench against 1.26: a bad RTSP path comes back as
 `gst-resource-error-quark:13` with `SDP contains no streams`, not
 `RESOURCE_NOT_FOUND`. Check what the element actually emits before adding a
 mapping - a code that looks obvious from the enum may never be sent.
+
+**`REFUSED` has no observed producer.** `rtspsrc` reports a refused connection
+as `Failed to connect. (Generic error)`, the errno discarded inside GStreamer's
+RTSP stack; `srtsrc` posts **nothing at all**, because `auto-reconnect` defaults
+true and it retries internally until our own watchdog gives up first. The
+remaining inputs are a listener, a discovery-by-name protocol and local devices,
+none of which can be refused. Aligning the per-protocol timeouts (and
+`srt auto-reconnect=false`) is the change that would decide whether it can ever
+fire; until then the member ships unreachable and its text match is dead.
+
+**SRT currently cannot report why it failed.** `auto-reconnect` swallows every
+connect failure, so a wrong host, a closed port and a wrong passphrase all reach
+the operator as the same connection timeout. No amount of classification fixes
+that from this side of the element.
 
 ### Placeholder pipeline vs source state
 The "No Signal" placeholder is a black `videotestsrc` pinned at 1920x1080 @ 30 that feeds the **shared** sink, and both sink probes are attached once for that sink's lifetime – so its caps reach the same writer the real source uses. `ReceiverStateMachine.set_resolution` / `set_source_framerate` therefore refuse while `is_placeholder_pipeline`, mirroring `mark_frame_received`, and `_create_placeholder_pipeline` calls `clear_source_caps()` rather than writing its own geometry in. **Do not publish placeholder caps as source state**: `video.resolution` / `source_fps` are what the Statistics panel reports as the feed's own, and what `update_video` shapes the window from – a source that has never delivered a frame would otherwise present as a working 1080p feed and pin the window to 16:9 for the session.

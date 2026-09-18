@@ -499,18 +499,23 @@ class TestTheElementGivesUpFirst:
     posted and the failure gets classified from the phase alone.
 
     This is how every RTSP fault came to read as one line: ``rtspsrc`` waits 20 s
-    on a TCP connect by default, and we tore the pipeline down at 8 s. The rule
-    is checked against the properties each plugin actually sets, so a future
-    plugin cannot reintroduce it quietly.
+    on a TCP connect by default, and we tore the pipeline down at 8 s.
+
+    The required properties are named rather than discovered, because a test
+    that only inspects what a plugin happens to set passes when the plugin sets
+    nothing - deleting the assignment would restore the very default this PR
+    exists to override, and the fake element carries no GStreamer defaults to
+    fall back on.
     """
 
-    # Properties whose value is a deadline the element applies to itself, and
-    # the divisor that brings each into seconds.
-    _TIMEOUT_PROPERTIES = {
-        "tcp-timeout": 1_000_000,  # rtspsrc, microseconds
-        "timeout": None,  # unit differs per element, resolved below
+    # element name -> deadline properties it MUST set, and the divisor bringing
+    # each into seconds. ``0`` means "disabled" to GStreamer, so it fails too.
+    _REQUIRED_DEADLINES: dict[str, tuple[dict[str, int], str]] = {
+        "rtspsrc": ({"tcp-timeout": 1_000_000, "timeout": 1_000_000}, "microseconds"),
+        "udpsrc": ({"timeout": 1_000_000_000}, "nanoseconds"),
     }
-    _TIMEOUT_UNITS = {"rtspsrc": 1_000_000, "udpsrc": 1_000_000_000, "srtsrc": 1_000_000}
+    # element name -> property that must be present and False.
+    _REQUIRED_NO_INTERNAL_RETRY = {"srtsrc": "auto-reconnect"}
 
     def _built(self, plugin: type[VideoInputBase]):
         from unittest.mock import patch
@@ -528,20 +533,26 @@ class TestTheElementGivesUpFirst:
                 config=config, sink=sink, build_overlay_tail=lambda *a: None, prepare_sink=lambda: sink
             )
 
-    def test_every_element_deadline_is_shorter_than_our_connection_timeout(self, plugin: type[VideoInputBase]) -> None:
+    def test_every_element_deadline_is_set_and_shorter_than_our_budget(self, plugin: type[VideoInputBase]) -> None:
         pipeline = self._built(plugin)
         budget = plugin.reconnect_policy().connection_timeout
-        if budget <= 0:
-            pytest.skip("Input has no connection timeout to outlast")
 
         for element in pipeline.elements:
-            unit = self._TIMEOUT_UNITS.get(element.name)
-            if unit is None:
+            required = self._REQUIRED_DEADLINES.get(element.name)
+            if required is None:
                 continue
-            for prop, value in element.properties.items():
-                if prop not in self._TIMEOUT_PROPERTIES or not isinstance(value, int) or value <= 0:
-                    continue
-                seconds = value / unit
+            units, unit_name = required
+            for prop, divisor in units.items():
+                assert prop in element.properties, (
+                    f"{plugin.input_id}: {element.name}.{prop} is not set, so GStreamer's own "
+                    f"default applies and it outlasts our {budget:.1f}s connection timeout"
+                )
+                value = element.properties[prop]
+                assert isinstance(value, int) and value > 0, (
+                    f"{plugin.input_id}: {element.name}.{prop} is {value!r} ({unit_name}); "
+                    "0 disables the deadline entirely, which is worse than the default"
+                )
+                seconds = value / divisor
                 assert seconds < budget, (
                     f"{plugin.input_id}: {element.name}.{prop} is {seconds:.1f}s against a "
                     f"{budget:.1f}s connection timeout, so we tear it down before it reports"
@@ -552,8 +563,14 @@ class TestTheElementGivesUpFirst:
         receiver's own retry layer has nothing to classify."""
         pipeline = self._built(plugin)
         for element in pipeline.elements:
-            if "auto-reconnect" in element.properties:
-                assert element.properties["auto-reconnect"] is False, (
-                    f"{plugin.input_id}: {element.name} retries internally, so a connect failure "
-                    "is swallowed and every cause reads as one timeout"
-                )
+            prop = self._REQUIRED_NO_INTERNAL_RETRY.get(element.name)
+            if prop is None:
+                continue
+            assert prop in element.properties, (
+                f"{plugin.input_id}: {element.name}.{prop} is not set, so its default applies "
+                "and a connect failure is retried internally instead of reaching the bus"
+            )
+            assert element.properties[prop] is False, (
+                f"{plugin.input_id}: {element.name} retries internally, so a connect failure "
+                "is swallowed and every cause reads as one timeout"
+            )

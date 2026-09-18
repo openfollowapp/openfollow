@@ -299,7 +299,7 @@ ndisrc → ndisrcdemux → ndi_video_queue (leaky) → videoconvert → shared_v
 ```
 srtsrc → pre_queue → decodebin → post_queue → videoconvert → shared_videosink
 ```
-- `srtsrc`: `mode=caller`, `wait-for-connection=True`, `latency=125ms`, **`auto-reconnect=False`** (on, it retries internally and the failure never reaches the bus)
+- `srtsrc`: `mode=caller`, `wait-for-connection=True`, `latency=125ms`, **`auto-reconnect=False`** (left on, it retries internally and the failure never reaches the bus)
 - `srt_passphrase`, when set, drives the `passphrase` property and the URL's own `?passphrase=` is stripped first, so one field answers "which key is this stream encrypted with". Blank leaves the URL path untouched
 - Hardware decoder priority boosting (V4L2 > avdec > openh264)
 - Preserves decoder latency on ASYNC_DONE (do NOT force 0)
@@ -408,11 +408,13 @@ reports every cause identically. The remaining inputs are a listener, a
 discovery-by-name protocol and local devices, none of which can be refused. The
 member ships unreachable and its text match is dead.
 
-**The element must give up before our watchdog does.** Its defaults do not:
-`rtspsrc.tcp-timeout` is 20 s and `srtsrc.auto-reconnect` retries forever, both
-against an 8 s `connection_timeout`, so the pipeline was torn down before it
-could say why. RTSP sets `tcp-timeout` to 10 s against a 15 s budget, and SRT turns internal
-retry off. **`rtspsrc.timeout` is deliberately left alone**: it is the live
+**The element must give up before our watchdog does**, or the pipeline is torn
+down before it can say why and the failure is classified from the phase alone.
+The defaults do not: `rtspsrc.tcp-timeout` is 20 s and `srtsrc.auto-reconnect`
+retries forever. **The budget each is measured against is per plugin**, not one
+number - RTSP allows 15 s and sets `tcp-timeout` to 10 s inside it; SRT allows
+8 s and turns internal retry off, which is what puts an error on the bus at
+all. **`rtspsrc.timeout` is deliberately left alone**: it is the live
 UDP-to-TCP fallback trigger, armed for the whole session, so lowering it
 downgrades a working feed to TCP-interleaved on any brief gap. `tcp-timeout` is
 likewise not the connect deadline but the wait for each RTSP response, so it

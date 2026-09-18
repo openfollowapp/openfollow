@@ -533,10 +533,19 @@ class TestTheElementGivesUpFirst:
     # Kinds that reach the network and are therefore covered by the rule.
     _NETWORKED = {SourceKind.REMOTE, SourceKind.LISTENER, SourceKind.NAMED}
 
+    def test_every_plugin_declares_its_source_kind(self, plugin: type[VideoInputBase]) -> None:
+        """The declaration is asserted rather than the value: the base default is
+        LOCAL, which exempts a plugin from the rule below, so an omission reads as
+        a deliberate exemption."""
+        assert "source_kind" in vars(plugin), (
+            f"{plugin.input_id} inherits source_kind instead of declaring it, so it counts as LOCAL "
+            "and every check below skips it. Declare it, even where LOCAL is the right answer."
+        )
+
     def test_a_networked_plugin_is_covered_by_this_rule(self, plugin: type[VideoInputBase]) -> None:
-        """The gap this closes: an input added later reaches the network through
-        an element nothing here knows about, and every assertion below becomes a
-        no-op while still reporting as passed."""
+        """Without this, an input reaching the network through an element nothing
+        here knows about makes every assertion below a no-op that still reports as
+        passed."""
         if plugin.source_kind not in self._NETWORKED:
             return
         element = plugin.source_element_name

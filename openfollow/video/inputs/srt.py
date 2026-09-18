@@ -124,7 +124,7 @@ class SrtInput(VideoInputBase):
             srtsrc.set_property("passphrase", passphrase)
         srtsrc.set_property("mode", "caller")
         srtsrc.set_property("wait-for-connection", True)
-        # On, srtsrc retries internally and the failure never reaches the bus.
+        # Left on, srtsrc retries internally and the failure never reaches the bus.
         srtsrc.set_property("auto-reconnect", False)
         srtsrc.set_property("latency", 125)
         logger.info(

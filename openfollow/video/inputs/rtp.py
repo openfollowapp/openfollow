@@ -19,11 +19,6 @@ from openfollow.video.inputs._base import (
 
 logger = logging.getLogger(__name__)
 
-# ``udpsrc`` reports in nanoseconds and ships with this disabled, so silence at
-# the socket is indistinguishable from packets that will not decode until our
-# own watchdog fires. With it set the element says so itself, and says when.
-_UDP_SILENCE_TIMEOUT_NS = 3_000_000_000
-
 
 def _parse_rtp_url(url: str) -> tuple[str, int, bool]:
     """Parse an RTP URL into ``(address, port, is_multicast)``.
@@ -167,7 +162,6 @@ class RtpInput(VideoInputBase):
         caps_str = (
             f"application/x-rtp, media=(string)video, clock-rate=(int){clock_rate}, encoding-name=(string){encoding}"
         )
-        udpsrc.set_property("timeout", _UDP_SILENCE_TIMEOUT_NS)
         udpsrc.set_property("caps", Gst.Caps.from_string(caps_str))
         logger.info("RTP caps: %s", caps_str)
 

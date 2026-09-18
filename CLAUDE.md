@@ -299,7 +299,7 @@ ndisrc → ndisrcdemux → ndi_video_queue (leaky) → videoconvert → shared_v
 ```
 srtsrc → pre_queue → decodebin → post_queue → videoconvert → shared_videosink
 ```
-- `srtsrc`: `mode=caller`, `wait-for-connection=True`, `latency=125ms`
+- `srtsrc`: `mode=caller`, `wait-for-connection=True`, `latency=125ms`, **`auto-reconnect=False`** (on, it retries internally and the failure never reaches the bus)
 - `srt_passphrase`, when set, drives the `passphrase` property and the URL's own `?passphrase=` is stripped first, so one field answers "which key is this stream encrypted with". Blank leaves the URL path untouched
 - Hardware decoder priority boosting (V4L2 > avdec > openh264)
 - Preserves decoder latency on ASYNC_DONE (do NOT force 0)
@@ -402,23 +402,29 @@ mapping - a code that looks obvious from the enum may never be sent.
 
 **`REFUSED` has no observed producer.** `rtspsrc` reports a refused connection
 as `Failed to connect. (Generic error)`, the errno discarded inside GStreamer's
-RTSP stack; `srtsrc` posts **nothing at all**, because `auto-reconnect` defaults
-true and it retries internally until our own watchdog gives up first. The
-remaining inputs are a listener, a discovery-by-name protocol and local devices,
-none of which can be refused. Aligning the per-protocol timeouts (and
-`srt auto-reconnect=false`) is the change that would decide whether it can ever
-fire; until then the member ships unreachable and its text match is dead.
+RTSP stack, confirmed against a socket probe raising `ECONNREFUSED` for the same
+endpoint. `srtsrc` posts a real error once internal retry is off (below), but
+reports every cause identically. The remaining inputs are a listener, a
+discovery-by-name protocol and local devices, none of which can be refused. The
+member ships unreachable and its text match is dead.
 
 **The element must give up before our watchdog does.** Its defaults do not:
 `rtspsrc.tcp-timeout` is 20 s and `srtsrc.auto-reconnect` retries forever, both
 against an 8 s `connection_timeout`, so the pipeline was torn down before it
-could say why. RTSP now sets 5 s / 2 s against a 12 s budget (room for a
-UDP-to-TCP fallback to finish), SRT turns internal retry off, and `udpsrc.timeout`
-is 3 s so the socket reports its own silence instead of our watchdog inferring
-it. `TestTheElementGivesUpFirst` checks the rule against the properties each
-plugin actually sets, so a new plugin cannot reintroduce it.
+could say why. RTSP sets `tcp-timeout` to 10 s against a 15 s budget, and SRT turns internal
+retry off. **`rtspsrc.timeout` is deliberately left alone**: it is the live
+UDP-to-TCP fallback trigger, armed for the whole session, so lowering it
+downgrades a working feed to TCP-interleaved on any brief gap. `tcp-timeout` is
+likewise not the connect deadline but the wait for each RTSP response, so it
+stays generous enough for a busy NVR to answer DESCRIBE. **`udpsrc.timeout` is
+left alone too**: the stall watchdog already covers socket silence and honours
+the operator's `stall_timeout` including its `0 = off`, and a second reporter at
+the same window only races it for the message. Read what a property does before
+setting it - two of these three were misread first time.
+`TestTheElementGivesUpFirst` keys on `source_element_name` and `SourceKind`, so
+a networked plugin absent from its map fails rather than passing silently.
 
-**SRT still cannot report *why*, only *that*.** With `auto-reconnect` off a real
+**SRT reports *that* it failed, never *why*.** With `auto-reconnect` off a real
 error reaches the bus in ~3 s instead of nothing at all, but an unresponsive
 listener, a wrong passphrase, a closed port and an unroutable host are all
 `gst-resource-error-quark:9` with `Connection timeout (16)`. That is libsrt's

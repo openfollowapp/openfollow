@@ -11,10 +11,12 @@ is automatically covered.
 from __future__ import annotations
 
 import gc
+from typing import Any
 
 import pytest
 
 from openfollow.configuration import AppConfig
+from openfollow.video.failure import SourceKind
 from openfollow.video.inputs import get_registry
 from openfollow.video.inputs._base import (
     ConfigField,
@@ -33,6 +35,24 @@ pytestmark = pytest.mark.unit
 
 def _plugin_params() -> list[pytest.param]:
     return [pytest.param(cls, id=cls.input_id) for cls in sorted(get_registry().values(), key=lambda c: c.input_id)]
+
+
+def _build_pipeline(plugin: type[VideoInputBase]) -> Any:
+    """Build one plugin's pipeline against the hermetic GStreamer fake."""
+    from unittest.mock import patch
+
+    from tests._fake_gst import FakeElement, make_fake_gst
+
+    available, _reason = plugin.is_available()
+    if not available:
+        pytest.skip("Backend is not available on this host")
+    fake = make_fake_gst()
+    sink = FakeElement("shared_videosink")
+    config = {f.name: f.default for f in plugin.config_fields()}
+    with patch("gi.repository.Gst", fake):
+        return plugin().create_pipeline(
+            config=config, sink=sink, build_overlay_tail=lambda *a: None, prepare_sink=lambda: sink
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -461,23 +481,9 @@ class TestSourceElementDeclaration:
         if not available:
             pytest.skip("Backend is not available on this host")
 
-        from unittest.mock import patch
-
-        from tests._fake_gst import FakeElement, make_fake_gst
-
-        fake = make_fake_gst()
-        sink = FakeElement("shared_videosink")
-        config = {f.name: f.default for f in plugin.config_fields()}
-        # No try/except: swallowing a build failure would turn a regression in
-        # ``create_pipeline`` into a skipped test, and this contract would pass
-        # without ever checking the declared element.
-        with patch("gi.repository.Gst", fake):
-            pipeline = plugin().create_pipeline(
-                config=config,
-                sink=sink,
-                build_overlay_tail=lambda *a: None,
-                prepare_sink=lambda: sink,
-            )
+        # Build failures are not swallowed: doing so would turn a regression in
+        # ``create_pipeline`` into a skipped test that never checks the element.
+        pipeline = _build_pipeline(plugin)
 
         assert pipeline.get_by_name(name) is not None, (
             f"{plugin.input_id} declares source_element_name={name!r} but builds no element with that name"
@@ -498,79 +504,86 @@ class TestTheElementGivesUpFirst:
     """Our watchdog must outlast the element's own clock, or its error is never
     posted and the failure gets classified from the phase alone.
 
-    This is how every RTSP fault came to read as one line: ``rtspsrc`` waits 20 s
-    on a TCP connect by default, and we tore the pipeline down at 8 s.
-
-    The required properties are named rather than discovered, because a test
-    that only inspects what a plugin happens to set passes when the plugin sets
-    nothing - deleting the assignment would restore the very default this PR
-    exists to override, and the fake element carries no GStreamer defaults to
-    fall back on.
+    Keyed on ``source_element_name`` rather than on whatever instance names a
+    pipeline happens to use, and on the declared ``SourceKind``, so a plugin
+    that dials or listens over the network cannot sit outside the rule by
+    naming its element something new or reaching for a source not listed here.
     """
 
-    # element name -> deadline properties it MUST set, and the divisor bringing
-    # each into seconds. ``0`` means "disabled" to GStreamer, so it fails too.
-    _REQUIRED_DEADLINES: dict[str, tuple[dict[str, int], str]] = {
-        "rtspsrc": ({"tcp-timeout": 1_000_000, "timeout": 1_000_000}, "microseconds"),
-        "udpsrc": ({"timeout": 1_000_000_000}, "nanoseconds"),
+    # Source element -> the deadline properties it must set, with the divisor
+    # bringing each into seconds. ``0`` disables a deadline in GStreamer, so it
+    # fails the same way a missing property does.
+    _DEADLINES: dict[str, dict[str, int]] = {
+        "rtspsrc": {"tcp-timeout": 1_000_000},
+        # srtsrc has no connect deadline to set; it is covered by the
+        # internal-retry rule below instead.
+        "srtsrc": {},
+        # udpsrc is a listener with nothing to dial, and its silence is the
+        # stall watchdog's business, which honours the operator's own timeout.
+        "udpsrc": {},
+        # ndisrc discovers by name rather than dialling an address. Listed so
+        # the coverage rule passes deliberately rather than by omission; if the
+        # element gains a connect deadline it belongs here.
+        "ndisrc": {},
     }
-    # element name -> property that must be present and False.
-    _REQUIRED_NO_INTERNAL_RETRY = {"srtsrc": "auto-reconnect"}
+    # Source element -> a property that must be present and False, because the
+    # element would otherwise retry internally and never post the failure.
+    _NO_INTERNAL_RETRY: dict[str, str] = {"srtsrc": "auto-reconnect"}
 
-    def _built(self, plugin: type[VideoInputBase]):
-        from unittest.mock import patch
+    # Kinds that reach the network and are therefore covered by the rule.
+    _NETWORKED = {SourceKind.REMOTE, SourceKind.LISTENER, SourceKind.NAMED}
 
-        from tests._fake_gst import FakeElement, make_fake_gst
+    def test_a_networked_plugin_is_covered_by_this_rule(self, plugin: type[VideoInputBase]) -> None:
+        """The gap this closes: an input added later reaches the network through
+        an element nothing here knows about, and every assertion below becomes a
+        no-op while still reporting as passed."""
+        if plugin.source_kind not in self._NETWORKED:
+            return
+        element = plugin.source_element_name
+        assert element in self._DEADLINES, (
+            f"{plugin.input_id} reaches the network through {element!r}, which this rule does not "
+            "cover. Add its deadline properties, or an empty mapping if it genuinely has none."
+        )
 
-        available, _reason = plugin.is_available()
-        if not available:
-            pytest.skip("Backend is not available on this host")
-        fake = make_fake_gst()
-        sink = FakeElement("shared_videosink")
-        config = {f.name: f.default for f in plugin.config_fields()}
-        with patch("gi.repository.Gst", fake):
-            return plugin().create_pipeline(
-                config=config, sink=sink, build_overlay_tail=lambda *a: None, prepare_sink=lambda: sink
-            )
-
-    def test_every_element_deadline_is_set_and_shorter_than_our_budget(self, plugin: type[VideoInputBase]) -> None:
-        pipeline = self._built(plugin)
+    def test_every_declared_deadline_is_set_and_shorter_than_our_budget(self, plugin: type[VideoInputBase]) -> None:
+        required = self._DEADLINES.get(plugin.source_element_name or "")
+        if not required:
+            return
+        pipeline = _build_pipeline(plugin)
         budget = plugin.reconnect_policy().connection_timeout
+        element = pipeline.get_by_name(plugin.source_element_name)
+        assert element is not None
 
-        for element in pipeline.elements:
-            required = self._REQUIRED_DEADLINES.get(element.name)
-            if required is None:
-                continue
-            units, unit_name = required
-            for prop, divisor in units.items():
-                assert prop in element.properties, (
-                    f"{plugin.input_id}: {element.name}.{prop} is not set, so GStreamer's own "
-                    f"default applies and it outlasts our {budget:.1f}s connection timeout"
-                )
-                value = element.properties[prop]
-                assert isinstance(value, int) and value > 0, (
-                    f"{plugin.input_id}: {element.name}.{prop} is {value!r} ({unit_name}); "
-                    "0 disables the deadline entirely, which is worse than the default"
-                )
-                seconds = value / divisor
-                assert seconds < budget, (
-                    f"{plugin.input_id}: {element.name}.{prop} is {seconds:.1f}s against a "
-                    f"{budget:.1f}s connection timeout, so we tear it down before it reports"
-                )
+        for prop, divisor in required.items():
+            assert prop in element.properties, (
+                f"{plugin.input_id}: {plugin.source_element_name}.{prop} is not set, so GStreamer's "
+                f"own default applies and it outlasts our {budget:.1f}s connection timeout"
+            )
+            value = element.properties[prop]
+            assert isinstance(value, int) and value > 0, (
+                f"{plugin.input_id}: {plugin.source_element_name}.{prop} is {value!r}; "
+                "0 disables the deadline entirely, which is worse than the default"
+            )
+            seconds = value / divisor
+            assert seconds < budget, (
+                f"{plugin.input_id}: {plugin.source_element_name}.{prop} is {seconds:.1f}s against a "
+                f"{budget:.1f}s connection timeout, so we tear it down before it reports"
+            )
 
     def test_a_network_input_does_not_retry_behind_our_back(self, plugin: type[VideoInputBase]) -> None:
         """An element that reconnects internally never posts the failure, so the
         receiver's own retry layer has nothing to classify."""
-        pipeline = self._built(plugin)
-        for element in pipeline.elements:
-            prop = self._REQUIRED_NO_INTERNAL_RETRY.get(element.name)
-            if prop is None:
-                continue
-            assert prop in element.properties, (
-                f"{plugin.input_id}: {element.name}.{prop} is not set, so its default applies "
-                "and a connect failure is retried internally instead of reaching the bus"
-            )
-            assert element.properties[prop] is False, (
-                f"{plugin.input_id}: {element.name} retries internally, so a connect failure "
-                "is swallowed and every cause reads as one timeout"
-            )
+        prop = self._NO_INTERNAL_RETRY.get(plugin.source_element_name or "")
+        if prop is None:
+            return
+        pipeline = _build_pipeline(plugin)
+        element = pipeline.get_by_name(plugin.source_element_name)
+        assert element is not None
+        assert prop in element.properties, (
+            f"{plugin.input_id}: {plugin.source_element_name}.{prop} is not set, so its default "
+            "applies and a connect failure is retried internally instead of reaching the bus"
+        )
+        assert element.properties[prop] is False, (
+            f"{plugin.input_id}: {plugin.source_element_name} retries internally, so a connect "
+            "failure is swallowed and every cause reads as one timeout"
+        )

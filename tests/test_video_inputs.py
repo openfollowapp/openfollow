@@ -221,7 +221,6 @@ def test_receiver_bus_handler_dispatches_core_message_types() -> None:
     class FakeGst:
         class MessageType:
             ASYNC_DONE = "ASYNC_DONE"
-            ELEMENT = "ELEMENT"
             ERROR = "ERROR"
             EOS = "EOS"
             SEGMENT_DONE = "SEGMENT_DONE"
@@ -295,7 +294,6 @@ def test_receiver_bus_handler_segment_done_without_handler_is_noop() -> None:
     class FakeGst:
         class MessageType:
             ASYNC_DONE = "ASYNC_DONE"
-            ELEMENT = "ELEMENT"
             ERROR = "ERROR"
             EOS = "EOS"
             SEGMENT_DONE = "SEGMENT_DONE"
@@ -326,7 +324,6 @@ def test_receiver_bus_handler_setup_bus_skips_when_pipeline_none() -> None:
     class FakeGst:
         class MessageType:
             ASYNC_DONE = "ASYNC_DONE"
-            ELEMENT = "ELEMENT"
 
     handler = ReceiverBusHandler(
         gst=FakeGst,
@@ -492,7 +489,6 @@ def test_receiver_bus_handler_unknown_message_type_is_ignored() -> None:
     class FakeGst:
         class MessageType:
             ASYNC_DONE = "ASYNC_DONE"
-            ELEMENT = "ELEMENT"
             ERROR = "ERROR"
             EOS = "EOS"
             SEGMENT_DONE = "SEGMENT_DONE"
@@ -522,7 +518,6 @@ def test_receiver_bus_handler_state_changed_branches() -> None:
     class FakeGst:
         class MessageType:
             ASYNC_DONE = "ASYNC_DONE"
-            ELEMENT = "ELEMENT"
             ERROR = "ERROR"
             EOS = "EOS"
             SEGMENT_DONE = "SEGMENT_DONE"
@@ -716,100 +711,3 @@ def test_receiver_state_machine_forgets_the_phase_on_a_source_change() -> None:
     state.mark_frame_received()
     state.forget_video_history()
     assert state.phase == ConnectionPhase.STARTING
-
-
-def _element_bus_handler(on_element_timeout, structure_name: str | None):
-    """A bus handler fed one ELEMENT message carrying ``structure_name``."""
-
-    class FakeGst:
-        class MessageType:
-            ASYNC_DONE = "ASYNC_DONE"
-            ELEMENT = "ELEMENT"
-            ERROR = "ERROR"
-            EOS = "EOS"
-            SEGMENT_DONE = "SEGMENT_DONE"
-            STATE_CHANGED = "STATE_CHANGED"
-
-    class FakeStructure:
-        @staticmethod
-        def get_name() -> str:
-            return structure_name or ""
-
-    class FakeMessage:
-        type = FakeGst.MessageType.ELEMENT
-
-        @staticmethod
-        def get_structure():
-            return FakeStructure() if structure_name is not None else None
-
-    handler = ReceiverBusHandler(
-        gst=FakeGst,
-        logger=logging.getLogger(__name__),
-        get_pipeline=lambda: object(),
-        on_async_done=lambda _p: None,
-        on_error=lambda _e: None,
-        on_eos=lambda: None,
-        is_placeholder_pipeline=lambda: False,
-        get_input_display_name=lambda: "RTP",
-        on_element_timeout=on_element_timeout,
-    )
-    handler.handle_message(None, FakeMessage())
-
-
-def test_bus_handler_forwards_a_udpsrc_silence_report() -> None:
-    """``udpsrc`` posts this when nothing has arrived at the socket. It is the
-    element saying what our watchdog would otherwise have to infer, sooner."""
-    seen: list[str] = []
-    _element_bus_handler(seen.append, "GstUDPSrcTimeout")
-    assert seen == ["GstUDPSrcTimeout"]
-
-
-def test_bus_handler_ignores_other_element_messages() -> None:
-    """Elements post plenty of ELEMENT messages; only the silence report means
-    the source has gone quiet."""
-    seen: list[str] = []
-    _element_bus_handler(seen.append, "GstLevel")
-    assert seen == []
-
-
-def test_bus_handler_tolerates_an_element_message_with_no_structure() -> None:
-    seen: list[str] = []
-    _element_bus_handler(seen.append, None)
-    assert seen == []
-
-
-def test_bus_handler_without_an_element_timeout_callback_is_a_noop() -> None:
-    """The callback is optional, as the segment-done one is."""
-
-    class FakeGst:
-        class MessageType:
-            ASYNC_DONE = "ASYNC_DONE"
-            ELEMENT = "ELEMENT"
-            ERROR = "ERROR"
-            EOS = "EOS"
-            SEGMENT_DONE = "SEGMENT_DONE"
-            STATE_CHANGED = "STATE_CHANGED"
-
-    class FakeMessage:
-        type = FakeGst.MessageType.ELEMENT
-
-        @staticmethod
-        def get_structure():
-            class S:
-                @staticmethod
-                def get_name() -> str:
-                    return "GstUDPSrcTimeout"
-
-            return S()
-
-    handler = ReceiverBusHandler(
-        gst=FakeGst,
-        logger=logging.getLogger(__name__),
-        get_pipeline=lambda: object(),
-        on_async_done=lambda _p: None,
-        on_error=lambda _e: None,
-        on_eos=lambda: None,
-        is_placeholder_pipeline=lambda: False,
-        get_input_display_name=lambda: "RTP",
-    )
-    handler.handle_message(None, FakeMessage())  # must not raise

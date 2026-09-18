@@ -124,11 +124,7 @@ class SrtInput(VideoInputBase):
             srtsrc.set_property("passphrase", passphrase)
         srtsrc.set_property("mode", "caller")
         srtsrc.set_property("wait-for-connection", True)
-        # Off, because on it swallows the reason. srtsrc retries a failed
-        # connect internally and posts only warnings, so nothing reaches the
-        # bus and a wrong host, a closed port, a wrong passphrase and a dead
-        # listener are one identical timeout to the operator. The receiver
-        # already owns retries, with backoff and a verdict on each attempt.
+        # On, srtsrc retries internally and the failure never reaches the bus.
         srtsrc.set_property("auto-reconnect", False)
         srtsrc.set_property("latency", 125)
         logger.info(

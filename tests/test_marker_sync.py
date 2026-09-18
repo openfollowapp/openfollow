@@ -1135,20 +1135,40 @@ class TestSendLoopOneIteration:
 
     def test_delta_with_pending_keeps_wake_short(self) -> None:
         sync = self._sync()
-        # Queue a delta but place its due-time in the future, so it's
-        # NOT due this iteration; the wait-until min() branch fires.
+        # Not due this iteration, so the wait-until min() branch fires, and far
+        # enough out that a loaded runner cannot reach the due-check late and
+        # consume it instead. Still well inside HEARTBEAT_INTERVAL, so the
+        # delta is what min() selects.
         sync._pending_delta_ids = {1}
-        sync._delta_due_at = time.monotonic() + 0.01
+        sync._delta_due_at = time.monotonic() + 1.0
         sock = MagicMock()
+        waits: list[float] = []
 
         def capture(_data, _addr):
             sync._stop_event.set()
 
+        def record_wait(timeout: float | None = None) -> bool:
+            # The event is already set by the send above, so the loop exits
+            # regardless of the value; record it rather than sleeping on it.
+            waits.append(float(timeout or 0.0))
+            return True
+
         sock.sendto.side_effect = capture
-        with patch.object(sync, "_open_tx_socket", return_value=sock):
+        with (
+            patch.object(sync, "_open_tx_socket", return_value=sock),
+            patch.object(sync._stop_event, "wait", side_effect=record_wait),
+        ):
             sync._send_loop()
         # Heartbeat fired and the loop exited cleanly.
         assert sock.sendto.call_count == 1
+        # The pending delta, not the heartbeat, bounded the sleep. Without the
+        # min() the loop would wait the full HEARTBEAT_INTERVAL and the queued
+        # delta would ship a heartbeat late.
+        assert waits, "the loop never waited, so the wake length was never decided"
+        assert 0.0 < waits[-1] <= 1.0, (
+            f"woke after {waits[-1]:.2f}s against a {marker_sync.HEARTBEAT_INTERVAL:.1f}s heartbeat: "
+            "the pending delta did not shorten the wait"
+        )
 
     def test_send_error_resets_socket(self) -> None:
         sync = self._sync()

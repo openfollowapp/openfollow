@@ -11,6 +11,13 @@
 # value never drifts between local `make test` and CI.
 COVERAGE_MIN ?= 100
 
+# Match the workflow's Hypothesis profile (.github/workflows/ci.yml). Without
+# this the pre-push gate fuzzes randomized while CI is derandomized, so a
+# generated-example line can decide the 100% gate and fail on a branch that
+# never touched it. ``?=`` keeps ``HYPOTHESIS_PROFILE=dev make test`` for
+# deliberately randomized exploration.
+export HYPOTHESIS_PROFILE ?= ci
+
 # Parallelize the suite with pytest-xdist, and cap each worker's native thread
 # pools so the two don't multiply.
 #

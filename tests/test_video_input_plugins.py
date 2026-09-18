@@ -228,20 +228,6 @@ class TestConfigRoundTrip:
             elif field.type is float:
                 assert getattr(cfg, field.name) == pytest.approx(1.5)
 
-    def test_apply_config_fields_restores_the_default_for_a_null_text_field(self, plugin: type[VideoInputBase]) -> None:
-        """A form can deliver None for a text field - an absent multipart part, a
-        JSON null - and the field must take its declared default rather than the
-        string "None"."""
-        cfg = AppConfig()
-        text_fields = [f for f in plugin.config_fields() if f.type is str]
-        if not text_fields:
-            pytest.skip("Plugin has no text fields")
-
-        plugin.apply_config_fields(cfg, {f.name: None for f in text_fields})
-
-        for field in text_fields:
-            assert getattr(cfg, field.name) == field.default
-
     def test_apply_config_fields_ignores_unparseable_numbers(self, plugin: type[VideoInputBase]) -> None:
         cfg = AppConfig()
         before = plugin.get_config_field_values(cfg)

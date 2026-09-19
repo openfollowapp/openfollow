@@ -195,12 +195,25 @@ class TestWhereItAppears:
         # Lazy: the General render itself must not query the host.
         assert host.reads == []
 
+    @pytest.mark.parametrize("path", ["/", "/section/general"])
+    def test_the_box_is_on_the_full_page_as_well_as_the_section_partial(self, tmp_path, monkeypatch, path: str) -> None:
+        """The landing page builds its own context and includes the General
+        partial directly, so a gate flag supplied only to the section reload
+        renders the box on a tab switch and nowhere on first paint."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        with _serve(tmp_path, monkeypatch, _Host()) as (_server, base):
+            status, body = _get(base, path)
+        assert status == 200
+        assert 'data-help="general-startup"' in body
+        assert 'hx-get="/section/general/startup"' in body
+
     def test_general_page_omits_the_box_where_there_is_no_systemd(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(sys, "platform", "darwin")
         with _serve(tmp_path, monkeypatch, _Host()) as (_server, base):
-            status, body = _get(base, "/section/general")
-        assert status == 200
-        assert "/section/general/startup" not in body
+            for path in ("/", "/section/general"):
+                status, body = _get(base, path)
+                assert status == 200
+                assert "/section/general/startup" not in body
 
 
 def _no_redirect_opener() -> urllib.request.OpenerDirector:

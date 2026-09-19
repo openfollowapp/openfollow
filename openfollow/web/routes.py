@@ -4382,6 +4382,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # Update-available banner (General section) + footer flag (base.tpl);
             # read once so the flag and version label can't disagree mid-render.
             **_footer_update_context(server),
+            # index.tpl includes the General partial directly, so the platform
+            # gate for the Startup box has to be supplied here too.
+            startup_supported=_startup_settings_supported(),
             button_names=sorted(VALID_BUTTON_NAMES),
             detection_missing=_get_detection_missing_deps(config),
             detection_extras_installed=extras,

@@ -1,6 +1,6 @@
 <div id="config-transfer-section" class="section" data-fold-key="config-transfer" data-help="config-transfer">
     <div class="section-head">
-        <h2>Configuration Transfer</h2>
+        <h2>Configuration</h2>
         <span class="section-note">Export, import and restore device settings</span>
     </div>
 

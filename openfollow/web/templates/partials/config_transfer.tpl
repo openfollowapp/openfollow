@@ -187,7 +187,7 @@ async function restoreDefaults() {
     _setRestoreError('');
     var ok = await modalConfirm({
         title: 'Restore defaults?',
-        message: 'Every setting returns to its factory value. This station keeps its web login, '
+        message: 'Every setting goes back to its default. This station keeps its web login, '
             + 'port, network interface and local file paths. Export first if you want a copy \u2013 '
             + 'this cannot be undone.',
         confirmLabel: 'Restore Defaults',

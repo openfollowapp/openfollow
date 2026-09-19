@@ -1,6 +1,6 @@
 # Configuration
 
-Move a station's full settings in and out as a single `.openfollowsettings` file – duplicate a config across stations, archive a rig before changes, or recover from a snapshot – and reset the station to how it shipped.
+Move a station's full settings in and out as a single `.openfollowsettings` file – duplicate a config across stations, archive a rig before changes, or recover from a snapshot – and put every setting back to its default.
 
 **Export Configuration** – downloads the current configuration as a `.openfollowsettings` file containing every saved setting (camera, grid, markers, zones, OSC, MIDI, input, display).
 

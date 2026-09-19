@@ -6,7 +6,7 @@ Configure how a keyboard drives markers on the Operator Screen. Keyboard input u
 
 ## Button Mapping
 
-Expand **Button Mapping** to customise which keys perform which actions. Click **Reset to Defaults** to restore the factory layout below.
+Expand **Button Mapping** to customise which keys perform which actions. Click **Reset to Defaults** to restore the default layout below.
 
 ### Movement
 

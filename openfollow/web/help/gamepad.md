@@ -28,7 +28,7 @@ The detection table shows each physical button (A, B, X, Y, LB, RB, Back, Start,
 
 ## Button Mapping
 
-Assign functions to physical buttons. Every selector offers the same set of detected buttons; set a field to `–` to leave that action unbound. **Reset to Defaults** restores the factory assignment for all buttons at once, without affecting detection results or stick settings.
+Assign functions to physical buttons. Every selector offers the same set of detected buttons; set a field to `–` to leave that action unbound. **Reset to Defaults** restores the default assignment for all buttons at once, without affecting detection results or stick settings.
 
 ### Normal Mode
 

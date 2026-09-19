@@ -84,8 +84,9 @@ include = [
 # ruff check/format replaces flake8/autopep8. Pinned to exact version
 # since pre-1.0 patches can add rules or change formatting (see [tool.ruff]
 # producing a spurious reformat diff) on changes unrelated to the work at hand.
-# The ``ruff-pre-commit`` hook ``rev`` in ``.pre-commit-config.yaml`` is pinned
-# to the SAME version so the local hooks and CI never disagree. Bump together.
+# This is the only ruff version in the repo: the pre-commit hook runs it out of
+# the poetry env rather than fetching its own at a ``rev``, so a second pin
+# cannot drift from this one.
 ruff = "0.16.7"
 pytest = "^9.1.1"
 pytest-cov = "^7.1"

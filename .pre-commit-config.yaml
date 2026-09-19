@@ -10,25 +10,30 @@ repos:
       - id: check-yaml
       - id: check-toml
 
-  # ruff lint + format; check-only (run `make format` to fix). rev must match
-  # pyproject.toml dev deps version.
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.7
+  # ruff and bandit run the versions poetry installed, so the hook and
+  # `make lint` / `make security` cannot disagree about a clean tree. A `rev:`
+  # here would be a second pin of a tool pyproject already pins, and Dependabot
+  # bumps the two as unrelated ecosystems, one PR each.
+  - repo: local
     hooks:
       - id: ruff-check
-        args: ["--no-fix"]
-        files: ^(openfollow|tests)/
-      - id: ruff-format
-        args: ["--check"]
+        name: ruff check
+        entry: poetry run ruff check --no-fix
+        language: system
+        types_or: [python, pyi]
         files: ^(openfollow|tests)/
 
-  # bandit static security scan, incremental on changed files.
-  # Config in [tool.bandit] in pyproject.toml.
-  - repo: https://github.com/PyCQA/bandit
-    rev: 1.9.4
-    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: poetry run ruff format --check
+        language: system
+        types_or: [python, pyi]
+        files: ^(openfollow|tests)/
+
+      # Config in [tool.bandit] in pyproject.toml.
       - id: bandit
-        args: ["-c", "pyproject.toml"]
-        # Keep unpinned to avoid version resolution issues with shallow checkout.
-        additional_dependencies: ["bandit[toml]"]
+        name: bandit
+        entry: poetry run bandit -c pyproject.toml
+        language: system
+        types: [python]
         files: ^openfollow/.*\.py$

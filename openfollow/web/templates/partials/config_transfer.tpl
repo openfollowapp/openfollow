@@ -1,7 +1,7 @@
 <div id="config-transfer-section" class="section" data-fold-key="config-transfer" data-help="config-transfer">
     <div class="section-head">
         <h2>Configuration Transfer</h2>
-        <span class="section-note">Export and import device settings</span>
+        <span class="section-note">Export, import and restore device settings</span>
     </div>
 
     <div id="import-restart-notice" class="restart-notice" style="display:none">
@@ -38,6 +38,15 @@
             <div id="import-error" class="restart-notice" style="display:none;margin-top:0.72rem;border-color:rgba(255,140,140,0.35);background:rgba(255,140,140,0.13);color:#ffd7d7;"></div>
             <div class="actions" style="margin-top:0.72rem;">
                 <button type="button" class="save-btn" id="import-btn" onclick="importConfig()">Import Configuration</button>
+            </div>
+        </div>
+
+        <div class="group">
+            <h3 class="group-title">Restore Defaults</h3>
+            <div id="restore-error" class="restart-notice" role="alert" aria-live="assertive" aria-atomic="true" style="display:none;margin-bottom:0.72rem;border-color:rgba(255,140,140,0.35);background:rgba(255,140,140,0.13);color:#ffd7d7;"></div>
+            <div class="actions">
+                <button type="button" class="btn-danger" id="restore-defaults-btn"
+                        onclick="restoreDefaults()">Restore Defaults</button>
             </div>
         </div>
     </div>
@@ -166,6 +175,46 @@ function skipImportRestart() {
     btn.textContent = 'Importing\u2026';
     _sendImport(_pendingImportData, '?skip_restart=1');
     _pendingImportData = null;
+}
+
+function _setRestoreError(msg) {
+    var el = document.getElementById('restore-error');
+    if (msg) { el.textContent = msg; el.style.display = 'block'; }
+    else { el.style.display = 'none'; }
+}
+
+async function restoreDefaults() {
+    _setRestoreError('');
+    var ok = await modalConfirm({
+        title: 'Restore defaults?',
+        message: 'Every setting returns to its factory value. This station keeps its web login, '
+            + 'port, network interface and local file paths. Export first if you want a copy \u2013 '
+            + 'this cannot be undone.',
+        confirmLabel: 'Restore Defaults',
+        danger: true,
+    });
+    if (!ok) return;
+
+    var btn = document.getElementById('restore-defaults-btn');
+    btn.disabled = true;
+    btn.textContent = 'Restoring\u2026';
+    fetch('/api/config/reset', {method: 'POST'})
+    .then(function(res) { return res.json(); })
+    .then(function(result) {
+        btn.disabled = false;
+        btn.textContent = 'Restore Defaults';
+        if (!result.success) {
+            _setRestoreError('Restore failed: ' + (result.error || 'unknown error'));
+            return;
+        }
+        showToast('Settings restored to defaults');
+        setTimeout(function() { window.location.reload(); }, 600);
+    })
+    .catch(function() {
+        btn.disabled = false;
+        btn.textContent = 'Restore Defaults';
+        _setRestoreError('Restore request failed. Check your network connection.');
+    });
 }
 
 function cancelImportRestart() {

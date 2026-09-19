@@ -13,3 +13,5 @@ The restart dialogue offers three choices:
 - **Restart Now** – apply everything and restart; the page reloads once the station is back online.
 - **Apply Without Restart** – apply what can take effect immediately; the rest waits for the next restart.
 - **Cancel** – discard the import; nothing changes.
+
+**Restore Defaults** – returns every setting to the value a fresh install has: camera, grid, markers, zones, OSC, MIDI, input, display and video source. A confirmation dialogue appears first; the page reloads once the reset is applied, and there is no undo. What stays is what describes this box rather than the show: the web login PIN and port, the network interface, the station's identity (its name follows that identity, as it did on the first run), and local file paths such as the detection model storage. Marker definitions in the shared catalog and uploaded media are not settings, so they are untouched.

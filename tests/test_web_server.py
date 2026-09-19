@@ -178,6 +178,24 @@ def test_index_page_uses_locally_bundled_htmx(live_server) -> None:
         assert cdn not in body, f"CDN reference reintroduced: {cdn!r}"
 
 
+def test_index_page_offers_restore_defaults_outside_the_form_gate(live_server) -> None:
+    """The control is a plain button, not a form submit: ``refreshFormGate``
+    disables every ``button[type="submit"].save-btn`` while a validation error
+    is on screen, and a destructive action that saves no form must stay
+    clickable."""
+    _, base = live_server
+    status, body = _get(base, "/")
+    assert status == 200
+
+    match = re.search(r"<button[^>]*id=\"restore-defaults-btn\"[^>]*>", body)
+    assert match, "Restore Defaults button missing from the General tab"
+    button = match.group(0)
+    assert 'onclick="restoreDefaults()"' in button
+    assert 'type="button"' in button
+    assert "save-btn" not in button
+    assert "/api/config/reset" in body
+
+
 def test_update_banner_and_footer_flag_shown_when_available(live_server, monkeypatch) -> None:
     # The background online-sync worker publishes a discovered version via the
     # command queue; the index page renders the banner (General section) and the
@@ -2567,6 +2585,51 @@ def test_api_config_import_with_skip_restart_saves_everything_live(
     assert saved.detection.enabled == (not before_detection)
     assert saved.otp_output.enabled == (not before_otp)
     assert saved.camera.pos_x == pytest.approx(99.0)
+
+
+# ---------------------------------------------------------------------------
+# Restore defaults
+# ---------------------------------------------------------------------------
+
+
+def test_api_config_reset_restores_defaults_and_keeps_device_fields(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.camera.pos_x = 9.5
+    cfg.grid.width = 42.0
+    cfg.controlled_marker_ids = [1, 2]
+    cfg.psn_system_name = "Front of House"
+    # Device-local: must survive so the operator keeps the station on the air.
+    cfg.web_port = 8123
+    cfg.psn_source_iface = "eth0"
+    cfg.detection.storage_path = "/mnt/nvme/openfollow/yolo"
+    save_config(cfg, server.config_path)
+
+    status, body = _post_json(base, "/api/config/reset", {})
+    assert status == 200
+    assert body.get("success") is True
+    assert body.get("needs_restart") is False
+
+    defaults = AppConfig()
+    saved = load_config(server.config_path)
+    assert saved.camera.pos_x == pytest.approx(defaults.camera.pos_x)
+    assert saved.grid.width == pytest.approx(defaults.grid.width)
+    assert saved.controlled_marker_ids == []
+    assert saved.psn_system_name != "Front of House"
+    assert saved.web_port == 8123
+    assert saved.psn_source_iface == "eth0"
+    assert saved.detection.storage_path == "/mnt/nvme/openfollow/yolo"
+
+
+def test_api_config_reset_keeps_the_web_pin_authenticating(pin_protected_server) -> None:
+    """A reset that cleared the PIN would lock the operator out of the only
+    interface an offline show LAN has."""
+    server, base, pin = pin_protected_server
+
+    assert _signed_post(base, "/api/config/reset", b"", pin) == 200
+
+    assert load_config(server.config_path).web_pin == pin
+    assert _post_json_status(base, "/api/config/camera", {"pos_x": 1.0}) == 401
 
 
 # ---------------------------------------------------------------------------

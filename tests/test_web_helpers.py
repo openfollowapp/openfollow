@@ -1273,6 +1273,121 @@ def test_import_needs_restart_returns_empty_when_identical() -> None:
 
 
 # ---------------------------------------------------------------------------
+# reset_config_to_defaults
+# ---------------------------------------------------------------------------
+
+# One distinctive value per preserved field. ``test_device_identity_fields_are_all_covered``
+# pins this list against ``_DEVICE_IDENTITY_FIELDS`` so a new entry can't ship untested.
+_DEVICE_IDENTITY_SAMPLES = [
+    ("psn_source_iface", "eth0"),
+    ("web_pin", "4821"),
+    ("web_port", 8080),
+    ("web_bind", "0.0.0.0"),
+    ("station_id", "f0e1d2c3b4a59687f0e1d2c3b4a59687"),
+    ("markers_catalog_path", "/mnt/nvme/openfollow/markers.toml"),
+    ("testpattern_selected_media", "0123456789abcdef"),
+    ("detection.storage_path", "/mnt/nvme/openfollow/yolo"),
+]
+
+
+def _set_path(cfg: AppConfig, path: str, value: object) -> None:
+    parent, _, name = path.rpartition(".")
+    setattr(getattr(cfg, parent) if parent else cfg, name, value)
+
+
+def _get_path(cfg: AppConfig, path: str) -> object:
+    parent, _, name = path.rpartition(".")
+    return getattr(getattr(cfg, parent) if parent else cfg, name)
+
+
+def test_device_identity_fields_are_all_covered() -> None:
+    from openfollow.web.routes import _DEVICE_IDENTITY_FIELDS
+
+    assert [path for path, _ in _DEVICE_IDENTITY_SAMPLES] == list(_DEVICE_IDENTITY_FIELDS)
+
+
+def test_reset_config_to_defaults_returns_every_section_to_default() -> None:
+    """A reset leaves nothing but the device-identity fields off the defaults."""
+    from openfollow.web.routes import _DEVICE_IDENTITY_FIELDS, reset_config_to_defaults
+
+    configured = AppConfig()
+    configured.video_source_type = "srt"
+    configured.window_width = 3840
+    configured.controlled_marker_ids = [1, 2]
+    configured.viewer_marker_ids = [1, 2, 3]
+    configured.marker_move_speeds = {1: 2.5}
+    configured.auto_update_check = False
+    configured.camera.pos_x = 9.5
+    configured.grid.width = 42.0
+    configured.marker.move_speed = 2.75
+    configured.controller.deadzone = 0.4
+    configured.detection.enabled = True
+    configured.osc.port = 9999
+    configured.trigger_zones.enabled = True
+    configured.otp_output.enabled = True
+    configured.ui.unit_system = "imperial"
+    for path, value in _DEVICE_IDENTITY_SAMPLES:
+        _set_path(configured, path, value)
+
+    restored = asdict(reset_config_to_defaults(configured))
+    defaults = asdict(AppConfig())
+    for path in _DEVICE_IDENTITY_FIELDS:
+        parent, _, name = path.rpartition(".")
+        (restored[parent] if parent else restored).pop(name)
+        (defaults[parent] if parent else defaults).pop(name)
+    # The station name follows the preserved id, not the bare default – see below.
+    restored.pop("psn_system_name")
+    defaults.pop("psn_system_name")
+
+    assert restored == defaults
+
+
+@pytest.mark.parametrize("path,value", _DEVICE_IDENTITY_SAMPLES)
+def test_reset_config_to_defaults_keeps_device_identity(path: str, value: object) -> None:
+    from openfollow.web.routes import reset_config_to_defaults
+
+    configured = AppConfig()
+    _set_path(configured, path, value)
+    assert _get_path(AppConfig(), path) != value, "sample must differ from the default"
+
+    assert _get_path(reset_config_to_defaults(configured), path) == value
+
+
+def test_reset_config_to_defaults_names_the_station_from_its_preserved_id() -> None:
+    """The name a first run seeds, not the bare default that a later restart
+    would silently replace."""
+    from openfollow.marker_catalog import derive_station_name
+    from openfollow.web.routes import reset_config_to_defaults
+
+    configured = AppConfig()
+    configured.station_id = "f0e1d2c3b4a59687f0e1d2c3b4a59687"
+    configured.psn_system_name = "Front of House"
+
+    restored = reset_config_to_defaults(configured)
+
+    assert restored.psn_system_name == derive_station_name(configured.station_id)
+    assert restored.psn_system_name != configured.psn_system_name
+
+
+def test_reset_config_to_defaults_falls_back_to_the_plain_name_without_an_id() -> None:
+    from openfollow.web.routes import reset_config_to_defaults
+
+    # ``station_id`` is blank until the first run mints one.
+    assert reset_config_to_defaults(AppConfig()).psn_system_name == AppConfig().psn_system_name
+
+
+def test_reset_config_to_defaults_leaves_the_source_config_alone() -> None:
+    from openfollow.web.routes import reset_config_to_defaults
+
+    configured = AppConfig()
+    configured.camera.pos_x = 9.5
+
+    reset_config_to_defaults(configured)
+
+    assert configured.camera.pos_x == 9.5
+
+
+# ---------------------------------------------------------------------------
 # _as_bool / _as_positive_int / _as_optional_float helpers – full branch coverage
 # ---------------------------------------------------------------------------
 

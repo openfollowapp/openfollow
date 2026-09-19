@@ -68,7 +68,7 @@ from openfollow.configuration import (
 
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
-from openfollow.marker_catalog import save_catalog
+from openfollow.marker_catalog import derive_station_name, save_catalog
 from openfollow.net_utils import get_local_ipv4_addresses
 from openfollow.network.adapter import Ipv4Config, Ipv4Method
 from openfollow.network.validate import parse_prefix, validate_apply
@@ -2422,34 +2422,75 @@ def _swap_for_direction(items: MutableSequence[Any], idx: int, direction: str) -
     return True
 
 
+# Fields that identify or connect THIS box rather than describe the show.
+# A whole-config write (import, restore-defaults) carries them over from the
+# running config: a foreign or default value locks the operator out of the web
+# UI, moves the station off its interface, re-mints its identity, or points a
+# path at a directory that does not exist here. One dot addresses a sub-config.
+_DEVICE_IDENTITY_FIELDS: tuple[str, ...] = (
+    "psn_source_iface",
+    "web_pin",
+    "web_port",
+    "web_bind",
+    "station_id",
+    "markers_catalog_path",
+    "testpattern_selected_media",
+    "detection.storage_path",
+)
+
+
+def _device_field_owner(cfg: AppConfig, path: str) -> tuple[Any, str]:
+    """Resolve a ``_DEVICE_IDENTITY_FIELDS`` path to ``(owner, attribute)``."""
+    parent, _, name = path.rpartition(".")
+    return (getattr(cfg, parent) if parent else cfg), name
+
+
+def capture_device_identity(cfg: AppConfig) -> dict[str, Any]:
+    """Snapshot the device-identity fields of *cfg*."""
+    out: dict[str, Any] = {}
+    for path in _DEVICE_IDENTITY_FIELDS:
+        owner, name = _device_field_owner(cfg, path)
+        out[path] = getattr(owner, name)
+    return out
+
+
+def restore_device_identity(cfg: AppConfig, snapshot: Mapping[str, Any]) -> None:
+    """Write a :func:`capture_device_identity` snapshot back onto *cfg*."""
+    for path, value in snapshot.items():
+        owner, name = _device_field_owner(cfg, path)
+        setattr(owner, name, value)
+
+
+def reset_config_to_defaults(current_cfg: AppConfig) -> AppConfig:
+    """Return a fresh ``AppConfig()`` carrying this device's identity over.
+
+    The station name follows the preserved ``station_id`` the way a first run
+    seeds it, so a reset leaves the name a fresh install would have shown
+    instead of ``OpenFollow`` until the next restart re-derives it.
+    """
+    fresh = AppConfig()
+    restore_device_identity(fresh, capture_device_identity(current_cfg))
+    fresh.psn_system_name = derive_station_name(fresh.station_id)
+    return fresh
+
+
 def _apply_import_data(
     current_cfg: AppConfig,
     data: dict[str, Any],
     *,
     skip_restart_sections: bool = False,
 ) -> AppConfig:
-    """Build a new config from import data, preserving the device-specific
-    network pin.
+    """Build a new config from import data, preserving this device's identity.
 
     *skip_restart_sections* survives in the API for backwards compatibility
     but no longer gates anything: every section is live-reloadable.
 
-    ``psn_source_iface`` is preserved across imports – importing a config
-    from another box must NOT clobber this device's chosen interface.
+    The ``_DEVICE_IDENTITY_FIELDS`` are snapshotted before the section applies
+    and written back after – a config from another box must not rewrite this
+    station's interface, login or host paths.
     """
     cfg = copy.deepcopy(current_cfg)
-    original_iface = cfg.psn_source_iface
-    # ``web_pin`` (login credential) and ``web_port`` (local bind) are
-    # device-local – an imported config must not rewrite this station's PIN
-    # or listen port. Captured here and restored after the section applies.
-    original_pin = cfg.web_pin
-    original_port = cfg.web_port
-    # ``detection.storage_path`` is an absolute path on THIS host – a path from
-    # the exporting machine would be unwritable here. Keep the device's own.
-    original_storage_path = cfg.detection.storage_path
-    # ``testpattern_selected_media`` is a device-local gallery id (media files
-    # don't travel), so an imported selection must not replace this station's.
-    original_selected_media = cfg.testpattern_selected_media
+    device_identity = capture_device_identity(cfg)
 
     # General section (top-level scalar fields)
     apply_section_data(cfg, "general", data)
@@ -2529,13 +2570,7 @@ def _apply_import_data(
     if "window_height" in data:
         cfg.window_height = _as_int(data["window_height"], cfg.window_height)
 
-    # Restore device-local fields (network pin, login PIN, listen port,
-    # detection storage path).
-    cfg.psn_source_iface = original_iface
-    cfg.web_pin = original_pin
-    cfg.web_port = original_port
-    cfg.detection.storage_path = original_storage_path
-    cfg.testpattern_selected_media = original_selected_media
+    restore_device_identity(cfg, device_identity)
     return cfg
 
 
@@ -7494,6 +7529,20 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             full_cfg = _apply_import_data(current, data)
             save_config(full_cfg, server.config_path)
             return json.dumps({"success": True, "needs_restart": False})
+
+    @app.post("/api/config/reset")
+    def api_reset_config() -> Any:
+        """Replace the whole config with defaults, keeping device identity.
+
+        Registered before the ``/api/config/<section>`` wildcard so ``reset``
+        is not read as a section name. The write applies through the same
+        hot-reload path as an import, so no restart is required.
+        """
+        response.content_type = "application/json"
+        with _config_write_lock:
+            current = load_config(server.config_path)
+            save_config(reset_config_to_defaults(current), server.config_path)
+        return json.dumps({"success": True, "needs_restart": False})
 
     @app.post("/api/config/broadcast-all")
     def api_broadcast_all() -> Any:

@@ -20,6 +20,21 @@ task uninstall  # Remove service
 task dev        # Run manually (not as service)
 ```
 
+## Autostart from the Web UI
+
+General → **Startup** carries a **Start OpenFollow at boot** switch, so a station that
+has no keyboard attached does not need `task enable` / `task disable` over SSH. The
+switch reads `systemctl is-enabled` each time the box opens rather than a stored flag,
+so it always reports what the station will do at the next boot – including when the
+unit was enabled or disabled from a shell.
+
+Switching it off leaves the running station alone; it takes effect at the next boot.
+The web UI is served by OpenFollow itself, so a station that no longer starts it at
+boot serves no page to switch it back on – that needs SSH or a keyboard and screen.
+The browser confirms before applying it for that reason.
+
+The box is absent on macOS and on any host not running OpenFollow as a systemd unit.
+
 ## Web Update Button
 
 The General section in the web UI includes a **Software Update** action that installs

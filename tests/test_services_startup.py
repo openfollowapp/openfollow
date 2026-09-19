@@ -410,6 +410,104 @@ def test_privilege_states_provider_returns_empty_without_broker(monkeypatch) -> 
     assert services._privilege_states_provider() == {}
 
 
+# Autostart providers (boot-enablement read + write for the General tab)
+
+
+def _stub_autostart(monkeypatch, *, read=None, write=None) -> None:
+    import openfollow.privilege.autostart as autostart_module
+
+    if read is not None:
+        monkeypatch.setattr(autostart_module, "read_autostart", read)
+    if write is not None:
+        monkeypatch.setattr(autostart_module, "set_autostart", write)
+
+
+def test_autostart_state_provider_flattens_the_host_read(monkeypatch) -> None:
+    """Templates compare plain values, so the dataclass is flattened here."""
+    from openfollow.privilege.autostart import AutostartState
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    seen: list[str] = []
+
+    def _read(name):
+        seen.append(name)
+        return AutostartState(available=True, enabled=True, reason="")
+
+    _stub_autostart(monkeypatch, read=_read)
+    assert services._autostart_state_provider("openfollow") == {
+        "available": True,
+        "enabled": True,
+        "reason": "",
+    }
+    assert seen == ["openfollow"]
+
+
+def test_handle_autostart_apply_reports_the_state_after_the_write(monkeypatch) -> None:
+    from openfollow.privilege.autostart import AutostartState
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    calls: list[tuple[str, bool]] = []
+
+    def _write(_broker, name, *, enabled):
+        calls.append((name, enabled))
+        return AutostartState(available=True, enabled=enabled, reason="")
+
+    _stub_autostart(monkeypatch, write=_write)
+    result = services._handle_autostart_apply("openfollow", False)
+    assert calls == [("openfollow", False)]
+    assert result == {"ok": True, "error": "", "available": True, "enabled": False, "reason": ""}
+
+
+def test_handle_autostart_apply_rereads_the_host_when_the_write_fails(monkeypatch) -> None:
+    """A refused change still has to answer with where the host actually is."""
+    from openfollow.privilege.autostart import AutostartState
+    from openfollow.privilege.broker import PrivilegeError
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    def _write(_broker, _name, *, enabled):
+        raise PrivilegeError("Disable a systemd unit: Interactive authentication required.")
+
+    _stub_autostart(
+        monkeypatch,
+        read=lambda _name: AutostartState(available=True, enabled=True, reason=""),
+        write=_write,
+    )
+    result = services._handle_autostart_apply("openfollow", False)
+    assert result["ok"] is False
+    assert result["error"] == "Interactive authentication required."
+    assert result["enabled"] is True
+
+
+def test_handle_autostart_apply_without_a_broker_answers_the_full_shape(monkeypatch) -> None:
+    """The renderer reads state keys unconditionally, so every path carries them."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    delattr(services, "_privilege_broker")
+    result = services._handle_autostart_apply("openfollow", True)
+    assert result["ok"] is False
+    assert result["available"] is False
+    assert result["enabled"] is False
+    assert result["reason"] == result["error"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "Disable a systemd unit: cancelled waiting for the device password.",
+            "Cancelled - the setting was not changed.",
+        ),
+        ("Enable a systemd unit: timed out after 10s.", "Cancelled - the setting was not changed."),
+        ("Enable a systemd unit: Failed to enable unit.", "Failed to enable unit."),
+        ("no colon here", "no colon here"),
+        ("Enable a systemd unit: ", "The setting could not be changed."),
+    ],
+)
+def test_autostart_failure_text_drops_the_capability_prefix(raw: str, expected: str) -> None:
+    """The broker's prefix names internal plumbing; the operator reads the reason."""
+    assert services_module._autostart_failure_text(Exception(raw)) == expected
+
+
 # Privilege prompter closure (created during init)
 class _FakeWebCommands:
     """Stand-in for :class:`WebCommandQueue` that records calls without

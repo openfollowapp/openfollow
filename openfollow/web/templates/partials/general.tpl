@@ -138,6 +138,73 @@
 </div>
 
 %# ------------------------------------------------------------------
+%# Startup. Lazy-loaded like the network block below so the ``systemctl``
+%# read stays off the General render path, and so the switch reports the
+%# host's own state on every open. Linux-only: there is no unit to switch
+%# anywhere else.
+%# ------------------------------------------------------------------
+% if defined('startup_supported') and startup_supported:
+<div class="section" data-fold-key="general-startup" data-help="general-startup" data-fold-default="collapsed">
+    <div class="section-head">
+        <h2>Startup</h2>
+        <span class="section-note">Whether this station starts OpenFollow at boot</span>
+    </div>
+    <div id="startup-settings" hx-get="/section/general/startup" hx-trigger="load"
+         hx-target="this" hx-swap="innerHTML">
+        <p class="muted">Loading startup settings…</p>
+    </div>
+</div>
+
+<script>
+// Start-at-boot switch. Turning it OFF is confirmed first: the web UI is part
+// of OpenFollow, so after the next reboot there is no page left to undo it
+// from. Defined on window so re-running this script after an HTMX section swap
+// reassigns rather than redefines. Uses the shared modal helpers from base.tpl.
+window.onAutostartToggle = async function (input) {
+  const enable = input.checked;
+  if (!enable) {
+    const proceed = await modalConfirm({
+      title: 'Stop OpenFollow starting at boot?',
+      message: 'Not recommended. This web interface is part of OpenFollow, so once this '
+        + 'station restarts there is no page to switch it back on \u2013 you would need SSH, '
+        + 'or a keyboard and screen on the station itself.',
+      confirmLabel: 'Turn it off',
+      cancelLabel: 'Keep starting at boot',
+      danger: true,
+    });
+    if (!proceed) { input.checked = true; return; }
+  }
+  input.disabled = true;
+  const body = new URLSearchParams();
+  if (enable) body.set('autostart', 'on');
+  let html;
+  try {
+    const resp = await fetch('/section/general/startup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+    // A redirect here is the PIN login; rendering what it returns would put the
+    // sign-in page inside the switch's box.
+    if (resp.redirected) throw new Error('Your session has expired. Reload the page and sign in again.');
+    if (!resp.ok) throw new Error('The station answered ' + resp.status + '.');
+    html = await resp.text();
+  } catch (err) {
+    input.disabled = false;
+    input.checked = !enable;
+    openModal({
+      title: 'Could not change the setting',
+      bodyHTML: '<p>' + escapeHTML(err && err.message ? err.message : String(err)) + '</p>',
+      footerButtons: [{ label: 'Close', kind: 'primary', onClick: () => closeModal() }],
+    });
+    return;
+  }
+  document.getElementById('startup-settings').innerHTML = html;
+};
+</script>
+% end
+
+%# ------------------------------------------------------------------
 %# Network Interface. One region toggling between read-only
 %# view (disabled fields + live 5s poll) and the editable form (Apply /
 %# Renew / Cancel). Lazy-loaded so the General render stays cheap and so it

@@ -55,6 +55,14 @@ _FALLBACK_PORTS: tuple[int, ...] = (8080, 2010)
 # within this window rather than re-resolving on every request.
 _LOCAL_IP_REFRESH_TTL = 5.0
 
+_AUTOSTART_UNREADABLE = "Could not read whether this service starts at boot."
+
+
+def _autostart_unavailable(reason: str) -> dict[str, Any]:
+    """Shape a read the toggle can't be offered from."""
+    return {"available": False, "enabled": False, "reason": reason}
+
+
 _REQUEST_BUSY_BODY = b"Server busy; retry"
 _REQUEST_BUSY_RESPONSE = (
     b"HTTP/1.1 503 Service Unavailable\r\n"
@@ -168,6 +176,9 @@ class ConfigWebServer:
         network_renew_handler: Callable[[str], ApplyResult] | None = None,
         # Privilege capability snapshot for the diagnostics bundle; optional for tests.
         privilege_states_provider: Callable[[], dict[str, str]] | None = None,
+        # Boot-autostart switch: host state on read, broker-elevated write.
+        autostart_state_provider: (Callable[[str], dict[str, Any]] | None) = None,
+        autostart_apply_handler: (Callable[[str, bool], dict[str, Any]] | None) = None,
         # Shared marker catalog (id/name/color) + multicast sync.
         # The inline catalog UI in the Markers & Zones tab (rendered
         # via the ``/api/markers/catalog`` poll) and the ``/api/markers/*``
@@ -237,6 +248,8 @@ class ConfigWebServer:
         self._network_renew_handler = network_renew_handler
         self._psn_source_advisory_provider = psn_source_advisory_provider
         self._privilege_states_provider = privilege_states_provider
+        self._autostart_state_provider = autostart_state_provider
+        self._autostart_apply_handler = autostart_apply_handler
         self._marker_catalog_provider = marker_catalog_provider
         self._marker_catalog_sync_provider = marker_catalog_sync_provider
         # Public so ``_build_diagnostics_providers`` can pass it straight
@@ -388,6 +401,27 @@ class ConfigWebServer:
         except Exception as exc:  # noqa: BLE001
             logger.exception("network_renew handler raised")
             return ApplyResult(ok=False, message=str(exc))
+
+    def get_autostart(self, service_name: str) -> dict[str, Any]:
+        """Whether ``service_name`` starts at boot, as systemd reports it now."""
+        if self._autostart_state_provider is None:
+            return _autostart_unavailable("Autostart cannot be changed on this build.")
+        try:
+            return dict(self._autostart_state_provider(service_name))
+        except Exception:  # noqa: BLE001
+            logger.exception("Autostart state provider raised")
+            return _autostart_unavailable(_AUTOSTART_UNREADABLE)
+
+    def apply_autostart(self, service_name: str, enabled: bool) -> dict[str, Any]:
+        """Enable/disable ``service_name`` at boot; always returns a result dict."""
+        unavailable = _autostart_unavailable("Autostart cannot be changed on this build.")
+        if self._autostart_apply_handler is None:
+            return {"ok": False, "error": unavailable["reason"], **unavailable}
+        try:
+            return dict(self._autostart_apply_handler(service_name, enabled))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Autostart apply handler raised")
+            return {"ok": False, "error": str(exc), **_autostart_unavailable(_AUTOSTART_UNREADABLE)}
 
     def get_psn_source_advisory(self) -> dict[str, str]:
         """Startup advisory when pinned PSN source iface unavailable; returns status/banner/resolved_ip."""

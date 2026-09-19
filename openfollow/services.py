@@ -151,6 +151,20 @@ def clear_detached_update_state() -> None:
         pass
 
 
+def _autostart_failure_text(exc: Exception) -> str:
+    """Operator-facing sentence for a failed autostart change.
+
+    The broker prefixes its message with the capability's technical
+    description; that names internal plumbing, so only the reason after it is
+    shown.
+    """
+    raw = str(exc)
+    if "cancelled" in raw.lower() or "timed out" in raw.lower():
+        return "Cancelled - the setting was not changed."
+    _head, sep, tail = raw.partition(": ")
+    return (tail.strip() if sep else raw) or "The setting could not be changed."
+
+
 class WebCommandQueue:
     """Thread-safe command queue for web-triggered runtime commands."""
 
@@ -1931,6 +1945,9 @@ class AppRuntimeServices:
             network_renew_handler=self._handle_network_renew,
             # Privilege capability snapshot for the diagnostics bundle.
             privilege_states_provider=self._privilege_states_provider,
+            # Boot-autostart switch: host state on read, broker-elevated write.
+            autostart_state_provider=self._autostart_state_provider,
+            autostart_apply_handler=self._handle_autostart_apply,
             marker_catalog_provider=lambda: self._app._marker_catalog,
             marker_catalog_sync_provider=lambda: self._app._marker_catalog_sync,
             # Live gamepad snapshot for the diagnostics bundle's E9 section.
@@ -2218,6 +2235,50 @@ class AppRuntimeServices:
         if broker is None:
             return {}
         return {name: state.value for name, state in broker.states().items()}
+
+    def _autostart_state_provider(self, service_name: str) -> dict[str, Any]:
+        """Web provider: does ``service_name`` start at boot?
+
+        Reads the host every time, so the switch in the browser cannot disagree
+        with what systemd will do at the next boot.
+        """
+        from openfollow.privilege.autostart import read_autostart
+
+        state = read_autostart(service_name)
+        return {
+            "available": state.available,
+            "enabled": state.enabled,
+            "reason": state.reason,
+        }
+
+    def _handle_autostart_apply(self, service_name: str, enabled: bool) -> dict[str, Any]:
+        """Web write path: flip the unit's boot enablement through the broker.
+
+        Returns the post-write host state so a failed elevation still re-renders
+        the switch where systemd actually left it.
+        """
+        from openfollow.privilege.autostart import set_autostart
+        from openfollow.privilege.broker import PrivilegeError
+
+        broker = getattr(self, "_privilege_broker", None)
+        if broker is None:
+            message = "Elevated actions are not available on this build."
+            return {"ok": False, "error": message, "available": False, "enabled": False, "reason": message}
+        try:
+            state = set_autostart(broker, service_name, enabled=enabled)
+        except PrivilegeError as exc:
+            return {
+                "ok": False,
+                "error": _autostart_failure_text(exc),
+                **self._autostart_state_provider(service_name),
+            }
+        return {
+            "ok": True,
+            "error": "",
+            "available": state.available,
+            "enabled": state.enabled,
+            "reason": state.reason,
+        }
 
     def _osc_binding_status_provider(
         self,

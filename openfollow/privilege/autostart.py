@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 from openfollow.privilege.broker import PrivilegeBroker, PrivilegeError
 from openfollow.privilege.capabilities import SERVICE_DISABLE, SERVICE_ENABLE
@@ -30,7 +31,6 @@ _SWITCHABLE_STATES: dict[str, bool] = {
     "enabled": True,
     "enabled-runtime": False,
     "disabled": False,
-    "indirect": False,
 }
 
 # States no enable / disable can move, with the sentence shown instead of the
@@ -43,6 +43,10 @@ _BLOCKED_STATES: dict[str, str] = {
     "static": "This service has no boot configuration to switch.",
     "generated": "This service has no boot configuration to switch.",
     "transient": "This service has no boot configuration to switch.",
+    # ``indirect`` is an [Install] section carrying only ``Also=``: ``enable``
+    # returns success and ``is-enabled`` still reports ``indirect``, so an ON
+    # action here could only ever end as "did not apply".
+    "indirect": "This service's boot state is set through another unit.",
 }
 
 # Fail closed on anything else systemd may print (``alias``, ``linked``,
@@ -57,6 +61,9 @@ _UNREADABLE = "Could not read whether this service starts at boot."
 # ``update_service_name``. A leading ``-`` is rejected separately: the name is
 # appended to ``systemctl enable`` and would otherwise parse as an option.
 _UNIT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]+$")
+
+_CGROUP_PATH = Path("/proc/self/cgroup")
+_SERVICE_SUFFIX = ".service"
 
 
 @dataclass(frozen=True)
@@ -148,3 +155,22 @@ def set_autostart(broker: PrivilegeBroker, service_name: str, *, enabled: bool) 
         timeout=_APPLY_TIMEOUT_S,
     )
     return read_autostart(service_name)
+
+
+def own_unit_name(*, default: str) -> str:
+    """The unit *this process* runs under, or ``default`` outside systemd.
+
+    The switch must never act on a name the operator can type. ``service.enable``
+    is granted as ``systemctl enable *``, so passing a configurable value here
+    would turn a web field into arbitrary unit enablement at boot. The kernel's
+    answer cannot be reached that way.
+    """
+    try:
+        lines = _CGROUP_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return default
+    for line in lines:
+        leaf = line.rpartition(":")[2].rpartition("/")[2]
+        if leaf.endswith(_SERVICE_SUFFIX) and _UNIT_NAME_RE.fullmatch(leaf):
+            return leaf
+    return default

@@ -2359,10 +2359,23 @@ def _is_valid_service_name(value: str) -> bool:
 
 
 def _service_unit_name(cfg: AppConfig) -> str:
-    """The unit this station's own service runs as, falling back to the default
-    when the configured name is unusable as an argv token."""
+    """The unit the updater restarts, falling back to the default when the
+    configured name is unusable as an argv token."""
     name = cfg.update_service_name
     return name if _is_valid_service_name(name) else DEFAULT_UPDATE_SERVICE_NAME
+
+
+def _autostart_unit_name() -> str:
+    """The unit the boot switch acts on: the one this process runs under.
+
+    Deliberately not ``update_service_name``. That field is writable over the
+    web and ``service.enable`` is granted as ``systemctl enable *``, so reading
+    the switch's target from config would make any syntactically valid unit
+    enablable at boot by whoever can reach the page.
+    """
+    from openfollow.privilege.autostart import own_unit_name
+
+    return own_unit_name(default=DEFAULT_UPDATE_SERVICE_NAME)
 
 
 def _is_valid_web_pin(value: str) -> bool:
@@ -5038,17 +5051,15 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def get_startup_section() -> Any:
         """The start-at-boot switch, lazily loaded so the ``systemctl`` read
         stays off the General render path."""
-        cfg = _request_scoped_config()
-        return _render_startup(server.get_autostart(_service_unit_name(cfg)))
+        return _render_startup(server.get_autostart(_autostart_unit_name()))
 
     @app.post("/section/general/startup")
     def post_startup_section() -> Any:
         """Switch start-at-boot on or off, re-rendering from what systemd
         reports afterwards - including when the change was refused, so the
         switch never shows a state the host doesn't hold."""
-        cfg = _request_scoped_config()
         enabled = _as_bool(request.forms.get("autostart"), False)
-        result = server.apply_autostart(_service_unit_name(cfg), enabled)
+        result = server.apply_autostart(_autostart_unit_name(), enabled)
         startup: dict[str, Any] = {
             "available": bool(result.get("available", False)),
             "enabled": bool(result.get("enabled", False)),

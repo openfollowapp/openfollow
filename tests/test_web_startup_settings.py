@@ -86,6 +86,13 @@ def _post_form(base: str, path: str, data: dict) -> tuple[int, str]:
         return e.code, e.read().decode()
 
 
+def _cgroup(tmp_path, unit: str):
+    """A ``/proc/self/cgroup`` naming ``unit`` as the leaf."""
+    path = tmp_path / "cgroup"
+    path.write_text(f"0::/system.slice/{unit}\n", encoding="utf-8")
+    return path
+
+
 _ADVANCED_SUMMARY = "<summary>Advanced Settings</summary>"
 
 
@@ -122,22 +129,35 @@ class TestRenderingTheSwitch:
         assert 'name="autostart"' not in body
         assert "masked on this host" in body
 
-    def test_the_read_names_the_configured_service(self, tmp_path, monkeypatch) -> None:
+    def test_the_read_names_the_unit_this_process_runs_under(self, tmp_path, monkeypatch) -> None:
         host = _Host()
-        cfg = AppConfig()
-        cfg.update_service_name = "station-app"
-        with _serve(tmp_path, monkeypatch, host, cfg=cfg) as (_server, base):
+        monkeypatch.setattr("openfollow.privilege.autostart._CGROUP_PATH", _cgroup(tmp_path, "station-app.service"))
+        with _serve(tmp_path, monkeypatch, host) as (_server, base):
             _get(base, "/section/general/startup")
-        assert host.reads == ["station-app"]
+        assert host.reads == ["station-app.service"]
 
-    def test_an_unusable_configured_name_falls_back_to_the_default(self, tmp_path, monkeypatch) -> None:
-        """A hand-edited config must not send a junk token to the host layer."""
+    def test_outside_systemd_the_read_falls_back_to_the_default(self, tmp_path, monkeypatch) -> None:
         host = _Host()
-        cfg = AppConfig()
-        cfg.update_service_name = "-rf"
-        with _serve(tmp_path, monkeypatch, host, cfg=cfg) as (_server, base):
+        monkeypatch.setattr("openfollow.privilege.autostart._CGROUP_PATH", tmp_path / "absent")
+        with _serve(tmp_path, monkeypatch, host) as (_server, base):
             _get(base, "/section/general/startup")
         assert host.reads == ["openfollow"]
+
+    @pytest.mark.parametrize("configured", ["station-app", "sshd", "-rf"])
+    def test_the_configured_update_name_never_reaches_the_switch(self, tmp_path, monkeypatch, configured: str) -> None:
+        """``update_service_name`` is writable over the web and ``service.enable``
+        is granted as ``systemctl enable *``. Taking the switch's target from it
+        would make any syntactically valid unit enablable at boot by whoever can
+        reach the page."""
+        host = _Host()
+        monkeypatch.setattr("openfollow.privilege.autostart._CGROUP_PATH", _cgroup(tmp_path, "openfollow.service"))
+        cfg = AppConfig()
+        cfg.update_service_name = configured
+        with _serve(tmp_path, monkeypatch, host, cfg=cfg) as (_server, base):
+            _get(base, "/section/general/startup")
+            _post_form(base, "/section/general/startup", {"autostart": "on"})
+        assert host.reads == ["openfollow.service"]
+        assert host.writes == [("openfollow.service", True)]
 
     def test_a_build_without_the_provider_says_so_rather_than_failing(self, tmp_path, monkeypatch) -> None:
         with _serve(tmp_path, monkeypatch, None) as (_server, base):

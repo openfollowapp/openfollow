@@ -10,6 +10,7 @@ import pytest
 
 from openfollow.privilege.autostart import (
     AutostartState,
+    own_unit_name,
     read_autostart,
     set_autostart,
     unit_file_name,
@@ -56,7 +57,7 @@ class TestUnitFileName:
 class TestReadAutostart:
     @pytest.mark.parametrize(
         ("state", "enabled"),
-        [("enabled", True), ("disabled", False), ("indirect", False)],
+        [("enabled", True), ("disabled", False)],
     )
     def test_switchable_states(self, monkeypatch, state: str, enabled: bool) -> None:
         _stub_is_enabled(monkeypatch, f"{state}\n")
@@ -78,7 +79,9 @@ class TestReadAutostart:
         assert result.available is False
         assert result.reason == "This service is in a boot state this switch does not handle."
 
-    @pytest.mark.parametrize("state", ["masked", "masked-runtime", "not-found", "static", "generated", "transient"])
+    @pytest.mark.parametrize(
+        "state", ["masked", "masked-runtime", "not-found", "static", "generated", "transient", "indirect"]
+    )
     def test_states_no_switch_can_move_report_unavailable(self, monkeypatch, state: str) -> None:
         """A switch whose only outcome is an error is not offered at all."""
         _stub_is_enabled(monkeypatch, f"{state}\n")
@@ -220,3 +223,77 @@ class TestSetAutostart:
         broker = FakeBroker()
         set_autostart(broker, "openfollow", enabled=True)
         assert "openfollow.service" in broker.calls[0].reason
+
+
+class TestIndirectUnits:
+    def test_indirect_offers_no_switch(self, monkeypatch) -> None:
+        """An [Install] section carrying only ``Also=`` keeps reporting
+        ``indirect`` after a successful ``enable``, so an ON action there could
+        only ever report that it did not apply."""
+        _stub_is_enabled(monkeypatch, "indirect\n")
+        result = read_autostart("openfollow")
+        assert result.available is False
+        assert result.reason == "This service's boot state is set through another unit."
+
+    def test_indirect_is_refused_before_any_elevation(self, monkeypatch) -> None:
+        _stub_is_enabled(monkeypatch, "indirect\n")
+        broker = FakeBroker()
+        with pytest.raises(PrivilegeError):
+            set_autostart(broker, "openfollow", enabled=True)
+        assert broker.calls == []
+
+
+class TestOwnUnitName:
+    """The switch's target is read from the kernel, never from config.
+
+    ``service.enable`` is granted as ``systemctl enable *``, so a target taken
+    from a web-writable field would make any syntactically valid unit enablable
+    at boot by whoever can reach the page.
+    """
+
+    @pytest.mark.parametrize(
+        ("cgroup", "expected"),
+        [
+            ("0::/system.slice/openfollow.service\n", "openfollow.service"),
+            ("0::/system.slice/custom-name.service\n", "custom-name.service"),
+            (
+                "11:pids:/system.slice/openfollow.service\n1:name=systemd:/system.slice/openfollow.service\n",
+                "openfollow.service",
+            ),
+            (
+                "0::/user.slice/user-1000.slice/user@1000.service/app.slice/openfollow.service\n",
+                "openfollow.service",
+            ),
+        ],
+    )
+    def test_reads_the_unit_this_process_runs_under(self, monkeypatch, tmp_path, cgroup: str, expected: str) -> None:
+        path = tmp_path / "cgroup"
+        path.write_text(cgroup, encoding="utf-8")
+        monkeypatch.setattr("openfollow.privilege.autostart._CGROUP_PATH", path)
+        assert own_unit_name(default="fallback") == expected
+
+    @pytest.mark.parametrize(
+        "cgroup",
+        [
+            "0::/\n",
+            "0::/user.slice/session-3.scope\n",
+            "0::/docker/2f9a1c\n",
+            "",
+        ],
+    )
+    def test_no_unit_in_the_cgroup_falls_back(self, monkeypatch, tmp_path, cgroup: str) -> None:
+        path = tmp_path / "cgroup"
+        path.write_text(cgroup, encoding="utf-8")
+        monkeypatch.setattr("openfollow.privilege.autostart._CGROUP_PATH", path)
+        assert own_unit_name(default="fallback") == "fallback"
+
+    def test_absent_cgroup_falls_back(self, monkeypatch, tmp_path) -> None:
+        """No /proc on macOS, and no systemd in a plain shell run."""
+        monkeypatch.setattr("openfollow.privilege.autostart._CGROUP_PATH", tmp_path / "missing")
+        assert own_unit_name(default="fallback") == "fallback"
+
+    def test_a_leaf_that_is_not_a_unit_name_is_ignored(self, monkeypatch, tmp_path) -> None:
+        path = tmp_path / "cgroup"
+        path.write_text("0::/system.slice/not a unit;rm -rf.service\n", encoding="utf-8")
+        monkeypatch.setattr("openfollow.privilege.autostart._CGROUP_PATH", path)
+        assert own_unit_name(default="fallback") == "fallback"

@@ -61,6 +61,7 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_virtual_faders,
 )
 from openfollow.runtime.overlay_draw_style import COLOR_DANGER_TEXT
+from openfollow.runtime.overlay_links import LINKS
 from openfollow.runtime.overlay_state import (
     ButtonDetectionState,
     MarkerOverlayData,
@@ -2340,3 +2341,72 @@ class TestTheDeviceBoxMatchesTheBrowser:
         printed the same URL a second line later."""
         cr = self._draws()
         assert len(cr.find_texts("192.0.2.10:554")) == 1
+
+
+class TestSettingsMenuLinkColumns:
+    """The Settings screen ends in the two addresses an operator cannot type.
+
+    The station has no keyboard for a URL and often no second screen, so the
+    codes are the usable half and the rows above them must leave room: the list
+    takes the height its items need rather than everything left over.
+    """
+
+    def test_both_captions_render(self) -> None:
+        state = _base_state(settings_items=["Network"], settings_items_enabled=[True])
+        cr = FakeCairo()
+        draw_settings_menu(FakeRenderer(state=state), cr, state, 1600, 900)
+        blob = " ".join(cr.show_text_strings())
+        assert "openfollow.app/docs" in blob
+        assert "Discord" in blob
+
+    def test_both_codes_render(self) -> None:
+        state = _base_state(settings_items=["Network"], settings_items_enabled=[True])
+        cr = FakeCairo()
+        draw_settings_menu(FakeRenderer(state=state), cr, state, 1600, 900)
+        dark = sum(sum(row.count("#") for row in code.symbol) for code in LINKS)
+        # Module squares are the only rects drawn at a repeated tiny size.
+        sizes: dict[float, int] = {}
+        for rect in cr.rects:
+            sizes[round(rect[2], 4)] = sizes.get(round(rect[2], 4), 0) + 1
+        assert max(sizes.values()) >= dark
+
+    def test_the_codes_sit_side_by_side_on_one_line(self) -> None:
+        state = _base_state(settings_items=["Network"], settings_items_enabled=[True])
+        cr = FakeCairo()
+        draw_settings_menu(FakeRenderer(state=state), cr, state, 1600, 900)
+        module = min(r[2] for r in cr.rects if r[2] > 0.0)
+        modules = [r for r in cr.rects if r[2] == pytest.approx(module)]
+        midpoint = (min(r[0] for r in modules) + max(r[0] for r in modules)) / 2.0
+        left = [r for r in modules if r[0] < midpoint]
+        right = [r for r in modules if r[0] >= midpoint]
+        assert left and right
+        # Both codes start on the same line, whatever their captions wrapped to.
+        assert min(r[1] for r in left) == pytest.approx(min(r[1] for r in right))
+        # And they are separate columns, not one code split down the middle.
+        assert min(r[0] for r in right) - max(r[0] for r in left) > module
+
+    def test_the_list_takes_its_rows_not_the_whole_panel(self) -> None:
+        """Two items must not produce the same list box as eight."""
+        heights = []
+        for count in (2, 8):
+            state = _base_state(
+                settings_items=[f"Item {i}" for i in range(count)],
+                settings_items_enabled=[True] * count,
+            )
+            cr = FakeCairo()
+            draw_settings_menu(FakeRenderer(state=state), cr, state, 1600, 900)
+            module = min(r[2] for r in cr.rects if r[2] > 0.0)
+            tops = [r[1] for r in cr.rects if r[2] == pytest.approx(module)]
+            heights.append(min(tops))
+        assert heights[0] < heights[1]
+
+    def test_a_panel_too_short_for_a_readable_code_draws_none(self) -> None:
+        """Half a code is not a code; below the floor the block is dropped."""
+        state = _base_state(
+            settings_items=[f"Item {i}" for i in range(12)],
+            settings_items_enabled=[True] * 12,
+        )
+        cr = FakeCairo()
+        draw_settings_menu(FakeRenderer(state=state), cr, state, 640, 320)
+        blob = " ".join(cr.show_text_strings())
+        assert "openfollow.app/docs" not in blob

@@ -42,6 +42,7 @@ from openfollow.runtime.overlay_layout import (
     selectable_list_layout,
     virtual_fader_card_y,
 )
+from openfollow.runtime.overlay_links import LINKS, LinkCode, draw_link_qr
 from openfollow.runtime.overlay_state import (
     MarkerOverlayData,
     OverlayState,
@@ -165,6 +166,24 @@ def draw_modal_shell(
     cr.move_to(subtitle_x, subtitle_y)
     cr.show_text(subtitle_text)
     return panel_x, panel_y, panel_w, panel_h
+
+
+# Settings list rows are 30px on a 14px pad (see ``draw_selectable_list``); the
+# documentation pointer takes what the rows leave.
+_LIST_ITEM_H = 30.0
+_LIST_PADDING = 14.0
+_LIST_MIN_H = 80.0
+_DOCS_GAP = 10.0
+# The pointer sits just under the rows, and what the rows do not use falls
+# below it rather than above.
+_DOCS_TOP_GAP = 24.0
+_DOCS_BOTTOM_MARGIN = 34.0
+_DOCS_LINE_H = 14.0
+_DOCS_FONT = 11.5
+_DOCS_COL_GAP = 20.0
+_DOCS_QR_MAX = 190.0
+# Below this the code is too small to read off a screen, so draw nothing.
+_DOCS_QR_MIN = 70.0
 
 
 def draw_selectable_list(
@@ -556,7 +575,17 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
         )
         cursor_y += block_h + 12.0
 
-    list_h = max(80.0, panel_y + panel_h - cursor_y - 14.0)
+    # The list takes the height its rows need, not everything left over, so the
+    # documentation pointer below it is on screen rather than under the panel.
+    available_h = panel_y + panel_h - cursor_y - _DOCS_BOTTOM_MARGIN
+    col_w = (content_w - _DOCS_COL_GAP * (len(LINKS) - 1)) / len(LINKS)
+    # One text height for every column, so the codes sit on one line whatever
+    # each caption breaks to.
+    text_h = max(len(code.lines) for code in LINKS) * _DOCS_LINE_H
+    block_max = text_h + _DOCS_GAP + min(_DOCS_QR_MAX, col_w)
+    docs_h = min(block_max, max(0.0, available_h - _LIST_MIN_H - _DOCS_TOP_GAP))
+    natural_list_h = len(items) * _LIST_ITEM_H + _LIST_PADDING if items else _LIST_MIN_H
+    list_h = max(_LIST_MIN_H, min(natural_list_h, available_h - docs_h - _DOCS_TOP_GAP))
     draw_selectable_list(
         renderer,
         cr,
@@ -568,6 +597,46 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
         h=list_h,
         empty_message="No settings available.",
     )
+    qr_size = min(docs_h - text_h - _DOCS_GAP, _DOCS_QR_MAX, col_w)
+    if qr_size >= _DOCS_QR_MIN:
+        docs_y = min(cursor_y + list_h + _DOCS_TOP_GAP, panel_y + panel_h - _DOCS_BOTTOM_MARGIN - docs_h)
+        for idx, code in enumerate(LINKS):
+            _draw_link_column(
+                renderer,
+                cr,
+                code,
+                content_x + idx * (col_w + _DOCS_COL_GAP),
+                docs_y,
+                col_w,
+                text_h,
+                qr_size,
+            )
+
+
+def _draw_link_column(
+    renderer: Any,
+    cr: Any,
+    code: LinkCode,
+    x: float,
+    y: float,
+    w: float,
+    text_h: float,
+    qr_size: float,
+) -> None:
+    """A caption over its QR, both centred in the column.
+
+    An operator at the station has no keyboard for a URL and often no second
+    screen, so the code is the usable half; the caption is what tells someone
+    reading over their shoulder where it leads.
+    """
+    renderer._set_ui_font(cr, _DOCS_FONT)
+    cr.set_source_rgba(*COLOR_TEXT_MUTED)
+    for row, authored in enumerate(code.lines):
+        line = renderer._truncate_text_to_width(cr, authored, w)
+        ext = cr.text_extents(line)
+        cr.move_to(x + (w - ext.width) / 2.0, y + (row + 1) * _DOCS_LINE_H)
+        cr.show_text(line)
+    draw_link_qr(cr, code, x + (w - qr_size) / 2.0, y + text_h + _DOCS_GAP, qr_size)
 
 
 def _draw_settings_info_card(

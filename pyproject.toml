@@ -87,7 +87,7 @@ include = [
 # This is the only ruff version in the repo: the pre-commit hook runs it out of
 # the poetry env rather than fetching its own at a ``rev``, so a second pin
 # cannot drift from this one.
-ruff = "0.16.7"
+ruff = "0.16.8"
 pytest = "^9.1.1"
 pytest-cov = "^7.1"
 coverage = { extras = ["toml"], version = "^7.16" }

@@ -767,6 +767,7 @@ and "manage X under Y" pointers – goes in that section's **help drawer markdow
 | `/section/network` | POST | Re-render edit form on interface/method change – no write |
 | `/section/network/apply` | POST | Validate + write IPv4 config via the privileged adapter |
 | `/section/network/renew` | POST | Renew DHCP lease via the privileged adapter |
+| `/section/general/startup` | GET/POST | Start-at-boot switch; reads `systemctl is-enabled`, writes via the `service.enable` / `service.disable` grants |
 | `/api/info` | GET | JSON: system_name, ip, port |
 | `/api/peers` | GET | JSON: discovered peers |
 | `/api/config/export` | GET | Download full config as JSON file |

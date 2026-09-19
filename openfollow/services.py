@@ -151,6 +151,28 @@ def clear_detached_update_state() -> None:
         pass
 
 
+_AUTOSTART_NOT_APPLIED = "The station accepted the change but did not apply it."
+_AUTOSTART_CHANGE_FAILED = "The setting could not be changed."
+
+
+def _autostart_failure_text(exc: Exception) -> str:
+    """Operator-facing sentence for a failed autostart change.
+
+    The broker prefixes its message with the capability's technical
+    description; that names internal plumbing, so only the reason after it is
+    shown. A dismissed password prompt is the one failure that can promise
+    nothing changed - a command timeout may have applied the setting, and
+    saying otherwise would sit above a switch showing the new state.
+    """
+    from openfollow.privilege.broker import PROMPT_CANCELLED_DETAIL
+
+    raw = str(exc)
+    if PROMPT_CANCELLED_DETAIL in raw:
+        return "Cancelled - the setting was not changed."
+    _head, sep, tail = raw.partition(": ")
+    return (tail.strip() if sep else raw) or _AUTOSTART_CHANGE_FAILED
+
+
 class WebCommandQueue:
     """Thread-safe command queue for web-triggered runtime commands."""
 
@@ -1931,6 +1953,9 @@ class AppRuntimeServices:
             network_renew_handler=self._handle_network_renew,
             # Privilege capability snapshot for the diagnostics bundle.
             privilege_states_provider=self._privilege_states_provider,
+            # Boot-autostart switch: host state on read, broker-elevated write.
+            autostart_state_provider=self._autostart_state_provider,
+            autostart_apply_handler=self._handle_autostart_apply,
             marker_catalog_provider=lambda: self._app._marker_catalog,
             marker_catalog_sync_provider=lambda: self._app._marker_catalog_sync,
             # Live gamepad snapshot for the diagnostics bundle's E9 section.
@@ -2218,6 +2243,54 @@ class AppRuntimeServices:
         if broker is None:
             return {}
         return {name: state.value for name, state in broker.states().items()}
+
+    def _autostart_state_provider(self, service_name: str) -> dict[str, Any]:
+        """Web provider: does ``service_name`` start at boot?
+
+        Reads the host every time, so the switch in the browser cannot disagree
+        with what systemd will do at the next boot.
+        """
+        from openfollow.privilege.autostart import read_autostart
+
+        state = read_autostart(service_name)
+        return {
+            "available": state.available,
+            "enabled": state.enabled,
+            "reason": state.reason,
+        }
+
+    def _handle_autostart_apply(self, service_name: str, enabled: bool) -> dict[str, Any]:
+        """Web write path: flip the unit's boot enablement through the broker.
+
+        Returns the post-write host state so a failed elevation still re-renders
+        the switch where systemd actually left it.
+        """
+        from openfollow.privilege.autostart import set_autostart
+        from openfollow.privilege.broker import PrivilegeError
+
+        broker = getattr(self, "_privilege_broker", None)
+        if broker is None:
+            message = "Elevated actions are not available on this build."
+            return {"ok": False, "error": message, "available": False, "enabled": False, "reason": message}
+        try:
+            state = set_autostart(broker, service_name, enabled=enabled)
+        except PrivilegeError as exc:
+            return {
+                "ok": False,
+                "error": _autostart_failure_text(exc),
+                **self._autostart_state_provider(service_name),
+            }
+        # A zero exit from systemctl is not the same as the setting having
+        # taken: report success only where the host now agrees, or the banner
+        # would announce the opposite of the state rendered beside it.
+        applied = state.available and state.enabled == enabled
+        return {
+            "ok": applied,
+            "error": "" if applied else (state.reason or _AUTOSTART_NOT_APPLIED),
+            "available": state.available,
+            "enabled": state.enabled,
+            "reason": state.reason,
+        }
 
     def _osc_binding_status_provider(
         self,

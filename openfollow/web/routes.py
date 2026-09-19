@@ -843,6 +843,16 @@ def _deb_update_supported() -> bool:
     return sys.platform.startswith("linux")
 
 
+def _startup_settings_supported() -> bool:
+    """Whether this host has a boot-enablement to switch at all.
+
+    systemd is Linux-only, so the Startup box is hidden everywhere else. On a
+    Linux host without the unit installed the box stays and says so - that is
+    an answer an operator can act on, where a hidden box is not.
+    """
+    return sys.platform.startswith("linux")
+
+
 def _footer_update_context(server: ConfigWebServer) -> dict[str, Any]:
     """base.tpl footer "Update available" flag context.
 
@@ -882,6 +892,7 @@ def _build_general_template_data(
         "network_state": server.get_network_state(),
         "current_version": openfollow.__version__,
         "update_supported": _deb_update_supported(),
+        "startup_supported": _startup_settings_supported(),
     }
     if update_feedback:
         data["update_feedback"] = update_feedback
@@ -2345,6 +2356,13 @@ def _is_valid_service_name(value: str) -> bool:
     if not candidate or candidate.startswith("-"):
         return False
     return bool(_SERVICE_NAME_RE.fullmatch(candidate))
+
+
+def _service_unit_name(cfg: AppConfig) -> str:
+    """The unit this station's own service runs as, falling back to the default
+    when the configured name is unusable as an argv token."""
+    name = cfg.update_service_name
+    return name if _is_valid_service_name(name) else DEFAULT_UPDATE_SERVICE_NAME
 
 
 def _is_valid_web_pin(value: str) -> bool:
@@ -4364,6 +4382,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # Update-available banner (General section) + footer flag (base.tpl);
             # read once so the flag and version label can't disagree mid-render.
             **_footer_update_context(server),
+            # index.tpl includes the General partial directly, so the platform
+            # gate for the Startup box has to be supplied here too.
+            startup_supported=_startup_settings_supported(),
             button_names=sorted(VALID_BUTTON_NAMES),
             detection_missing=_get_detection_missing_deps(config),
             detection_extras_installed=extras,
@@ -5010,6 +5031,45 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         _persist_ui_change(_mutate)
         return ""
 
+    def _render_startup(startup: dict[str, Any]) -> Any:
+        return template("partials/startup", startup=startup)
+
+    @app.get("/section/general/startup")
+    def get_startup_section() -> Any:
+        """The start-at-boot switch, lazily loaded so the ``systemctl`` read
+        stays off the General render path."""
+        cfg = _request_scoped_config()
+        return _render_startup(server.get_autostart(_service_unit_name(cfg)))
+
+    @app.post("/section/general/startup")
+    def post_startup_section() -> Any:
+        """Switch start-at-boot on or off, re-rendering from what systemd
+        reports afterwards - including when the change was refused, so the
+        switch never shows a state the host doesn't hold."""
+        cfg = _request_scoped_config()
+        enabled = _as_bool(request.forms.get("autostart"), False)
+        result = server.apply_autostart(_service_unit_name(cfg), enabled)
+        startup: dict[str, Any] = {
+            "available": bool(result.get("available", False)),
+            "enabled": bool(result.get("enabled", False)),
+            "reason": str(result.get("reason", "")),
+        }
+        if result.get("ok"):
+            startup["banner"] = {
+                "kind": "ok",
+                "text": (
+                    "OpenFollow will start automatically at boot."
+                    if startup["enabled"]
+                    else "OpenFollow will not start at boot."
+                ),
+            }
+        else:
+            startup["banner"] = {
+                "kind": "error",
+                "text": str(result.get("error", "")) or "The setting could not be changed.",
+            }
+        return _render_startup(startup)
+
     @app.post("/section/general/deb-update")
     def deb_update_general() -> Any:
         """Check GitHub Releases for a newer .deb and install it.
@@ -5020,9 +5080,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """
         cfg = load_config(server.config_path)
         response.content_type = "application/json"
-        service_name = cfg.update_service_name
-        if not _is_valid_service_name(service_name):
-            service_name = DEFAULT_UPDATE_SERVICE_NAME
+        service_name = _service_unit_name(cfg)
         if not server.request_deb_update(service_name=service_name):
             return json.dumps({"ok": False, "error": "An update is already running. Please wait for it to finish."})
         return json.dumps({"ok": True})
@@ -5085,9 +5143,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return json.dumps({"ok": False, "error": f"File too large (max {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB)."})
 
         cfg = load_config(server.config_path)
-        service_name = cfg.update_service_name
-        if not _is_valid_service_name(service_name):
-            service_name = DEFAULT_UPDATE_SERVICE_NAME
+        service_name = _service_unit_name(cfg)
 
         staged_path = f"/tmp/{DEB_UPDATE_TMP_PREFIX}{secrets.token_hex(8)}.ofupdate"  # nosec B108
         try:

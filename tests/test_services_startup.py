@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import openfollow.privilege.broker as broker_module
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig
 
@@ -408,6 +409,150 @@ def test_privilege_states_provider_returns_empty_without_broker(monkeypatch) -> 
     services = _build_services_with_psutil_backend(monkeypatch)
     delattr(services, "_privilege_broker")
     assert services._privilege_states_provider() == {}
+
+
+# Autostart providers (boot-enablement read + write for the General tab)
+
+
+def _stub_autostart(monkeypatch, *, read=None, write=None) -> None:
+    import openfollow.privilege.autostart as autostart_module
+
+    if read is not None:
+        monkeypatch.setattr(autostart_module, "read_autostart", read)
+    if write is not None:
+        monkeypatch.setattr(autostart_module, "set_autostart", write)
+
+
+def test_autostart_state_provider_flattens_the_host_read(monkeypatch) -> None:
+    """Templates compare plain values, so the dataclass is flattened here."""
+    from openfollow.privilege.autostart import AutostartState
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    seen: list[str] = []
+
+    def _read(name):
+        seen.append(name)
+        return AutostartState(available=True, enabled=True, reason="")
+
+    _stub_autostart(monkeypatch, read=_read)
+    assert services._autostart_state_provider("openfollow") == {
+        "available": True,
+        "enabled": True,
+        "reason": "",
+    }
+    assert seen == ["openfollow"]
+
+
+def test_handle_autostart_apply_reports_the_state_after_the_write(monkeypatch) -> None:
+    from openfollow.privilege.autostart import AutostartState
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    calls: list[tuple[str, bool]] = []
+
+    def _write(_broker, name, *, enabled):
+        calls.append((name, enabled))
+        return AutostartState(available=True, enabled=enabled, reason="")
+
+    _stub_autostart(monkeypatch, write=_write)
+    result = services._handle_autostart_apply("openfollow", False)
+    assert calls == [("openfollow", False)]
+    assert result == {"ok": True, "error": "", "available": True, "enabled": False, "reason": ""}
+
+
+def test_handle_autostart_apply_refuses_success_when_the_host_disagrees(monkeypatch) -> None:
+    """A zero exit from systemctl is not the same as the setting having taken.
+
+    Reporting ok on the exit code alone renders a success banner announcing the
+    opposite of the switch drawn beside it.
+    """
+    from openfollow.privilege.autostart import AutostartState
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _stub_autostart(
+        monkeypatch,
+        write=lambda _broker, _name, *, enabled: AutostartState(available=True, enabled=False, reason=""),
+    )
+    result = services._handle_autostart_apply("openfollow", True)
+    assert result["ok"] is False
+    assert result["error"] == "The station accepted the change but did not apply it."
+    assert result["enabled"] is False
+
+
+def test_handle_autostart_apply_surfaces_a_host_that_became_unswitchable(monkeypatch) -> None:
+    """When the post-write read says why it can't be switched, that beats the
+    generic "did not apply" sentence."""
+    from openfollow.privilege.autostart import AutostartState
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _stub_autostart(
+        monkeypatch,
+        write=lambda _broker, _name, *, enabled: AutostartState(
+            available=False, enabled=False, reason="This service is masked on this host."
+        ),
+    )
+    result = services._handle_autostart_apply("openfollow", True)
+    assert result["ok"] is False
+    assert result["error"] == "This service is masked on this host."
+
+
+def test_handle_autostart_apply_rereads_the_host_when_the_write_fails(monkeypatch) -> None:
+    """A refused change still has to answer with where the host actually is."""
+    from openfollow.privilege.autostart import AutostartState
+    from openfollow.privilege.broker import PrivilegeError
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    def _write(_broker, _name, *, enabled):
+        raise PrivilegeError("Disable a systemd unit: Interactive authentication required.")
+
+    _stub_autostart(
+        monkeypatch,
+        read=lambda _name: AutostartState(available=True, enabled=True, reason=""),
+        write=_write,
+    )
+    result = services._handle_autostart_apply("openfollow", False)
+    assert result["ok"] is False
+    assert result["error"] == "Interactive authentication required."
+    assert result["enabled"] is True
+
+
+def test_handle_autostart_apply_without_a_broker_answers_the_full_shape(monkeypatch) -> None:
+    """The renderer reads state keys unconditionally, so every path carries them."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    delattr(services, "_privilege_broker")
+    result = services._handle_autostart_apply("openfollow", True)
+    assert result["ok"] is False
+    assert result["available"] is False
+    assert result["enabled"] is False
+    assert result["reason"] == result["error"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            f"Disable a systemd unit: {broker_module.PROMPT_CANCELLED_DETAIL}",
+            "Cancelled - the setting was not changed.",
+        ),
+        ("Enable a systemd unit: Failed to enable unit.", "Failed to enable unit."),
+        ("no colon here", "no colon here"),
+        ("Enable a systemd unit: ", "The setting could not be changed."),
+    ],
+)
+def test_autostart_failure_text_drops_the_capability_prefix(raw: str, expected: str) -> None:
+    """The broker's prefix names internal plumbing; the operator reads the reason."""
+    assert services_module._autostart_failure_text(Exception(raw)) == expected
+
+
+def test_autostart_failure_text_does_not_promise_a_timeout_changed_nothing() -> None:
+    """A command timeout may have applied the setting.
+
+    Reporting it as "not changed" would sit above a switch showing the new
+    state - the same contradiction the post-write check exists to prevent. Only
+    a dismissed password prompt can promise nothing happened.
+    """
+    text = services_module._autostart_failure_text(Exception("Enable a systemd unit: timed out after 10s."))
+    assert text == "timed out after 10s."
 
 
 # Privilege prompter closure (created during init)

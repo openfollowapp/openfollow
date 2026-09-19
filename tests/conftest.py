@@ -85,6 +85,21 @@ def _restore_os_environ() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _no_host_cgroup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may resolve the unit the test process itself runs under.
+
+    ``autostart.own_unit_name`` reads ``/proc/self/cgroup`` to find the unit
+    OpenFollow runs as, which is what keeps the boot switch off a name an
+    operator can type. A test host that is itself inside a systemd service
+    answers with *that* unit, so a test asserting on the switch's target
+    passes on a laptop with no ``/proc`` and on a shell session's scope, then
+    fails on a CI runner that has one. Point it at an absent file, so a test
+    that cares supplies its own and the rest get the documented fallback.
+    """
+    monkeypatch.setattr("openfollow.privilege.autostart._CGROUP_PATH", tmp_path / "absent-cgroup")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_midi_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force the MIDI backend absent by default in every test.
 

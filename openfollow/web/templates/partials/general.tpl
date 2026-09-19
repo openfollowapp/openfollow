@@ -1,6 +1,7 @@
-%# General tab content. Top-level sections: Station Settings (identity +
-%# display units + web access PIN), Network (live interface state), and
-%# Software Update (signed-.deb release installer).
+%# General tab content. Top-level sections: Station Settings (identity,
+%# display units, web access PIN, and an Advanced Settings disclosure
+%# holding the start-at-boot switch + the experimental opt-in), Network
+%# (live interface state), and Software Update (signed-.deb installer).
 %#
 %# Each form posts to ``/section/general`` (or the appropriate sub-
 %# route) with its own ``id``, ``hx-target=#its-id`` and
@@ -50,7 +51,7 @@
 <div class="section" data-fold-key="general-station" data-help="general-station" data-fold-default="expanded">
     <div class="section-head">
         <h2>Station Settings</h2>
-        <span class="section-note">Identity, display units, and web access</span>
+        <span class="section-note">Identity, display units, web access, and startup</span>
     </div>
 
     %# Station name + Web Access PIN – one form, saved together via
@@ -110,24 +111,47 @@
         </div>
     </form>
 
-    %# "Show experimental features" opt-in; a separate form so its change
-    %# does not also trigger the units form.
-    <form id="general-experimental-section"
-          hx-post="/settings/experimental" hx-swap="none" hx-trigger="change">
-        <div class="group group--divider">
-            <h3 class="group-title">Experimental features</h3>
-            <div class="row">
-                <div class="field checkbox-field wide">
-                    <label for="general-show-experimental">Show experimental features</label>
-                    <div class="checkbox-wrap">
-                        <input type="checkbox" id="general-show-experimental" name="show_experimental_features"
-                               {{'checked' if config.ui.show_experimental_features else ''}}
-                               onchange="onExperimentalToggle(this)">
-                    </div>
+    %# Advanced Settings: the two controls an operator sets once and then
+    %# leaves alone. Deliberately carries no ``data-adv-key`` - that attribute
+    %# is what persists a disclosure's open state, and this one opens closed on
+    %# every load.
+    % _startup_here = defined('startup_supported') and startup_supported
+    <details class="inline-advanced">
+        <summary>Advanced Settings</summary>
+        <div class="inline-advanced-content">
+            % if _startup_here:
+            %# Fetched on its own so the ``systemctl`` read stays off the
+            %# General render path, and so the switch reports the host's state
+            %# rather than a stored flag.
+            <div class="group">
+                <h3 class="group-title">Startup</h3>
+                <div id="startup-settings" hx-get="/section/general/startup" hx-trigger="load"
+                     hx-target="this" hx-swap="innerHTML">
+                    <p class="muted">Loading startup settings…</p>
                 </div>
             </div>
+            % end
+
+            %# "Show experimental features" opt-in; a separate form so its change
+            %# does not also trigger the units form.
+            <form id="general-experimental-section"
+                  hx-post="/settings/experimental" hx-swap="none" hx-trigger="change">
+                <div class="group {{'group--divider' if _startup_here else ''}}">
+                    <h3 class="group-title">Experimental features</h3>
+                    <div class="row">
+                        <div class="field checkbox-field wide">
+                            <label for="general-show-experimental">Show experimental features</label>
+                            <div class="checkbox-wrap">
+                                <input type="checkbox" id="general-show-experimental" name="show_experimental_features"
+                                       {{'checked' if config.ui.show_experimental_features else ''}}
+                                       onchange="onExperimentalToggle(this)">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </form>
         </div>
-    </form>
+    </details>
 
     %# Save sits at the box bottom (the display-units and experimental toggles
     %# above live-apply on change, so only Station name + Web Access PIN need it).
@@ -137,24 +161,7 @@
     </div>
 </div>
 
-%# ------------------------------------------------------------------
-%# Startup. Lazy-loaded like the network block below so the ``systemctl``
-%# read stays off the General render path, and so the switch reports the
-%# host's own state on every open. Linux-only: there is no unit to switch
-%# anywhere else.
-%# ------------------------------------------------------------------
 % if defined('startup_supported') and startup_supported:
-<div class="section" data-fold-key="general-startup" data-help="general-startup" data-fold-default="collapsed">
-    <div class="section-head">
-        <h2>Startup</h2>
-        <span class="section-note">Whether this station starts OpenFollow at boot</span>
-    </div>
-    <div id="startup-settings" hx-get="/section/general/startup" hx-trigger="load"
-         hx-target="this" hx-swap="innerHTML">
-        <p class="muted">Loading startup settings…</p>
-    </div>
-</div>
-
 <script>
 // Start-at-boot switch. Turning it OFF is confirmed first: the web UI is part
 // of OpenFollow, so after the next reboot there is no page left to undo it

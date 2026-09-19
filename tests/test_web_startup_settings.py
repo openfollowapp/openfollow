@@ -86,6 +86,24 @@ def _post_form(base: str, path: str, data: dict) -> tuple[int, str]:
         return e.code, e.read().decode()
 
 
+_ADVANCED_SUMMARY = "<summary>Advanced Settings</summary>"
+
+
+def _advanced_opening_tag(body: str) -> str:
+    """The ``<details …>`` tag that opens the Advanced Settings disclosure."""
+    summary_at = body.index(_ADVANCED_SUMMARY)
+    open_at = body.rindex("<details", 0, summary_at)
+    return body[open_at : body.index(">", open_at) + 1]
+
+
+def _advanced_group(body: str) -> str | None:
+    """The disclosure's markup, or ``None`` when the page carries none."""
+    if _ADVANCED_SUMMARY not in body:
+        return None
+    summary_at = body.index(_ADVANCED_SUMMARY)
+    return body[summary_at : body.index("</details>", summary_at)]
+
+
 class TestRenderingTheSwitch:
     @pytest.mark.parametrize("enabled", [True, False])
     def test_switch_shows_what_the_host_reports(self, tmp_path, monkeypatch, enabled: bool) -> None:
@@ -185,6 +203,8 @@ class TestSwitchingIt:
 
 
 class TestWhereItAppears:
+    """The switch lives in Station Settings' Advanced Settings disclosure."""
+
     def test_general_page_loads_the_switch_lazily_on_a_systemd_host(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(sys, "platform", "linux")
         host = _Host()
@@ -196,24 +216,49 @@ class TestWhereItAppears:
         assert host.reads == []
 
     @pytest.mark.parametrize("path", ["/", "/section/general"])
-    def test_the_box_is_on_the_full_page_as_well_as_the_section_partial(self, tmp_path, monkeypatch, path: str) -> None:
+    def test_the_switch_is_on_the_full_page_as_well_as_the_section_partial(
+        self, tmp_path, monkeypatch, path: str
+    ) -> None:
         """The landing page builds its own context and includes the General
         partial directly, so a gate flag supplied only to the section reload
-        renders the box on a tab switch and nowhere on first paint."""
+        renders the switch on a tab switch and nowhere on first paint."""
         monkeypatch.setattr(sys, "platform", "linux")
         with _serve(tmp_path, monkeypatch, _Host()) as (_server, base):
             status, body = _get(base, path)
         assert status == 200
-        assert 'data-help="general-startup"' in body
+        assert _advanced_group(body) is not None
         assert 'hx-get="/section/general/startup"' in body
 
-    def test_general_page_omits_the_box_where_there_is_no_systemd(self, tmp_path, monkeypatch) -> None:
+    def test_general_page_omits_the_switch_where_there_is_no_systemd(self, tmp_path, monkeypatch) -> None:
+        """The disclosure stays - it still holds the experimental opt-in."""
         monkeypatch.setattr(sys, "platform", "darwin")
         with _serve(tmp_path, monkeypatch, _Host()) as (_server, base):
             for path in ("/", "/section/general"):
                 status, body = _get(base, path)
                 assert status == 200
                 assert "/section/general/startup" not in body
+                assert _advanced_group(body) is not None
+
+    @pytest.mark.parametrize("path", ["/", "/section/general"])
+    def test_the_disclosure_never_remembers_being_open(self, tmp_path, monkeypatch, path: str) -> None:
+        """``data-adv-key`` is what persists a disclosure's open state, and an
+        ``open`` attribute is what renders it expanded. This one must come up
+        closed on every load, so it carries neither."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        with _serve(tmp_path, monkeypatch, _Host()) as (_server, base):
+            _status, body = _get(base, path)
+        opening_tag = _advanced_opening_tag(body)
+        assert "data-adv-key" not in opening_tag
+        assert "open" not in opening_tag
+
+    def test_both_advanced_controls_are_inside_the_disclosure(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(sys, "platform", "linux")
+        with _serve(tmp_path, monkeypatch, _Host()) as (_server, base):
+            _status, body = _get(base, "/")
+        group = _advanced_group(body)
+        assert group is not None
+        assert 'id="startup-settings"' in group
+        assert 'name="show_experimental_features"' in group
 
 
 def _no_redirect_opener() -> urllib.request.OpenerDirector:

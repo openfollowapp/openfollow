@@ -38,10 +38,12 @@ updates:
       - "dependencies"
       - "ci"
 
-  # pre-commit hooks (.pre-commit-config.yaml). The bandit hook is pinned to an
-  # exact `rev:` that poetry's `bandit = "^1.9.4"` would otherwise outpace –
-  # without this the hook and `make security`/CI can drift to different bandit
-  # versions (a finding could pass one and fail the other).
+  # pre-commit hooks (.pre-commit-config.yaml). Only the hooks that bring their
+  # own tool are listed there; ruff and bandit run out of the poetry env, so
+  # they are pinned once in pyproject.toml and never appear here. Bumping a
+  # tool in both places at once is not possible: Dependabot treats pip and
+  # pre-commit as unrelated ecosystems and opens a separate PR for each, so a
+  # two-sided pin arrives as two PRs that each break the other's half.
   - package-ecosystem: "pre-commit"
     directory: "/"
     schedule:

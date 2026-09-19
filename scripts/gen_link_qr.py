@@ -39,14 +39,23 @@ def _decodes_back(symbol: np.ndarray, url: str) -> bool:
 
 
 def main() -> int:
+    stale = False
     for code in LINKS:
         symbol = _symbol(code.url)
         if not _decodes_back(symbol, code.url):
             print(f"{code.url} did not decode back from its own symbol", file=sys.stderr)
             return 1
-        print(f"\n# {code.url} ({symbol.shape[0]}x{symbol.shape[0]})")
-        for row in symbol:
-            print('        "' + "".join("#" if v else "." for v in row) + '",')
+        rows = tuple("".join("#" if v else "." for v in row) for row in symbol)
+        if rows != code.symbol:
+            stale = True
+            print(f"\n# {code.url} ({symbol.shape[0]}x{symbol.shape[0]}) - CHECKED-IN ROWS DIFFER, paste these")
+        else:
+            print(f"\n# {code.url} ({symbol.shape[0]}x{symbol.shape[0]}) - unchanged")
+        for row in rows:
+            print(f'        "{row}",')
+    if stale:
+        print("\nA symbol above no longer matches overlay_links.py.", file=sys.stderr)
+        return 1
     return 0
 
 

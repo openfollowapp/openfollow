@@ -3,10 +3,15 @@
 """Tests for :mod:`openfollow.runtime.overlay_links`.
 
 The symbols are checked-in data, not something the station encodes, so what
-these tests defend is the data staying a well-formed QR and the drawing giving
-it the white field and quiet zone a scanner needs. ``scripts/gen_link_qr.py``
-is what proves a symbol still decodes to its URL; it needs OpenCV, which the
-runtime has only with the detection extra.
+these tests defend is the stored rows still carrying the address their caption
+promises, and the drawing giving them the white field and quiet zone a scanner
+needs. Shape alone is not enough: a symbol left stale after a URL edit is still
+a well-formed QR, and it sends an operator somewhere else.
+
+The decode reads the rows that ship, never a freshly encoded matrix, so it
+fails on exactly that. It needs OpenCV, which both CI and the pre-push gate
+install with the detection extra; without it the check is skipped rather than
+quietly weakened.
 """
 
 from __future__ import annotations
@@ -111,3 +116,24 @@ class TestDrawing:
         draw_link_qr(cr, DOCS, 0.0, 0.0, size, radius=999.0)
         module = size / (len(DOCS.symbol) + 2 * QUIET_MODULES)
         assert max(a[2] for a in cr.arcs) <= QUIET_MODULES * module + 1e-6
+
+
+@pytest.mark.parametrize("code", LINKS, ids=lambda c: c.url)
+def test_the_checked_in_symbol_decodes_to_its_url(code) -> None:
+    """The rows that ship must carry the address the caption promises.
+
+    Regenerating is a manual step, so a URL edited without it leaves a symbol
+    that still passes every structural check and points at the old address.
+    """
+    cv2 = pytest.importorskip("cv2", reason="QR decoding needs the detection extra")
+    import numpy as np
+
+    scale, quiet = 8, QUIET_MODULES
+    dark = np.array([[0 if bit == "#" else 255 for bit in row] for row in code.symbol], dtype=np.uint8)
+    blown = np.kron(dark, np.ones((scale, scale), np.uint8))
+    margin = quiet * scale
+    canvas = np.full((blown.shape[0] + 2 * margin, blown.shape[1] + 2 * margin), 255, np.uint8)
+    canvas[margin : margin + blown.shape[0], margin : margin + blown.shape[1]] = blown
+
+    decoded, _, _ = cv2.QRCodeDetector().detectAndDecode(canvas)
+    assert decoded == code.url

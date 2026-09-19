@@ -68,3 +68,7 @@ markers.toml.*
 # top-level ``/templates/`` directory is the runtime mirror and
 # must NOT track operator-saved files.
 /templates/
+
+# mutmut's generated copy of the tree, rebuilt by every run
+mutants/
+.mutmut-cache

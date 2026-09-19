@@ -4,7 +4,7 @@
 # lint / typecheck / security / test / build steps plus coverage and mutation.
 
 .PHONY: ci ci-remote lint format typecheck security audit test test-unit test-integration test-smoke-e2e build dmg coverage coverage-html coverage-xml install-hooks \
-        mutation mutation-results mutation-show mutation-clean
+        mutation mutation-module mutation-results mutation-show mutation-clean
 
 # Combined line + branch coverage floor – ratchet up with every PR.
 # Path to 100% is the gate; CI invokes test-integration so the
@@ -158,6 +158,16 @@ mutation-clean:
 
 mutation: mutation-clean
 	poetry run mutmut run
+
+# Mutate one module without editing pyproject.toml: mutmut accepts mutant-name
+# patterns, and they are derived from the dotted module path.
+#   make mutation-module MODULE=openfollow.marker_catalog.sync
+# The module must not be in ``do_not_mutate``, and the tests that cover it must
+# be in ``pytest_add_cli_args_test_selection``, or every mutant survives for
+# want of a test rather than for want of an assertion.
+mutation-module:
+	@test -n "$(MODULE)" || { echo "usage: make mutation-module MODULE=openfollow.<module>"; exit 2; }
+	poetry run mutmut run "$(MODULE).*"
 
 mutation-results:
 	poetry run mutmut results

@@ -547,7 +547,7 @@ class TestTheElementGivesUpFirst:
         here knows about makes every assertion below a no-op that still reports as
         passed."""
         if plugin.source_kind not in self._NETWORKED:
-            return
+            pytest.skip(f"{plugin.input_id} is a local source, so it reaches no network to be slow")
         element = plugin.source_element_name
         assert element in self._DEADLINES, (
             f"{plugin.input_id} reaches the network through {element!r}, which this rule does not "
@@ -557,7 +557,7 @@ class TestTheElementGivesUpFirst:
     def test_every_declared_deadline_is_set_and_shorter_than_our_budget(self, plugin: type[VideoInputBase]) -> None:
         required = self._DEADLINES.get(plugin.source_element_name or "")
         if not required:
-            return
+            pytest.skip(f"{plugin.input_id} declares no deadline property to check")
         pipeline = _build_pipeline(plugin)
         budget = plugin.reconnect_policy().connection_timeout
         element = pipeline.get_by_name(plugin.source_element_name)
@@ -584,7 +584,7 @@ class TestTheElementGivesUpFirst:
         receiver's own retry layer has nothing to classify."""
         prop = self._NO_INTERNAL_RETRY.get(plugin.source_element_name or "")
         if prop is None:
-            return
+            pytest.skip(f"{plugin.input_id} has no internal-retry property to disable")
         pipeline = _build_pipeline(plugin)
         element = pipeline.get_by_name(plugin.source_element_name)
         assert element is not None

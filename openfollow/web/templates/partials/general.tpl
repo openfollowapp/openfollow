@@ -125,8 +125,7 @@
             %# rather than a stored flag.
             <div class="group">
                 <h3 class="group-title">Startup</h3>
-                <div id="startup-settings" hx-get="/section/general/startup" hx-trigger="load"
-                     hx-target="this" hx-swap="innerHTML">
+                <div id="startup-settings">
                     <p class="muted">Loading startup settings…</p>
                 </div>
             </div>
@@ -167,6 +166,30 @@
 // of OpenFollow, so after the next reboot there is no page left to undo it
 // from. Defined on window so re-running this script after an HTMX section swap
 // reassigns rather than redefines. Uses the shared modal helpers from base.tpl.
+//
+// This script is the region's only writer. A second one - an hx-trigger="load"
+// on the region itself - repainted it from a read issued before the write,
+// so the switch flicked back to the state it had just left. Every request
+// takes a sequence number and a reply older than the newest one is dropped.
+window._autostartSeq = window._autostartSeq || 0;
+
+window.applyAutostartHtml = function (html, seq) {
+  if (seq !== window._autostartSeq) return;
+  const region = document.getElementById('startup-settings');
+  if (region) region.innerHTML = html;
+};
+
+window.loadAutostart = async function () {
+  const seq = ++window._autostartSeq;
+  try {
+    const resp = await fetch('/section/general/startup');
+    if (resp.redirected || !resp.ok) return;
+    window.applyAutostartHtml(await resp.text(), seq);
+  } catch (err) {
+    /* The region keeps its placeholder; the next section render retries. */
+  }
+};
+
 window.onAutostartToggle = async function (input) {
   const enable = input.checked;
   if (!enable) {
@@ -182,6 +205,7 @@ window.onAutostartToggle = async function (input) {
     if (!proceed) { input.checked = true; return; }
   }
   input.disabled = true;
+  const seq = ++window._autostartSeq;
   const body = new URLSearchParams();
   if (enable) body.set('autostart', 'on');
   let html;
@@ -206,8 +230,10 @@ window.onAutostartToggle = async function (input) {
     });
     return;
   }
-  document.getElementById('startup-settings').innerHTML = html;
+  window.applyAutostartHtml(html, seq);
 };
+
+window.loadAutostart();
 </script>
 % end
 

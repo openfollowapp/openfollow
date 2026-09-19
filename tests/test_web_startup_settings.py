@@ -231,7 +231,8 @@ class TestWhereItAppears:
         with _serve(tmp_path, monkeypatch, host) as (_server, base):
             status, body = _get(base, "/section/general")
         assert status == 200
-        assert 'hx-get="/section/general/startup"' in body
+        assert 'id="startup-settings"' in body
+        assert "window.loadAutostart()" in body
         # Lazy: the General render itself must not query the host.
         assert host.reads == []
 
@@ -247,7 +248,8 @@ class TestWhereItAppears:
             status, body = _get(base, path)
         assert status == 200
         assert _advanced_group(body) is not None
-        assert 'hx-get="/section/general/startup"' in body
+        assert 'id="startup-settings"' in body
+        assert "window.loadAutostart()" in body
 
     def test_general_page_omits_the_switch_where_there_is_no_systemd(self, tmp_path, monkeypatch) -> None:
         """The disclosure stays - it still holds the experimental opt-in."""
@@ -358,3 +360,30 @@ class TestProviderFailures:
             "enabled": False,
             "reason": "Autostart cannot be changed on this build.",
         }
+
+
+class TestOnlyOneWriterPaintsTheSwitch:
+    """The region had two writers: this script and an ``hx-trigger="load"`` on
+    the region itself. A read issued before a write could land after it and
+    repaint the switch with the state it had just left."""
+
+    def test_the_region_carries_no_htmx_load_of_its_own(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(sys, "platform", "linux")
+        with _serve(tmp_path, monkeypatch, _Host()) as (_server, base):
+            _status, body = _get(base, "/section/general")
+        region_at = body.index('id="startup-settings"')
+        region_tag = body[body.rindex("<div", 0, region_at) : body.index(">", region_at) + 1]
+        assert "hx-get" not in region_tag, region_tag
+        assert "hx-trigger" not in region_tag, region_tag
+
+    def test_every_render_is_sequence_guarded(self, tmp_path, monkeypatch) -> None:
+        """Both the initial read and the write bump the same counter, and the
+        one shared applier drops a reply that is no longer the newest."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        with _serve(tmp_path, monkeypatch, _Host()) as (_server, base):
+            _status, body = _get(base, "/section/general")
+        assert "if (seq !== window._autostartSeq) return;" in body
+        assert body.count("++window._autostartSeq") == 2
+        # The region is written in exactly one place.
+        assert body.count("region.innerHTML = html") == 1
+        assert "getElementById('startup-settings').innerHTML" not in body

@@ -11,6 +11,10 @@
 # value never drifts between local `make test` and CI.
 COVERAGE_MIN ?= 100
 
+# The test file ``[tool.mutmut]`` runs each mutant against; echoed by
+# ``mutation-module`` so the scope of a run is visible in its own output.
+MUTATION_TESTS := $(shell poetry run python -c "import tomllib,pathlib; print(' '.join(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['tool']['mutmut']['pytest_add_cli_args_test_selection']))" 2>/dev/null)
+
 # Match the workflow's Hypothesis profile (.github/workflows/ci.yml). Without
 # this the pre-push gate fuzzes randomized while CI is derandomized, so a
 # generated-example line can decide the 100% gate and fail on a branch that
@@ -159,14 +163,20 @@ mutation-clean:
 mutation: mutation-clean
 	poetry run mutmut run
 
-# Mutate one module without editing pyproject.toml: mutmut accepts mutant-name
-# patterns, and they are derived from the dotted module path.
-#   make mutation-module MODULE=openfollow.marker_catalog.sync
-# The module must not be in ``do_not_mutate``, and the tests that cover it must
-# be in ``pytest_add_cli_args_test_selection``, or every mutant survives for
-# want of a test rather than for want of an assertion.
+# Mutate one module by mutant-name pattern, which mutmut derives from the dotted
+# module path:
+#   make mutation-module MODULE=openfollow.zones.engine
+#
+# This selects which mutants run, NOT which tests they run against. Pointing it
+# at a module whose tests are not in ``pytest_add_cli_args_test_selection``
+# reports every mutant as survived - for want of a test, not for want of an
+# assertion - which reads like a damning result and means nothing. mutmut takes
+# no command-line override for that, so a different module still needs both it
+# and ``do_not_mutate`` edited in pyproject.toml first. The default example is
+# the one the committed config already covers.
 mutation-module:
 	@test -n "$(MODULE)" || { echo "usage: make mutation-module MODULE=openfollow.<module>"; exit 2; }
+	@echo "note: mutants run against $(MUTATION_TESTS) - a module outside that reports every mutant survived"
 	poetry run mutmut run "$(MODULE).*"
 
 mutation-results:

@@ -14,9 +14,12 @@ guarded on a plugin attribute and returned; one of them was exempting a whole
 category of plugin from the rule it existed to enforce, and neither coverage nor
 the assertion count could show it - the test reported as passed either way.
 
-Only returns belonging to the test function itself count. A nested helper or a
-fake class method (``def join(self): return``) is ordinary code and is ignored,
-which is why this walks the body rather than using ``ast.walk``.
+Two things are deliberately narrowed to what pytest actually collects, because
+a convention check that fires on code pytest never runs is worse than no check.
+Only **module-level** ``test_*`` functions and ``test_*`` methods of a
+module-level ``Test*`` class are candidates - a fake's nested
+``def test_send(self)`` is ordinary code, not a test. And only returns belonging
+to the candidate itself count, not those of a helper defined inside it.
 
 Hypothesis tests are exempt: ``@given`` runs the body once per example and a
 ``return`` discards that example, which is a per-example filter rather than a
@@ -56,6 +59,21 @@ def _own_bare_returns(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Re
     return found
 
 
+def _collected_tests(tree: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """The functions pytest would collect from *tree*, by its default rules."""
+    found: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name.startswith("test_"):
+            found.append(node)
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            found.extend(
+                child
+                for child in node.body
+                if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef) and child.name.startswith("test_")
+            )
+    return found
+
+
 def _is_hypothesis_test(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     for decorator in fn.decorator_list:
         name = ast.unparse(decorator).split("(")[0].split(".")[-1]
@@ -69,10 +87,8 @@ def test_no_test_bails_out_with_a_bare_return() -> None:
 
     for path in sorted(TESTS_DIR.glob("test_*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
-            if not node.name.startswith("test_") or _is_hypothesis_test(node):
+        for node in _collected_tests(tree):
+            if _is_hypothesis_test(node):
                 continue
             for statement in _own_bare_returns(node):
                 offenders.append(f"{path.name}:{statement.lineno} {node.name}")

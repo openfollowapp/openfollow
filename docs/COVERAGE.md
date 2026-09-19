@@ -131,14 +131,22 @@ make mutation-clean
 ```
 
 To audit a **different** module from the shortlist, leave
-`paths_to_mutate` in `[tool.mutmut]` pointed at `openfollow/` and
+`source_paths` in `[tool.mutmut]` pointed at `openfollow/` and
 re-scope the run by editing `do_not_mutate` so it excludes everything
-except the module you want to audit. Update `tests_dir` only to point
-at that module's single test file, then `make mutation`. Mutmut 3.x
-has no CLI override for these; per-module Makefile targets that tried
-to rewrite the config on the fly were an unneeded layer of indirection.
+except the module you want to audit. Update
+`pytest_add_cli_args_test_selection` only to point at that module's
+single test file, then `make mutation`. Mutmut 3.x has no CLI override
+for either.
 
-When you re-scope, keep `tests_dir` to a **single** test file. Loading
+`make mutation-module MODULE=openfollow.<module>` narrows an existing
+configuration to one module's mutants by name, which saves the
+`do_not_mutate` edit. It does **not** change which tests those mutants
+run against: aimed at a module outside the configured test selection it
+reports every mutant as survived, for want of a test rather than for
+want of an assertion. The target echoes the selection it is about to
+use so that is visible in its own output.
+
+When you re-scope, keep the test selection to a **single** file. Loading
 the full `tests/` tree re-imports `openfollow.services` (with its
 Gtk/GStreamer chain) from the mutants/ copy and triggers a GObject
 metaclass conflict against the copy the pytest host already loaded –
@@ -245,9 +253,10 @@ Remaining survivors grouped by pattern:
 
 Run: 219 covered mutants, 183 killed + 3 timeouts, **33 survivors**.
 Reproduce with `only_mutate = ["openfollow/psn/receiver.py"]` (leaving
-`paths_to_mutate` at `openfollow/`, so the rest of the package is still
+`source_paths` at `openfollow/`, so the rest of the package is still
 copied for the mutants to import) and the whole receiver suite as the
-test selection, not just the mutation file – `tests_dir =
+test selection, not just the mutation file –
+`pytest_add_cli_args_test_selection =
 ["tests/test_psn_receiver_mutation.py", "tests/test_psn_receiver.py",
 "tests/test_psn_receiver_sockets.py", "tests/test_psn_edge_cases.py"]`
 with `pytest_add_cli_args = ["-x", "-q"]`. Dropping `-m unit` is what

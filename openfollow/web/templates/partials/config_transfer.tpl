@@ -187,9 +187,10 @@ async function restoreDefaults() {
     _setRestoreError('');
     var ok = await modalConfirm({
         title: 'Restore defaults?',
-        message: 'Every setting goes back to its default. Network access is not reset: the web '
-            + 'login, port and interface stay as they are, so this page keeps working \u2013 and '
-            + 'local file paths are kept too. Export first if you want a copy; this cannot be undone.',
+        message: 'Every setting goes back to its default and the station restarts. Network '
+            + 'access is not reset: the web login, port and interface stay as they are, so this '
+            + 'page comes back on its own \u2013 and local file paths are kept too. Export first '
+            + 'if you want a copy; this cannot be undone.',
         confirmLabel: 'Restore Defaults',
         danger: true,
     });
@@ -207,8 +208,8 @@ async function restoreDefaults() {
             _setRestoreError('Restore failed: ' + (result.error || 'unknown error'));
             return;
         }
-        showToast('Settings restored to defaults');
-        setTimeout(function() { window.location.reload(); }, 600);
+        /* The reset restarts the station; wait for it to answer again. */
+        _showRestartingState();
     })
     .catch(function() {
         btn.disabled = false;

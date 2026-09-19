@@ -2608,7 +2608,11 @@ def test_api_config_reset_restores_defaults_and_keeps_device_fields(live_server)
     status, body = _post_json(base, "/api/config/reset", {})
     assert status == 200
     assert body.get("success") is True
-    assert body.get("needs_restart") is False
+    # A reset also touches fields the hot-reload dispatcher never applies, so
+    # it only completes across a restart.
+    assert body.get("needs_restart") is True
+    assert body.get("restarting") is True
+    assert server.check_restart_requested() is True
 
     defaults = AppConfig()
     saved = load_config(server.config_path)
@@ -2630,6 +2634,36 @@ def test_api_config_reset_keeps_the_web_pin_authenticating(pin_protected_server)
 
     assert load_config(server.config_path).web_pin == pin
     assert _post_json_status(base, "/api/config/camera", {"pos_x": 1.0}) == 401
+
+
+def test_api_config_reset_refuses_a_cross_origin_form_post(live_server) -> None:
+    """A reset is bodyless, so without an origin check a plain auto-submitting
+    form on an attacker page would wipe an unprotected station - no preflight
+    and no read of the response needed. This server has no PIN set."""
+    server, base = live_server
+    before = load_config(server.config_path)
+    before.camera.pos_x = 7.5
+    save_config(before, server.config_path)
+
+    req = urllib.request.Request(
+        f"{base}/api/config/reset",
+        data=b"",
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "http://attacker.example",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            status = r.status
+    except urllib.error.HTTPError as e:
+        status = e.code
+
+    assert status == 403
+    # Nothing was written, so the station is untouched.
+    assert load_config(server.config_path).camera.pos_x == pytest.approx(7.5)
+    assert server.check_restart_requested() is False
 
 
 # ---------------------------------------------------------------------------

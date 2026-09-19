@@ -3965,6 +3965,18 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.hook("before_request")
     def _check_auth() -> Any:
         pin = _request_scoped_config().web_pin
+
+        # CSRF / DNS-rebind defence, applied whether or not a PIN is set. A
+        # station with no PIN still must not let an attacker page drive it:
+        # a cross-origin form POST needs no preflight and no response access,
+        # which is enough to wipe the config or restart the unit. Browsers
+        # always send the header on a state-changing request; its absence
+        # means a non-browser client, which this threat model does not cover.
+        if request.method not in _SAFE_HTTP_METHODS:
+            origin_host = _request_origin_host()
+            if origin_host is not None and origin_host not in _allowed_request_hosts():
+                abort(403, "Cross-origin request refused")
+
         if not pin:
             return
 
@@ -4048,21 +4060,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             login_throttle.record_failure(remote)
             abort(401, "Invalid peer signature")
 
-        # CSRF / DNS-rebind defence. ``SameSite=Strict`` cookies
-        # are keyed on *site*, so a hostname an attacker rebinds to the device
-        # IP reads as same-site and the browser still attaches the auth cookie.
-        # When a browser sends an ``Origin``/``Referer`` on a state-changing
-        # request, require its host to be one of this device's own addresses;
-        # a forged request from an attacker page carries that page's foreign
-        # Origin → reject. An absent header (server-to-server / non-browser
-        # client) is allowed – the rebind threat is browser-driven, where the
-        # header is always present. Runs before the cookie check so a valid
-        # cookie riding a rebind is still rejected.
-        if request.method not in _SAFE_HTTP_METHODS:
-            origin_host = _request_origin_host()
-            if origin_host is not None and origin_host not in _allowed_request_hosts():
-                abort(403, "Cross-origin request refused")
-
+        # ``SameSite=Strict`` cookies are keyed on *site*, so a hostname an
+        # attacker rebinds to the device IP reads as same-site and the browser
+        # still attaches the auth cookie. The origin check above runs before
+        # this, so a valid cookie riding a rebind is already rejected.
         if request.get_cookie(_AUTH_COOKIE, secret=pin) == "ok":
             return
 
@@ -7532,17 +7533,29 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/api/config/reset")
     def api_reset_config() -> Any:
-        """Replace the whole config with defaults, keeping device identity.
+        """Replace the whole config with defaults, keeping device identity,
+        then restart.
 
         Registered before the ``/api/config/<section>`` wildcard so ``reset``
-        is not read as a section name. The write applies through the same
-        hot-reload path as an import, so no restart is required.
+        is not read as a section name.
+
+        **The restart is part of the operation, not a convenience.** A section
+        save only ever writes fields the hot-reload dispatcher applies, so it
+        can finish live; a whole-config reset also touches fields it does not:
+        ``network.backend`` takes effect at startup by design, the
+        update / time-sync group is read off ``app._config`` and never
+        reassigned, and ``marker_move_speeds`` is deliberately
+        runtime-authoritative. Left running, those keep their pre-reset values
+        in memory, and the next wholesale ``save_config(app._config)`` - the
+        zone-overlay hotkey is one - writes them back over the reset. So the
+        reset would silently, partially undo itself.
         """
         response.content_type = "application/json"
         with _config_write_lock:
             current = load_config(server.config_path)
             save_config(reset_config_to_defaults(current), server.config_path)
-        return json.dumps({"success": True, "needs_restart": False})
+        server.request_restart()
+        return json.dumps({"success": True, "needs_restart": True, "restarting": True})
 
     @app.post("/api/config/broadcast-all")
     def api_broadcast_all() -> Any:

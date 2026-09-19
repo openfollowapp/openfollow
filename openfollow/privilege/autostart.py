@@ -18,11 +18,23 @@ logger = logging.getLogger(__name__)
 _PROBE_TIMEOUT_S = 5.0
 _APPLY_TIMEOUT_S = 10.0
 
-# The two states that mean the unit has an enablement an operator can revoke.
-_ENABLED_STATES = frozenset({"enabled", "enabled-runtime"})
+# ``systemctl is-enabled`` output mapped to the one question this switch asks:
+# will the unit start at the NEXT boot?
+#
+# ``enabled-runtime`` maps to False deliberately. It is enablement through
+# ``/run``, which the next boot discards, so reporting it as on would promise
+# the opposite of what happens - and, because the write below skips a unit
+# already in the requested state, it would also swallow the ``enable`` that
+# converts it into a persistent one.
+_SWITCHABLE_STATES: dict[str, bool] = {
+    "enabled": True,
+    "enabled-runtime": False,
+    "disabled": False,
+    "indirect": False,
+}
 
 # States no enable / disable can move, with the sentence shown instead of the
-# toggle. Offering a switch here would hand the operator a control whose only
+# switch. Offering one here would hand the operator a control whose only
 # outcome is an error.
 _BLOCKED_STATES: dict[str, str] = {
     "masked": "This service is masked on this host.",
@@ -32,6 +44,12 @@ _BLOCKED_STATES: dict[str, str] = {
     "generated": "This service has no boot configuration to switch.",
     "transient": "This service has no boot configuration to switch.",
 }
+
+# Fail closed on anything else systemd may print (``alias``, ``linked``,
+# ``linked-runtime``, ``bad``, or a state a later release adds). None of them
+# establishes a persistent boot state, so treating them as a plain "off" would
+# show an unchecked switch that an operator could read as an answer.
+_UNRECOGNISED = "This service is in a boot state this switch does not handle."
 
 _UNREADABLE = "Could not read whether this service starts at boot."
 
@@ -102,7 +120,10 @@ def read_autostart(service_name: str) -> AutostartState:
     blocked = _BLOCKED_STATES.get(state)
     if blocked is not None:
         return AutostartState(available=False, enabled=False, reason=blocked)
-    return AutostartState(available=True, enabled=state in _ENABLED_STATES)
+    enabled = _SWITCHABLE_STATES.get(state)
+    if enabled is None:
+        return AutostartState(available=False, enabled=False, reason=_UNRECOGNISED)
+    return AutostartState(available=True, enabled=enabled)
 
 
 def set_autostart(broker: PrivilegeBroker, service_name: str, *, enabled: bool) -> AutostartState:

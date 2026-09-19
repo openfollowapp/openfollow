@@ -25,9 +25,10 @@ task dev        # Run manually (not as service)
 General → Station Settings → **Advanced Settings** carries a **Start OpenFollow at
 boot** switch, so a station that has no keyboard attached does not need `task enable` /
 `task disable` over SSH. The group is collapsed on every page load. The switch reads
-`systemctl is-enabled` each time it opens rather than a stored flag, so it always
+`systemctl is-enabled` when the General section loads rather than a stored flag, so it
 reports what the station will do at the next boot – including when the unit was enabled
-or disabled from a shell.
+or disabled from a shell. It does not poll: reload the page to pick up a change made
+elsewhere while it is open.
 
 Switching it off leaves the running station alone; it takes effect at the next boot.
 The web UI is served by OpenFollow itself, so a station that no longer starts it at

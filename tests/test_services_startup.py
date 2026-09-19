@@ -458,6 +458,42 @@ def test_handle_autostart_apply_reports_the_state_after_the_write(monkeypatch) -
     assert result == {"ok": True, "error": "", "available": True, "enabled": False, "reason": ""}
 
 
+def test_handle_autostart_apply_refuses_success_when_the_host_disagrees(monkeypatch) -> None:
+    """A zero exit from systemctl is not the same as the setting having taken.
+
+    Reporting ok on the exit code alone renders a success banner announcing the
+    opposite of the switch drawn beside it.
+    """
+    from openfollow.privilege.autostart import AutostartState
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _stub_autostart(
+        monkeypatch,
+        write=lambda _broker, _name, *, enabled: AutostartState(available=True, enabled=False, reason=""),
+    )
+    result = services._handle_autostart_apply("openfollow", True)
+    assert result["ok"] is False
+    assert result["error"] == "The station accepted the change but did not apply it."
+    assert result["enabled"] is False
+
+
+def test_handle_autostart_apply_surfaces_a_host_that_became_unswitchable(monkeypatch) -> None:
+    """When the post-write read says why it can't be switched, that beats the
+    generic "did not apply" sentence."""
+    from openfollow.privilege.autostart import AutostartState
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _stub_autostart(
+        monkeypatch,
+        write=lambda _broker, _name, *, enabled: AutostartState(
+            available=False, enabled=False, reason="This service is masked on this host."
+        ),
+    )
+    result = services._handle_autostart_apply("openfollow", True)
+    assert result["ok"] is False
+    assert result["error"] == "This service is masked on this host."
+
+
 def test_handle_autostart_apply_rereads_the_host_when_the_write_fails(monkeypatch) -> None:
     """A refused change still has to answer with where the host actually is."""
     from openfollow.privilege.autostart import AutostartState

@@ -56,11 +56,27 @@ class TestUnitFileName:
 class TestReadAutostart:
     @pytest.mark.parametrize(
         ("state", "enabled"),
-        [("enabled", True), ("enabled-runtime", True), ("disabled", False), ("indirect", False)],
+        [("enabled", True), ("disabled", False), ("indirect", False)],
     )
     def test_switchable_states(self, monkeypatch, state: str, enabled: bool) -> None:
         _stub_is_enabled(monkeypatch, f"{state}\n")
         assert read_autostart("openfollow") == AutostartState(available=True, enabled=enabled)
+
+    def test_runtime_enablement_does_not_read_as_starting_at_boot(self, monkeypatch) -> None:
+        """``enabled-runtime`` is enablement through /run, which the next boot
+        discards. Reporting it as on would promise the opposite of what the
+        switch is asking about."""
+        _stub_is_enabled(monkeypatch, "enabled-runtime\n")
+        assert read_autostart("openfollow") == AutostartState(available=True, enabled=False)
+
+    @pytest.mark.parametrize("state", ["alias", "linked", "linked-runtime", "bad", "something-new"])
+    def test_states_the_switch_does_not_handle_fail_closed(self, monkeypatch, state: str) -> None:
+        """None of these establishes a persistent boot state, so rendering them
+        as a plain unchecked switch would show an answer that isn't one."""
+        _stub_is_enabled(monkeypatch, f"{state}\n")
+        result = read_autostart("openfollow")
+        assert result.available is False
+        assert result.reason == "This service is in a boot state this switch does not handle."
 
     @pytest.mark.parametrize("state", ["masked", "masked-runtime", "not-found", "static", "generated", "transient"])
     def test_states_no_switch_can_move_report_unavailable(self, monkeypatch, state: str) -> None:
@@ -181,6 +197,16 @@ class TestSetAutostart:
         with pytest.raises(PrivilegeError):
             set_autostart(broker, "openfollow", enabled=False)
         assert broker.calls == []
+
+    def test_turning_on_a_runtime_enabled_unit_writes_the_persistent_enable(self, monkeypatch) -> None:
+        """The idempotent skip must not swallow the one write that converts a
+        runtime enablement into one that survives a reboot."""
+        _stub_is_enabled(monkeypatch, "enabled-runtime\n")
+        broker = FakeBroker()
+        set_autostart(broker, "openfollow", enabled=True)
+        assert len(broker.calls) == 1
+        assert broker.calls[0].capability == SERVICE_ENABLE
+        assert broker.calls[0].argv == ["/usr/bin/systemctl", "enable", "openfollow.service"]
 
     def test_a_failed_elevation_propagates(self, monkeypatch) -> None:
         _stub_is_enabled(monkeypatch, "enabled\n")

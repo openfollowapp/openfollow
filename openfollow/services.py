@@ -151,6 +151,9 @@ def clear_detached_update_state() -> None:
         pass
 
 
+_AUTOSTART_NOT_APPLIED = "The station accepted the change but did not apply it."
+
+
 def _autostart_failure_text(exc: Exception) -> str:
     """Operator-facing sentence for a failed autostart change.
 
@@ -2272,9 +2275,13 @@ class AppRuntimeServices:
                 "error": _autostart_failure_text(exc),
                 **self._autostart_state_provider(service_name),
             }
+        # A zero exit from systemctl is not the same as the setting having
+        # taken: report success only where the host now agrees, or the banner
+        # would announce the opposite of the state rendered beside it.
+        applied = state.available and state.enabled == enabled
         return {
-            "ok": True,
-            "error": "",
+            "ok": applied,
+            "error": "" if applied else (state.reason or _AUTOSTART_NOT_APPLIED),
             "available": state.available,
             "enabled": state.enabled,
             "reason": state.reason,

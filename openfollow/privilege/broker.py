@@ -44,6 +44,11 @@ _COMMAND_NOT_FOUND_MARKER: Final[str] = "command not found"
 # Sudo NOPASSWD token (appears on Options: line, never in user content).
 _NOPASSWD_OPTION_TOKEN: Final[str] = "!authenticate"
 
+# Detail raised when the operator dismissed the password prompt or it expired.
+# Callers match on it to tell that apart from a command timeout, where the
+# action may in fact have been applied. Shared so the two surfaces can't drift.
+PROMPT_CANCELLED_DETAIL: Final[str] = "cancelled or timed out waiting for the device password."
+
 
 def _has_nopasswd_option(listing: str) -> bool:
     """Return True if sudo -n -ll output shows NOPASSWD on Options: line."""
@@ -229,7 +234,7 @@ class PrivilegeBroker:
 
         password = self._prompter(capability, reason or capability.description)
         if password is None:
-            raise PrivilegeError(f"{capability.description}: cancelled or timed out waiting for the device password.")
+            raise PrivilegeError(f"{capability.description}: {PROMPT_CANCELLED_DETAIL}")
 
         try:
             return self._run_with_password(

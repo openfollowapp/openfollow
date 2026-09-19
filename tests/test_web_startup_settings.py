@@ -319,7 +319,11 @@ class TestProviderFailures:
         server = self._server(tmp_path, autostart_apply_handler=_boom)
         result = server.apply_autostart("openfollow", True)
         assert result["ok"] is False
-        assert "systemctl exploded" in result["error"]
+        # A written sentence, not the exception text: this branch is a bug in
+        # the handler, and raw Python (plus whatever host detail it carries) is
+        # not something an operator can act on.
+        assert result["error"] == "The setting could not be changed."
+        assert "systemctl exploded" not in result["error"]
         assert result["available"] is False
         assert result["enabled"] is False
 

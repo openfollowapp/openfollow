@@ -56,6 +56,7 @@ _FALLBACK_PORTS: tuple[int, ...] = (8080, 2010)
 _LOCAL_IP_REFRESH_TTL = 5.0
 
 _AUTOSTART_UNREADABLE = "Could not read whether this service starts at boot."
+_AUTOSTART_CHANGE_FAILED = "The setting could not be changed."
 
 
 def _autostart_unavailable(reason: str) -> dict[str, Any]:
@@ -419,9 +420,13 @@ class ConfigWebServer:
             return {"ok": False, "error": unavailable["reason"], **unavailable}
         try:
             return dict(self._autostart_apply_handler(service_name, enabled))
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
+            # Written sentence, not ``str(exc)``: this branch is a bug in the
+            # handler, and raw Python text (with whatever host detail it
+            # carries) is not something an operator can act on. The exception
+            # itself is in the log above.
             logger.exception("Autostart apply handler raised")
-            return {"ok": False, "error": str(exc), **_autostart_unavailable(_AUTOSTART_UNREADABLE)}
+            return {"ok": False, "error": _AUTOSTART_CHANGE_FAILED, **_autostart_unavailable(_AUTOSTART_UNREADABLE)}
 
     def get_psn_source_advisory(self) -> dict[str, str]:
         """Startup advisory when pinned PSN source iface unavailable; returns status/banner/resolved_ip."""

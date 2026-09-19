@@ -152,6 +152,7 @@ def clear_detached_update_state() -> None:
 
 
 _AUTOSTART_NOT_APPLIED = "The station accepted the change but did not apply it."
+_AUTOSTART_CHANGE_FAILED = "The setting could not be changed."
 
 
 def _autostart_failure_text(exc: Exception) -> str:
@@ -159,13 +160,17 @@ def _autostart_failure_text(exc: Exception) -> str:
 
     The broker prefixes its message with the capability's technical
     description; that names internal plumbing, so only the reason after it is
-    shown.
+    shown. A dismissed password prompt is the one failure that can promise
+    nothing changed - a command timeout may have applied the setting, and
+    saying otherwise would sit above a switch showing the new state.
     """
+    from openfollow.privilege.broker import PROMPT_CANCELLED_DETAIL
+
     raw = str(exc)
-    if "cancelled" in raw.lower() or "timed out" in raw.lower():
+    if PROMPT_CANCELLED_DETAIL in raw:
         return "Cancelled - the setting was not changed."
     _head, sep, tail = raw.partition(": ")
-    return (tail.strip() if sep else raw) or "The setting could not be changed."
+    return (tail.strip() if sep else raw) or _AUTOSTART_CHANGE_FAILED
 
 
 class WebCommandQueue:

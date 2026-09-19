@@ -13,6 +13,7 @@ from openfollow.privilege import PrivilegeBroker, PrivilegeError
 from openfollow.privilege.broker import (
     _COMMAND_NOT_FOUND_MARKER,
     _PASSWORD_REQUIRED_MARKER,
+    PROMPT_CANCELLED_DETAIL,
 )
 from openfollow.privilege.capabilities import (
     DEVICE_GROUP_JOIN,
@@ -528,7 +529,10 @@ class TestRunNeedsPassword:
             ),
         )
         broker.set_prompter(lambda cap, reason: None)
-        with pytest.raises(PrivilegeError, match="cancelled or timed out"):
+        # Asserted against the shared constant, not a copy of the wording:
+        # ``services`` matches on it to tell a dismissed prompt from a command
+        # timeout, which may in fact have applied the change.
+        with pytest.raises(PrivilegeError, match=re.escape(PROMPT_CANCELLED_DETAIL)):
             broker.run(NETWORK_NM_CON_MOD, ["/usr/bin/nmcli", "con", "mod", "x"])
 
     def test_missing_prompter_raises(self, broker, monkeypatch) -> None:

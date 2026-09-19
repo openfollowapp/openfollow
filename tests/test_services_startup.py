@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import openfollow.privilege.broker as broker_module
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig
 
@@ -530,10 +531,9 @@ def test_handle_autostart_apply_without_a_broker_answers_the_full_shape(monkeypa
     ("raw", "expected"),
     [
         (
-            "Disable a systemd unit: cancelled waiting for the device password.",
+            f"Disable a systemd unit: {broker_module.PROMPT_CANCELLED_DETAIL}",
             "Cancelled - the setting was not changed.",
         ),
-        ("Enable a systemd unit: timed out after 10s.", "Cancelled - the setting was not changed."),
         ("Enable a systemd unit: Failed to enable unit.", "Failed to enable unit."),
         ("no colon here", "no colon here"),
         ("Enable a systemd unit: ", "The setting could not be changed."),
@@ -542,6 +542,17 @@ def test_handle_autostart_apply_without_a_broker_answers_the_full_shape(monkeypa
 def test_autostart_failure_text_drops_the_capability_prefix(raw: str, expected: str) -> None:
     """The broker's prefix names internal plumbing; the operator reads the reason."""
     assert services_module._autostart_failure_text(Exception(raw)) == expected
+
+
+def test_autostart_failure_text_does_not_promise_a_timeout_changed_nothing() -> None:
+    """A command timeout may have applied the setting.
+
+    Reporting it as "not changed" would sit above a switch showing the new
+    state - the same contradiction the post-write check exists to prevent. Only
+    a dismissed password prompt can promise nothing happened.
+    """
+    text = services_module._autostart_failure_text(Exception("Enable a systemd unit: timed out after 10s."))
+    assert text == "timed out after 10s."
 
 
 # Privilege prompter closure (created during init)

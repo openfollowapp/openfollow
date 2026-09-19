@@ -737,6 +737,8 @@
  accent-color: var(--accent);
  }
  .actions { display: flex; flex-wrap: wrap; gap: 0.64rem; margin-top: 0.5rem; }
+ /* A collapsed disclosure sits tight against a following action row. */
+ .inline-advanced + .actions { margin-top: 1.15rem; }
  /* One token-driven base; the variant classes below only swap
  colour. Legacy role names (.save-btn/.update-btn/.restart-btn/
  .ghost-btn/.broadcast-btn) are kept as aliases so existing

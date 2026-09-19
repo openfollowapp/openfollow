@@ -96,7 +96,9 @@
     <form id="general-display-section"
           hx-post="/settings/unit-system" hx-target="#general-display-section" hx-swap="outerHTML"
           hx-select="#general-display-section" hx-trigger="change">
-        <div class="group group--divider">
+        %# No ``group--divider``: the Advanced Settings disclosure below carries
+        %# its own top border, and both would draw two rules a few pixels apart.
+        <div class="group">
             <h3 class="group-title">Display units</h3>
             <div class="row">
                 <div class="field wide">

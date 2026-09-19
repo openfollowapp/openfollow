@@ -387,3 +387,26 @@ class TestOnlyOneWriterPaintsTheSwitch:
         # The region is written in exactly one place.
         assert body.count("region.innerHTML = html") == 1
         assert "getElementById('startup-settings').innerHTML" not in body
+
+
+class TestAdvancedDisclosureSeparation:
+    """One rule above the disclosure, not two.
+
+    ``.inline-advanced`` draws its own top border, so a ``group--divider`` on
+    the group right above it put a second rule a few pixels away.
+    """
+
+    def test_the_group_above_the_disclosure_draws_no_rule_of_its_own(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(sys, "platform", "linux")
+        with _serve(tmp_path, monkeypatch, _Host()) as (_server, base):
+            _status, body = _get(base, "/section/general")
+        disclosure_at = body.index('<details class="inline-advanced">')
+        preceding = body[:disclosure_at]
+        last_group = preceding[preceding.rindex("<div class=") :]
+        assert "group--divider" not in last_group, last_group[:200]
+
+    def test_a_following_action_row_is_not_flush_against_the_disclosure(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(sys, "platform", "linux")
+        with _serve(tmp_path, monkeypatch, _Host()) as (_server, base):
+            _status, body = _get(base, "/")
+        assert ".inline-advanced + .actions" in body

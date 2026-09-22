@@ -8,6 +8,7 @@ snapshots – so the suite never imports real ``pyspacemouse`` or touches HID.
 
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 import time
@@ -34,6 +35,27 @@ from openfollow.operator_messages import OperatorMessageStore
 from openfollow.psn.marker import Marker
 
 pytestmark = pytest.mark.unit
+
+# Captured before the autouse stub below replaces the module attribute, so the
+# tests that exercise the real lookup can still reach it.
+_REAL_BACKEND_PUCK_IDS = mouse3d_module._backend_puck_ids
+
+# The two pucks the enumeration fixtures use, standing in for the backend's
+# profile table.
+_STUB_PROFILE_IDS = frozenset({(0x256F, 0xC635), (0x046D, 0xC626)})
+
+
+@pytest.fixture(autouse=True)
+def _stub_backend_profiles(monkeypatch):  # noqa: ANN001, ANN201
+    """Resolve profile lookups against a stub table, never the installed package.
+
+    The lookup is cached, so it is cleared either side of every test: a table
+    stubbed by one test must not answer another's.
+    """
+    _REAL_BACKEND_PUCK_IDS.cache_clear()
+    monkeypatch.setattr(mouse3d_module, "_backend_puck_ids", lambda: _STUB_PROFILE_IDS)
+    yield
+    _REAL_BACKEND_PUCK_IDS.cache_clear()
 
 
 # --------------------------------------------------------------------------- #
@@ -1479,6 +1501,7 @@ def _seed_manager(mgr: Mouse3DManager, handlers_by_path: dict) -> None:  # noqa:
     [
         (0x256F, 0xC635, True),  # 3Dconnexion vendor
         (0x046D, 0xC626, True),  # Logitech legacy, PID in the SpaceMouse range
+        (0x046D, 0xC628, False),  # in the VID/PID range, but no profile to drive it
         (0x046D, 0xC700, False),  # Logitech legacy, PID out of range
         (0x1234, 0xC626, False),  # unknown vendor
     ],
@@ -1819,3 +1842,145 @@ def test_invert_control_direction_leaves_mouse3d_reset_absolute(wired) -> None: 
     manager.mouse3d_manager.next_update = Mouse3DUpdate(reset=True)
     manager.update(0.016)
     assert app._server.get_marker(10).pos == pytest.approx((5.0, 6.0, 7.0))
+
+
+# --------------------------------------------------------------------------- #
+# Backend device profiles: what the backend can actually drive
+# --------------------------------------------------------------------------- #
+
+
+def _fake_spec(vid, pid):  # noqa: ANN001, ANN202
+    return SimpleNamespace(vendor_id=vid, product_id=pid)
+
+
+def _fake_pyspacemouse(specs):  # noqa: ANN001, ANN202
+    fake = types.ModuleType("pyspacemouse")
+    fake.get_device_specs = lambda: specs
+    return fake
+
+
+def test_is_supported_puck_falls_back_to_range_without_profiles(monkeypatch) -> None:  # noqa: ANN001
+    # With no profile table to consult, enumeration must still find pucks, so
+    # the VID/PID range stands in - including for the PID it cannot vouch for.
+    monkeypatch.setattr(mouse3d_module, "_backend_puck_ids", lambda: None)
+    assert _is_supported_puck(0x046D, 0xC628) is True
+    assert _is_supported_puck(0x256F, 0x0001) is True
+    assert _is_supported_puck(0x1234, 0xC626) is False
+
+
+def test_backend_puck_ids_reads_the_profile_table(monkeypatch) -> None:  # noqa: ANN001
+    specs = {"Nav": _fake_spec(0x046D, 0xC626), "Explorer": _fake_spec(0x256F, 0xC635)}
+    monkeypatch.setitem(sys.modules, "pyspacemouse", _fake_pyspacemouse(specs))
+    assert _REAL_BACKEND_PUCK_IDS() == frozenset({(0x046D, 0xC626), (0x256F, 0xC635)})
+
+
+def test_backend_puck_ids_none_when_package_missing(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setitem(sys.modules, "pyspacemouse", None)  # `from ... import` -> ImportError
+    assert _REAL_BACKEND_PUCK_IDS() is None
+
+
+def test_backend_puck_ids_none_when_import_raises_oserror(monkeypatch) -> None:  # noqa: ANN001
+    # easyhid dlopens libhidapi at import, so a missing library raises OSError
+    # rather than ImportError.
+    fake = types.ModuleType("pyspacemouse")
+
+    def _getattr(name):  # noqa: ANN001, ANN202
+        raise OSError("libhidapi missing")
+
+    fake.__getattr__ = _getattr
+    monkeypatch.setitem(sys.modules, "pyspacemouse", fake)
+    assert _REAL_BACKEND_PUCK_IDS() is None
+
+
+def test_backend_puck_ids_none_when_table_unreadable(monkeypatch) -> None:  # noqa: ANN001
+    fake = types.ModuleType("pyspacemouse")
+    fake.get_device_specs = lambda: (_ for _ in ()).throw(RuntimeError("bad toml"))
+    monkeypatch.setitem(sys.modules, "pyspacemouse", fake)
+    assert _REAL_BACKEND_PUCK_IDS() is None
+
+
+def test_backend_puck_ids_is_cached(monkeypatch) -> None:  # noqa: ANN001
+    calls = []
+    fake = types.ModuleType("pyspacemouse")
+
+    def _specs():  # noqa: ANN202
+        calls.append(1)
+        return {"Nav": _fake_spec(0x046D, 0xC626)}
+
+    fake.get_device_specs = _specs
+    monkeypatch.setitem(sys.modules, "pyspacemouse", fake)
+    assert _REAL_BACKEND_PUCK_IDS() == _REAL_BACKEND_PUCK_IDS()
+    assert len(calls) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Skipping an undrivable puck says so
+# --------------------------------------------------------------------------- #
+
+
+def _enumerate_with(monkeypatch, devices):  # noqa: ANN001, ANN202
+    class _Enum:
+        def find(self):  # noqa: ANN202
+            return list(devices)
+
+    fake_easyhid = types.ModuleType("easyhid")
+    fake_easyhid.Enumeration = _Enum
+    monkeypatch.setitem(sys.modules, "easyhid", fake_easyhid)
+    return _PySpaceMouseBackend()
+
+
+def test_enumerate_names_an_unprofiled_puck_once(monkeypatch, caplog) -> None:  # noqa: ANN001
+    backend = _enumerate_with(monkeypatch, [_fake_hid_device(0x046D, 0xC628, "/dev/hidraw4", name="Notebooks")])
+    with caplog.at_level(logging.WARNING, logger="openfollow.input.mouse3d"):
+        assert backend.enumerate() == []
+        assert backend.enumerate() == []  # a second pass must not repeat it
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "046d:c628" in warnings[0].getMessage()
+    assert "Notebooks" in warnings[0].getMessage()
+
+
+def test_enumerate_stays_quiet_about_devices_that_are_not_pucks(monkeypatch, caplog) -> None:  # noqa: ANN001
+    # Every HID device on the host comes past this filter; only a 3Dconnexion
+    # one that cannot be driven is worth a line.
+    backend = _enumerate_with(monkeypatch, [_fake_hid_device(0x1234, 0x0001, "/dev/hidraw9", name="Keyboard")])
+    with caplog.at_level(logging.WARNING, logger="openfollow.input.mouse3d"):
+        assert backend.enumerate() == []
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+
+
+# --------------------------------------------------------------------------- #
+# A refused open must not take the read thread with it
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("exc", [ValueError("no profile"), TypeError("bad arg"), Exception("boom")])
+def test_open_device_survives_an_unexpected_refusal(exc, caplog) -> None:  # noqa: ANN001
+    def _boom():  # noqa: ANN202
+        raise exc
+
+    with caplog.at_level(logging.WARNING, logger="openfollow.input.mouse3d"):
+        assert Mouse3DHandler._open_device(_boom) is None
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_worker_survives_an_unexpected_open_refusal() -> None:
+    # The backend refuses a device it holds no profile for with ValueError. That
+    # is not a reason to stop reading the device for the rest of the session.
+    calls = []
+
+    def _refuse():  # noqa: ANN202
+        calls.append(1)
+        raise ValueError("not a supported SpaceMouse")
+
+    h = Mouse3DHandler(Mouse3DConfig(enabled=True), device_factory=_refuse)
+    h.start()
+    deadline = time.monotonic() + 2.0
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    try:
+        assert calls, "worker never attempted an open"
+        assert h._thread is not None and h._thread.is_alive()
+        assert h.connected is False
+    finally:
+        h.stop(wait=True)

@@ -109,8 +109,9 @@ OpenFollow runs as a fullscreen Wayland kiosk and will not start on a headless
 server or on a VM without a GPU.
 
 **Storage.** 16 GB is the floor once the Media Gallery is in use – it holds up to
-1 GB of clips and stills alongside the operating system, the app, and the detection
-models. 32 GB leaves room for a full gallery plus every model quality tier.
+1 GB of clips and stills alongside the operating system, the app, and the
+pre-shipped detection models. 32 GB leaves headroom for a full gallery and for
+further models added later.
 
 **Network.** Wired only; Wi-Fi does not carry the 60 Hz PSN multicast stream
 reliably. Gigabit matters for full-bandwidth NDI, which runs at roughly

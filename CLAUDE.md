@@ -1084,7 +1084,7 @@ When set, the interface name is resolved to an IPv4 and flows to: PsnReceiver (`
 ### Package management
 This project uses **Poetry** for dependency management. Always use `poetry` commands:
 - `poetry install` – install all dependencies
-- `poetry run python3 -m openfollow` – run the app
+- `poetry run openfollow` – run the app
 - `poetry add <package>` – add a dependency
 - `poetry run pytest` – run tests
 

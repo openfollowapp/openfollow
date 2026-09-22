@@ -52,7 +52,7 @@ You get a live video view with an overlay, control 3D markers with a gamepad, mo
 - **OSC input** – receive `/marker/{id} x y z` position jumps
 - **Flexible video inputs** – network sources + Pi camera
 - **Web UI configuration** – no manual file editing
-- **Affordable hardware** – designed to run reliably on a Raspberry Pi
+- **Affordable hardware** – designed to run reliably on a Raspberry Pi 5
 
 ### Integrations
 
@@ -69,9 +69,12 @@ Known-compatible tools include grandMA3, ETC Eos 3.3, QLab 5, ADM OSC, LightStri
 
 ## Table of contents
 
+- [System requirements](#system-requirements)
+  - [Operating system](#operating-system)
+  - [Not supported](#not-supported)
 - [Raspberry Pi deployment (recommended)](#raspberry-pi-deployment-recommended)
   - [Option 1: flash the ready-made image (CM5 or Pi 5)](#option-1-flash-the-ready-made-image-cm5-or-pi-5)
-  - [Option 2: install the `.deb` package (other Pi models)](#option-2-install-the-deb-package-other-pi-models)
+  - [Option 2: install the `.deb` package (existing Pi OS install, or an x86_64 PC)](#option-2-install-the-deb-package-existing-pi-os-install-or-an-x86_64-pc)
   - [Updating OpenFollow](#updating-openfollow)
 - [Webinterface](#webinterface)
 - [Security notes](#security-notes)
@@ -85,6 +88,66 @@ Known-compatible tools include grandMA3, ETC Eos 3.3, QLab 5, ADM OSC, LightStri
 
 ---
 
+## System requirements
+
+OpenFollow targets **Raspberry Pi 5 class hardware or better**, driving a **Full HD
+display**. Earlier Raspberry Pi models do not keep up with the video pipeline.
+
+| | Minimum | Recommended |
+| --- | --- | --- |
+| CPU (arm64) | Raspberry Pi 5, Compute Module 5, or Pi 500 | 8 GB variant |
+| CPU (x86_64) | 4-core Intel Core 8th gen / N100 / AMD Zen or newer, with a graphics output | 4-core desktop-class |
+| RAM | 4 GB | 8 GB |
+| Storage | 16 GB, A1-class card or better | 32 GB, A2 card / eMMC / NVMe |
+| Display | 1920×1080, connected, DRM/KMS capable | 1920×1080 @ 60 Hz |
+| Network | Wired Gigabit Ethernet | – |
+| Power (Pi 5) | Official 5 V / 5 A (27 W) PSU | – |
+
+**Display.** The overlay is drawn at fixed pixel sizes, so below 1920×1080 it covers
+too much of the video to be usable. A connected display is required at all times:
+OpenFollow runs as a fullscreen Wayland kiosk and will not start on a headless
+server or on a VM without a GPU.
+
+**Storage.** 16 GB is the floor once the Media Gallery is in use – it holds up to
+1 GB of clips and stills alongside the operating system, the app, and the detection
+models. 32 GB leaves room for a full gallery plus every model quality tier.
+
+**Network.** Wired only; Wi-Fi does not carry the 60 Hz PSN multicast stream
+reliably. Gigabit matters for full-bandwidth NDI, which runs at roughly
+120–160 Mbit/s for 1080p60. Every other video source, and all four outputs
+together, fit far below that.
+
+**Person detection** needs 8 GB of RAM, and on x86_64 a CPU with AVX2. A Pi 5 runs
+the Fastest and Fast quality tiers; the larger tiers are workstation territory.
+
+### Operating system
+
+| Install path | Tested and supported | Possible, but untested |
+| --- | --- | --- |
+| Appliance image | Raspberry Pi OS Lite (64-bit), shipped in the image | – |
+| `.deb` (arm64) | Raspberry Pi OS Lite (64-bit, Trixie) | – |
+| `.deb` (amd64) | Debian 13 (Trixie) | Most Debian 13 based systems with Python 3.13, such as Ubuntu |
+
+The `.deb` bundles a Python 3.13 virtualenv, so the host must provide Python 3.13.
+Installing on most Debian 13 based systems with Python 3.13, such as Ubuntu, is
+possible but neither tested nor supported. A host on an older or newer Python
+(Debian 12, Ubuntu 24.04, or anything on Python 3.14) refuses the install.
+
+Raspberry Pi OS **with Desktop** is not supported either: OpenFollow runs its own
+Wayland kiosk and expects to own the display.
+
+### Not supported
+
+- Raspberry Pi 4 and earlier, including CM4 and Zero 2 W
+- Any 32-bit operating system
+- Displays below 1920×1080
+- Headless servers and virtual machines without a GPU
+- Raspberry Pi OS with Desktop
+- Hosts not running Python 3.13
+- Wi-Fi as the only network connection
+
+---
+
 ## Raspberry Pi deployment (recommended)
 
 Install a pre-built release from the [Releases page](../../releases). Pick the
@@ -94,7 +157,8 @@ artifact for your hardware:
 | --- | --- |
 | Compute Module 5 (eMMC) | Flash the ready-made image – [Option 1](#option-1-flash-the-ready-made-image-cm5-or-pi-5) |
 | Raspberry Pi 5 (SD card) | Flash the ready-made image – [Option 1](#option-1-flash-the-ready-made-image-cm5-or-pi-5) |
-| Any other 64-bit Raspberry Pi | Install the `.deb` package – [Option 2](#option-2-install-the-deb-package-other-pi-models) |
+| Pi 5 or CM5 with Raspberry Pi OS already installed | Install the `.deb` package – [Option 2](#option-2-install-the-deb-package-existing-pi-os-install-or-an-x86_64-pc) |
+| x86_64 PC running Debian 13 | Install the `.deb` package – [Option 2](#option-2-install-the-deb-package-existing-pi-os-install-or-an-x86_64-pc) |
 | Other Debian machine | [Manual install](#manual) (not actively maintained) |
 | macOS | [Dev setup](#development-environment-macos) (not actively maintained) |
 
@@ -117,7 +181,7 @@ into the app. Download the artifact for your board from the
 
 **Standard Raspberry Pi 5 (SD card):**
 
-1. Insert a microSD card (8 GB or larger) into your computer.
+1. Insert a microSD card (16 GB or larger, A1-class or better) into your computer.
 2. In **Raspberry Pi Imager**: **Choose OS → Use custom**, select `openfollow-pi5_<version>.img.xz`.
 3. **Choose Storage** → the microSD card → **Write**.
 4. Insert the card into the Pi 5 and power on – it comes up running OpenFollow on HDMI.
@@ -125,15 +189,14 @@ into the app. Download the artifact for your board from the
 
 Open the Web UI at `http://<pi-ip>:80` to configure it.
 
-### Option 2: install the `.deb` package (other Pi models, or an x86_64 PC)
+### Option 2: install the `.deb` package (existing Pi OS install, or an x86_64 PC)
 
-Needs internet so `apt` can pull the package's system dependencies. Works on a Pi
-(`arm64`) and on a commodity x86_64 box – mini-PC, NUC, or laptop – (`amd64`). Two
-requirements: the package bundles a **Python 3.13** venv, so the host must be
-**Debian 13 (Trixie)** or a derivative on the same Python (Raspberry Pi OS is
-Trixie-based) – Ubuntu 24.04 / Debian 12 ship an older Python and will refuse to
-install; and it runs a **fullscreen display kiosk**, so the machine needs a GPU +
-monitor (a headless server or VM has no display for it to drive).
+For a Pi 5 or CM5 that already runs Raspberry Pi OS Lite, and for a commodity
+x86_64 box – mini-PC, NUC, or laptop – running Debian 13. Needs internet so `apt`
+can pull the package's system dependencies. Check
+[System requirements](#system-requirements) first: the package refuses to install
+on a host without **Python 3.13**, and it runs a **fullscreen display kiosk**, so
+the machine needs a GPU and a Full HD monitor.
 
 1. Prepare the host: flash the latest **Raspberry Pi OS Lite (64-bit)** with
    **Raspberry Pi Imager** (enable SSH and create a user), boot the Pi, and SSH in

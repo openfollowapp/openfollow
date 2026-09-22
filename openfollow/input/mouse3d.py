@@ -20,6 +20,7 @@ it by the marker's move-speed – so the handler stays free of app state.
 from __future__ import annotations
 
 import contextlib
+import functools
 import importlib.util
 import io
 import logging
@@ -78,11 +79,51 @@ _SPACEMOUSE_PID_HI = 0xC6FF
 _ENUMERATE_INTERVAL_S = 1.5
 
 
-def _is_supported_puck(vendor_id: int, product_id: int) -> bool:
-    """True for a USB VID/PID in the 3Dconnexion range the backend can drive."""
+def _looks_like_puck(vendor_id: int, product_id: int) -> bool:
+    """True for a USB VID/PID in the 3Dconnexion range.
+
+    Recognition only: it says the device is a 3Dconnexion one, not that the
+    backend can read it. :func:`_is_supported_puck` answers that.
+    """
     if vendor_id == _VID_3DCONNEXION:
         return True
     return vendor_id == _VID_LOGITECH_LEGACY and _SPACEMOUSE_PID_LO <= product_id <= _SPACEMOUSE_PID_HI
+
+
+@functools.cache
+def _backend_puck_ids() -> frozenset[tuple[int, int]] | None:
+    """``(vid, pid)`` pairs the backend holds a device profile for.
+
+    ``None`` when the table can't be read, which is the signal to fall back to
+    the VID/PID range. Cached because a *failed* import is not cached by Python
+    the way a successful one is, so an uncachable answer would otherwise be
+    re-attempted once per HID device per enumeration pass.
+    """
+    try:
+        from pyspacemouse import get_device_specs  # lazy: imports the HID backend
+    except (ImportError, OSError) as exc:
+        logger.debug("3D Mouse device profiles unavailable: %s", exc)
+        return None
+    try:
+        specs = get_device_specs()
+    except Exception as exc:  # noqa: BLE001 - an unreadable table must not stop enumeration
+        logger.debug("3D Mouse device profiles unreadable: %s", exc)
+        return None
+    return frozenset((int(spec.vendor_id), int(spec.product_id)) for spec in specs.values())
+
+
+def _is_supported_puck(vendor_id: int, product_id: int) -> bool:
+    """True for a puck the backend holds a device profile for.
+
+    The backend refuses to open a device it has no profile for, so its own
+    table is the only honest answer to "can this be driven". The VID/PID range
+    stands in only while that table is unreadable, which is the case during
+    enumeration on a host where the HID backend won't import.
+    """
+    ids = _backend_puck_ids()
+    if ids is None:
+        return _looks_like_puck(vendor_id, product_id)
+    return (vendor_id, product_id) in ids
 
 
 @dataclass(frozen=True)
@@ -110,6 +151,11 @@ class _PySpaceMouseBackend:
     each unique node once with ``open_by_path``.
     """
 
+    def __init__(self) -> None:
+        # Devices already reported as undrivable, so a puck the backend has no
+        # profile for is named once rather than on every enumeration pass.
+        self._unprofiled_warned: set[tuple[int, int]] = set()
+
     def enumerate(self) -> list[Mouse3DDeviceInfo]:
         try:
             from easyhid import Enumeration  # lazy: dlopens libhidapi (may raise OSError)
@@ -126,6 +172,7 @@ class _PySpaceMouseBackend:
             vid = int(getattr(dev, "vendor_id", 0) or 0)
             pid = int(getattr(dev, "product_id", 0) or 0)
             if not _is_supported_puck(vid, pid):
+                self._note_unprofiled(vid, pid, dev)
                 continue
             path = getattr(dev, "path", None)
             if isinstance(path, bytes):
@@ -138,6 +185,25 @@ class _PySpaceMouseBackend:
                 serial=str(getattr(dev, "serial_number", "") or ""),
             )
         return [by_path[p] for p in sorted(by_path)]
+
+    def _note_unprofiled(self, vendor_id: int, product_id: int, dev: Any) -> None:
+        """Name a 3Dconnexion device the backend holds no profile for, once.
+
+        Skipping it silently would leave a connected puck simply absent, with
+        nothing on the device or in the log to say why.
+        """
+        if not _looks_like_puck(vendor_id, product_id):
+            return
+        key = (vendor_id, product_id)
+        if key in self._unprofiled_warned:
+            return
+        self._unprofiled_warned.add(key)
+        logger.warning(
+            "3D Mouse %04x:%04x (%s) has no device profile in the installed pyspacemouse, so it is skipped.",
+            vendor_id,
+            product_id,
+            str(getattr(dev, "product_string", "") or "unnamed"),
+        )
 
     def open(self, path: str) -> Any:
         import pyspacemouse  # lazy
@@ -241,6 +307,8 @@ class Mouse3DHandler:
         # here (its own prev-state map) and ``update`` drains them each frame.
         self._worker_prev_buttons: dict[int, bool] = {}
         self._pending_edges: set[int] = set()  # guarded by ``_lock``
+        # One warning per run of unexpected open refusals; see ``_open_device``.
+        self._open_refusal_logged = False
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -535,8 +603,7 @@ class Mouse3DHandler:
         open_fn: Callable[[], Any] = pyspacemouse.open
         return open_fn
 
-    @staticmethod
-    def _open_device(factory: Callable[[], Any]) -> Any | None:
+    def _open_device(self, factory: Callable[[], Any]) -> Any | None:
         try:
             device = factory()
         except (OSError, RuntimeError) as exc:
@@ -545,7 +612,19 @@ class Mouse3DHandler:
             # reconnect loop keeps polling instead of dying.
             logger.debug("3D Mouse open failed: %s", exc)
             return None
+        except Exception as exc:  # noqa: BLE001 - a refused open must never kill the read thread
+            # The loop reopens every backoff, so a refusal that will never
+            # succeed is said once and kept at debug after that.
+            logger.log(
+                logging.DEBUG if self._open_refusal_logged else logging.WARNING,
+                "3D Mouse open raised: %r",
+                exc,
+            )
+            self._open_refusal_logged = True
+            return None
         # An opener returns a falsy value when no device is present.
+        if device:
+            self._open_refusal_logged = False
         return device or None
 
     def _pump(self, device: Any, stop: threading.Event) -> bool:

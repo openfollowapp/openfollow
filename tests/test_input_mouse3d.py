@@ -1063,17 +1063,17 @@ def test_open_device_oserror_returns_none() -> None:
     def _boom():  # noqa: ANN202
         raise OSError("permission denied")
 
-    assert Mouse3DHandler._open_device(_boom) is None
+    assert _handler()._open_device(_boom) is None
 
 
 def test_open_device_falsey_returns_none() -> None:
-    assert Mouse3DHandler._open_device(lambda: None) is None
-    assert Mouse3DHandler._open_device(lambda: False) is None
+    assert _handler()._open_device(lambda: None) is None
+    assert _handler()._open_device(lambda: False) is None
 
 
 def test_open_device_returns_device() -> None:
     dev = object()
-    assert Mouse3DHandler._open_device(lambda: dev) is dev
+    assert _handler()._open_device(lambda: dev) is dev
 
 
 def test_resolve_factory_returns_injected() -> None:
@@ -1960,8 +1960,37 @@ def test_open_device_survives_an_unexpected_refusal(exc, caplog) -> None:  # noq
         raise exc
 
     with caplog.at_level(logging.WARNING, logger="openfollow.input.mouse3d"):
-        assert Mouse3DHandler._open_device(_boom) is None
+        assert _handler()._open_device(_boom) is None
     assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_repeated_refusal_is_warned_once_then_kept_at_debug(caplog) -> None:  # noqa: ANN001
+    # The reconnect loop reopens every backoff, so a refusal that can never
+    # succeed must not put a warning in the journal every few seconds.
+    def _boom():  # noqa: ANN202
+        raise ValueError("not a supported SpaceMouse")
+
+    h = _handler()
+    with caplog.at_level(logging.DEBUG, logger="openfollow.input.mouse3d"):
+        for _ in range(5):
+            assert h._open_device(_boom) is None
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    debugs = [r for r in caplog.records if r.levelno == logging.DEBUG and "open raised" in r.getMessage()]
+    assert len(warnings) == 1
+    assert len(debugs) == 4
+
+
+def test_a_working_open_rearms_the_refusal_warning(caplog) -> None:  # noqa: ANN001
+    # A device that opens and later breaks is a new fault, not the old one.
+    def _boom():  # noqa: ANN202
+        raise ValueError("gone")
+
+    h = _handler()
+    with caplog.at_level(logging.WARNING, logger="openfollow.input.mouse3d"):
+        h._open_device(_boom)
+        h._open_device(lambda: object())  # a real device clears the latch
+        h._open_device(_boom)
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 2
 
 
 def test_worker_survives_an_unexpected_open_refusal() -> None:

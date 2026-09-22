@@ -307,6 +307,8 @@ class Mouse3DHandler:
         # here (its own prev-state map) and ``update`` drains them each frame.
         self._worker_prev_buttons: dict[int, bool] = {}
         self._pending_edges: set[int] = set()  # guarded by ``_lock``
+        # One warning per run of unexpected open refusals; see ``_open_device``.
+        self._open_refusal_logged = False
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -601,8 +603,7 @@ class Mouse3DHandler:
         open_fn: Callable[[], Any] = pyspacemouse.open
         return open_fn
 
-    @staticmethod
-    def _open_device(factory: Callable[[], Any]) -> Any | None:
+    def _open_device(self, factory: Callable[[], Any]) -> Any | None:
         try:
             device = factory()
         except (OSError, RuntimeError) as exc:
@@ -612,9 +613,18 @@ class Mouse3DHandler:
             logger.debug("3D Mouse open failed: %s", exc)
             return None
         except Exception as exc:  # noqa: BLE001 - a refused open must never kill the read thread
-            logger.warning("3D Mouse open raised: %r", exc)
+            # The loop reopens every backoff, so a refusal that will never
+            # succeed is said once and kept at debug after that.
+            logger.log(
+                logging.DEBUG if self._open_refusal_logged else logging.WARNING,
+                "3D Mouse open raised: %r",
+                exc,
+            )
+            self._open_refusal_logged = True
             return None
         # An opener returns a falsy value when no device is present.
+        if device:
+            self._open_refusal_logged = False
         return device or None
 
     def _pump(self, device: Any, stop: threading.Event) -> bool:

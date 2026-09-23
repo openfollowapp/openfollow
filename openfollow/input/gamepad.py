@@ -267,6 +267,9 @@ class GamepadHandler:
         # which OpenFollow doesn't use. On Linux, SDL audio opens the default ALSA
         # device and floods the log. Point SDL audio at the dummy driver before init.
         os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        # The video subsystem is what pygame's event API needs, not joystick
+        # init, and SDL's real backend pumps the same run loop GTK drives.
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
         if not pygame.get_init():
             pygame.init()
 

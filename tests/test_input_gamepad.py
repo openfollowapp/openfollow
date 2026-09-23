@@ -1314,6 +1314,47 @@ class TestPygameSubsystemInitOnConstruct:
         GamepadHandler(FakeApp())
         assert os.environ["SDL_AUDIODRIVER"] == "alsa"
 
+    def test_points_sdl_video_at_dummy_driver_before_init(self, monkeypatch) -> None:
+        monkeypatch.delenv("SDL_VIDEODRIVER", raising=False)
+        seen: dict[str, str | None] = {}
+
+        monkeypatch.setattr(pygame, "get_init", lambda: False)
+        monkeypatch.setattr(
+            pygame,
+            "init",
+            lambda: seen.__setitem__("driver", os.environ.get("SDL_VIDEODRIVER")),
+        )
+        monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.joystick, "init", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "get_count", lambda: 0)
+        monkeypatch.setattr(pygame.joystick, "Joystick", lambda i: FakeJoystick())
+        monkeypatch.setattr(pygame.event, "get", lambda: [])
+        monkeypatch.setattr(pygame.event, "post", lambda e: None)
+        monkeypatch.setattr(gp, "sdl2_controller", None)
+
+        GamepadHandler(FakeApp())
+        # Read at init time, not after: SDL takes the driver when the subsystem
+        # comes up, so a setdefault below pygame.init() would be a silent no-op.
+        assert seen["driver"] == "dummy"
+
+    def test_keeps_explicit_video_driver_override(self, monkeypatch) -> None:
+        monkeypatch.setenv("SDL_VIDEODRIVER", "x11")
+
+        monkeypatch.setattr(pygame, "get_init", lambda: False)
+        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.joystick, "init", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "get_count", lambda: 0)
+        monkeypatch.setattr(pygame.joystick, "Joystick", lambda i: FakeJoystick())
+        monkeypatch.setattr(pygame.event, "get", lambda: [])
+        monkeypatch.setattr(pygame.event, "post", lambda e: None)
+        monkeypatch.setattr(gp, "sdl2_controller", None)
+
+        GamepadHandler(FakeApp())
+        assert os.environ["SDL_VIDEODRIVER"] == "x11"
+
     def test_calls_sdl2_controller_init_when_available_and_uninit(self, monkeypatch) -> None:
         sdl2_calls = {"init": False}
 

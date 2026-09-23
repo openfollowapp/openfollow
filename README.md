@@ -250,6 +250,19 @@ poetry run openfollow
   poetry install
   ```
 
+- **`objc[...]: Class X is implemented in both libgtk-3.0.dylib and
+  libgtk-4.1.dylib` in the console, or GTK-related crashes.** Some other brew
+  formula on the machine pulled in `gtk4` (OpenFollow only needs `gtk+3`, via
+  the `pygobject3` / `gstreamer` formulas above). Two GTK major versions
+  loaded into the same process is a known source of "spurious casting
+  failures and mysterious crashes" per macOS's own Objective-C runtime
+  warning. Check for the conflict and unlink `gtk4` while running OpenFollow:
+
+  ```bash
+  brew list --formula | grep -E '^gtk(\+3|4)$'
+  brew unlink gtk4   # re-link later with `brew link gtk4` if another app needs it
+  ```
+
 <details>
 <summary><b>Optional: AI person detection</b></summary>
 

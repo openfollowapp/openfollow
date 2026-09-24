@@ -91,7 +91,7 @@ class ButtonEvent:
     ``button`` is a name from
     :data:`openfollow.configuration.VALID_BUTTON_NAMES` (``"A"``,
     ``"DPAD_UP"``, etc.). ``controller_index`` is the SDL joystick
-    index, kept for future per-controller routing – today's
+    instance id, kept for future per-controller routing – today's
     Hotkey-trigger and ControllerButton-trigger matchers ignore it.
     """
 

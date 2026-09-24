@@ -34,6 +34,7 @@ class JoystickProtocol(Protocol):
     def get_button(self, button: int) -> int: ...  # pragma: no cover
     def get_guid(self) -> str: ...  # pragma: no cover
     def get_hat(self, hat: int) -> tuple[int, int]: ...  # pragma: no cover
+    def get_instance_id(self) -> int: ...  # pragma: no cover
     def get_name(self) -> str: ...  # pragma: no cover
     def get_numaxes(self) -> int: ...  # pragma: no cover
     def get_numbuttons(self) -> int: ...  # pragma: no cover

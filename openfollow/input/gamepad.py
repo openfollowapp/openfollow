@@ -4,12 +4,14 @@
 
 from __future__ import annotations
 
+import ctypes
+import functools
 import logging
 import math
 import os
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
@@ -29,6 +31,49 @@ if TYPE_CHECKING:
     from openfollow.input.faders import VirtualFaderBus
 
 logger = logging.getLogger(__name__)
+
+
+@functools.cache
+def _sdl_device_instance_id_fn() -> Callable[[int], int] | None:
+    """SDL's device-index to instance-id lookup, from the SDL pygame itself loaded.
+
+    Resolved through pygame's joystick module so the symbol comes from pygame's
+    own SDL rather than another copy in the process (OpenCV bundles one).
+    """
+    module_path = getattr(pygame.joystick, "__file__", None)
+    if not isinstance(module_path, str):
+        return None
+    try:
+        fn = ctypes.CDLL(module_path).SDL_JoystickGetDeviceInstanceID
+    except (OSError, AttributeError):
+        return None
+    fn.restype = ctypes.c_int32
+    fn.argtypes = [ctypes.c_int]
+    return cast(Callable[[int], int], fn)
+
+
+def _device_instance_id(device_index: int) -> int | None:
+    """Instance id SDL has assigned to ``device_index``, read without opening it."""
+    fn = _sdl_device_instance_id_fn()
+    if fn is None:
+        return None
+    instance_id = fn(device_index)
+    return instance_id if instance_id >= 0 else None
+
+
+def _instance_id_lookup_available() -> bool:
+    """Whether ``_device_instance_id`` can answer, so hotplug can match by id."""
+    return _sdl_device_instance_id_fn() is not None
+
+
+def _quit_quietly(device: Any) -> None:
+    """Close a joystick or controller; one that is already gone raises nothing."""
+    if device is None:
+        return
+    try:
+        device.quit()
+    except pygame.error:
+        pass
 
 
 def _safe_call(fn: Callable[[], Any], default: Any) -> Any:
@@ -145,7 +190,7 @@ class ControllerRuntimeInfo:
     (i.e. it's in X-input mode), and whether its identity matches the saved
     calibration."""
 
-    index: int
+    index: int  # SDL instance id (the handler key), not the controller slot
     backend: str
     name: str
     guid: str
@@ -180,6 +225,17 @@ class SettingsMenuInput:
     down_pressed: bool = False
     confirm_pressed: bool = False
     cancel_pressed: bool = False
+
+
+@dataclass(frozen=True)
+class _OpenedDevice:
+    """A device opened by ``_open_device`` and not yet registered."""
+
+    key: int
+    joy: JoystickProtocol
+    ctrl: ControllerProtocol | None
+    cap: ControllerCapabilities
+    baseline: dict[int, float]
 
 
 @dataclass
@@ -248,7 +304,6 @@ class GamepadHandler:
         # so each (controller_idx, button_id) is read once and shared, not re-read.
         self._frame_button_states: dict[tuple[int, int], bool] | None = None
         self._event_bus = event_bus
-        self.last_joystick_count = 0
         self._startup_retry_remaining = 0.0  # seconds remaining for startup retries
         self._startup_retry_timer = 0.0  # time since last retry
         self._axes_logged: set[int] = set()  # controllers whose raw axes have been dumped
@@ -256,12 +311,12 @@ class GamepadHandler:
         # hotplug re-detect doesn't re-warn on every cycle. Cleared in
         # ``apply_config`` when the calibration identity changes.
         self._calibration_warned: set[str] = set()
-        # Guards ``self.capabilities`` against cross-thread access: every
-        # write (publish in _detect_controllers, pop in _cleanup_failed,
-        # clear in stop) and every read reachable off the main thread
-        # (runtime_snapshot, get_controller_info) holds this lock, so a
-        # web-server thread never observes a half-rebuilt dict. Main-thread-
-        # only reads (e.g. the post-publish warn loop) don't need it.
+        # Threading: the main loop is the only writer, and every reader that
+        # combines maps (get_controller_info, the HUD, the button wizard) runs
+        # there too. Off the main loop each reader takes one map: the OSC thread
+        # reads ``joysticks`` keys, the web thread reads ``capabilities`` under
+        # this lock (runtime_snapshot). The maps are replaced, never mutated in
+        # place, so a single-map reader always holds a complete one.
         self._capabilities_lock = threading.Lock()
 
         # pygame.init() requires video subsystem; it also initializes SDL audio/mixer
@@ -454,142 +509,203 @@ class GamepadHandler:
         self._button_bus_prev.clear()
 
     def _detect_controllers(self, force: bool = False) -> None:
-        """Detect and initialize all connected controllers."""
+        """Open every attached controller from scratch.
+
+        Runs for the first enumeration, the no-controllers retry, and a hotplug
+        when the instance-id lookup is unavailable. A device that reopens keeps
+        its per-device state (its instance id survives the reopen), a device
+        that did not is pruned, and the new maps are published in one swap.
+        """
         try:
             count = pygame.joystick.get_count()
 
-            if not force and count == self.last_joystick_count:
+            if not force and count == len(self.joysticks):
                 return
 
-            # Controller configuration changed - rebuild dict
-            old_count = self.last_joystick_count
-            self.last_joystick_count = count
-            previous_bumper_states = self._bumper_state.copy()
-            previous_axis_baselines = self._shoulder_axis_baselines.copy()
-            previous_button_prev = self._button_prev.copy()
-            previous_button_bus_prev = self._button_bus_prev.copy()
+            old_count = len(self.joysticks)
             previously_connected = set(self.joysticks)
+            for device in (*self.controllers.values(), *self.joysticks.values()):
+                _quit_quietly(device)
 
-            # Clean up old devices
-            for ctrl in self.controllers.values():
-                try:
-                    ctrl.quit()
-                except pygame.error:
-                    pass
-            for joy in self.joysticks.values():
-                try:
-                    joy.quit()
-                except pygame.error:
-                    pass
-
-            # Initialize new devices. ``capabilities`` is built in a local
-            # dict and published atomically under the lock after the loop, so
-            # a concurrent diagnostics ``runtime_snapshot()`` (web thread)
-            # never iterates a half-built dict.
-            self.joysticks = {}
-            self.controllers = {}
-            # Re-enumeration (count changed): clear the axis-dump flags so a
-            # reused index re-dumps for its new controller.
-            self._axes_logged.clear()
-            new_capabilities: dict[int, ControllerCapabilities] = {}
+            opened: dict[int, _OpenedDevice] = {}
             for i in range(count):
-                try:
-                    # ``init()`` is part of the concrete pygame
-                    # joystick API but not a method we use after
-                    # construction, so we keep it off the protocol
-                    # surface and call it on the concrete object
-                    # before casting. The cast is the bridge: pygame
-                    # ships ``Joystick`` as a function-typed weak
-                    # stub, so the runtime instance has to be
-                    # explicitly retyped to the structural protocol
-                    # mypy uses everywhere downstream.
-                    pygame_joy = pygame.joystick.Joystick(i)
-                    pygame_joy.init()
-                    joy = cast(JoystickProtocol, pygame_joy)
-                    self.joysticks[i] = joy
+                device = self._open_device(i, held=opened)
+                if device is not None:
+                    opened[device.key] = device
 
-                    backend = "joystick"
-                    ctrl_obj: ControllerProtocol | None = None
-                    if sdl2_controller is not None and sdl2_controller.is_controller(i):
-                        try:
-                            ctrl_obj = cast(ControllerProtocol, sdl2_controller.Controller(i))
-                            self.controllers[i] = ctrl_obj
-                            backend = "sdl2_controller"
-                        except pygame.error as e:
-                            logger.warning("Controller %s SDL2 open failed, fallback to joystick: %s", i, e)
-
-                    # Driver getters can raise beyond pygame.error on flaky
-                    # pads; degrade per-field so one bad read still connects.
-                    cap_name = _safe_call(joy.get_name, "")
-                    cap_guid = _safe_call(joy.get_guid, "")
-                    cap_axes = _safe_call(joy.get_numaxes, 0)
-                    cap_buttons = _safe_call(joy.get_numbuttons, 0)
-                    cap_hats = _safe_call(joy.get_numhats, 0)
-                    new_capabilities[i] = ControllerCapabilities(
-                        backend=backend,
-                        name=cap_name,
-                        guid=cap_guid,
-                        num_axes=cap_axes,
-                        num_buttons=cap_buttons,
-                        num_hats=cap_hats,
-                    )
-                    logger.info(
-                        "Controller %s connected via %s: %s (GUID: %s, axes=%s, buttons=%s)",
-                        i,
-                        backend,
-                        cap_name,
-                        cap_guid,
-                        cap_axes,
-                        cap_buttons,
-                    )
-                except pygame.error as e:
-                    logger.error("Failed to initialize controller %s: %s", i, e)
-            # Publish the rebuilt capabilities atomically for the web-thread
-            # reader, then warn (reads the now-live dict on the main thread).
+            self.joysticks = {key: d.joy for key, d in opened.items()}
+            self.controllers = {key: d.ctrl for key, d in opened.items() if d.ctrl is not None}
             with self._capabilities_lock:
-                self.capabilities = new_capabilities
-            for i in self.capabilities:
-                self._warn_if_calibration_mismatch(i)
-            self._bumper_state = {i: previous_bumper_states.get(i, (False, False)) for i in self.joysticks}
-            self._shoulder_axis_baselines = {}
-            self._button_prev = {i: previous_button_prev.get(i, {}) for i in self.joysticks}
-            # Mirror ``_button_prev`` so bus-emission edge state is
-            # carried forward for indices that stayed connected and
-            # dropped for indices that disconnected. Without this, a
-            # disconnect handled silently here (no ``pygame.error``
-            # raised, so ``_cleanup_failed`` doesn't fire) leaves
-            # stale per-index state – when a new controller later
-            # reuses the index, the next tick can emit a ghost
-            # release or swallow a fresh press.
-            self._button_bus_prev = {i: previous_button_bus_prev.get(i, {}) for i in self.joysticks}
-            for i, joystick in self.joysticks.items():
-                baseline = previous_axis_baselines.get(i, {}).copy()
-                for axis_idx in {*LT_AXIS_INDICES, *RT_AXIS_INDICES}:
-                    if axis_idx >= joystick.get_numaxes():
-                        continue
-                    if axis_idx not in baseline:
-                        baseline[axis_idx] = joystick.get_axis(axis_idx)
-                self._shoulder_axis_baselines[i] = baseline
-            # Mark freshly-connected pads as needing a centered stick reading
-            # before their deflection is honoured; pads that stayed connected
-            # keep whatever primed state they already had.
-            self._stick_unprimed = {i for i in self.joysticks if i not in previously_connected} | (
-                self._stick_unprimed & set(self.joysticks)
-            )
+                self.capabilities = {key: d.cap for key, d in opened.items()}
+            self._prune_device_state(keep=set(opened))
+            for key, d in opened.items():
+                if key in previously_connected:
+                    # Kept rest values win; axes it never had are filled in.
+                    self._shoulder_axis_baselines[key] = {**d.baseline, **self._shoulder_axis_baselines.get(key, {})}
+                else:
+                    self._init_device_state(d)
+                self._warn_if_calibration_mismatch(key)
 
-            if count > old_count:
-                logger.info("Controllers connected: %s -> %s", old_count, count)
-            elif count < old_count:
-                logger.info("Controllers disconnected: %s -> %s", old_count, count)
+            new_count = len(self.joysticks)
+            if new_count > old_count:
+                logger.info("Controllers connected: %s -> %s", old_count, new_count)
+            elif new_count < old_count:
+                logger.info("Controllers disconnected: %s -> %s", old_count, new_count)
             # pragma: no branch – exhaustive log-level dispatch over the
             # connect / disconnect / force-refresh axes; the no-log
             # branch (count unchanged AND not forced) fires silently
             # via the same code path coverage already exercises.
             elif force:  # pragma: no branch
-                logger.info("Controller map refreshed: %s devices", count)
+                logger.info("Controller map refreshed: %s devices", new_count)
 
         except pygame.error as e:
             logger.error("Error detecting controllers: %s", e)
+
+    def _open_device(self, device_index: int, *, held: Mapping[int, object]) -> _OpenedDevice | None:
+        """Open one SDL device without registering it; ``None`` if it is in ``held`` or fails.
+
+        The key is the SDL instance id: it stays the same for as long as the
+        device is attached, so state never has to follow a renumbering. Callers
+        must not pass the index of a device that is already open: pygame opens
+        it again inside SDL before returning its cached object, so each such
+        call leaks an SDL reference. ``_apply_hotplug`` matches by instance id
+        first, and a rescan closes everything before it opens.
+        """
+        pygame_joy: Any = None
+        ctrl_obj: ControllerProtocol | None = None
+        try:
+            # ``init()`` is part of the concrete pygame joystick API but not a
+            # method we use after construction, so it stays off the protocol
+            # surface; the cast retypes pygame's function-typed stub to it.
+            pygame_joy = pygame.joystick.Joystick(device_index)
+            pygame_joy.init()
+            joy = cast(JoystickProtocol, pygame_joy)
+            key = joy.get_instance_id()
+            # SDL changes its device list only while events are pumped, so the
+            # ids listed before this open can't go stale. If that ever changed,
+            # this keeps the maps sound, at the cost of the extra SDL reference
+            # pygame took for its cached object.
+            if key in held:
+                return None
+
+            backend = "joystick"
+            if sdl2_controller is not None and sdl2_controller.is_controller(device_index):
+                try:
+                    ctrl_obj = cast(ControllerProtocol, sdl2_controller.Controller(device_index))
+                    backend = "sdl2_controller"
+                except pygame.error as e:
+                    logger.warning("Controller %s SDL2 open failed, fallback to joystick: %s", key, e)
+            baseline = {
+                axis_idx: joy.get_axis(axis_idx)
+                for axis_idx in {*LT_AXIS_INDICES, *RT_AXIS_INDICES}
+                if axis_idx < joy.get_numaxes()
+            }
+        except pygame.error as e:
+            logger.error("Failed to initialize controller %s: %s", device_index, e)
+            self._release_unregistered(pygame_joy, ctrl_obj)
+            return None
+
+        # Driver getters can raise beyond pygame.error on flaky pads; degrade
+        # per-field so one bad read still connects.
+        cap = ControllerCapabilities(
+            backend=backend,
+            name=_safe_call(joy.get_name, ""),
+            guid=_safe_call(joy.get_guid, ""),
+            num_axes=_safe_call(joy.get_numaxes, 0),
+            num_buttons=_safe_call(joy.get_numbuttons, 0),
+            num_hats=_safe_call(joy.get_numhats, 0),
+        )
+        logger.info(
+            "Controller %s connected via %s: %s (GUID: %s, axes=%s, buttons=%s)",
+            key,
+            backend,
+            cap.name,
+            cap.guid,
+            cap.num_axes,
+            cap.num_buttons,
+        )
+        return _OpenedDevice(key=key, joy=joy, ctrl=ctrl_obj, cap=cap, baseline=baseline)
+
+    def _adopt(self, devices: list[_OpenedDevice]) -> None:
+        """Register newly opened devices with fresh state, each shared map replaced once."""
+        if not devices:
+            return
+        self.joysticks = {**self.joysticks, **{d.key: d.joy for d in devices}}
+        self.controllers = {**self.controllers, **{d.key: d.ctrl for d in devices if d.ctrl is not None}}
+        with self._capabilities_lock:
+            self.capabilities = {**self.capabilities, **{d.key: d.cap for d in devices}}
+        for d in devices:
+            self._init_device_state(d)
+            self._warn_if_calibration_mismatch(d.key)
+
+    def _init_device_state(self, device: _OpenedDevice) -> None:
+        """Fresh edge state for a newly connected pad, its stick not yet seen at rest."""
+        self._bumper_state[device.key] = (False, False)
+        self._shoulder_axis_baselines[device.key] = dict(device.baseline)
+        self._button_prev[device.key] = {}
+        self._button_bus_prev[device.key] = {}
+        self._stick_unprimed.add(device.key)
+
+    def _prune_device_state(self, *, keep: set[int]) -> None:
+        """Drop per-device state for every key not in ``keep``."""
+        for state in (self._bumper_state, self._shoulder_axis_baselines, self._button_prev, self._button_bus_prev):
+            for key in [k for k in state if k not in keep]:
+                del state[key]
+        self._stick_unprimed &= keep
+        self._axes_logged &= keep
+
+    def _release_unregistered(self, joy: Any, ctrl: ControllerProtocol | None) -> None:
+        """Close what a failed open created, never an object already registered.
+
+        pygame returns its cached object for a device that is already open, so
+        identity, not equality, decides whether the object is ours to close.
+        """
+        registered = [*self.joysticks.values(), *self.controllers.values()]
+        for device in (ctrl, joy):
+            if device is not None and not any(device is held for held in registered):
+                _quit_quietly(device)
+
+    def _close_device(self, key: int) -> None:
+        """Close one device and drop all of its per-device state."""
+        _quit_quietly(self.controllers.get(key))
+        _quit_quietly(self.joysticks.get(key))
+        self.joysticks = {k: v for k, v in self.joysticks.items() if k != key}
+        self.controllers = {k: v for k, v in self.controllers.items() if k != key}
+        with self._capabilities_lock:
+            self.capabilities = {k: v for k, v in self.capabilities.items() if k != key}
+        self._prune_device_state(keep=set(self.joysticks))
+
+    def _apply_hotplug(self) -> None:
+        """Match the open devices to SDL's device list by instance id.
+
+        A device SDL no longer lists is closed, a listed id not yet open is
+        opened, and a device that stayed attached is left alone. That also makes
+        SDL's announcement of the devices attached at startup a no-op. Without
+        the instance-id lookup the open set can't be matched, so it is rebuilt.
+        """
+        try:
+            if not _instance_id_lookup_available():
+                self._detect_controllers(force=True)
+                return
+            old_count = len(self.joysticks)
+            listed = {i: _device_instance_id(i) for i in range(pygame.joystick.get_count())}
+            for key in [k for k in self.joysticks if k not in listed.values()]:
+                self._close_device(key)
+            opened = []
+            for device_index, instance_id in listed.items():
+                if instance_id is None or instance_id in self.joysticks:
+                    continue
+                device = self._open_device(device_index, held=self.joysticks)
+                if device is not None:
+                    opened.append(device)
+            self._adopt(opened)
+            new_count = len(self.joysticks)
+            if new_count > old_count:
+                logger.info("Controllers connected: %s -> %s", old_count, new_count)
+            elif new_count < old_count:
+                logger.info("Controllers disconnected: %s -> %s", old_count, new_count)
+        except pygame.error as e:
+            logger.error("Error applying controller hotplug: %s", e)
 
     def _apply_deadzone(self, value: float) -> float:
         """Deadzone + response curve for a raw stick value (shared with the 3D mouse)."""
@@ -1043,11 +1159,10 @@ class GamepadHandler:
         cap = self.capabilities.get(idx)
         if cap is None or self._identity_matches_calibration(cap):
             return
-        # De-dup per controller. GUID is the natural key, but fall back to
-        # index+name when it's empty (degraded read / pad reports no GUID) so
-        # several GUID-less pads don't collapse onto one key and suppress all
-        # but the first warning.
-        warn_key = cap.guid or f"{idx}:{cap.name}"
+        # De-dup per controller model. GUID is the natural key; fall back to the
+        # name when it's empty. Not the key: the instance id changes on every
+        # reconnect, so it would re-warn on each replug.
+        warn_key = cap.guid or f"name:{cap.name}"
         if warn_key in self._calibration_warned:
             return
         self._calibration_warned.add(warn_key)
@@ -1067,43 +1182,28 @@ class GamepadHandler:
 
     def _pump_events(self) -> None:
         """Process pygame events; consume joystick events and re-post others."""
-        hotplug_detected = False
+        hotplug = False
         for event in pygame.event.get():
-            if event.type in (
+            if event.type in (pygame.JOYDEVICEADDED, pygame.JOYDEVICEREMOVED):
+                hotplug = True
+            # SDL posts the game-controller hotplug events alongside the
+            # joystick ones for the same device, so they are consumed, not
+            # acted on.
+            elif event.type not in (
                 pygame.JOYAXISMOTION,
                 pygame.JOYBUTTONDOWN,
                 pygame.JOYBUTTONUP,
                 pygame.JOYHATMOTION,
-                pygame.JOYDEVICEADDED,
-                pygame.JOYDEVICEREMOVED,
                 *CONTROLLER_EVENT_TYPES,
             ):
-                if event.type in (
-                    pygame.JOYDEVICEADDED,
-                    pygame.JOYDEVICEREMOVED,
-                    getattr(pygame, "CONTROLLERDEVICEADDED", None),
-                    getattr(pygame, "CONTROLLERDEVICEREMOVED", None),
-                ):
-                    hotplug_detected = True
-            else:
                 pygame.event.post(event)
-        if hotplug_detected:
-            self._detect_controllers(force=True)
+        if hotplug:
+            self._apply_hotplug()
 
     def _cleanup_failed(self, to_remove: list[int]) -> None:
-        """Remove controllers that errored during polling."""
-        for idx in to_remove:
-            self.joysticks.pop(idx, None)
-            self.controllers.pop(idx, None)
-            with self._capabilities_lock:
-                self.capabilities.pop(idx, None)
-            self._bumper_state.pop(idx, None)
-            self._shoulder_axis_baselines.pop(idx, None)
-            self._stick_unprimed.discard(idx)
-            self._button_prev.pop(idx, None)
-            self._button_bus_prev.pop(idx, None)
-            # Drop the axis-dump flag so a pad later reusing this index dumps.
-            self._axes_logged.discard(idx)
+        """Close controllers that errored during polling."""
+        for key in to_remove:
+            self._close_device(key)
 
     def update(self, dt: float) -> GamepadUpdate:
         """
@@ -1511,8 +1611,8 @@ class GamepadHandler:
             marker_id (None, filled by InputManager), effective_speed, backend.
         """
         info: list[dict[str, Any]] = []
-        # Snapshot capabilities under the lock – this can be called from the
-        # HUD path while the main loop rebuilds capabilities.
+        # Copied under the lock like every capabilities read; this runs on the
+        # main loop, which is also the only writer.
         with self._capabilities_lock:
             caps_by_idx = dict(self.capabilities)
         for idx, joystick in self.joysticks.items():
@@ -1541,22 +1641,14 @@ class GamepadHandler:
     def stop(self) -> None:
         """Release controller resources and pygame subsystems used by this handler."""
         self.enabled = False
-        for ctrl in self.controllers.values():
-            try:
-                ctrl.quit()
-            except pygame.error:
-                pass
-        self.controllers.clear()
-        for joy in self.joysticks.values():
-            try:
-                joy.quit()
-            except pygame.error:
-                pass
-        self.joysticks.clear()
+        for device in (*self.controllers.values(), *self.joysticks.values()):
+            _quit_quietly(device)
+        self.controllers = {}
+        self.joysticks = {}
         self._axes_logged.clear()
         self._stick_unprimed.clear()
         with self._capabilities_lock:
-            self.capabilities.clear()
+            self.capabilities = {}
         if sdl2_controller is not None and sdl2_controller.get_init():
             sdl2_controller.quit()
         # pragma: no branch – the False arms only fire when the

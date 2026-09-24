@@ -171,9 +171,9 @@ class InputManager:
         so merely enabling the feature doesn't shift the gamepad numbering.
 
         Thread-safe snapshot – called from the OSC scheduler thread as well as
-        the main loop. ``gamepad_handler.joysticks`` is rebuilt on the main loop
-        (``_detect_controllers`` reassigns then repopulates), so iterating it can
-        race; fall back to no gamepads for that one call rather than raise.
+        the main loop. ``gamepad_handler.joysticks`` is replaced on the main loop
+        (keyed by SDL instance id), so iterating it can race; fall back to no
+        gamepads for that one call rather than raise.
         """
         slots: list[tuple[str, int]] = []
         if self.app._config.mouse3d.enabled:
@@ -213,7 +213,7 @@ class InputManager:
         return None
 
     def _gamepad_unified_idx(self, controller_idx: int, slots: list[tuple[str, int]] | None = None) -> int | None:
-        """Unified index for a gamepad's pygame index, or ``None`` if absent."""
+        """Unified index for a gamepad's handler key, or ``None`` if absent."""
         if slots is None:
             slots = self._controller_slots()
         for i, (kind, local_idx) in enumerate(slots):
@@ -232,7 +232,7 @@ class InputManager:
 
     def _gamepad_marker_id(self, controller_idx: int, slots: list[tuple[str, int]] | None = None) -> int | None:
         """Marker a gamepad's movement/reset targets, routed through the shared
-        controller-id space (the gamepad's pygame index -> its unified slot)."""
+        controller-id space (the gamepad's handler key -> its unified slot)."""
         if slots is None:
             slots = self._controller_slots()
         return self._controller_marker_id(self._gamepad_unified_idx(controller_idx, slots), slots)

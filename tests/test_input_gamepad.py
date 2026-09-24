@@ -12,6 +12,7 @@ settings-menu input shapes, cleanup and stop) is exercised end-to-end.
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 
@@ -73,12 +74,16 @@ class FakeJoystick:
         num_axes: int = 6,
         name: str = "FakePad",
         guid: str = "0000",
+        instance_id: int | None = None,
     ) -> None:
         self._buttons = [False] * num_buttons
         self._hats = [(0, 0)] * num_hats
         self._axes = [0.0] * num_axes
         self._name = name
         self._guid = guid
+        # ``None`` = let the stubbed ``Joystick(idx)`` factory stamp the index,
+        # which is what SDL hands out on a fresh start.
+        self.instance_id = instance_id
         self.init_called = False
         self.quit_called = False
 
@@ -112,6 +117,9 @@ class FakeJoystick:
 
     def get_guid(self) -> str:
         return self._guid
+
+    def get_instance_id(self) -> int:
+        return 0 if self.instance_id is None else self.instance_id
 
     # Test helpers
     def press(self, btn: int) -> None:
@@ -196,7 +204,7 @@ def stubbed_pygame(monkeypatch):
 
     events: list[object] = []
     posted: list[object] = []
-    state = {"count": 0, "factories": {}}
+    state = {"count": 0, "factories": {}, "instance_ids": {}, "lookup": False}
 
     monkeypatch.setattr(pygame, "get_init", lambda: True)
     monkeypatch.setattr(pygame, "init", lambda: None)
@@ -207,11 +215,16 @@ def stubbed_pygame(monkeypatch):
 
     def _joystick_factory(idx: int):
         factory = state["factories"].get(idx)
-        if factory is None:
-            return FakeJoystick()
-        return factory(idx)
+        joy = FakeJoystick() if factory is None else factory(idx)
+        if getattr(joy, "instance_id", 0) is None:
+            joy.instance_id = idx
+        return joy
 
     monkeypatch.setattr(pygame.joystick, "Joystick", _joystick_factory)
+    # SDL's instance-id lookup answers from ``state``; ``lookup`` False stands
+    # for a pygame build where it can't be reached.
+    monkeypatch.setattr(gp, "_device_instance_id", lambda idx: state["instance_ids"].get(idx))
+    monkeypatch.setattr(gp, "_instance_id_lookup_available", lambda: state["lookup"])
     monkeypatch.setattr(pygame.event, "get", lambda: list(events))
     monkeypatch.setattr(pygame.event, "post", lambda e: posted.append(e))
 
@@ -774,14 +787,19 @@ class TestCleanupFailed:
     def test_pops_every_tracked_structure(self, stubbed_pygame) -> None:
         handler, _ = make_handler(stubbed_pygame)
         joy = FakeJoystick()
+        ctrl = FakeController()
         handler.joysticks[0] = joy
-        handler.controllers[0] = FakeController()
+        handler.controllers[0] = ctrl
         handler.capabilities[0] = ControllerCapabilities(backend="joystick")
         handler._bumper_state[0] = (True, False)
         handler._shoulder_axis_baselines[0] = {4: 0.0}
         handler._button_prev[0] = {1: True}
 
         handler._cleanup_failed([0, 999])  # 999 is unknown; must not raise
+
+        # A pad that failed a read is released in SDL, not just forgotten.
+        assert joy.quit_called is True
+        assert ctrl.quit_called is True
 
         assert 0 not in handler.joysticks
         assert 0 not in handler.controllers
@@ -1210,18 +1228,408 @@ class TestPumpEvents:
         handler._pump_events()
         assert evt not in stubbed_pygame["posted"]
 
-    def test_device_added_triggers_redetection(self, stubbed_pygame) -> None:
+
+class TestHotplugTouchesOnlyTheChangedDevice:
+    """A device event opens or closes the one device it names, never the rest."""
+
+    @staticmethod
+    def _attach(
+        stubbed_pygame,
+        *joys: FakeJoystick,
+        opened: list[int] | None = None,
+        lookup: bool = True,
+    ) -> None:
+        """Make ``joys`` the attached devices, in SDL device-index order.
+
+        ``lookup=False`` makes SDL's pre-open instance-id lookup unavailable.
+        """
+
+        def _factory(idx: int, joy: FakeJoystick):
+            if opened is not None:
+                opened.append(idx)
+            return joy
+
+        stubbed_pygame["state"]["count"] = len(joys)
+        stubbed_pygame["state"]["lookup"] = lookup
+        stubbed_pygame["state"]["instance_ids"] = (
+            {i: joy.get_instance_id() for i, joy in enumerate(joys)} if lookup else {}
+        )
+        stubbed_pygame["state"]["factories"] = {
+            i: (lambda idx, joy=joy: _factory(idx, joy)) for i, joy in enumerate(joys)
+        }
+
+    @staticmethod
+    def _deliver(stubbed_pygame, *events: tuple[int, dict[str, int]]) -> None:
+        stubbed_pygame["events"][:] = [pygame.event.Event(kind, fields) for kind, fields in events]
+
+    def test_startup_announcement_reopens_nothing(self, stubbed_pygame) -> None:
+        opened: list[int] = []
+        pad = FakeJoystick(instance_id=0)
+        self._attach(stubbed_pygame, pad, opened=opened)
         handler, _ = make_handler(stubbed_pygame)
-        called = {"force": False}
 
-        def _record(force: bool = False) -> None:
-            called["force"] = force
-
-        handler._detect_controllers = _record  # type: ignore[assignment]
-        evt = pygame.event.Event(pygame.JOYDEVICEADDED, {})
-        stubbed_pygame["events"].append(evt)
+        # SDL announces every device already attached when its joystick
+        # subsystem came up, including the one just opened.
+        self._deliver(stubbed_pygame, (pygame.JOYDEVICEADDED, {"device_index": 0}))
         handler._pump_events()
-        assert called["force"] is True
+
+        assert opened == [0]
+        assert pad.quit_called is False
+        assert handler.joysticks == {0: pad}
+
+    def test_unplugging_one_pad_leaves_the_other_open(self, stubbed_pygame) -> None:
+        pad_a = FakeJoystick(instance_id=0)
+        pad_b = FakeJoystick(instance_id=1)
+        self._attach(stubbed_pygame, pad_a, pad_b)
+        handler, _ = make_handler(stubbed_pygame)
+
+        self._attach(stubbed_pygame, pad_b)
+        self._deliver(stubbed_pygame, (pygame.JOYDEVICEREMOVED, {"instance_id": 0}))
+        handler._pump_events()
+
+        assert pad_a.quit_called is True
+        assert pad_b.quit_called is False
+        assert handler.joysticks == {1: pad_b}
+        assert set(handler.capabilities) == {1}
+
+    def test_unplugged_pad_that_fails_to_close_is_still_dropped(self, stubbed_pygame) -> None:
+        class _VanishedPad(FakeJoystick):
+            def quit(self) -> None:
+                raise pygame.error("device already gone")
+
+        pad = _VanishedPad(instance_id=0)
+        self._attach(stubbed_pygame, pad)
+        handler, _ = make_handler(stubbed_pygame)
+
+        self._attach(stubbed_pygame)
+        self._deliver(stubbed_pygame, (pygame.JOYDEVICEREMOVED, {"instance_id": 0}))
+        handler._pump_events()
+
+        assert handler.joysticks == {}
+        assert handler.capabilities == {}
+
+    def test_held_button_does_not_fire_again_when_another_pad_is_unplugged(self, stubbed_pygame) -> None:
+        pad_a = FakeJoystick(instance_id=0)
+        pad_b = FakeJoystick(instance_id=1)
+        self._attach(stubbed_pygame, pad_a, pad_b)
+        handler, _ = make_handler(stubbed_pygame)
+        pad_b.press(CONTROLLER_BUTTON_X)  # default btn_reset = "X"
+        assert handler.update(0.016).resets == {1}
+        assert handler.update(0.016).resets == set()
+
+        # pad_a goes; SDL renumbers pad_b to device index 0.
+        self._attach(stubbed_pygame, pad_b)
+        self._deliver(stubbed_pygame, (pygame.JOYDEVICEREMOVED, {"instance_id": 0}))
+        result = handler.update(0.016)
+
+        # Still the same held press on pad_b: no second reset.
+        assert result.resets == set()
+
+    def test_plugging_in_opens_only_the_new_pad(self, stubbed_pygame) -> None:
+        pad_a = FakeJoystick(instance_id=0)
+        self._attach(stubbed_pygame, pad_a)
+        handler, _ = make_handler(stubbed_pygame)
+
+        pad_b = FakeJoystick(instance_id=7)
+        self._attach(stubbed_pygame, pad_a, pad_b)
+        self._deliver(stubbed_pygame, (pygame.JOYDEVICEADDED, {"device_index": 1}))
+        handler._pump_events()
+
+        assert pad_a.quit_called is False
+        assert pad_b.init_called is True
+        assert handler.joysticks == {0: pad_a, 7: pad_b}
+
+    def test_replug_within_one_frame_swaps_just_that_device(self, stubbed_pygame) -> None:
+        pad = FakeJoystick(instance_id=0)
+        self._attach(stubbed_pygame, pad)
+        handler, _ = make_handler(stubbed_pygame)
+
+        replugged = FakeJoystick(instance_id=3)
+        self._attach(stubbed_pygame, replugged)
+        self._deliver(
+            stubbed_pygame,
+            (pygame.JOYDEVICEREMOVED, {"instance_id": 0}),
+            (pygame.JOYDEVICEADDED, {"device_index": 0}),
+        )
+        handler._pump_events()
+
+        assert pad.quit_called is True
+        assert handler.joysticks == {3: replugged}
+
+    def test_game_controller_hotplug_events_are_consumed_not_acted_on(self, stubbed_pygame) -> None:
+        opened: list[int] = []
+        pad = FakeJoystick(instance_id=0)
+        self._attach(stubbed_pygame, pad, opened=opened)
+        handler, _ = make_handler(stubbed_pygame)
+
+        self._deliver(
+            stubbed_pygame,
+            (pygame.CONTROLLERDEVICEADDED, {"device_index": 0}),
+            (pygame.CONTROLLERDEVICEREMOVED, {"instance_id": 0}),
+        )
+        handler._pump_events()
+
+        assert opened == [0]
+        assert pad.quit_called is False
+        assert stubbed_pygame["posted"] == []
+
+    def test_removal_of_a_device_that_is_not_open_changes_nothing(self, stubbed_pygame) -> None:
+        pad = FakeJoystick(instance_id=0)
+        self._attach(stubbed_pygame, pad)
+        handler, _ = make_handler(stubbed_pygame)
+
+        self._deliver(stubbed_pygame, (pygame.JOYDEVICEREMOVED, {"instance_id": 42}))
+        handler._pump_events()
+
+        assert pad.quit_called is False
+        assert handler.joysticks == {0: pad}
+
+    @pytest.mark.parametrize("stale_index", [0, 5], ids=["already-open", "out-of-range"])
+    def test_add_with_a_stale_index_still_opens_the_new_pad(self, stubbed_pygame, stale_index) -> None:
+        opened: list[int] = []
+        pad_a = FakeJoystick(instance_id=0)
+        self._attach(stubbed_pygame, pad_a, opened=opened)
+        handler, _ = make_handler(stubbed_pygame)
+
+        # The event names an index that does not lead to the new pad; the
+        # handler matches SDL's current list, not the event.
+        pad_b = FakeJoystick(instance_id=1)
+        self._attach(stubbed_pygame, pad_a, pad_b, opened=opened)
+        self._deliver(stubbed_pygame, (pygame.JOYDEVICEADDED, {"device_index": stale_index}))
+        handler._pump_events()
+
+        assert opened == [0, 1]
+        assert pad_a.quit_called is False
+        assert handler.joysticks == {0: pad_a, 1: pad_b}
+
+    def test_a_burst_of_adds_opens_each_new_pad_once(self, stubbed_pygame) -> None:
+        opened: list[int] = []
+        pad_a = FakeJoystick(instance_id=0)
+        self._attach(stubbed_pygame, pad_a, opened=opened)
+        handler, _ = make_handler(stubbed_pygame)
+
+        pad_b = FakeJoystick(instance_id=1)
+        self._attach(stubbed_pygame, pad_a, pad_b, opened=opened)
+        self._deliver(
+            stubbed_pygame,
+            (pygame.JOYDEVICEADDED, {"device_index": 1}),
+            (pygame.JOYDEVICEADDED, {"device_index": 0}),
+        )
+        handler._pump_events()
+
+        assert opened == [0, 1]
+        assert handler.joysticks == {0: pad_a, 1: pad_b}
+
+    @pytest.mark.parametrize(
+        ("lookup", "expected_opens", "reopened"),
+        [(True, [0, 1], False), (False, [0, 0, 1], True)],
+        ids=["matched-by-instance-id", "lookup-unavailable-rescans"],
+    )
+    def test_add_naming_an_open_pad_leaves_its_state_alone(
+        self, stubbed_pygame, lookup, expected_opens, reopened
+    ) -> None:
+        opened: list[int] = []
+        pad_a = FakeJoystick(instance_id=0)
+        self._attach(stubbed_pygame, pad_a, opened=opened, lookup=lookup)
+        handler, _ = make_handler(stubbed_pygame)
+        pad_a.press(CONTROLLER_BUTTON_X)
+        assert handler.update(0.016).resets == {0}
+
+        # A new pad arrives in the same frame as an add that names pad_a's
+        # index. With the lookup, pad_a is matched and left alone; without it,
+        # the rescan reopens pad_a but carries its state by instance id.
+        pad_b = FakeJoystick(instance_id=1)
+        self._attach(stubbed_pygame, pad_a, pad_b, opened=opened, lookup=lookup)
+        self._deliver(
+            stubbed_pygame,
+            (pygame.JOYDEVICEADDED, {"device_index": 0}),
+            (pygame.JOYDEVICEADDED, {"device_index": 1}),
+        )
+        result = handler.update(0.016)
+
+        assert opened == expected_opens
+        assert pad_a.quit_called is reopened
+        assert handler.joysticks == {0: pad_a, 1: pad_b}
+        assert result.resets == set()
+
+    def test_failed_open_releases_what_it_opened(self, stubbed_pygame, monkeypatch) -> None:
+        class _UnreadablePad(FakeJoystick):
+            def get_axis(self, idx: int) -> float:
+                raise pygame.error("axis read failed")
+
+        class _Sdl2:
+            @staticmethod
+            def get_init() -> bool:
+                return True
+
+            @staticmethod
+            def is_controller(_idx: int) -> bool:
+                return True
+
+            @staticmethod
+            def Controller(_idx: int) -> FakeController:  # noqa: N802 - mirrors pygame's API
+                return ctrl
+
+        class _GoneController(FakeController):
+            def quit(self) -> None:
+                super().quit()
+                raise pygame.error("controller already gone")
+
+        ctrl = _GoneController()
+        pad = _UnreadablePad(instance_id=4)
+        monkeypatch.setattr(gp, "sdl2_controller", _Sdl2)
+        self._attach(stubbed_pygame, pad)
+        handler, _ = make_handler(stubbed_pygame)
+
+        assert handler.joysticks == {}
+        assert pad.quit_called is True
+        assert ctrl.quit_called is True
+
+    def test_failed_open_never_closes_a_registered_pad(self, stubbed_pygame) -> None:
+        class _FlakyIdPad(FakeJoystick):
+            """Reports its id once, as a registered pad does, then fails."""
+
+            def __init__(self) -> None:
+                super().__init__(instance_id=0)
+                self.id_reads = 0
+
+            def get_instance_id(self) -> int:
+                self.id_reads += 1
+                if self.id_reads > 1:
+                    raise pygame.error("device busy")
+                return 0
+
+        pad = _FlakyIdPad()
+        self._attach(stubbed_pygame, pad, lookup=False)
+        handler, _ = make_handler(stubbed_pygame)
+
+        # A stale lookup lists a new id at an index whose object pygame hands
+        # back is the registered pad, and that object then fails its id read.
+        state = stubbed_pygame["state"]
+        state["lookup"] = True
+        state["count"] = 2
+        state["instance_ids"] = {0: 0, 1: 9}
+        state["factories"] = {0: lambda idx: pad, 1: lambda idx: pad}
+        self._deliver(stubbed_pygame, (pygame.JOYDEVICEADDED, {"device_index": 1}))
+        handler._pump_events()
+
+        assert pad.quit_called is False
+        assert handler.joysticks == {0: pad}
+
+    def test_stale_lookup_never_registers_a_pad_twice(self, stubbed_pygame) -> None:
+        pad = FakeJoystick(instance_id=0)
+        self._attach(stubbed_pygame, pad)
+        handler, _ = make_handler(stubbed_pygame)
+
+        # The lookup lists a new id at an index whose object pygame hands back
+        # is the pad already registered.
+        state = stubbed_pygame["state"]
+        state["count"] = 2
+        state["instance_ids"] = {0: 0, 1: 9}
+        state["factories"] = {0: lambda idx: pad, 1: lambda idx: pad}
+        self._deliver(stubbed_pygame, (pygame.JOYDEVICEADDED, {"device_index": 1}))
+        handler._pump_events()
+
+        assert pad.quit_called is False
+        assert handler.joysticks == {0: pad}
+
+    def test_a_pad_that_never_opens_does_not_churn_the_others(self, stubbed_pygame) -> None:
+        class _DeadPad(FakeJoystick):
+            def init(self) -> None:
+                raise pygame.error("cannot open")
+
+        pad_a = FakeJoystick(instance_id=0)
+        dead = _DeadPad(instance_id=5)
+        self._attach(stubbed_pygame, pad_a, dead)
+        handler, _ = make_handler(stubbed_pygame)
+        assert handler.joysticks == {0: pad_a}
+
+        # SDL keeps counting the dead device; another pad's arrival must not
+        # close and reopen the pad that works.
+        pad_c = FakeJoystick(instance_id=6)
+        self._attach(stubbed_pygame, pad_a, dead, pad_c)
+        self._deliver(stubbed_pygame, (pygame.JOYDEVICEADDED, {"device_index": 2}))
+        handler._pump_events()
+
+        assert pad_a.quit_called is False
+        assert handler.joysticks == {0: pad_a, 6: pad_c}
+
+    def test_rescan_never_shows_other_threads_a_partial_set(self, stubbed_pygame) -> None:
+        pad_a = FakeJoystick(instance_id=0)
+        pad_b = FakeJoystick(instance_id=1)
+        self._attach(stubbed_pygame, pad_a, pad_b, lookup=False)
+        handler, _ = make_handler(stubbed_pygame)
+        seen_mid_rescan: list[tuple[set[int], set[int]]] = []
+
+        def _open_b(idx: int) -> FakeJoystick:
+            # What the web and OSC threads would read while the rescan runs.
+            seen_mid_rescan.append((set(handler.joysticks), set(handler.capabilities)))
+            return pad_b
+
+        stubbed_pygame["state"]["factories"][1] = _open_b
+        handler._detect_controllers(force=True)
+
+        assert seen_mid_rescan == [({0, 1}, {0, 1})]
+        assert set(handler.joysticks) == set(handler.capabilities) == {0, 1}
+
+    def test_hotplug_error_is_logged_not_raised(self, stubbed_pygame, monkeypatch, caplog) -> None:
+        pad = FakeJoystick(instance_id=0)
+        self._attach(stubbed_pygame, pad)
+        handler, _ = make_handler(stubbed_pygame)
+
+        def _boom() -> int:
+            raise pygame.error("device list unavailable")
+
+        monkeypatch.setattr(pygame.joystick, "get_count", _boom)
+        self._deliver(stubbed_pygame, (pygame.JOYDEVICEADDED, {"device_index": 0}))
+        with caplog.at_level(logging.ERROR, logger="openfollow.input.gamepad"):
+            handler._pump_events()
+
+        assert "device list unavailable" in caplog.text
+        assert handler.joysticks == {0: pad}
+
+
+class TestDeviceInstanceIdLookup:
+    """SDL's instance id for a device index, read without opening the device."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_lookup(self):
+        lookup = gp._sdl_device_instance_id_fn  # a test may swap it; clear the real cache
+        lookup.cache_clear()
+        yield
+        lookup.cache_clear()
+
+    def test_lookup_resolves_in_the_sdl_pygame_loaded(self) -> None:
+        # The contract the whole hotplug path rests on: if packaging ever makes
+        # the symbol unreachable, this fails instead of hotplug quietly falling
+        # back to a full rescan.
+        assert gp._sdl_device_instance_id_fn() is not None
+        assert gp._instance_id_lookup_available() is True
+
+    def test_lookup_unavailable_is_reported(self, monkeypatch) -> None:
+        monkeypatch.setattr(gp, "_sdl_device_instance_id_fn", lambda: None)
+        assert gp._instance_id_lookup_available() is False
+        assert gp._device_instance_id(0) is None
+
+    def test_index_with_no_device_reads_as_unknown(self) -> None:
+        # Real call into the SDL pygame loaded; no joystick has this index.
+        assert gp._device_instance_id(10_000) is None
+
+    def test_reports_the_id_sdl_assigned(self, monkeypatch) -> None:
+        monkeypatch.setattr(gp, "_sdl_device_instance_id_fn", lambda: lambda idx: idx + 40)
+        assert gp._device_instance_id(2) == 42
+
+    @pytest.mark.parametrize("failure", [OSError("no such image"), AttributeError("no such symbol")])
+    def test_unreachable_sdl_reads_as_unknown(self, monkeypatch, failure) -> None:
+        def _cdll(_path: str):
+            raise failure
+
+        monkeypatch.setattr(gp.ctypes, "CDLL", _cdll)
+        assert gp._device_instance_id(0) is None
+
+    def test_joystick_module_without_a_file_reads_as_unknown(self, monkeypatch) -> None:
+        monkeypatch.setattr(pygame.joystick, "__file__", None, raising=False)
+        assert gp._device_instance_id(0) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -1528,8 +1936,8 @@ class TestDetectControllersErrorPaths:
             def quit(self):
                 raise pygame.error("ctrl quit boom")
 
+        handler.joysticks[0] = FakeJoystick()
         handler.controllers[0] = _ExplodingCtrl()
-        handler.last_joystick_count = 1
         stubbed_pygame["state"]["count"] = 0  # all devices gone
         handler._detect_controllers()
         assert handler.controllers == {}
@@ -1543,7 +1951,6 @@ class TestDetectControllersErrorPaths:
                 raise pygame.error("joy quit boom")
 
         handler.joysticks[0] = _ExplodingJoy()
-        handler.last_joystick_count = 1
         stubbed_pygame["state"]["count"] = 0
         handler._detect_controllers()
         assert handler.joysticks == {}
@@ -1594,7 +2001,6 @@ class TestDetectControllersErrorPaths:
         import logging as _logging
 
         handler, _ = make_handler(stubbed_pygame)
-        handler.last_joystick_count = 0
         stubbed_pygame["state"]["count"] = 0
         with caplog.at_level(_logging.INFO, logger="openfollow.input.gamepad"):
             handler._detect_controllers(force=True)
@@ -2334,7 +2740,6 @@ class TestDetectControllersRebuildsBusPrev:
         # Simulate one connected controller with bus state.
         joy = FakeJoystick()
         handler.joysticks[0] = joy
-        handler.last_joystick_count = 1
         handler._button_bus_prev[0] = {CONTROLLER_BUTTON_A: True}
 
         # Hotplug: device disappears silently (no pygame.error).
@@ -2351,7 +2756,6 @@ class TestDetectControllersRebuildsBusPrev:
         app = FakeApp()
         handler = GamepadHandler(app, event_bus=bus)
         handler.joysticks[0] = FakeJoystick()
-        handler.last_joystick_count = 1
         handler._button_bus_prev[0] = {CONTROLLER_BUTTON_A: True}
 
         # Disconnect.
@@ -2369,7 +2773,6 @@ class TestDetectControllersRebuildsBusPrev:
         app = FakeApp()
         handler = GamepadHandler(app, event_bus=bus)
         handler.joysticks[0] = FakeJoystick()
-        handler.last_joystick_count = 1
         handler._button_bus_prev[0] = {CONTROLLER_BUTTON_A: True}
 
         # force=True with an unchanged count rebuilds the map.
@@ -2868,6 +3271,26 @@ class TestRuntimeSnapshot:
             again = [r for r in caplog.records if "does not match the saved" in r.message]
             assert len(again) == 1
 
+    def test_guidless_pad_warns_once_across_reconnects(self, stubbed_pygame, caplog) -> None:
+        import logging as _logging
+
+        cfg = ControllerConfig()
+        cfg.mapped_controller_guid = "calibrated-guid"
+        handler, _ = make_handler(stubbed_pygame, config=cfg)
+        state = stubbed_pygame["state"]
+        with caplog.at_level(_logging.WARNING, logger="openfollow.input.gamepad"):
+            # The same GUID-less pad, reconnected: SDL gives it a new instance id each time.
+            for instance_id in (0, 1, 2):
+                state["factories"][0] = lambda idx, i=instance_id: FakeJoystick(
+                    name="No-GUID Pad", guid="", instance_id=i
+                )
+                state["count"] = 1
+                handler._detect_controllers()
+                state["count"] = 0
+                handler._detect_controllers()
+        warnings = [r for r in caplog.records if "does not match the saved" in r.message]
+        assert len(warnings) == 1
+
     def test_no_warn_when_identity_matches(self, stubbed_pygame, caplog) -> None:
         import logging as _logging
 
@@ -2941,7 +3364,7 @@ class TestRuntimeSnapshot:
         handler.apply_config()  # identity unchanged
         assert handler._calibration_warned == {"connected"}
 
-    def test_warn_dedup_falls_back_to_idx_name_when_guid_empty(
+    def test_warn_dedup_falls_back_to_name_when_guid_empty(
         self,
         stubbed_pygame,
         caplog,
@@ -2958,7 +3381,7 @@ class TestRuntimeSnapshot:
             handler._warn_if_calibration_mismatch(1)
         warns = [r for r in caplog.records if "does not match the saved" in r.message]
         assert len(warns) == 2
-        assert handler._calibration_warned == {"0:Pad A", "1:Pad B"}
+        assert handler._calibration_warned == {"name:Pad A", "name:Pad B"}
 
 
 class TestFrameButtonSnapshot:

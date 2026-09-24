@@ -57,6 +57,7 @@ pragma without an entry here is treated as a review blocker.
 | [`openfollow/video/media_store.py`][media_store]        | `if match is None: # pragma: no cover - callers pass only regex-matched paths` in `_user_item` | `_user_item` is only ever called with paths already filtered through `_USER_FILE_RE`, so the re-match never fails. The guard is defense-in-depth against a future caller bypassing the filter. |
 | [`openfollow/input/mouse3d.py`][mouse3d]                | `...  # pragma: no cover - Protocol method body, never executed` on `Mouse3DBackend.enumerate` | `typing.Protocol` method body is a type-stub ellipsis – the Protocol registers the signature for structural checks but never executes the body. The concrete implementation (`_PySpaceMouseBackend.enumerate`) is exercised by `tests/test_input_mouse3d.py`. |
 | [`openfollow/input/mouse3d.py`][mouse3d]                | `...  # pragma: no cover - Protocol method body, never executed` on `Mouse3DBackend.open` | Same as above for the `open` stub; `_PySpaceMouseBackend.open` is exercised via a mocked `pyspacemouse.open_by_path` in `tests/test_input_mouse3d.py`. |
+| [`openfollow/input/_joystick_protocol.py`][joystick_protocol] | `...  # pragma: no cover` on every method of `JoystickProtocol` and `ControllerProtocol`, including `JoystickProtocol.get_instance_id` | `typing.Protocol` method bodies are type-stub ellipses that only describe the pygame surface for mypy; the calls go to the concrete pygame object or a test fake. `get_instance_id` is exercised through `GamepadHandler` by the hotplug tests in `tests/test_input_gamepad.py`. |
 
 [receiver]: ../openfollow/video/receiver.py
 [gamepad]: ../openfollow/input/gamepad.py
@@ -65,6 +66,7 @@ pragma without an entry here is treated as a review blocker.
 [detection]: ../openfollow/video/detection.py
 [media_store]: ../openfollow/video/media_store.py
 [mouse3d]: ../openfollow/input/mouse3d.py
+[joystick_protocol]: ../openfollow/input/_joystick_protocol.py
 
 ## Mutation testing
 

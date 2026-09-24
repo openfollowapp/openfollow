@@ -2633,7 +2633,8 @@ def collect_gamepad_runtime(p: DiagnosticsProviders) -> list[str]:
         return ["  [no controllers connected]"]
     rows: list[str] = []
     for pad in pads:
-        rows.append(f"  [{pad.get('index')}] {pad.get('name', '') or '(unnamed)'}")
+        # The key is SDL's instance id, which grows with every reconnect; it is not the slot.
+        rows.append(f"  [instance {pad.get('index')}] {pad.get('name', '') or '(unnamed)'}")
         rows.append(f"      guid:    {pad.get('guid', '') or '(none)'}")
         if pad.get("is_game_controller"):
             mode = "X-input (SDL game controller – preferred)"

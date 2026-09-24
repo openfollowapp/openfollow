@@ -1060,7 +1060,7 @@ This repo has two active development streams (Mac dev + Pi). Merge conflicts hap
 - **Always combine both sides** – never just pick one side
 
 ### macOS vs Pi differences
-- **macOS:** Quartz keyboard polling, per-frame GDK pointer polling (`window.poll_pointer`; GTK pointer/scroll events don't fire reliably under the pipeline – wheel-Z is unavailable, use `Q`/`E`), NDI via libndi dylib
+- **macOS:** Quartz keyboard polling, per-frame GDK pointer polling (`window.poll_pointer`; GTK pointer/scroll events don't fire reliably under the pipeline – wheel-Z is unavailable, use `Q`/`E`), NDI via libndi dylib, SDL's HIDAPI joystick backend switched off (`SDL_JOYSTICK_HIDAPI=0` in `GamepadHandler`: SDL 2.28 keeps a closed device's HID callback registered, so any reopen turns input into a use-after-free)
 - **Pi:** GTK event-based keyboard + GTK pointer/scroll events, NDI via ARM libndi, Cage compositor, systemd service
 - `gst_runtime_available()` checks GStreamer at runtime
 

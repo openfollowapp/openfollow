@@ -3032,11 +3032,19 @@ def test_collect_gamepad_runtime_provider_raises() -> None:
 def test_collect_gamepad_runtime_xinput_match() -> None:
     p = diag.DiagnosticsProviders(gamepad_runtime=lambda: [_pad()])
     joined = "\n".join(diag.collect_gamepad_runtime(p))
-    assert "[0] GameSir-G7 SE" in joined
+    assert "[instance 0] GameSir-G7 SE" in joined
     assert "guid:    g7se-guid" in joined
     assert "X-input (SDL game controller – preferred)" in joined
     assert "axes=6 buttons=15 hats=1" in joined
     assert "calibration: matches saved mapping" in joined
+
+
+def test_collect_gamepad_runtime_labels_the_key_as_an_instance_not_a_slot() -> None:
+    # A reconnected pad keeps a growing SDL instance id; the bundle must not
+    # present it as though it were the pad's slot.
+    p = diag.DiagnosticsProviders(gamepad_runtime=lambda: [_pad(index=3)])
+    first_row = diag.collect_gamepad_runtime(p)[0]
+    assert first_row == "  [instance 3] GameSir-G7 SE"
 
 
 def test_collect_gamepad_runtime_raw_backend_and_mismatch() -> None:

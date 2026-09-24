@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -270,6 +271,10 @@ class GamepadHandler:
         # The video subsystem is what pygame's event API needs, not joystick
         # init, and SDL's real backend pumps the same run loop GTK drives.
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        # SDL 2.28's macOS HIDAPI backend leaves its input-report callback on a
+        # closed device, so a reopen turns HID traffic into a use-after-free.
+        if sys.platform == "darwin":
+            os.environ.setdefault("SDL_JOYSTICK_HIDAPI", "0")
         if not pygame.get_init():
             pygame.init()
 

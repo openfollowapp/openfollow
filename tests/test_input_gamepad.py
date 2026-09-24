@@ -1355,6 +1355,48 @@ class TestPygameSubsystemInitOnConstruct:
         GamepadHandler(FakeApp())
         assert os.environ["SDL_VIDEODRIVER"] == "x11"
 
+    @pytest.mark.parametrize(("platform", "expected"), [("darwin", "0"), ("linux", None)])
+    def test_disables_sdl_hidapi_joysticks_on_macos_before_init(self, monkeypatch, platform, expected) -> None:
+        monkeypatch.delenv("SDL_JOYSTICK_HIDAPI", raising=False)
+        monkeypatch.setattr("sys.platform", platform)
+        seen: dict[str, str | None] = {}
+
+        monkeypatch.setattr(pygame, "get_init", lambda: False)
+        monkeypatch.setattr(
+            pygame,
+            "init",
+            lambda: seen.__setitem__("hidapi", os.environ.get("SDL_JOYSTICK_HIDAPI")),
+        )
+        monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.joystick, "init", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "get_count", lambda: 0)
+        monkeypatch.setattr(pygame.joystick, "Joystick", lambda i: FakeJoystick())
+        monkeypatch.setattr(pygame.event, "get", lambda: [])
+        monkeypatch.setattr(pygame.event, "post", lambda e: None)
+        monkeypatch.setattr(gp, "sdl2_controller", None)
+
+        GamepadHandler(FakeApp())
+        assert seen["hidapi"] == expected
+
+    def test_keeps_explicit_sdl_hidapi_override_on_macos(self, monkeypatch) -> None:
+        monkeypatch.setenv("SDL_JOYSTICK_HIDAPI", "1")
+        monkeypatch.setattr("sys.platform", "darwin")
+
+        monkeypatch.setattr(pygame, "get_init", lambda: False)
+        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.joystick, "init", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "get_count", lambda: 0)
+        monkeypatch.setattr(pygame.joystick, "Joystick", lambda i: FakeJoystick())
+        monkeypatch.setattr(pygame.event, "get", lambda: [])
+        monkeypatch.setattr(pygame.event, "post", lambda e: None)
+        monkeypatch.setattr(gp, "sdl2_controller", None)
+
+        GamepadHandler(FakeApp())
+        assert os.environ["SDL_JOYSTICK_HIDAPI"] == "1"
+
     def test_calls_sdl2_controller_init_when_available_and_uninit(self, monkeypatch) -> None:
         sdl2_calls = {"init": False}
 

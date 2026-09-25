@@ -641,7 +641,7 @@ Left-click on a marker's **ground circle** grabs that marker (hit-tested against
 **Event source per platform.** `MouseHandler`'s `on_pointer_*` entry points are fed by the GTK pointer signal handlers in [`window.py`](openfollow/window.py) (`_on_button_press`/`_on_motion`/`_on_scroll`). GTK doesn't reliably deliver pointer events to the gtksink-hosted window on **macOS** under the GStreamer pipeline (the same reason the keyboard polls Quartz instead of reading GTK key events), so on macOS the window also runs `poll_pointer()` once per frame from `_on_tick`: it reads `gdk_window.get_device_position()` (window-relative position + a button mask) and synthesises the same `pointer_down`/`pointer_move` events through `_emit`, so everything downstream is unchanged. Edge detection lives in the pure `_poll_pointer_events` helper. The scroll **wheel can't be polled** (no current-scroll-position API), so wheel-Z stays GTK-only on macOS – use the `Q`/`E` keys for height there. The poll is a no-op on Linux/Pi, where the GTK events work.
 
 ### Gamepad (`input/gamepad.py`)
-All bindings are `ControllerConfig` fields; defaults shown.
+Gamepad input runs on **pygame-ce** (it installs the `pygame` module). The classic `pygame` distribution installs the same module, so the two must not share an environment: `GamepadHandler` logs a WARNING at startup when classic pygame is what loaded, and the diagnostics bundle names the loaded build and its SDL version. All bindings are `ControllerConfig` fields; defaults shown.
 - Left stick (`move_xy_stick`, default `left`): move selected marker
 - LB / RB (`btn_speed_down` / `btn_speed_up`): adjust move speed
 - LT / RT (`btn_move_z_down` / `btn_move_z_up`): lower / raise marker Z
@@ -1062,7 +1062,7 @@ This repo has two active development streams (Mac dev + Pi). Merge conflicts hap
 - **Always combine both sides** – never just pick one side
 
 ### macOS vs Pi differences
-- **macOS:** Quartz keyboard polling, per-frame GDK pointer polling (`window.poll_pointer`; GTK pointer/scroll events don't fire reliably under the pipeline – wheel-Z is unavailable, use `Q`/`E`), NDI via libndi dylib, SDL's HIDAPI joystick backend switched off (`SDL_JOYSTICK_HIDAPI=0` in `GamepadHandler`: SDL 2.28 keeps a closed device's HID callback registered, so any reopen turns input into a use-after-free)
+- **macOS:** Quartz keyboard polling, per-frame GDK pointer polling (`window.poll_pointer`; GTK pointer/scroll events don't fire reliably under the pipeline – wheel-Z is unavailable, use `Q`/`E`), NDI via libndi dylib, SDL's HIDAPI joystick backend switched off (`SDL_JOYSTICK_HIDAPI=0` in `GamepadHandler`: SDL before 2.32.6 kept a closed device's HID callback registered, so a reopen turned input into a use-after-free; pygame-ce bundles a fixed SDL, and the backend stays off until pads are verified on it)
 - **Pi:** GTK event-based keyboard + GTK pointer/scroll events, NDI via ARM libndi, Cage compositor, systemd service
 - `gst_runtime_available()` checks GStreamer at runtime
 

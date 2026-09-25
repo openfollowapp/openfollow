@@ -84,13 +84,9 @@ class FakeJoystick:
         # ``None`` = let the stubbed ``Joystick(idx)`` factory stamp the index,
         # which is what SDL hands out on a fresh start.
         self.instance_id = instance_id
-        self.init_called = False
         self.quit_called = False
 
     # Surface read by the handler
-    def init(self) -> None:
-        self.init_called = True
-
     def quit(self) -> None:
         self.quit_called = True
 
@@ -1336,7 +1332,6 @@ class TestHotplugTouchesOnlyTheChangedDevice:
         handler._pump_events()
 
         assert pad_a.quit_called is False
-        assert pad_b.init_called is True
         assert handler.joysticks == {0: pad_a, 7: pad_b}
 
     def test_replug_within_one_frame_swaps_just_that_device(self, stubbed_pygame) -> None:
@@ -1534,13 +1529,13 @@ class TestHotplugTouchesOnlyTheChangedDevice:
         assert handler.joysticks == {0: pad}
 
     def test_a_pad_that_never_opens_does_not_churn_the_others(self, stubbed_pygame) -> None:
-        class _DeadPad(FakeJoystick):
-            def init(self) -> None:
-                raise pygame.error("cannot open")
+        def _open_fails(_idx: int):
+            raise pygame.error("cannot open")
 
         pad_a = FakeJoystick(instance_id=0)
-        dead = _DeadPad(instance_id=5)
+        dead = FakeJoystick(instance_id=5)
         self._attach(stubbed_pygame, pad_a, dead)
+        stubbed_pygame["state"]["factories"][1] = _open_fails
         handler, _ = make_handler(stubbed_pygame)
         assert handler.joysticks == {0: pad_a}
 
@@ -1548,6 +1543,7 @@ class TestHotplugTouchesOnlyTheChangedDevice:
         # close and reopen the pad that works.
         pad_c = FakeJoystick(instance_id=6)
         self._attach(stubbed_pygame, pad_a, dead, pad_c)
+        stubbed_pygame["state"]["factories"][1] = _open_fails
         self._deliver(stubbed_pygame, (pygame.JOYDEVICEADDED, {"device_index": 2}))
         handler._pump_events()
 
@@ -1682,6 +1678,13 @@ class TestPygameSubsystemInitOnConstruct:
         GamepadHandler(FakeApp())
         assert called["pygame"] is True
         assert called["joystick"] is True
+
+    @pytest.mark.parametrize(("is_ce", "warns"), [(True, False), (False, True)], ids=["pygame-ce", "classic"])
+    def test_warns_when_classic_pygame_loaded(self, stubbed_pygame, monkeypatch, caplog, is_ce, warns) -> None:
+        monkeypatch.setattr(pygame, "IS_CE", is_ce, raising=False)
+        with caplog.at_level(logging.WARNING, logger="openfollow.input.gamepad"):
+            make_handler(stubbed_pygame)
+        assert any("classic pygame" in r.message for r in caplog.records) is warns
 
     def test_points_sdl_audio_at_dummy_driver_before_init(self, monkeypatch) -> None:
         monkeypatch.delenv("SDL_AUDIODRIVER", raising=False)
@@ -1960,14 +1963,11 @@ class TestDetectControllersErrorPaths:
 
         good_joy = FakeJoystick(num_buttons=12)
 
-        class _BadJoy:
-            def init(self):
-                raise pygame.error("device gone")
-
-            def quit(self): ...
+        def _open_fails(_i: int):
+            raise pygame.error("device gone")
 
         stubbed_pygame["state"]["count"] = 2
-        stubbed_pygame["state"]["factories"][0] = lambda i: _BadJoy()
+        stubbed_pygame["state"]["factories"][0] = _open_fails
         stubbed_pygame["state"]["factories"][1] = lambda i: good_joy
 
         handler, _ = make_handler(stubbed_pygame)

@@ -326,12 +326,21 @@ class GamepadHandler:
         # The video subsystem is what pygame's event API needs, not joystick
         # init, and SDL's real backend pumps the same run loop GTK drives.
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-        # SDL 2.28's macOS HIDAPI backend leaves its input-report callback on a
-        # closed device, so a reopen turns HID traffic into a use-after-free.
+        # SDL before 2.32.6 left its macOS HIDAPI input-report callback on a
+        # closed device, so a reopen turned HID traffic into a use-after-free.
+        # pygame-ce bundles a fixed SDL; the backend stays off until pads are
+        # verified on it.
         if sys.platform == "darwin":
             os.environ.setdefault("SDL_JOYSTICK_HIDAPI", "0")
         if not pygame.get_init():
             pygame.init()
+        if not getattr(pygame, "IS_CE", False):
+            logger.warning(
+                "Gamepad input is running on classic pygame %s (SDL %s), not pygame-ce: "
+                "remove the 'pygame' package from this Python environment so pygame-ce loads.",
+                pygame.version.ver,
+                ".".join(str(part) for part in pygame.get_sdl_version()),
+            )
 
         if not pygame.joystick.get_init():
             pygame.joystick.init()
@@ -574,11 +583,9 @@ class GamepadHandler:
         pygame_joy: Any = None
         ctrl_obj: ControllerProtocol | None = None
         try:
-            # ``init()`` is part of the concrete pygame joystick API but not a
-            # method we use after construction, so it stays off the protocol
-            # surface; the cast retypes pygame's function-typed stub to it.
+            # The constructor opens the device; the cast retypes pygame's
+            # function-typed stub to the protocol used everywhere downstream.
             pygame_joy = pygame.joystick.Joystick(device_index)
-            pygame_joy.init()
             joy = cast(JoystickProtocol, pygame_joy)
             key = joy.get_instance_id()
             # SDL changes its device list only while events are pumped, so the

@@ -93,7 +93,7 @@ AGPLv3-compatible.
 | [tomli](https://github.com/hukkin/tomli) | ≥1.2.0 (Python < 3.11 only) | MIT |
 | [tomli-w](https://github.com/hukkin/tomli-w) | ≥1.0 | MIT |
 | [bottle](https://bottlepy.org/) | ≥0.12 | MIT |
-| [pygame](https://www.pygame.org/) | ≥2.5.0 | LGPL-2.1-or-later |
+| [pygame-ce](https://pyga.me/) | ≥2.5.8 | LGPL-2.1-or-later |
 | [multicast-expert](https://github.com/multiplemonomials/multicast_expert) | ≥1.4 | MIT |
 | [PyGObject](https://gitlab.gnome.org/GNOME/pygobject) | ≥3.42 | LGPL-2.1-or-later |
 | [psutil](https://github.com/giampaolo/psutil) | ≥5.9 | BSD-3-Clause |

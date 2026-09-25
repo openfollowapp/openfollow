@@ -12,6 +12,7 @@ import logging
 import platform
 import socket
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -914,6 +915,27 @@ def test_collect_runtime_versions_reports_gtk3_row() -> None:
     assert len(gtk_rows) == 1
     # The value after the label is never empty.
     assert gtk_rows[0].split("GTK 3", 1)[1].strip()
+
+
+def test_collect_runtime_versions_names_the_loaded_pygame_build() -> None:
+    import pygame
+
+    rows = diag.collect_runtime_versions()
+    pygame_rows = [r for r in rows if r.strip().startswith("pygame ")]
+    sdl = ".".join(str(part) for part in pygame.get_sdl_version())
+    assert pygame_rows == [f"  {'pygame':<29}pygame-ce {pygame.version.ver}, SDL {sdl}"]
+
+
+def test_pygame_build_flags_a_classic_pygame(monkeypatch) -> None:
+    import pygame
+
+    monkeypatch.setattr(pygame, "IS_CE", False, raising=False)
+    assert diag._pygame_build().startswith("classic pygame (pygame-ce expected) ")
+
+
+def test_pygame_build_survives_an_unimportable_pygame(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "pygame", None)
+    assert diag._pygame_build() == "[unavailable: ModuleNotFoundError]"
 
 
 def test_gtk3_version_never_raises() -> None:

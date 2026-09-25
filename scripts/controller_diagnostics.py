@@ -35,9 +35,7 @@ def _list_joysticks() -> list[Any]:
     pygame.joystick.init()
     joysticks: list[Any] = []
     for idx in range(pygame.joystick.get_count()):
-        js = pygame.joystick.Joystick(idx)
-        js.init()
-        joysticks.append(js)
+        joysticks.append(pygame.joystick.Joystick(idx))
     return joysticks
 
 

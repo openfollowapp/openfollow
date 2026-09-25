@@ -1487,6 +1487,22 @@ def _safe_version(dist: str) -> str:
         return "[not installed]"
 
 
+def _pygame_build() -> str:
+    """The pygame build this process loaded, with its SDL version.
+
+    Read from the loaded module, not package metadata: ``pygame`` and
+    ``pygame-ce`` install the same module, and a classic copy elsewhere on the
+    path can shadow pygame-ce while both show as installed.
+    """
+    try:
+        import pygame  # noqa: PLC0415 - loaded by the gamepad handler already; keep module import cheap
+    except Exception as exc:  # noqa: BLE001 - a broken pygame must not break the bundle
+        return f"[unavailable: {type(exc).__name__}]"
+    flavour = "pygame-ce" if getattr(pygame, "IS_CE", False) else "classic pygame (pygame-ce expected)"
+    sdl = ".".join(str(part) for part in pygame.get_sdl_version())
+    return f"{flavour} {pygame.version.ver}, SDL {sdl}"
+
+
 def _git_failure_detail(out: str) -> str:
     """Render a non-zero git result as an actionable sentinel."""
     if not out:
@@ -1538,8 +1554,9 @@ def collect_runtime_versions(
             rows.append(f"  Working tree                 {'dirty' if out.strip() else 'clean'}")
         else:
             rows.append(f"  Working tree                 {_git_failure_detail(out)}")
-    for dist in ("bottle", "pygame", "psutil"):
-        rows.append(f"  {dist:<29}{_safe_version(dist)}")
+    rows.append(f"  {'bottle':<29}{_safe_version('bottle')}")
+    rows.append(f"  {'pygame':<29}{_pygame_build()}")
+    rows.append(f"  {'psutil':<29}{_safe_version('psutil')}")
     rc, out = _run(["gst-launch-1.0", "--version"], timeout_s=cap())
     rows.append(f"  GStreamer                    {out.splitlines()[0] if rc == 0 and out else '[unavailable]'}")
     rows.append(f"  GTK 3                        {_gtk3_version(cap())}")

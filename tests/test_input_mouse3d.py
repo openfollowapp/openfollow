@@ -1141,6 +1141,55 @@ def test_pump_returns_on_read_oserror() -> None:
     assert h._snapshot is None
 
 
+class _HIDException(Exception):  # noqa: N818 - mirrors easyhid's own name
+    """Stands in for ``easyhid.HIDException``: not an ``OSError``."""
+
+
+def test_pump_returns_on_a_read_error_that_is_not_an_oserror() -> None:
+    h = Mouse3DHandler(Mouse3DConfig(enabled=True), device_factory=lambda: None)
+
+    class _Dev:
+        def read(self):  # noqa: ANN202
+            raise _HIDException("Failed to read from HID device: -1")
+
+    assert h._pump(_Dev(), h._stop) is False  # returns instead of raising
+    assert h._snapshot is None
+
+
+def test_unplug_that_raises_a_non_oserror_still_reconnects() -> None:
+    # easyhid reports an unplugged puck as HIDException; the read thread must
+    # survive it and pick the puck up again when it comes back.
+    class _OneReadThenUnplug:
+        def __init__(self) -> None:
+            self.n = 0
+
+        def read(self) -> object:
+            self.n += 1
+            if self.n == 1:
+                return _state(x=0.5)
+            raise _HIDException("Failed to read from HID device: -1")
+
+        def close(self) -> None:
+            pass
+
+    class _Replugged:
+        def read(self) -> object:
+            return _state(x=0.25)
+
+        def close(self) -> None:
+            pass
+
+    seq: list[object] = [_OneReadThenUnplug(), _Replugged()]
+    h = Mouse3DHandler(_cfg(), device_factory=lambda: seq.pop(0) if seq else None)
+    h.start()
+    try:
+        assert _wait_until(lambda: not seq and h._snapshot is not None and h._snapshot.x == 0.25)
+        assert h._thread is not None and h._thread.is_alive()
+        assert h.connected
+    finally:
+        h.stop()
+
+
 def test_pump_exits_immediately_when_already_stopped() -> None:
     h = Mouse3DHandler(Mouse3DConfig(enabled=True), device_factory=lambda: None)
     h._stop.set()  # already stopping -> the while condition is False on entry
@@ -1253,6 +1302,18 @@ def test_detect_read_oserror_returns_none() -> None:
     class _Dev:
         def read(self):  # noqa: ANN202
             raise OSError("unplugged mid-detect")
+
+        def close(self) -> None:
+            pass
+
+    h = Mouse3DHandler(Mouse3DConfig(enabled=True), device_factory=lambda: _Dev())
+    assert h.detect_pressed_button(timeout=0.5) is None
+
+
+def test_detect_read_error_that_is_not_an_oserror_returns_none() -> None:
+    class _Dev:
+        def read(self):  # noqa: ANN202
+            raise _HIDException("Failed to read from HID device: -1")
 
         def close(self) -> None:
             pass
@@ -1791,6 +1852,31 @@ def test_manager_detect_devices_survive_read_oserror_then_time_out() -> None:
     backend = _FakeBackend([Mouse3DDeviceInfo(path="/dev/hidraw2")], {"/dev/hidraw2": lambda: _RaisingDevice()})
     mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
     assert mgr.detect_pressed_button(timeout=0.03) is None  # read OSError swallowed, then timeout
+
+
+def test_manager_detect_devices_survive_a_read_error_that_is_not_an_oserror() -> None:
+    class _UnpluggedDevice:
+        def read(self):  # noqa: ANN202
+            raise _HIDException("Failed to read from HID device: -1")
+
+        def close(self) -> None:
+            pass
+
+    backend = _FakeBackend([Mouse3DDeviceInfo(path="/dev/hidraw2")], {"/dev/hidraw2": lambda: _UnpluggedDevice()})
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    assert mgr.detect_pressed_button(timeout=0.03) is None
+
+
+def test_manager_detect_skips_a_puck_whose_open_fails_with_a_non_oserror() -> None:
+    def _gone():  # noqa: ANN202
+        raise _HIDException("Failed to open device")
+
+    backend = _FakeBackend(
+        [Mouse3DDeviceInfo(path="/dev/hidraw2"), Mouse3DDeviceInfo(path="/dev/hidraw3")],
+        {"/dev/hidraw2": _gone, "/dev/hidraw3": lambda: FakeDevice([_state(buttons=[0, 1])])},
+    )
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    assert mgr.detect_pressed_button(timeout=0.5) == 1
 
 
 def test_manager_detect_devices_time_out_when_no_press() -> None:

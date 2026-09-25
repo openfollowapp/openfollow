@@ -433,7 +433,7 @@ class Mouse3DHandler:
             while time.monotonic() < deadline:
                 try:
                     state = device.read()
-                except OSError:
+                except Exception:  # noqa: BLE001 - easyhid's HIDException is not an OSError
                     return None
                 if state is not None:
                     buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
@@ -639,8 +639,9 @@ class Mouse3DHandler:
         while not stop.is_set():
             try:
                 state = device.read()
-            except OSError as exc:
-                logger.info("3D Mouse read failed (disconnect?): %s", exc)
+            except Exception as exc:  # noqa: BLE001 - a failed read must never kill the read thread
+                # easyhid reports an unplugged puck as HIDException, not OSError.
+                logger.info("3D Mouse read failed (disconnect?): %r", exc)
                 return read_any
             if state is None:
                 # Sustained silence means the puck is centered. Re-zero a latched
@@ -884,8 +885,8 @@ class Mouse3DManager:
             for info in infos:
                 try:
                     device = backend.open(info.path)
-                except (OSError, RuntimeError) as exc:
-                    logger.debug("3D Mouse detect open failed: %s", exc)
+                except Exception as exc:  # noqa: BLE001 - detect is best-effort, one puck must not stop it
+                    logger.debug("3D Mouse detect open failed: %r", exc)
                     continue
                 if device:
                     devices.append(device)
@@ -896,7 +897,7 @@ class Mouse3DManager:
                 for device in devices:
                     try:
                         state = device.read()
-                    except OSError:
+                    except Exception:  # noqa: BLE001 - easyhid's HIDException is not an OSError
                         continue
                     if state is not None:
                         buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))

@@ -22,8 +22,7 @@ Every update – online or offline – is checked before anything is installed a
 
 For venues with no internet, expand **Offline install** to install an update bundle you supply.
 
-- **Choose file** – pick an `openfollow_<version>_<arch>.ofupdate` bundle, downloaded from the release on a machine that does have internet.
-- **Upload & Install** – uploads it over your local network and installs it after the same signature + checksum verification as the online path.
+**Choose Update & Install** opens a file picker for an `openfollow_<version>_<arch>.ofupdate` bundle, downloaded from the release on a machine that does have internet. Choosing the file starts the install straight away: it uploads over your local network and installs after the same signature + checksum verification as the online path. A locked dialog shows the upload percentage, then the verification and the install, until the page reloads on the new version.
 
 Unlike the online check, the offline path does **not** gate on version – you can deliberately reinstall the same version or downgrade, as long as the bundle is properly signed.
 

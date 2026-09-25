@@ -660,15 +660,21 @@ get the same marker_id without reaching back into the InputManager. Two
 modes:
 
 - **Single-gamepad mode** – predicate is *exactly one controller
-  connected AND* `app._selected_id is not None`. Route to
+  connected* (a gamepad or a 3D mouse, counted together) *AND*
+  `app._selected_id is not None`. Route to
   `app._selected_id`. DPAD next/prev cycles `_selected_id` – same
   contract as the keyboard.
 - **Multi-gamepad mode** – the fallback: triggered when the
   single-gamepad predicate fails, i.e. **2+ controllers connected**
   *or* **one controller with no selection**. Fixed slot mapping
-  `app._controlled_ids[controller_idx]` (derived from
-  `controlled_marker_ids`), so each physical gamepad keeps its own
-  marker regardless of the shared `app._selected_id`. **DPAD next/prev
+  `app._controlled_ids[unified_idx]` (derived from
+  `controlled_marker_ids`), so each physical controller keeps its own
+  marker regardless of the shared `app._selected_id`. `unified_idx` is the
+  controller's position in `_controller_slots()`: 3D mice first (sorted
+  hidraw path), then gamepads in SDL instance-id order, which is plug order.
+  Unplugging a controller shifts every later one down a slot, and a
+  replugged pad gets a new, higher instance id and moves to the end.
+  **DPAD next/prev
   is disabled in this mode** – pressing it is a no-op at flag-set time
   (the edge state in `_button_prev` still advances normally so a later
   single-pad disconnect leaves no stuck carryover, and the OSC trigger
@@ -677,7 +683,8 @@ modes:
   `prev_marker` labels in this mode.
 
 Don't reintroduce direct `app._controlled_ids[controller_idx]` indexing in
-a new consumer – route through `_gamepad_marker_id` (or the injected
+a new consumer (`controller_idx` is the gamepad handler's key, the SDL
+instance id, not a slot) – route through `_gamepad_marker_id` (or the injected
 `marker_resolver` inside `GamepadHandler`) so HUD, speed, movement, and
 reset stay in sync.
 
@@ -708,13 +715,13 @@ keeps the operator's per-marker speed).
 Each `MarkerOverlayData` carries `controller_idx`, `controller_connected`,
 and `is_controlled`, populated by reverse-mapping
 `InputManager.get_controller_info()`. The marker card renders a small
-top-left badge "C0" / "C1" / … mirroring the status dot top-right; a
-muted "C0·" suffix marks a disconnected pad. The bottom-center
-"Ctrl0 → M0 | Ctrl1 → M1" panel from earlier builds was retired in
-favour of the per-card surface. Connected pads with no marker (more pads
-than `controlled_marker_ids`) surface in the Settings menu's info card
-under "Unbound controllers". Assignment stays **implicit**: pygame's
-plug-order × the `controlled_marker_ids` list (edited via the web UI).
+top-left badge "C1" / "C2" / … (the unified index plus one: operator-facing
+numbering starts at 1, a 0 never appears in the UI) mirroring the status dot
+top-right; a muted "C1·" suffix marks a disconnected pad. Connected pads
+with no marker (more pads than `controlled_marker_ids`) surface in the
+Settings menu's info card under "Unbound controllers". Assignment stays
+**implicit**: the unified slot order (see the routing section above) × the
+`controlled_marker_ids` list (edited via the web UI).
 
 Viewer-only markers (in `viewer_marker_ids` but NOT in
 `controlled_marker_ids`) render at reduced alpha (≈0.6 via a Cairo group

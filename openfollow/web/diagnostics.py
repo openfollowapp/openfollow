@@ -201,14 +201,14 @@ class DiagnosticsProviders:
     recent_midi_events: Callable[[], list[dict[str, Any]]] | None = None
 
     # Subsystem indices for the USB visibility column. Each returns
-    # a list of strings (port names / joystick names / camera
-    # labels). ``None`` → corresponding visibility cell stays "–"
+    # a list of strings (port names / camera labels); gamepads come from
+    # ``gamepad_runtime``. ``None`` → corresponding visibility cell stays "–"
     # for every device, with a footer note explaining why.
     midi_port_names: Callable[[], list[str]] | None = None
-    gamepad_names: Callable[[], list[str]] | None = None
     camera_names: Callable[[], list[str]] | None = None
 
-    # Live per-controller snapshot for the dedicated gamepad section.
+    # Live per-controller snapshot for the dedicated gamepad section and the
+    # USB visibility column.
     # Each dict carries: index, name, guid, backend, num_axes, num_buttons,
     # num_hats, is_game_controller, matches_calibration, calibration_stored
     # (the shape of ``GamepadHandler.runtime_snapshot`` items, as dicts).
@@ -2469,11 +2469,34 @@ def _best_usb_match(haystack: str, raws: list[str]) -> str | None:
     return best_raw
 
 
+def _sdl_guid_usb_id(guid: object) -> str | None:
+    """``vid:pid`` from an SDL joystick GUID, or ``None`` when it holds none.
+    SDL stores them as little-endian words 2 and 4 with words 3 and 5 zero;
+    any other layout is derived from the name."""
+    if not isinstance(guid, str) or len(guid) != 32:
+        return None
+    try:
+        raw = bytes.fromhex(guid)
+    except ValueError:
+        return None
+    words = [int.from_bytes(raw[i : i + 2], "little") for i in range(0, 16, 2)]
+    if words[3] or words[5] or not words[2]:
+        return None
+    return f"{words[2]:04x}:{words[4]:04x}"
+
+
+def _gamepad_for_usb_id(usb_id: str, pads: list[dict[str, Any]]) -> str | None:
+    for pad in pads:
+        if _sdl_guid_usb_id(pad.get("guid")) == usb_id:
+            return str(pad.get("name") or "").strip() or usb_id
+    return None
+
+
 def render_usb_table(
     devices: list[UsbDevice],
     *,
     midi_ports: list[str] | None,
-    gamepads: list[str] | None,
+    gamepads: list[dict[str, Any]] | None,
     cameras: list[str] | None,
 ) -> list[str]:
     """Render the USB section as a fixed-width table. Each non-hub
@@ -2490,6 +2513,7 @@ def render_usb_table(
     _sep = f"  {'-' * 5}  {'-' * 9}  {'-' * 10}  {'-' * 34}  {'-' * 18}  {'-' * 17}  {'-' * 24}"
     rows: list[str] = [_h, _sep]
     counts = {"hub": 0, "midi": 0, "gamepad": 0, "camera": 0, "other": 0, "unclaimed": 0}
+    gamepad_names = [name for g in gamepads or [] if (name := str(g.get("name") or "").strip())]
     for d in devices:
         if d.is_hub:
             vis = "(hub)"
@@ -2502,7 +2526,11 @@ def render_usb_table(
                 vis = f"MIDI: {raw}"
                 counts["midi"] += 1
             if not vis:
-                raw = _best_usb_match(haystack, gamepads or [])
+                # USB ids first: SDL often names a pad from its mapping ("Generic
+                # X-Box pad"), which shares no token with the USB product string.
+                raw = _gamepad_for_usb_id(f"{d.vid}:{d.pid}", gamepads or []) or _best_usb_match(
+                    haystack, gamepad_names
+                )
                 if raw:
                     vis = f"gamepad: {raw}"
                     counts["gamepad"] += 1
@@ -2514,7 +2542,7 @@ def render_usb_table(
             if not vis:
                 any_index = any(x is not None for x in (midi_ports, gamepads, cameras))
                 if any_index:
-                    vis = "?  endpoint device, no subsystem claim"
+                    vis = "?  endpoint device, no OpenFollow input matched"
                     counts["unclaimed"] += 1
                 else:
                     vis = "–"
@@ -2560,14 +2588,14 @@ def collect_usb(p: DiagnosticsProviders) -> list[str]:
         return ["  [unavailable: no USB devices enumerated (system_profiler unavailable or returned no SPUSBDataType)]"]
     provider_errors: list[str] = []
     midi: list[str] | None = None
-    gp: list[str] | None = None
+    gp: list[dict[str, Any]] | None = None
     cam: list[str] | None = None
     if p.midi_port_names is not None:
         midi, err = _safely_value(p.midi_port_names, "midi_port_names", None)
         if err is not None:
             provider_errors.append(err)
-    if p.gamepad_names is not None:
-        gp, err = _safely_value(p.gamepad_names, "gamepad_names", None)
+    if p.gamepad_runtime is not None:
+        gp, err = _safely_value(p.gamepad_runtime, "gamepad_runtime", None)
         if err is not None:
             provider_errors.append(err)
     if p.camera_names is not None:
@@ -2606,7 +2634,7 @@ def collect_recent_io(p: DiagnosticsProviders) -> list[str]:
             rows.append("  OSC sends:        (no events recorded since process start)")
     else:
         rows.append("  OSC sends:        [not wired]")
-    rows.append("  OSC receives:     [not applicable: OpenFollow has no OSC input path]")
+    rows.append("  OSC receives:     [not recorded: listener status is in section A2]")
     if p.recent_midi_events is not None:
         midi_unavailable = False
         try:

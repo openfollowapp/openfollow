@@ -966,7 +966,7 @@ def test_render_usb_table_generic_token_does_not_steal_name() -> None:
     ``"Controller"`` must not be attributed the *first* gamepad's name
     just because ``controller`` is a substring of it. The distinctively
     named pad matches by its model token; the generic device falls to an
-    honest 'no subsystem claim' row instead of borrowing a wrong name."""
+    honest unmatched row instead of borrowing a wrong name."""
     devices = [
         diag.UsbDevice(
             vid="3537",
@@ -985,8 +985,8 @@ def test_render_usb_table_generic_token_does_not_steal_name() -> None:
         devices,
         midi_ports=[],
         gamepads=[
-            "GameSir-G7 SE Controller for Xbox",
-            "Xbox Series X Controller",
+            {"name": "GameSir-G7 SE Controller for Xbox"},
+            {"name": "Xbox Series X Controller"},
         ],
         cameras=[],
     )
@@ -995,7 +995,80 @@ def test_render_usb_table_generic_token_does_not_steal_name() -> None:
     # "gamesir" token – exactly once.
     assert joined.count("gamepad: GameSir-G7 SE Controller for Xbox") == 1
     # Bare "Controller" must not claim GameSir name without distinctive overlap.
-    assert "?  endpoint device, no subsystem claim" in joined
+    assert "?  endpoint device, no OpenFollow input matched" in joined
+
+
+_PRO2_GUID = "03008665c82d00001e20000014010000"  # SDL GUID of an 8BitDo Pro 2 on xpad: 2dc8:201e
+_PRO2_USB = diag.UsbDevice(vid="2dc8", pid="201e", name="8BitDo Pro 2 Wired Controller for Xbox", manufacturer="8BitDo")
+
+
+def test_render_usb_table_matches_a_gamepad_by_the_usb_ids_in_its_sdl_guid() -> None:
+    # SDL names an xpad pad from its mapping, sharing no token with the USB product string.
+    out = diag.render_usb_table(
+        [_PRO2_USB],
+        midi_ports=[],
+        gamepads=[{"name": "Generic X-Box pad", "guid": _PRO2_GUID}],
+        cameras=[],
+    )
+    joined = "\n".join(out)
+    assert "gamepad: Generic X-Box pad" in joined
+    assert "1 gamepad" in joined
+    assert "0 other endpoint" in joined
+
+
+def test_render_usb_table_prefers_the_guid_match_over_a_name_match() -> None:
+    out = diag.render_usb_table(
+        [_PRO2_USB],
+        midi_ports=[],
+        gamepads=[
+            {"name": "8BitDo Pro 2", "guid": "030000005e0400008e02000014010000"},
+            {"name": "Generic X-Box pad", "guid": _PRO2_GUID},
+        ],
+        cameras=[],
+    )
+    assert any("gamepad: Generic X-Box pad" in row for row in out)
+
+
+def test_render_usb_table_falls_back_to_the_name_when_the_guid_carries_no_ids() -> None:
+    # A name-derived GUID: words 3 and 5 hold name bytes, not zero.
+    out = diag.render_usb_table(
+        [diag.UsbDevice(vid="045e", pid="028e", name="Xbox 360 Controller", manufacturer="Microsoft")],
+        midi_ports=[],
+        gamepads=[{"name": "Xbox 360 Controller", "guid": "0000000058626f782033363020436f00"}],
+        cameras=[],
+    )
+    assert any("gamepad: Xbox 360 Controller" in row for row in out)
+
+
+def test_render_usb_table_labels_an_unnamed_pad_matched_by_guid_with_its_ids() -> None:
+    out = diag.render_usb_table([_PRO2_USB], midi_ports=[], gamepads=[{"name": "  ", "guid": _PRO2_GUID}], cameras=[])
+    assert any("gamepad: 2dc8:201e" in row for row in out)
+
+
+@pytest.mark.parametrize(
+    ("guid", "vid"),
+    [
+        (None, "045e"),
+        ("", "045e"),
+        ("0300", "045e"),
+        ("z" * 32, "045e"),
+        ("030000005e0400008e0200001401000000", "045e"),  # 34 chars
+        ("030000005e0401008e02000014010000", "045e"),  # word 3 set: name-derived
+        ("030000005e0400008e02010014010000", "045e"),  # word 5 set: name-derived
+        ("03000000000000008e02000014010000", "0000"),  # no vendor
+    ],
+)
+def test_render_usb_table_ignores_a_guid_without_usable_ids(guid: object, vid: str) -> None:
+    out = diag.render_usb_table(
+        [diag.UsbDevice(vid=vid, pid="028e", name="Some  Device")],
+        midi_ports=[],
+        # A blank name must not match on whitespace either.
+        gamepads=[{"name": "  ", "guid": guid}],
+        cameras=[],
+    )
+    joined = "\n".join(out)
+    assert "gamepad:" not in joined
+    assert "?  endpoint device, no OpenFollow input matched" in joined
 
 
 def test_usb_match_score_does_not_double_count_repeated_tokens() -> None:
@@ -1208,7 +1281,7 @@ def test_render_usb_table_visibility_matches_midi() -> None:
     out = diag.render_usb_table(
         devices,
         midi_ports=["MIDI Mix"],
-        gamepads=["Xbox 360 Controller"],
+        gamepads=[{"name": "Xbox 360 Controller"}],
         cameras=[],
     )
     joined = "\n".join(out)
@@ -1249,7 +1322,8 @@ def test_collect_recent_io_renders_not_wired_when_no_providers() -> None:
     rows = diag.collect_recent_io(diag.DiagnosticsProviders())
     joined = "\n".join(rows)
     assert "[not wired]" in joined  # OSC + MIDI providers both unwired
-    assert "no OSC input path" in joined
+    assert "OSC receives:     [not recorded: listener status is in section A2]" in joined
+    assert "no OSC input path" not in joined
     assert "no MIDI output path" in joined
 
 
@@ -1899,7 +1973,7 @@ def test_collect_usb_dispatches_to_macos_branch(monkeypatch) -> None:
     )
     p = diag.DiagnosticsProviders(
         midi_port_names=lambda: ["MIDI Mix"],
-        gamepad_names=lambda: [],
+        gamepad_runtime=lambda: [],
         camera_names=lambda: [],
     )
     rows = diag.collect_usb(p)
@@ -2534,12 +2608,21 @@ def test_collect_usb_with_subsystem_providers(monkeypatch) -> None:
     )
     p = diag.DiagnosticsProviders(
         midi_port_names=lambda: ["MIDI Mix"],
-        gamepad_names=lambda: [],
+        gamepad_runtime=lambda: [],
         camera_names=lambda: [],
     )
     rows = diag.collect_usb(p)
     joined = "\n".join(rows)
     assert "MIDI: MIDI Mix" in joined
+
+
+def test_collect_usb_matches_a_pad_from_the_gamepad_runtime_snapshot(monkeypatch) -> None:
+    monkeypatch.setattr(diag.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(diag, "collect_usb_devices_linux", lambda **kw: [_PRO2_USB])
+    p = diag.DiagnosticsProviders(gamepad_runtime=lambda: [{"name": "Generic X-Box pad", "guid": _PRO2_GUID}])
+    joined = "\n".join(diag.collect_usb(p))
+    assert "gamepad: Generic X-Box pad" in joined
+    assert "gamepad subsystem not available" not in joined
 
 
 def test_collect_usb_provider_failures_degrade_visibility(monkeypatch) -> None:
@@ -2555,7 +2638,7 @@ def test_collect_usb_provider_failures_degrade_visibility(monkeypatch) -> None:
 
     p = diag.DiagnosticsProviders(
         midi_port_names=boom,
-        gamepad_names=boom,
+        gamepad_runtime=boom,
         camera_names=boom,
     )
     rows = diag.collect_usb(p)
@@ -2568,7 +2651,7 @@ def test_collect_usb_provider_failures_degrade_visibility(monkeypatch) -> None:
     # the operator can tell a crashing backend apart from "feature
     # not configured" – the previous version discarded ``err``.
     assert "[unavailable: midi_port_names:" in joined
-    assert "[unavailable: gamepad_names:" in joined
+    assert "[unavailable: gamepad_runtime:" in joined
     assert "[unavailable: camera_names:" in joined
 
 
@@ -2584,7 +2667,7 @@ def test_collect_usb_with_partial_subsystem_providers(monkeypatch) -> None:
     # for each provider in turn (single set / others unset).
     for kwargs in (
         {"midi_port_names": lambda: []},
-        {"gamepad_names": lambda: []},
+        {"gamepad_runtime": lambda: []},
         {"camera_names": lambda: []},
     ):
         p = diag.DiagnosticsProviders(**kwargs)
@@ -3167,13 +3250,7 @@ def test_build_diagnostics_providers_passes_every_declared_provider() -> None:
 def test_build_diagnostics_providers_wires_io_fields() -> None:
     from openfollow.web.routes import _build_diagnostics_providers
 
-    server = _io_server(
-        gamepad_runtime_provider=lambda: [
-            {"name": "8BitDo Pro 2"},
-            {"name": "  "},  # whitespace-only → filtered out
-            {"name": "nanoKONTROL2"},
-        ]
-    )
+    server = _io_server(gamepad_runtime_provider=lambda: [{"name": "8BitDo Pro 2"}])
     providers = _build_diagnostics_providers(server, SimpleNamespace(web_port=8080))
     # The direct hooks pass straight through.
     assert providers.recent_osc_sends is server.recent_osc_sends_provider
@@ -3181,21 +3258,7 @@ def test_build_diagnostics_providers_wires_io_fields() -> None:
     assert providers.recent_midi_events is server.recent_midi_events_provider
     assert providers.midi_port_names is server.midi_port_names_provider
     assert providers.camera_names is server.camera_names_provider
-    # gamepad_names is derived from the gamepad runtime snapshot's names,
-    # dropping empty / whitespace-only entries.
-    assert providers.gamepad_names is not None
-    assert providers.gamepad_names() == ["8BitDo Pro 2", "nanoKONTROL2"]
-
-
-def test_build_diagnostics_providers_gamepad_names_none_when_unwired() -> None:
-    from openfollow.web.routes import _build_diagnostics_providers
-
-    server = _io_server(gamepad_runtime_provider=None)
-    providers = _build_diagnostics_providers(server, SimpleNamespace(web_port=8080))
-    # No runtime provider → no derived names hook (keeps render_usb_table's
-    # "subsystem not available" footer note meaningful).
-    assert providers.gamepad_names is None
-    assert providers.gamepad_runtime is None
+    assert providers.gamepad_runtime is server.gamepad_runtime_provider
 
 
 # ---------------------------------------------------------------------------

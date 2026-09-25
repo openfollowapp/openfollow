@@ -2821,27 +2821,9 @@ def _build_diagnostics_providers(
     callables. Each closes over ``server`` / ``cfg`` so providers read
     fresh state even if config is hot-reloaded between bundle generations.
 
-    ``gamepad_names`` derives from the already-wired
-    ``gamepad_runtime_provider`` rather than a dedicated hook (its snapshot
-    dicts carry each pad's ``name``). ``worker_thread_tracebacks`` stays
-    ``None`` and degrades to a "[not applicable]" sentinel.
+    ``worker_thread_tracebacks`` stays ``None`` and degrades to a
+    "[not applicable]" sentinel.
     """
-    # ``gamepad_names`` reuses the gamepad runtime snapshot. ``None`` when
-    # unwired keeps ``render_usb_table``'s "subsystem not available" footer
-    # meaningful (vs. an empty-but-present list).
-    gamepad_runtime = server.gamepad_runtime_provider
-    gamepad_names: Callable[[], list[str]] | None
-    if gamepad_runtime is None:
-        gamepad_names = None
-    else:
-        runtime = gamepad_runtime
-
-        def _gamepad_names() -> list[str]:
-            # Drop empty/whitespace names for parity with the
-            # midi_port_names / camera_names providers.
-            return [name for g in (runtime() or []) if (name := g.get("name", "").strip())]
-
-        gamepad_names = _gamepad_names
     return diagnostics.DiagnosticsProviders(
         web_port_configured=lambda: cfg.web_port,
         web_port_display=lambda: server.display_port,
@@ -2896,7 +2878,6 @@ def _build_diagnostics_providers(
         recent_midi_events=server.recent_midi_events_provider,
         # USB-visibility cross-reference indices.
         midi_port_names=server.midi_port_names_provider,
-        gamepad_names=gamepad_names,
         camera_names=server.camera_names_provider,
     )
 

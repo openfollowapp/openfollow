@@ -195,3 +195,183 @@ class TestUpdateSupportedFlag:
     ) -> None:
         data = self._build(monkeypatch, platform)
         assert data["update_supported"] is expected
+
+
+def _update_script_function(name: str) -> str:
+    """Body of ``window.<name>`` in the rendered Software Update script."""
+    import re
+
+    match = re.search(
+        rf"window\.{name} = (?:async )?function \([^)]*\) \{{(.*?)\n\}};",
+        _render_general(update_supported=True),
+        re.DOTALL,
+    )
+    assert match is not None, f"window.{name} not found in partials/general"
+    return match.group(1)
+
+
+class TestSoftwareUpdateProgressModal:
+    """Once the operator confirms an install, the page stays locked and says
+    which step is running until the device restarts."""
+
+    def test_offline_install_is_one_control(self) -> None:
+        # Picking the bundle is the whole action: the button opens the picker
+        # and the choice itself starts the install.
+        body = _render_general(update_supported=True)
+        assert "document.getElementById('general-update-file').click()" in body
+        assert 'onchange="openfollowUploadUpdate(this)"' in body
+        assert "Choose Update &amp; Install" in body
+        assert "modalConfirm" not in _update_script_function("openfollowUploadUpdate")
+
+    def test_upload_locks_the_page_before_the_bundle_is_sent(self) -> None:
+        body = _update_script_function("openfollowUploadUpdate")
+        chosen = body.index("if (!file) return;")
+        locked = body.index("openfollowUpdateProgress('Uploading update…')")
+        sent = body.index("xhr.send(file)")
+        assert chosen < locked < sent
+
+    def test_the_same_file_can_be_chosen_again_after_a_failure(self) -> None:
+        # A file input only fires change when its value changes.
+        body = _update_script_function("openfollowUploadUpdate")
+        assert body.index("input.value = '';") < body.index("xhr.send(file)")
+
+    def test_upload_reports_progress_then_verification(self) -> None:
+        body = _update_script_function("openfollowUploadUpdate")
+        assert "xhr.upload.onprogress" in body
+        assert "openfollowUpdateProgress('Uploading update… ' + Math.floor(" in body
+        # The device verifies the bundle after the last byte arrives and before it answers.
+        uploaded = body[body.index("xhr.upload.onload = () => {") : body.index("xhr.onload = () => {")]
+        assert "openfollowUpdateProgress('Verifying update…')" in uploaded
+
+    def test_check_and_install_locks_the_page_before_starting(self) -> None:
+        body = _update_script_function("openfollowCheckUpdate")
+        confirmed = body.index("if (!confirmed) return;")
+        locked = body.index("openfollowUpdateProgress('Starting update…')")
+        started = body.index("openfollowUpdateJSON('/section/general/deb-update', {")
+        assert confirmed < locked < started
+
+    def test_poll_shows_every_step_message(self) -> None:
+        # Download, verify and install all report as one state, so a state
+        # guard would freeze the first message on screen.
+        body = _update_script_function("openfollowPollUpdate")
+        tail = body[body.rindex("sawProgress = true;") :]
+        assert "showUpdating(st.message" in tail
+        assert "if (" not in tail[: tail.index("showUpdating(st.message")]
+
+    def test_progress_modal_is_locked_and_rewrites_its_status_line(self) -> None:
+        body = _update_script_function("openfollowUpdateProgress")
+        assert "dismissable: false" in body
+        assert 'id="update-progress-msg" role="status" aria-live="polite"' in body
+        # An open modal gets its line rewritten rather than being rebuilt.
+        assert body.index("line.textContent = msg;") < body.index("openModal(")
+        # The modal has no button, so the line is what takes focus.
+        assert 'aria-live="polite" tabindex="-1"' in body
+
+    def test_an_aborted_or_timed_out_upload_releases_the_lock(self) -> None:
+        # Neither fires onload, so without these the locked dialog never closes.
+        body = _update_script_function("openfollowUploadUpdate")
+        assert "xhr.onerror = xhr.onabort = xhr.ontimeout = () => finish({\n        ok: false," in body
+
+    def test_a_settled_upload_cannot_reopen_the_lock(self) -> None:
+        # A progress event queued before the result would otherwise lock the
+        # page again over the closable error.
+        body = _update_script_function("openfollowUploadUpdate")
+        settle = body[body.index("const finish = (result) => {") :]
+        settle = settle[: settle.index("};")]
+        assert settle.index("xhr.upload.onprogress = xhr.upload.onload = null;") < settle.index("resolve(result);")
+        promise = body[body.index("new Promise((resolve) => {") : body.index("xhr.send(file);")]
+        assert promise.count("resolve(") == 1
+
+    def test_every_request_behind_the_lock_gives_up(self) -> None:
+        # A request that never settles would leave the page inert for good.
+        helper = _update_script_function("openfollowUpdateJSON")
+        assert "setTimeout(() => ctrl.abort(), ms)" in helper
+        # The body read is bounded too, not just the headers.
+        assert helper.index(".then((resp) => resp.json())") < helper.index(".finally(() => clearTimeout(timer))")
+        check = _update_script_function("openfollowCheckUpdate")
+        after_lock = check[check.index("openfollowUpdateProgress('Starting update…')") :]
+        assert "openfollowUpdateJSON('/section/general/deb-update', {" in after_lock
+        assert "fetch(" not in after_lock
+        poll = _update_script_function("openfollowPollUpdate")
+        assert "openfollowUpdateJSON('/api/update-status'" in poll
+        assert "fetch(" not in poll
+
+    def test_a_stalled_upload_releases_the_lock(self) -> None:
+        # Bytes that stop moving, or no answer once the bundle is in, abort the request.
+        body = _update_script_function("openfollowUploadUpdate")
+        assert "watchdog = setTimeout(() => { stalled = true; xhr.abort(); }, ms);" in body
+        assert "arm(30000);\n      xhr.send(file);" in body
+        progress = body[body.index("xhr.upload.onprogress = (ev) => {") : body.index("xhr.upload.onload = () => {")]
+        # Re-armed only by bytes that moved, not by any progress event.
+        assert progress.index("if (ev.loaded > sent) {") < progress.index("arm(30000);")
+        uploaded = body[body.index("xhr.upload.onload = () => {") : body.index("xhr.onload = () => {")]
+        assert "arm(120000);" in uploaded
+
+    def test_an_answer_that_is_not_an_object_takes_the_error_path(self) -> None:
+        # JSON ``null`` parses fine; reading ``.ok`` / ``.state`` off it outside
+        # a ``try`` would leave the lock stuck.
+        guard = _update_script_function("openfollowUpdateObject")
+        assert "if (!data || typeof data !== 'object' || Array.isArray(data)) throw" in guard
+        helper = _update_script_function("openfollowUpdateJSON")
+        assert helper.index(".then(openfollowUpdateObject)") < helper.index(".finally(")
+        upload = _update_script_function("openfollowUploadUpdate")
+        assert "finish(openfollowUpdateObject(JSON.parse(xhr.responseText)));" in upload
+
+    def test_only_a_dropped_connection_counts_as_a_restart(self) -> None:
+        # A timed-out poll followed by "idle" must not read as a finished update.
+        body = _update_script_function("openfollowPollUpdate")
+        assert "const dropped = err instanceof TypeError;" in body
+        assert "if (dropped) sawProgress = true;" in body
+        assert "sawProgress = true;  //" not in body
+
+    def test_a_job_that_stays_queued_is_not_progress(self) -> None:
+        # Otherwise a job that never starts waits out the 15-minute backstop,
+        # and a later "idle" reads as a finished update.
+        body = _update_script_function("openfollowPollUpdate")
+        queued = body.index("if (st.state === 'queued') {")
+        assert queued < body.rindex("sawProgress = true;")
+        branch = body[queued : body.index("continue;", queued)]
+        assert "++idleWaits >= MAX_IDLE" in branch
+
+    def test_poll_gives_up_on_elapsed_time_not_poll_count(self) -> None:
+        # Each poll can wait out its own timeout, so a count would stretch the limits.
+        body = _update_script_function("openfollowPollUpdate")
+        assert "performance.now() - unreachableSince >= UNREACHABLE_MS" in body
+        assert "performance.now() - beganAt >= GIVE_UP_MS" in body
+        assert "Date.now()" not in body
+
+
+def _base_modal_source() -> str:
+    from pathlib import Path
+
+    import openfollow
+
+    base = Path(openfollow.__file__).resolve().parent / "web" / "templates" / "base.tpl"
+    src = base.read_text(encoding="utf-8")
+    return src[src.index(" let _modalCloseHandler = null;") : src.index(" function modalConfirm(opts) {")]
+
+
+class TestLockedModalBlocksThePage:
+    """The backdrop stops the mouse; a locked modal must stop the keyboard too."""
+
+    def test_a_locked_modal_makes_the_page_behind_it_inert(self) -> None:
+        src = _base_modal_source()
+        assert "_lockModalBackground(!_modalDismissable);" in src
+        helper = src[src.index("function _lockModalBackground(lock) {") : src.index(" function closeModal() {")]
+        assert "sib.setAttribute('inert', '');" in helper
+
+    def test_closing_releases_only_what_the_modal_made_inert(self) -> None:
+        # The closed help drawer carries its own inert, which must survive.
+        src = _base_modal_source()
+        helper = src[src.index("function _lockModalBackground(lock) {") : src.index(" function closeModal() {")]
+        assert "_modalInerted.forEach((el) => {" in helper
+        # A drawer that finished closing while the modal was up keeps its inert.
+        assert "if (el.getAttribute('aria-hidden') !== 'true') el.removeAttribute('inert');" in helper
+        assert "!sib.hasAttribute('inert')" in helper
+        close = src[src.index(" function closeModal() {") : src.index(" function openModal(opts) {")]
+        # An inert element can't take focus, so release first.
+        assert close.index("_lockModalBackground(false);") < close.index("lastFocus.focus();")
+
+    def test_a_modal_replacing_an_open_one_keeps_the_original_focus_target(self) -> None:
+        src = _base_modal_source()
+        assert "if (root.hidden) _modalLastFocus = document.activeElement;" in src

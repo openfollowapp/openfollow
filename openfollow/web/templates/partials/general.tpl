@@ -304,22 +304,15 @@ window.loadAutostart();
     <details class="inline-advanced" data-adv-key="general-offline-install">
         <summary>Offline install</summary>
         <div class="inline-advanced-content">
-            <p class="field-note">Install an .ofupdate release bundle without internet access.</p>
             <input type="file" id="general-update-file" style="display:none"
                    accept=".ofupdate"
                    {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}
-                   onchange="document.getElementById('general-update-filename').textContent = this.files[0] ? this.files[0].name : ''">
+                   onchange="openfollowUploadUpdate(this)">
             <div class="actions">
-                <button type="button" class="btn-secondary"
+                <button type="button" class="update-btn"
                         onclick="document.getElementById('general-update-file').click()"
                         {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}>
-                    Choose file
-                </button>
-                <span id="general-update-filename" class="field-note" style="margin:0;align-self:center"></span>
-            </div>
-            <div class="actions">
-                <button type="button" class="update-btn" onclick="openfollowUploadUpdate(this)" {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}>
-                    Upload &amp; Install
+                    Choose Update &amp; Install
                 </button>
             </div>
         </div>
@@ -374,18 +367,18 @@ window.openfollowCheckUpdate = async function (btn) {
     cancelLabel: 'Not now',
   });
   if (!confirmed) return;
+  openfollowUpdateProgress('Starting update…');
 
   // Start the install and confirm it was actually queued before polling – a
   // rejected request (another update in flight) must not leave the operator
   // staring at a locked progress modal that never resolves.
   let started;
   try {
-    const resp = await fetch('/section/general/deb-update', {
+    started = await openfollowUpdateJSON('/section/general/deb-update', {
       method: 'POST', headers: { 'Accept': 'application/json' },
-    });
-    started = await resp.json();
+    }, 15000);
   } catch (err) {
-    started = { ok: false, error: String(err) };
+    started = { ok: false, error: err.name === 'AbortError' ? 'The device did not answer.' : (err.message || String(err)) };
   }
   if (!started.ok) {
     openModal({
@@ -398,29 +391,60 @@ window.openfollowCheckUpdate = async function (btn) {
   openfollowPollUpdate(info.latest);
 };
 
-// Poll /api/update-status and reflect live install progress in a locked modal
-// until a terminal state. The install runs detached, so failures only surface
-// here – the modal stays open (no ×, no ESC, no backdrop close) so the operator
-// can't dismiss progress and miss a failure. On success the page auto-reloads.
-window.openfollowPollUpdate = async function (versionLabel) {
-  let sawProgress = false;
-  let lastState = '';
-  let failCount = 0;
-  let idleWaits = 0;
-  let polls = 0;
-  const MAX_FAIL = 200;   // ~5 min unreachable (restart window) before giving up
-  const MAX_IDLE = 12;    // ~18 s queued-but-never-advancing -> assume it never started
-  const MAX_POLLS = 600;  // ~15 min absolute backstop so the modal can't lock forever
-  // Locked progress modal: spinner + status line, no footer buttons.
-  const showUpdating = (msg) => openModal({
+// The device's JSON answer, or throw: ``null``, an array or a bare value parses
+// fine but has none of the fields, and reading one would leave the lock stuck.
+window.openfollowUpdateObject = function (data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Unexpected response from the device.');
+  return data;
+};
+
+// JSON request that gives up after ``ms``, body read included: anything awaited
+// behind the locked modal must settle, or the page stays inert with no way out.
+window.openfollowUpdateJSON = function (url, opts, ms) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...opts, signal: ctrl.signal })
+    .then((resp) => resp.json())
+    .then(openfollowUpdateObject)
+    .finally(() => clearTimeout(timer));
+};
+
+// Locked progress modal (no ×, no ESC, no backdrop close). Opened once, then
+// only its status line is rewritten, so frequent progress updates don't
+// restart the spinner or steal focus. The line takes focus, since the page
+// behind is inert and the modal has no button.
+window.openfollowUpdateProgress = function (msg) {
+  const line = document.getElementById('update-progress-msg');
+  if (line) {
+    line.textContent = msg;
+    return;
+  }
+  openModal({
     title: 'Installing update',
     dismissable: false,
     bodyHTML: '<div class="modal-progress"><div class="modal-spinner"></div>'
-      + '<p>' + escapeHTML(msg) + '</p></div>'
+      + '<p id="update-progress-msg" role="status" aria-live="polite" tabindex="-1">' + escapeHTML(msg) + '</p></div>'
       + '<p>Keep this device powered on. It restarts automatically and this page'
       + ' reloads when the update finishes.</p>',
     footerButtons: [],
   });
+};
+
+// Poll /api/update-status and reflect live install progress in a locked modal
+// until a terminal state. The install runs detached, so failures only surface
+// here – the modal stays open so the operator can't dismiss progress and miss
+// a failure. On success the page auto-reloads. Callers open the modal first.
+window.openfollowPollUpdate = async function (versionLabel) {
+  let sawProgress = false;
+  let unreachableSince = null;
+  let idleWaits = 0;
+  const beganAt = performance.now();
+  // Monotonic elapsed time, not poll counts: a poll can wait out its own
+  // timeout, and a wall-clock jump must not end the wait early or late.
+  const UNREACHABLE_MS = 5 * 60 * 1000;  // restart window before giving up
+  const MAX_IDLE = 12;                   // ~18 s queued-but-never-advancing -> assume it never started
+  const GIVE_UP_MS = 15 * 60 * 1000;     // absolute backstop so the modal can't lock forever
+  const showUpdating = openfollowUpdateProgress;
   // Dismissable fall-back for every stuck/abandoned path so the operator is
   // never trapped behind the locked progress spinner.
   const showStuck = (title, msg) => openModal({
@@ -428,27 +452,30 @@ window.openfollowPollUpdate = async function (versionLabel) {
     bodyHTML: '<p>' + escapeHTML(msg) + '</p>',
     footerButtons: [{ label: 'Reload', kind: 'primary', onClick: () => location.reload() }],
   });
-  showUpdating('Installing version ' + versionLabel + '…');
   for (;;) {
     await new Promise((r) => setTimeout(r, 1500));
-    if (++polls >= MAX_POLLS) {
+    if (performance.now() - beganAt >= GIVE_UP_MS) {
       showStuck('Still working…', 'The update is taking longer than expected. '
         + 'Reload the page to check the current version.');
       return;
     }
     let st;
     try {
-      st = await (await fetch('/api/update-status', { headers: { 'Accept': 'application/json' } })).json();
-      failCount = 0;  // reset on successful fetch
+      st = await openfollowUpdateJSON('/api/update-status', { headers: { 'Accept': 'application/json' } }, 5000);
+      unreachableSince = null;
     } catch (err) {
-      sawProgress = true;  // connection dropped – the service is restarting
-      failCount++;
-      if (failCount >= MAX_FAIL) {
+      // Only a dropped connection (fetch's TypeError) shows the service is
+      // restarting; a timeout or a garbled answer is just no answer, and must
+      // not turn a job that never started into "Update complete".
+      const dropped = err instanceof TypeError;
+      if (dropped) sawProgress = true;
+      if (unreachableSince === null) unreachableSince = performance.now();
+      if (performance.now() - unreachableSince >= UNREACHABLE_MS) {
         showStuck('Device unreachable', 'The device has been unreachable for several minutes. '
           + 'Check that it is powered on, then reload this page.');
         return;
       }
-      showUpdating('Restarting onto version ' + versionLabel + '…');
+      if (dropped) showUpdating('Restarting onto version ' + versionLabel + '…');
       continue;
     }
     if (st.state === 'failed') {
@@ -483,55 +510,91 @@ window.openfollowPollUpdate = async function (versionLabel) {
       setTimeout(() => location.reload(), 1200);
       return;
     }
-    sawProgress = true;
-    if (st.state !== lastState) {
-      lastState = st.state;
-      showUpdating(st.message || ('Installing version ' + versionLabel + '…'));
+    if (st.state === 'queued') {
+      // Waiting to be picked up is not progress: a job that never leaves the
+      // queue ends as "did not start", not in the 15-minute backstop.
+      if (++idleWaits >= MAX_IDLE) {
+        showStuck('Update did not start', 'The update was queued but never started. '
+          + 'Reload the page to check the current version.');
+        return;
+      }
+      continue;
     }
+    sawProgress = true;
+    // Every step (download, verify, install) reports under one state, so
+    // follow the message, not the state.
+    showUpdating(st.message || ('Installing version ' + versionLabel + '…'));
   }
 };
 
-// Offline install: upload an operator-supplied .ofupdate bundle and install it
-// locally (no GitHub, no internet). Defined on window so re-running after an HTMX
-// section swap reassigns rather than redefines.
-window.openfollowUploadUpdate = async function (btn) {
-  const input = document.getElementById('general-update-file');
-  const file = input && input.files && input.files[0];
-  if (!file) {
-    openModal({
-      title: 'No file selected',
-      bodyHTML: '<p>Choose an .ofupdate release bundle to install first.</p>',
-      footerButtons: [{ label: 'Close', kind: 'primary', onClick: () => closeModal() }],
-    });
-    return;
-  }
+// Offline install: choosing an .ofupdate bundle installs it locally (no GitHub,
+// no internet), with no second step. Called from the file input's change event;
+// defined on window so re-running after an HTMX section swap reassigns rather
+// than redefines.
+window.openfollowUploadUpdate = async function (input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  // Cleared so picking the same file again after a failure fires change again.
+  input.value = '';
 
-  const proceed = await modalConfirm({
-    title: 'Install this file?',
-    message: 'Install "' + file.name + '" and restart the device? '
-      + 'It uploads over your local network – only install files you trust.',
-    confirmLabel: 'Install now',
-    cancelLabel: 'Cancel',
-  });
-  if (!proceed) return;
-
-  const original = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Uploading…';
+  // The request covers the upload and the device's signature and checksum
+  // check, so the locked modal goes up now, not when it answers.
+  openfollowUpdateProgress('Uploading update…');
   let info;
   try {
-    // Send the bundle as the raw request body (not multipart); filename as a query param.
-    const resp = await fetch('/section/general/deb-upload?filename=' + encodeURIComponent(file.name), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream' },
-      body: file,
+    // XHR rather than fetch: only XHR reports upload progress.
+    info = await new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      // A slow link is fine; bytes that stop moving, or a device that never
+      // answers once it has the bundle, end the wait instead of the lock.
+      let stalled = false;
+      let watchdog = 0;
+      let sent = 0;
+      const arm = (ms) => {
+        clearTimeout(watchdog);
+        watchdog = setTimeout(() => { stalled = true; xhr.abort(); }, ms);
+      };
+      // Every outcome settles here: a progress event arriving afterwards must
+      // not reopen the lock over the result.
+      const finish = (result) => {
+        clearTimeout(watchdog);
+        xhr.upload.onprogress = xhr.upload.onload = null;
+        resolve(result);
+      };
+      xhr.open('POST', '/section/general/deb-upload?filename=' + encodeURIComponent(file.name));
+      // Raw request body, not multipart; the filename rides along as a query param.
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.upload.onprogress = (ev) => {
+        // Only bytes that actually moved count as progress.
+        if (ev.loaded > sent) {
+          sent = ev.loaded;
+          arm(30000);
+        }
+        if (ev.lengthComputable) {
+          openfollowUpdateProgress('Uploading update… ' + Math.floor((ev.loaded / ev.total) * 100) + '%');
+        }
+      };
+      xhr.upload.onload = () => {
+        arm(120000);
+        openfollowUpdateProgress('Verifying update…');
+      };
+      xhr.onload = () => {
+        try {
+          finish(openfollowUpdateObject(JSON.parse(xhr.responseText)));
+        } catch (err) {
+          finish({ ok: false, error: 'Unexpected response from the device (HTTP ' + xhr.status + ').' });
+        }
+      };
+      // An abort or timeout ends the request without onload, like a network error.
+      xhr.onerror = xhr.onabort = xhr.ontimeout = () => finish({
+        ok: false,
+        error: stalled ? 'The device stopped responding.' : 'The upload was interrupted.',
+      });
+      arm(30000);
+      xhr.send(file);
     });
-    info = await resp.json();
   } catch (err) {
     info = { ok: false, error: String(err) };
-  } finally {
-    btn.disabled = false;
-    btn.textContent = original;
   }
 
   if (!info.ok) {
@@ -543,11 +606,7 @@ window.openfollowUploadUpdate = async function (btn) {
     return;
   }
 
-  // The server has accepted + queued the install. Show the same "updating"
-  // notice as the online path (the connection drops when the service restarts
-  // mid-install). When the uploaded version is the same as or older than what's
-  // installed, prepend an honest downgrade/reinstall note – the install is
-  // already underway, so this is informational, not a cancel point.
+  // Accepted and queued; the connection drops while the service restarts.
   openfollowPollUpdate(info.version);
 };
 </script>

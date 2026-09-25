@@ -2362,11 +2362,32 @@
  // When false, ESC / backdrop / × can't close – locks a modal during install.
  // ``closeModal()`` stays unguarded so ``openModal`` can still swap it.
  let _modalDismissable = true;
+ // A locked modal also makes the page behind it inert, so the keyboard can't
+ // reach it either. Only elements inerted here are released, and one hidden
+ // from assistive tech meanwhile (a help drawer that closed) keeps it.
+ let _modalInerted = [];
+ function _lockModalBackground(lock) {
+ _modalInerted.forEach((el) => {
+ if (el.getAttribute('aria-hidden') !== 'true') el.removeAttribute('inert');
+ });
+ _modalInerted = [];
+ if (!lock) return;
+ for (let el = document.getElementById('modal-root'); el && el.parentElement && el !== document.body; el = el.parentElement) {
+ for (const sib of el.parentElement.children) {
+ if (sib !== el && !sib.hasAttribute('inert')) {
+ sib.setAttribute('inert', '');
+ _modalInerted.push(sib);
+ }
+ }
+ }
+ }
  function closeModal() {
  const root = document.getElementById('modal-root');
  if (!root) return;
  root.hidden = true;
  _modalDismissable = true;
+ // Before restoring focus: an inert element can't take it.
+ _lockModalBackground(false);
  const closeBtn = root.querySelector('.modal-close');
  if (closeBtn) closeBtn.hidden = false;
  const handler = _modalCloseHandler;
@@ -2393,14 +2414,16 @@
  // (``modalPrompt``, ``modalConfirm``) provide the
  // promise-shaped API for common patterns.
  if (_modalCloseHandler) closeModal();
- _modalLastFocus = document.activeElement;
  const root = document.getElementById('modal-root');
  const title = document.getElementById('modal-title');
  const body = document.getElementById('modal-body');
  const footer = document.getElementById('modal-footer');
  if (!root || !title || !body || !footer) return;
+ // A modal replacing an open one returns focus to where the first was opened.
+ if (root.hidden) _modalLastFocus = document.activeElement;
  // ``dismissable`` defaults true; false hides × and locks ESC/backdrop.
  _modalDismissable = opts.dismissable !== false;
+ _lockModalBackground(!_modalDismissable);
  const closeBtn = root.querySelector('.modal-close');
  if (closeBtn) closeBtn.hidden = !_modalDismissable;
  title.textContent = opts.title || '';

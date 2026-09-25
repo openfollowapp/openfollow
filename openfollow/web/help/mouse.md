@@ -24,6 +24,6 @@ Click-and-drag control for steering markers directly on the live video. Off by d
 
 **Invert wheel** – flips the scroll direction. By default scroll **up raises**; invert makes scroll up lower.
 
-**Step per tick (m)** – how far each wheel notch moves the marker's height. Default `0.1` m.
+**Step per tick (m)** – how far each wheel click moves the marker's height, however fast the wheel turns. Default `0.1` m. Height follows at most ten clicks a second, so a free-spinning wheel moves the marker a limited distance and stops when the wheel stops. A trackpad or Magic Mouse sends many scroll events for one swipe, each counted as a click, so it moves the height much further than a wheel.
 
 **Save** – store the current settings. Changes apply immediately but are lost on restart unless you save.

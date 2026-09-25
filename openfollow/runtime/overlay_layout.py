@@ -271,8 +271,6 @@ def build_help_sections(
             ]
             if double_click_reset:
                 mouse.append("Double right click: Reset")
-            # The scroll wheel can't be polled on macOS, so wheel-Z is
-            # unavailable there – the caller passes scroll_z=False to hide it.
             if scroll_z:
                 mouse.append("Scroll wheel: Adjust Z")
         if mouse3d_connected:

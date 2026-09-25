@@ -17,6 +17,7 @@ by public entry point so each section reads as an independent spec:
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -2233,6 +2234,23 @@ class TestPerFrameCaches:
         st.button_labels = {"reset": "Y"}  # a rebind
         hud._help_sections_for(renderer, "settings", st)
         assert modes == ["normal", "settings", "settings"]
+
+    @pytest.mark.parametrize("platform", ["darwin", "linux"])
+    def test_wheel_hint_follows_the_wheel_z_setting_on_every_platform(self, monkeypatch, platform) -> None:
+        # Wheel-Z works on macOS too, so the hint must not be hidden there;
+        # turning wheel-Z off is what hides it, and the cached help rebuilds.
+        import openfollow.runtime.overlay_draw_hud as hud
+
+        monkeypatch.setattr(sys, "platform", platform)
+        renderer = FakeRenderer()
+        st = renderer.state
+        st.mouse_enabled = True
+        st.mouse_wheel_z_enabled = True
+        mouse = dict(hud._help_sections_for(renderer, "normal", st))["Mouse"]
+        assert "Scroll wheel: Adjust Z" in mouse
+        st.mouse_wheel_z_enabled = False
+        mouse = dict(hud._help_sections_for(renderer, "normal", st))["Mouse"]
+        assert not any("Scroll wheel" in line for line in mouse)
 
 
 class TestVideoFailureReachesTheDeviceSurfaces:

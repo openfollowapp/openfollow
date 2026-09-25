@@ -109,8 +109,7 @@ def test_build_help_sections_mouse_includes_scroll_z_by_default() -> None:
     assert any("Scroll wheel: Adjust Z" in line for line in mouse)
 
 
-def test_build_help_sections_mouse_omits_scroll_z_when_unavailable() -> None:
-    # macOS can't poll the scroll wheel, so the caller passes scroll_z=False.
+def test_build_help_sections_mouse_omits_scroll_z_when_wheel_z_is_off() -> None:
     mouse = dict(
         build_help_sections(
             mode="normal",

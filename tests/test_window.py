@@ -1333,11 +1333,29 @@ class TestEventDispatch:
         assert result is False
         assert received == [{"key": "a"}]
 
+    @pytest.mark.parametrize(
+        "platform,batched",
+        [("darwin", True), ("linux", False), ("win32", False)],
+    )
+    def test_platform_decides_whether_scroll_is_batched(self, fake_gi, monkeypatch, platform, batched) -> None:
+        # The behaviour tests pin the flag so both branches run on every host,
+        # which leaves the detection itself uncovered. This is the test that
+        # fails if the platform check is inverted or dropped.
+        monkeypatch.setattr(sys, "platform", platform)
+        from openfollow.window import GtkNativeSinkWindow
+
+        win = GtkNativeSinkWindow(width=1280, height=720, title="Test")
+        assert win._scroll_is_batched is batched
+
     def test_scroll_event_normalises_smooth_delta_to_unit_tick(self, window) -> None:
-        # A smooth-scroll delta is collapsed to a single unit tick so one notch
-        # is exactly one ``mouse_wheel_z_step`` regardless of the device's delta
-        # magnitude. GTK dy > 0 is scroll *down* (emit -1); dy < 0 is up (+1).
-        # The magnitudes here (1.5, -2.0, 2.5) must NOT scale the tick.
+        # Where one event is one detent, the magnitude is an arbitrary per-device
+        # scale, so one notch is exactly one ``mouse_wheel_z_step`` whatever the
+        # device reports. GTK dy > 0 is scroll *down* (emit -1); dy < 0 is up
+        # (+1). The magnitudes here (1.5, -2.0, 2.5) must NOT scale the tick.
+        # Pinned rather than inherited from the host: neither CI nor the Pi gate
+        # runs on the batched platform, so an unpinned flag tests whichever
+        # branch the developer happens to be on.
+        window._scroll_is_batched = False
         received = self._handler_list(window, "wheel")
 
         for delta in (1.5, 2.5):  # scroll down at different per-notch magnitudes
@@ -1369,11 +1387,28 @@ class TestEventDispatch:
         )
         assert received == []
 
+    def test_scroll_event_counts_batched_clicks(self, window) -> None:
+        # Scroll acceleration sizes one click by how fast the wheel turned (~13
+        # slow, ~103 fast), so every event is at least one click; only a fast
+        # flick's batched event, a multiple of ~103, counts as several.
+        window._scroll_is_batched = True
+        received = self._handler_list(window, "wheel")
+        for delta in (-13.0, -103.0, 50.0, -309.0, -822.0):
+            window._window.fire(
+                "scroll-event",
+                SimpleNamespace(
+                    get_scroll_deltas=lambda d=delta: (True, 0.0, d),
+                    direction=FakeGdkScrollDirection.SMOOTH,
+                ),
+            )
+        assert [r["dy"] for r in received] == [1.0, 1.0, -1.0, 3.0, 8.0]
+
     def test_scroll_one_notch_pair_emits_single_tick(self, window) -> None:
         # Real devices emit a legacy discrete UP/DOWN event AND a smooth event
         # per wheel notch. Only the smooth one is processed; handling both would
         # double-count and move Z two steps per notch. One notch up = discrete
         # UP (ok=False) followed by smooth (ok=True, dy=-1.5) -> a single +1.
+        window._scroll_is_batched = False
         received = self._handler_list(window, "wheel")
         window._window.fire(
             "scroll-event",

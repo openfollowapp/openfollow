@@ -88,6 +88,12 @@ _GDK_KEY_MAP: dict[str, str] = {
 }
 
 
+# What one wheel click reports on quartz once scroll acceleration has peaked
+# (measured ~103). Used only to count the clicks a fast flick batches into one
+# event; the size of a single event says how fast the wheel turned, not how far.
+_SCROLL_UNIT_QUARTZ = 100.0
+
+
 class GtkNativeSinkWindow:
     """GTK 3 window for GStreamer native sink mode.
 
@@ -141,6 +147,9 @@ class GtkNativeSinkWindow:
         # button state once per frame there and synthesise the same pointer
         # events; a no-op elsewhere, where the GTK signal handlers work.
         self._pointer_poll = sys.platform == "darwin"
+        # Quartz batches the clicks of a fast flick into one event; libinput
+        # sends one event per click instead.
+        self._scroll_is_batched = sys.platform == "darwin"
         self._pointer_device: Any = None  # lazily acquired on the first poll
         self._poll_last_pos: tuple[int, int] | None = None
         self._poll_btn1 = False
@@ -568,13 +577,23 @@ class GtkNativeSinkWindow:
         Gdk = self._Gdk
         ok, _dx, dy = event.get_scroll_deltas()
         if ok:
-            # Smooth event – authoritative. Collapsed to a single unit tick so
-            # one notch == one ``mouse_wheel_z_step`` regardless of the device's
-            # reported magnitude (some report e.g. 1.5/notch, which would
-            # otherwise scale the step). GTK dy > 0 is scroll *down* → emit -1
-            # (lower); dy < 0 is up → +1 (raise). dy == 0 is horizontal → no tick.
+            # Smooth event – authoritative. GTK dy > 0 is scroll *down* → emit a
+            # negative tick (lower); dy < 0 is up → positive (raise). dy == 0 is
+            # horizontal → no tick.
             if dy:
-                self._emit("wheel", dy=-1.0 if dy > 0 else 1.0)
+                if self._scroll_is_batched:
+                    # Scroll acceleration sizes one click anywhere from ~13
+                    # (slow) to ~103 (fast), so every event is at least one
+                    # click; only a flick's batched event, a multiple of the
+                    # peak, counts as several. The mouse handler rate-limits a
+                    # free-spinning wheel.
+                    ticks = max(1.0, float(int(abs(dy) / _SCROLL_UNIT_QUARTZ + 0.5)))
+                    self._emit("wheel", dy=-ticks if dy > 0 else ticks)
+                else:
+                    # One event is one detent and the magnitude is an arbitrary
+                    # per-device scale (some report 1.5/notch), so it is the
+                    # event that counts, not how large it says it is.
+                    self._emit("wheel", dy=-1.0 if dy > 0 else 1.0)
             return True
         # Legacy discrete event. On a smooth-capable device GDK emits one of
         # these per notch *in addition* to the smooth event, flagged as

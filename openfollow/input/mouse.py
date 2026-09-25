@@ -68,6 +68,13 @@ _SETTLE_EPS = 1e-4
 # still converging, so the marker never freezes short of the target.
 _MIN_GLIDE_ALPHA = 0.01
 
+# Wheel-Z rate limit, in whole clicks: a burst goes through at once (a ratcheted
+# flick batches up to three), then at most this many a second. A free-spinning
+# wheel reports hundreds of clicks for one flick; the excess is dropped, not
+# queued, so Z stops when the wheel does.
+_WHEEL_BURST_CLICKS = 3.0
+_WHEEL_CLICKS_PER_S = 10.0
+
 # Double-click window: a second right-click within this many seconds and pixels
 # of the first counts as a double right-click (reset to default).
 _DOUBLE_CLICK_S = 0.4
@@ -96,6 +103,8 @@ class MouseHandler:
         self._last_rclick: tuple[float, float, float, bool] | None = None
         # Monotonic clock, injectable so tests can drive double-click timing.
         self._clock = time.monotonic
+        self._wheel_budget = _WHEEL_BURST_CLICKS
+        self._wheel_refilled_at: float | None = None
         # Pre-allocated NumPy buffers (same pattern as services_detection_pin)
         self._cam_buffer = np.zeros(7, dtype=np.float64)
         self._screen_buffer = np.zeros((1, 2), dtype=np.float64)
@@ -175,12 +184,25 @@ class MouseHandler:
         marker = self._get_selected_marker()
         if marker is None:
             return False
-        x, y, z = marker.pos
-        # ``dy`` is sign-normalised at the emit site so scrolling UP is positive
-        # on both smooth- and discrete-scroll devices; invert flips that.
-        sign = -1.0 if cfg.mouse_wheel_invert else 1.0
-        marker.set_pos(x, y, z + sign * dy * cfg.mouse_wheel_z_step)
+        clicks = self._take_wheel_clicks(abs(dy))
+        if clicks:
+            x, y, z = marker.pos
+            # ``dy`` is sign-normalised at the emit site so scrolling UP is
+            # positive on both smooth- and discrete-scroll devices; invert flips it.
+            sign = -1.0 if cfg.mouse_wheel_invert else 1.0
+            marker.set_pos(x, y, z + sign * math.copysign(clicks, dy) * cfg.mouse_wheel_z_step)
         return True
+
+    def _take_wheel_clicks(self, wanted: float) -> float:
+        """Whole clicks the wheel rate limit lets through now, out of ``wanted``."""
+        now = self._clock()
+        if self._wheel_refilled_at is not None:
+            refill = (now - self._wheel_refilled_at) * _WHEEL_CLICKS_PER_S
+            self._wheel_budget = min(_WHEEL_BURST_CLICKS, self._wheel_budget + refill)
+        self._wheel_refilled_at = now
+        granted = float(math.floor(min(wanted, self._wheel_budget) + 1e-9))
+        self._wheel_budget -= granted
+        return granted
 
     def update(self) -> None:
         """Glide the controlled marker toward the cursor target.

@@ -744,6 +744,7 @@ def build_marker_visual_state(
     )
     state.mouse_enabled = cfg.controller.mouse_enabled
     state.mouse_double_click_reset = cfg.controller.mouse_double_click_reset
+    state.mouse_wheel_z_enabled = cfg.controller.mouse_wheel_z_enabled
     # 3D Mouse help: show its axis / button bindings when the feature is enabled
     # and a device is actually connected (mirrors the gamepad-connected gate).
     # The maps are only read by the help overlay (gated on mouse3d_connected), so

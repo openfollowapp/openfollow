@@ -562,6 +562,80 @@ class _FakeClock:
         return self.t
 
 
+class TestWheelRateLimit:
+    """A free-spinning wheel reports hundreds of clicks for one flick; wheel-Z
+    lets a burst through at once and then a steady rate, dropping the rest."""
+
+    @staticmethod
+    def _handler(app: _DummyApp) -> tuple[MouseHandler, _FakeClock]:
+        app._server.get_marker(1).set_pos(0.0, 0.0, 1.0)
+        handler = MouseHandler(app)
+        clock = _FakeClock()
+        handler._clock = clock
+        _grab(handler, app)
+        return handler, clock
+
+    def test_a_ratcheted_flick_of_three_clicks_goes_through_whole(self) -> None:
+        app = _DummyApp()
+        handler, _clock = self._handler(app)
+        handler.on_wheel(3.0)
+        assert app._server.get_marker(1).pos[2] == pytest.approx(1.3)
+
+    def test_clicks_beyond_the_burst_are_dropped_not_queued(self) -> None:
+        app = _DummyApp()
+        handler, clock = self._handler(app)
+        assert handler.on_wheel(8.0) is True
+        assert app._server.get_marker(1).pos[2] == pytest.approx(1.3)
+        # Nothing held back arrives later on its own.
+        clock.t += 5.0
+        assert app._server.get_marker(1).pos[2] == pytest.approx(1.3)
+
+    def test_a_free_spinning_wheel_is_held_to_the_rate(self) -> None:
+        # Two seconds of free-spin at 8 clicks every 50 ms asks for 320 clicks.
+        app = _DummyApp()
+        handler, clock = self._handler(app)
+        for _ in range(40):
+            handler.on_wheel(8.0)
+            clock.t += 0.05
+        # Burst of 3, then 10 a second for the 1.95 s after the first event.
+        assert app._server.get_marker(1).pos[2] == pytest.approx(1.0 + (3 + 19) * 0.1)
+
+    def test_a_long_pause_does_not_bank_clicks(self) -> None:
+        # Idle time refills the burst, never more, so a flick after a minute's
+        # rest is limited like any other.
+        app = _DummyApp()
+        handler, clock = self._handler(app)
+        handler.on_wheel(1.0)
+        clock.t += 60.0
+        handler.on_wheel(8.0)
+        assert app._server.get_marker(1).pos[2] == pytest.approx(1.4)
+
+    def test_only_whole_clicks_are_let_through(self) -> None:
+        app = _DummyApp()
+        handler, clock = self._handler(app)
+        handler.on_wheel(3.0)
+        clock.t += 0.05  # half a click's worth of refill
+        handler.on_wheel(1.0)
+        assert app._server.get_marker(1).pos[2] == pytest.approx(1.3)
+        clock.t += 0.05
+        handler.on_wheel(1.0)
+        assert app._server.get_marker(1).pos[2] == pytest.approx(1.4)
+
+    def test_a_fractional_request_moves_whole_clicks_only(self) -> None:
+        app = _DummyApp()
+        handler, _clock = self._handler(app)
+        handler.on_wheel(2.5)
+        assert app._server.get_marker(1).pos[2] == pytest.approx(1.2)
+
+    def test_ordinary_turning_is_never_limited(self) -> None:
+        app = _DummyApp()
+        handler, clock = self._handler(app)
+        for _ in range(20):
+            handler.on_wheel(-1.0)
+            clock.t += 0.15
+        assert app._server.get_marker(1).pos[2] == pytest.approx(1.0 - 20 * 0.1)
+
+
 _DEFAULT_POS = (7.0, -3.0, 1.6)  # _DummyApp._get_default_marker_position
 
 

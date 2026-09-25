@@ -1261,6 +1261,20 @@ class TestHotplugTouchesOnlyTheChangedDevice:
     def _deliver(stubbed_pygame, *events: tuple[int, dict[str, int]]) -> None:
         stubbed_pygame["events"][:] = [pygame.event.Event(kind, fields) for kind, fields in events]
 
+    def test_connect_log_names_the_sdl_instance_not_a_slot(self, stubbed_pygame, caplog) -> None:
+        # A replugged pad comes back under a fresh, higher instance id, so the
+        # number stops matching its slot or the C-badge; the log must say which.
+        first = FakeJoystick(instance_id=0)
+        self._attach(stubbed_pygame, first)
+        handler, _ = make_handler(stubbed_pygame)
+
+        self._attach(stubbed_pygame, first, FakeJoystick(instance_id=7))
+        self._deliver(stubbed_pygame, (pygame.JOYDEVICEADDED, {"device_index": 1}))
+        with caplog.at_level(logging.INFO, logger="openfollow.input.gamepad"):
+            handler._pump_events()
+
+        assert "Gamepad instance 7 connected via" in caplog.text
+
     def test_startup_announcement_reopens_nothing(self, stubbed_pygame) -> None:
         opened: list[int] = []
         pad = FakeJoystick(instance_id=0)
@@ -2116,7 +2130,7 @@ class TestDetectControllersErrorPaths:
 
         assert 0 not in handler.joysticks
         assert 1 in handler.joysticks
-        assert any("Failed to initialize controller 0" in r.message for r in caplog.records)
+        assert any("Failed to open gamepad at SDL device index 0" in r.message for r in caplog.records)
 
     def test_pygame_error_on_get_count_is_swallowed(self, stubbed_pygame, caplog, monkeypatch) -> None:
         import logging as _logging

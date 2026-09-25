@@ -665,14 +665,14 @@ class GamepadHandler:
                     ctrl_obj = cast(ControllerProtocol, sdl2_controller.Controller(device_index))
                     backend = "sdl2_controller"
                 except pygame.error as e:
-                    logger.warning("Controller %s SDL2 open failed, fallback to joystick: %s", key, e)
+                    logger.warning("Gamepad instance %s SDL2 open failed, fallback to joystick: %s", key, e)
             baseline = {
                 axis_idx: joy.get_axis(axis_idx)
                 for axis_idx in {*LT_AXIS_INDICES, *RT_AXIS_INDICES}
                 if axis_idx < joy.get_numaxes()
             }
         except pygame.error as e:
-            logger.error("Failed to initialize controller %s: %s", device_index, e)
+            logger.error("Failed to open gamepad at SDL device index %s: %s", device_index, e)
             self._release_unregistered(pygame_joy, ctrl_obj)
             return None
 
@@ -687,7 +687,7 @@ class GamepadHandler:
             num_hats=_safe_call(joy.get_numhats, 0),
         )
         logger.info(
-            "Controller %s connected via %s: %s (GUID: %s, axes=%s, buttons=%s)",
+            "Gamepad instance %s connected via %s: %s (GUID: %s, axes=%s, buttons=%s)",
             key,
             backend,
             cap.name,
@@ -839,7 +839,7 @@ class GamepadHandler:
                 return self._read_axes_from_controller(controller)
             return self._read_axes_from_joystick(joystick)
         except pygame.error as e:
-            logger.warning("Error reading axes from controller %s: %s", controller_idx, e)
+            logger.warning("Error reading axes from gamepad instance %s: %s", controller_idx, e)
             return (0.0, 0.0, 0.0)
 
     def _update_stick_priming(self, controller_idx: int, dx: float, dy: float) -> bool:
@@ -898,7 +898,7 @@ class GamepadHandler:
                 raw = joystick.get_axis(idx)
         except pygame.error as e:
             logger.warning(
-                "Error reading marker-fader axis from controller %s: %s",
+                "Error reading marker-fader axis from gamepad instance %s: %s",
                 controller_idx,
                 e,
             )
@@ -1238,7 +1238,7 @@ class GamepadHandler:
             return
         self._calibration_warned.add(warn_key)
         logger.warning(
-            "Controller %s (%r, GUID %s) does not match the saved button "
+            "Gamepad instance %s (%r, GUID %s) does not match the saved button "
             "mapping (%r, GUID %s). The stored calibration may misbehave – "
             "re-run the button-detection wizard. If this is an Xbox-style "
             "pad on the raw-joystick backend (%s), switch it to X-input mode "
@@ -1377,7 +1377,7 @@ class GamepadHandler:
                     num_buttons = joystick.get_numbuttons()
                     buttons = {i: joystick.get_button(i) for i in range(num_buttons)}
                     logger.info(
-                        "Controller %s axis dump – raw axes: %s | SDL2 logical: %s | buttons: %s",
+                        "Gamepad instance %s axis dump – raw axes: %s | SDL2 logical: %s | buttons: %s",
                         controller_idx,
                         raw,
                         sdl_axes,
@@ -1490,7 +1490,7 @@ class GamepadHandler:
 
             except pygame.error as e:
                 logger.warning(
-                    "Error reading controller %s, possibly disconnected: %s",
+                    "Error reading gamepad instance %s, possibly disconnected: %s",
                     controller_idx,
                     e,
                 )
@@ -1563,7 +1563,7 @@ class GamepadHandler:
                 # input loop keeps running for the surviving
                 # controllers.
                 logger.warning(
-                    "Error emitting button events for controller %s, marking for cleanup: %s",
+                    "Error emitting button events for gamepad instance %s, marking for cleanup: %s",
                     controller_idx,
                     e,
                 )
@@ -1607,7 +1607,7 @@ class GamepadHandler:
                 # spurious reset / settings-open / speed change.
                 self._sync_normal_mode_button_prev(controller_idx)
             except pygame.error as e:
-                logger.warning("Error reading source selection input from controller %s: %s", controller_idx, e)
+                logger.warning("Error reading source selection input from gamepad instance %s: %s", controller_idx, e)
                 to_remove.append(controller_idx)
 
         self._cleanup_failed(to_remove)
@@ -1643,7 +1643,7 @@ class GamepadHandler:
                 )
                 self._sync_normal_mode_button_prev(controller_idx)
             except pygame.error as e:
-                logger.warning("Error reading settings menu input from controller %s: %s", controller_idx, e)
+                logger.warning("Error reading settings menu input from gamepad instance %s: %s", controller_idx, e)
                 to_remove.append(controller_idx)
 
         self._cleanup_failed(to_remove)

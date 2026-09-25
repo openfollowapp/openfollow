@@ -34,22 +34,28 @@ logger = logging.getLogger(__name__)
 
 
 @functools.cache
-def _sdl_device_instance_id_fn() -> Callable[[int], int] | None:
-    """SDL's device-index to instance-id lookup, from the SDL pygame itself loaded.
+def _sdl_device_fn(symbol: str, restype: Any) -> Callable[[int], int] | None:
+    """An SDL per-device-index query, from the SDL pygame itself loaded.
 
     Resolved through pygame's joystick module so the symbol comes from pygame's
-    own SDL rather than another copy in the process (OpenCV bundles one).
+    own SDL rather than another copy in the process (OpenCV bundles one). None
+    of these queries opens the device.
     """
     module_path = getattr(pygame.joystick, "__file__", None)
     if not isinstance(module_path, str):
         return None
     try:
-        fn = ctypes.CDLL(module_path).SDL_JoystickGetDeviceInstanceID
+        fn = getattr(ctypes.CDLL(module_path), symbol)
     except (OSError, AttributeError):
         return None
-    fn.restype = ctypes.c_int32
+    fn.restype = restype
     fn.argtypes = [ctypes.c_int]
     return cast(Callable[[int], int], fn)
+
+
+def _sdl_device_instance_id_fn() -> Callable[[int], int] | None:
+    """SDL's device-index to instance-id lookup, or ``None`` if unreachable."""
+    return _sdl_device_fn("SDL_JoystickGetDeviceInstanceID", ctypes.c_int32)
 
 
 def _device_instance_id(device_index: int) -> int | None:
@@ -59,6 +65,60 @@ def _device_instance_id(device_index: int) -> int | None:
         return None
     instance_id = fn(device_index)
     return instance_id if instance_id >= 0 else None
+
+
+# 3Dconnexion pucks as (vendor, product), kept out of SDL's joystick API: the
+# 3D Mouse subsystem drives them, and SDL would otherwise bind one as a gamepad.
+# SDL's blacklist takes exact pairs only, and Logitech's 0x046d also covers its
+# gamepads, so that vendor's puck range is listed model by model.
+_SPACEMOUSE_IDS: frozenset[tuple[int, int]] = frozenset(
+    {
+        # Logitech-era 3Dconnexion
+        (0x046D, 0xC603),  # SpaceMouse Plus XT
+        (0x046D, 0xC605),  # CADman
+        (0x046D, 0xC606),  # SpaceMouse Classic
+        (0x046D, 0xC621),  # Spaceball 5000
+        (0x046D, 0xC623),  # SpaceTraveler
+        (0x046D, 0xC625),  # SpacePilot
+        (0x046D, 0xC626),  # SpaceNavigator
+        (0x046D, 0xC627),  # SpaceExplorer
+        (0x046D, 0xC628),  # SpaceNavigator for Notebooks
+        (0x046D, 0xC629),  # SpacePilot Pro
+        (0x046D, 0xC62B),  # SpaceMouse Pro
+        (0x046D, 0xC640),  # NuLOOQ navigator
+        # 3Dconnexion
+        (0x256F, 0xC62E),  # SpaceMouse Wireless, cabled
+        (0x256F, 0xC62F),  # SpaceMouse Wireless receiver
+        (0x256F, 0xC631),  # SpaceMouse Pro Wireless, cabled
+        (0x256F, 0xC632),  # SpaceMouse Pro Wireless receiver
+        (0x256F, 0xC633),  # SpaceMouse Enterprise
+        (0x256F, 0xC635),  # SpaceMouse Compact
+        (0x256F, 0xC636),  # SpaceMouse Module
+        (0x256F, 0xC638),  # SpaceMouse Pro Wireless BT, cabled
+        (0x256F, 0xC63A),  # SpaceMouse Wireless BT
+        (0x256F, 0xC641),  # sources disagree whether a puck; harmless if not
+        (0x256F, 0xC652),  # Universal Receiver
+        (0x256F, 0xC658),  # sources disagree whether a puck; harmless if not
+    }
+)
+
+
+def _is_spacemouse(device_index: int) -> bool:
+    """Whether SDL lists ``device_index`` as a 3Dconnexion puck, read without opening it.
+
+    Backs up the blacklist on an SDL that ignores it (older than 2.30, as a
+    stray classic pygame loads).
+    """
+    vendor = _sdl_device_fn("SDL_JoystickGetDeviceVendor", ctypes.c_uint16)
+    product = _sdl_device_fn("SDL_JoystickGetDeviceProduct", ctypes.c_uint16)
+    if vendor is None or product is None:
+        return False
+    return (vendor(device_index), product(device_index)) in _SPACEMOUSE_IDS
+
+
+def _spacemouse_blacklist() -> str:
+    """``SDL_JOYSTICK_BLACKLIST_DEVICES`` value naming every known puck."""
+    return ",".join(f"0x{vid:04x}/0x{pid:04x}" for vid, pid in sorted(_SPACEMOUSE_IDS))
 
 
 def _instance_id_lookup_available() -> bool:
@@ -332,6 +392,7 @@ class GamepadHandler:
         # verified on it.
         if sys.platform == "darwin":
             os.environ.setdefault("SDL_JOYSTICK_HIDAPI", "0")
+        os.environ.setdefault("SDL_JOYSTICK_BLACKLIST_DEVICES", _spacemouse_blacklist())
         if not pygame.get_init():
             pygame.init()
         if not getattr(pygame, "IS_CE", False):
@@ -580,6 +641,9 @@ class GamepadHandler:
         call leaks an SDL reference. ``_apply_hotplug`` matches by instance id
         first, and a rescan closes everything before it opens.
         """
+        if _is_spacemouse(device_index):
+            logger.debug("Device %s is a 3Dconnexion puck; the 3D Mouse drives it", device_index)
+            return None
         pygame_joy: Any = None
         ctrl_obj: ControllerProtocol | None = None
         try:

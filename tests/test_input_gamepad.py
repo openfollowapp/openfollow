@@ -12,9 +12,11 @@ settings-menu input shapes, cleanup and stop) is exercised end-to-end.
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import math
 import os
+import re
 
 import pygame
 import pytest
@@ -200,7 +202,7 @@ def stubbed_pygame(monkeypatch):
 
     events: list[object] = []
     posted: list[object] = []
-    state = {"count": 0, "factories": {}, "instance_ids": {}, "lookup": False}
+    state = {"count": 0, "factories": {}, "instance_ids": {}, "lookup": False, "pucks": set()}
 
     monkeypatch.setattr(pygame, "get_init", lambda: True)
     monkeypatch.setattr(pygame, "init", lambda: None)
@@ -221,6 +223,7 @@ def stubbed_pygame(monkeypatch):
     # for a pygame build where it can't be reached.
     monkeypatch.setattr(gp, "_device_instance_id", lambda idx: state["instance_ids"].get(idx))
     monkeypatch.setattr(gp, "_instance_id_lookup_available", lambda: state["lookup"])
+    monkeypatch.setattr(gp, "_is_spacemouse", lambda idx: idx in state["pucks"])
     monkeypatch.setattr(pygame.event, "get", lambda: list(events))
     monkeypatch.setattr(pygame.event, "post", lambda e: posted.append(e))
 
@@ -1585,12 +1588,109 @@ class TestHotplugTouchesOnlyTheChangedDevice:
         assert handler.joysticks == {0: pad}
 
 
+def _sdl_vidpid_pairs(hint: str) -> set[tuple[int, int]]:
+    """Read a VID/PID list the way SDL does: consecutive ``0x`` numbers, in pairs."""
+    numbers = [int(token, 16) for token in re.findall(r"0x([0-9a-fA-F]+)", hint)]
+    return set(zip(numbers[0::2], numbers[1::2], strict=False))
+
+
+class TestSpacemouseBlacklist:
+    """The SDL blacklist that keeps 3Dconnexion pucks from binding as gamepads."""
+
+    # The profiles pyspacemouse 2.1.0 ships: every puck the 3D Mouse subsystem
+    # can drive must also be kept away from SDL.
+    DRIVABLE = {
+        (0x046D, 0xC625), (0x046D, 0xC626), (0x046D, 0xC627), (0x046D, 0xC629), (0x046D, 0xC62B),
+        (0x256F, 0xC62E), (0x256F, 0xC632), (0x256F, 0xC633), (0x256F, 0xC635), (0x256F, 0xC638),
+        (0x256F, 0xC63A), (0x256F, 0xC641), (0x256F, 0xC652),
+    }  # fmt: skip
+    # 3Dconnexion products that are not 6DOF pucks (CadMouse, Keyboard Pro,
+    # Numpad Pro). Blocking them would do nothing, so they stay off the list.
+    NOT_PUCKS = {
+        (0x256F, 0xC650), (0x256F, 0xC651), (0x256F, 0xC654), (0x256F, 0xC655), (0x256F, 0xC656),
+        (0x256F, 0xC657), (0x256F, 0xC664), (0x256F, 0xC665), (0x256F, 0xC668),
+    }  # fmt: skip
+
+    def test_every_drivable_puck_is_blocked(self) -> None:
+        assert _sdl_vidpid_pairs(gp._spacemouse_blacklist()) >= self.DRIVABLE
+
+    def test_logitech_entries_stay_inside_the_puck_range(self) -> None:
+        # Logitech's own gamepads share vendor 0x046d; only its 3Dconnexion
+        # range may be blocked.
+        for vid, pid in _sdl_vidpid_pairs(gp._spacemouse_blacklist()):
+            assert vid in (0x046D, 0x256F)
+            if vid == 0x046D:
+                assert 0xC600 <= pid <= 0xC6FF
+
+    def test_non_puck_products_are_not_listed(self) -> None:
+        assert not self.NOT_PUCKS & _sdl_vidpid_pairs(gp._spacemouse_blacklist())
+
+    def test_every_entry_is_a_pair_sdl_can_read(self) -> None:
+        for entry in gp._spacemouse_blacklist().split(","):
+            assert re.fullmatch(r"0x[0-9a-f]{4}/0x[0-9a-f]{4}", entry)
+
+
+class TestSpacemouseFallback:
+    """Pucks stay off the gamepad path even where SDL ignores its blacklist."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_lookup(self):
+        lookup = gp._sdl_device_fn  # a test may swap it; clear the real cache
+        lookup.cache_clear()
+        yield
+        lookup.cache_clear()
+
+    def test_listed_puck_is_never_opened(self, stubbed_pygame) -> None:
+        opened: list[int] = []
+        pad = FakeJoystick(instance_id=0)
+        puck = FakeJoystick(instance_id=1, name="SpaceNavigator")
+        stubbed_pygame["state"].update(
+            count=2,
+            lookup=True,
+            instance_ids={0: 0, 1: 1},
+            pucks={1},
+            factories={i: (lambda idx, j=j: (opened.append(idx), j)[1]) for i, j in enumerate((pad, puck))},
+        )
+        handler, _ = make_handler(stubbed_pygame)
+
+        # A later hotplug must not open it either.
+        stubbed_pygame["events"][:] = [pygame.event.Event(pygame.JOYDEVICEADDED, {"device_index": 1})]
+        handler._pump_events()
+
+        assert opened == [0]
+        assert handler.joysticks == {0: pad}
+
+    def test_reads_vendor_and_product_through_pygames_sdl(self) -> None:
+        # The fallback only holds if both queries resolve in the loaded SDL.
+        assert gp._sdl_device_fn("SDL_JoystickGetDeviceVendor", ctypes.c_uint16) is not None
+        assert gp._sdl_device_fn("SDL_JoystickGetDeviceProduct", ctypes.c_uint16) is not None
+
+    def test_index_with_no_device_is_not_a_puck(self) -> None:
+        # Real call into the SDL pygame loaded; SDL reports 0/0 for no device.
+        assert gp._is_spacemouse(10_000) is False
+
+    @pytest.mark.parametrize(
+        ("ids", "expected"),
+        [((0x046D, 0xC626), True), ((0x045E, 0x028E), False)],
+        ids=["spacenavigator", "xbox-360-pad"],
+    )
+    def test_matches_the_puck_list(self, monkeypatch, ids, expected) -> None:
+        vendor, product = ids
+        answers = {"SDL_JoystickGetDeviceVendor": vendor, "SDL_JoystickGetDeviceProduct": product}
+        monkeypatch.setattr(gp, "_sdl_device_fn", lambda symbol, _restype: lambda _idx: answers[symbol])
+        assert gp._is_spacemouse(0) is expected
+
+    def test_unreachable_sdl_treats_nothing_as_a_puck(self, monkeypatch) -> None:
+        monkeypatch.setattr(gp, "_sdl_device_fn", lambda _symbol, _restype: None)
+        assert gp._is_spacemouse(0) is False
+
+
 class TestDeviceInstanceIdLookup:
     """SDL's instance id for a device index, read without opening the device."""
 
     @pytest.fixture(autouse=True)
     def _fresh_lookup(self):
-        lookup = gp._sdl_device_instance_id_fn  # a test may swap it; clear the real cache
+        lookup = gp._sdl_device_fn  # a test may swap it; clear the real cache
         lookup.cache_clear()
         yield
         lookup.cache_clear()
@@ -1685,6 +1785,46 @@ class TestPygameSubsystemInitOnConstruct:
         with caplog.at_level(logging.WARNING, logger="openfollow.input.gamepad"):
             make_handler(stubbed_pygame)
         assert any("classic pygame" in r.message for r in caplog.records) is warns
+
+    def test_keeps_3dconnexion_pucks_off_the_joystick_api_before_init(self, monkeypatch) -> None:
+        monkeypatch.delenv("SDL_JOYSTICK_BLACKLIST_DEVICES", raising=False)
+        seen: dict[str, str | None] = {}
+
+        monkeypatch.setattr(pygame, "get_init", lambda: False)
+        monkeypatch.setattr(
+            pygame,
+            "init",
+            lambda: seen.__setitem__("blacklist", os.environ.get("SDL_JOYSTICK_BLACKLIST_DEVICES")),
+        )
+        monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.joystick, "init", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "get_count", lambda: 0)
+        monkeypatch.setattr(pygame.event, "get", lambda: [])
+        monkeypatch.setattr(pygame.event, "post", lambda e: None)
+        monkeypatch.setattr(gp, "sdl2_controller", None)
+
+        GamepadHandler(FakeApp())
+
+        # SDL takes the list when its joystick subsystem comes up.
+        blocked = _sdl_vidpid_pairs(seen["blacklist"] or "")
+        assert {(0x046D, 0xC626), (0x256F, 0xC62F), (0x256F, 0xC631)} <= blocked
+
+    def test_keeps_an_explicit_blacklist(self, monkeypatch) -> None:
+        monkeypatch.setenv("SDL_JOYSTICK_BLACKLIST_DEVICES", "0x1234/0x5678")
+
+        monkeypatch.setattr(pygame, "get_init", lambda: False)
+        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.joystick, "init", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "get_count", lambda: 0)
+        monkeypatch.setattr(pygame.event, "get", lambda: [])
+        monkeypatch.setattr(pygame.event, "post", lambda e: None)
+        monkeypatch.setattr(gp, "sdl2_controller", None)
+
+        GamepadHandler(FakeApp())
+        assert os.environ["SDL_JOYSTICK_BLACKLIST_DEVICES"] == "0x1234/0x5678"
 
     def test_points_sdl_audio_at_dummy_driver_before_init(self, monkeypatch) -> None:
         monkeypatch.delenv("SDL_AUDIODRIVER", raising=False)

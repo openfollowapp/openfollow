@@ -1256,19 +1256,8 @@ def _coerce_unit_input(
     return repr(meters), None
 
 
-def _mouse_bool_fields() -> tuple[str, ...]:
-    """Bool checkboxes the mouse form submits.
-
-    The scroll-wheel checkboxes are not rendered on macOS (the wheel can't be
-    polled there), so they must be excluded from the save – ``_save_section_from_form``
-    coerces any ``bool_fields`` entry missing from the POST to ``False``, which
-    would otherwise clobber the stored ``mouse_wheel_*`` values on every macOS save.
-    Mirrors the ``_is_macos`` branch in ``partials/mouse.tpl``.
-    """
-    fields = ["mouse_enabled", "mouse_double_click_reset"]
-    if sys.platform != "darwin":
-        fields += ["mouse_wheel_z_enabled", "mouse_wheel_invert"]
-    return tuple(fields)
+# Bool checkboxes the mouse form submits; an unticked one is absent from the POST.
+_MOUSE_BOOL_FIELDS = ("mouse_enabled", "mouse_double_click_reset", "mouse_wheel_z_enabled", "mouse_wheel_invert")
 
 
 def _normalize_unit_fields(
@@ -5268,7 +5257,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/mouse")
     def update_mouse() -> Any:
         """Update mouse settings."""
-        cfg = _save_section_from_form("mouse", bool_fields=_mouse_bool_fields())
+        cfg = _save_section_from_form("mouse", bool_fields=_MOUSE_BOOL_FIELDS)
         return template("partials/mouse", config=cfg, saved=True)
 
     @app.post("/section/mouse3d")

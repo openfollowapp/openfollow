@@ -1017,6 +1017,19 @@ def test_form_post_keyboard_persists_movement_layout(live_server) -> None:
     assert saved.controller.key_move_layout == "ijkl"
 
 
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_form_post_mouse_saves_the_wheel_settings_on_every_platform(live_server, monkeypatch, platform) -> None:
+    # An unticked checkbox is absent from the POST and must save as off; no
+    # platform may skip the wheel fields.
+    monkeypatch.setattr(sys, "platform", platform)
+    server, base = live_server
+    status, _ = _post_form(base, "/section/mouse", {"mouse_enabled": "true", "mouse_wheel_z_step": "0.4"})
+    assert status == 200
+    saved = load_config(server.config_path)
+    assert saved.controller.mouse_wheel_z_enabled is False
+    assert saved.controller.mouse_wheel_z_step == pytest.approx(0.4)
+
+
 def test_form_post_mouse_renders_saved_partial(live_server) -> None:
     _, base = live_server
     status, body = _post_form(base, "/section/mouse", {"mouse_enabled": "true"})

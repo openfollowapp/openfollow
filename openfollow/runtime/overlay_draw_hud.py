@@ -8,7 +8,6 @@ button-detection wizard, Pi network screens)."""
 
 from __future__ import annotations
 
-import sys
 from typing import Any, cast
 
 import cairo
@@ -64,6 +63,7 @@ def _help_sections_for(
         state.controller_connected,
         state.mouse_enabled,
         state.mouse_double_click_reset,
+        state.mouse_wheel_z_enabled,
         tuple(sorted((state.button_labels or {}).items())),
         tuple(sorted((state.keyboard_labels or {}).items())),
         state.mouse3d_connected,
@@ -80,8 +80,7 @@ def _help_sections_for(
         controller_connected=state.controller_connected,
         mouse_enabled=state.mouse_enabled,
         double_click_reset=state.mouse_double_click_reset,
-        # Scroll-wheel Z can't be polled on macOS – hide the hint there.
-        scroll_z=sys.platform != "darwin",
+        scroll_z=state.mouse_wheel_z_enabled,
         button_labels=state.button_labels,
         keyboard_labels=state.keyboard_labels,
         mouse3d_connected=state.mouse3d_connected,

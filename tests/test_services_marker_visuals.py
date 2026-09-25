@@ -864,6 +864,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
             keyboard_enabled=False,
             mouse_enabled=False,
             mouse_double_click_reset=True,
+            mouse_wheel_z_enabled=True,
             btn_reset="",
             btn_toggle_help="",
             btn_toggle_zones="",
@@ -988,6 +989,23 @@ class TestBuildMarkerVisualStateTornRead:
 
         assert state.lens_k1 == -0.15
         assert state.lens_k2 == 0.04
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_wheel_z_setting_reaches_the_help_overlay_state(self, enabled: bool) -> None:
+        # The HUD help shows the scroll-wheel hint only while wheel-Z is on.
+        app = _make_visual_app(_TornMarker([(0.0, 0.0, 0.0)]), controlled=False)
+        app._config.controller.mouse_wheel_z_enabled = enabled
+
+        state = build_marker_visual_state(
+            app,
+            overlay_state_pool=OverlayStatePool(),
+            system_stats=None,
+            person_detector=None,
+            cam_params_buffer=np.zeros(7),
+            dt=1.0 / 60.0,
+        )
+
+        assert state.mouse_wheel_z_enabled is enabled
 
 
 class TestVideoFailureReachesTheTopRightBadge:

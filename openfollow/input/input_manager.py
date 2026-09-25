@@ -348,7 +348,7 @@ class InputManager:
                 default_pos = self.app._get_default_marker_position()
                 marker.set_pos(*default_pos)
                 logger.info(
-                    "Controller %s reset marker %s to default position (%s, %s, %s)",
+                    "Gamepad instance %s reset marker %s to default position (%s, %s, %s)",
                     controller_idx,
                     marker_id,
                     default_pos[0],

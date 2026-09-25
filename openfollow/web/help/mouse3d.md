@@ -2,7 +2,7 @@
 
 Steer the selected marker with a 6DOF "3D Mouse" – a spring-centred puck you push, pull, lift and twist. Off by default; turn it on with the **Enabled** checkbox.
 
-**A controller in its own right.** A 3D Mouse counts alongside gamepads in one shared numbering (3D mice first, then gamepads), so its bound marker carries a controller badge (`C1`, `C2`, …) on the Operator Screen.
+**A controller in its own right.** A 3D Mouse counts alongside gamepads in one shared numbering (3D mice first, then gamepads), so its bound marker carries a controller badge (`C1`, `C2`, …) on the Operator Screen. A 3Dconnexion puck is never treated as a gamepad, even where the operating system offers it as a game controller: it only drives a marker through this section.
 
 - **On its own** it drives whichever marker is currently selected, the same as the keyboard and the on-screen mouse; use the marker-cycle buttons (below) to change which marker it steers.
 - **Alongside other controllers** it's pinned to its own marker by plug order, the way two gamepads each keep their own marker, so two operators don't fight over one selection. The marker-cycle buttons go quiet in this mode, since each controller already owns a marker.

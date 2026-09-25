@@ -58,15 +58,19 @@ log "Testing Pi reachable at ${HOST}."
 
 remote() { ssh "${SSH_OPTS[@]}" "${SSH_USER}@${HOST}" "$@"; }
 
-# Guard: a missing repo, or a dirty Pi checkout we'd silently clobber.
-state="$(remote "cd '$REMOTE_DIR' 2>/dev/null && printf '%s ' \$(git rev-parse HEAD) \$(git status --porcelain | wc -l)" || true)"
-read -r orig_ref dirty <<<"$state"
-if [ -z "${orig_ref:-}" ]; then
-  log "ERROR: no git repo at ${HOST}:${REMOTE_DIR}"
+# Guard: a missing repo, or a dirty Pi checkout we'd silently clobber. Queried
+# separately: packed into one string, an empty HEAD takes the dirty count's place.
+orig_ref="$(remote "cd '$REMOTE_DIR' 2>/dev/null && test -d .git && git rev-parse --verify -q HEAD" || true)"
+if [ -z "$orig_ref" ]; then
+  log "ERROR: no git checkout with a commit at ${HOST}:${REMOTE_DIR} (.git must be a directory)."
   exit 2
 fi
-if [ "${dirty:-0}" != "0" ] && [ "${OPENFOLLOW_CI_FORCE:-0}" != "1" ]; then
-  log "ERROR: ${HOST}:${REMOTE_DIR} has ${dirty} uncommitted change(s)."
+if ! porcelain="$(remote "cd '$REMOTE_DIR' && git status --porcelain")"; then
+  log "ERROR: cannot read git status at ${HOST}:${REMOTE_DIR}"
+  exit 2
+fi
+if [ -n "$porcelain" ] && [ "${OPENFOLLOW_CI_FORCE:-0}" != "1" ]; then
+  log "ERROR: ${HOST}:${REMOTE_DIR} has $(grep -c '' <<<"$porcelain") uncommitted change(s)."
   log "Refusing to overwrite. Commit/stash on the Pi, or set OPENFOLLOW_CI_FORCE=1."
   exit 2
 fi
@@ -74,10 +78,11 @@ fi
 # Mirror the working tree to the Pi. --delete makes the Pi match our tree
 # exactly (so a file our branch deleted is gone during the run); excluded paths
 # are protected from both copy and delete, keeping the Pi's device-local state
-# (config.toml, detection models) and all build/cache junk untouched.
+# (config.toml, detection models) and all build/cache junk untouched. `.git`
+# has no trailing slash: in a git worktree it is a file, not a directory.
 log "Syncing working tree -> ${HOST}:${REMOTE_DIR}"
 rsync -az --delete \
-  --exclude='.git/' \
+  --exclude='.git' \
   --exclude='.venv/' \
   --exclude='config.toml' \
   --exclude='models/' \
@@ -103,16 +108,20 @@ rsync -az --delete \
   "$REPO_ROOT/" "${SSH_USER}@${HOST}:${REMOTE_DIR}/"
 
 restore() {
+  trap - EXIT
   log "Restoring ${HOST}:${REMOTE_DIR} to ${orig_ref:0:9}"
   # `git clean -e models -e config.toml`: drop the files our sync added, but
   # keep the device-local state the rsync also excluded. config.toml is
   # gitignored (clean skips it anyway) but models/ is NOT, so without -e a
   # clean would delete a Pi's detection weights – the one path that lives in
   # the repo dir yet must survive.
-  remote "cd '$REMOTE_DIR' && git reset --hard '$orig_ref' >/dev/null 2>&1 && git clean -fd -e models -e config.toml >/dev/null 2>&1" || \
-    log "WARNING: restore failed – check ${HOST}:${REMOTE_DIR} by hand."
+  if ! remote "cd '$REMOTE_DIR' && git reset --hard '$orig_ref' >/dev/null 2>&1 && git clean -fd -e models -e config.toml >/dev/null 2>&1"; then
+    log "ERROR: ${HOST}:${REMOTE_DIR} could not be restored to ${orig_ref:0:9} – check it by hand."
+    return 1
+  fi
 }
-trap restore EXIT
+# Covers an interrupted run; the normal path restores before the verdict.
+trap 'restore || exit 3' EXIT
 
 log "Running 'make ci' on ${HOST} (real aarch64 / py3.13 target)"
 set +e
@@ -120,6 +129,11 @@ remote "export PATH=\$HOME/.local/bin:\$PATH; cd '$REMOTE_DIR' && make ci"
 status=$?
 set -e
 
+# The next gate runs on this checkout, so leaving it broken fails this one.
+if ! restore; then
+  log "CI FAILED on ${HOST}: make ci exited ${status}, but the Pi was left in an unknown state."
+  exit 3
+fi
 if [ "$status" -eq 0 ]; then
   log "CI PASSED on ${HOST}."
 else

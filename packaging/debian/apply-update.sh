@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-# Install a staged OpenFollow .deb update then restart the service.
+# Install a staged OpenFollow .deb update and make sure the service is running.
 #
 # Must run detached from openfollow.service (launched as root in a transient
 # systemd-run unit, owned by PID 1): the package prerm stops openfollow.service,
@@ -71,10 +71,10 @@ if ! out=$(apt-get install -y --reinstall --allow-downgrades "$SPEC" 2>&1); then
     fail "$detail"
 fi
 
-# Success: the package postinst already (re)starts the unit on configure;
-# restart again so an already-running unit is definitely cycled onto the new
-# version. The freshly-started instance clears STATE_FILE on boot.
+# Success: prerm stopped the unit and postinst started the new version, so
+# `start` only covers a postinst start that failed. Never restart here: that
+# stops the instance postinst just started while it is still starting.
 write_state restarting "Update installed. Restarting…"
 cleanup_spec
-systemctl restart openfollow.service \
-    || { write_state failed "Restart failed. Service may need manual attention." ""; exit 1; }
+systemctl start openfollow.service \
+    || { write_state failed "Start failed. Service may need manual attention." ""; exit 1; }

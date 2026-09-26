@@ -117,7 +117,7 @@ class InputManager:
         self._slot_table = ControllerSlotTable()
         self._slot_kinds_enabled = self._kinds_enabled()
         self._usb_hosts = usb_host_paths()
-        # (slot index, clock time the HUD flash ends) of the latest Identify.
+        # (slot index, clock time it started) of the latest Identify.
         self._identify_flash: tuple[int, float] | None = None
         self._refresh_slots()
 
@@ -555,7 +555,7 @@ class InputManager:
         slots = self._controller_slots()
         if not 0 <= unified_idx < len(slots):
             return False
-        self._identify_flash = (unified_idx, self._clock() + _IDENTIFY_FLASH_S)
+        self._identify_flash = (unified_idx, self._clock())
         slot = slots[unified_idx]
         if slot.state != CONNECTED or slot.local_id is None:
             return False
@@ -564,9 +564,12 @@ class InputManager:
         return self.mouse3d_manager.identify(slot.local_id)
 
     def identify_flash_marker(self) -> int | None:
-        """Marker whose card the HUD flashes for an Identify still running."""
+        """Marker whose card is lit right now by a running Identify (on/off at 2 Hz)."""
         flash = self._identify_flash
-        if flash is None or self._clock() >= flash[1]:
+        if flash is None:
+            return None
+        elapsed = self._clock() - flash[1]
+        if elapsed >= _IDENTIFY_FLASH_S or int(elapsed * 4) % 2:
             return None
         return self._controller_marker_id(flash[0])
 

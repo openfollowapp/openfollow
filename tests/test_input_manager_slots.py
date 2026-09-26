@@ -272,11 +272,12 @@ def test_identify_pulses_the_device_and_flashes_its_card(station) -> None:
     manager.gamepad_handler.rumbles_ok[1] = False
     assert manager.identify_slot(1) is False
     assert manager.gamepad_handler.identified == [1]
-    assert manager.identify_flash_marker() == 11
-    clock.now += 2.9
-    assert manager.identify_flash_marker() == 11
-    clock.now += 0.1
-    assert manager.identify_flash_marker() is None
+    # Lit and dark in quarter-second turns, for three seconds.
+    lit = []
+    for step in range(13):
+        clock.now = 1000.0 + step * 0.25
+        lit.append(manager.identify_flash_marker())
+    assert lit == [11, None] * 6 + [None]
     assert manager.identify_slot(0) is True
 
 

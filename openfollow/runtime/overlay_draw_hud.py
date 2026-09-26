@@ -18,6 +18,7 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_BG_BASE,
     COLOR_BORDER_SOFT,
     COLOR_DANGER,
+    COLOR_DANGER_BG,
     COLOR_DANGER_TEXT,
     COLOR_OK,
     COLOR_TEXT,
@@ -1170,10 +1171,16 @@ def draw_marker_card(
     if use_group:
         cr.push_group()
     try:
-        # Solid background; border uses marker color for per-card identity.
-        cr.set_source_rgb(*COLOR_BG_BASE)
+        # Solid background; border uses marker color for per-card identity. A
+        # card whose controller is missing turns red so it reads across a room.
+        missing = t.is_controlled and t.controller_idx is not None and not t.controller_connected
+        cr.set_source_rgb(*(COLOR_DANGER_BG if missing else COLOR_BG_BASE))
         draw_rounded_rect(cr, x, y, w, h, radius)
         cr.fill()
+        if t.identify_flash:
+            cr.set_source_rgba(*COLOR_ACCENT_SOFT)
+            draw_rounded_rect(cr, x, y, w, h, radius)
+            cr.fill()
 
         # Selection differentiates via edge_alpha + line_width.
         edge_alpha = 0.95 if selected else 0.62
@@ -1182,6 +1189,11 @@ def draw_marker_card(
         draw_rounded_rect(cr, x, y, w, h, radius)
         cr.set_line_width(2.8 if selected else 2.5)
         cr.stroke()
+        if t.identify_flash:
+            cr.set_source_rgb(*COLOR_ACCENT)
+            draw_rounded_rect(cr, x, y, w, h, radius)
+            cr.set_line_width(4.0)
+            cr.stroke()
 
         renderer._set_ui_font(cr, 10)
 
@@ -1200,16 +1212,17 @@ def draw_marker_card(
             cr.arc(dot_x, dot_y, dot_r + 1.5, 0, 6.2832)
             cr.stroke()
 
-        # Controller badge top-left (controlled markers only); disconnected pads
-        # render with dot suffix. 1-based to match the OSC ``:cN`` reference.
+        # Controller badge top-left (controlled markers only). 1-based to match
+        # the OSC ``:cN`` reference.
         if t.is_controlled and t.controller_idx is not None:
-            renderer._set_ui_font(cr, 9)
             if t.controller_connected:
+                renderer._set_ui_font(cr, 9)
                 cr.set_source_rgb(*COLOR_TEXT)
                 badge = f"C{t.controller_idx + 1}"
             else:
-                cr.set_source_rgba(*COLOR_TEXT_MUTED)
-                badge = f"C{t.controller_idx + 1}·"
+                renderer._set_ui_font(cr, 9, bold=True)
+                cr.set_source_rgb(*COLOR_DANGER_TEXT)
+                badge = f"C{t.controller_idx + 1} missing"
             cr.move_to(x + 8, y + 14)
             cr.show_text(badge)
 

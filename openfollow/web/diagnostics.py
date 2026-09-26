@@ -523,6 +523,8 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
             f"marker {marker if marker is not None else '-':<4} {item.get('name', '') or '(unnamed)'} "
             f"({item.get('port_label', '') or 'no stable port'})"
         )
+        if item.get("port_key"):
+            rows.append(f"         key {item['port_key']}")
     system = stats.get("system") or {}
     out_res = system.get("output_resolution")
     rows.append(f"  Output resolution:      {_fmt_resolution(out_res) if out_res else '- (no canvas)'}")

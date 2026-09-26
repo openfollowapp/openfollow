@@ -2758,6 +2758,7 @@ class AppRuntimeServices:
             },
             "controllers": {
                 "connected_count": 0,
+                "missing_count": 0,
                 "mapped_count": 0,
                 "items": [],
             },
@@ -2913,6 +2914,7 @@ class AppRuntimeServices:
                         "effective_speed": float(item["effective_speed"]),
                         "backend": str(item["backend"]),
                         "port_label": str(item.get("port_label", "")),
+                        "port_key": item.get("port_key"),
                         "seconds_since_input": None if since is None else float(since),
                     }
                 )

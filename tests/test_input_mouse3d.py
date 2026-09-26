@@ -2361,3 +2361,26 @@ def test_a_light_that_fails_does_not_stop_the_puck(monkeypatch) -> None:  # noqa
         assert _wait_until(lambda: handler.update(0.016).velocity[0] != 0.0)
     finally:
         handler.stop(wait=True)
+
+
+def test_a_reconnected_puck_starts_unused(monkeypatch) -> None:  # noqa: ANN001
+    class _Pullable(_LedDevice):
+        gone = False
+
+        def read(self) -> object | None:
+            if self.gone:
+                raise OSError("device gone")
+            return super().read()
+
+    device = _Pullable([_state(x=0.5)])
+    opens = iter([device])
+    handler = _run_handler(monkeypatch, lambda: next(opens, None))
+    try:
+        assert _wait_until(lambda: handler.connected and handler._snapshot is not None)
+        handler.update(0.016)
+        assert handler.last_input_at is not None
+        device.gone = True
+        assert _wait_until(lambda: not handler.connected)
+        assert handler.last_input_at is None
+    finally:
+        handler.stop(wait=True)

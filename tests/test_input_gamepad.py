@@ -3847,6 +3847,14 @@ class TestLastInput:
         handler.update(0.016)
         assert 0 in handler.last_input()
 
+    def test_a_pulled_trigger_counts(self, stubbed_pygame, monkeypatch) -> None:
+        # Z moves on the triggers, read after the stick.
+        joy = FakeJoystick()
+        handler, _ = self._handler(stubbed_pygame, monkeypatch, joy)
+        joy._axes[gp.RT_AXIS_INDICES[0]] = 1.0
+        handler.update(0.016)
+        assert handler.last_input() == {0: 50.0}
+
     def test_stick_noise_inside_the_deadzone_does_not(self, stubbed_pygame, monkeypatch) -> None:
         joy = FakeJoystick()
         handler, _ = self._handler(stubbed_pygame, monkeypatch, joy)

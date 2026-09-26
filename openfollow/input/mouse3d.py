@@ -636,6 +636,8 @@ class Mouse3DHandler:
                     self._snapshot = None
                     self._pending_edges = set()
                     self._identify_requested = False
+                    # A new connection has not been used yet.
+                    self._last_input_at = None
                 self._worker_prev_buttons = {}
                 self._blink_due = []
                 # A stop lets go of a puck that is still there; a failed read

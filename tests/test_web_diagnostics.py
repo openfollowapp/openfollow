@@ -3536,6 +3536,7 @@ def test_collect_runtime_state_lists_every_controller_slot() -> None:
                 "marker_id": 10,
                 "name": "GameSir",
                 "port_label": "USB 2 · port 1",
+                "port_key": "usb:platform/xhci-hcd.1:1",
             },
             {"controller_index": 1, "state": "connected", "marker_id": 11, "name": "", "port_label": ""},
         ],
@@ -3545,6 +3546,11 @@ def test_collect_runtime_state_lists_every_controller_slot() -> None:
     assert "1 connected, 1 missing, 1 mapped to a marker" in joined
     assert "    C1   missing   marker 10   GameSir (USB 2 · port 1)" in rows
     assert "    C2   connected marker 11   (unnamed) (no stable port)" in rows
+    # The raw key follows a slot that has one, for support to match against sysfs.
+    first = rows.index("    C1   missing   marker 10   GameSir (USB 2 · port 1)")
+    assert rows[first + 1] == "         key usb:platform/xhci-hcd.1:1"
+    second = rows.index("    C2   connected marker 11   (unnamed) (no stable port)")
+    assert "key" not in rows[second + 1]
 
 
 def test_collect_runtime_state_reports_not_wired() -> None:

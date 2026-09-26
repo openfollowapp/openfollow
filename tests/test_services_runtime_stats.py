@@ -179,6 +179,8 @@ class TestDefaultRuntimeStatsSnapshot:
         assert snap["system"]["cpu_percent"] == 0.0
         assert snap["video"]["connected"] is False
         assert snap["controllers"]["items"] == []
+        # Same shape as a published snapshot, so /api/stats never changes schema at startup.
+        assert snap["controllers"] == {"connected_count": 0, "missing_count": 0, "mapped_count": 0, "items": []}
         assert snap["tracking"]["enabled"] is False
 
     def test_reflects_video_source_type_from_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -441,6 +443,7 @@ class TestPublishRuntimeStats:
                     "effective_speed": 2.0,
                     "backend": "mouse3d",
                     "port_label": "USB 1 · port 2",
+                    "port_key": "usb:platform/xhci-hcd.0:2",
                     "seconds_since_input": 0.25,
                 },
             ]
@@ -460,6 +463,7 @@ class TestPublishRuntimeStats:
             None,
         )
         assert (puck["kind"], puck["seconds_since_input"]) == ("mouse3d", 0.25)
+        assert (puck["port_key"], reserved["port_key"]) == ("usb:platform/xhci-hcd.0:2", None)
 
     def test_detector_present_delegates_to_performance_stats(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

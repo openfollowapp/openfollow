@@ -1452,6 +1452,8 @@ class GamepadHandler:
 
                 # Read analog triggers for Z (height); disabled for controllers without them
                 dz = self._read_trigger_height(controller_idx, joystick)
+                if dz:
+                    self._last_input[controller_idx] = self._clock()
 
                 if dx != 0.0 or dy != 0.0 or dz != 0.0:
                     move_speed = self.get_effective_speed(controller_idx)

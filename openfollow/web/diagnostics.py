@@ -2485,13 +2485,6 @@ def _sdl_guid_usb_id(guid: object) -> str | None:
     return f"{words[2]:04x}:{words[4]:04x}"
 
 
-def _gamepad_for_usb_id(usb_id: str, pads: list[dict[str, Any]]) -> str | None:
-    for pad in pads:
-        if _sdl_guid_usb_id(pad.get("guid")) == usb_id:
-            return str(pad.get("name") or "").strip() or usb_id
-    return None
-
-
 def render_usb_table(
     devices: list[UsbDevice],
     *,
@@ -2501,8 +2494,9 @@ def render_usb_table(
 ) -> list[str]:
     """Render the USB section as a fixed-width table. Each non-hub
     device gets a "visibility" cell that cross-references the
-    device's product / manufacturer string against each input
-    subsystem's enumeration. Operator question this answers in one
+    device against each input subsystem's enumeration: gamepads by
+    the USB ids in their SDL GUID, everything else by product /
+    manufacturer string. Operator question this answers in one
     glance: "is the kernel seeing this device, and is OpenFollow
     picking it up?"
     """
@@ -2513,12 +2507,18 @@ def render_usb_table(
     _sep = f"  {'-' * 5}  {'-' * 9}  {'-' * 10}  {'-' * 34}  {'-' * 18}  {'-' * 17}  {'-' * 24}"
     rows: list[str] = [_h, _sep]
     counts = {"hub": 0, "midi": 0, "gamepad": 0, "camera": 0, "other": 0, "unclaimed": 0}
-    # A pad whose GUID carries USB ids is matched by them alone, never by name.
-    gamepad_names = [
-        name
-        for g in gamepads or []
-        if _sdl_guid_usb_id(g.get("guid")) is None and (name := str(g.get("name") or "").strip())
-    ]
+    # A pad is matched by its GUID ids only when a device carries them: SDL's
+    # macOS backend puts ids in the GUID that no USB device has.
+    usb_ids = {f"{d.vid}:{d.pid}" for d in devices}
+    gamepad_by_usb_id: dict[str, str] = {}
+    gamepad_names: list[str] = []
+    for g in gamepads or []:
+        name = str(g.get("name") or "").strip()
+        usb_id = _sdl_guid_usb_id(g.get("guid"))
+        if usb_id is not None and usb_id in usb_ids:
+            gamepad_by_usb_id.setdefault(usb_id, name or usb_id)
+        elif name:
+            gamepad_names.append(name)
     for d in devices:
         if d.is_hub:
             vis = "(hub)"
@@ -2531,11 +2531,9 @@ def render_usb_table(
                 vis = f"MIDI: {raw}"
                 counts["midi"] += 1
             if not vis:
-                # USB ids first: SDL often names a pad from its mapping ("Generic
-                # X-Box pad"), which shares no token with the USB product string.
-                raw = _gamepad_for_usb_id(f"{d.vid}:{d.pid}", gamepads or []) or _best_usb_match(
-                    haystack, gamepad_names
-                )
+                # USB ids first: a pad's name comes from its driver ("Generic X-Box
+                # pad" on xpad) and often shares no token with the USB product string.
+                raw = gamepad_by_usb_id.get(f"{d.vid}:{d.pid}") or _best_usb_match(haystack, gamepad_names)
                 if raw:
                     vis = f"gamepad: {raw}"
                     counts["gamepad"] += 1
@@ -2547,7 +2545,7 @@ def render_usb_table(
             if not vis:
                 any_index = any(x is not None for x in (midi_ports, gamepads, cameras))
                 if any_index:
-                    vis = "?  endpoint device, no OpenFollow input matched"
+                    vis = "?  endpoint device, no MIDI, gamepad or camera match"
                     counts["unclaimed"] += 1
                 else:
                     vis = "–"

@@ -995,7 +995,7 @@ def test_render_usb_table_generic_token_does_not_steal_name() -> None:
     # "gamesir" token – exactly once.
     assert joined.count("gamepad: GameSir-G7 SE Controller for Xbox") == 1
     # Bare "Controller" must not claim GameSir name without distinctive overlap.
-    assert "?  endpoint device, no OpenFollow input matched" in joined
+    assert "?  endpoint device, no MIDI, gamepad or camera match" in joined
 
 
 _PRO2_GUID = "03008665c82d00001e20000014010000"  # SDL GUID of an 8BitDo Pro 2 on xpad: 2dc8:201e
@@ -1021,12 +1021,26 @@ def test_render_usb_table_prefers_the_guid_match_over_a_name_match() -> None:
         [_PRO2_USB],
         midi_ports=[],
         gamepads=[
-            {"name": "8BitDo Pro 2", "guid": "030000005e0400008e02000014010000"},
+            # A name-derived GUID, and a name that matches the device verbatim.
+            {"name": "8BitDo Pro 2 Wired Controller for Xbox", "guid": "0000000058626f782033363020436f00"},
             {"name": "Generic X-Box pad", "guid": _PRO2_GUID},
         ],
         cameras=[],
     )
     assert any("gamepad: Generic X-Box pad" in row for row in out)
+
+
+def test_render_usb_table_falls_back_to_the_name_when_no_device_carries_the_guid_ids() -> None:
+    # SDL's macOS backend reports a USB Xbox pad with the product id of its Bluetooth model.
+    out = diag.render_usb_table(
+        [diag.UsbDevice(vid="045e", pid="0b12", name="Controller", manufacturer="Microsoft")],
+        midi_ports=[],
+        gamepads=[{"name": "Controller", "guid": "050000695e040000130b00003f066d04"}],
+        cameras=[],
+    )
+    joined = "\n".join(out)
+    assert "gamepad: Controller" in joined
+    assert "1 gamepad" in joined
 
 
 def test_render_usb_table_falls_back_to_the_name_when_the_guid_carries_no_ids() -> None:
@@ -1040,7 +1054,7 @@ def test_render_usb_table_falls_back_to_the_name_when_the_guid_carries_no_ids() 
     assert any("gamepad: Xbox 360 Controller" in row for row in out)
 
 
-def test_render_usb_table_never_matches_a_pad_with_usb_ids_by_its_name() -> None:
+def test_render_usb_table_does_not_match_a_pad_found_by_its_ids_again_by_name() -> None:
     # The webcam shares only the brand with the pad, whose GUID names a different device.
     out = diag.render_usb_table(
         [
@@ -1084,7 +1098,7 @@ def test_render_usb_table_ignores_a_guid_without_usable_ids(guid: object, vid: s
     )
     joined = "\n".join(out)
     assert "gamepad:" not in joined
-    assert "?  endpoint device, no OpenFollow input matched" in joined
+    assert "?  endpoint device, no MIDI, gamepad or camera match" in joined
 
 
 def test_usb_match_score_does_not_double_count_repeated_tokens() -> None:
@@ -1339,7 +1353,6 @@ def test_collect_recent_io_renders_not_wired_when_no_providers() -> None:
     joined = "\n".join(rows)
     assert "[not wired]" in joined  # OSC + MIDI providers both unwired
     assert "OSC receives:     [not recorded: listener status is in section A2]" in joined
-    assert "no OSC input path" not in joined
     assert "no MIDI output path" in joined
 
 

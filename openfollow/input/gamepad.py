@@ -1373,9 +1373,18 @@ class GamepadHandler:
         # cached reads into the next poll (a menu poller, or a later frame).
         self._frame_button_states = {}
         try:
-            return self._poll_and_emit(dt)
+            result = self._poll_and_emit(dt)
+            self._note_held_buttons(self._frame_button_states)
+            return result
         finally:
             self._frame_button_states = None
+
+    def _note_held_buttons(self, frame_buttons: Mapping[tuple[int, int], bool]) -> None:
+        """A button held this frame counts as use, taken from the frame's own reads."""
+        now = self._clock()
+        for (controller_idx, _button_id), pressed in frame_buttons.items():
+            if pressed and controller_idx in self.joysticks:
+                self._last_input[controller_idx] = now
 
     def _poll_and_emit(self, dt: float) -> GamepadUpdate:
         """Poll movement + action edges for every controller and emit bus
@@ -1426,7 +1435,7 @@ class GamepadHandler:
 
                 # Read left stick for X/Y
                 dx, dy, _ = self._read_axes(controller_idx, joystick)
-                if dx or dy or self._any_button_or_hat(joystick):
+                if dx or dy:
                     self._last_input[controller_idx] = self._clock()
 
                 # Discard a stale stick reading from a pad that hasn't centered
@@ -1713,12 +1722,6 @@ class GamepadHandler:
             self._get_button(controller_idx, self._btn_speed_down_id),
             self._get_button(controller_idx, self._btn_speed_up_id),
         )
-
-    @staticmethod
-    def _any_button_or_hat(joystick: JoystickProtocol) -> bool:
-        if any(joystick.get_button(i) for i in range(joystick.get_numbuttons())):
-            return True
-        return any(joystick.get_hat(i) != (0, 0) for i in range(joystick.get_numhats()))
 
     def last_input(self) -> dict[int, float]:
         """Instance id -> clock time of that pad's latest movement or held button."""

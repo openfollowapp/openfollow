@@ -105,6 +105,14 @@ def test_a_bluetooth_hidraw_node_is_keyed_by_hid_uniq(tmp_path: Path) -> None:
     assert resolve_key(node, sysfs_root=tmp_path) == "bt:11:22:33:44:55:66"
 
 
+def test_a_bluetooth_address_is_found_above_a_uevent_that_lacks_one(tmp_path: Path) -> None:
+    input_dev = tmp_path / "devices" / "platform" / "bluetooth" / "hci0" / "hci0:14" / "input" / "input9"
+    node = _node(tmp_path, "input", "event6", input_dev / "event6")
+    (input_dev / "event6" / "uevent").write_text("MAJOR=13\nMINOR=70\n")
+    (input_dev / "uniq").write_text("aa:bb:cc:00:11:22\n")
+    assert resolve_key(node, sysfs_root=tmp_path) == "bt:aa:bb:cc:00:11:22"
+
+
 @pytest.mark.parametrize("content", ["uniq", "uevent"])
 def test_a_bluetooth_device_without_an_address_has_no_key(tmp_path: Path, content: str) -> None:
     dev = tmp_path / "devices" / "platform" / "bluetooth" / "hci0" / "hci0:13" / "input" / "input8"

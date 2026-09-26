@@ -3822,20 +3822,23 @@ class TestLastInput:
     def test_a_held_button_counts(self, stubbed_pygame, monkeypatch) -> None:
         joy = FakeJoystick()
         handler, clock = self._handler(stubbed_pygame, monkeypatch, joy)
-        joy.press(7)
+        joy.press(handler._btn_reset_id)
         handler.update(0.016)
         assert handler.last_input() == {0: 50.0}
         clock.now = 51.0
-        joy.release(7)
+        joy.release(handler._btn_reset_id)
         handler.update(0.016)
         assert handler.last_input() == {0: 50.0}
 
-    def test_a_pressed_hat_counts(self, stubbed_pygame, monkeypatch) -> None:
+    def test_any_named_button_counts_when_the_bus_reads_it(self, stubbed_pygame, monkeypatch) -> None:
+        # In the app the input event bus reads every named button each frame,
+        # so a button bound to no action lights the dot too.
         joy = FakeJoystick()
-        handler, _ = self._handler(stubbed_pygame, monkeypatch, joy)
-        joy.set_hat((1, 0))
+        _pads(stubbed_pygame, monkeypatch, joy)
+        handler = GamepadHandler(FakeApp(), clock=_Clock(), event_bus=InputEventBus())
+        joy.press(gp.BUTTON_NAME_TO_ID["START"])
         handler.update(0.016)
-        assert 0 in handler.last_input()
+        assert handler.last_input() == {0: 50.0}
 
     def test_a_deflected_stick_counts(self, stubbed_pygame, monkeypatch) -> None:
         joy = FakeJoystick()
@@ -3854,10 +3857,15 @@ class TestLastInput:
     def test_a_departed_pad_forgets_its_input(self, stubbed_pygame, monkeypatch) -> None:
         joy = FakeJoystick()
         handler, _ = self._handler(stubbed_pygame, monkeypatch, joy)
-        joy.press(7)
+        joy.press(handler._btn_reset_id)
         handler.update(0.016)
         handler._close_device(0)
         assert handler.last_input() == {}
+
+    def test_a_pad_dropped_this_frame_leaves_no_input_behind(self, stubbed_pygame, monkeypatch) -> None:
+        handler, _ = self._handler(stubbed_pygame, monkeypatch, FakeJoystick())
+        handler._note_held_buttons({(0, 1): True, (9, 1): True, (0, 2): False})
+        assert handler.last_input() == {0: 50.0}
 
 
 class TestIdentify:

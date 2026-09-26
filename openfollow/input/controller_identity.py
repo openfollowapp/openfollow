@@ -56,15 +56,15 @@ def _class_device(name: str, sysfs_root: Path) -> Path | None:
 
 def _usb_key(device: Path, sysfs_root: Path) -> str | None:
     devices = (sysfs_root / "devices").resolve()
-    for node in (device, *device.parents):
-        if node == devices or devices not in node.parents:
-            return None
+    node = device
+    while devices in node.parents:
         if (node / "devpath").is_file() and (node / "busnum").is_file():
             devpath = (node / "devpath").read_text(encoding="ascii").strip()
             root_hub = next((p for p in node.parents if _ROOT_HUB_RE.fullmatch(p.name)), None)
             if root_hub is None or not devpath:
                 return None
             return f"{USB_KEY_PREFIX}{root_hub.parent.relative_to(devices).as_posix()}:{devpath}"
+        node = node.parent
     return None
 
 

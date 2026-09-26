@@ -2236,24 +2236,24 @@ def test_identify_needs_an_open_puck_with_an_led(connected: bool, has_led: bool,
     assert handler.request_identify() is accepted
 
 
-def test_identify_blinks_on_schedule_and_ends_lit() -> None:
+def test_identify_blinks_on_schedule_and_leaves_the_led_dark() -> None:
+    """The LED rests dark, so the blink must start lit to be seen and end dark."""
     clock = _Clock()
     handler = Mouse3DHandler(_cfg(), device_factory=lambda: None, clock=clock)
     handler._connected = handler._has_led = True
     device = _LedDevice()
     assert handler.request_identify()
     handler._drive_identify(device)
-    assert device.leds == [False]
+    assert device.leds == [True]
     clock.now += 0.24
     handler._drive_identify(device)
-    assert device.leds == [False]
+    assert device.leds == [True]
     clock.now += 0.01
     handler._drive_identify(device)
-    assert device.leds == [False, True]
+    assert device.leds == [True, False]
     clock.now += 5.0
     handler._drive_identify(device)
-    assert device.leds == list(mouse3d_module._IDENTIFY_BLINKS)
-    assert device.leds[-1] is True
+    assert device.leds == [True, False, True, False, True, False]
 
 
 def test_a_failed_led_write_abandons_the_blink() -> None:
@@ -2269,7 +2269,7 @@ def test_a_failed_led_write_abandons_the_blink() -> None:
     handler.request_identify()
     handler._drive_identify(device)
     handler._drive_identify(device)
-    assert device.leds == [False]
+    assert device.leds == [True]
     assert handler._blink_due == []
 
 

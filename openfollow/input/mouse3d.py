@@ -53,8 +53,9 @@ _POLL_S = 0.004
 # reads means it's centered, so a latched non-zero reading is a dropped
 # return-to-center report; re-zero it before the marker glides untouched.
 _RECENTER_AFTER_IDLE_S = 0.2
-# Identify: LED states played this far apart, ending lit.
-_IDENTIFY_BLINKS = (False, True, False, True, False, True)
+# Identify: LED states played this far apart. A puck's LED rests dark, so the
+# blink starts lit and ends dark again.
+_IDENTIFY_BLINKS = (True, False, True, False, True, False)
 _IDENTIFY_BLINK_S = 0.25
 # Move-speed steps per second at full deflection for a ``speed``-mapped axis.
 _SPEED_AXIS_RATE = 6.0

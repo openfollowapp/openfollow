@@ -77,4 +77,4 @@ fi
 write_state restarting "Update installed. Restarting…"
 cleanup_spec
 systemctl start openfollow.service \
-    || { write_state failed "Restart failed. Service may need manual attention." ""; exit 1; }
+    || { write_state failed "Start failed. Service may need manual attention." ""; exit 1; }

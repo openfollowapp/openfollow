@@ -81,7 +81,7 @@ def test_starts_the_service_without_cycling_the_instance_postinst_started(tmp_pa
 def test_a_failed_start_is_reported(tmp_path: Path) -> None:
     _calls, state = _run(tmp_path, systemctl_exit=1)
     assert state["state"] == "failed"
-    assert state["message"] == "Restart failed. Service may need manual attention."
+    assert state["message"] == "Start failed. Service may need manual attention."
 
 
 def test_a_failed_install_reports_apts_error_and_skips_the_restart(tmp_path: Path) -> None:

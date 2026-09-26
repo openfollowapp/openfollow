@@ -17,6 +17,10 @@ import logging
 import math
 import os
 import re
+import select
+import signal
+import subprocess
+import sys
 
 import pygame
 import pytest
@@ -1961,6 +1965,48 @@ class TestPygameSubsystemInitOnConstruct:
 
         GamepadHandler(FakeApp())
         assert os.environ["SDL_JOYSTICK_HIDAPI"] == "1"
+
+    def test_a_stop_after_init_still_ends_the_process(self) -> None:
+        # Real SDL, in its own process: the signal handler lives inside SDL, so a
+        # stubbed pygame cannot show whether the stop gets through.
+        script = (
+            "import time, types\n"
+            "from openfollow.configuration import AppConfig\n"
+            "from openfollow.input.gamepad import GamepadHandler\n"
+            "GamepadHandler(types.SimpleNamespace(_config=AppConfig()))\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        env = {k: v for k, v in os.environ.items() if k != "SDL_NO_SIGNAL_HANDLERS"}
+        env["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, text=True
+        )
+        try:
+            assert proc.stdout is not None
+            ready, _, _ = select.select([proc.stdout], [], [], 30)
+            assert ready and proc.stdout.readline().strip() == "ready"
+            proc.send_signal(signal.SIGTERM)
+            assert proc.wait(timeout=10) == -signal.SIGTERM
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_keeps_explicit_sdl_signal_handler_override(self, monkeypatch) -> None:
+        monkeypatch.setenv("SDL_NO_SIGNAL_HANDLERS", "0")
+
+        monkeypatch.setattr(pygame, "get_init", lambda: False)
+        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.joystick, "init", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "get_count", lambda: 0)
+        monkeypatch.setattr(pygame.event, "get", lambda: [])
+        monkeypatch.setattr(pygame.event, "post", lambda e: None)
+        monkeypatch.setattr(gp, "sdl2_controller", None)
+
+        GamepadHandler(FakeApp())
+        assert os.environ["SDL_NO_SIGNAL_HANDLERS"] == "0"
 
     def test_calls_sdl2_controller_init_when_available_and_uninit(self, monkeypatch) -> None:
         sdl2_calls = {"init": False}

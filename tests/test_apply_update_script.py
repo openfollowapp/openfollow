@@ -22,7 +22,7 @@ _SCRIPT = Path(openfollow.__file__).resolve().parent.parent / "packaging" / "deb
 _STATE_LINE = "STATE_FILE=/var/lib/openfollow/update-state.json"
 
 
-def _run(tmp_path: Path, *, apt_exit: int = 0, apt_output: str = "") -> tuple[list[str], dict]:
+def _run(tmp_path: Path, *, apt_exit: int = 0, apt_output: str = "", systemctl_exit: int = 0) -> tuple[list[str], dict]:
     if not _SCRIPT.is_file():
         pytest.skip("no packaging/debian/apply-update.sh in this tree")
     source = _SCRIPT.read_text(encoding="utf-8")
@@ -35,7 +35,7 @@ def _run(tmp_path: Path, *, apt_exit: int = 0, apt_output: str = "") -> tuple[li
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "calls"
-    for name, code, output in (("apt-get", apt_exit, apt_output), ("systemctl", 0, "")):
+    for name, code, output in (("apt-get", apt_exit, apt_output), ("systemctl", systemctl_exit, "")):
         stub = bin_dir / name
         stub.write_text(
             f'#!/bin/sh\necho "{name} $*" >> "{calls}"\nprintf "%s\\n" "{output}"\nexit {code}\n',
@@ -68,7 +68,20 @@ def test_installs_even_when_that_version_is_already_installed(tmp_path: Path) ->
     assert "--reinstall" in apt.split()
     assert "--allow-downgrades" in apt.split()
     assert state["state"] == "restarting"
-    assert "systemctl restart openfollow.service" in calls
+
+
+def test_starts_the_service_without_cycling_the_instance_postinst_started(tmp_path: Path) -> None:
+    # prerm stops the unit and postinst starts it again, so a restart here would
+    # stop the new version while it is still starting.
+    calls, _state = _run(tmp_path)
+    systemctl = [line for line in calls if line.startswith("systemctl ")]
+    assert systemctl == ["systemctl start openfollow.service"]
+
+
+def test_a_failed_start_is_reported(tmp_path: Path) -> None:
+    _calls, state = _run(tmp_path, systemctl_exit=1)
+    assert state["state"] == "failed"
+    assert state["message"] == "Restart failed. Service may need manual attention."
 
 
 def test_a_failed_install_reports_apts_error_and_skips_the_restart(tmp_path: Path) -> None:

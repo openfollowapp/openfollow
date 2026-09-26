@@ -393,6 +393,9 @@ class GamepadHandler:
         if sys.platform == "darwin":
             os.environ.setdefault("SDL_JOYSTICK_HIDAPI", "0")
         os.environ.setdefault("SDL_JOYSTICK_BLACKLIST_DEVICES", _spacemouse_blacklist())
+        # SDL's own SIGINT/SIGTERM handler turns a stop into a quit event nothing
+        # reads, until the GLib main loop takes the signals over.
+        os.environ.setdefault("SDL_NO_SIGNAL_HANDLERS", "1")
         if not pygame.get_init():
             pygame.init()
         if not getattr(pygame, "IS_CE", False):

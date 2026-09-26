@@ -26,5 +26,9 @@ until [ -d "$XDG_RUNTIME_DIR" ]; do sleep 0.5; done
 # Cage session non-empty, so with the old `exec python` Cage stayed alive after
 # the app died (zombie app, black screen) and systemd never respawned. Killing
 # kanshi empties the session so Cage exits cleanly.
+#
+# Cage takes SIGTERM before it forks the app, then waits for the app without
+# signalling it, so a stop that lands before the app has started hangs until
+# TimeoutStopSec kills the session.
 exec /usr/bin/cage -- /bin/sh -c \
   'kanshi -c /usr/share/openfollow/kanshi.config & /opt/openfollow/venv/bin/python -m openfollow.main; rc=$?; kill "$!" 2>/dev/null; exit $rc'

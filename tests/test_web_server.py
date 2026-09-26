@@ -22,9 +22,11 @@ import urllib.request
 import pytest
 
 import openfollow
+import openfollow.services as services_module
 import openfollow.web.discovery as discovery_module
 from openfollow.configuration import AppConfig, load_config, save_config
 from openfollow.web import peer_auth
+from openfollow.web import whats_new as whats_new_module
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port, start_on_free_port
 
@@ -264,6 +266,73 @@ def test_update_banner_hidden_when_up_to_date(live_server) -> None:
     # CSS class is always defined in base.tpl, so assert on the visible text).
     assert "is ready to install" not in body
     assert "(Update available: v" not in body
+
+
+@pytest.fixture()
+def after_in_app_update(tmp_path, monkeypatch):
+    """The installer's state as a fresh start after an in-app update finds it.
+
+    Requested before ``live_server`` so the server's queue starts from it.
+    """
+    state_file = tmp_path / "update-state.json"
+    state_file.write_text('{"state":"restarting","message":"","error":""}')
+    seen_file = tmp_path / "whats-new-seen"
+    monkeypatch.setattr(services_module, "_DETACHED_UPDATE_STATE_FILE", str(state_file))
+    monkeypatch.setattr(services_module, "_WHATS_NEW_SEEN_FILE", str(seen_file))
+    return seen_file
+
+
+_WHATS_NEW_TRIGGER = "document.addEventListener('DOMContentLoaded', openfollowShowWhatsNew)"
+
+
+def test_whats_new_does_not_open_on_an_ordinary_start(live_server) -> None:
+    _, base = live_server
+    for path in ("/", "/wizard"):
+        status, body = _get(base, path)
+        assert status == 200
+        assert _WHATS_NEW_TRIGGER not in body
+
+
+def test_whats_new_opens_on_every_full_page_after_an_in_app_update(after_in_app_update, live_server) -> None:
+    _, base = live_server
+    for path in ("/", "/wizard"):
+        status, body = _get(base, path)
+        assert status == 200
+        assert _WHATS_NEW_TRIGGER in body
+
+
+def test_dismissing_whats_new_closes_it_for_the_station(after_in_app_update, live_server) -> None:
+    _, base = live_server
+    status, data = _post_json(base, "/api/whats-new/dismiss", {})
+    assert (status, data) == (200, {"ok": True})
+    assert after_in_app_update.read_text() == openfollow.__version__
+    assert _WHATS_NEW_TRIGGER not in _get(base, "/")[1]
+
+
+def test_whats_new_serves_the_notes_for_the_installed_release(live_server, tmp_path, monkeypatch) -> None:
+    _, base = live_server
+    notes = tmp_path / "whatsnew.md"
+    notes.write_text(f"v{openfollow.__version__}\n\n## Controllers\n", encoding="utf-8")
+    monkeypatch.setattr(whats_new_module, "WHATS_NEW_FILE", notes)
+    status, data = _get_json(base, "/api/whats-new")
+    assert status == 200
+    assert data == {"version": openfollow.__version__, "matches": True, "html": "<h2>Controllers</h2>\n"}
+
+    notes.write_text("v0.0.1\n\n## Something older\n", encoding="utf-8")
+    _, data = _get_json(base, "/api/whats-new")
+    assert data == {"version": openfollow.__version__, "matches": False, "html": ""}
+
+
+def test_whats_new_without_notes_points_to_the_docs_and_any_close_dismisses(live_server) -> None:
+    _, base = live_server
+    _, body = _get(base, "/")
+    opener = body[body.index("async function openfollowShowWhatsNew()") :]
+    opener = opener[: opener.index("``modalChooseTemplate``")]
+    fallback = opener[opener.index(": '<p>Find the full release notes") :]
+    assert '<a href="https://openfollow.app/docs"' in fallback
+    # Closed by Continue, the ×, ESC or the backdrop: every path reaches onClose.
+    assert "onClose: () => { fetch('/api/whats-new/dismiss', { method: 'POST' })" in opener
+    assert "size: 'large'" in opener
 
 
 def test_select_options_have_explicit_dark_background(live_server) -> None:

@@ -17,12 +17,14 @@ between ``OpenFollowApp.run()`` and the per-subsystem classes:
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+import openfollow
 import openfollow.services as services_module
 from openfollow.configuration import (
     AppConfig,
@@ -1576,6 +1578,71 @@ class TestDetachedUpdateState:
             "message": "deb restart",
             "error": "",
         }
+
+
+class TestWhatsNewPending:
+    """The first start after an in-app update opens What's new; no other start does."""
+
+    def _station(self, monkeypatch, tmp_path, *, state: str | None, seen: str | None = None) -> tuple[Any, Any]:
+        state_file = tmp_path / "update-state.json"
+        seen_file = tmp_path / "whats-new-seen"
+        monkeypatch.setattr(services_module, "_DETACHED_UPDATE_STATE_FILE", str(state_file))
+        monkeypatch.setattr(services_module, "_WHATS_NEW_SEEN_FILE", str(seen_file))
+        monkeypatch.setattr(openfollow, "__version__", "0.4.4")
+        if state is not None:
+            state_file.write_text(json.dumps({"state": state, "message": "", "error": ""}))
+        if seen is not None:
+            seen_file.write_text(seen)
+        return state_file, seen_file
+
+    @pytest.mark.parametrize("state", ["running", "restarting"])
+    def test_a_start_by_the_installer_opens_it(self, monkeypatch, tmp_path, state: str) -> None:
+        state_file, _ = self._station(monkeypatch, tmp_path, state=state)
+        assert services_module.WebCommandQueue().whats_new_pending()
+        assert not state_file.exists()
+
+    @pytest.mark.parametrize("state", [None, "failed", "idle", "queued"])
+    def test_any_other_start_does_not(self, monkeypatch, tmp_path, state: str | None) -> None:
+        self._station(monkeypatch, tmp_path, state=state)
+        assert not services_module.WebCommandQueue().whats_new_pending()
+
+    def test_a_release_already_seen_stays_closed(self, monkeypatch, tmp_path) -> None:
+        self._station(monkeypatch, tmp_path, state="restarting", seen="0.4.4")
+        assert not services_module.WebCommandQueue().whats_new_pending()
+
+    def test_an_older_release_seen_does_not_close_this_one(self, monkeypatch, tmp_path) -> None:
+        self._station(monkeypatch, tmp_path, state="restarting", seen="0.4.3")
+        assert services_module.WebCommandQueue().whats_new_pending()
+
+    def test_an_unreadable_seen_record_counts_as_unseen(self, monkeypatch, tmp_path) -> None:
+        _, seen_file = self._station(monkeypatch, tmp_path, state="running")
+        seen_file.mkdir()
+        assert services_module.WebCommandQueue().whats_new_pending()
+
+    def test_dismissing_it_survives_the_installer_rewriting_its_state(self, monkeypatch, tmp_path) -> None:
+        # The installer can write ``restarting`` after this version cleared the
+        # file, so the next start finds the same install again.
+        state_file, seen_file = self._station(monkeypatch, tmp_path, state="running")
+        q = services_module.WebCommandQueue()
+        q.dismiss_whats_new("0.4.4")
+        assert not q.whats_new_pending()
+        assert seen_file.read_text() == "0.4.4"
+        state_file.write_text(json.dumps({"state": "restarting", "message": "", "error": ""}))
+        assert not services_module.WebCommandQueue().whats_new_pending()
+
+    def test_dismissing_when_nothing_is_open_records_nothing(self, monkeypatch, tmp_path) -> None:
+        _, seen_file = self._station(monkeypatch, tmp_path, state=None)
+        services_module.WebCommandQueue().dismiss_whats_new("0.4.4")
+        assert not seen_file.exists()
+
+    def test_an_unwritable_seen_record_still_closes_it(self, monkeypatch, tmp_path, caplog) -> None:
+        self._station(monkeypatch, tmp_path, state="running")
+        monkeypatch.setattr(services_module, "_WHATS_NEW_SEEN_FILE", str(tmp_path / "absent-dir" / "seen"))
+        q = services_module.WebCommandQueue()
+        with caplog.at_level("WARNING", logger=services_module.__name__):
+            q.dismiss_whats_new("0.4.4")
+        assert not q.whats_new_pending()
+        assert "What's new was seen" in caplog.text
 
 
 class TestConsumeUpdateRequestedEmpty:

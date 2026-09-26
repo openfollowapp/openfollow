@@ -73,6 +73,9 @@ include = [
     # by default, so without this the wheel build drops the ``.md`` files and
     # the help drawer would 404 on a packaged install.
     { path = "openfollow/web/help/*.md", format = ["sdist", "wheel"] },
+    # The release notes the updater's What's new step shows
+    # (``openfollow/web/whats_new.py``); their images ship with ``static/``.
+    { path = "openfollow/web/whatsnew/*.md", format = ["sdist", "wheel"] },
     # Release-signing public key read at runtime to verify an update bundle
     # before install. Listed explicitly for the same reason as above: Poetry
     # ships only Python modules by default, so without this the wheel drops the

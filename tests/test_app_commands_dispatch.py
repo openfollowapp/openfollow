@@ -241,3 +241,44 @@ def test_check_update_rejects_second_request_while_running(monkeypatch) -> None:
     status = app._web_commands.get_update_status()
     assert status["state"] == "running"
     assert "already in progress" in status["message"]
+
+
+# ---------------------------------------------------------------------------
+# check_controller_slot_actions
+# ---------------------------------------------------------------------------
+
+
+class _SlotRecorder:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int]] = []
+
+    def identify_slot(self, index: int) -> bool:
+        self.calls.append(("identify", index))
+        return True
+
+    def forget_slot(self, index: int) -> bool:
+        self.calls.append(("forget", index))
+        return True
+
+
+def test_slot_actions_run_once_in_the_order_they_were_clicked() -> None:
+    app = _make_app(_input_manager=_SlotRecorder())
+    app._web_commands.request_slot_action("identify", 1)
+    app._web_commands.request_slot_action("forget", 0)
+    app_commands.check_controller_slot_actions(app)
+    app_commands.check_controller_slot_actions(app)
+    assert app._input_manager.calls == [("identify", 1), ("forget", 0)]
+
+
+def test_an_unknown_slot_action_does_nothing() -> None:
+    app = _make_app(_input_manager=_SlotRecorder())
+    app._web_commands.request_slot_action("delete", 0)
+    app_commands.check_controller_slot_actions(app)
+    assert app._input_manager.calls == []
+
+
+def test_slot_actions_without_input_are_dropped() -> None:
+    app = _make_app(_input_manager=None)
+    app._web_commands.request_slot_action("identify", 0)
+    app_commands.check_controller_slot_actions(app)
+    assert app._web_commands.consume_slot_actions() == []

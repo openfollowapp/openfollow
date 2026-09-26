@@ -266,6 +266,132 @@ def test_update_banner_hidden_when_up_to_date(live_server) -> None:
     assert "(Update available: v" not in body
 
 
+_SLOT_ITEMS = [
+    {
+        "controller_index": 0,
+        "name": "GameSir",
+        "kind": "gamepad",
+        "state": "missing",
+        "connected": False,
+        "marker_id": 10,
+        "port_label": "USB 2 · port 1",
+        "seconds_since_input": None,
+    },
+    {
+        "controller_index": 1,
+        "name": "SpaceNavigator",
+        "kind": "mouse3d",
+        "state": "connected",
+        "connected": True,
+        "marker_id": 11,
+        "port_label": "USB 1 · port 2",
+        "seconds_since_input": 0.2,
+    },
+    {
+        "controller_index": 2,
+        "name": "8BitDo",
+        "kind": "gamepad",
+        "state": "reserved",
+        "connected": False,
+        "marker_id": None,
+        "port_label": "USB 1 · port 1",
+        "seconds_since_input": None,
+    },
+]
+
+
+@pytest.fixture()
+def slots_server(tmp_path, monkeypatch):
+    """A live server whose runtime stats carry a missing, a connected and a reserved slot."""
+    monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
+    stats: dict = {"controllers": {"connected_count": 1, "missing_count": 1, "items": list(_SLOT_ITEMS)}}
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(tmp_path / "config.toml"),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            runtime_stats_provider=lambda: stats,
+        )
+    ) as (server, base):
+        yield server, base, stats
+
+
+def _row(body: str, slot: str) -> str:
+    start = body.index(f'<th scope="row">{slot}</th>')
+    return body[start : body.index("</tr>", start)]
+
+
+def test_controller_slots_table_shows_every_state(slots_server) -> None:
+    _, base, _ = slots_server
+    status, body = _get(base, "/section/controller_slots")
+    assert status == 200
+    missing, connected, reserved = _row(body, "C1"), _row(body, "C2"), _row(body, "C3")
+    assert "GameSir" in missing and "USB 2 · port 1" in missing and "Missing" in missing
+    assert "/identify/0" in missing and "/forget/0" in missing
+    assert "3D Mouse" in connected and 'class="slot-activity is-active"' in connected
+    assert "/identify/1" in connected and "/forget/" not in connected
+    assert "Reserved" in reserved and "<button" not in reserved
+
+
+def test_an_idle_controller_has_an_unlit_dot(slots_server) -> None:
+    _, base, stats = slots_server
+    stats["controllers"]["items"][1] = {**_SLOT_ITEMS[1], "seconds_since_input": 4.0}
+    _, body = _get(base, "/section/controller_slots")
+    assert 'class="slot-activity" role="img" aria-label="Idle"' in _row(body, "C2")
+
+
+def test_no_controllers_says_so(slots_server) -> None:
+    _, base, stats = slots_server
+    stats["controllers"] = {}
+    _, body = _get(base, "/section/controller_slots")
+    assert "No controller connected." in body
+
+
+@pytest.mark.parametrize(("action", "index"), [("identify", 1), ("forget", 0)])
+def test_slot_actions_are_queued_for_the_main_loop(slots_server, action: str, index: int) -> None:
+    server, base, _ = slots_server
+    status, body = _post_form(base, f"/section/controller_slots/{action}/{index}", {})
+    assert status == 200
+    assert "slot-table" in body
+    assert server._command_queue.consume_slot_actions() == [(action, index)]
+
+
+@pytest.mark.parametrize("path", ["/section/controller_slots/delete/0", "/section/controller_slots/identify/one"])
+def test_anything_else_is_not_a_slot_action(slots_server, path: str) -> None:
+    server, base, _ = slots_server
+    status, _ = _post_form(base, path, {})
+    assert status == 404
+    assert server._command_queue.consume_slot_actions() == []
+
+
+def test_the_input_tab_opens_with_the_controller_slots(slots_server) -> None:
+    _, base, _ = slots_server
+    _, body = _get(base, "/")
+    tab = body[body.index('id="tab-input"') :]
+    assert tab.index('id="controller-slots-section"') < tab.index('id="gamepad-section"')
+    assert 'data-help="controller_slots"' in tab
+    assert "this.closest('.tab-content').classList.contains('active')" in tab
+
+
+def test_statistics_name_each_missing_controller(slots_server) -> None:
+    _, base, _ = slots_server
+    _, body = _get(base, "/section/statistics")
+    assert "1 connected · 1 missing" in body
+    assert "C1 missing</strong> · marker 10 · GameSir (USB 2 · port 1)" in body
+
+
+def test_statistics_without_missing_controllers_raise_no_warning(slots_server) -> None:
+    _, base, stats = slots_server
+    stats["controllers"] = {"connected_count": 1, "missing_count": 0, "items": [_SLOT_ITEMS[1]]}
+    _, body = _get(base, "/section/statistics")
+    assert "1 connected<" in body
+    assert "missing</strong>" not in body
+
+
 def test_select_options_have_explicit_dark_background(live_server) -> None:
     # Regression guard: the native <select> dropdown popup does not inherit
     # the select's dark background. Firefox renders the option list on the

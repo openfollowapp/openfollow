@@ -3173,6 +3173,14 @@ def test_collect_gamepad_runtime_xinput_match() -> None:
     assert "calibration: matches saved mapping" in joined
 
 
+@pytest.mark.parametrize(
+    ("key", "shown"), [("usb:platform/xhci-hcd.1:1", "usb:platform/xhci-hcd.1:1"), (None, "(none)")]
+)
+def test_collect_gamepad_runtime_names_the_socket(key: str | None, shown: str) -> None:
+    p = diag.DiagnosticsProviders(gamepad_runtime=lambda: [dict(_pad(), port_key=key)])
+    assert f"      port:    {shown}" in diag.collect_gamepad_runtime(p)
+
+
 def test_collect_gamepad_runtime_labels_the_key_as_an_instance_not_a_slot() -> None:
     # A reconnected pad keeps a growing SDL instance id; the bundle must not
     # present it as though it were the pad's slot.
@@ -3515,6 +3523,30 @@ def test_runtime_state_reports_frame_work_not_a_throughput_rate() -> None:
     assert "fps" not in "\n".join(row for row in rows if "Frame loop" not in row and "source framerate" not in row)
 
 
+def test_collect_runtime_state_lists_every_controller_slot() -> None:
+    stats = _stats()
+    stats["controllers"] = {
+        "connected_count": 1,
+        "missing_count": 1,
+        "mapped_count": 1,
+        "items": [
+            {
+                "controller_index": 0,
+                "state": "missing",
+                "marker_id": 10,
+                "name": "GameSir",
+                "port_label": "USB 2 · port 1",
+            },
+            {"controller_index": 1, "state": "connected", "marker_id": 11, "name": "", "port_label": ""},
+        ],
+    }
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    joined = "\n".join(rows)
+    assert "1 connected, 1 missing, 1 mapped to a marker" in joined
+    assert "    C1   missing   marker 10   GameSir (USB 2 · port 1)" in rows
+    assert "    C2   connected marker 11   (unnamed) (no stable port)" in rows
+
+
 def test_collect_runtime_state_reports_not_wired() -> None:
     assert "not wired" in diag.collect_runtime_state(diag.DiagnosticsProviders())[0]
 
@@ -3546,7 +3578,7 @@ def test_collect_runtime_state_reports_a_healthy_feed() -> None:
     assert "25.0 fps" in joined
     assert "last error            (none)" in joined
     assert "running (last frame 0.01s ago)" in joined
-    assert "1 connected, 1 mapped to a marker" in joined
+    assert "1 connected, 0 missing, 1 mapped to a marker" in joined
 
 
 def test_collect_runtime_state_reports_the_reconnect_loop() -> None:

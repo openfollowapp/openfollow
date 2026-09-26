@@ -4430,6 +4430,21 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Get the live runtime statistics partial."""
         return template("partials/statistics", stats=server.get_runtime_stats())
 
+    @app.get("/section/controller_slots")
+    def get_controller_slots() -> Any:
+        """The Controller Slots table, from the main loop's latest stats snapshot."""
+        return template(
+            "partials/controller_slots_table", controllers=server.get_runtime_stats().get("controllers", {})
+        )
+
+    @app.post("/section/controller_slots/<action:re:identify|forget>/<index:int>")
+    def controller_slot_action(action: str, index: int) -> Any:
+        """Queue Identify / Forget for one slot; the main loop, which owns the slots, runs it."""
+        server.request_slot_action(action, index)
+        return template(
+            "partials/controller_slots_table", controllers=server.get_runtime_stats().get("controllers", {})
+        )
+
     @app.get("/section/video_source/failure")
     def get_video_source_failure() -> Any:
         """Just the video failure box, for the Camera & Grid tab to poll.

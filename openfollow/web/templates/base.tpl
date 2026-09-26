@@ -1196,6 +1196,17 @@
  .peer-item.online { border: 1px solid rgba(125, 229, 159, 0.35); }
  .peer-item.offline { border: 1px solid rgba(255, 140, 140, 0.22); opacity: 0.75; }
  .peer-status { color: var(--ok); font-size: 1.1rem; }
+ /* Controller Slots table (Input tab). */
+ .slot-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+ .slot-table th, .slot-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border-soft); }
+ .slot-table thead th { color: var(--muted); font-weight: 600; font-size: 0.8rem; }
+ .slot-row.slot-missing { background: rgba(255, 76, 76, 0.12); }
+ .slot-missing-label { color: var(--danger); }
+ .slot-reserved-label, .slot-empty { color: var(--muted); }
+ .slot-activity { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; background: rgba(247, 245, 233, 0.2); margin-right: 4px; vertical-align: middle; }
+ .slot-activity.is-active { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+ .slot-actions { white-space: nowrap; text-align: right; }
+ .slot-actions button { margin: 0 0 0 6px; padding: 4px 10px; }
  .peer-item.offline .peer-status { color: var(--danger); }
  .peer-name { flex: 1; font-weight: 600; }
  .peer-name em { color: var(--muted); font-style: italic; font-weight: 400; }

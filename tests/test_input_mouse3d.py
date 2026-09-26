@@ -20,6 +20,7 @@ import pytest
 import openfollow.input.input_manager as input_manager_module
 import openfollow.input.mouse3d as mouse3d_module
 from openfollow.configuration import MOUSE3D_AXES, AppConfig, MarkerConfig, Mouse3DConfig
+from openfollow.input.controller_slots import SlotEntry
 from openfollow.input.gamepad import GamepadUpdate
 from openfollow.input.input_manager import InputManager
 from openfollow.input.mouse3d import (
@@ -694,6 +695,15 @@ class _FakeGamepadHandler:
             for idx in sorted(self.joysticks)
         ]
 
+    def device_identities(self) -> dict[int, tuple[str | None, str]]:
+        return dict.fromkeys(self.joysticks, (None, "Pad"))
+
+    def last_input(self) -> dict[int, float]:
+        return {}
+
+    def identify(self, _instance_id: int) -> bool:
+        return True
+
     def stop(self) -> None:
         pass
 
@@ -726,18 +736,27 @@ class _FakeMouse3DManager:
     def reload_config(self, config) -> None:  # noqa: ANN001
         self.reloaded_with = config
 
-    def connected_indices(self) -> list[int]:
+    def connected_ids(self) -> list[int]:
         return list(range(len(self.devices))) if self.connected else []
 
-    def connected_devices(self) -> list[Mouse3DDeviceInfo]:
-        return list(self.devices) if self.connected else []
+    def connected_devices(self) -> dict[int, Mouse3DDeviceInfo]:
+        return dict(enumerate(self.devices)) if self.connected else {}
+
+    def initial_scan_settled(self) -> bool:
+        return True
+
+    def last_input(self) -> dict[int, float]:
+        return {}
+
+    def identify(self, _instance_id: int) -> bool:
+        return True
 
     def detect_pressed_button(self, timeout: float = 2.0) -> int | None:
         return None
 
     def update(self, _dt: float) -> dict[int, Mouse3DUpdate]:
         self.update_calls += 1
-        return dict.fromkeys(self.connected_indices(), self.next_update)
+        return dict.fromkeys(self.connected_ids(), self.next_update)
 
 
 class _DummyServer:
@@ -840,12 +859,13 @@ def test_get_controller_info_defaults_missing_gamepad_fields(wired) -> None:  # 
     # unconditionally, or the 4Hz stats tick KeyErrors.
     manager, _ = wired
     manager.gamepad_handler.joysticks = {0: object()}  # pad present in slots
+    manager.update(0.016)
     manager.gamepad_handler.get_controller_info = lambda: []  # ...but info missing
     info = manager.get_controller_info()
     assert len(info) == 1
     item = info[0]
-    assert item["name"] == ""
-    assert item["connected"] is False
+    assert item["name"] == "Pad"
+    assert item["connected"] is True
     assert item["effective_speed"] == 0.0
     assert item["backend"] == ""
     # Consumable exactly as publish_runtime_stats does it (must not raise).
@@ -876,11 +896,13 @@ def test_mouse_and_gamepad_unified_ordering(wired) -> None:  # noqa: ANN001
     manager, app = wired
     app._config.mouse3d.enabled = True
     manager.gamepad_handler.joysticks = {0: object()}  # one gamepad beside the mouse
-    # Mice first: mouse = unified 0 (c1) -> slot 0; gamepad = unified 1 (c2) -> slot 1.
+    manager.update(0.016)
+    # Neither has a port key, so today's order holds: mice first.
     assert manager.controller_marker_id(0) == app._controlled_ids[0]  # mouse -> 10
     assert manager.controller_marker_id(1) == app._controlled_ids[1]  # gamepad -> 11
     info = manager.get_controller_info()
-    assert info[0]["name"] == "3D Mouse"
+    assert info[0]["name"] == "SpaceNavigator"
+    assert info[0]["kind"] == "mouse3d"
     assert info[0]["controller_index"] == 0
     assert info[0]["marker_id"] == app._controlled_ids[0]
     assert info[1]["controller_index"] == 1
@@ -936,22 +958,11 @@ def test_disconnected_mouse_is_not_a_controller(wired) -> None:  # noqa: ANN001
     app._config.mouse3d.enabled = True
     manager.mouse3d_manager.connected = False  # enabled but no device
     manager.gamepad_handler.joysticks = {0: object()}
+    manager.update(0.016)
     # Only the gamepad counts -> it takes unified index 0 (c1).
     info = manager.get_controller_info()
     assert [c["name"] for c in info] == ["Pad"]
     assert manager.controller_marker_id(0) == app._controlled_ids[0]
-
-
-def test_controller_slots_runtime_error_falls_back(wired) -> None:  # noqa: ANN001
-    manager, _ = wired
-
-    class _Boom(dict):
-        def __iter__(self):  # noqa: ANN204
-            raise RuntimeError("joysticks rebuilt mid-iteration")
-
-    manager.gamepad_handler.joysticks = _Boom()
-    # sorted() raises -> fall back to no gamepads, no crash.
-    assert manager._controller_slots() == []
 
 
 def test_controller_marker_id_none_index(wired) -> None:  # noqa: ANN001
@@ -1012,10 +1023,12 @@ def test_marker_cycle_active_and_unified_idx_use_live_snapshot(wired) -> None:  
     manager.mouse3d_manager.connected = True
     # Lone 3D mouse: one unified controller -> cycling active, mouse is slot 0.
     manager.gamepad_handler.joysticks = {}
+    manager.update(0.016)
     assert manager.marker_cycle_active() is True
     assert manager._mouse3d_unified_idx(0) == 0
     # Add a gamepad: two controllers -> cycling suppressed, gamepad is slot 1.
     manager.gamepad_handler.joysticks = {0: object()}
+    manager.update(0.016)
     assert manager.marker_cycle_active() is False
     assert manager._gamepad_unified_idx(0) == 1
 
@@ -1381,8 +1394,8 @@ def test_manager_enumerates_and_reads_two_pucks(monkeypatch) -> None:  # noqa: A
     mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
     mgr.start()
     try:
-        assert _wait_until(lambda: mgr.connected_indices() == [0, 1])
-        assert [d.product_name for d in mgr.connected_devices()] == ["SpaceNavigator", "SpaceExplorer"]
+        assert _wait_until(lambda: mgr.connected_ids() == [0, 1])
+        assert [d.product_name for d in mgr.connected_devices().values()] == ["SpaceNavigator", "SpaceExplorer"]
         # Wait until both handlers have published their first snapshot.
         assert _wait_until(lambda: all(u.velocity != (0.0, 0.0, 0.0) for u in mgr.update(1.0).values()))
         updates = mgr.update(1.0)
@@ -1401,7 +1414,7 @@ def test_manager_dedups_by_path(monkeypatch) -> None:  # noqa: ANN001
     mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
     mgr.start()
     try:
-        assert _wait_until(lambda: mgr.connected_indices() == [0])  # collapsed to one puck
+        assert _wait_until(lambda: mgr.connected_ids() == [0])  # collapsed to one puck
         assert backend.opened.count("/dev/hidraw2") == 1  # opened exactly once
     finally:
         mgr.stop(wait=True)
@@ -1421,11 +1434,13 @@ def test_manager_hotplug_add_then_remove(monkeypatch) -> None:  # noqa: ANN001
     mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
     mgr.start()
     try:
-        assert _wait_until(lambda: mgr.connected_indices() == [0])
+        assert _wait_until(lambda: mgr.connected_ids() == [0])
         backend._infos.append(info3)  # plug a second puck
-        assert _wait_until(lambda: mgr.connected_indices() == [0, 1])
+        assert _wait_until(lambda: mgr.connected_ids() == [0, 1])
         backend._infos[:] = [info3]  # unplug the first
-        assert _wait_until(lambda: [d.path for d in mgr.connected_devices()] == ["/dev/hidraw3"])
+        assert _wait_until(lambda: [d.path for d in mgr.connected_devices().values()] == ["/dev/hidraw3"])
+        # The puck that stayed keeps its id; nothing slides into the gap.
+        assert mgr.connected_ids() == [1]
     finally:
         mgr.stop(wait=True)
 
@@ -1446,7 +1461,7 @@ def test_manager_open_runtimeerror_does_not_kill_reconnect(monkeypatch) -> None:
     mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
     mgr.start()
     try:
-        assert _wait_until(lambda: mgr.connected_indices() == [0], timeout=3.0)
+        assert _wait_until(lambda: mgr.connected_ids() == [0], timeout=3.0)
         assert opens["n"] >= 3  # retried past the RuntimeErrors
     finally:
         mgr.stop(wait=True)
@@ -1458,7 +1473,7 @@ def test_manager_disabled_does_not_start(monkeypatch) -> None:  # noqa: ANN001
     mgr = Mouse3DManager(_cfg(enabled=False), backend=backend)
     mgr.start()  # no-op while disabled
     try:
-        assert mgr.connected_indices() == []
+        assert mgr.connected_ids() == []
         assert mgr.update(1.0) == {}
         assert backend.opened == []
     finally:
@@ -1498,8 +1513,9 @@ def test_two_pucks_controller_info_surfaces_each_device(wired) -> None:  # noqa:
         Mouse3DDeviceInfo(path="/dev/hidraw2", product_name="SpaceNavigator", serial="SN1"),
         Mouse3DDeviceInfo(path="/dev/hidraw3", product_name="SpaceExplorer", serial="SN2"),
     ]
+    manager.update(0.016)
     info = manager.get_controller_info()
-    assert [c["name"] for c in info] == ["3D Mouse", "3D Mouse"]
+    assert [c["name"] for c in info] == ["SpaceNavigator", "SpaceExplorer"]
     assert [c["controller_index"] for c in info] == [0, 1]
     assert [c["marker_id"] for c in info] == [10, 11]
     assert [c["product_name"] for c in info] == ["SpaceNavigator", "SpaceExplorer"]
@@ -1529,7 +1545,8 @@ def test_two_pucks_plus_gamepad_unified_order(wired) -> None:  # noqa: ANN001
         Mouse3DDeviceInfo(path="/dev/hidraw3"),
     ]
     manager.gamepad_handler.joysticks = {0: object()}
-    # Mice first: mouse0=c1->10, mouse1=c2->11, gamepad0=c3->12.
+    manager.update(0.016)
+    # No port keys, so today's order: mouse0=c1->10, mouse1=c2->11, gamepad0=c3->12.
     assert manager.controller_marker_id(0) == 10
     assert manager.controller_marker_id(1) == 11
     assert manager.controller_marker_id(2) == 12
@@ -1576,16 +1593,16 @@ def test_manager_status_accessors_report_connected_puck() -> None:
     _seed_manager(mgr, {"/dev/hidraw2": _connected_handler(path="/dev/hidraw2")})
     assert mgr.available is True
     assert mgr.connected is True
-    assert mgr.connected_indices() == [0]
-    assert [d.path for d in mgr.connected_devices()] == ["/dev/hidraw2"]
+    assert mgr.connected_ids() == [0]
+    assert [d.path for d in mgr.connected_devices().values()] == ["/dev/hidraw2"]
 
 
 def test_manager_status_accessors_when_handler_not_open() -> None:
     mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
     _seed_manager(mgr, {"/dev/hidraw2": _handler()})  # handler present but not connected
     assert mgr.connected is False
-    assert mgr.connected_indices() == []
-    assert mgr.connected_devices() == []
+    assert mgr.connected_ids() == []
+    assert mgr.connected_devices() == {}
 
 
 def test_manager_latest_button_scans_pucks_in_order() -> None:
@@ -1767,7 +1784,8 @@ def test_pyspacemouse_backend_open_delegates_to_open_by_path(monkeypatch) -> Non
 def test_mouse3d_unified_idx_returns_none_when_slot_absent(wired) -> None:  # noqa: ANN001
     manager, _app = wired
     # A local index with no matching mouse3d slot resolves to None (no marker).
-    assert manager._mouse3d_unified_idx(0, [("gamepad", 0)]) is None
+    pad_slot = SlotEntry(kind="gamepad", key=None, name="Pad", state="connected", local_id=0)
+    assert manager._mouse3d_unified_idx(0, (pad_slot,)) is None
 
 
 def test_mouse3d_update_noops_when_slot_resolves_no_marker(wired) -> None:  # noqa: ANN001
@@ -2099,3 +2117,186 @@ def test_worker_survives_an_unexpected_open_refusal() -> None:
         assert h.connected is False
     finally:
         h.stop(wait=True)
+
+
+# --------------------------------------------------------------------------- #
+# Stable ids, where each puck is plugged in, first-scan settling, Identify
+# --------------------------------------------------------------------------- #
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 10.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class _LedDevice(FakeDevice):
+    """A puck whose profile names an LED; records every LED write."""
+
+    def __init__(self, states: list[object] | None = None, *, led: bool = True) -> None:
+        super().__init__(states)
+        self.info = SimpleNamespace(led_id=(4, 1) if led else None)
+        self.leds: list[bool] = []
+
+    def set_led(self, state: bool) -> None:
+        self.leds.append(state)
+
+
+def test_enumerate_records_the_ids_and_socket_of_each_puck(monkeypatch) -> None:  # noqa: ANN001
+    class _Enum:
+        def find(self):  # noqa: ANN202
+            return [_fake_hid_device(0x256F, 0xC635, "/dev/hidraw2", name="Nav")]
+
+    fake_easyhid = types.ModuleType("easyhid")
+    fake_easyhid.Enumeration = _Enum
+    monkeypatch.setitem(sys.modules, "easyhid", fake_easyhid)
+    monkeypatch.setattr(mouse3d_module, "resolve_key", lambda path: {"/dev/hidraw2": "usb:h:1"}.get(path))
+    (info,) = _PySpaceMouseBackend().enumerate()
+    assert (info.vendor_id, info.product_id, info.port_key) == (0x256F, 0xC635, "usb:h:1")
+
+
+def test_a_manager_that_never_started_has_nothing_to_wait_for() -> None:
+    assert Mouse3DManager(_cfg(enabled=False), backend=_FakeBackend([], {})).initial_scan_settled() is True
+
+
+def test_the_first_scan_settles_once_every_puck_has_tried_to_open(monkeypatch) -> None:  # noqa: ANN001
+    _fast_manager(monkeypatch)
+    release = threading.Event()
+
+    def _slow_open():  # noqa: ANN202
+        release.wait(2.0)
+        return FakeDevice()
+
+    backend = _FakeBackend([Mouse3DDeviceInfo(path="/dev/hidraw2")], {"/dev/hidraw2": _slow_open})
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    mgr.start()
+    try:
+        assert _wait_until(lambda: backend.opened == ["/dev/hidraw2"])
+        assert mgr.initial_scan_settled() is False
+        release.set()
+        assert _wait_until(mgr.initial_scan_settled)
+    finally:
+        release.set()
+        mgr.stop(wait=True)
+    assert mgr.initial_scan_settled() is True
+
+
+def test_a_first_scan_that_finds_no_puck_settles(monkeypatch) -> None:  # noqa: ANN001
+    _fast_manager(monkeypatch)
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
+    mgr.start()
+    try:
+        assert _wait_until(mgr.initial_scan_settled)
+    finally:
+        mgr.stop(wait=True)
+
+
+def test_a_missing_backend_still_counts_as_a_first_attempt() -> None:
+    handler = Mouse3DHandler(_cfg(), device_factory=None)
+    handler._resolve_factory = lambda: (_ for _ in ()).throw(ImportError("no pyspacemouse"))  # type: ignore[method-assign]
+    handler._run(threading.Event())
+    assert handler.first_attempt_done is True
+
+
+def test_a_puck_records_when_it_was_last_used() -> None:
+    clock = _Clock()
+    handler = Mouse3DHandler(_cfg(), device_factory=lambda: None, clock=clock)
+    handler._snapshot = _state()
+    handler.update(0.016)
+    assert handler.last_input_at is None
+    handler._snapshot = _state(x=0.5)
+    handler.update(0.016)
+    assert handler.last_input_at == 10.0
+    clock.now = 11.0
+    handler._snapshot = _state(buttons=[0, 1])
+    handler.update(0.016)
+    assert handler.last_input_at == 11.0
+
+
+def test_the_manager_reports_last_use_by_instance_id() -> None:
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
+    used = _connected_handler(path="/dev/hidraw2")
+    used.instance_id = 4
+    used._last_input_at = 3.0
+    idle = _connected_handler(path="/dev/hidraw3")
+    idle.instance_id = 5
+    _seed_manager(mgr, {"/dev/hidraw2": used, "/dev/hidraw3": idle})
+    assert mgr.last_input() == {4: 3.0}
+
+
+@pytest.mark.parametrize(
+    ("connected", "has_led", "accepted"), [(True, True, True), (True, False, False), (False, True, False)]
+)
+def test_identify_needs_an_open_puck_with_an_led(connected: bool, has_led: bool, accepted: bool) -> None:
+    handler = _handler()
+    handler._connected = connected
+    handler._has_led = has_led
+    assert handler.request_identify() is accepted
+
+
+def test_identify_blinks_on_schedule_and_leaves_the_led_dark() -> None:
+    """The LED rests dark, so the blink must start lit to be seen and end dark."""
+    clock = _Clock()
+    handler = Mouse3DHandler(_cfg(), device_factory=lambda: None, clock=clock)
+    handler._connected = handler._has_led = True
+    device = _LedDevice()
+    assert handler.request_identify()
+    handler._drive_identify(device)
+    assert device.leds == [True]
+    clock.now += 0.24
+    handler._drive_identify(device)
+    assert device.leds == [True]
+    clock.now += 0.01
+    handler._drive_identify(device)
+    assert device.leds == [True, False]
+    clock.now += 5.0
+    handler._drive_identify(device)
+    assert device.leds == [True, False, True, False, True, False]
+
+
+def test_a_failed_led_write_abandons_the_blink() -> None:
+    handler = _handler()
+    handler._connected = handler._has_led = True
+
+    class _Broken(_LedDevice):
+        def set_led(self, state: bool) -> None:
+            super().set_led(state)
+            raise OSError("write failed")
+
+    device = _Broken()
+    handler.request_identify()
+    handler._drive_identify(device)
+    handler._drive_identify(device)
+    assert device.leds == [True]
+    assert handler._blink_due == []
+
+
+def test_identify_runs_on_the_read_thread(monkeypatch) -> None:  # noqa: ANN001
+    _fast_manager(monkeypatch)
+    device = _LedDevice()
+    backend = _FakeBackend([Mouse3DDeviceInfo(path="/dev/hidraw2")], {"/dev/hidraw2": lambda: device})
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    mgr.start()
+    try:
+        assert _wait_until(lambda: mgr.connected_ids() == [0])
+        assert mgr.identify(0) is True
+        assert _wait_until(lambda: device.leds == list(mouse3d_module._IDENTIFY_BLINKS), timeout=3.0)
+        assert mgr.identify(99) is False
+    finally:
+        mgr.stop(wait=True)
+
+
+def test_a_puck_without_led_support_is_not_blinked(monkeypatch) -> None:  # noqa: ANN001
+    _fast_manager(monkeypatch)
+    device = _LedDevice(led=False)
+    backend = _FakeBackend([Mouse3DDeviceInfo(path="/dev/hidraw2")], {"/dev/hidraw2": lambda: device})
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    mgr.start()
+    try:
+        assert _wait_until(lambda: mgr.connected_ids() == [0])
+        assert mgr.identify(0) is False
+    finally:
+        mgr.stop(wait=True)
+    assert device.leds == []

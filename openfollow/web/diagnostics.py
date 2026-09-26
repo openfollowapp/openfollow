@@ -513,8 +513,16 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
     controllers = stats.get("controllers") or {}
     rows.append(
         f"  Controllers:            {controllers.get('connected_count', 0)} connected, "
+        f"{controllers.get('missing_count', 0)} missing, "
         f"{controllers.get('mapped_count', 0)} mapped to a marker"
     )
+    for item in controllers.get("items") or []:
+        marker = item.get("marker_id")
+        rows.append(
+            f"    C{int(item.get('controller_index', 0)) + 1:<3} {item.get('state', ''):<9} "
+            f"marker {marker if marker is not None else '-':<4} {item.get('name', '') or '(unnamed)'} "
+            f"({item.get('port_label', '') or 'no stable port'})"
+        )
     system = stats.get("system") or {}
     out_res = system.get("output_resolution")
     rows.append(f"  Output resolution:      {_fmt_resolution(out_res) if out_res else '- (no canvas)'}")
@@ -2684,6 +2692,7 @@ def collect_gamepad_runtime(p: DiagnosticsProviders) -> list[str]:
         # The key is SDL's instance id, which grows with every reconnect; it is not the slot.
         rows.append(f"  [instance {pad.get('index')}] {pad.get('name', '') or '(unnamed)'}")
         rows.append(f"      guid:    {pad.get('guid', '') or '(none)'}")
+        rows.append(f"      port:    {pad.get('port_key') or '(none)'}")
         if pad.get("is_game_controller"):
             mode = "X-input (SDL game controller – preferred)"
         else:

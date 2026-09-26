@@ -91,10 +91,16 @@ class FakeJoystick:
         # which is what SDL hands out on a fresh start.
         self.instance_id = instance_id
         self.quit_called = False
+        self.can_rumble = True
+        self.rumbles: list[tuple[float, float, int]] = []
 
     # Surface read by the handler
     def quit(self) -> None:
         self.quit_called = True
+
+    def rumble(self, low_frequency: float, high_frequency: float, duration: int) -> bool:
+        self.rumbles.append((low_frequency, high_frequency, duration))
+        return self.can_rumble
 
     def get_numbuttons(self) -> int:
         return len(self._buttons)
@@ -206,7 +212,7 @@ def stubbed_pygame(monkeypatch):
 
     events: list[object] = []
     posted: list[object] = []
-    state = {"count": 0, "factories": {}, "instance_ids": {}, "lookup": False, "pucks": set()}
+    state = {"count": 0, "factories": {}, "instance_ids": {}, "lookup": False, "pucks": set(), "paths": {}}
 
     monkeypatch.setattr(pygame, "get_init", lambda: True)
     monkeypatch.setattr(pygame, "init", lambda: None)
@@ -228,6 +234,7 @@ def stubbed_pygame(monkeypatch):
     monkeypatch.setattr(gp, "_device_instance_id", lambda idx: state["instance_ids"].get(idx))
     monkeypatch.setattr(gp, "_instance_id_lookup_available", lambda: state["lookup"])
     monkeypatch.setattr(gp, "_is_spacemouse", lambda idx: idx in state["pucks"])
+    monkeypatch.setattr(gp, "_device_path", lambda idx: state["paths"].get(idx))
     monkeypatch.setattr(pygame.event, "get", lambda: list(events))
     monkeypatch.setattr(pygame.event, "post", lambda e: posted.append(e))
 
@@ -3726,3 +3733,167 @@ class TestStickPrimingAfterDetection:
         assert 0 in handler._stick_unprimed
         handler._cleanup_failed([0])
         assert 0 not in handler._stick_unprimed
+
+
+# --------------------------------------------------------------------------- #
+# Where each pad is plugged in, whether it is in use, and identifying it
+# --------------------------------------------------------------------------- #
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 50.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _pads(stubbed_pygame, monkeypatch, *joys: FakeJoystick, keys: dict[str, str] | None = None) -> None:
+    """Attach ``joys`` at SDL indices 0.., their nodes ``/dev/input/event<index>``."""
+    stubbed_pygame["state"]["count"] = len(joys)
+    stubbed_pygame["state"]["factories"] = {i: (lambda idx, j=joy: j) for i, joy in enumerate(joys)}
+    stubbed_pygame["state"]["paths"] = {i: f"/dev/input/event{i}" for i in range(len(joys))}
+    monkeypatch.setattr(gp, "resolve_key", lambda node: (keys or {}).get(node))
+
+
+class TestDevicePath:
+    @pytest.fixture(autouse=True)
+    def _fresh_lookup(self):
+        lookup = gp._sdl_device_fn
+        lookup.cache_clear()
+        yield
+        lookup.cache_clear()
+
+    def test_the_node_sdl_reports_is_decoded(self, monkeypatch) -> None:
+        monkeypatch.setattr(gp, "_sdl_device_fn", lambda symbol, restype: lambda idx: b"/dev/input/event3")
+        assert gp._device_path(0) == "/dev/input/event3"
+
+    @pytest.mark.parametrize("raw", [None, b""])
+    def test_no_node_is_no_path(self, monkeypatch, raw) -> None:
+        monkeypatch.setattr(gp, "_sdl_device_fn", lambda symbol, restype: lambda idx: raw)
+        assert gp._device_path(0) is None
+
+    def test_an_sdl_without_the_lookup_is_no_path(self, monkeypatch) -> None:
+        monkeypatch.setattr(gp, "_sdl_device_fn", lambda symbol, restype: None)
+        assert gp._device_path(0) is None
+
+    def test_the_lookup_resolves_in_pygames_own_sdl(self) -> None:
+        assert gp._sdl_device_fn("SDL_JoystickPathForIndex", ctypes.c_char_p) is not None
+        assert gp._device_path(10_000) is None
+
+
+class TestPortKey:
+    def test_each_pad_records_the_socket_it_is_in(self, stubbed_pygame, monkeypatch) -> None:
+        _pads(
+            stubbed_pygame,
+            monkeypatch,
+            FakeJoystick(name="Left"),
+            FakeJoystick(name="Right"),
+            keys={"/dev/input/event0": "usb:h:2", "/dev/input/event1": "usb:h:1"},
+        )
+        handler, _ = make_handler(stubbed_pygame)
+        assert handler.device_identities() == {0: ("usb:h:2", "Left"), 1: ("usb:h:1", "Right")}
+        assert [(info.index, info.port_key) for info in handler.runtime_snapshot()] == [(0, "usb:h:2"), (1, "usb:h:1")]
+
+    def test_a_pad_with_no_socket_has_no_key(self, stubbed_pygame, monkeypatch) -> None:
+        _pads(stubbed_pygame, monkeypatch, FakeJoystick(name="Wireless"))
+        handler, _ = make_handler(stubbed_pygame)
+        assert handler.device_identities() == {0: (None, "Wireless")}
+
+    def test_the_connect_log_names_the_socket(self, stubbed_pygame, monkeypatch, caplog) -> None:
+        _pads(stubbed_pygame, monkeypatch, FakeJoystick(), keys={"/dev/input/event0": "usb:h:1"})
+        with caplog.at_level("INFO", logger=gp.__name__):
+            make_handler(stubbed_pygame)
+        assert "port: usb:h:1" in caplog.text
+
+
+class TestLastInput:
+    def _handler(self, stubbed_pygame, monkeypatch, joy: FakeJoystick) -> tuple[GamepadHandler, _Clock]:
+        _pads(stubbed_pygame, monkeypatch, joy)
+        clock = _Clock()
+        handler = GamepadHandler(FakeApp(), clock=clock)
+        return handler, clock
+
+    def test_an_idle_pad_has_no_input(self, stubbed_pygame, monkeypatch) -> None:
+        handler, _ = self._handler(stubbed_pygame, monkeypatch, FakeJoystick())
+        handler.update(0.016)
+        assert handler.last_input() == {}
+
+    def test_a_held_button_counts(self, stubbed_pygame, monkeypatch) -> None:
+        joy = FakeJoystick()
+        handler, clock = self._handler(stubbed_pygame, monkeypatch, joy)
+        joy.press(handler._btn_reset_id)
+        handler.update(0.016)
+        assert handler.last_input() == {0: 50.0}
+        clock.now = 51.0
+        joy.release(handler._btn_reset_id)
+        handler.update(0.016)
+        assert handler.last_input() == {0: 50.0}
+
+    def test_any_named_button_counts_when_the_bus_reads_it(self, stubbed_pygame, monkeypatch) -> None:
+        # In the app the input event bus reads every named button each frame,
+        # so a button bound to no action lights the dot too.
+        joy = FakeJoystick()
+        _pads(stubbed_pygame, monkeypatch, joy)
+        handler = GamepadHandler(FakeApp(), clock=_Clock(), event_bus=InputEventBus())
+        joy.press(gp.BUTTON_NAME_TO_ID["START"])
+        handler.update(0.016)
+        assert handler.last_input() == {0: 50.0}
+
+    def test_a_deflected_stick_counts(self, stubbed_pygame, monkeypatch) -> None:
+        joy = FakeJoystick()
+        handler, _ = self._handler(stubbed_pygame, monkeypatch, joy)
+        joy._axes[0] = 0.9
+        handler.update(0.016)
+        assert 0 in handler.last_input()
+
+    def test_stick_noise_inside_the_deadzone_does_not(self, stubbed_pygame, monkeypatch) -> None:
+        joy = FakeJoystick()
+        handler, _ = self._handler(stubbed_pygame, monkeypatch, joy)
+        joy._axes[0] = 0.05
+        handler.update(0.016)
+        assert handler.last_input() == {}
+
+    def test_a_departed_pad_forgets_its_input(self, stubbed_pygame, monkeypatch) -> None:
+        joy = FakeJoystick()
+        handler, _ = self._handler(stubbed_pygame, monkeypatch, joy)
+        joy.press(handler._btn_reset_id)
+        handler.update(0.016)
+        handler._close_device(0)
+        assert handler.last_input() == {}
+
+    def test_a_pad_dropped_this_frame_leaves_no_input_behind(self, stubbed_pygame, monkeypatch) -> None:
+        handler, _ = self._handler(stubbed_pygame, monkeypatch, FakeJoystick())
+        handler._note_held_buttons({(0, 1): True, (9, 1): True, (0, 2): False})
+        assert handler.last_input() == {0: 50.0}
+
+
+class TestIdentify:
+    def test_a_pad_that_can_rumble_rumbles(self, stubbed_pygame, monkeypatch) -> None:
+        joy = FakeJoystick()
+        _pads(stubbed_pygame, monkeypatch, joy)
+        handler, _ = make_handler(stubbed_pygame)
+        assert handler.identify(0) is True
+        assert joy.rumbles == [(gp._IDENTIFY_STRENGTH, gp._IDENTIFY_STRENGTH, gp._IDENTIFY_MS)]
+
+    def test_a_pad_without_rumble_says_so(self, stubbed_pygame, monkeypatch) -> None:
+        joy = FakeJoystick()
+        joy.can_rumble = False
+        _pads(stubbed_pygame, monkeypatch, joy)
+        handler, _ = make_handler(stubbed_pygame)
+        assert handler.identify(0) is False
+
+    def test_a_pad_that_fails_to_rumble_says_so(self, stubbed_pygame, monkeypatch) -> None:
+        joy = FakeJoystick()
+
+        def _gone(*_args: object) -> bool:
+            raise pygame.error("device removed")
+
+        joy.rumble = _gone  # type: ignore[method-assign]
+        _pads(stubbed_pygame, monkeypatch, joy)
+        handler, _ = make_handler(stubbed_pygame)
+        assert handler.identify(0) is False
+
+    def test_an_unknown_pad_cannot_be_identified(self, stubbed_pygame) -> None:
+        handler, _ = make_handler(stubbed_pygame)
+        assert handler.identify(42) is False

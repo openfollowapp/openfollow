@@ -24,7 +24,7 @@ Use this panel when your controller's layout doesn't match the standard Xbox ref
 
 The detection table shows each physical button (A, B, X, Y, LB, RB, Back, Start, D-Pad directions), the logical name OpenFollow assigned it, and the raw hardware ID. LT and RT trigger state (normal or swapped) is shown beneath the table.
 
-> Re-run the wizard if you swap to a different physical unit or change the controller's mode. A GUID mismatch is reported in the diagnostics bundle under Gamepad controllers.
+> Re-run the wizard if you swap to a different model or change the controller's mode; another pad of the same model shares the mapping. A GUID mismatch is reported in the diagnostics bundle under Gamepad controllers.
 
 ## Button Mapping
 
@@ -43,7 +43,7 @@ Controls active during show operation.
 - **Marker fader speed (s)** – seconds a full stick deflection takes to sweep the fader end to end. Range 0.05–60 s. Default: `1.0`. Lower values give faster response; higher values give finer resolution over slow sweeps.
 - **Speed −** / **Speed +** – step tracking speed down or up through the configured range. Defaults: `LB` / `RB`.
 - **Move Z−** / **Move Z+** – lower or raise the marker's height. Defaults: `LT` / `RT`.
-- **Next Marker** / **Prev Marker** – cycle which marker this controller drives. Defaults: `D-Pad Right` / `D-Pad Left`. These are suppressed automatically when more than one controller is connected – gamepads and 3D mice share one numbering – since each controller is pinned to its own marker by plug order.
+- **Next Marker** / **Prev Marker** – cycle which marker this controller drives. Defaults: `D-Pad Right` / `D-Pad Left`. These are suppressed automatically when more than one controller is connected – gamepads and 3D mice share one numbering – since each controller is pinned to its own marker by the USB socket it is plugged into (see Controller Slots).
 
 ### Menu Navigation
 

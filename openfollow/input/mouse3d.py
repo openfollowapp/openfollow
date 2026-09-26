@@ -23,6 +23,7 @@ import contextlib
 import functools
 import importlib.util
 import io
+import itertools
 import logging
 import threading
 import time
@@ -31,6 +32,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 from openfollow.configuration import MOUSE3D_AXES, _coerce_float
+from openfollow.input.controller_identity import resolve_key
 from openfollow.input.shaping import shape_axis
 
 if TYPE_CHECKING:
@@ -51,6 +53,10 @@ _POLL_S = 0.004
 # reads means it's centered, so a latched non-zero reading is a dropped
 # return-to-center report; re-zero it before the marker glides untouched.
 _RECENTER_AFTER_IDLE_S = 0.2
+# Identify: LED states played this far apart. A puck's LED rests dark, so the
+# blink starts lit and ends dark again.
+_IDENTIFY_BLINKS = (True, False, True, False, True, False)
+_IDENTIFY_BLINK_S = 0.25
 # Move-speed steps per second at full deflection for a ``speed``-mapped axis.
 _SPEED_AXIS_RATE = 6.0
 # Web "Detect" flow: how long to watch for a button press after the click, and
@@ -133,6 +139,10 @@ class Mouse3DDeviceInfo:
     path: str
     product_name: str = ""
     serial: str = ""
+    vendor_id: int = 0
+    product_id: int = 0
+    # The socket the puck is plugged into (see controller_identity), or None.
+    port_key: str | None = None
 
 
 class Mouse3DBackend(Protocol):
@@ -183,6 +193,9 @@ class _PySpaceMouseBackend:
                 path=path,
                 product_name=str(getattr(dev, "product_string", "") or ""),
                 serial=str(getattr(dev, "serial_number", "") or ""),
+                vendor_id=vid,
+                product_id=pid,
+                port_key=resolve_key(path),
             )
         return [by_path[p] for p in sorted(by_path)]
 
@@ -284,8 +297,13 @@ class Mouse3DHandler:
         config: Mouse3DConfig,
         *,
         device_factory: Callable[[], Any] | None = None,
+        instance_id: int = 0,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._cfg = config
+        # Session-unique id the manager hands out; stays while the path does.
+        self.instance_id = instance_id
+        self._clock = clock
         # ``None`` -> lazy ``pyspacemouse.open`` resolved on the worker thread.
         self._device_factory = device_factory
         self._lock = threading.Lock()
@@ -309,6 +327,14 @@ class Mouse3DHandler:
         self._pending_edges: set[int] = set()  # guarded by ``_lock``
         # One warning per run of unexpected open refusals; see ``_open_device``.
         self._open_refusal_logged = False
+        # Set once the worker's first open attempt has finished, either way.
+        self._first_attempt = threading.Event()
+        self._last_input_at: float | None = None
+        # Identify: requested by the web (guarded by ``_lock``), then played by
+        # the worker, which owns the device, as a schedule of LED states.
+        self._has_led = False
+        self._identify_requested = False
+        self._blink_due: list[tuple[float, bool]] = []
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -447,6 +473,24 @@ class Mouse3DHandler:
 
     # -- per-frame consume (GTK thread) ------------------------------------
 
+    @property
+    def first_attempt_done(self) -> bool:
+        """Whether the first try to open the device has finished."""
+        return self._first_attempt.is_set()
+
+    @property
+    def last_input_at(self) -> float | None:
+        """Clock time of this puck's latest deflection or held button."""
+        return self._last_input_at
+
+    def request_identify(self) -> bool:
+        """Blink the puck's LED so it can be picked out; False if it has none."""
+        with self._lock:
+            if not (self._connected and self._has_led):
+                return False
+            self._identify_requested = True
+            return True
+
     def update(self, dt: float) -> Mouse3DUpdate:
         """Map the latest snapshot to a marker-input result for this frame."""
         with self._lock:
@@ -483,6 +527,8 @@ class Mouse3DHandler:
         # Worker-latched presses (may include a tap already released by now) plus
         # the current-frame level edge for a button still held at sample time.
         edges = self._button_edges(snap.buttons) | pending_edges
+        if vx or vy or vz or speed_signal or fader_signal or edges or any(snap.buttons):
+            self._last_input_at = self._clock()
         return Mouse3DUpdate(
             velocity=(vx, vy, vz),
             fader_signal=fader_signal,
@@ -559,12 +605,14 @@ class Mouse3DHandler:
             with self._lock:
                 self._available = False
                 self._import_error = str(exc)
+            self._first_attempt.set()
             return
         with self._lock:
             self._available = True
         backoff = _RECONNECT_MIN_S
         while not stop.is_set():
             device = self._open_device(factory)
+            self._first_attempt.set()
             if device is None:
                 with self._lock:
                     self._connected = False
@@ -574,6 +622,7 @@ class Mouse3DHandler:
                 continue
             with self._lock:
                 self._connected = True
+                self._has_led = _has_led(device)
             try:
                 read_any = self._pump(device, stop)
             finally:
@@ -583,7 +632,9 @@ class Mouse3DHandler:
                     # next connect.
                     self._snapshot = None
                     self._pending_edges = set()
+                    self._identify_requested = False
                 self._worker_prev_buttons = {}
+                self._blink_due = []
                 _safe_close(device)
             # Reset the backoff only once a connection actually delivered a
             # reading; an open that never reads (immediate read error) backs off
@@ -602,6 +653,22 @@ class Mouse3DHandler:
 
         open_fn: Callable[[], Any] = pyspacemouse.open
         return open_fn
+
+    def _drive_identify(self, device: Any) -> None:
+        """Advance a requested blink by clock, between reads, so reading never stops."""
+        with self._lock:
+            requested = self._identify_requested
+            self._identify_requested = False
+        now = self._clock()
+        if requested:
+            self._blink_due = [(now + i * _IDENTIFY_BLINK_S, on) for i, on in enumerate(_IDENTIFY_BLINKS)]
+        while self._blink_due and now >= self._blink_due[0][0]:
+            _due, on = self._blink_due.pop(0)
+            try:
+                device.set_led(on)
+            except Exception:  # noqa: BLE001 - a failed LED write must never kill the read thread
+                logger.debug("3D Mouse LED write failed", exc_info=True)
+                self._blink_due = []
 
     def _open_device(self, factory: Callable[[], Any]) -> Any | None:
         try:
@@ -637,6 +704,7 @@ class Mouse3DHandler:
         read_any = False
         idle_s = 0.0
         while not stop.is_set():
+            self._drive_identify(device)
             try:
                 state = device.read()
             except Exception as exc:  # noqa: BLE001 - a failed read must never kill the read thread
@@ -706,6 +774,9 @@ class Mouse3DManager:
         self._infos: list[Mouse3DDeviceInfo] = []
         self._handlers: dict[str, Mouse3DHandler] = {}
         self._available = backend is not None or not check_mouse3d_dependencies()
+        self._next_id = itertools.count()
+        # Handlers the supervisor's first pass started; None until that pass ran.
+        self._first_scan: list[Mouse3DHandler] | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -721,6 +792,8 @@ class Mouse3DManager:
             return
         stop = threading.Event()
         self._stop = stop
+        with self._lock:
+            self._first_scan = None
         self._thread = threading.Thread(target=self._supervise, args=(stop,), daemon=True, name="Mouse3DMgr")
         self._thread.start()
 
@@ -791,9 +864,15 @@ class Mouse3DManager:
             to_add = [info for info in infos if info.path not in self._handlers]
             started: list[Mouse3DHandler] = []
             for info in to_add:
-                handler = Mouse3DHandler(self._cfg, device_factory=self._opener_for(backend, info.path))
+                handler = Mouse3DHandler(
+                    self._cfg,
+                    device_factory=self._opener_for(backend, info.path),
+                    instance_id=next(self._next_id),
+                )
                 self._handlers[info.path] = handler
                 started.append(handler)
+            if self._first_scan is None:
+                self._first_scan = list(started)
             removed = [self._handlers.pop(path) for path in list(self._handlers) if path not in wanted]
             self._infos = infos
             # Start under the lock so a concurrent ``stop()`` can't interleave
@@ -834,13 +913,36 @@ class Mouse3DManager:
             handlers = list(self._handlers.values())
         return any(handler.connected for handler in handlers)
 
-    def connected_indices(self) -> list[int]:
-        """Local indices (``0..N-1``, sorted-path order) of open pucks."""
-        return list(range(len(self._connected_ordered())))
+    def initial_scan_settled(self) -> bool:
+        """Whether the pucks present at start have all had their first open attempt."""
+        if self._thread is None:
+            return True
+        with self._lock:
+            first = self._first_scan
+        return first is not None and all(handler.first_attempt_done for handler in first)
 
-    def connected_devices(self) -> list[Mouse3DDeviceInfo]:
-        """Identity of each open puck, in local-index order."""
-        return [info for info, _handler in self._connected_ordered()]
+    def connected_ids(self) -> list[int]:
+        """Instance ids of open pucks, in sorted-path order."""
+        return [handler.instance_id for _info, handler in self._connected_ordered()]
+
+    def connected_devices(self) -> dict[int, Mouse3DDeviceInfo]:
+        """Identity of each open puck, by instance id."""
+        return {handler.instance_id: info for info, handler in self._connected_ordered()}
+
+    def last_input(self) -> dict[int, float]:
+        """Instance id -> clock time of that puck's latest deflection or held button."""
+        return {
+            handler.instance_id: handler.last_input_at
+            for _info, handler in self._connected_ordered()
+            if handler.last_input_at is not None
+        }
+
+    def identify(self, instance_id: int) -> bool:
+        """Blink one puck's LED; False if it is not open or has no LED."""
+        for _info, handler in self._connected_ordered():
+            if handler.instance_id == instance_id:
+                return handler.request_identify()
+        return False
 
     def latest_button(self) -> int | None:
         """First currently-pressed button across all open pucks (bindings shared)."""
@@ -913,8 +1015,13 @@ class Mouse3DManager:
     # -- per-frame consume (GTK thread) ------------------------------------
 
     def update(self, dt: float) -> dict[int, Mouse3DUpdate]:
-        """Per-device results keyed by local index (only connected pucks)."""
-        return {idx: handler.update(dt) for idx, (_info, handler) in enumerate(self._connected_ordered())}
+        """Per-device results keyed by instance id (only connected pucks)."""
+        return {handler.instance_id: handler.update(dt) for _info, handler in self._connected_ordered()}
+
+
+def _has_led(device: Any) -> bool:
+    """Whether pyspacemouse knows how to drive this puck's LED."""
+    return getattr(getattr(device, "info", None), "led_id", None) is not None
 
 
 def _safe_close(device: Any) -> None:

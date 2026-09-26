@@ -182,6 +182,10 @@ class WebCommandQueue:
         self._button_detection_requested = threading.Event()
         self._button_detection_cancel_requested = threading.Event()
         self._button_detection_active = threading.Event()
+        # Controller-slot actions from the web (identify / forget, by slot
+        # index), drained on the main loop, which owns the slots.
+        self._slot_actions_lock = threading.Lock()
+        self._slot_actions: list[tuple[str, int]] = []
         self._update_lock = threading.Lock()
         self._update_request: dict[str, str] | None = None
         self._update_status: dict[str, str] = {
@@ -235,6 +239,17 @@ class WebCommandQueue:
 
     def request_button_detection(self) -> None:
         self._button_detection_requested.set()
+
+    def request_slot_action(self, action: str, index: int) -> None:
+        """Queue ``identify`` or ``forget`` for the controller slot at ``index``."""
+        with self._slot_actions_lock:
+            self._slot_actions.append((action, index))
+
+    def consume_slot_actions(self) -> list[tuple[str, int]]:
+        """Take every queued controller-slot action, oldest first."""
+        with self._slot_actions_lock:
+            actions, self._slot_actions = self._slot_actions, []
+        return actions
 
     def consume_button_detection_requested(self) -> bool:
         if self._button_detection_requested.is_set():
@@ -2840,14 +2855,19 @@ class AppRuntimeServices:
         input_manager = getattr(app, "_input_manager", None)
         if input_manager is not None:
             for item in input_manager.get_controller_info():
+                since = item.get("seconds_since_input")
                 controller_items.append(
                     {
                         "controller_index": int(item["controller_index"]),
                         "name": str(item["name"]),
+                        "kind": str(item.get("kind", "")),
+                        "state": str(item.get("state", "connected" if item["connected"] else "missing")),
                         "connected": bool(item["connected"]),
                         "marker_id": (int(item["marker_id"]) if item["marker_id"] is not None else None),
                         "effective_speed": float(item["effective_speed"]),
                         "backend": str(item["backend"]),
+                        "port_label": str(item.get("port_label", "")),
+                        "seconds_since_input": None if since is None else float(since),
                     }
                 )
 
@@ -2894,7 +2914,10 @@ class AppRuntimeServices:
             "video": video_snapshot,
             "controllers": {
                 "connected_count": int(sum(1 for item in controller_items if item["connected"])),
-                "mapped_count": int(sum(1 for item in controller_items if item["marker_id"] is not None)),
+                "missing_count": int(sum(1 for item in controller_items if item["state"] == "missing")),
+                "mapped_count": int(
+                    sum(1 for item in controller_items if item["connected"] and item["marker_id"] is not None)
+                ),
                 "items": controller_items,
             },
             "playback": playback_snapshot,

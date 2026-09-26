@@ -407,8 +407,59 @@ class TestPublishRuntimeStats:
         services.publish_runtime_stats(force=True)
         c = services.get_runtime_stats_snapshot()["controllers"]
         assert c["connected_count"] == 2
-        assert c["mapped_count"] == 2
+        # Mapped counts only connected controllers, so it never exceeds connected.
+        assert c["mapped_count"] == 1
+        # An entry without a state reads as missing once disconnected.
+        assert c["missing_count"] == 1
         assert [item["name"] for item in c["items"]] == ["Xbox", "PS4", "8BitDo"]
+        assert [item["state"] for item in c["items"]] == ["connected", "connected", "missing"]
+
+    def test_controller_slots_carry_their_state_port_and_use(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mgr = _FakeInputManager(
+            [
+                {
+                    "controller_index": 0,
+                    "name": "GameSir",
+                    "kind": "gamepad",
+                    "state": "reserved",
+                    "connected": False,
+                    "marker_id": None,
+                    "effective_speed": 0.0,
+                    "backend": "",
+                    "port_label": "USB 2 · port 1",
+                    "seconds_since_input": None,
+                },
+                {
+                    "controller_index": 1,
+                    "name": "SpaceNavigator",
+                    "kind": "mouse3d",
+                    "state": "connected",
+                    "connected": True,
+                    "marker_id": 11,
+                    "effective_speed": 2.0,
+                    "backend": "mouse3d",
+                    "port_label": "USB 1 · port 2",
+                    "seconds_since_input": 0.25,
+                },
+            ]
+        )
+        self._prime(services, input_manager=mgr)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        c = services.get_runtime_stats_snapshot()["controllers"]
+        assert (c["connected_count"], c["missing_count"], c["mapped_count"]) == (1, 0, 1)
+        reserved, puck = c["items"]
+        assert (reserved["state"], reserved["port_label"], reserved["seconds_since_input"]) == (
+            "reserved",
+            "USB 2 · port 1",
+            None,
+        )
+        assert (puck["kind"], puck["seconds_since_input"]) == ("mouse3d", 0.25)
 
     def test_detector_present_delegates_to_performance_stats(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -613,6 +664,7 @@ class TestGamepadRuntimeSnapshot:
             is_game_controller=True,
             matches_calibration=False,
             calibration_stored=True,
+            port_key="usb:h:1",
         )
         services._app._input_manager = SimpleNamespace(
             gamepad_handler=SimpleNamespace(runtime_snapshot=lambda: [info]),
@@ -630,6 +682,7 @@ class TestGamepadRuntimeSnapshot:
                 "is_game_controller": True,
                 "matches_calibration": False,
                 "calibration_stored": True,
+                "port_key": "usb:h:1",
             }
         ]
 

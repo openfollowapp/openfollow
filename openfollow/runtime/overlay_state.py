@@ -87,9 +87,12 @@ class MarkerOverlayData:
     online: bool = True
     # Catalog name; empty falls back to M<id>.
     name: str = ""
-    # Controller binding for marker card badge.
+    # Controller binding for marker card badge. A bound controller that is not
+    # connected is missing: its slot still owns this marker.
     controller_idx: int | None = None
     controller_connected: bool = False
+    # On/off phase of an Identify flash on this card, set per frame.
+    identify_flash: bool = False
     is_controlled: bool = False
     # Per-controlled-marker gamepad fader value (0..1) or None.
     marker_fader: float | None = None

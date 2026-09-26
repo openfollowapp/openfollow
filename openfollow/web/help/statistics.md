@@ -32,7 +32,7 @@ The first line is the station's reading of how far the connection got before it 
 System health for the station hardware.
 
 - **IP** – the network address this station is reachable on. Useful for pointing another tool or peer at it.
-- **Controllers** – number of input controllers (gamepads, MIDI devices, etc.) currently connected. A drop to zero during a show indicates a disconnected or unpowered device.
+- **Controllers** – gamepads and 3D mice connected, and how many are missing. A red warning above the list names each missing controller, the marker its slot drives and the port it was in; the Controller Slots section on the Input tab shows the rest.
 - **CPU** – processor load as a percentage. Sustained values above roughly 80–90 % can cause frame drops or tracking lag.
 - **RAM** – memory usage as a percentage. Approaching 100 % on a Raspberry Pi typically causes slowdowns.
 - **Temperature** – processor temperature in degrees Celsius; `N/A` on platforms without a thermal sensor. On a Raspberry Pi, sustained values above 80 °C may trigger thermal throttling, visible as CPU spikes paired with frame-rate drops.

@@ -109,6 +109,14 @@
         <div class="stat-panel-head">
             <h3 class="stat-panel-title">Device</h3>
         </div>
+% missing_controllers = [c for c in controllers.get('items', []) if c.get('state') == 'missing']
+% if missing_controllers:
+        <div class="stat-warn" role="alert" style="margin: 0 0 10px; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255, 120, 120, 0.45); background: rgba(255, 76, 76, 0.1); color: #ffd6d6; font-size: 0.85rem;">
+% for c in missing_controllers:
+            <div><strong>C{{int(c.get('controller_index', 0)) + 1}} missing</strong>{{(' · marker %s' % c['marker_id']) if c.get('marker_id') is not None else ''}}{{(' · ' + c['name']) if c.get('name') else ''}}{{(' (' + c['port_label'] + ')') if c.get('port_label') else ''}}</div>
+% end
+        </div>
+% end
         <dl class="metric-list">
             <div class="metric-row">
                 <dt class="metric-label">IP</dt>
@@ -116,7 +124,7 @@
             </div>
             <div class="metric-row">
                 <dt class="metric-label">Controllers</dt>
-                <dd class="metric-value">{{controllers.get('connected_count', 0)}} connected</dd>
+                <dd class="metric-value">{{controllers.get('connected_count', 0)}} connected{{(' · %d missing' % controllers['missing_count']) if controllers.get('missing_count') else ''}}</dd>
             </div>
             <div class="metric-row">
                 <dt class="metric-label">CPU</dt>

@@ -659,22 +659,18 @@ consistent. The routing surface is also passed to `GamepadHandler` as a
 get the same marker_id without reaching back into the InputManager. Two
 modes:
 
-- **Single-gamepad mode** – predicate is *exactly one controller
-  connected* (a gamepad or a 3D mouse, counted together) *AND*
+- **Single-gamepad mode** – predicate is *exactly one controller slot*
+  (a gamepad or a 3D mouse, counted together; a missing slot counts) *AND*
   `app._selected_id is not None`. Route to
   `app._selected_id`. DPAD next/prev cycles `_selected_id` – same
   contract as the keyboard.
 - **Multi-gamepad mode** – the fallback: triggered when the
-  single-gamepad predicate fails, i.e. **2+ controllers connected**
-  *or* **one controller with no selection**. Fixed slot mapping
-  `app._controlled_ids[unified_idx]` (derived from
-  `controlled_marker_ids`), so each physical controller keeps its own
-  marker regardless of the shared `app._selected_id`. `unified_idx` is the
-  controller's position in `_controller_slots()`: 3D mice first (sorted
-  hidraw path), then gamepads in SDL instance-id order, which is plug order.
-  Unplugging a controller shifts every later one down a slot, and a
-  replugged pad gets a new, higher instance id and moves to the end.
-  **DPAD next/prev
+  single-gamepad predicate fails, i.e. **2+ slots** *or* **one slot with
+  no selection**. Fixed slot mapping `app._controlled_ids[unified_idx]`
+  (derived from `controlled_marker_ids`), so each physical controller keeps
+  its own marker regardless of the shared `app._selected_id`. `unified_idx`
+  is the controller's position in `_controller_slots()`, see "Controller
+  slots" below. **DPAD next/prev
   is disabled in this mode** – pressing it is a no-op at flag-set time
   (the edge state in `_button_prev` still advances normally so a later
   single-pad disconnect leaves no stuck carryover, and the OSC trigger
@@ -687,6 +683,37 @@ a new consumer (`controller_idx` is the gamepad handler's key, the SDL
 instance id, not a slot) – route through `_gamepad_marker_id` (or the injected
 `marker_resolver` inside `GamepadHandler`) so HUD, speed, movement, and
 reset stay in sync.
+
+### Controller slots (`input/controller_slots.py`, `input/controller_identity.py`)
+Which slot a controller holds comes from the **USB socket** it is plugged
+into, never the order it was probed in. `controller_identity.resolve_key`
+walks a device node (`/dev/input/event*` from `SDL_JoystickPathForIndex`, a
+puck's `/dev/hidraw*`) through sysfs to the USB device: the key is
+`usb:<host controller path>:<devpath>`, and `devpath` excludes the bus
+number, so a renumbered bus and a controller's USB 2 / USB 3 root hubs keep
+one socket's key. Bluetooth keys by address; anything else is keyless.
+
+`ControllerSlotTable` is the session table, owned by `InputManager` and
+refreshed once per frame (`_refresh_slots`, after gamepad hotplug, before
+routing); other threads read its immutable `slots` tuple. It is seeded in
+port order until the 3D mouse's first scan settles (`initial_scan_settled`,
+or 3 s), then frozen:
+- a departed controller leaves its slot **missing**, keeping its marker, so
+  nobody behind it moves and OSC `cN` keeps sending;
+- an arrival reclaims a missing / reserved slot of its kind with its key,
+  else takes the lowest one of its kind (any kind when there is exactly one
+  slot), else appends;
+- **Forget** (web) makes a missing slot **reserved**: it keeps its place,
+  drives no marker, raises no warning;
+- switching gamepads or the 3D mouse on or off rebuilds from port order, and
+  a disabled kind holds no slots.
+
+Nothing persists: every start numbers by socket again. 3D mice carry
+session-unique instance ids (like SDL's), so a puck keeps its id while a
+sibling comes and goes. `identify_slot` rumbles a pad (main loop) or blinks a
+puck's LED (its read thread, scheduled between reads) and flashes the slot's
+marker card; `get_controller_info` carries each slot's state, kind, port
+label and time since last use for the web Controller Slots table.
 
 ### Speed per marker (`AppConfig.marker_move_speeds`)
 Move speed is stored **per marker** in a `dict[int, float]` keyed by
@@ -717,7 +744,9 @@ and `is_controlled`, populated by reverse-mapping
 `InputManager.get_controller_info()`. The marker card renders a small
 top-left badge "C1" / "C2" / … (the unified index plus one: operator-facing
 numbering starts at 1, a 0 never appears in the UI) mirroring the status dot
-top-right; a muted "C1·" suffix marks a disconnected pad. Connected pads
+top-right. A card whose controller is missing turns red with the badge
+"C1 missing", and the top-right status badge carries one row per missing
+controller; Identify flashes the card. Connected pads
 with no marker (more pads than `controlled_marker_ids`) surface in the
 Settings menu's info card under "Unbound controllers". Assignment stays
 **implicit**: the unified slot order (see the routing section above) × the

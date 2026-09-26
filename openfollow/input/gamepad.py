@@ -11,6 +11,7 @@ import math
 import os
 import sys
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
@@ -23,6 +24,7 @@ except ImportError:  # pragma: no cover - depends on runtime pygame build
     sdl2_controller = None  # type: ignore[assignment]
 
 from openfollow.input._joystick_protocol import ControllerProtocol, JoystickProtocol
+from openfollow.input.controller_identity import resolve_key
 from openfollow.input.shaping import apply_curve, shape_axis
 
 if TYPE_CHECKING:
@@ -34,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 @functools.cache
-def _sdl_device_fn(symbol: str, restype: Any) -> Callable[[int], int] | None:
+def _sdl_device_fn(symbol: str, restype: Any) -> Callable[[int], Any] | None:
     """An SDL per-device-index query, from the SDL pygame itself loaded.
 
     Resolved through pygame's joystick module so the symbol comes from pygame's
@@ -50,7 +52,7 @@ def _sdl_device_fn(symbol: str, restype: Any) -> Callable[[int], int] | None:
         return None
     fn.restype = restype
     fn.argtypes = [ctypes.c_int]
-    return cast(Callable[[int], int], fn)
+    return cast(Callable[[int], Any], fn)
 
 
 def _sdl_device_instance_id_fn() -> Callable[[int], int] | None:
@@ -63,8 +65,20 @@ def _device_instance_id(device_index: int) -> int | None:
     fn = _sdl_device_instance_id_fn()
     if fn is None:
         return None
-    instance_id = fn(device_index)
+    instance_id = int(fn(device_index))
     return instance_id if instance_id >= 0 else None
+
+
+def _device_path(device_index: int) -> str | None:
+    """Device node SDL reads ``device_index`` from, read without opening it.
+
+    ``/dev/input/event*`` or ``/dev/hidraw*`` on Linux; nothing on macOS.
+    """
+    fn = _sdl_device_fn("SDL_JoystickPathForIndex", ctypes.c_char_p)
+    if fn is None:
+        return None
+    raw = fn(device_index)
+    return os.fsdecode(raw) if raw else None
 
 
 # 3Dconnexion pucks as (vendor, product), kept out of SDL's joystick API: the
@@ -114,6 +128,11 @@ def _is_spacemouse(device_index: int) -> bool:
     if vendor is None or product is None:
         return False
     return (vendor(device_index), product(device_index)) in _SPACEMOUSE_IDS
+
+
+# Identify: a rumble long and strong enough to feel in a hand or on a desk.
+_IDENTIFY_STRENGTH = 0.7
+_IDENTIFY_MS = 900
 
 
 def _spacemouse_blacklist() -> str:
@@ -239,6 +258,8 @@ class ControllerCapabilities:
     num_axes: int = 0
     num_buttons: int = 0
     num_hats: int = 0
+    # The socket the pad is plugged into (see controller_identity), or None.
+    port_key: str | None = None
 
 
 @dataclass
@@ -265,6 +286,7 @@ class ControllerRuntimeInfo:
     matches_calibration: bool
     # True when any calibration (name / guid / raw indices) is on file.
     calibration_stored: bool
+    port_key: str | None = None
 
 
 @dataclass
@@ -326,8 +348,12 @@ class GamepadHandler:
         event_bus: InputEventBus | None = None,
         virtual_faders: VirtualFaderBus | None = None,
         marker_resolver: Callable[[int], int | None] | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.app = app
+        self._clock = clock
+        # Instance id -> when the pad last moved or had a button held.
+        self._last_input: dict[int, float] = {}
         self.deadzone = 0.15
         self.enabled = True
         self.invert_y = False
@@ -688,13 +714,15 @@ class GamepadHandler:
             num_axes=_safe_call(joy.get_numaxes, 0),
             num_buttons=_safe_call(joy.get_numbuttons, 0),
             num_hats=_safe_call(joy.get_numhats, 0),
+            port_key=resolve_key(_device_path(device_index)),
         )
         logger.info(
-            "Gamepad instance %s connected via %s: %s (GUID: %s, axes=%s, buttons=%s)",
+            "Gamepad instance %s connected via %s: %s (GUID: %s, port: %s, axes=%s, buttons=%s)",
             key,
             backend,
             cap.name,
             cap.guid,
+            cap.port_key or "none",
             cap.num_axes,
             cap.num_buttons,
         )
@@ -722,7 +750,13 @@ class GamepadHandler:
 
     def _prune_device_state(self, *, keep: set[int]) -> None:
         """Drop per-device state for every key not in ``keep``."""
-        for state in (self._bumper_state, self._shoulder_axis_baselines, self._button_prev, self._button_bus_prev):
+        for state in (
+            self._bumper_state,
+            self._shoulder_axis_baselines,
+            self._button_prev,
+            self._button_bus_prev,
+            self._last_input,
+        ):
             for key in [k for k in state if k not in keep]:
                 del state[key]
         self._stick_unprimed &= keep
@@ -1184,10 +1218,10 @@ class GamepadHandler:
     def _identity_matches_calibration(self, cap: ControllerCapabilities) -> bool:
         """Whether ``cap`` matches the stored calibration identity.
 
-        GUID is the strong signal (it differs per unit and per hardware
-        mode); the name is the fallback for calibrations saved before a GUID
-        was recorded. With no calibration on file there's nothing to mismatch,
-        so everything matches.
+        GUID is the strong signal: it identifies the model and its hardware
+        mode, not the unit, so two pads of one model match alike. The name is
+        the fallback for calibrations saved before a GUID was recorded. With no
+        calibration on file there's nothing to mismatch, so everything matches.
         """
         if not self._is_calibrated:
             return True
@@ -1222,6 +1256,7 @@ class GamepadHandler:
                     is_game_controller=(cap.backend == "sdl2_controller"),
                     matches_calibration=self._identity_matches_calibration(cap),
                     calibration_stored=self._is_calibrated,
+                    port_key=cap.port_key,
                 )
             )
         return snapshot
@@ -1338,9 +1373,18 @@ class GamepadHandler:
         # cached reads into the next poll (a menu poller, or a later frame).
         self._frame_button_states = {}
         try:
-            return self._poll_and_emit(dt)
+            result = self._poll_and_emit(dt)
+            self._note_held_buttons(self._frame_button_states)
+            return result
         finally:
             self._frame_button_states = None
+
+    def _note_held_buttons(self, frame_buttons: Mapping[tuple[int, int], bool]) -> None:
+        """A button held this frame counts as use, taken from the frame's own reads."""
+        now = self._clock()
+        for (controller_idx, _button_id), pressed in frame_buttons.items():
+            if pressed and controller_idx in self.joysticks:
+                self._last_input[controller_idx] = now
 
     def _poll_and_emit(self, dt: float) -> GamepadUpdate:
         """Poll movement + action edges for every controller and emit bus
@@ -1391,6 +1435,8 @@ class GamepadHandler:
 
                 # Read left stick for X/Y
                 dx, dy, _ = self._read_axes(controller_idx, joystick)
+                if dx or dy:
+                    self._last_input[controller_idx] = self._clock()
 
                 # Discard a stale stick reading from a pad that hasn't centered
                 # since (re)detection, so a restart can't fling the marker.
@@ -1676,6 +1722,26 @@ class GamepadHandler:
             self._get_button(controller_idx, self._btn_speed_down_id),
             self._get_button(controller_idx, self._btn_speed_up_id),
         )
+
+    def last_input(self) -> dict[int, float]:
+        """Instance id -> clock time of that pad's latest movement or held button."""
+        return dict(self._last_input)
+
+    def device_identities(self) -> dict[int, tuple[str | None, str]]:
+        """Instance id -> (port key, name) of every open pad."""
+        with self._capabilities_lock:
+            caps = dict(self.capabilities)
+        return {idx: (caps[idx].port_key, caps[idx].name) for idx in self.joysticks if idx in caps}
+
+    def identify(self, instance_id: int) -> bool:
+        """Rumble one pad so it can be picked out by hand; False if it can't rumble."""
+        joystick = self.joysticks.get(instance_id)
+        if joystick is None:
+            return False
+        try:
+            return bool(joystick.rumble(_IDENTIFY_STRENGTH, _IDENTIFY_STRENGTH, _IDENTIFY_MS))
+        except pygame.error:
+            return False
 
     def get_controller_info(self) -> list[dict[str, Any]]:
         """Get info about connected controllers for HUD display.

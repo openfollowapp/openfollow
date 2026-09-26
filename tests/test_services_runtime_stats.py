@@ -613,6 +613,7 @@ class TestGamepadRuntimeSnapshot:
             is_game_controller=True,
             matches_calibration=False,
             calibration_stored=True,
+            port_key="usb:h:1",
         )
         services._app._input_manager = SimpleNamespace(
             gamepad_handler=SimpleNamespace(runtime_snapshot=lambda: [info]),
@@ -630,6 +631,7 @@ class TestGamepadRuntimeSnapshot:
                 "is_game_controller": True,
                 "matches_calibration": False,
                 "calibration_stored": True,
+                "port_key": "usb:h:1",
             }
         ]
 

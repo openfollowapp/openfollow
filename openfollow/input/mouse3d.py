@@ -53,9 +53,9 @@ _POLL_S = 0.004
 # reads means it's centered, so a latched non-zero reading is a dropped
 # return-to-center report; re-zero it before the marker glides untouched.
 _RECENTER_AFTER_IDLE_S = 0.2
-# Identify: LED states played this far apart. A puck's LED rests dark, so the
-# blink starts lit and ends dark again.
-_IDENTIFY_BLINKS = (True, False, True, False, True, False)
+# Identify: LED states played this far apart. The LED is lit while the puck is
+# in use, so the blink starts dark and ends lit again.
+_IDENTIFY_BLINKS = (False, True, False, True, False, True)
 _IDENTIFY_BLINK_S = 0.25
 # Move-speed steps per second at full deflection for a ``speed``-mapped axis.
 _SPEED_AXIS_RATE = 6.0
@@ -623,6 +623,9 @@ class Mouse3DHandler:
             with self._lock:
                 self._connected = True
                 self._has_led = _has_led(device)
+            # Lit while OpenFollow has the puck open and can use it.
+            if self._has_led:
+                _set_led_quietly(device, True)
             try:
                 read_any = self._pump(device, stop)
             finally:
@@ -635,6 +638,10 @@ class Mouse3DHandler:
                     self._identify_requested = False
                 self._worker_prev_buttons = {}
                 self._blink_due = []
+                # A stop lets go of a puck that is still there; a failed read
+                # means it is gone, with nothing left to switch off.
+                if stop.is_set() and self._has_led:
+                    _set_led_quietly(device, False)
                 _safe_close(device)
             # Reset the backoff only once a connection actually delivered a
             # reading; an open that never reads (immediate read error) backs off
@@ -1022,6 +1029,13 @@ class Mouse3DManager:
 def _has_led(device: Any) -> bool:
     """Whether pyspacemouse knows how to drive this puck's LED."""
     return getattr(getattr(device, "info", None), "led_id", None) is not None
+
+
+def _set_led_quietly(device: Any, on: bool) -> None:
+    try:
+        device.set_led(on)
+    except Exception:  # noqa: BLE001 - the light is a courtesy; reading must go on
+        logger.debug("3D Mouse LED write failed", exc_info=True)
 
 
 def _safe_close(device: Any) -> None:

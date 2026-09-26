@@ -712,7 +712,9 @@ Nothing persists: every start numbers by socket again. 3D mice carry
 session-unique instance ids (like SDL's), so a puck keeps its id while a
 sibling comes and goes. `identify_slot` rumbles a pad (main loop) or blinks a
 puck's LED (its read thread, scheduled between reads) and flashes the slot's
-marker card; `get_controller_info` carries each slot's state, kind, port
+marker card. A puck's LED is lit while its handler has it open, switched off
+when OpenFollow lets go, and left alone when the puck vanished, so the blink
+ends lit; `get_controller_info` carries each slot's state, kind, port
 label and time since last use for the web Controller Slots table.
 
 ### Speed per marker (`AppConfig.marker_move_speeds`)

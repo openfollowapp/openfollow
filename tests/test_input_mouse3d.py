@@ -2236,24 +2236,24 @@ def test_identify_needs_an_open_puck_with_an_led(connected: bool, has_led: bool,
     assert handler.request_identify() is accepted
 
 
-def test_identify_blinks_on_schedule_and_leaves_the_led_dark() -> None:
-    """The LED rests dark, so the blink must start lit to be seen and end dark."""
+def test_identify_blinks_on_schedule_and_ends_lit() -> None:
+    """The LED is lit while the puck is in use, so the blink starts dark and ends lit."""
     clock = _Clock()
     handler = Mouse3DHandler(_cfg(), device_factory=lambda: None, clock=clock)
     handler._connected = handler._has_led = True
     device = _LedDevice()
     assert handler.request_identify()
     handler._drive_identify(device)
-    assert device.leds == [True]
+    assert device.leds == [False]
     clock.now += 0.24
     handler._drive_identify(device)
-    assert device.leds == [True]
+    assert device.leds == [False]
     clock.now += 0.01
     handler._drive_identify(device)
-    assert device.leds == [True, False]
+    assert device.leds == [False, True]
     clock.now += 5.0
     handler._drive_identify(device)
-    assert device.leds == [True, False, True, False, True, False]
+    assert device.leds == [False, True, False, True, False, True]
 
 
 def test_a_failed_led_write_abandons_the_blink() -> None:
@@ -2269,7 +2269,7 @@ def test_a_failed_led_write_abandons_the_blink() -> None:
     handler.request_identify()
     handler._drive_identify(device)
     handler._drive_identify(device)
-    assert device.leds == [True]
+    assert device.leds == [False]
     assert handler._blink_due == []
 
 
@@ -2282,7 +2282,8 @@ def test_identify_runs_on_the_read_thread(monkeypatch) -> None:  # noqa: ANN001
     try:
         assert _wait_until(lambda: mgr.connected_ids() == [0])
         assert mgr.identify(0) is True
-        assert _wait_until(lambda: device.leds == list(mouse3d_module._IDENTIFY_BLINKS), timeout=3.0)
+        blink = list(mouse3d_module._IDENTIFY_BLINKS)
+        assert _wait_until(lambda: device.leds == [True, *blink], timeout=3.0)
         assert mgr.identify(99) is False
     finally:
         mgr.stop(wait=True)
@@ -2300,3 +2301,63 @@ def test_a_puck_without_led_support_is_not_blinked(monkeypatch) -> None:  # noqa
     finally:
         mgr.stop(wait=True)
     assert device.leds == []
+
+
+# --------------------------------------------------------------------------- #
+# The puck's light says OpenFollow can use it
+# --------------------------------------------------------------------------- #
+
+
+def _run_handler(monkeypatch, factory) -> Mouse3DHandler:  # noqa: ANN001
+    monkeypatch.setattr(mouse3d_module, "_RECONNECT_MIN_S", 0.001)
+    handler = Mouse3DHandler(_cfg(enabled=True), device_factory=factory)
+    handler.start()
+    return handler
+
+
+def test_the_light_is_on_while_the_puck_is_open_and_off_when_openfollow_lets_go(monkeypatch) -> None:  # noqa: ANN001
+    device = _LedDevice()
+    handler = _run_handler(monkeypatch, lambda: device)
+    assert _wait_until(lambda: handler.connected)
+    assert device.leds == [True]
+    handler.stop(wait=True)
+    assert device.leds == [True, False]
+
+
+def test_a_puck_that_vanished_is_not_written_to(monkeypatch) -> None:  # noqa: ANN001
+    class _Unplugged(_LedDevice):
+        def read(self) -> object | None:
+            raise OSError("device gone")
+
+    device = _Unplugged()
+    opens = iter([device])
+    handler = _run_handler(monkeypatch, lambda: next(opens, None))
+    try:
+        assert _wait_until(lambda: device.closed)
+        assert device.leds == [True]
+    finally:
+        handler.stop(wait=True)
+    assert device.leds == [True]
+
+
+def test_a_puck_without_an_led_is_never_written_to(monkeypatch) -> None:  # noqa: ANN001
+    device = _LedDevice(led=False)
+    handler = _run_handler(monkeypatch, lambda: device)
+    assert _wait_until(lambda: handler.connected)
+    handler.stop(wait=True)
+    assert device.leds == []
+
+
+def test_a_light_that_fails_does_not_stop_the_puck(monkeypatch) -> None:  # noqa: ANN001
+    class _NoLight(_LedDevice):
+        def set_led(self, state: bool) -> None:
+            super().set_led(state)
+            raise OSError("write failed")
+
+    device = _NoLight([_state(x=0.5)])
+    handler = _run_handler(monkeypatch, lambda: device)
+    try:
+        assert _wait_until(lambda: handler.connected)
+        assert _wait_until(lambda: handler.update(0.016).velocity[0] != 0.0)
+    finally:
+        handler.stop(wait=True)

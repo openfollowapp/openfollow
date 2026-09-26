@@ -9,6 +9,8 @@ Steer the selected marker with a 6DOF "3D Mouse" – a spring-centred puck you p
 
 **Device not found.** If no 3D Mouse is connected the section still saves, but nothing moves. On a fresh device, plug the unit in and the connection is picked up automatically; unplugging and re-plugging recovers on its own.
 
+**The light.** A puck with a light keeps it on while OpenFollow has the puck open and can use it, and turns it off when the 3D Mouse is switched off here or the station stops. A puck that stays dark while the 3D Mouse is enabled is not being read.
+
 ## Axis mapping
 
 The puck senses six motions. Each gets its own row in the form, named for the gesture you make – the same push / pull / tilt / twist motions shown in the 3Dconnexion manual. The config-file key is in parentheses.

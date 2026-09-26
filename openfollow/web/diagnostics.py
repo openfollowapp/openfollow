@@ -2513,7 +2513,12 @@ def render_usb_table(
     _sep = f"  {'-' * 5}  {'-' * 9}  {'-' * 10}  {'-' * 34}  {'-' * 18}  {'-' * 17}  {'-' * 24}"
     rows: list[str] = [_h, _sep]
     counts = {"hub": 0, "midi": 0, "gamepad": 0, "camera": 0, "other": 0, "unclaimed": 0}
-    gamepad_names = [name for g in gamepads or [] if (name := str(g.get("name") or "").strip())]
+    # A pad whose GUID carries USB ids is matched by them alone, never by name.
+    gamepad_names = [
+        name
+        for g in gamepads or []
+        if _sdl_guid_usb_id(g.get("guid")) is None and (name := str(g.get("name") or "").strip())
+    ]
     for d in devices:
         if d.is_hub:
             vis = "(hub)"

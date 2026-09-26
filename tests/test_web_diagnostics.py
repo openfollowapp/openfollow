@@ -1040,6 +1040,22 @@ def test_render_usb_table_falls_back_to_the_name_when_the_guid_carries_no_ids() 
     assert any("gamepad: Xbox 360 Controller" in row for row in out)
 
 
+def test_render_usb_table_never_matches_a_pad_with_usb_ids_by_its_name() -> None:
+    # The webcam shares only the brand with the pad, whose GUID names a different device.
+    out = diag.render_usb_table(
+        [
+            diag.UsbDevice(vid="046d", pid="c21d", name="Gamepad F310", manufacturer="Logitech"),
+            diag.UsbDevice(vid="046d", pid="082d", name="HD Pro Webcam C920", manufacturer="Logitech"),
+        ],
+        midi_ports=[],
+        gamepads=[{"name": "Logitech Gamepad F310", "guid": "030000006d0400001dc2000014010000"}],
+        cameras=["HD Pro Webcam C920"],
+    )
+    webcam = next(row for row in out if "046d:082d" in row)
+    assert webcam.endswith("camera: HD Pro Webcam C920")
+    assert "1 gamepad, 1 camera" in "\n".join(out)
+
+
 def test_render_usb_table_labels_an_unnamed_pad_matched_by_guid_with_its_ids() -> None:
     out = diag.render_usb_table([_PRO2_USB], midi_ports=[], gamepads=[{"name": "  ", "guid": _PRO2_GUID}], cameras=[])
     assert any("gamepad: 2dc8:201e" in row for row in out)

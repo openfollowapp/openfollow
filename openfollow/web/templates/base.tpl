@@ -1901,6 +1901,8 @@
  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
  overflow: hidden;
  }
+ .modal-card.modal-card-large { width: min(820px, 100%); }
+ .modal-card-large .modal-body img { max-width: 100%; height: auto; }
  .modal-header {
  display: flex;
  align-items: center;
@@ -2409,6 +2411,7 @@
  // helper wires Cancel automatically). ``onClose`` fires after
  // the modal closes for any reason (Cancel, ESC, backdrop, the
  // close button, or a footer button that calls ``closeModal``).
+ // ``size: 'large'`` widens the card for long, illustrated content.
  // Returns nothing – caller wires its own confirm logic via
  // ``footerButtons.onClick``. Helper wrappers
  // (``modalPrompt``, ``modalConfirm``) provide the
@@ -2426,6 +2429,8 @@
  _lockModalBackground(!_modalDismissable);
  const closeBtn = root.querySelector('.modal-close');
  if (closeBtn) closeBtn.hidden = !_modalDismissable;
+ const card = root.querySelector('.modal-card');
+ if (card) card.classList.toggle('modal-card-large', opts.size === 'large');
  title.textContent = opts.title || '';
  // Wipe previous content. ``replaceChildren`` is the modern
  // single-call API and avoids the double-set ``innerHTML = ''``
@@ -2602,6 +2607,29 @@
  const div = document.createElement('div');
  div.textContent = value == null ? '' : String(value);
  return div.innerHTML;
+ }
+ // The What's new step an in-app update ends in: this release's notes when
+ // the package carries them, else where to find them. Closing it in any way
+ // marks it seen for this station.
+ async function openfollowShowWhatsNew() {
+ let notes;
+ try {
+ const resp = await fetch('/api/whats-new', { headers: { 'Accept': 'application/json' } });
+ if (!resp.ok) return;
+ notes = await resp.json();
+ } catch (err) {
+ return;
+ }
+ openModal({
+ title: notes.matches ? "What's new in v" + notes.version : 'Updated to v' + notes.version,
+ size: 'large',
+ bodyHTML: notes.matches
+ ? notes.html
+ : '<p>Find the full release notes and changes on '
+ + '<a href="https://openfollow.app/docs" target="_blank" rel="noopener noreferrer">openfollow.app/docs</a>.</p>',
+ footerButtons: [{ label: 'Continue', kind: 'primary', onClick: () => closeModal() }],
+ onClose: () => { fetch('/api/whats-new/dismiss', { method: 'POST' }).catch(() => {}); },
+ });
  }
  // ``modalChooseTemplate`` opens a list-style modal showing every
  // ``.oftemplate`` of a given type. Clicking a row applies
@@ -4444,6 +4472,9 @@
  oscEditorInit(document);
  });
  </script>
+ % if defined('whats_new_pending') and whats_new_pending:
+ <script>document.addEventListener('DOMContentLoaded', openfollowShowWhatsNew);</script>
+ % end
  %# Privilege-password modal. Surfaces whenever a privileged subsystem
  %# (e.g. a network apply) parks a password prompt on the broker. Global so
  %# it works on every page, not just where the prompting action lives; polls

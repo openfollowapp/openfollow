@@ -534,6 +534,14 @@ class ConfigWebServer:
         """Newest release the background online-sync found ("" if up to date)."""
         return self._command_queue.get_update_available()
 
+    def whats_new_pending(self) -> bool:
+        """True when the page should open the updater's What's new step."""
+        return self._command_queue.whats_new_pending()
+
+    def dismiss_whats_new(self, version: str) -> None:
+        """Record that What's new was shown for ``version``."""
+        self._command_queue.dismiss_whats_new(version)
+
     def pending_privilege_password_request(self) -> dict[str, str] | None:
         """Return the active privilege-password prompt or None."""
         return self._command_queue.pending_privilege_password_request()

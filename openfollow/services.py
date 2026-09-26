@@ -151,6 +151,31 @@ def clear_detached_update_state() -> None:
         pass
 
 
+# The installer publishes ``running`` before apt starts this version and
+# ``restarting`` after; finding either at startup means that install started us.
+_UPDATE_INSTALLING_STATES = frozenset({"running", "restarting"})
+# Version whose What's new was last dismissed. ``restarting`` can be written
+# after this process already cleared the file, so the next start would read the
+# same install again without it.
+_WHATS_NEW_SEEN_FILE = "/var/lib/openfollow/whats-new-seen"
+
+
+def _read_whats_new_seen() -> str:
+    try:
+        with open(_WHATS_NEW_SEEN_FILE, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _write_whats_new_seen(version: str) -> None:
+    try:
+        with open(_WHATS_NEW_SEEN_FILE, "w", encoding="utf-8") as fh:
+            fh.write(version)
+    except OSError:
+        logger.warning("Could not record that What's new was seen", exc_info=True)
+
+
 _AUTOSTART_NOT_APPLIED = "The station accepted the change but did not apply it."
 _AUTOSTART_CHANGE_FAILED = "The setting could not be changed."
 
@@ -189,7 +214,18 @@ class WebCommandQueue:
             "message": "",
             "error": "",
         }
-        # Fresh boot: clear a completed/failed detached update.
+        import openfollow
+
+        # Fresh boot: clear a completed/failed detached update, noting first
+        # whether that install is what started this process.
+        detached = _read_detached_update_state()
+        self._whats_new_pending = threading.Event()
+        if (
+            detached is not None
+            and detached["state"] in _UPDATE_INSTALLING_STATES
+            and _read_whats_new_seen() != openfollow.__version__
+        ):
+            self._whats_new_pending.set()
         clear_detached_update_state()
         # Generic privilege-password prompt. The PrivilegeBroker uses this
         # any time a sudoers grant is missing and a password is needed to
@@ -340,6 +376,16 @@ class WebCommandQueue:
         """Return the newest available release tag, or "" when up to date."""
         with self._update_available_lock:
             return self._update_available
+
+    def whats_new_pending(self) -> bool:
+        """True from an in-app update's first start until What's new is dismissed."""
+        return self._whats_new_pending.is_set()
+
+    def dismiss_whats_new(self, version: str) -> None:
+        """Mark What's new seen for ``version``, so no later start shows it again."""
+        if self._whats_new_pending.is_set():
+            self._whats_new_pending.clear()
+            _write_whats_new_seen(version)
 
     # ----- generic privilege password prompt -----------
 

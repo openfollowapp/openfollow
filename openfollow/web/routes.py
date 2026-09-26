@@ -99,6 +99,7 @@ from openfollow.web import diagnostics, peer_auth
 from openfollow.web._md import render_help_markdown
 from openfollow.web.labels import video_error_token
 from openfollow.web.login_throttle import LoginThrottle
+from openfollow.web.whats_new import load_whats_new
 
 logger = logging.getLogger(__name__)
 
@@ -853,12 +854,13 @@ def _startup_settings_supported() -> bool:
     return sys.platform.startswith("linux")
 
 
-def _footer_update_context(server: ConfigWebServer) -> dict[str, Any]:
-    """base.tpl footer "Update available" flag context.
+def _page_update_context(server: ConfigWebServer) -> dict[str, Any]:
+    """base.tpl update context: the footer "Update available" flag and the
+    What's new step an in-app update ends in.
 
-    Spread into every authenticated full-page render so the indicator isn't
-    limited to the config landing page – an update is most often discovered by
-    the online-sync worker while the operator is still in the Setup Wizard.
+    Spread into every authenticated full-page render so neither is limited to
+    the config landing page – an update is most often discovered by the
+    online-sync worker while the operator is still in the Setup Wizard.
     Pre-auth pages (login / about) deliberately omit it: they expose no state.
     """
     latest = server.get_update_available()
@@ -866,6 +868,7 @@ def _footer_update_context(server: ConfigWebServer) -> dict[str, Any]:
         "update_supported": _deb_update_supported(),
         "update_available": bool(latest),
         "latest_version": latest,
+        "whats_new_pending": server.whats_new_pending(),
     }
 
 
@@ -4364,7 +4367,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             current_version=openfollow.__version__,
             # Update-available banner (General section) + footer flag (base.tpl);
             # read once so the flag and version label can't disagree mid-render.
-            **_footer_update_context(server),
+            **_page_update_context(server),
             # index.tpl includes the General partial directly, so the platform
             # gate for the Startup box has to be supplied here too.
             startup_supported=_startup_settings_supported(),
@@ -7408,6 +7411,20 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         response.content_type = "application/json"
         return json.dumps(server.get_update_status())
 
+    @app.get("/api/whats-new")
+    def api_whats_new() -> Any:
+        """The installed release's What's new; ``html`` is empty when the bundled notes describe another."""
+        notes = load_whats_new(openfollow.__version__)
+        response.content_type = "application/json"
+        return json.dumps({"version": notes.version, "matches": notes.matches, "html": notes.html})
+
+    @app.post("/api/whats-new/dismiss")
+    def api_whats_new_dismiss() -> Any:
+        """Close the What's new step for this release, on this station."""
+        server.dismiss_whats_new(openfollow.__version__)
+        response.content_type = "application/json"
+        return json.dumps({"ok": True})
+
     # ----- privilege password prompt --------------------------------
     #
     # The broker parks any subsystem that needs ``sudo`` without a
@@ -8013,7 +8030,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         input_data = _build_input_template_data(config)
         # Footer "Update available" flag: an update is most often discovered
         # while the operator is still in the Setup Wizard.
-        return template("wizard", config=config, **input_data, **_footer_update_context(server))
+        return template("wizard", config=config, **input_data, **_page_update_context(server))
 
     @app.get("/api/video/snapshot/full")
     def api_video_snapshot_full() -> Any:

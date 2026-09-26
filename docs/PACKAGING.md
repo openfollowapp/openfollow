@@ -147,6 +147,17 @@ the `.deb` extracted from it:
 tar xf openfollow_<version>_<arch>.ofupdate openfollow_<version>_<arch>.deb
 ```
 
+### What's new notes
+
+A release can ship operator-facing notes that the in-app updater shows once, as
+its last step (`openfollow/web/whats_new.py`). Write them in
+`openfollow/web/whatsnew/whatsnew.md`: the first line is the version they
+describe (`v0.4.4`), the rest is Markdown. Put images in
+`openfollow/web/static/whatsnew/` and reference them as
+`/assets/whatsnew/<file>`. Keep only the current release's notes. A release that
+doesn't touch the file shows a generic confirmation rather than the previous
+release's notes, because the version line no longer matches.
+
 ## Appliance image (rpi-image-gen)
 
 The appliance image is **Pi-only** (arm64): x86_64 hosts are supported through the

@@ -4,7 +4,7 @@ Install a newer OpenFollow release and restart the service – no SSH session ne
 
 **Installed** shows the version currently running on this device.
 
-**Check & Install Latest** queries GitHub for the newest published release. If it is newer than the installed version, a confirmation dialog appears; confirming downloads the signed update bundle (`.ofupdate`) for this device's architecture, verifies it, and installs it. Progress is shown in a locked dialog and the page reloads automatically once the new version is up. If the device is already current, you'll see an "already up to date" message and nothing is changed.
+**Check & Install Latest** queries GitHub for the newest published release. If it is newer than the installed version, a confirmation dialog appears; confirming downloads the signed update bundle (`.ofupdate`) for this device's architecture, verifies it, and installs it. Progress is shown in a locked dialog and the page reloads automatically once the new version is up. The reloaded page then opens **What's new**: the installed release's notes, or a pointer to the full release notes when the package carries none. It appears once per update on this station, and closing it marks it seen. If the device is already current, you'll see an "already up to date" message and nothing is changed.
 
 The install runs detached from the running service (the package restarts the service itself), so the device briefly goes away and comes back on the new version. If the updater is missing the privilege it needs, install fails with a hint to run **Apply Permissions** on the Device page first.
 

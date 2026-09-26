@@ -538,6 +538,14 @@ class ConfigWebServer:
         """Queue a controller-slot action (``identify`` / ``forget``) for the main loop."""
         self._command_queue.request_slot_action(action, index)
 
+    def whats_new_pending(self) -> bool:
+        """True when the page should open the updater's What's new step."""
+        return self._command_queue.whats_new_pending()
+
+    def dismiss_whats_new(self, version: str) -> None:
+        """Record that What's new was shown for ``version``."""
+        self._command_queue.dismiss_whats_new(version)
+
     def pending_privilege_password_request(self) -> dict[str, str] | None:
         """Return the active privilege-password prompt or None."""
         return self._command_queue.pending_privilege_password_request()

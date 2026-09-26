@@ -134,6 +134,12 @@ def test_a_device_directly_on_a_root_hub_has_no_key(tmp_path: Path) -> None:
     assert resolve_key(node, sysfs_root=tmp_path) is None
 
 
+def test_a_usb_device_reporting_no_devpath_has_no_key(tmp_path: Path) -> None:
+    device = _usb_device(tmp_path, _HOST1, "usb3", "3-1", "")
+    node = _node(tmp_path, "input", "event1", device / "3-1:1.0" / "input" / "input5")
+    assert resolve_key(node, sysfs_root=tmp_path) is None
+
+
 def test_a_usb_device_outside_any_root_hub_has_no_key(tmp_path: Path) -> None:
     device = _usb_device(tmp_path, "platform/odd", "hub", "x-1", "1")
     node = _node(tmp_path, "input", "event8", device / "x-1:1.0" / "input" / "input2")

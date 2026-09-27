@@ -21,14 +21,13 @@ from openfollow.video.inputs._base import (
     InputCapabilities,
     ReconnectPolicy,
     VideoInputBase,
-    WebRoute,
     coerce_positive_int,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _discover_cameras() -> list[dict[str, str]]:
+def discover_cameras() -> list[dict[str, str]]:
     """Cameras libcamera can see, as ``{"model", "path"}``; ``path`` is what ``camera-name`` takes.
 
     Listed through GStreamer's libcamera device provider, which shares
@@ -208,34 +207,21 @@ class PiCamInput(VideoInputBase):
     @classmethod
     def discover_sources(cls, timeout: float = 2.0) -> list[str]:
         """Discover connected Pi cameras through libcamera."""
-        cameras = _discover_cameras()
+        cameras = discover_cameras()
         return [cam["path"] for cam in cameras]
 
     # -- Web UI ---------------------------------------------------------------
 
     @classmethod
     def web_ui_html(cls, config: dict[str, Any]) -> str:
-        camera_name = cls._esc(config.get("picam_camera_name", ""))
         width = config.get("picam_width", 1920)
         height = config.get("picam_height", 1080)
         framerate = config.get("picam_framerate", 30)
         return (
-            '<div class="row ndi-row">'
-            '    <div class="field wide">'
-            "        <label>Camera</label>"
-            '        <select name="picam_camera_name"'
-            '                hx-get="/video-input/picam/cameras"'
-            '                hx-trigger="load, click from:#refresh-picam"'
-            '                hx-target="this" hx-swap="innerHTML">'
-            f'            <option value="{camera_name}">'
-            f"              {camera_name or '-- Loading... --'}"
-            "            </option>"
-            "        </select>"
-            "    </div>"
-            '    <button type="button" id="refresh-picam"'
-            '            class="secondary"'
-            '            style="margin-bottom:0;">Scan</button>'
-            "</div>"
+            # Which camera, and naming it in config.txt: the camera setup block.
+            # Inside the Video Source form: its own target, or htmx hands it the form's.
+            '<div id="picam-camera-setup" hx-get="/section/video_source/camera-setup"'
+            ' hx-trigger="load" hx-target="this" hx-swap="innerHTML"></div>'
             '<div class="row">'
             '    <div class="field">'
             "        <label>Width</label>"
@@ -253,32 +239,7 @@ class PiCamInput(VideoInputBase):
             '                min="1" max="120">'
             "    </div>"
             "</div>"
-            # Inside the Video Source form: its own target, or htmx hands it the form's.
-            '<div id="picam-camera-setup" hx-get="/section/video_source/camera-setup"'
-            ' hx-trigger="load" hx-target="this" hx-swap="innerHTML"></div>'
         )
-
-    @classmethod
-    def web_routes(cls) -> list[WebRoute]:
-        return [
-            WebRoute("GET", "/video-input/picam/cameras", "handle_list_cameras"),
-        ]
-
-    def handle_list_cameras(self, config: dict[str, Any]) -> str:
-        """Return ``<option>`` elements for camera dropdown."""
-        cameras = _discover_cameras()
-        current = config.get("picam_camera_name", "")
-
-        options: list[str] = ['<option value="">Auto-detect</option>']
-        if not cameras:
-            options.append('<option value="" disabled>-- No cameras found --</option>')
-        for cam in cameras:
-            path = self._esc(cam["path"])
-            model = self._esc(cam["model"])
-            selected = " selected" if cam["path"] == current else ""
-            label = f"{model} ({path})"
-            options.append(f'<option value="{path}"{selected}>{label}</option>')
-        return "\n".join(options)
 
     # -- Config ---------------------------------------------------------------
 

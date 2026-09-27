@@ -151,6 +151,13 @@ class TestReconnectPolicy:
 # --------------------------------------------------------------------------- #
 
 
+# Fields a plugin's fragment leaves to a block it loads into the same form, by
+# the route that renders them (its own suite covers the markup).
+_RENDERED_BY_A_LOADED_BLOCK = {
+    "picam": {"picam_camera_name": 'hx-get="/section/video_source/camera-setup"'},
+}
+
+
 @pytest.mark.parametrize("plugin", _plugin_params())
 class TestWebUI:
     def test_returns_html_string(self, plugin: type[VideoInputBase]) -> None:
@@ -165,8 +172,11 @@ class TestWebUI:
         form input, so it is deliberately absent from the standard form)."""
         values = {f.name: f.default for f in plugin.config_fields()}
         html = plugin.web_ui_html(values)
+        elsewhere = _RENDERED_BY_A_LOADED_BLOCK.get(plugin.input_id, {})
+        for loader in set(elsewhere.values()):
+            assert loader in html, f"{plugin.__name__}.web_ui_html no longer loads {loader!r}"
         for field in plugin.config_fields():
-            if not field.device_editable:
+            if not field.device_editable or field.name in elsewhere:
                 continue
             assert field.name in html, f"{plugin.__name__}.web_ui_html omits field {field.name!r}"
 

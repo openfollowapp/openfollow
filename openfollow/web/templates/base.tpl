@@ -1213,6 +1213,9 @@
  .peer-address { color: var(--muted); font-size: 0.84rem; }
  .no-peers { color: var(--muted); padding: 14px; text-align: center; font-style: italic; }
  .ndi-row { align-items: flex-end; }
+ /* A setting shown, not edited here: sized like an input beside it. */
+ .value-box { display: block; border-radius: 0.75rem; border: 1px solid var(--border); background: var(--surface); padding: 0.62rem 0.72rem; font-size: 0.93rem; line-height: 1.25; }
+ .inset-panel { margin-bottom: 0.72rem; padding: 0.9rem; border-radius: 0.9rem; border: 1px solid var(--border); background: var(--surface); }
  .htmx-request { opacity: 0.83; }
  /* Metric echo: shows canonical value under length/speed input when imperial display is active. */
  .metric-echo { display: block; margin-top: 2px; color: var(--muted); font-size: 0.8rem; }

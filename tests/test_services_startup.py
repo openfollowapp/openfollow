@@ -890,8 +890,12 @@ def test_camera_setup_state_provider_flattens_the_host_read(monkeypatch) -> None
     from openfollow.privilege.camera_config import Camera
 
     ov = Camera("ov5647", "cam0")
+    import openfollow.video.inputs.picam as picam_module
+
     services = _camera_services(monkeypatch)
     _stub_camera(monkeypatch, read=lambda: _camera_state(configured=ov, managed=True, active=(ov,), live=ov))
+    detected = [{"model": "ov5647", "path": "/base/ov5647@36"}]
+    monkeypatch.setattr(picam_module, "discover_cameras", lambda: detected)
     assert services._camera_setup_state_provider() == {
         "available": True,
         "reason": "",
@@ -901,6 +905,7 @@ def test_camera_setup_state_provider_flattens_the_host_read(monkeypatch) -> None
         "active": ["ov5647,cam0"],
         "live": "ov5647,cam0",
         "pending": False,
+        "detected": detected,
     }
 
 

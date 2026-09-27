@@ -7,4 +7,4 @@ A marker this station controls is now always shown. If a marker was controlled b
 
 ## Pi Camera on any Raspberry Pi
 
-A camera on a Compute Module, or a sensor the Pi does not recognise by itself, is now set up from the browser: **Video Source → Pi Camera → Camera setup**. Choose the sensor and the connector it is plugged into; it starts without a restart. The camera list now finds a camera that is already in use, and a camera asked for a size or frame rate it cannot deliver says so instead of showing No Signal.
+A camera on a Compute Module, or a sensor the Pi does not recognise by itself, is now set up from the browser: in **Video Source → Pi Camera**, press **Change** beside the camera and choose the camera module and the connector it is plugged into. It starts without a restart, and when no camera is found the choice opens by itself. Raspberry Pi's camera modules are listed by name, a camera that is already streaming is recognised, and a camera asked for a size or frame rate it cannot deliver says so instead of showing No Signal.

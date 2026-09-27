@@ -27,6 +27,7 @@ from openfollow.privilege.camera_config import (
     parse_token,
     read_camera_setup,
     rewrite_config,
+    sensor_label,
 )
 
 pytestmark = pytest.mark.unit
@@ -81,13 +82,30 @@ class TestTokens:
     @pytest.mark.parametrize(
         ("token", "label"),
         [
-            ("ov5647,cam0", "ov5647 on CAM/DISP 0"),
-            ("imx708,cam1", "imx708 on CAM/DISP 1"),
-            ("imx219,", "imx219 on the default connector"),
+            ("ov5647,cam0", "Camera Module 1 (ov5647) on CAM/DISP 0"),
+            ("imx708,cam1", "Camera Module 3 (imx708) on CAM/DISP 1"),
+            ("imx290,cam0", "imx290 on CAM/DISP 0"),
+            ("imx219,", "Camera Module 2 (imx219) on the default connector"),
         ],
     )
     def test_label_reads_as_the_board_prints_it(self, token: str, label: str) -> None:
         assert camera_label(token) == label
+
+    @pytest.mark.parametrize(
+        ("sensor", "label"),
+        [
+            ("imx477", "HQ Camera (imx477)"),
+            ("imx296", "Global Shutter Camera (imx296)"),
+            ("imx500", "AI Camera (imx500)"),
+            ("imx500-pi5", "AI Camera for Pi 5 (imx500-pi5)"),
+            # libcamera names a variant after the sensor.
+            ("imx708_wide_noir", "Camera Module 3 (imx708_wide_noir)"),
+            ("arducam-pivariety", "arducam-pivariety"),
+            ("", ""),
+        ],
+    )
+    def test_sensor_label_names_the_raspberry_pi_module(self, sensor: str, label: str) -> None:
+        assert sensor_label(sensor) == label
 
 
 class TestReadingConfig:

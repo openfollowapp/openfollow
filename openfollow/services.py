@@ -2363,10 +2363,11 @@ class AppRuntimeServices:
         return {name: state.value for name, state in broker.states().items()}
 
     def _camera_setup_state_provider(self) -> dict[str, Any]:
-        """Web provider: the Pi camera the boot configuration names, read from the host."""
+        """Web provider: the Pi camera the boot configuration names, and the cameras libcamera sees."""
         from openfollow.privilege.camera_config import read_camera_setup
+        from openfollow.video.inputs.picam import discover_cameras
 
-        return _camera_setup_view(read_camera_setup())
+        return {**_camera_setup_view(read_camera_setup()), "detected": discover_cameras()}
 
     def _handle_camera_setup_apply(self, token: str) -> dict[str, Any]:
         """Web write path: name the camera in config.txt and start it now where possible."""

@@ -36,6 +36,7 @@ __all__ = [
     "Camera",
     "CameraSetupState",
     "HELPER_PATH",
+    "MODULE_NAMES",
     "camera_label",
     "camera_lines",
     "configured_camera",
@@ -44,6 +45,7 @@ __all__ = [
     "parse_token",
     "read_camera_setup",
     "rewrite_config",
+    "sensor_label",
 ]
 
 CONFIG_PATH = Path("/boot/firmware/config.txt")
@@ -100,12 +102,29 @@ class CameraSetupState:
     pending: bool = False
 
 
+# Sensor overlay -> Raspberry Pi product, in the order the camera list offers them.
+MODULE_NAMES = {
+    "imx708": "Camera Module 3",
+    "imx219": "Camera Module 2",
+    "ov5647": "Camera Module 1",
+    "imx477": "HQ Camera",
+    "imx296": "Global Shutter Camera",
+    "imx500": "AI Camera",
+    "imx500-pi5": "AI Camera for Pi 5",
+}
+
+
+def sensor_label(sensor: str) -> str:
+    """``"imx708"`` -> ``"Camera Module 3 (imx708)"``; libcamera's ``imx708_wide`` keeps its suffix."""
+    name = MODULE_NAMES.get(sensor) or MODULE_NAMES.get(sensor.split("_", 1)[0])
+    return f"{name} ({sensor})" if name else sensor
+
+
 def camera_label(token: str) -> str:
-    """``"ov5647,cam0"`` -> ``"ov5647 on CAM/DISP 0"``, as the connector is printed on the board."""
+    """``"ov5647,cam0"`` -> ``"Camera Module 1 (ov5647) on CAM/DISP 0"``, as the board prints the connector."""
     sensor, _, port = token.partition(",")
-    if port in ("cam0", "cam1"):
-        return f"{sensor} on CAM/DISP {port[-1]}"
-    return f"{sensor} on the default connector"
+    where = f"CAM/DISP {port[-1]}" if port in ("cam0", "cam1") else "the default connector"
+    return f"{sensor_label(sensor)} on {where}"
 
 
 def parse_token(token: str) -> Camera | None:

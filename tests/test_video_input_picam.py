@@ -11,13 +11,13 @@ from unittest.mock import patch
 import pytest
 
 from openfollow.video.inputs import picam as picam_module
-from openfollow.video.inputs.picam import PiCamInput, _discover_cameras
+from openfollow.video.inputs.picam import PiCamInput, discover_cameras
 from tests._fake_gst import FakeElement, FakePipeline, make_fake_gst
 
 pytestmark = pytest.mark.unit
 
 # --------------------------------------------------------------------------- #
-# _discover_cameras
+# discover_cameras
 # --------------------------------------------------------------------------- #
 
 
@@ -55,7 +55,7 @@ def _discover(gst: SimpleNamespace) -> list[dict[str, str]]:
     from gi.repository import Gst  # noqa: F401
 
     with patch("gi.repository.Gst", gst):
-        return _discover_cameras()
+        return discover_cameras()
 
 
 class TestDiscoverCameras:
@@ -95,14 +95,14 @@ class TestDiscoverCameras:
 
     def test_no_gstreamer_bindings_lists_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setitem(sys.modules, "gi.repository", None)
-        assert _discover_cameras() == []
+        assert discover_cameras() == []
 
 
 class TestDiscoverSources:
     def test_returns_paths_from_discover_cameras(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             picam_module,
-            "_discover_cameras",
+            "discover_cameras",
             lambda: [{"path": "/base/a", "model": "x"}, {"path": "/base/b", "model": "y"}],
         )
         assert PiCamInput.discover_sources() == ["/base/a", "/base/b"]
@@ -229,42 +229,6 @@ class TestPicamLinkFailures:
 
 
 # --------------------------------------------------------------------------- #
-# Web UI / handlers
-# --------------------------------------------------------------------------- #
-
-
-class TestHandleListCameras:
-    def test_auto_detect_entry_always_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(picam_module, "_discover_cameras", lambda: [])
-        html = PiCamInput().handle_list_cameras({"picam_camera_name": ""})
-        assert "Auto-detect" in html
-        assert "-- No cameras found --" in html
-
-    def test_selected_matches_current_camera(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            picam_module,
-            "_discover_cameras",
-            lambda: [
-                {"path": "/base/a", "model": "imx219"},
-                {"path": "/base/b", "model": "imx477"},
-            ],
-        )
-        html = PiCamInput().handle_list_cameras({"picam_camera_name": "/base/b"})
-        assert '<option value="/base/b" selected>imx477 (/base/b)</option>' in html
-        assert '<option value="/base/a">imx219 (/base/a)</option>' in html
-
-    def test_values_escaped_in_options(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            picam_module,
-            "_discover_cameras",
-            lambda: [{"path": "</p>hack", "model": "<>"}],
-        )
-        html = PiCamInput().handle_list_cameras({})
-        assert "</p>hack" not in html
-        assert "&lt;&gt;" in html
-
-
-# --------------------------------------------------------------------------- #
 # Lifecycle + labels
 # --------------------------------------------------------------------------- #
 
@@ -294,9 +258,9 @@ class TestGetSourceLabel:
         # Side-effect free: get_source_label runs on the GTK main thread on hot
         # paths and must NOT spawn the blocking rpicam-hello scan.
         def _boom() -> list:
-            raise AssertionError("_discover_cameras must not be called from get_source_label")
+            raise AssertionError("discover_cameras must not be called from get_source_label")
 
-        monkeypatch.setattr(picam_module, "_discover_cameras", _boom)
+        monkeypatch.setattr(picam_module, "discover_cameras", _boom)
         label = PiCamInput.get_source_label(
             {
                 "picam_camera_name": "/base/imx219",
@@ -384,3 +348,11 @@ class TestCameraSetupInTheSettings:
             '<div id="picam-camera-setup" hx-get="/section/video_source/camera-setup"'
             ' hx-trigger="load" hx-target="this" hx-swap="innerHTML"></div>'
         ) in html
+
+    def test_the_setup_block_owns_the_camera_choice(self) -> None:
+        """One Camera row: the block shows it, and a choice appears only when there is one to make."""
+        html = PiCamInput.web_ui_html({"picam_camera_name": "/base/a", "picam_width": 1280})
+        assert html.index('id="picam-camera-setup"') < html.index('name="picam_width"')
+        assert 'name="picam_camera_name"' not in html
+        assert 'value="1280"' in html
+        assert PiCamInput.web_routes() == []

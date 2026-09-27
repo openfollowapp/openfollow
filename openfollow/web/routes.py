@@ -75,7 +75,7 @@ from openfollow.net_utils import get_local_ipv4_addresses
 from openfollow.network.adapter import Ipv4Config, Ipv4Method
 from openfollow.network.validate import parse_prefix, validate_apply
 from openfollow.palette import AUTO_PICK_ORDER
-from openfollow.privilege.camera_config import AUTOMATIC, camera_label
+from openfollow.privilege.camera_config import AUTOMATIC
 from openfollow.templates import (
     TEMPLATE_FILE_SUFFIX,
     TEMPLATE_LEGACY_SUFFIX,
@@ -5173,13 +5173,15 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def _render_startup(startup: dict[str, Any]) -> Any:
         return template("partials/startup", startup=startup)
 
-    def _render_camera_setup(setup: dict[str, Any], banner: dict[str, str] | None = None) -> Any:
-        return template("partials/camera_setup", setup=setup, banner=banner)
+    def _render_camera_setup(setup: dict[str, Any], *, mode: str = "view", banner: dict[str, str] | None = None) -> Any:
+        camera_name = str(load_config(server.config_path).picam_camera_name)
+        return template("partials/camera_setup", setup=setup, mode=mode, banner=banner, camera_name=camera_name)
 
     @app.get("/section/video_source/camera-setup")
     def get_camera_setup() -> Any:
-        """The Pi camera the boot configuration names, loaded lazily into the Pi Camera settings."""
-        return _render_camera_setup(server.get_camera_setup())
+        """Which Pi camera the station uses, loaded lazily into the Pi Camera settings."""
+        mode = "edit" if request.query.get("edit") == "1" else "view"
+        return _render_camera_setup(server.get_camera_setup(), mode=mode)
 
     @app.post("/section/video_source/camera-setup")
     def post_camera_setup() -> Any:
@@ -5189,14 +5191,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         token = AUTOMATIC if sensor == AUTOMATIC else f"{sensor},{connector}"
         result = server.apply_camera_setup(token)
         if not result.get("ok"):
-            return _render_camera_setup(result, {"kind": "error", "text": str(result.get("error", ""))})
-        if result.get("pending"):
-            text = "Saved. The camera changes when the station restarts."
-        elif not result.get("configured"):
-            text = "Back to automatic camera detection."
-        else:
-            text = f"Camera set up: {camera_label(str(result['configured']))}."
-        return _render_camera_setup(result, {"kind": "ok", "text": text})
+            return _render_camera_setup(
+                result, mode="edit", banner={"kind": "error", "text": str(result.get("error", ""))}
+            )
+        # A live change is checked again once the camera has had time to start.
+        return _render_camera_setup(result, mode="view" if result.get("pending") else "checking")
 
     @app.post("/section/video_source/camera-setup/restart")
     def post_camera_setup_restart() -> Any:
@@ -5204,11 +5203,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         result = server.restart_for_camera()
         if not result.get("ok"):
             return _render_camera_setup(
-                server.get_camera_setup(), {"kind": "error", "text": str(result.get("error", ""))}
+                server.get_camera_setup(), banner={"kind": "error", "text": str(result.get("error", ""))}
             )
-        return _render_camera_setup(
-            {"available": False, "reason": ""}, {"kind": "ok", "text": "Restarting the station."}
-        )
+        return _render_camera_setup({}, mode="restarting", banner={"kind": "ok", "text": "Restarting the station."})
 
     @app.get("/section/general/startup")
     def get_startup_section() -> Any:

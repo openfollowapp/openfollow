@@ -466,7 +466,12 @@ pipeline**: the device vanishes under `libcamerasrc`, which then never reaches
 NULL, and every later swap refuses. `apply_camera`'s `release` callback first
 has the main loop stop the Pi Camera pipeline (`receiver.release_source()`, via
 `WebCommandQueue.release_camera`); unanswered, the change waits for a restart
-instead.
+instead. The block (`partials/camera_setup.tpl`, loaded into the Pi Camera
+fragment) owns the **Camera** row: what libcamera detects plus what config.txt
+names, with Raspberry Pi module names (`MODULE_NAMES`). It renders
+`picam_camera_name` only when there is a choice (2+ cameras, or a saved one
+that is gone), opens the setup by itself when no camera is found, and after a
+live Apply re-checks after 3 s rather than reporting a success it has not seen.
 
 ### Placeholder pipeline vs source state
 The "No Signal" placeholder is a black `videotestsrc` pinned at 1920x1080 @ 30 that feeds the **shared** sink, and both sink probes are attached once for that sink's lifetime – so its caps reach the same writer the real source uses. `ReceiverStateMachine.set_resolution` / `set_source_framerate` / `set_source_format` therefore refuse while `is_placeholder_pipeline`, mirroring `mark_frame_received`, and `_create_placeholder_pipeline` calls `clear_source_caps()` rather than writing its own geometry in. **Do not publish placeholder caps as source state**: `video.resolution` / `source_fps` are what the Statistics panel reports as the feed's own, and what `update_video` shapes the window from – a source that has never delivered a frame would otherwise present as a working 1080p feed and pin the window to 16:9 for the session.

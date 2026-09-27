@@ -1015,7 +1015,7 @@ class Mouse3DManager:
             backend, error = BackendState.OK, ""
         devices = []
         for info, handler in pairs:
-            state, detail = _device_state(info, handler)
+            state, detail = _device_state(handler)
             devices.append(
                 Mouse3DDeviceStatus(
                     path=info.path,
@@ -1149,12 +1149,11 @@ def idle_mouse3d_status(enabled: bool) -> Mouse3DStatus:
     )
 
 
-def _device_state(info: Mouse3DDeviceInfo, handler: Mouse3DHandler | None) -> tuple[DeviceState, str]:
+def _device_state(handler: Mouse3DHandler | None) -> tuple[DeviceState, str]:
     """One puck's state and the wording of its latest open failure."""
-    if not info.profiled:
-        return DeviceState.NO_PROFILE, ""
     if handler is None:
-        return DeviceState.OPENING, ""
+        # Only an unprofiled puck: the manager lists every other one with its handler.
+        return DeviceState.NO_PROFILE, ""
     if handler.connected:
         return DeviceState.OPEN, ""
     error = handler.open_error

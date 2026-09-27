@@ -2478,3 +2478,342 @@ def test_a_reconnected_puck_starts_unused(monkeypatch) -> None:  # noqa: ANN001
         assert handler.last_input_at is None
     finally:
         handler.stop(wait=True)
+
+
+# --------------------------------------------------------------------------- #
+# Status: what the supervisor observed, for the web section and the bundle
+# --------------------------------------------------------------------------- #
+
+
+def _states(mgr: Mouse3DManager) -> dict[str, tuple[str, str]]:
+    return {d.path: (d.state.value, d.error) for d in mgr.status().devices}
+
+
+def test_status_reports_every_attached_puck_and_why_it_is_not_in_use(monkeypatch) -> None:  # noqa: ANN001
+    _fast_manager(monkeypatch)
+
+    def _refused():  # noqa: ANN202
+        raise PermissionError("/dev/hidraw3 is not readable and writable by this process")
+
+    def _failed():  # noqa: ANN202
+        raise RuntimeError("Failed to open device")
+
+    infos = [
+        Mouse3DDeviceInfo(path="/dev/hidraw2", product_name="SpaceNavigator", vendor_id=0x046D, product_id=0xC626),
+        Mouse3DDeviceInfo(path="/dev/hidraw3", product_name="Compact"),
+        Mouse3DDeviceInfo(path="/dev/hidraw4", product_name="Pro"),
+        Mouse3DDeviceInfo(path="/dev/hidraw5", product_name="Receiver", profiled=False),
+    ]
+    backend = _FakeBackend(
+        infos,
+        {"/dev/hidraw2": lambda: FakeDevice(), "/dev/hidraw3": _refused, "/dev/hidraw4": _failed},
+    )
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    mgr.start()
+    try:
+        expected = {
+            "/dev/hidraw2": ("open", ""),
+            "/dev/hidraw3": ("not_permitted", "/dev/hidraw3 is not readable and writable by this process"),
+            "/dev/hidraw4": ("open_failed", "Failed to open device"),
+            "/dev/hidraw5": ("no_profile", ""),
+        }
+        assert _wait_until(lambda: _states(mgr) == expected)
+        status = mgr.status()
+        assert (status.enabled, status.supported, status.scanned) == (True, True, True)
+        assert status.backend.value == "ok"
+        assert status.devices[0].product_name == "SpaceNavigator"
+        assert (status.devices[0].vendor_id, status.devices[0].product_id) == (0x046D, 0xC626)
+        # An unprofiled puck is reported, never opened, and holds no slot.
+        assert "/dev/hidraw5" not in backend.opened
+        assert [d.path for d in mgr.connected_devices().values()] == ["/dev/hidraw2"]
+    finally:
+        mgr.stop(wait=True)
+
+
+@pytest.mark.parametrize(
+    ("opener_result", "state"),
+    [
+        (PermissionError("denied"), "not_permitted"),
+        (RuntimeError("Failed to open device"), "open_failed"),
+        (FileNotFoundError("gone"), "open_failed"),
+        (ValueError("not a supported SpaceMouse"), "open_failed"),
+        (None, "open_failed"),
+    ],
+    ids=["permission", "hidapi-refusal", "other-oserror", "unexpected", "no-device"],
+)
+def test_an_open_failure_is_classified(monkeypatch, opener_result, state) -> None:  # noqa: ANN001
+    _fast_manager(monkeypatch)
+
+    def _open():  # noqa: ANN202
+        if isinstance(opener_result, BaseException):
+            raise opener_result
+        return opener_result
+
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([_PUCK_A], {"/dev/hidraw2": _open}))
+    mgr.start()
+    try:
+        assert _wait_until(lambda: _states(mgr).get("/dev/hidraw2", ("",))[0] == state)
+        assert _states(mgr)["/dev/hidraw2"][1]  # the raw wording travels with it
+    finally:
+        mgr.stop(wait=True)
+
+
+def test_an_open_error_clears_once_the_puck_opens(monkeypatch) -> None:  # noqa: ANN001
+    _fast_manager(monkeypatch)
+    refuse = threading.Event()
+    refuse.set()
+
+    def _open():  # noqa: ANN202
+        if refuse.is_set():
+            raise PermissionError("denied")
+        return FakeDevice()
+
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([_PUCK_A], {"/dev/hidraw2": _open}))
+    mgr.start()
+    try:
+        assert _wait_until(lambda: _states(mgr).get("/dev/hidraw2") == ("not_permitted", "denied"))
+        refuse.clear()
+        assert _wait_until(lambda: _states(mgr).get("/dev/hidraw2") == ("open", ""), timeout=5.0)
+    finally:
+        mgr.stop(wait=True)
+
+
+def test_a_puck_being_opened_reports_no_fault() -> None:
+    gate = threading.Event()
+
+    def _open():  # noqa: ANN202
+        gate.wait(2.0)
+        return FakeDevice()
+
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([_PUCK_A], {"/dev/hidraw2": _open}))
+    mgr.start()
+    try:
+        assert _wait_until(lambda: "/dev/hidraw2" in _states(mgr))
+        assert _states(mgr)["/dev/hidraw2"] == ("opening", "")
+        assert mgr.status().scanned is False  # its first attempt is still running
+    finally:
+        gate.set()
+        mgr.stop(wait=True)
+
+
+class _FailingBackend(_FakeBackend):
+    """Enumeration raises while ``fail`` is set, as easyhid does without libhidapi."""
+
+    def __init__(self, infos, openers) -> None:  # noqa: ANN001
+        super().__init__(infos, openers)
+        self.fail = threading.Event()
+        self.fail.set()
+
+    def enumerate(self):  # noqa: ANN201
+        if self.fail.is_set():
+            raise AttributeError("function/symbol 'hid_enumerate' not found in library '<None>'")
+        return super().enumerate()
+
+
+def test_a_backend_that_cannot_enumerate_is_reported_then_recovers(monkeypatch, caplog) -> None:  # noqa: ANN001
+    _fast_manager(monkeypatch)
+    backend = _FailingBackend([_PUCK_A], {"/dev/hidraw2": lambda: FakeDevice()})
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    with caplog.at_level(logging.INFO, logger="openfollow.input.mouse3d"):
+        mgr.start()
+        try:
+            assert _wait_until(lambda: mgr.status().backend.value == "could_not_start")
+            status = mgr.status()
+            assert "hid_enumerate" in status.backend_error
+            assert status.devices == ()
+            time.sleep(0.05)  # several more failing passes
+            backend.fail.clear()
+            assert _wait_until(lambda: _states(mgr).get("/dev/hidraw2") == ("open", ""))
+            assert mgr.status().backend.value == "ok"
+            assert mgr.status().backend_error == ""
+        finally:
+            mgr.stop(wait=True)
+    records = [r for r in caplog.records if r.name == "openfollow.input.mouse3d"]
+    warnings = [r for r in records if r.levelno == logging.WARNING and "could not start" in r.getMessage()]
+    assert len(warnings) == 1  # one line per episode, not one per pass
+    assert any(r.levelno == logging.INFO and "started after an earlier failure" in r.getMessage() for r in records)
+
+
+def test_a_restart_forgets_the_last_backend_error(monkeypatch) -> None:  # noqa: ANN001
+    _fast_manager(monkeypatch)
+    backend = _FailingBackend([], {})
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    mgr.start()
+    try:
+        assert _wait_until(lambda: mgr.status().backend.value == "could_not_start")
+    finally:
+        mgr.stop(wait=True)
+    backend.fail.clear()
+    gate = threading.Event()
+    backend.enumerate = lambda: (gate.wait(2.0), [])[1]  # type: ignore[method-assign]
+    mgr.start()
+    try:
+        # Before the new supervisor's first pass has finished.
+        assert mgr.status().backend.value == "ok"
+    finally:
+        gate.set()
+        mgr.stop(wait=True)
+
+
+def test_missing_pyspacemouse_is_reported_as_not_installed(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(mouse3d_module, "check_mouse3d_dependencies", lambda: ["pyspacemouse"])
+    monkeypatch.setattr(mouse3d_module, "_platform_supported", lambda: True)
+    mgr = Mouse3DManager(_cfg(enabled=True))
+    mgr.start()
+    status = mgr.status()
+    assert status.backend.value == "not_installed"
+    assert status.backend_error == "pyspacemouse is not installed"
+    assert mgr._thread is None
+
+
+def test_status_neither_enumerates_nor_probes_the_installation(monkeypatch) -> None:  # noqa: ANN001
+    """It runs on the 4 Hz stats tick, so it may only read what the supervisor holds."""
+    _fast_manager(monkeypatch)
+    backend = _FakeBackend([_PUCK_A], {"/dev/hidraw2": lambda: FakeDevice()})
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    mgr.start()
+    try:
+        assert _wait_until(lambda: _states(mgr).get("/dev/hidraw2") == ("open", ""))
+    finally:
+        mgr.stop(wait=True)
+    enumerated = []
+    backend.enumerate = lambda: enumerated.append(1) or []  # type: ignore[method-assign]
+
+    def _forbidden(*_a):  # noqa: ANN002, ANN202
+        raise AssertionError("status must not probe")
+
+    monkeypatch.setattr(mouse3d_module, "check_mouse3d_dependencies", _forbidden)
+    monkeypatch.setattr(mouse3d_module, "_backend_puck_ids", _forbidden)
+    monkeypatch.setattr(mouse3d_module.metadata, "version", _forbidden)
+    for _ in range(5):
+        mgr.status()
+    assert enumerated == []
+
+
+def test_the_backend_version_is_read_once(monkeypatch) -> None:  # noqa: ANN001
+    mouse3d_module._backend_version.cache_clear()
+    reads = []
+
+    def _version(name):  # noqa: ANN001, ANN202
+        reads.append(name)
+        return "2.1.0"
+
+    monkeypatch.setattr(mouse3d_module.metadata, "version", _version)
+    try:
+        mgr = Mouse3DManager(_cfg(enabled=False), backend=_FakeBackend([], {}))
+        assert mgr.status().backend_version == "2.1.0"
+        assert mgr.status().backend_version == "2.1.0"
+        assert reads == ["pyspacemouse"]
+    finally:
+        mouse3d_module._backend_version.cache_clear()
+
+
+def test_the_backend_version_is_blank_when_the_package_is_absent(monkeypatch) -> None:  # noqa: ANN001
+    mouse3d_module._backend_version.cache_clear()
+
+    def _missing(name):  # noqa: ANN001, ANN202
+        raise mouse3d_module.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(mouse3d_module.metadata, "version", _missing)
+    try:
+        assert mouse3d_module._backend_version() == ""
+    finally:
+        mouse3d_module._backend_version.cache_clear()
+
+
+def test_idle_status_says_nothing_was_scanned(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(mouse3d_module, "_platform_supported", lambda: False)
+    status = mouse3d_module.idle_mouse3d_status(True)
+    assert (status.enabled, status.supported, status.scanned, status.devices) == (True, False, False, ())
+
+
+def test_detect_never_opens_an_unprofiled_puck() -> None:
+    backend = _FakeBackend(
+        [Mouse3DDeviceInfo(path="/dev/hidraw5", profiled=False)],
+        {"/dev/hidraw5": lambda: FakeDevice([_state(buttons=[1])])},
+    )
+    mgr = Mouse3DManager(_cfg(enabled=False), backend=backend)
+    assert mgr.detect_pressed_button(timeout=0.01) is None
+    assert backend.opened == []
+
+
+# --------------------------------------------------------------------------- #
+# macOS: the real backend cannot read a puck, so it is never started
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(("platform_name", "supported"), [("darwin", False), ("linux", True), ("win32", True)])
+def test_only_macos_is_unsupported(monkeypatch, platform_name, supported) -> None:  # noqa: ANN001
+    monkeypatch.setattr(mouse3d_module, "sys", SimpleNamespace(platform=platform_name))
+    assert mouse3d_module._platform_supported() is supported
+
+
+def test_on_macos_the_real_backend_never_scans(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(mouse3d_module, "_platform_supported", lambda: False)
+    monkeypatch.setattr(mouse3d_module, "check_mouse3d_dependencies", lambda: [])
+    resolved = []
+    monkeypatch.setattr(Mouse3DManager, "_resolve_backend", lambda self: resolved.append(1) or _FakeBackend([], {}))
+    mgr = Mouse3DManager(_cfg(enabled=True))
+    mgr.start()
+    assert mgr._thread is None
+    # The web Detect flow while disabled does not look either.
+    assert mgr.detect_pressed_button(timeout=0.01) is None
+    assert resolved == []
+    status = mgr.status()
+    assert (status.enabled, status.supported) == (True, False)
+
+
+def test_an_injected_backend_is_not_the_one_the_platform_gate_is_about(monkeypatch) -> None:  # noqa: ANN001
+    _fast_manager(monkeypatch)
+    monkeypatch.setattr(mouse3d_module, "_platform_supported", lambda: False)
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([_PUCK_A], {"/dev/hidraw2": lambda: FakeDevice()}))
+    mgr.start()
+    try:
+        assert _wait_until(lambda: mgr.connected_ids() == [0])
+        assert mgr.status().supported is True
+    finally:
+        mgr.stop(wait=True)
+
+
+# --------------------------------------------------------------------------- #
+# The real backend tells a permission problem from any other refused open
+# --------------------------------------------------------------------------- #
+
+
+def _install_open_by_path(monkeypatch, open_by_path):  # noqa: ANN001, ANN202
+    fake = types.ModuleType("pyspacemouse")
+    fake.open_by_path = open_by_path
+    monkeypatch.setitem(sys.modules, "pyspacemouse", fake)
+
+
+def test_open_names_a_node_this_process_may_not_use(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    node = tmp_path / "hidraw3"
+    node.write_bytes(b"")
+    refusal = RuntimeError("Failed to open device")
+
+    def _open_by_path(path):  # noqa: ANN001, ANN202
+        raise refusal
+
+    _install_open_by_path(monkeypatch, _open_by_path)
+    monkeypatch.setattr(mouse3d_module.os, "access", lambda path, mode: False)
+    with pytest.raises(PermissionError) as info:
+        _PySpaceMouseBackend().open(str(node))
+    assert str(node) in str(info.value)
+    assert info.value.__cause__ is refusal
+
+
+@pytest.mark.parametrize("exists", [True, False], ids=["accessible-node", "vanished-node"])
+def test_open_keeps_any_other_refusal_as_it_was(monkeypatch, tmp_path, exists) -> None:  # noqa: ANN001
+    node = tmp_path / "hidraw3"
+    if exists:
+        node.write_bytes(b"")
+    refusal = RuntimeError("Failed to open device")
+
+    def _open_by_path(path):  # noqa: ANN001, ANN202
+        raise refusal
+
+    _install_open_by_path(monkeypatch, _open_by_path)
+    monkeypatch.setattr(mouse3d_module.os, "access", lambda path, mode: exists)
+    with pytest.raises(RuntimeError) as info:
+        _PySpaceMouseBackend().open(str(node))
+    assert info.value is refusal

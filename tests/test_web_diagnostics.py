@@ -4996,3 +4996,134 @@ def test_collect_runtime_state_records_an_unreadable_failure_without_inventing_o
     assert "reading  " not in joined
     assert "suggested" not in joined
     assert "v4l2src is Linux-only" in joined
+
+
+# ---------------------------------------------------------------------------
+# Section E10 – 3D Mouse
+# ---------------------------------------------------------------------------
+
+
+def _m3d(**overrides: Any) -> diag.DiagnosticsProviders:
+    block: dict[str, Any] = {
+        "enabled": True,
+        "supported": True,
+        "scanned": True,
+        "backend": "ok",
+        "backend_error": "",
+        "backend_version": "2.1.0",
+        "devices": [],
+    }
+    block.update(overrides)
+    return diag.DiagnosticsProviders(runtime_stats=lambda: {"mouse3d": block})
+
+
+def test_collect_mouse3d_lists_every_puck_with_its_raw_error() -> None:
+    rows = diag.collect_mouse3d(
+        _m3d(
+            devices=[
+                {
+                    "path": "/dev/hidraw3",
+                    "product_name": "SpaceNavigator",
+                    "usb_id": "046d:c626",
+                    "port_key": "usb:platform/xhci-hcd.1:1",
+                    "state": "open",
+                    "error": "",
+                },
+                {
+                    "path": "/dev/hidraw4",
+                    "product_name": "",
+                    "usb_id": "256f:c635",
+                    "port_key": None,
+                    "state": "not_permitted",
+                    "error": "/dev/hidraw4 is not readable and writable by this process",
+                },
+            ]
+        )
+    )
+    assert rows == [
+        "  enabled: yes · backend: ok (pyspacemouse 2.1.0)",
+        "  SpaceNavigator",
+        "      usb:     046d:c626",
+        "      path:    /dev/hidraw3",
+        "      port:    usb:platform/xhci-hcd.1:1",
+        "      state:   open",
+        "  (unnamed)",
+        "      usb:     256f:c635",
+        "      path:    /dev/hidraw4",
+        "      port:    (none)",
+        "      state:   not_permitted",
+        "      error:   /dev/hidraw4 is not readable and writable by this process",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({}, ["  enabled: yes · backend: ok (pyspacemouse 2.1.0)", "  [no 3D Mouse connected]"]),
+        (
+            {"scanned": False, "backend_version": ""},
+            ["  enabled: yes · backend: ok (pyspacemouse version unknown)", "  [first scan not finished]"],
+        ),
+        ({"enabled": False}, ["  enabled: no", "  [not scanned: 3D Mouse is disabled]"]),
+        (
+            {"supported": False, "enabled": True},
+            ["  enabled: yes", "  [not scanned: 3D Mouse is not supported on this platform by this version]"],
+        ),
+        (
+            {"supported": False, "enabled": False},
+            ["  enabled: no", "  [not scanned: 3D Mouse is not supported on this platform by this version]"],
+        ),
+        (
+            {"backend": "could_not_start", "backend_error": "symbol hid_enumerate not found"},
+            [
+                "  enabled: yes · backend: could_not_start (pyspacemouse 2.1.0)",
+                "      error:   symbol hid_enumerate not found",
+                "  [no devices listed: the backend could not look]",
+            ],
+        ),
+        (
+            {"backend": "not_installed", "backend_error": ""},
+            [
+                "  enabled: yes · backend: not_installed (pyspacemouse 2.1.0)",
+                "      error:   (none)",
+                "  [no devices listed: the backend could not look]",
+            ],
+        ),
+    ],
+    ids=[
+        "none",
+        "first-scan-pending",
+        "disabled",
+        "macos-enabled",
+        "macos-disabled",
+        "could-not-start",
+        "not-installed",
+    ],
+)
+def test_collect_mouse3d_states_every_case_that_lists_no_puck(overrides: dict[str, Any], expected: list[str]) -> None:
+    assert diag.collect_mouse3d(_m3d(**overrides)) == expected
+
+
+def test_collect_mouse3d_without_stats() -> None:
+    assert diag.collect_mouse3d(diag.DiagnosticsProviders()) == ["  [not applicable: runtime stats provider not wired]"]
+    assert diag.collect_mouse3d(diag.DiagnosticsProviders(runtime_stats=lambda: {})) == [
+        "  [no 3D Mouse status published]"
+    ]
+    assert diag.collect_mouse3d(diag.DiagnosticsProviders(runtime_stats=lambda: None)) == [
+        "  [no 3D Mouse status published]"
+    ]
+
+
+def test_collect_mouse3d_provider_raises() -> None:
+    def boom() -> dict[str, Any]:
+        raise RuntimeError("kaboom")
+
+    (row,) = diag.collect_mouse3d(diag.DiagnosticsProviders(runtime_stats=boom))
+    assert "kaboom" in row
+
+
+def test_bundle_places_the_3d_mouse_after_the_gamepads() -> None:
+    text = diag.format_bundle(diag.collect_bundle(providers=_m3d()))
+    assert text.index("=== E9. Gamepad controllers ===") < text.index("=== E10. 3D Mouse ===")
+    assert text.index("=== E10. 3D Mouse ===") < text.index("=== F. Recent I/O activity ===")
+    assert "  [no 3D Mouse connected]" in text

@@ -23,9 +23,10 @@ from typing import Any
 
 import pytest
 
+import openfollow.input.mouse3d as mouse3d_module
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig
-from openfollow.input.mouse3d_status import Mouse3DStatus
+from openfollow.input.mouse3d_status import DeviceState, Mouse3DDeviceStatus, Mouse3DStatus
 from openfollow.services import AppRuntimeServices
 from openfollow.video.failure import ConnectionPhase, SourceKind, VideoFailure
 
@@ -191,6 +192,9 @@ class TestDefaultRuntimeStatsSnapshot:
         assert snap["controllers"]["items"] == []
         # Same shape as a published snapshot, so /api/stats never changes schema at startup.
         assert snap["controllers"] == {"connected_count": 0, "missing_count": 0, "mapped_count": 0, "items": []}
+        # Nothing scanned yet, so the 3D Mouse section claims neither a fault nor "none connected".
+        assert snap["mouse3d"]["scanned"] is False
+        assert snap["mouse3d"]["devices"] == []
         assert snap["tracking"]["enabled"] is False
 
     def test_reflects_video_source_type_from_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -323,6 +327,50 @@ class TestPublishRuntimeStats:
         services.publish_runtime_stats()
         after = services.get_runtime_stats_snapshot()
         assert before == after
+
+    def test_the_3d_mouse_status_is_the_managers_own(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        status = Mouse3DStatus(
+            enabled=True,
+            supported=True,
+            scanned=True,
+            devices=(
+                Mouse3DDeviceStatus(
+                    path="/dev/hidraw5",
+                    product_name="SpaceMouse Wireless Receiver",
+                    vendor_id=0x256F,
+                    product_id=0xC62F,
+                    port_key=None,
+                    state=DeviceState.NO_PROFILE,
+                ),
+            ),
+        )
+        self._prime(services, input_manager=_FakeInputManager(mouse3d=status))
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["mouse3d"] == status.to_dict()
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_without_input_the_3d_mouse_reads_as_not_scanned(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, enabled: bool
+    ) -> None:
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        monkeypatch.setattr(mouse3d_module, "_platform_supported", lambda: False)
+        services._app._config.mouse3d.enabled = enabled
+        self._prime(services)
+        services.publish_runtime_stats(force=True)
+        block = services.get_runtime_stats_snapshot()["mouse3d"]
+        assert (block["enabled"], block["supported"], block["scanned"], block["devices"]) == (
+            enabled,
+            False,
+            False,
+            [],
+        )
 
     def test_force_bypasses_throttle(self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch) -> None:
         self._prime(services)

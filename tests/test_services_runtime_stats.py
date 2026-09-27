@@ -101,6 +101,7 @@ class _FakeReceiver:
         self.source_name = "CAM1"
         self.source_selection_active = False
         self.source_framerate = 59.94
+        self.source_format = "I420"
         self.source_kind = SourceKind.REMOTE
 
 
@@ -192,6 +193,7 @@ class TestDefaultRuntimeStatsSnapshot:
         assert snap["controllers"]["items"] == []
         # Same shape as a published snapshot, so /api/stats never changes schema at startup.
         assert snap["controllers"] == {"connected_count": 0, "missing_count": 0, "mapped_count": 0, "items": []}
+        assert snap["video"]["source_format"] == ""
         # Nothing scanned yet, so the 3D Mouse section claims neither a fault nor "none connected".
         assert snap["mouse3d"]["scanned"] is False
         assert snap["mouse3d"]["devices"] == []
@@ -402,6 +404,7 @@ class TestPublishRuntimeStats:
         assert video["connected"] is True
         assert video["resolution"] == {"width": 1920, "height": 1080}
         assert video["source_fps"] == pytest.approx(59.94)
+        assert video["source_format"] == "I420"
         # Machine-readable for support tooling, plus the sentence the panel and
         # the HUD both render, so the two cannot describe the same failure
         # differently.

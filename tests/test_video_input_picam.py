@@ -148,6 +148,14 @@ class TestCreatePipeline:
         assert pipeline.get_by_name("post_queue") is not None
         assert pipeline.get_by_name("convert") is not None
 
+    def test_the_capsfilter_pins_a_colour_format_but_not_colorimetry(self) -> None:
+        """Left open, libcamera takes the lowest-sorting format it offers: raw
+        Bayer or greyscale, never the camera's own YUV420 default. Colorimetry
+        stays open: a value the ISP adjusts fails negotiation outright."""
+        caps = _build({}).get_by_name("capsfilter").properties["caps"].to_string()
+        assert "format=(string)I420" in caps
+        assert "colorimetry" not in caps
+
     def test_empty_camera_name_does_not_set_property(self) -> None:
         pipeline = _build({"picam_camera_name": ""})
         src = pipeline.get_by_name("libcamerasrc")

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -249,6 +250,11 @@ class GstNativeSinkReceiver:
     def source_framerate(self) -> float:
         """Return framerate declared in the negotiated video caps (0.0 if unknown)."""
         return self._state.source_framerate
+
+    @property
+    def source_format(self) -> str:
+        """What the source element delivered: pixel format for raw video, else the media type."""
+        return self._state.source_format
 
     @property
     def status_marker(self) -> NdiStatusMarker:
@@ -628,12 +634,18 @@ class GstNativeSinkReceiver:
             return
         pad.add_probe(Gst.PadProbeType.BUFFER, self._on_source_buffer)
 
-    def _on_source_buffer(self, _pad: Any, _info: Any) -> int:
+    def _on_source_buffer(self, pad: Any, _info: Any) -> int:
         """First buffer out of the source element; runs on a streaming thread.
 
-        Removes itself - one byte is the whole signal.
+        Removes itself - one byte is the whole signal. Its caps are the format
+        the source itself delivered, which the sink probe, downstream of the
+        conversion, never sees.
         """
         self._state.note_phase(ConnectionPhase.DATA_ARRIVING)
+        caps = pad.get_current_caps()
+        source_format = _source_format(caps.to_string()) if caps is not None else ""
+        if source_format and self._state.set_source_format(source_format):
+            logger.info("Video source format: %s", source_format)
         return cast(int, Gst.PadProbeReturn.REMOVE)
 
     def get_sink_widget(self) -> Any:
@@ -1345,3 +1357,20 @@ class GstNativeSinkReceiver:
         finally:
             with self._discovery_lock:
                 self._discovery_running = False
+
+
+def _source_format(caps: str) -> str:
+    """A pixel format for raw video (``I420``), else the media type (``image/jpeg``).
+
+    Read from the caps string: the structure getters are what GStreamer 1.26.2
+    broke.
+    """
+    media, _, fields = caps.partition(",")
+    media = media.strip()
+    if media in ("", "ANY", "EMPTY"):
+        return ""
+    if media.split("(", 1)[0] == "video/x-raw":
+        match = re.search(r"\bformat=(?:\(string\))?([A-Za-z0-9_]+)", fields)
+        if match:
+            return match.group(1)
+    return media

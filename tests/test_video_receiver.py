@@ -4409,6 +4409,51 @@ class TestSourceByteObservation:
         # One byte is the whole signal; the sink probe carries the per-frame work.
         assert result == fake_gst.PadProbeReturn.REMOVE
 
+    @pytest.mark.parametrize(
+        ("caps", "expected"),
+        [
+            ("video/x-raw, format=(string)I420, width=(int)1920, height=(int)1080", "I420"),
+            ("video/x-raw(memory:DMABuf), format=(string)NV12, width=(int)1920", "NV12"),
+            # What a Pi Camera left to choose negotiates: reported as delivered,
+            # whatever was asked for.
+            ("video/x-raw, format=(string)GRAY8, width=(int)1920", "GRAY8"),
+            ("image/jpeg, width=(int)1920, height=(int)1080", "image/jpeg"),
+            ("application/x-rtp, media=(string)video, encoding-name=(string)H264", "application/x-rtp"),
+            ("video/x-raw, width=(int)1920", "video/x-raw"),
+        ],
+    )
+    def test_the_first_buffer_records_the_format_the_source_delivered(
+        self, fake_gst, fake_glib, fake_input_cls, caps: str, expected: str
+    ) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._on_source_buffer(FakePad("src", caps), object())
+        assert r.source_format == expected
+
+    @pytest.mark.parametrize("caps", ["", "ANY", "EMPTY"])
+    def test_caps_that_name_nothing_record_nothing(self, fake_gst, fake_glib, fake_input_cls, caps: str) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._on_source_buffer(FakePad("src", caps), object())
+        assert r.source_format == ""
+        assert r._state.phase == ConnectionPhase.DATA_ARRIVING  # the byte still counts
+
+    def test_the_format_is_logged_once_per_connection(self, fake_gst, fake_glib, fake_input_cls, caplog) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        pad = FakePad("src", "video/x-raw, format=(string)I420, width=(int)1920")
+        with caplog.at_level(logging.INFO, logger="openfollow.video.receiver"):
+            r._on_source_buffer(pad, object())
+            r._on_source_buffer(pad, object())
+            r._reset_video_flow_state()  # the next attempt forgets it
+            assert r.source_format == ""
+            r._on_source_buffer(pad, object())
+        lines = [rec.getMessage() for rec in caplog.records if "source format" in rec.getMessage()]
+        assert lines == ["Video source format: I420", "Video source format: I420"]
+
+    def test_the_placeholder_publishes_no_source_format(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._state.is_placeholder_pipeline = True
+        r._on_source_buffer(FakePad("src", "video/x-raw, format=(string)I420"), object())
+        assert r.source_format == ""
+
     def test_a_dynamic_pad_source_is_followed_via_pad_added(
         self, fake_gst, fake_glib, fake_input_cls, monkeypatch
     ) -> None:

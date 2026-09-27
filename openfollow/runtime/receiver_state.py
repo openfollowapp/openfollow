@@ -42,6 +42,9 @@ class ReceiverStateMachine:
         self._phase_lock = threading.Lock()
         self.resolution: tuple[int, int] = (0, 0)
         self.source_framerate: float = 0.0
+        # What the source element itself delivered: a pixel format for raw
+        # video, else the media type.
+        self.source_format = ""
         self.is_placeholder_pipeline = False
         self.source_selection_active = False
         self.was_connected_before_selection = False
@@ -80,9 +83,10 @@ class ReceiverStateMachine:
                 self.phase = phase
 
     def clear_source_caps(self) -> None:
-        """Forget the negotiated resolution / frame rate of the last source."""
+        """Forget the negotiated resolution / frame rate / format of the last source."""
         self.resolution = (0, 0)
         self.source_framerate = 0.0
+        self.source_format = ""
 
     def set_resolution(self, width: int, height: int) -> bool:
         """Record the source's negotiated resolution; ``True`` when it changed.
@@ -104,6 +108,14 @@ class ReceiverStateMachine:
         if self.is_placeholder_pipeline:
             return
         self.source_framerate = float(fps)
+
+    def set_source_format(self, source_format: str) -> bool:
+        """Record the format the source delivered; ``True`` when it changed."""
+        if self.is_placeholder_pipeline:
+            return False
+        previous = self.source_format
+        self.source_format = source_format
+        return previous != source_format
 
     def mark_frame_received(self) -> bool:
         """Record that a real decoded frame reached the sink.

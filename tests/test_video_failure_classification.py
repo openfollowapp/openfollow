@@ -17,6 +17,7 @@ from openfollow.video.failure import (
     STREAM_DECODE,
     STREAM_DEMUX,
     STREAM_DOMAIN,
+    STREAM_FAILED,
     STREAM_TYPE_NOT_FOUND,
     STREAM_WRONG_TYPE,
     ConnectionPhase,
@@ -223,6 +224,7 @@ class TestOperatorText:
             "decode_error",
             "stalled",
             "device_unavailable",
+            "unsupported_mode",
             "unknown",
         }
 
@@ -483,3 +485,77 @@ class TestNoSentenceClaimsWhatTheFarEndDid:
 
     def test_the_no_data_sentence_names_this_station_as_the_observer(self) -> None:
         assert "this station did not receive" in failure_sentence(VideoFailure.NO_DATA, where="X")
+
+
+class TestANegotiationFailureNamesTheMode:
+    """``libcamerasrc`` asked for a mode the camera cannot deliver reports the
+    generic stream failure, with the reason only in the debug string. As
+    captured from a Pi Camera left to choose its own format."""
+
+    _MESSAGE = "Internal data stream error."
+    _DEBUG = (
+        "../src/gstreamer/gstlibcamerasrc.cpp(902): gst_libcamera_src_task_enter (): "
+        "/GstPipeline:picam-sink/GstLibcameraSrc:libcamerasrc:\nstreaming stopped, reason not-negotiated (-4)"
+    )
+
+    @pytest.mark.parametrize("phase", [ConnectionPhase.STARTING, ConnectionPhase.DATA_ARRIVING])
+    def test_before_any_video_it_is_the_mode(self, phase: ConnectionPhase) -> None:
+        verdict = classify_failure(
+            phase=phase, domain=STREAM_DOMAIN, code=STREAM_FAILED, message=self._MESSAGE, debug=self._DEBUG
+        )
+        assert verdict == VideoFailure.UNSUPPORTED_MODE
+
+    def test_the_marker_counts_in_the_message_too(self) -> None:
+        verdict = classify_failure(
+            phase=ConnectionPhase.STARTING,
+            domain=STREAM_DOMAIN,
+            code=STREAM_FAILED,
+            message="streaming stopped, reason not-negotiated (-4)",
+        )
+        assert verdict == VideoFailure.UNSUPPORTED_MODE
+
+    def test_after_video_it_is_still_a_stall(self) -> None:
+        """A feed that was on screen and stopped is reported as having stopped."""
+        verdict = classify_failure(
+            phase=ConnectionPhase.DECODING,
+            domain=STREAM_DOMAIN,
+            code=STREAM_FAILED,
+            message=self._MESSAGE,
+            debug=self._DEBUG,
+        )
+        assert verdict == VideoFailure.STALLED
+
+    def test_the_generic_failure_without_the_marker_stays_unknown(self) -> None:
+        verdict = classify_failure(
+            phase=ConnectionPhase.STARTING,
+            domain=STREAM_DOMAIN,
+            code=STREAM_FAILED,
+            message=self._MESSAGE,
+            debug="streaming stopped, reason error (-5)",
+        )
+        assert verdict == VideoFailure.UNKNOWN
+
+    @pytest.mark.parametrize("domain", [RESOURCE_DOMAIN, "some-other-quark"])
+    def test_the_marker_in_another_domain_is_not_claimed(self, domain: str) -> None:
+        verdict = classify_failure(phase=ConnectionPhase.STARTING, domain=domain, code=1, debug=self._DEBUG)
+        assert verdict == VideoFailure.UNKNOWN
+
+    def test_it_reads_as_what_the_device_does_not_offer(self) -> None:
+        assert failure_chip(VideoFailure.UNSUPPORTED_MODE) == "Unsupported mode"
+        assert (
+            failure_sentence(VideoFailure.UNSUPPORTED_MODE, where="Pi Camera (1920x1080@30)", kind=SourceKind.LOCAL)
+            == "Pi Camera (1920x1080@30) does not offer the format, size or frame rate this station asked for."
+        )
+
+    def test_a_local_device_is_sent_to_its_resolution_and_frame_rate(self) -> None:
+        assert (
+            failure_action(VideoFailure.UNSUPPORTED_MODE, kind=SourceKind.LOCAL)
+            == "Choose a resolution and frame rate the device supports under Video Source."
+        )
+
+    @pytest.mark.parametrize("kind", [SourceKind.REMOTE, SourceKind.NAMED, SourceKind.LISTENER])
+    def test_a_network_source_gets_the_general_step(self, kind: SourceKind) -> None:
+        assert (
+            failure_action(VideoFailure.UNSUPPORTED_MODE, kind=kind)
+            == "Check the settings under Video Source, or download a diagnostics bundle."
+        )

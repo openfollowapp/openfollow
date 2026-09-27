@@ -250,7 +250,7 @@ video/inputs/
     srt.py          # SRT plugin (pipeline, decoder config, web UI)
     rtsp.py         # RTSP plugin (rtspsrc, auto-codec, multi-transport)
     rtp.py          # RTP plugin (udpsrc, manual codec selection)
-    picam.py        # Raspberry Pi camera plugin (libcamerasrc, CSI/MIPI)
+    picam.py        # Raspberry Pi camera plugin (libcamerasrc, CSI/MIPI); caps pin format=I420
     v4l2.py         # USB camera / capture card plugin (v4l2src, UVC, Linux-only)
     avf.py          # USB camera / capture card plugin (avfvideosrc, macOS-only)
     testpattern.py  # Media Gallery source (id stays "testpattern"): plays a stored image / VP8 clip
@@ -282,7 +282,7 @@ Delegates protocol-specific work to the active plugin. Retains shared infrastruc
 - Shared gtksink management (detach/reattach across pipeline switches)
 - Connection timeout, reconnection scheduling (driven by plugin's `ReconnectPolicy`)
 - First-frame / caps detection via downstream pad probes (`_on_pad_event` for the caps event, `_on_sink_buffer` → `_handle_video_connected` on the first buffer) – replaces the old `cairooverlay` caps-changed signal
-- Source-byte observation: `_attach_source_probe()` puts a one-shot buffer probe on the plugin's `source_element_name`. Attached **per pipeline** (the source element is rebuilt on every reconnect), unlike the sink probes which attach once for the shared sink's lifetime. A source with no static `src` pad (`rtspsrc`) is followed via `pad-added`
+- Source-byte observation: `_attach_source_probe()` puts a one-shot buffer probe on the plugin's `source_element_name`. Attached **per pipeline** (the source element is rebuilt on every reconnect), unlike the sink probes which attach once for the shared sink's lifetime. A source with no static `src` pad (`rtspsrc`) is followed via `pad-added`. The same first buffer records `source_format` from that pad's caps (a pixel format for raw video, else the media type), read from the caps **string** because the structure getters are what GStreamer 1.26.2 broke; the sink probe sits after `videoconvert` and never sees it. It is logged once per connection and published as `video.source_format`
 - Source discovery scheduling (calls plugin's `discover_sources()`)
 - Source selection state management (generic, checks `InputCapabilities.has_source_selection`)
 
@@ -331,7 +331,11 @@ the phase is what decides an ambiguous error: the same
 and the empty-SDP marker both live in GStreamer's debug string, not its message,
 so a caller that drops it discards the evidence the mapping depends on. A known
 domain carrying a code with no rule (the generic `FAILED = 1`) stays `UNKNOWN`
-rather than landing in a neighbouring bucket.
+rather than landing in a neighbouring bucket. The one exception is observed on
+hardware: a caps negotiation failure arrives as `gst-stream-error-quark:1` with
+`reason not-negotiated` in the debug string, and **before any video** that is
+`UNSUPPORTED_MODE` (the source cannot deliver the format, size or frame rate
+asked for); after video it stays `STALLED`.
 
 **Classify before `_reset_video_flow_state`.** `_schedule_reconnect` clears the
 phase it classifies from, so the verdict is computed at the top of that method;
@@ -434,8 +438,15 @@ design at the caller - telling one from another for the passphrase case would be
 an oracle - not a gap in the taxonomy. Do not add a mapping that pretends
 otherwise.
 
+**The Pi Camera's capsfilter pins `format=I420`.** Left open, libcamerasrc takes
+the lowest-sorting fourcc it offers (raw Bayer or greyscale), not the camera's
+YUV420 default: on a CM5 with libcamera 0.7.1 that negotiated a raw stream and
+failed outright. Colorimetry is **not** pinned: one the ISP adjusts fails
+negotiation. `v4l2.py` is a different mechanism (driver-preference order) and
+is left open deliberately.
+
 ### Placeholder pipeline vs source state
-The "No Signal" placeholder is a black `videotestsrc` pinned at 1920x1080 @ 30 that feeds the **shared** sink, and both sink probes are attached once for that sink's lifetime – so its caps reach the same writer the real source uses. `ReceiverStateMachine.set_resolution` / `set_source_framerate` therefore refuse while `is_placeholder_pipeline`, mirroring `mark_frame_received`, and `_create_placeholder_pipeline` calls `clear_source_caps()` rather than writing its own geometry in. **Do not publish placeholder caps as source state**: `video.resolution` / `source_fps` are what the Statistics panel reports as the feed's own, and what `update_video` shapes the window from – a source that has never delivered a frame would otherwise present as a working 1080p feed and pin the window to 16:9 for the session.
+The "No Signal" placeholder is a black `videotestsrc` pinned at 1920x1080 @ 30 that feeds the **shared** sink, and both sink probes are attached once for that sink's lifetime – so its caps reach the same writer the real source uses. `ReceiverStateMachine.set_resolution` / `set_source_framerate` / `set_source_format` therefore refuse while `is_placeholder_pipeline`, mirroring `mark_frame_received`, and `_create_placeholder_pipeline` calls `clear_source_caps()` rather than writing its own geometry in. **Do not publish placeholder caps as source state**: `video.resolution` / `source_fps` are what the Statistics panel reports as the feed's own, and what `update_video` shapes the window from – a source that has never delivered a frame would otherwise present as a working 1080p feed and pin the window to 16:9 for the session.
 
 `update_video` applies the aspect-ratio hint whenever the real resolution changes (tracked in `app._video_aspect`), **not** once per session: the HUD projects across the canvas while calibration is solved against the input, so a window left at a previous source's aspect ratio slides the overlay off the video with nothing in the UI to explain it. `app._video_logged` stays a one-shot latch for its log line only.
 

@@ -472,6 +472,7 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
     rows.append(f"    last error            {error or '(none)'}")
     rows.append(f"    input resolution      {_fmt_resolution(video.get('resolution'))}")
     rows.append(f"    source framerate      {float(video.get('source_fps', 0.0) or 0.0):.1f} fps")
+    rows.append(f"    source format         {video.get('source_format') or '-'}")
 
     playback = stats.get("playback") or {}
     stale_after = float(playback.get("stale_after_s", 0.0) or 0.0)

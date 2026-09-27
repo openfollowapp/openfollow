@@ -2760,6 +2760,7 @@ class AppRuntimeServices:
                 "resolution": {"width": 0, "height": 0},
                 "source_selection_active": False,
                 "source_fps": 0.0,
+                "source_format": "",
             },
             "controllers": {
                 "connected_count": 0,
@@ -2856,6 +2857,7 @@ class AppRuntimeServices:
             "resolution": {"width": 0, "height": 0},
             "source_selection_active": False,
             "source_fps": 0.0,
+            "source_format": "",
         }
         receiver = getattr(app, "_video_receiver", None)
         if receiver is not None:
@@ -2902,6 +2904,7 @@ class AppRuntimeServices:
                 "resolution": {"width": int(width), "height": int(height)},
                 "source_selection_active": bool(receiver.source_selection_active),
                 "source_fps": float(getattr(receiver, "source_framerate", 0.0)),
+                "source_format": str(getattr(receiver, "source_format", "") or ""),
             }
 
         controller_items: list[dict[str, Any]] = []

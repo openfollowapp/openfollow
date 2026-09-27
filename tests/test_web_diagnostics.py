@@ -5127,3 +5127,14 @@ def test_bundle_places_the_3d_mouse_after_the_gamepads() -> None:
     assert text.index("=== E9. Gamepad controllers ===") < text.index("=== E10. 3D Mouse ===")
     assert text.index("=== E10. 3D Mouse ===") < text.index("=== F. Recent I/O activity ===")
     assert "  [no 3D Mouse connected]" in text
+
+
+@pytest.mark.parametrize(("source_format", "shown"), [("I420", "I420"), ("image/jpeg", "image/jpeg"), ("", "-")])
+def test_runtime_state_names_the_format_the_source_delivered(source_format: str, shown: str) -> None:
+    stats = _stats()
+    stats["video"] = dict(stats.get("video") or {}, source_format=source_format)
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    assert f"    source format         {shown}" in rows
+    assert rows.index(f"    source format         {shown}") == 1 + next(
+        i for i, row in enumerate(rows) if "source framerate" in row
+    )

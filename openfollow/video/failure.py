@@ -65,6 +65,7 @@ class VideoFailure(Enum):
     DECODE_ERROR = "decode_error"
     STALLED = "stalled"
     DEVICE_UNAVAILABLE = "device_unavailable"
+    UNSUPPORTED_MODE = "unsupported_mode"
     UNKNOWN = "unknown"
 
 
@@ -82,6 +83,7 @@ RESOURCE_SETTINGS = 13
 RESOURCE_NOT_AUTHORIZED = 15
 
 # ``GstStreamError``.
+STREAM_FAILED = 1
 STREAM_TYPE_NOT_FOUND = 4
 STREAM_WRONG_TYPE = 5
 STREAM_CODEC_NOT_FOUND = 6
@@ -102,6 +104,10 @@ _REFUSED_MARKERS = ("connection refused", "econnrefused")
 # settings failure. The wording is gstrtspsrc's own, not a camera's.
 _EMPTY_SDP_MARKERS = ("sdp contains no streams", "no streams in sdp")
 
+# A source asked for a format, size or frame rate it cannot deliver stops with
+# the generic stream failure; only the flow return in the debug string says so.
+_NOT_NEGOTIATED_MARKERS = ("not-negotiated",)
+
 _CHIPS: dict[VideoFailure, str] = {
     VideoFailure.NONE: "OK",
     VideoFailure.NOT_CONFIGURED: "Not configured",
@@ -114,6 +120,7 @@ _CHIPS: dict[VideoFailure, str] = {
     VideoFailure.DECODE_ERROR: "Decode error",
     VideoFailure.STALLED: "Stalled",
     VideoFailure.DEVICE_UNAVAILABLE: "Device busy",
+    VideoFailure.UNSUPPORTED_MODE: "Unsupported mode",
     VideoFailure.UNKNOWN: "Failed",
 }
 
@@ -137,6 +144,7 @@ _SENTENCES: dict[VideoFailure, str] = {
     VideoFailure.DECODE_ERROR: "Video is arriving from {where}, but it cannot be decoded.",
     VideoFailure.STALLED: "Video from {where} stopped arriving.",
     VideoFailure.DEVICE_UNAVAILABLE: "{where} is not available - another program may be holding it.",
+    VideoFailure.UNSUPPORTED_MODE: "{where} does not offer the format, size or frame rate this station asked for.",
     VideoFailure.UNKNOWN: "Video from {where} failed for a reason this station does not recognise.",
 }
 
@@ -166,6 +174,7 @@ _ACTIONS: dict[VideoFailure, str] = {
     VideoFailure.DECODE_ERROR: "Check the camera's encoder settings, or lower its bitrate.",
     VideoFailure.STALLED: "Check the camera and the network link between it and this station.",
     VideoFailure.DEVICE_UNAVAILABLE: "Close any other program using this device.",
+    VideoFailure.UNSUPPORTED_MODE: "Check the settings under Video Source, or download a diagnostics bundle.",
     VideoFailure.UNKNOWN: "Check the settings under Video Source, or download a diagnostics bundle.",
 }
 
@@ -182,6 +191,7 @@ _KIND_ACTIONS: dict[SourceKind, dict[VideoFailure, str]] = {
         # The same code arrives from an absent capture device and a deleted
         # media file, neither of which has a stream path to correct.
         VideoFailure.STREAM_NOT_FOUND: "Check the device or file selected under Video Source still exists.",
+        VideoFailure.UNSUPPORTED_MODE: "Choose a resolution and frame rate the device supports under Video Source.",
     },
     SourceKind.NAMED: {
         VideoFailure.UNREACHABLE: "Check the source is running and visible to this station on the network.",
@@ -279,6 +289,9 @@ def classify_failure(
             return _silence_verdict(phase, saw_video)
 
     if domain == STREAM_DOMAIN:
+        # Before any video only: a feed that was on screen and stopped is a stall.
+        if code == STREAM_FAILED and not saw_video and any(marker in text for marker in _NOT_NEGOTIATED_MARKERS):
+            return VideoFailure.UNSUPPORTED_MODE
         if code in _FORMAT_CODES:
             return VideoFailure.UNSUPPORTED_FORMAT
         if code in _DECODE_CODES:

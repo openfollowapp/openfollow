@@ -18,6 +18,7 @@ The first line is the station's reading of how far the connection got before it 
 - **Unsupported** / **Decode error** – video is arriving; this station cannot turn it into pictures.
 - **Stalled** – video was arriving and stopped.
 - **Device busy** – a local capture device another program is holding.
+- **Unsupported mode** – the source could not deliver the format, size or frame rate asked of it, so no video started.
 - **Not configured** – no source has been set.
 - **Failed** – the pipeline reported something this station has no reading for. Here, and only here, its own wording is shown instead, because it is the whole story. **Signal** reads `Disconnected` for this case rather than inventing a label.
 

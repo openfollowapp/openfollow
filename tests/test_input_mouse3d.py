@@ -2578,6 +2578,43 @@ def test_an_open_error_clears_once_the_puck_opens(monkeypatch) -> None:  # noqa:
         mgr.stop(wait=True)
 
 
+def test_a_dropped_puck_does_not_revive_an_old_open_error(monkeypatch) -> None:  # noqa: ANN001
+    """A puck that opened after a refusal and then dropped is reconnecting, not refused."""
+    _fast_manager(monkeypatch)
+
+    class _Dropping(FakeDevice):
+        gone = False
+
+        def read(self) -> object | None:
+            if self.gone:
+                raise OSError("device gone")
+            return super().read()
+
+    device = _Dropping()
+    attempts: list[int] = []
+    reopen = threading.Event()
+
+    def _open():  # noqa: ANN202
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise PermissionError("denied")
+        if len(attempts) == 2:
+            return device
+        reopen.wait(2.0)
+        return None
+
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([_PUCK_A], {"/dev/hidraw2": _open}))
+    mgr.start()
+    try:
+        assert _wait_until(lambda: _states(mgr).get("/dev/hidraw2") == ("open", ""))
+        device.gone = True
+        assert _wait_until(lambda: len(attempts) >= 3)
+        assert _states(mgr)["/dev/hidraw2"] == ("opening", "")
+    finally:
+        reopen.set()
+        mgr.stop(wait=True)
+
+
 def test_a_puck_being_opened_reports_no_fault() -> None:
     gate = threading.Event()
 

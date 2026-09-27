@@ -65,8 +65,10 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_ACCENT,
     COLOR_ACCENT_SOFT,
     COLOR_BG_BASE,
-    COLOR_DANGER_BG,
-    COLOR_DANGER_TEXT,
+    COLOR_TEXT,
+    COLOR_TEXT_MUTED,
+    COLOR_WARNING_BORDER,
+    COLOR_WARNING_FILL,
 )
 from openfollow.runtime.overlay_links import LINKS
 from openfollow.runtime.overlay_state import (
@@ -996,8 +998,6 @@ class TestBottomLeftInfoPanel:
 
     def test_panel_turns_red_when_settings_banner_set(self) -> None:
         """The bottom-left HUD info panel mirrors the Settings menu's error state so operators see the failure."""
-        from openfollow.runtime.overlay_draw_style import COLOR_DANGER
-
         state = _base_state(ip_text="192.168.1.2")
         state.video_source_type = "rtsp"
         state.settings_menu_banner = "Video source unreachable."
@@ -1009,17 +1009,15 @@ class TestBottomLeftInfoPanel:
             1920,
             1080,
         )
-        # At least one stroke ran (the red border) AND the value
-        # colour was set to COLOR_DANGER for the IP / source rows.
-        assert cr.strokes >= 1
-        assert any(call[0] == "rgb" and call[1:] == COLOR_DANGER for call in cr.calls)
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+        assert ("rgb", *COLOR_WARNING_BORDER) in cr.calls
+        # The values keep the HUD's normal text colour; the panel carries the red.
+        assert cr.find_texts("192.168.1.2")[0].rgba[:3] == COLOR_TEXT
 
     def test_panel_turns_red_when_error_message_set(self) -> None:
         """Same red treatment when ``state.error_message`` is set
         (mid-stream disconnect path that doesn't go through the
         auto-banner)."""
-        from openfollow.runtime.overlay_draw_style import COLOR_DANGER
-
         state = _base_state(ip_text="192.168.1.2")
         state.error_message = "Connection refused"
         cr = FakeCairo()
@@ -1030,15 +1028,13 @@ class TestBottomLeftInfoPanel:
             1920,
             1080,
         )
-        assert cr.strokes >= 1
-        assert any(call[0] == "rgb" and call[1:] == COLOR_DANGER for call in cr.calls)
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+        assert ("rgb", *COLOR_WARNING_BORDER) in cr.calls
 
     def test_panel_stays_normal_when_no_error(self) -> None:
         """Default state: no banner, no error_message → panel uses the
         standard background gradient and values in normal text colour
         (no danger-red anywhere in the draw calls)."""
-        from openfollow.runtime.overlay_draw_style import COLOR_DANGER
-
         state = _base_state(ip_text="192.168.1.2")
         state.video_source_type = "ndi"
         state.settings_menu_banner = ""
@@ -1051,9 +1047,8 @@ class TestBottomLeftInfoPanel:
             1920,
             1080,
         )
-        # No danger-coloured fill / border / text in normal state.
-        assert not any(call[0] == "rgb" and call[1:] == COLOR_DANGER for call in cr.calls)
-        assert not any(call[0] == "rgba" and call[1:4] == COLOR_DANGER for call in cr.calls)
+        assert ("rgba", *COLOR_WARNING_FILL) not in cr.calls
+        assert ("rgb", *COLOR_WARNING_BORDER) not in cr.calls
 
 
 # --------------------------------------------------------------------------- #
@@ -1124,13 +1119,11 @@ class TestSystemStatsAndPanels:
     def test_info_panel_error_state_keeps_danger_chrome(self) -> None:
         # The failure state is a deliberate red alert and must NOT be
         # flattened into the neutral card chrome.
-        from openfollow.runtime.overlay_draw_style import COLOR_DANGER
-
         state = _base_state(ip_text="10.0.0.5", error_message="SRT connection lost")
         cr = FakeCairo()
         draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
         assert not _emits_card_chrome(cr)
-        assert ("rgb", *COLOR_DANGER) in cr.calls
+        assert ("rgb", *COLOR_WARNING_BORDER) in cr.calls
 
     def test_help_panel_uses_card_chrome(self) -> None:
         # Top-left help block panel reads in the card style.
@@ -1518,9 +1511,10 @@ class TestMarkerCardRendering:
             state=None,
         )
         # 1-based: controller_idx 1 -> "C2".
-        assert "C2 missing" in cr.show_text_strings()
-        assert ("rgb", *COLOR_DANGER_BG) in cr.calls
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
         assert ("rgb", *COLOR_BG_BASE) not in cr.calls
+        badge = next(d for d in cr.texts if d.text == "C2 missing")
+        assert badge.rgba[:3] == COLOR_TEXT
 
     @staticmethod
     def _missing_card(name: str) -> tuple[FakeCairo, Any, Any]:
@@ -1571,7 +1565,7 @@ class TestMarkerCardRendering:
             selected=False,
             state=None,
         )
-        assert ("rgb", *COLOR_DANGER_BG) not in cr.calls
+        assert ("rgba", *COLOR_WARNING_FILL) not in cr.calls
         assert not any(text.endswith("missing") for text in cr.show_text_strings())
 
     def test_an_unbound_card_is_never_red(self) -> None:
@@ -1587,7 +1581,7 @@ class TestMarkerCardRendering:
             selected=False,
             state=None,
         )
-        assert ("rgb", *COLOR_DANGER_BG) not in cr.calls
+        assert ("rgba", *COLOR_WARNING_FILL) not in cr.calls
 
     @pytest.mark.parametrize("flash", [True, False])
     def test_identify_flashes_the_card(self, flash: bool) -> None:
@@ -2427,13 +2421,13 @@ class TestTheDeviceBoxMatchesTheBrowser:
         assert lead.bold is True
         assert action.font_size == lead.font_size
 
-    def test_both_use_the_web_failure_colour(self) -> None:
-        """``#ffd7d7``; the device drew body text in the ordinary near-white,
-        so the same failure looked like a different kind of message."""
+    def test_the_text_keeps_the_huds_own_colours(self) -> None:
+        """The box carries the red; its text reads like every other HUD text:
+        the observation in the normal colour, the label and next step muted."""
         cr = self._draws()
-        for needle in ("Nothing answered", "Check the camera"):
-            rgba = self._find(cr, needle).rgba
-            assert rgba[:3] == pytest.approx(COLOR_DANGER_TEXT, abs=0.002)
+        assert self._find(cr, "Nothing answered").rgba[:3] == COLOR_TEXT
+        assert self._find(cr, "Check the camera").rgba == COLOR_TEXT_MUTED
+        assert self._find(cr, "ERROR").rgba == COLOR_TEXT_MUTED
 
     def test_the_source_is_named_once(self) -> None:
         """The sentence already carries the address; a headline above it

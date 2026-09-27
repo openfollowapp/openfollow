@@ -96,6 +96,9 @@ class FakeCairo:
         self._cur_line_width = w
         self.calls.append(("line_width", w))
 
+    def set_line_join(self, join: Any) -> None:
+        self.calls.append(("line_join", join))
+
     # ------------------------------------------------------------------
     # Geometry
     # ------------------------------------------------------------------

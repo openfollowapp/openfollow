@@ -5,7 +5,7 @@
 The badge surfaces ``OverlayState.status_flags`` entries as rows. Empty
 list ⇒ nothing draws; non-empty ⇒ one row per active flag, with overflow
 rolled into a single "+N more" tail row to bound the on-screen footprint.
-Each entry carries a severity – ``"error"`` (red, warning triangle) or
+Each entry carries a severity – ``"error"`` (warning red, warning sign) or
 ``"info"`` (green, filled dot).
 
 Driven against the project's :class:`FakeCairo` so the tests stay fast
@@ -16,7 +16,13 @@ from __future__ import annotations
 
 import pytest
 
-from openfollow.runtime.overlay_draw_style import COLOR_DANGER, COLOR_OK
+from openfollow.runtime.overlay_draw_style import (
+    COLOR_DANGER_BG,
+    COLOR_OK,
+    COLOR_TEXT,
+    COLOR_WARNING_BORDER,
+    COLOR_WARNING_FILL,
+)
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.runtime.overlay_status_badge import (
     _BADGE_MAX_WIDTH,
@@ -95,22 +101,27 @@ class TestSingleFlag:
         texts = cr.show_text_strings()
         assert any("MIDI patch" in t for t in texts)
 
-    def test_error_row_paints_danger_border(self) -> None:
-        """An error row matches the device's failure chrome: a solid
-        ``COLOR_DANGER`` border (and a 20% danger fill)."""
+    def test_an_error_row_is_the_huds_warning_red(self) -> None:
+        """The same fill and border as every other HUD warning surface."""
         cr = FakeCairo()
         state = _state_with_flags(("midi_unavailable", "MIDI backend error"))
         draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
-        # Border stroke is set via set_source_rgb(*COLOR_DANGER).
-        rgb_calls = [c for c in cr.calls if c[0] == "rgb"]
-        assert any(tuple(round(v, 3) for v in c[1:]) == tuple(round(v, 3) for v in COLOR_DANGER) for c in rgb_calls)
-        # Fill is the same colour at 20% alpha.
-        rgba_calls = [c for c in cr.calls if c[0] == "rgba"]
-        assert any(
-            abs(c[1] - COLOR_DANGER[0]) < 1e-3 and abs(c[2] - COLOR_DANGER[1]) < 1e-3 and abs(c[4] - 0.20) < 1e-3
-            for c in rgba_calls
-            if len(c) == 5
-        )
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+        assert ("rgb", *COLOR_WARNING_BORDER) in cr.calls
+
+    def test_an_error_row_carries_a_warning_sign(self) -> None:
+        """An off-white triangle with its "!" in the row's red, drawn in a
+        saved state so its rounded corners don't leak into later drawing."""
+        cr = FakeCairo()
+        state = _state_with_flags(("midi_unavailable", "MIDI backend error"))
+        draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
+        kinds = [c[0] for c in cr.calls]
+        triangle = kinds.index("rgb", kinds.index("line_join"))
+        assert cr.calls[triangle][1:] == COLOR_TEXT
+        assert cr.fill_preserves == 1
+        assert ("rgb", *COLOR_DANGER_BG) in cr.calls
+        assert cr.rects, "the '!' bar"
+        assert cr.saves == cr.restores == 1
 
 
 class TestSeverity:
@@ -126,16 +137,16 @@ class TestSeverity:
         # rounded-rect corners are also arcs, so just assert the green colour
         # was set, then a circle exists.)
         assert cr.arcs, "info glyph should draw an arc"
-        # No danger colour anywhere on a pure-info badge.
-        assert not any(tuple(round(v, 3) for v in c[1:]) == tuple(round(v, 3) for v in COLOR_DANGER) for c in rgb_calls)
+        # No warning red anywhere on a pure-info badge.
+        assert ("rgb", *COLOR_WARNING_BORDER) not in cr.calls
+        assert ("rgba", *COLOR_WARNING_FILL) not in cr.calls
 
-    def test_error_row_uses_danger_red(self) -> None:
+    def test_error_row_uses_no_info_green(self) -> None:
         cr = FakeCairo()
         state = _state_with_flags(("midi_unavailable", "Backend down", "error"))
         draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
-        rgb_calls = [c for c in cr.calls if c[0] == "rgb"]
-        assert any(tuple(round(v, 3) for v in c[1:]) == tuple(round(v, 3) for v in COLOR_DANGER) for c in rgb_calls)
-        assert not any(tuple(round(v, 3) for v in c[1:]) == tuple(round(v, 3) for v in COLOR_OK) for c in rgb_calls)
+        assert ("rgb", *COLOR_WARNING_BORDER) in cr.calls
+        assert ("rgb", *COLOR_OK) not in cr.calls
 
 
 class TestMultipleFlags:
@@ -146,9 +157,7 @@ class TestMultipleFlags:
             ("midi_unavailable", "Backend down"),
         )
         draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
-        # Two rows × (background fill + glyph fill) = 4 fills (the border is a
-        # stroke, not a fill).
-        assert cr.fills == 4
+        assert len(_row_top_ys(cr, _badge_x(cr))) == 2
         texts = cr.show_text_strings()
         assert any("Patch missing" in t for t in texts)
         assert any("Backend down" in t for t in texts)
@@ -190,9 +199,8 @@ class TestOverflow:
         flags = [(f"src_{i}", f"info {i}", "info") for i in range(_MAX_VISIBLE_ROWS + 1)]
         state = _state_with_flags(*flags)
         draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
-        rgb_calls = [c for c in cr.calls if c[0] == "rgb"]
-        # Pure-info stack incl. the tail → never sets the danger colour.
-        assert not any(tuple(round(v, 3) for v in c[1:]) == tuple(round(v, 3) for v in COLOR_DANGER) for c in rgb_calls)
+        # Pure-info stack incl. the tail never sets the warning red.
+        assert ("rgb", *COLOR_WARNING_BORDER) not in cr.calls
 
     def test_no_overflow_when_count_equals_cap(self) -> None:
         cr = FakeCairo()
@@ -214,8 +222,8 @@ class TestPositioning:
         frame_w = 1920
         draw_status_badge(FakeRenderer(state=state), cr, state, frame_w, 1080)
         # The rounded-rect right corners sit at cx = x + w - radius; the right
-        # edge is that + radius. An error row draws no circle glyph, so every
-        # arc here belongs to the background rounded rect.
+        # edge is that + radius. The sign's "!" dot sits at the left, so the
+        # rightmost arcs are the background's corners.
         right_edge = max(cx for (cx, _cy, _r) in cr.arcs) + _ROW_RADIUS
         assert right_edge == frame_w - _GUTTER
 

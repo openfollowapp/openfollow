@@ -18,11 +18,11 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_BG_BASE,
     COLOR_BORDER_SOFT,
     COLOR_DANGER,
-    COLOR_DANGER_BG,
-    COLOR_DANGER_TEXT,
     COLOR_OK,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
+    COLOR_WARNING_BORDER,
+    COLOR_WARNING_FILL,
     draw_card_background,
     draw_rounded_rect,
     parse_hex,
@@ -698,8 +698,8 @@ def _draw_settings_error_box(
 
     Two weights, matching the web UI's ``.notice.error`` and its
     ``.notice-sub``: what the station saw carries the emphasis, the step to try
-    sits under it, lighter and smaller. Same colours as the browser, so an
-    operator comparing the screen against a laptop sees one message.
+    sits under it, lighter. The text keeps the HUD's normal colours; the box
+    carries the red.
     """
     label = "ERROR"
     pad = 12.0
@@ -720,27 +720,21 @@ def _draw_settings_error_box(
         body_h += 4.0
     card_h = pad * 2 + title_size + 6.0 + body_h
 
-    # Subtle red wash inside, hard red border outside.
     draw_rounded_rect(cr, x, y, w, card_h, 10.0)
-    cr.set_source_rgba(
-        COLOR_DANGER[0],
-        COLOR_DANGER[1],
-        COLOR_DANGER[2],
-        0.18,
-    )
+    cr.set_source_rgba(*COLOR_WARNING_FILL)
     cr.fill()
-    cr.set_source_rgb(*COLOR_DANGER)
+    cr.set_source_rgb(*COLOR_WARNING_BORDER)
     draw_rounded_rect(cr, x, y, w, card_h, 10.0)
     cr.set_line_width(2.0)
     cr.stroke()
 
     renderer._set_ui_font(cr, title_size, bold=True)
-    cr.set_source_rgb(*COLOR_DANGER)
+    cr.set_source_rgba(*COLOR_TEXT_MUTED)
     cr.move_to(x + pad, y + pad + title_size - 2.0)
     cr.show_text(label)
 
     renderer._set_ui_font(cr, body_size, bold=True)
-    cr.set_source_rgb(*COLOR_DANGER_TEXT)
+    cr.set_source_rgb(*COLOR_TEXT)
     line_y = y + pad + title_size + 6.0 + body_size
     for line in body_lines:
         cr.move_to(x + pad, line_y)
@@ -750,7 +744,7 @@ def _draw_settings_error_box(
     if action_lines:
         line_y += 4.0
         renderer._set_ui_font(cr, action_size, bold=False)
-        cr.set_source_rgba(*COLOR_DANGER_TEXT, 0.8)
+        cr.set_source_rgba(*COLOR_TEXT_MUTED)
         for line in action_lines:
             cr.move_to(x + pad, line_y)
             cr.show_text(line)
@@ -1084,14 +1078,9 @@ def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: 
     in_error = bool(state.settings_menu_banner or state.error_message or state.video_failure_text)
     if in_error:
         draw_rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, 11)
-        cr.set_source_rgba(
-            COLOR_DANGER[0],
-            COLOR_DANGER[1],
-            COLOR_DANGER[2],
-            0.20,
-        )
+        cr.set_source_rgba(*COLOR_WARNING_FILL)
         cr.fill()
-        cr.set_source_rgb(*COLOR_DANGER)
+        cr.set_source_rgb(*COLOR_WARNING_BORDER)
         draw_rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, 11)
         cr.set_line_width(1.6)
         cr.stroke()
@@ -1111,10 +1100,7 @@ def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: 
     cr.show_text(station_label)
 
     renderer._set_ui_font(cr, value_size)
-    if in_error:
-        cr.set_source_rgb(*COLOR_DANGER)
-    else:
-        cr.set_source_rgb(*COLOR_TEXT)
+    cr.set_source_rgb(*COLOR_TEXT)
     cr.move_to(value_x, row1_y)
     cr.show_text(ip_value)
     cr.move_to(value_x, row2_y)
@@ -1174,7 +1160,10 @@ def draw_marker_card(
         # Solid background; border uses marker color for per-card identity. A
         # card whose controller is missing turns red so it reads across a room.
         missing = t.is_controlled and t.controller_idx is not None and not t.controller_connected
-        cr.set_source_rgb(*(COLOR_DANGER_BG if missing else COLOR_BG_BASE))
+        if missing:
+            cr.set_source_rgba(*COLOR_WARNING_FILL)
+        else:
+            cr.set_source_rgb(*COLOR_BG_BASE)
         draw_rounded_rect(cr, x, y, w, h, radius)
         cr.fill()
         if t.identify_flash:
@@ -1222,7 +1211,7 @@ def draw_marker_card(
                 badge = f"C{t.controller_idx + 1}"
             else:
                 renderer._set_ui_font(cr, 9, bold=True)
-                cr.set_source_rgb(*COLOR_DANGER_TEXT)
+                cr.set_source_rgb(*COLOR_TEXT)
                 badge = f"C{t.controller_idx + 1} missing"
             cr.move_to(x + 8, y + 14)
             cr.show_text(badge)

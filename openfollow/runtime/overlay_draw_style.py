@@ -33,12 +33,12 @@ CARD_BG_ALPHA = 0.9
 # Status indicators
 COLOR_OK = (0.494, 0.898, 0.624)  # #7de59f (RGB, green, online)
 COLOR_DANGER = (1.0, 0.549, 0.549)  # #ff8c8c (RGB, red, offline)
-# Text inside a failure box. Matches the web UI's ``.notice.error`` colour so
-# the same message reads the same on the screen and in the browser.
-COLOR_DANGER_TEXT = (1.0, 0.843, 0.843)  # #ffd7d7 (RGB)
-# Card background of a marker whose controller is missing; dark enough that the
-# card's light text stays readable on it.
+# The HUD's warning red. Status rows, failure panels and a missing controller's
+# card fill with it (the card keeps its marker-coloured border); dark enough
+# that the HUD's normal text stays readable on it.
 COLOR_DANGER_BG = (0.42, 0.08, 0.08)  # #6b1414 (RGB)
+COLOR_WARNING_FILL = (*COLOR_DANGER_BG, 0.8)  # #6b1414 at 80% (RGBA)
+COLOR_WARNING_BORDER = (0.69, 0.149, 0.149)  # #b02626 (RGB)
 
 # Typography
 FONT_UI_FAMILY = "Inter"

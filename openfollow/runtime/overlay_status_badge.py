@@ -7,10 +7,14 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import cairo
+
 from openfollow.runtime.overlay_draw_style import (
-    COLOR_DANGER,
+    COLOR_DANGER_BG,
     COLOR_OK,
     COLOR_TEXT,
+    COLOR_WARNING_BORDER,
+    COLOR_WARNING_FILL,
     draw_rounded_rect,
 )
 from openfollow.runtime.overlay_state import OverlayState
@@ -30,7 +34,7 @@ _BADGE_MAX_WIDTH = 280.0
 _ROW_HEIGHT = 22.0
 _ROW_SPACING = 4.0
 _ICON_PAD = 8.0
-_TEXT_PAD = 24.0  # icon column reserved on the left
+_TEXT_PAD = 28.0  # icon column reserved on the left
 # Font the rows are drawn in; measuring has to match or the fit is wrong.
 _ROW_FONT_SIZE = 10.0
 
@@ -93,6 +97,32 @@ def draw_status_badge(
         )
 
 
+def _draw_warning_sign(cr: Any, cx: float, cy: float) -> None:
+    """Off-white warning triangle with its "!" in the row's red."""
+    size = 13.0
+    half = size * 0.58
+    cr.save()
+    cr.set_line_join(cairo.LINE_JOIN_ROUND)
+    cr.set_line_width(2.0)
+    cr.move_to(cx, cy - size * 0.55)
+    cr.line_to(cx - half, cy + size * 0.45)
+    cr.line_to(cx + half, cy + size * 0.45)
+    cr.close_path()
+    cr.set_source_rgb(*COLOR_TEXT)
+    cr.fill_preserve()
+    cr.stroke()
+    mark_h = size * 0.62
+    bar_w = mark_h * 0.2
+    bar_h = mark_h * 0.52
+    bar_top = cy + 1.2 - mark_h * 0.42
+    cr.set_source_rgb(*COLOR_DANGER_BG)
+    cr.rectangle(cx - bar_w / 2, bar_top, bar_w, bar_h)
+    cr.fill()
+    cr.arc(cx, bar_top + bar_h + bar_w * 1.25, bar_w * 0.62, 0, 2 * math.pi)
+    cr.fill()
+    cr.restore()
+
+
 def _draw_warning_row(
     renderer: Any,
     cr: Any,
@@ -103,44 +133,32 @@ def _draw_warning_row(
     message: str,
     severity: str = "error",
 ) -> None:
-    """One badge row – background, severity glyph, message text.
+    """One badge row: background, severity glyph, message text.
 
-    Hoisted into a helper so the overflow row reuses the same chrome
-    as a normal row. ``severity`` picks the colour and glyph: ``"error"``
-    → danger red with a warning triangle, ``"info"`` → ok green with a
-    filled dot. The row's background is hand-painted (rounded rect + 20%
-    fill + solid border) rather than going through
-    ``draw_panel_background`` so the badge can pick the colour per row
-    without reaching into the shared helper's signature.
+    ``"error"`` is the HUD's warning red with a warning sign, ``"info"`` a
+    green wash with a filled dot. The overflow row reuses it.
     """
-    # Chrome matches the bottom-left info panel's failure state (rounded
-    # rect + 20% fill + solid border) so a row reads with the same visual
-    # language as a video / source failure elsewhere on the device UI.
-    # Severity picks the colour: "error" → danger red, "info" → ok green.
-    color = COLOR_OK if severity == "info" else COLOR_DANGER
+    info = severity == "info"
     radius = 8.0
     draw_rounded_rect(cr, x, y, w, h, radius)
-    cr.set_source_rgba(color[0], color[1], color[2], 0.20)
+    if info:
+        cr.set_source_rgba(*COLOR_OK, 0.20)
+    else:
+        cr.set_source_rgba(*COLOR_WARNING_FILL)
     cr.fill()
     draw_rounded_rect(cr, x, y, w, h, radius)
-    cr.set_source_rgb(*color)
+    cr.set_source_rgb(*(COLOR_OK if info else COLOR_WARNING_BORDER))
     cr.set_line_width(1.6)
     cr.stroke()
 
-    # Glyph: triangle for errors, dot for info.
-    glyph_size = 8.0
-    glyph_cx = x + _ICON_PAD + glyph_size * 0.5
+    glyph_cx = x + _ICON_PAD + 6.0
     glyph_cy = y + h * 0.5
-    cr.set_source_rgb(*color)
-    if severity == "info":
-        cr.arc(glyph_cx, glyph_cy, glyph_size * 0.5, 0, 2 * math.pi)
+    if info:
+        cr.set_source_rgb(*COLOR_OK)
+        cr.arc(glyph_cx, glyph_cy, 4.0, 0, 2 * math.pi)
         cr.fill()
     else:
-        cr.move_to(glyph_cx, glyph_cy - glyph_size * 0.6)
-        cr.line_to(glyph_cx - glyph_size * 0.5, glyph_cy + glyph_size * 0.5)
-        cr.line_to(glyph_cx + glyph_size * 0.5, glyph_cy + glyph_size * 0.5)
-        cr.close_path()
-        cr.fill()
+        _draw_warning_sign(cr, glyph_cx, glyph_cy)
 
     # Message text – bold, truncated.
     renderer._set_ui_font(cr, _ROW_FONT_SIZE, bold=True)

@@ -408,6 +408,9 @@
  .seg-toggle .seg-option > span small { font-size: 0.72rem; font-weight: 400; opacity: 0.8; }
  .seg-toggle .seg-option input:checked + span { background: var(--accent); color: #1a1205; }
  .seg-toggle .seg-option input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+ /* Row-sized: one line, no sub-label, as wide as its labels. */
+ .seg-toggle--compact { display: inline-grid; grid-template-columns: repeat(3, auto); gap: 2px; max-width: none; padding: 2px; border-radius: 0.55rem; }
+ .seg-toggle--compact .seg-option > span { padding: 0.22rem 0.6rem; border-radius: 0.4rem; font-size: 0.78rem; font-weight: 700; white-space: nowrap; }
  .tier-list { display: flex; flex-direction: column; gap: 6px; max-width: 32rem; }
  .tier-option { margin: 0; display: flex; cursor: pointer; }
  .tier-option input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }

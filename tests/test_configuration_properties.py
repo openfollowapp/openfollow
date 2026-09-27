@@ -40,6 +40,7 @@ from openfollow.configuration import (
     _coerce_str,
     load_config,
     save_config,
+    viewed_with_controlled,
 )
 
 pytestmark = pytest.mark.unit
@@ -195,8 +196,9 @@ def _normalised_configs(draw: st.DrawFn) -> AppConfig:
     Covers the serialisation-fragile fields specifically – the marker-id lists
     and ``marker_move_speeds`` (int keys → TOML string keys → back) – plus
     several sub-config trees. ``marker_move_speeds`` keys are kept ⊆
-    ``controlled_marker_ids`` and values non-negative, so ``save_config``'s
-    prune/normalise step is a no-op and the round-trip is a true identity.
+    ``controlled_marker_ids`` and values non-negative, and the viewed list
+    already holds every controlled id, so the save / load normalisation is a
+    no-op and the round-trip is a true identity.
     """
     controlled = draw(_MARKER_IDS)
     speeds = {mid: draw(_finite(0.0, 10.0)) for mid in controlled if draw(st.booleans())}
@@ -208,7 +210,7 @@ def _normalised_configs(draw: st.DrawFn) -> AppConfig:
         heal_interval=draw(_finite(0.0, 60.0)),
         web_port=draw(st.integers(min_value=1, max_value=65535)),
         controlled_marker_ids=list(controlled),
-        viewer_marker_ids=draw(_MARKER_IDS),
+        viewer_marker_ids=viewed_with_controlled(list(controlled), draw(_MARKER_IDS)),
         marker_move_speeds=speeds,
         grid=GridConfig(
             width=draw(_finite(0.1, 100.0)),

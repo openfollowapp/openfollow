@@ -191,7 +191,7 @@ All config lives in `config.toml` (auto-reloaded when file changes on disk).
 | `auto_time_sync` | `True` | Auto-sync the system clock from `time_sync_server` on startup / IP change (Pi has no RTC); needs the `system.set_clock` grant |
 | `time_sync_server` | `"ptbtime1.ptb.de"` | NTP server the online-sync worker queries for trusted time |
 | `controlled_marker_ids` | `[]` | Markers this instance moves |
-| `viewer_marker_ids` | `[]` | Markers shown in overlay (incl. remote) |
+| `viewer_marker_ids` | `[]` | Markers shown in overlay (incl. remote); always holds every controlled id (`viewed_with_controlled`: on load, in the selection route and in `init_markers`) |
 
 ### Sub-configs
 - **CameraConfig:** pos_x/y/z, pitch/yaw/roll, fov
@@ -668,7 +668,9 @@ modes:
   single-gamepad predicate fails, i.e. **2+ slots** *or* **one slot with
   no selection**. Fixed slot mapping `app._controlled_ids[unified_idx]`
   (derived from `controlled_marker_ids`), so each physical controller keeps
-  its own marker regardless of the shared `app._selected_id`. `unified_idx`
+  its own marker regardless of the shared `app._selected_id`. The selection route
+  keeps `controlled_marker_ids` in its order and appends a newly controlled
+  marker, so taking control of one never moves another pad's marker. `unified_idx`
   is the controller's position in `_controller_slots()`, see "Controller
   slots" below. **DPAD next/prev
   is disabled in this mode** – pressing it is a no-op at flag-set time

@@ -164,13 +164,11 @@ class TestMarkerCatalogDiffRenderer:
     to prevent silent regressions to full-reload."""
 
     def test_skeleton_marker_attributes_present(self) -> None:
-        """The skeleton (built once per root) anchors the diff via
-        ``data-role`` attributes on the two tbodies + the station-name
-        span. Without these, ``applyData`` has no stable join points."""
+        """The skeleton (built once per root) anchors the diff via the
+        catalog body's ``data-role``; without it ``applyData`` has no
+        stable join point."""
         body = _render_marker()
         assert 'data-role="catalog-body"' in body
-        assert 'data-role="selection-body"' in body
-        assert 'data-role="station-name"' in body
 
     def test_skeleton_idempotency_flag(self) -> None:
         body = _render_marker()
@@ -245,3 +243,64 @@ class TestMarkerAddRowReCreate:
         body = _render_marker()
         assert "already exists" in body
         assert "querySelector('[data-marker-id=\"' + id" in body
+
+
+class TestThisStationToggle:
+    """One table: each catalog row says what this station does with the marker, and
+    the per-station selection table is gone."""
+
+    def test_the_column_replaces_viewed_by(self) -> None:
+        body = _render_marker()
+        assert (
+            '\'<th>This Station <span id="selection-saved-flash" class="saved-flash" aria-live="polite"></span></th>\''
+            in body
+        )
+        assert "Viewed by" not in body
+        assert "marker-selection-table" not in body
+        assert "This station\\'s selection" not in body
+
+    def test_each_row_and_the_add_row_carry_the_three_states(self) -> None:
+        body = _render_marker()
+        assert "[['control', 'View &amp; Control'], ['view', 'View'], ['hide', 'Hide']]" in body
+        assert "thisStationToggle('this-station-' + id, id)" in body
+        assert "thisStationToggle('this-station-new', null)" in body
+        assert "seg-toggle seg-toggle--3 seg-toggle--compact" in body
+
+    def test_the_save_reads_every_row_and_control_implies_view(self) -> None:
+        body = _render_marker()
+        assert "root.querySelectorAll('tr[data-marker-id] input[data-this-station]:checked')" in body
+        assert "if (state === 'control') controlled.push(id);" in body
+        assert "if (state !== 'hide') viewer.push(id);" in body
+
+    def test_the_add_row_saves_its_choice_with_the_new_marker(self) -> None:
+        """Hide is saved too: re-adding a deleted id must clear a selection the
+        delete's best-effort prune could not write."""
+        body = _render_marker()
+        assert "if (root && chosen) postSelection(root, null, {id: id, state: chosen.value});" in body
+        assert "chosen.value !== 'hide'" not in body
+
+    def test_saves_run_one_at_a_time_and_read_the_toggles_when_sent(self) -> None:
+        """Each save posts the whole selection, and the server runs requests in
+        parallel: two in flight could commit out of order and put back the older one."""
+        body = _render_marker()
+        start = body.index("function postSelection(root, row, extra) {")
+        post = body[start : body.index("\n    }\n", start)]
+        assert "selectionQueue = selectionQueue" in post
+        assert ".then(function() { return saveSelection(root, row, extra); })" in post
+        # The snapshot is taken inside the queued save, not when the click happened.
+        assert "querySelectorAll" not in post
+        save = body[body.index("function saveSelection(root, row, extra) {") :]
+        assert save.index("root.querySelectorAll('tr[data-marker-id] input[data-this-station]:checked')") < save.index(
+            "fetch('/api/markers/selection'"
+        )
+
+    def test_the_poll_never_moves_a_toggle_mid_save(self) -> None:
+        body = _render_marker()
+        assert "const settled = selectionPending === 0 && Date.now() >= selectionSettleUntil;" in body
+        assert "if (!tr.dataset.synced || (settled && !toggle.contains(document.activeElement))) {" in body
+
+    def test_a_save_flashes_its_row_background(self) -> None:
+        body = _render_marker()
+        assert "tr.classList.add(ok ? 'row-saved' : 'row-failed');" in body
+        assert "@keyframes row-flash-green { from { background-color: var(--success-chip); } }" in body
+        assert "@keyframes row-flash-red { from { background-color: var(--error-chip); } }" in body

@@ -453,7 +453,8 @@ class TestInitMarkerCatalogSyncOnChange:
         captured["on_change"]([2])
         cfg = load_config(fake._config_path)
         assert cfg.controlled_marker_ids == [1]
-        assert cfg.viewer_marker_ids == []
+        # 2 is pruned from both lists; the still-controlled 1 is viewed.
+        assert cfg.viewer_marker_ids == [1]
 
     def test_on_change_no_config_write_for_undriven_peer_delete(
         self,

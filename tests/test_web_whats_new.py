@@ -99,3 +99,11 @@ def test_the_notes_file_ships_in_the_wheel() -> None:
         if isinstance(entry, dict) and "wheel" in entry.get("format", [])
     ]
     assert any(fnmatch.fnmatch(relative, pattern) for pattern in shipped)
+
+
+def test_the_shipped_notes_render_for_their_release() -> None:
+    """The bundled file names the release it describes on its first line and renders for it."""
+    first_line = whats_new_module.WHATS_NEW_FILE.read_text(encoding="utf-8").partition("\n")[0].strip()
+    notes = load_whats_new(first_line.lstrip("v"))
+    assert notes.matches
+    assert "This Station" in notes.html

@@ -25,6 +25,7 @@ import numpy as np
 from openfollow.configuration import (
     ControllerButtonTrigger,
     HotkeyTrigger,
+    viewed_with_controlled,
 )
 from openfollow.input import InputManager
 from openfollow.input.mouse3d import idle_mouse3d_status
@@ -1047,7 +1048,9 @@ class AppRuntimeServices:
             return out
 
         self._app._controlled_ids = _normalise(self._app._config.controlled_marker_ids)
-        self._app._viewer_ids = _normalise(self._app._config.viewer_marker_ids)
+        self._app._viewer_ids = viewed_with_controlled(
+            self._app._controlled_ids, _normalise(self._app._config.viewer_marker_ids)
+        )
         tc = self._app._config.marker
         default_pos = (tc.default_pos_x, tc.default_pos_y, tc.default_pos_z)
         # ``init_psn`` runs before ``init_markers``; narrow once for the

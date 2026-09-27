@@ -15,11 +15,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import pytest
+import tomllib
 
 import openfollow.web.discovery as discovery_module
-from openfollow.configuration import load_config
+from openfollow.configuration import load_config, save_config
 from openfollow.marker_catalog import MarkerCatalog
 from openfollow.marker_catalog.sync import PeerSelection
 from openfollow.web.server import ConfigWebServer
@@ -155,9 +157,9 @@ class TestCatalogEndpoints:
         status, _ = _request(base, "/api/markers/catalog/2", method="DELETE")
         assert status == 200
         cfg = load_config(cfg_path)
-        # Deleted id pruned from both selection lists; the survivor stays.
+        # Deleted id pruned from both selection lists; the survivor stays, viewed.
         assert cfg.controlled_marker_ids == [1]
-        assert cfg.viewer_marker_ids == []
+        assert cfg.viewer_marker_ids == [1]
         assert catalog.get(2) is None
         assert catalog.get(1) is not None
 
@@ -382,7 +384,7 @@ class TestSelectionEndpoint:
         assert status == 200
         cfg = load_config(cfg_path)
         assert cfg.controlled_marker_ids == [1, 2]
-        assert cfg.viewer_marker_ids == [1]
+        assert cfg.viewer_marker_ids == [1, 2]
 
     def test_unknown_id_rejected(self, live_server) -> None:
         _, base, _, catalog, _ = live_server
@@ -418,7 +420,59 @@ class TestSelectionEndpoint:
         assert status == 200
         cfg = load_config(cfg_path)
         assert cfg.controlled_marker_ids == [1, 2]
-        assert cfg.viewer_marker_ids == [2]
+        assert cfg.viewer_marker_ids == [2, 1]
+
+    def test_a_newly_controlled_marker_takes_the_next_slot(self, live_server) -> None:
+        """Controller slots follow ``controlled_marker_ids`` (C1 = first): markers already
+        controlled keep their place and a new one appends, whatever order the table posts."""
+        _, base, cfg_path, catalog, _ = live_server
+        for mid in (3, 5, 7):
+            catalog.upsert(mid, f"M{mid}", "#ff0000")
+        cfg = load_config(cfg_path)
+        cfg.controlled_marker_ids = [7, 5]
+        cfg.viewer_marker_ids = [5, 7, 3]
+        save_config(cfg, cfg_path)
+        status, _ = _request(
+            base,
+            "/api/markers/selection",
+            method="POST",
+            body={"controlled_ids": [3, 5, 7], "viewer_ids": [3, 5, 7]},
+        )
+        assert status == 200
+        cfg = load_config(cfg_path)
+        assert cfg.controlled_marker_ids == [7, 5, 3]
+        assert cfg.viewer_marker_ids == [5, 7, 3]
+
+    def test_releasing_a_marker_keeps_the_others_in_order(self, live_server) -> None:
+        _, base, cfg_path, catalog, _ = live_server
+        for mid in (3, 5, 7):
+            catalog.upsert(mid, f"M{mid}", "#ff0000")
+        cfg = load_config(cfg_path)
+        cfg.controlled_marker_ids = [7, 5, 3]
+        save_config(cfg, cfg_path)
+        status, _ = _request(
+            base,
+            "/api/markers/selection",
+            method="POST",
+            body={"controlled_ids": [3, 7], "viewer_ids": [3, 5, 7]},
+        )
+        assert status == 200
+        assert load_config(cfg_path).controlled_marker_ids == [7, 3]
+
+    def test_a_controlled_marker_is_saved_as_viewed(self, live_server) -> None:
+        _, base, cfg_path, catalog, _ = live_server
+        catalog.upsert(2, "B", "#00ff00")
+        status, _ = _request(
+            base,
+            "/api/markers/selection",
+            method="POST",
+            body={"controlled_ids": [2], "viewer_ids": []},
+        )
+        assert status == 200
+        # Read the file as written: loading it would apply the rule again and hide a route that skipped it.
+        saved = tomllib.loads(Path(cfg_path).read_text(encoding="utf-8"))
+        assert saved["controlled_marker_ids"] == [2]
+        assert saved["viewer_marker_ids"] == [2]
 
 
 class TestCatalogPolling:

@@ -523,7 +523,7 @@
         html += '        <option value="both" ' + (z.trigger_source === 'both' ? 'selected' : '') + '>Both</option>';
         html += '      </select></div>';
         html += '      <div class="field" style="flex:2 1 0;">';
-        html += '        <label>Triggered By <span class="section-note" style="font-weight:normal;">(marker IDs only – empty = any)</span></label>';
+        html += '        <label>Triggered By</label>';
         html += '        <input type="text" data-zone-field="triggered_by"'
               + ' data-zone-validate-field="triggered_by"'
               + ' value="' + escapeAttr((z.triggered_by || []).join(', ')) + '"'
@@ -558,7 +558,7 @@
             html += '          <span style="min-width:2.5em;font-size:0.85em;opacity:0.7;">V' + (vi + 1) + '</span>';
             html += '          <input type="' + vType + '"' + vStep + ' data-vertex-field="x" data-vertex-index="' + vi + '" value="' + (IS_IMPERIAL ? formatLength(vx) : Number(vx).toFixed(3)) + '" style="width:' + vWidth + ';">';
             html += '          <input type="' + vType + '"' + vStep + ' data-vertex-field="y" data-vertex-index="' + vi + '" value="' + (IS_IMPERIAL ? formatLength(vy) : Number(vy).toFixed(3)) + '" style="width:' + vWidth + ';">';
-            html += '          <button type="button" class="secondary" data-vertex-delete="' + vi + '" title="Remove vertex" ' + canDel + '>×</button>';
+            html += '          <button type="button" class="danger" data-vertex-delete="' + vi + '" title="Remove vertex" ' + canDel + '>×</button>';
             html += '        </div>';
             if (IS_IMPERIAL) {
                 html += '          <small class="metric-echo" data-vertex-echo="' + vi + '">Stored: ' + metricEcho(vx) + ', ' + metricEcho(vy) + '</small>';

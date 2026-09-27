@@ -8,6 +8,7 @@ Routes are exercised against a live :class:`ConfigWebServer`.
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1509,3 +1510,21 @@ class TestImport:
         assert status == 200, body
         status, body = _get(base, "/api/templates?type=osc_output")
         assert "Round Trip" in [t["name"] for t in json.loads(body)["templates"]]
+
+
+@pytest.mark.unit
+def test_no_label_carries_its_own_explanation() -> None:
+    """A label names its control; what it does belongs in the section's help drawer.
+    Covers the labels scripts build as strings too."""
+    root = Path(__file__).resolve().parent.parent / "openfollow"
+    sources = [*(root / "web" / "templates").rglob("*.tpl"), *(root / "video" / "inputs").glob("*.py")]
+    note = re.compile(r"<label[^>]*>[^<]*<span class=\\?[\"'](?:section-note|field-note|hint)")
+    assert [p.name for p in sources if note.search(p.read_text(encoding="utf-8"))] == []
+
+
+@pytest.mark.unit
+def test_removing_a_zone_vertex_is_a_danger_button() -> None:
+    zone_editor = (
+        Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "partials" / "zone_editor.tpl"
+    )
+    assert """<button type="button" class="danger" data-vertex-delete=""" in zone_editor.read_text(encoding="utf-8")

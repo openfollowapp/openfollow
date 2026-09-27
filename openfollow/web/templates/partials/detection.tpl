@@ -13,46 +13,40 @@
 % di_state = di.get('state', 'idle')
 % di_running = di_state == 'running'
 % if missing:
-    <div role="alert" style="margin: 0 0 14px; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255, 120, 120, 0.45); background: rgba(255, 76, 76, 0.1); color: #ffd6d6; font-size: 0.85rem;">
-        <strong>Detection needs extra components:</strong> {{', '.join(missing)}}.
-        Install with <code>bash /usr/share/openfollow/install-detection.sh</code>, then restart.
+    <div class="notice error" role="alert">
+        <div>Detection needs extra components: {{', '.join(missing)}}.</div>
+        <div class="notice-sub">Install with <code>bash /usr/share/openfollow/install-detection.sh</code>, then restart.</div>
     </div>
 % end
 % if install_feedback:
-%     fb_bg = 'rgba(255, 76, 76, 0.1)' if install_error else 'rgba(76, 175, 80, 0.12)'
-%     fb_border = 'rgba(255, 120, 120, 0.45)' if install_error else 'rgba(120, 200, 120, 0.45)'
-%     fb_color = '#ffd6d6' if install_error else '#d6ffd9'
 %     fb_role = 'alert' if install_error else 'status'
 %     fb_live = 'assertive' if install_error else 'polite'
-    <div role="{{fb_role}}" aria-live="{{fb_live}}" aria-atomic="true" style="margin: 0 0 14px; padding: 10px 12px; border-radius: 8px; border: 1px solid {{fb_border}}; background: {{fb_bg}}; color: {{fb_color}}; font-size: 0.85rem;">
+    <div class="notice {{'error' if install_error else 'success'}}" role="{{fb_role}}" aria-live="{{fb_live}}" aria-atomic="true">
         {{install_feedback}}
     </div>
 % end
 % if di_running:
-    <div role="status" aria-live="polite" aria-atomic="true" class="install-progress"
+    <div role="status" aria-live="polite" aria-atomic="true" class="notice install-progress"
          hx-get="/section/detection"
          hx-trigger="every 1s"
          hx-target="#detection-section"
-         hx-swap="outerHTML"
-         style="margin: 0 0 14px; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(120, 180, 255, 0.45); background: rgba(120, 180, 255, 0.10); color: #d6e6ff; font-size: 0.85rem;">
-        <strong>{{di.get('message') or 'Working...'}}</strong>
+         hx-swap="outerHTML">
+        <div>{{di.get('message') or 'Working...'}}</div>
 %     tail = di.get('tail') or ''
 %     if tail.strip():
-        <pre style="margin: 6px 0 0; padding: 6px 8px; background: rgba(0,0,0,0.25); border-radius: 4px; font-size: 0.75rem; max-height: 8em; overflow: auto; white-space: pre-wrap; color: #cfd6df;">{{tail}}</pre>
+        <pre>{{tail}}</pre>
 %     end
     </div>
 % elif di_state == 'success':
-    <div role="status" aria-live="polite" aria-atomic="true"
-         style="margin: 0 0 14px; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(120, 200, 120, 0.45); background: rgba(76, 175, 80, 0.12); color: #d6ffd9; font-size: 0.85rem;">
-        <strong>{{di.get('message') or 'Done.'}}</strong>
+    <div class="notice success" role="status" aria-live="polite" aria-atomic="true">
+        {{di.get('message') or 'Done.'}}
     </div>
 % elif di_state == 'error':
-    <div role="alert" aria-live="assertive" aria-atomic="true"
-         style="margin: 0 0 14px; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255, 120, 120, 0.45); background: rgba(255, 76, 76, 0.10); color: #ffd6d6; font-size: 0.85rem;">
-        <strong>{{di.get('message') or 'Failed.'}}</strong>
+    <div class="notice error" role="alert" aria-live="assertive" aria-atomic="true">
+        <div>{{di.get('message') or 'Failed.'}}</div>
 %     tail = di.get('tail') or ''
 %     if tail.strip():
-        <pre style="margin: 6px 0 0; padding: 6px 8px; background: rgba(0,0,0,0.25); border-radius: 4px; font-size: 0.75rem; max-height: 8em; overflow: auto; white-space: pre-wrap; color: #ffd6d6;">{{tail}}</pre>
+        <pre>{{tail}}</pre>
 %     end
     </div>
 % end

@@ -3,7 +3,7 @@
 % # - ``cards``: dict of card values (see partials/diagnostics.tpl header)
 % # - ``log_unavailable_warning``: str (empty when journalctl works)
 % if log_unavailable_warning:
-<div class="notice warning" role="alert">⚠ {{log_unavailable_warning}}</div>
+<div class="notice warning" role="alert">{{log_unavailable_warning}}</div>
 % end
 
 <div id="diagnostics-cards" class="stats-columns">

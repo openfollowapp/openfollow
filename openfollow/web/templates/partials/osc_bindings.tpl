@@ -60,7 +60,7 @@
  % # Red when the row can never fire; the badge beside the name says why.
  % _fault_visible, _fault_more, _faults = _fault_summary_by_row.get(row.id, ((), '', ()))
  % _dot_broken = bool(_faults)
- <details class="osc-binding-row" data-row-id="{{row.id}}" data-trigger-kind="{{trigger_kind}}"
+ <details class="osc-binding-row{{' has-fault' if _dot_broken else ''}}" data-row-id="{{row.id}}" data-trigger-kind="{{trigger_kind}}"
  data-reorder-url="/section/osc_bindings/reorder" data-reorder-target="osc-bindings-section" {{'open' if is_focus else ''}}>
  <summary class="osc-binding-summary">
  % # The drag handle lives inside ``<summary>`` so it

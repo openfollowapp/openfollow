@@ -41,7 +41,7 @@ def test_stalled_loop_without_an_age_still_renders_the_alert() -> None:
 
 def test_before_the_first_frame_reads_as_starting() -> None:
     body = _render({"stalled": False, "seconds_since_last_frame": None})
-    assert '<span class="stat-chip warn">Starting</span>' in body
+    assert '<span class="stat-chip info">Starting</span>' in body
 
 
 def test_the_threshold_comes_from_the_payload_not_a_literal() -> None:

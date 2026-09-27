@@ -177,8 +177,7 @@ class TestWebUI:
     def test_html_renders_unavailable_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(NdiInput, "is_available", classmethod(lambda cls: (False, "missing lib")))
         html = NdiInput.web_ui_html({"ndi_source_name": ""})
-        assert "NDI not available" in html
-        assert "missing lib" in html
+        assert '<div class="notice error" role="alert">NDI not available: missing lib</div>' in html
 
     def test_empty_source_prompts_loading_placeholder(self) -> None:
         html = NdiInput.web_ui_html({"ndi_source_name": ""})

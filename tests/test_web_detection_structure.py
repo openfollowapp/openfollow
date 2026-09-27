@@ -253,7 +253,7 @@ def test_display_group_keeps_box_controls() -> None:
 
 def test_missing_deps_banner_points_at_install_script() -> None:
     html = _render(detection_missing=["onnxruntime"])
-    banner = html.split('role="alert"', 1)[1].split("</div>", 1)[0]
+    banner = html.split('role="alert"', 1)[1].split("\n    </div>", 1)[0]
     assert "onnxruntime" in banner
     assert "install-detection.sh" in banner
 
@@ -346,3 +346,53 @@ def test_pin_point_select_renders_head_and_feet() -> None:
     html = _render()
     assert 'name="pin_point"' in html
     assert 'value="top"' in html and 'value="bottom"' in html
+
+
+def test_missing_deps_banner_is_the_error_box_with_the_next_step_below() -> None:
+    html = _render(detection_missing=["onnxruntime"])
+    box = html.split('<div class="notice error" role="alert">', 1)[1].split("\n    </div>", 1)[0]
+    assert "<div>Detection needs extra components: onnxruntime.</div>" in box
+    assert '<div class="notice-sub">Install with <code>bash /usr/share/openfollow/install-detection.sh</code>' in box
+
+
+@pytest.mark.parametrize(
+    ("failed", "opening"),
+    [(True, '<div class="notice error" role="alert"'), (False, '<div class="notice success" role="status"')],
+)
+def test_install_feedback_takes_its_level_box(failed: bool, opening: str) -> None:
+    html = _render(install_feedback="Detection components installed.", install_error=failed)
+    assert "Detection components installed." in html.split(opening, 1)[1]
+
+
+@pytest.mark.parametrize(
+    ("state", "opening", "tail_shown"),
+    [
+        ("running", 'class="notice install-progress"', True),
+        ("success", '<div class="notice success" role="status"', False),
+        ("error", '<div class="notice error" role="alert"', True),
+    ],
+)
+def test_install_progress_states_take_their_level_boxes(state: str, opening: str, tail_shown: bool) -> None:
+    install = {"state": state, "message": "Installing detection components...", "tail": "Collecting onnxruntime"}
+    html = _render(detection_install=install)
+    assert "Installing detection components..." in html.split(opening, 1)[1]
+    assert ("<pre>Collecting onnxruntime</pre>" in html) is tail_shown
+
+
+@pytest.mark.parametrize(
+    "ctx",
+    [
+        {"detection_missing": ["onnxruntime"]},
+        {"install_feedback": "Install failed.", "install_error": True},
+        {"install_feedback": "Installed.", "install_error": False},
+        {"detection_install": {"state": "running", "message": "Working...", "tail": "x"}},
+        {"detection_install": {"state": "success", "message": "Done."}},
+        {"detection_install": {"state": "error", "message": "Failed.", "tail": "x"}},
+    ],
+    ids=["missing", "feedback-error", "feedback-success", "running", "success", "error"],
+)
+def test_detection_boxes_carry_no_inline_style(ctx: dict[str, object]) -> None:
+    html = _render(**ctx)
+    boxes = html[: html.index("<form")]
+    assert 'class="notice' in boxes
+    assert "style=" not in boxes

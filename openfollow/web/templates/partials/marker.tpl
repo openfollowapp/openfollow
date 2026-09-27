@@ -242,8 +242,8 @@
                 owners.push({name: escapeHTML(p.station_name || p.station_id), self: false});
             }
         }
-        if (owners.length === 0) return '–';
-        return owners.map(o => o.self ? '<strong>' + o.name + '</strong>' : o.name).join(' + ');
+        if (owners.length === 0) return '<span class="stat-chip warn not-controlled">Not controlled</span>';
+        return owners.map(o => o.self ? '<strong>' + o.name + '</strong>' : o.name).join('<br>+ ');
     }
 
     function viewedByLabel(entry, thisStation, peers) {
@@ -341,7 +341,7 @@
         }).then(writeResult(table)).then(function(ok) {
             const flash = root.querySelector('#selection-saved-flash');
             if (!ok || !flash) return;
-            flash.textContent = '✓ saved';
+            flash.textContent = 'Saved';
             flash.classList.add('show');
             setTimeout(function() { flash.classList.remove('show'); }, 1200);
         }).catch(writeUnreachable(table));
@@ -394,7 +394,7 @@
         setInputIfChanged(tr.querySelector('[data-field="name"]'), entry.name || '');
         setSwatchIfChanged(tr.querySelector('[data-field="color"]'), entry.color || '');
         const ctrlHTML = controlledByLabel(entry, thisStation, peers) +
-            (conflict ? ' <span title="More than one station claims control" class="conflict-flag">⚠</span>' : '');
+            (conflict ? ' <span class="stat-chip off conflict-flag">Conflict</span>' : '');
         setHTMLIfChanged(tr.querySelector('[data-cell="controlled-by"]'), ctrlHTML);
         setHTMLIfChanged(tr.querySelector('[data-cell="viewed-by"]'), viewedByLabel(entry, thisStation, peers));
     }
@@ -481,7 +481,7 @@
                     flash('', null);
                     return;
                 }
-                flash('✓ Added marker ' + id, 'ok');
+                flash('Added marker ' + id, 'ok');
                 // Clear name and id so updateAddRow re-suggests the next-free id.
                 nameIn.value = '';
                 idIn.value = '';
@@ -658,14 +658,11 @@
     border-bottom: 1px solid rgba(255,255,255,0.08);
     text-align: left;
 }
-.marker-catalog-table tr.conflict {
-    background: rgba(255,0,0,0.08);
-    outline: 1px solid rgba(255,0,0,0.5);
-}
-.marker-catalog-table .conflict-flag {
-    color: #f55;
-    font-weight: bold;
-}
+/* Two stations control one marker: the fault-row tint. The control state is a status chip, placed here. */
+.marker-catalog-table tr.conflict { background: var(--error-row); }
+.marker-catalog-table tr.conflict td[data-cell="controlled-by"] { white-space: nowrap; }
+.marker-catalog-table .conflict-flag { margin-left: 0.3rem; }
+.marker-catalog-table .conflict-flag, .marker-catalog-table .not-controlled { vertical-align: 1px; }
 .marker-catalog-table .cell-soft, .saved-flash {
     color: rgba(255,255,255,0.75);
     font-size: 0.92em;
@@ -675,14 +672,19 @@
     font-size: 0.92em;
     color: rgba(255,255,255,0.75);
 }
-.marker-catalog-table .add-feedback.ok { color: #6cf07a; font-weight: bold; }
-.marker-catalog-table .add-feedback.error { color: #f55; }
+.marker-catalog-table .add-feedback.ok { color: var(--success-text); font-weight: bold; }
+.marker-catalog-table .add-feedback.error { color: var(--error-text); font-weight: 600; }
+/* A confirmation leads with the green check sign. */
+.marker-catalog-table .add-feedback.ok::before, .saved-flash::before {
+    content: ""; display: inline-block; width: 1.1em; height: 1.1em; margin-right: 0.35em; vertical-align: -0.2em;
+    background: var(--success-sign-green) no-repeat center / contain;
+}
 .marker-catalog-table input[type="text"] {
     width: 100%;
     box-sizing: border-box;
 }
 .saved-flash {
-    color: #6cf07a;
+    color: var(--success-text);
     font-weight: bold;
     opacity: 0;
     transition: opacity 0.25s ease-in;

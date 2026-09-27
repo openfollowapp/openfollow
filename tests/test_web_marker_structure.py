@@ -231,6 +231,15 @@ class TestMarkerAddRowReCreate:
         assert ".then(writeResult(tr)).then(function(ok)" in body
         assert "writeFailed(tr, window.OpenFollow.saveError.UNREACHABLE)" in body
 
+    def test_row_states_read_as_labels(self) -> None:
+        body = _render_marker()
+        assert '<span class="stat-chip off conflict-flag">Conflict</span>' in body
+        # One controlling station per line, so a conflict reads as a list.
+        assert "o.name).join('<br>+ ');" in body
+        assert """return '<span class="stat-chip warn not-controlled">Not controlled</span>';""" in body
+        assert "flash('Added marker ' + id, 'ok');" in body
+        assert "flash.textContent = 'Saved';" in body
+
     def test_add_row_blocks_live_duplicate(self) -> None:
         """Adding a live id is blocked by the duplicate guard."""
         body = _render_marker()

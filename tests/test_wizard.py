@@ -333,6 +333,7 @@ class TestWizardPage:
         assert status == 200
         assert "wizard" in body.lower()
         assert len(body) > 1000
+        assert '<div id="wizard-video-saved" class="notice success" role="status" style="display:none">' in body
 
     def test_save_and_next_advances_only_after_save_resolves(self, live_server) -> None:
         # Save & Next must not advance while the old source is still active: the

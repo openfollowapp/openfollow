@@ -229,7 +229,7 @@ def test_section_diagnostics_warns_when_journalctl_missing(
     # consults ``shutil.which`` rather than spawning journalctl every poll.
     monkeypatch.setattr(diagnostics.shutil, "which", lambda _name: None)
     _, body, _ = _get(base, "/section/diagnostics")
-    assert "journalctl is unavailable" in body
+    assert '<div class="notice warning" role="alert">journalctl is unavailable' in body
 
 
 def test_section_diagnostics_warns_when_service_name_blank(

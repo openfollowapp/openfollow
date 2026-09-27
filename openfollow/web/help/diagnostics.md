@@ -35,7 +35,7 @@ Health of the incoming peer-discovery listener. If this card is unhealthy, this 
 
 Tells you where log lines are coming from. Normally this reads **journalctl** (the system journal, preferred). If the system journal isn't reachable, it falls back to **ring** – an in-memory log buffer covering the current session.
 
-> If journalctl is expected but unavailable, a yellow warning banner appears above the cards explaining why.
+> If journalctl is expected but unavailable, an amber notice above the cards explains why.
 
 ## Bundle & tools
 

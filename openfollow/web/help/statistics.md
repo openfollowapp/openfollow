@@ -47,8 +47,8 @@ State of the optional AI-based person detection engine. The panel header chip su
 | Chip colour | Meaning |
 |-------------|---------|
 | Green – **Running** | Detection is enabled and the engine is actively processing frames. |
-| Yellow – **Idle** | Detection is enabled but not yet running (for example, waiting for a video signal). |
-| Yellow – **Unavailable** | Detection is enabled but required packages are missing; a banner lists them. |
+| Blue – **Idle** | Detection is enabled but not yet running (for example, waiting for a video signal). |
+| Amber – **Unavailable** | Detection is enabled but required packages are missing; a banner lists them. |
 | Grey – **Off** | Detection is disabled. |
 
 - **Status** – a text label matching the header chip state above.

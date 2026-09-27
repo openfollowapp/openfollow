@@ -4,7 +4,7 @@ A live view of every OpenFollow station discovered on your LAN. Confirm all stat
 
 Each row is one station – this one or a peer discovered by multicast.
 
-- **Status indicator** – filled circle (●) = online and responding; open circle (○) = seen previously but not currently reachable.
+- **Status indicator** – a green dot = online and responding; a red ring = seen previously but not currently reachable. The row takes the same colour, and this station's row is blue.
 - **Station name** – the name set under General → Station Settings. This station's row is labelled *(this station)*.
 - **Address** – the IP address and web port the station serves on (e.g. `192.168.1.42:80`). Open it in a browser to reach that station's web interface.
 

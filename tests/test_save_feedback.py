@@ -61,3 +61,10 @@ def test_a_zone_save_that_saves_nothing_resolves_null() -> None:
 def test_zone_actions_chained_on_a_save_stop_when_it_failed(name: str) -> None:
     body = _function_body(_template("partials/zone_editor.tpl"), name)
     assert re.search(r"saveSelectedZone\(\)\.then\(function\s*\((\w+)\)\s*\{\s*if\s*\(!\1\)\s*return", body)
+
+
+def test_a_template_export_failure_reports_on_the_dialog() -> None:
+    body = _function_body(_template("base.tpl"), "onExportClick")
+    assert "saveError.show(card, await saveError.fromResponse(res), 'Not exported.')" in body
+    assert "saveError.show(card, saveError.UNREACHABLE, 'Not exported.')" in body
+    assert "showToast" not in body

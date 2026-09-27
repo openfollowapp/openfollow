@@ -394,7 +394,8 @@ def test_statistics_name_each_missing_controller(slots_server) -> None:
     _, base, _ = slots_server
     _, body = _get(base, "/section/statistics")
     assert "1 connected · 1 missing" in body
-    assert "C1 missing</strong> · marker 10 · GameSir (USB 2 · port 1)" in body
+    box = body[body.index('<div class="notice error" role="alert">') :]
+    assert box.index("<div>C1 missing · marker 10 · GameSir (USB 2 · port 1)</div>") < box.index("</div>\n")
 
 
 def test_statistics_without_missing_controllers_raise_no_warning(slots_server) -> None:
@@ -402,7 +403,7 @@ def test_statistics_without_missing_controllers_raise_no_warning(slots_server) -
     stats["controllers"] = {"connected_count": 1, "missing_count": 0, "items": [_SLOT_ITEMS[1]]}
     _, body = _get(base, "/section/statistics")
     assert "1 connected<" in body
-    assert "missing</strong>" not in body
+    assert re.search(r"C\d+ missing", body) is None
 
 
 @pytest.fixture()
@@ -3440,6 +3441,7 @@ def test_login_submit_renders_error_template_on_invalid_pin(pin_protected_server
     # asserting "incorrect"/"invalid" would couple to copy. Asserting the
     # form is re-rendered (still has the pin input) covers the branch.
     assert 'name="pin"' in body or "PIN" in body
+    assert '<div class="notice error" role="alert">' in body
 
 
 def test_repeated_wrong_pin_locks_out_with_retry_after(pin_protected_server) -> None:

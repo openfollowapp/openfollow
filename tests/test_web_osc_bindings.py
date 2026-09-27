@@ -1358,6 +1358,7 @@ def test_section_render_no_invalid_dot_when_valid(live_server) -> None:
     assert status == 200
     assert "osc-binding-enabled-dot invalid" not in body
     assert "osc-binding-nested-row is-invalid" not in body
+    assert "has-fault" not in body
 
 
 def test_save_persists_explicit_markerN_placeholder(live_server) -> None:
@@ -3794,6 +3795,8 @@ def test_section_render_hides_the_dot_from_assistive_tech_when_a_fault_shows(liv
     _, body = _get(base, "/section/osc_bindings")
     assert '<span class="osc-binding-enabled-dot invalid" aria-hidden="true">' in body
     assert 'aria-label="Enabled"' in body
+    assert '<details class="osc-binding-row has-fault"' in body
+    assert '<details class="osc-binding-row" ' in body
     assert 'aria-label="Invalid OSC message"' not in body
 
 
@@ -3890,3 +3893,32 @@ def test_fault_label_for_an_explicit_marker_entry_without_its_id() -> None:
         markers_unusable=False,
     )
     assert out == ("Marker not registered",)
+
+
+def _base_rule(selector: str) -> dict[str, str]:
+    """The declarations of the base.tpl rule whose selector list starts with ``selector``."""
+    base = (Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "base.tpl").read_text()
+    body = re.search(r"\n\s*" + re.escape(selector) + r"\b[^{]*\{([^}]*)\}", base)
+    assert body, selector
+    return {k.strip(): v.strip() for k, v in re.findall(r"([\w-]+)\s*:\s*([^;]+);", body.group(1))}
+
+
+def _rem(value: str) -> float:
+    assert value.endswith("rem"), value
+    return float(value[:-3])
+
+
+@pytest.mark.unit
+def test_nested_marker_rows_line_up_with_the_binding_above() -> None:
+    """A nested marker's dot and name sit under the binding's dot and name: the
+    indent is the drag handle plus one summary gap, and both rows share the gap
+    and the side padding."""
+    handle = _base_rule(".osc-binding-drag-handle")
+    summary_gap = _rem(_base_rule(".osc-binding-summary")["gap"])
+    nested_indent = _rem(_base_rule(".osc-binding-nested")["margin"].split()[-1])
+    nested_row = _base_rule(".osc-binding-nested-row")
+    assert handle["flex"] == "none"
+    assert "padding" not in handle
+    assert nested_indent == pytest.approx(_rem(handle["width"]) + summary_gap)
+    assert _rem(nested_row["gap"]) == pytest.approx(summary_gap)
+    assert nested_row["padding"].split()[1] == _base_rule(".osc-binding-row")["padding"].split()[1]

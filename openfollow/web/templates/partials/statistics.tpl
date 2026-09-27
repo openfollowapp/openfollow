@@ -51,9 +51,9 @@
 % elif tracking_running:
 %     tracking_chip_class = "ok"
 % elif tracking_enabled:
-%     tracking_chip_class = "warn"
+%     tracking_chip_class = "info"
 % else:
-%     tracking_chip_class = "off"
+%     tracking_chip_class = ""
 % end
 % show_missing_banner = bool(tracking_missing) and tracking_enabled
 % frame_age = playback.get("seconds_since_last_frame")
@@ -70,7 +70,7 @@
 % else:
 %     frame_clock_state = "Running"
 % end
-% frame_clock_chip = "off" if frame_stalled else ("ok" if frame_age is not None else "warn")
+% frame_clock_chip = "off" if frame_stalled else ("ok" if frame_age is not None else "info")
 
 <div class="stats-columns">
     <section class="stat-panel">
@@ -111,9 +111,9 @@
         </div>
 % missing_controllers = [c for c in controllers.get('items', []) if c.get('state') == 'missing']
 % if missing_controllers:
-        <div class="stat-warn" role="alert" style="margin: 0 0 10px; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255, 120, 120, 0.45); background: rgba(255, 76, 76, 0.1); color: #ffd6d6; font-size: 0.85rem;">
+        <div class="notice error" role="alert">
 % for c in missing_controllers:
-            <div><strong>C{{int(c.get('controller_index', 0)) + 1}} missing</strong>{{(' · marker %s' % c['marker_id']) if c.get('marker_id') is not None else ''}}{{(' · ' + c['name']) if c.get('name') else ''}}{{(' (' + c['port_label'] + ')') if c.get('port_label') else ''}}</div>
+            <div>C{{int(c.get('controller_index', 0)) + 1}} missing{{(' · marker %s' % c['marker_id']) if c.get('marker_id') is not None else ''}}{{(' · ' + c['name']) if c.get('name') else ''}}{{(' (' + c['port_label'] + ')') if c.get('port_label') else ''}}</div>
 % end
         </div>
 % end
@@ -158,12 +158,12 @@
     <section class="stat-panel">
         <div class="stat-panel-head">
             <h3 class="stat-panel-title">Person Detection</h3>
-            <span class="stat-chip {{tracking_chip_class}}">{{tracking_state}}</span>
+            <span class="stat-chip{{(" " + tracking_chip_class) if tracking_chip_class else ""}}">{{tracking_state}}</span>
         </div>
 % if show_missing_banner:
-        <div class="stat-warn" role="alert" style="margin: 0 0 10px; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255, 120, 120, 0.45); background: rgba(255, 76, 76, 0.1); color: #ffd6d6; font-size: 0.85rem;">
-            <strong>Missing packages:</strong> {{', '.join(tracking_missing)}}.
-            Install them from the Person Detection section, then restart.
+        <div class="notice error" role="alert">
+            <div>Missing packages: {{', '.join(tracking_missing)}}.</div>
+            <div class="notice-sub">Install them from the Person Detection section, then restart.</div>
         </div>
 % end
         <dl class="metric-list">

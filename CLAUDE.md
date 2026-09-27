@@ -794,6 +794,17 @@ and "manage X under Y" pointers – goes in that section's **help drawer markdow
   not help: "Marker speed limits, default speed, and default position" is fine;
   a sentence teaching behaviour is not.
 
+### Status & warning language (REQUIRED)
+
+Every state surface on the web UI and the HUD (boxes, chips, pills, dots, table
+rows, borders, flashes, inline text, the toast, HUD rows and cards) uses the four
+levels, tokens and components in [`docs/STATUS_LANGUAGE.md`](docs/STATUS_LANGUAGE.md).
+A new element picks an existing level and component and uses the `:root` tokens:
+no literal colours, alphas, radii or icons in templates, partials or scripts. If
+nothing fits, extend that document in the same change. A one-off red is a review
+blocker. `tests/test_status_language.py` pins the `:root` tokens to the document's
+table and fails a status rule that carries a literal colour.
+
 ### Key routes
 | Route | Method | Description |
 |---|---|---|

@@ -44,6 +44,36 @@
  --accent-soft: rgba(255, 188, 0, 0.12);
  --ok: #7de59f;
  --danger: #ff8c8c;
+ /* Status language, one token set per level: see docs/STATUS_LANGUAGE.md. */
+ --error-fill: rgba(107, 20, 20, 0.8);
+ --error-border: #b02626;
+ --error-chip: rgba(107, 20, 20, 0.8);
+ --error-line: #b02626;
+ --error-text: #f44848;
+ --error-mark: #e04848;
+ --error-mark-muted: rgba(224, 72, 72, 0.4);
+ --error-row: hsl(2deg 64% 14%);
+ --caution-fill: rgba(255, 188, 0, 0.12);
+ --caution-border: rgba(255, 188, 0, 0.6);
+ --caution-chip: rgba(155, 114, 0, 0.8);
+ --caution-line: #ffbc00;
+ --caution-text: #ffbc00;
+ --info-fill: rgba(38, 100, 176, 0.2);
+ --info-border: rgba(38, 100, 176, 0.5);
+ --info-chip: rgba(23, 61, 107, 0.8);
+ --info-line: #2664b0;
+ --info-text: #4f8dd9;
+ --success-fill: rgba(61, 154, 96, 0.2);
+ --success-border: rgba(61, 154, 96, 0.5);
+ --success-chip: rgba(37, 94, 58, 0.8);
+ --success-line: #3d9a60;
+ --success-text: #5cc98c;
+ --success-mark: #5cc98c;
+ --success-mark-muted: rgba(92, 201, 140, 0.4);
+ --error-sign: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 15'%3E%3Cpath d='M8 1.4 L14.8 13.6 H1.2 Z' fill='%23f7f5e9' stroke='%23f7f5e9' stroke-width='1.8' stroke-linejoin='round'/%3E%3Crect x='7.15' y='5' width='1.7' height='4.6' fill='%236b1414'/%3E%3Ccircle cx='8' cy='11.55' r='1.05' fill='%236b1414'/%3E%3C/svg%3E");
+ --info-sign: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7.2' fill='%23f7f5e9'/%3E%3Ccircle cx='8' cy='4.7' r='1.1' fill='%2307130d'/%3E%3Crect x='7.15' y='6.7' width='1.7' height='5.3' fill='%2307130d'/%3E%3C/svg%3E");
+ --success-sign: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7.2' fill='%23f7f5e9'/%3E%3Cpath d='M4.6 8.3 L7 10.6 L11.4 5.8' fill='none' stroke='%2307130d' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+ --success-sign-green: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7.2' fill='%235cc98c'/%3E%3Cpath d='M4.6 8.3 L7 10.6 L11.4 5.8' fill='none' stroke='%2307130d' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
  /* Button system tokens (web UI cleanup). Colour encodes
  importance, not action type: primary = the one commit action
  (Save/Update/Restart all map here), secondary = alternatives,
@@ -166,18 +196,18 @@
  .section.is-collapsed > :not(.section-head) { display: none; }
  .section.saved, .save-flash.saved { animation: flash-green .55s; }
  @keyframes flash-green {
- 0% { box-shadow: 0 0 0 2px rgba(125, 229, 159, 0.75); }
+ 0% { box-shadow: 0 0 0 2px var(--success-line); }
  100% { box-shadow: none; }
  }
  /* A failed save: the same flash in red (save-feedback.js), plus its line. */
  .save-failed { animation: flash-red .55s; }
  @keyframes flash-red {
- 0% { box-shadow: 0 0 0 2px rgba(255, 140, 140, 0.85); }
+ 0% { box-shadow: 0 0 0 2px var(--error-line); }
  100% { box-shadow: none; }
  }
  .save-error {
  margin: 0.6rem 0 0;
- color: #ff8a8a;
+ color: var(--error-text);
  font-weight: 600;
  font-size: 0.82rem;
  line-height: 1.35;
@@ -417,10 +447,10 @@
  font-weight: 700;
  }
  .stat-chip {
- display: inline-flex;
- align-items: center;
+ display: inline-block;
  border-radius: 999px;
- padding: 0.14rem 0.55rem;
+ --pill-pad-y: 0.14rem;
+ padding-inline: 0.55rem;
  font-size: 0.68rem;
  letter-spacing: 0.06em;
  text-transform: uppercase;
@@ -430,21 +460,11 @@
  background: rgba(255, 255, 255, 0.05);
  white-space: nowrap;
  }
- .stat-chip.ok {
- color: #c8ffd8;
- border-color: rgba(125, 229, 159, 0.4);
- background: rgba(125, 229, 159, 0.14);
- }
- .stat-chip.warn {
- color: #ffe7ae;
- border-color: rgba(255, 188, 0, 0.35);
- background: rgba(255, 188, 0, 0.14);
- }
- .stat-chip.off {
- color: #ffd7d7;
- border-color: rgba(255, 140, 140, 0.35);
- background: rgba(255, 140, 140, 0.13);
- }
+ .stat-chip.off, .stat-chip.warn, .stat-chip.info, .stat-chip.ok { color: var(--text); }
+ .stat-chip.off { border-color: var(--error-line); background: var(--error-chip); }
+ .stat-chip.warn { border-color: var(--caution-line); background: var(--caution-chip); }
+ .stat-chip.info { border-color: var(--info-line); background: var(--info-chip); }
+ .stat-chip.ok { border-color: var(--success-line); background: var(--success-chip); }
  .metric-list {
  margin: 0;
  padding: 0;
@@ -556,14 +576,7 @@
  }
  @media (max-width: 640px) { .gallery-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
  .gallery-grid.is-loading { opacity: 0.5; pointer-events: none; }
- .gallery-error {
- grid-column: 1 / -1;
- color: var(--danger);
- font-size: 0.84rem;
- padding: 0.35rem 0.5rem;
- border: 1px solid var(--danger);
- border-radius: 0.4rem;
- }
+ .gallery-error { grid-column: 1 / -1; }
  .gallery-tile {
  position: relative;
  border: 2px solid transparent;
@@ -865,17 +878,17 @@
  line-height: 1.3;
  }
  .field-error-msg {
- color: #ff8a8a;
+ color: var(--error-text);
  font-weight: 600;
  }
- /* ``field-warn-msg``: soft-fail channel, visually prominent but leaves Save usable.
- Keys off ``.field-error-msg`` and ``aria-invalid``. Used by OSC binding validators. */
+ /* ``field-warn-msg``: an error that leaves Save usable (it doesn't set
+ ``aria-invalid``). Used by OSC binding validators. */
  .field-warn-msg {
- color: #ff8a8a;
+ color: var(--error-text);
  font-weight: 600;
  }
  .field-note-msg {
- color: #9fc9ff;
+ color: var(--info-text);
  }
  /* Virtual Faders: eight vertical fader strips (horizontal layout);
  clicking a strip selects it for editing in the detail panel below. */
@@ -1025,75 +1038,14 @@
  input[aria-invalid="true"],
  select[aria-invalid="true"],
  textarea[aria-invalid="true"],
- /* Enabled checkbox: ``data-osc-unresolved="true"`` marker allows Save
- when deps unresolved; mirrors danger styling for visual consistency. */
+ /* Enabled checkbox: ``data-osc-unresolved="true"`` allows Save while a
+ placeholder is unresolved, but the binding can't fire, so it reads as an error. */
  input[data-osc-unresolved="true"],
  /* OSC message editor: ``contenteditable`` div needs explicit invalid styling
  to match standard input controls. Ensures visual consistency when validation fails. */
  .osc-message-editor[aria-invalid="true"] {
- border-color: #ff5c5c;
- box-shadow: 0 0 0 1px rgba(255, 92, 92, 0.35);
- }
- .restart-notice {
- margin-bottom: 12px;
- padding: 10px 12px;
- border-radius: 0.8rem;
- border: 1px solid rgba(159, 201, 255, 0.35);
- background: rgba(159, 201, 255, 0.11);
- color: #d5e9ff;
- font-weight: 600;
- }
- /* Generic notice banner – same shape as ``.restart-notice`` /
- ``.update-notice`` but reusable outside those flows. Default
- variant is informational blue; ``.warning`` matches the yellow
- palette of ``.stat-chip.warn``; ``.error`` matches the red
- danger palette. Use this for inline messages that aren't tied
- to a specific feature's notice block. */
- .notice {
- margin: 0 0 12px;
- padding: 10px 12px;
- border-radius: 0.8rem;
- border: 1px solid rgba(159, 201, 255, 0.35);
- background: rgba(159, 201, 255, 0.11);
- color: #d5e9ff;
- font-weight: 600;
- line-height: 1.35;
- }
- .notice.warning {
- border-color: rgba(255, 188, 0, 0.35);
- background: rgba(255, 188, 0, 0.13);
- color: #ffe1a2;
- }
- .notice.error {
- border-color: rgba(255, 140, 140, 0.35);
- background: rgba(255, 140, 140, 0.13);
- color: #ffd7d7;
- }
- /* Supporting detail under a notice's headline – present, but subordinate to
-    the line that actually answers the operator's question. */
- .notice .notice-sub {
- margin-top: 4px;
- font-weight: 400;
- opacity: 0.8;
- }
- .update-notice {
- margin-bottom: 12px;
- padding: 10px 12px;
- border-radius: 0.8rem;
- border: 1px solid rgba(159, 201, 255, 0.35);
- background: rgba(159, 201, 255, 0.11);
- color: #d5e9ff;
- font-weight: 600;
- }
- .update-notice.updating {
- border-color: rgba(255, 188, 0, 0.35);
- background: rgba(255, 188, 0, 0.13);
- color: #ffe1a2;
- }
- .update-notice.error {
- border-color: rgba(255, 140, 140, 0.35);
- background: rgba(255, 140, 140, 0.13);
- color: #ffd7d7;
+ border-color: var(--error-line);
+ box-shadow: 0 0 0 1px var(--error-line);
  }
  /* Awaiting-password prompt: roomier padding and explicit vertical
  rhythm between the message, the password input and the action
@@ -1101,8 +1053,9 @@
  decision and the default cramped spacing made the controls
  look like decoration. */
  .update-notice.awaiting-password {
- padding: 14px 16px;
+ padding: 14px 16px 14px 38px;
  }
+ .update-notice.awaiting-password::before { top: 15px; }
  .update-notice.awaiting-password p {
  margin: 0 0 12px;
  }
@@ -1207,22 +1160,37 @@
  margin-bottom: 5px;
  background: rgba(255, 255, 255, 0.02);
  }
- .peer-item.local { border: 1px solid rgba(255, 188, 0, 0.4); background: rgba(255, 188, 0, 0.05); }
- .peer-item.online { border: 1px solid rgba(125, 229, 159, 0.35); }
- .peer-item.offline { border: 1px solid rgba(255, 140, 140, 0.22); opacity: 0.75; }
- .peer-status { color: var(--ok); font-size: 1.1rem; }
+ .peer-item.local { border: 1px solid var(--info-border); background: var(--info-fill); }
+ .peer-item.online { border: 1px solid var(--success-border); background: var(--success-fill); }
+ .peer-item.offline { border: 1px solid var(--error-line); background: var(--error-row); }
+ /* The state dot; the ● / ○ glyph stays in the markup for text readers. */
+ .peer-status {
+ flex: none; box-sizing: content-box; width: 10px; height: 10px; margin: 0 3px;
+ border: 2px solid var(--success-mark-muted); border-radius: 999px;
+ background: var(--success-mark); background-clip: content-box; color: var(--ok); font-size: 0;
+ }
  /* Controller Slots table (Input tab). */
  .slot-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
  .slot-table th, .slot-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border-soft); }
  .slot-table thead th { color: var(--muted); font-weight: 600; font-size: 0.8rem; }
- .slot-row.slot-missing { background: rgba(255, 76, 76, 0.12); }
- .slot-missing-label { color: var(--danger); }
+ .slot-row.slot-missing { background: var(--error-row); }
+ .slot-missing-label {
+ display: inline-block; border-radius: 999px; --pill-pad-y: 0.14rem; padding-inline: 0.55rem;
+ font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 700; white-space: nowrap;
+ color: var(--text); background: var(--error-chip); border: 1px solid var(--error-line);
+ }
  .slot-reserved-label, .slot-empty { color: var(--muted); }
- .slot-activity { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; background: rgba(247, 245, 233, 0.2); margin-right: 4px; vertical-align: middle; }
- .slot-activity.is-active { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+ .slot-activity { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--muted); margin: 0 4px 0 0; vertical-align: middle; }
+ .slot-activity.is-active {
+ box-sizing: content-box; width: 10px; height: 10px; margin: -2.6px 1.4px -2.6px -2.6px;
+ border: 2px solid var(--success-mark-muted); background: var(--success-mark); background-clip: content-box;
+ }
  .slot-actions { white-space: nowrap; text-align: right; }
  .slot-actions button { margin: 0 0 0 6px; padding: 4px 10px; }
- .peer-item.offline .peer-status { color: var(--danger); }
+ .peer-item.offline .peer-status {
+ color: var(--danger); width: 8px; height: 8px;
+ border: 3px solid var(--error-mark); background-color: var(--error-mark-muted);
+ }
  .peer-name { flex: 1; font-weight: 600; }
  .peer-name em { color: var(--muted); font-style: italic; font-weight: 400; }
  .peer-address { color: var(--muted); font-size: 0.84rem; }
@@ -1340,15 +1308,19 @@
  position: fixed;
  right: 16px;
  bottom: 16px;
- border: 1px solid rgba(255, 188, 0, 0.4);
- background: rgba(7, 19, 13, 0.95);
- color: var(--accent);
- padding: 10px 16px;
+ display: inline-flex;
+ align-items: center;
+ gap: 8px;
+ border: 1px solid var(--success-border);
+ background: linear-gradient(var(--success-fill), var(--success-fill)), rgba(7, 19, 13, 0.95);
+ color: var(--text);
+ padding: 10px 16px 10px 12px;
  border-radius: 999px;
  opacity: 0;
  transition: opacity 0.3s;
  font-weight: 600;
  }
+ .toast::before { content: ""; flex: none; width: 16px; height: 16px; background: var(--success-sign) no-repeat center / contain; }
  .toast.show { opacity: 1; }
  /* Tab navigation */
  .tab-bar {
@@ -1438,7 +1410,9 @@
  color: var(--muted);
  font-family: ui-monospace, monospace;
  font-size: 0.95rem;
- padding: 0 0.25rem;
+ flex: none;
+ width: 1rem;
+ text-align: center;
  user-select: none;
  letter-spacing: -0.1em;
  }
@@ -1447,17 +1421,20 @@
  .osc-binding-row.dragging, .osc-destination-row.dragging { opacity: 0.55; }
  .osc-binding-row.drop-target, .osc-destination-row.drop-target { outline: 2px dashed var(--accent); outline-offset: 2px; }
  .osc-binding-enabled-dot { width: 0.55rem; height: 0.55rem; border-radius: 999px; background: var(--muted); flex: none; }
- .osc-binding-enabled-dot.on { background: var(--accent); }
- .osc-binding-enabled-dot.invalid { background: var(--danger); }
+ /* The state dots: 14px outside, so a -2.6px margin keeps the grey dot's footprint. */
+ .osc-binding-enabled-dot.on, .osc-binding-enabled-dot.invalid { box-sizing: content-box; margin: -2.6px; background-clip: content-box; }
+ .osc-binding-enabled-dot.on { width: 10px; height: 10px; border: 2px solid var(--success-mark-muted); background-color: var(--success-mark); }
+ .osc-binding-enabled-dot.invalid { width: 8px; height: 8px; border: 3px solid var(--error-mark); background-color: var(--error-mark-muted); }
+ .osc-binding-row.has-fault { border-color: var(--error-line); }
  .osc-binding-kind-badge, .osc-destination-proto-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
  .osc-binding-marker-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
  /* Why a row can never fire, on its collapsed summary. Capped at three
     entries by the renderer; the full list rides in a sibling
     visually-hidden span so assistive tech never gets the truncation. */
  .osc-binding-fault {
- font-size: 0.7rem; padding: 0.1rem 0.45rem; border-radius: 0.4rem;
- background: rgba(255, 140, 140, 0.14); color: var(--danger);
- border: 1px solid rgba(255, 140, 140, 0.3);
+ font-size: 0.7rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem; border-radius: 0.4rem;
+ background: var(--error-fill); color: var(--text);
+ border: 1px solid var(--error-border);
  font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
  }
  .osc-binding-fault-more { color: var(--muted); font-size: 0.7rem; flex: none; white-space: nowrap; }
@@ -1467,10 +1444,11 @@
  /* Negative top pulls the chips up under their parent row (the row's
     0.6rem bottom margin otherwise floats them); the bottom margin keeps a
     clear gap before the next transmitter so they don't touch. */
- .osc-binding-nested { display: flex; flex-direction: column; gap: 0.4rem; margin: -0.2rem 0 0.7rem 1.4rem; }
- .osc-binding-nested-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--muted); padding: 0.45rem 0.8rem; border: 1px solid var(--border-soft); border-radius: 0.5rem; background: rgba(255,255,255,0.02); }
+ /* Indented by the drag handle and one summary gap, so the dots and names line up with the row above. */
+ .osc-binding-nested { display: flex; flex-direction: column; gap: 0.4rem; margin: -0.2rem 0 0.7rem 1.6rem; }
+ .osc-binding-nested-row { display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; color: var(--muted); padding: 0.45rem 0.8rem; border: 1px solid var(--border-soft); border-radius: 0.5rem; background: rgba(255,255,255,0.02); }
  /* The red dot alone marks an uncontrolled marker – no red border. */
- .osc-binding-nested-row.is-invalid { color: var(--danger); }
+ .osc-binding-nested-row.is-invalid { color: var(--error-text); }
  /* Destination collapsed summary: host:port sits right after the name; the
  protocol badge anchors to the right. */
  .osc-destination-addr { color: var(--muted); font-size: 0.8rem; }
@@ -1599,35 +1577,18 @@
  white-space: pre-wrap;
  word-break: break-word;
  }
- .diag-error {
- color: #ff8a8a;
- background: rgba(255, 140, 140, 0.1);
- border: 1px solid rgba(255, 140, 140, 0.3);
- padding: 0.5rem 0.7rem;
- border-radius: 0.5rem;
- font-size: 0.85rem;
- }
  .diag-status-pill {
- display: inline-flex;
- align-items: center;
- gap: 0.3rem;
- padding: 0.14rem 0.6rem;
+ display: inline-block;
+ --pill-pad-y: 0.14rem;
+ padding-inline: 0.6rem;
  border-radius: 999px;
  font-size: 0.72rem;
  letter-spacing: 0.06em;
  text-transform: uppercase;
  font-weight: 700;
  }
- .diag-status-pill.healthy {
- color: #c8ffd8;
- border: 1px solid rgba(125, 229, 159, 0.4);
- background: rgba(125, 229, 159, 0.14);
- }
- .diag-status-pill.unhealthy {
- color: #ffd7d7;
- border: 1px solid rgba(255, 140, 140, 0.4);
- background: rgba(255, 140, 140, 0.13);
- }
+ .diag-status-pill.healthy { color: var(--text); border: 1px solid var(--success-line); background: var(--success-chip); }
+ .diag-status-pill.unhealthy { color: var(--text); border: 1px solid var(--error-line); background: var(--error-chip); }
  .diag-status-pill.unknown {
  color: var(--muted);
  border: 1px solid var(--border);
@@ -1660,8 +1621,9 @@
  text-transform: uppercase;
  font-size: 0.7rem;
  }
- .diag-event-status.sent { color: #c8ffd8; }
- .diag-event-status.skipped { color: #ffd7a8; }
+ .diag-event-status.sent { color: var(--success-text); }
+ /* Skipped, not failed: the binding still works. */
+ .diag-event-status.skipped { color: var(--caution-text); }
  .diag-event-detail { color: var(--muted); word-break: break-all; }
  .diag-raw {
  margin-top: 0.6rem;
@@ -1710,54 +1672,46 @@
  display: inline-block;
  font-family: ui-monospace, monospace;
  font-size: 0.85rem;
- padding: 0.05rem 0.4rem;
+ --pill-pad-y: 0.05rem;
+ padding-inline: 0.4rem;
  margin: 0 0.1rem;
  border-radius: 0.35rem;
- background: var(--accent-soft);
- color: var(--accent);
- border: 1px solid rgba(255, 188, 0, 0.35);
+ background: var(--success-fill);
+ color: var(--success-text);
+ border: 1px solid var(--success-border);
  white-space: nowrap;
  vertical-align: baseline;
  user-select: all;
  cursor: text;
  }
- .osc-pill:hover { border-color: var(--accent); }
- /* pill rendering for unresolved placeholders.
- The ``data-unresolved="true"`` flag is set by the pill JS when
- the placeholder's dependency isn't satisfied ([x] without a
- configured default marker, or [x:N] when N isn't
- registered). The danger palette mirrors aria-invalid styling
- on inputs so the operator sees the same "this needs
- attention" cue across the form. */
+ .osc-pill:hover { border-color: var(--success-line); }
+ /* An unresolved placeholder (``data-unresolved``, set from the server's list)
+ stops its binding firing, so it is an error, like the binding's red dot. */
  .osc-pill[data-unresolved="true"] {
- background: rgba(220, 60, 60, 0.14);
- color: #ff9b9b;
- border-color: rgba(220, 60, 60, 0.55);
+ background: var(--error-row);
+ color: var(--text);
+ border-color: var(--error-line);
  }
- .osc-pill[data-unresolved="true"]:hover {
- border-color: #ff7070;
- }
- /* Pill rendered for a bracketed token whose name isn't a
- recognised placeholder (``[xyz]`` / ``[bogus]``). The server-side
- compiler treats these as literal text, but the editor used to
- render them as a normal accent-coloured pill – visually
- indistinguishable from a real placeholder. The dashed warning
- palette signals "this looks like a placeholder but it's actually
- literal text". ``[data-unresolved="true"]`` (red, dependency
- missing) takes precedence when both apply, since the dependency
- hint is the more actionable error. */
+ .osc-pill[data-unresolved="true"]:hover { border-color: var(--error-mark); }
+ /* A bracketed token that isn't a placeholder (``data-invalid``) is sent as
+ literal text, so it reads as text with a red wavy underline, not a pill. */
  .osc-pill[data-invalid="true"] {
- background: rgba(255, 178, 102, 0.1);
- color: #ffc187;
- border: 1px dashed rgba(255, 178, 102, 0.55);
+ background: none;
+ border: 0;
+ padding: 0;
+ margin: 0;
+ color: var(--text);
+ text-decoration: underline wavy var(--error-text);
+ text-decoration-thickness: 1.5px;
+ text-underline-offset: 5px;
  }
- .osc-pill[data-invalid="true"]:hover {
- border-color: #ffb066;
- }
+ /* Both flags only if the editor's grammar and the server disagree: the server's verdict wins. */
  .osc-pill[data-invalid="true"][data-unresolved="true"] {
- background: rgba(220, 60, 60, 0.14);
- color: #ff9b9b;
- border: 1px dashed rgba(220, 60, 60, 0.55);
+ padding-inline: 0.4rem;
+ margin: 0 0.1rem;
+ border: 1px solid var(--error-line);
+ background: var(--error-row);
+ text-decoration: none;
  }
  .placeholder-buttons { flex-wrap: wrap; gap: 0.25rem; }
  .placeholder-chip {
@@ -1775,15 +1729,16 @@
  .osc-bindings-toolbar { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
  .badge-experimental {
  display: inline-block;
- padding: 0.1rem 0.45rem;
+ --pill-pad-y: 0.1rem;
+ padding-inline: 0.45rem;
  border-radius: 999px;
  font-size: 0.62rem;
  font-weight: 700;
  letter-spacing: 0.06em;
  text-transform: uppercase;
- background: rgba(255, 188, 0, 0.14);
- border: 1px solid rgba(255, 188, 0, 0.35);
- color: #ffe7ae;
+ background: var(--caution-chip);
+ border: 1px solid var(--caution-line);
+ color: var(--text);
  vertical-align: middle;
  margin-left: 0.3rem;
  }
@@ -1842,16 +1797,6 @@
  border-left: 3px solid var(--accent);
  background: var(--accent-soft);
  font-size: 0.85rem;
- }
- .network-banner-ok { border-left-color: var(--ok); background: rgba(125, 229, 159, 0.1); }
- .network-banner-error { border-left-color: var(--danger); background: rgba(255, 140, 140, 0.1); }
- .network-warning {
- margin: 0.6rem 0;
- padding: 0.45rem 0.7rem;
- border-left: 3px solid var(--accent);
- background: var(--accent-soft);
- color: var(--muted);
- font-size: 0.8rem;
  }
  /* Mode bar at the top of the network form: names the current mode and,
  in view mode, offers a text-link switch (not a button) so the unlock
@@ -2046,18 +1991,15 @@
  }
  .modal-list-item-name { flex: 1; font-weight: 600; }
  .modal-list-item-badge {
+ display: inline-block;
  font-size: 0.66rem;
  letter-spacing: 0.06em;
  text-transform: uppercase;
- padding: 0.12rem 0.45rem;
+ --pill-pad-y: 0.12rem;
+ padding-inline: 0.45rem;
  border-radius: 999px;
  border: 1px solid rgba(255, 255, 255, 0.18);
  color: var(--muted);
- }
- .modal-list-item-badge.system {
- color: #c8ffd8;
- border-color: rgba(125, 229, 159, 0.4);
- background: rgba(125, 229, 159, 0.12);
  }
  .modal-list-item-apply,
  .modal-list-item-export,
@@ -2083,14 +2025,62 @@
  text-align: center;
  padding: 1.5rem 0.5rem;
  }
- .modal-error {
- color: #ff8a8a;
- background: rgba(255, 140, 140, 0.1);
- border: 1px solid rgba(255, 140, 140, 0.3);
- padding: 0.5rem 0.7rem;
- border-radius: 0.5rem;
- margin-bottom: 0.7rem;
- font-size: 0.85rem;
+ /* Status language boxes (docs/STATUS_LANGUAGE.md): one look per level, shared
+ by the older class names; the level's sign sits in the left padding. Last in
+ the block, so it wins over each class's layout-only rule above. */
+ .notice, .update-notice, .restart-notice, .modal-error, .diag-error, .gallery-error,
+ .wizard-action-required, .network-banner.network-banner-error, .network-banner.network-banner-ok {
+ position: relative;
+ margin: 0 0 12px;
+ padding: 10px 12px 10px 38px;
+ border: 1px solid var(--info-border);
+ border-radius: 6px;
+ background: var(--info-fill);
+ color: var(--text);
+ font-size: 0.9rem;
+ font-weight: 600;
+ line-height: 1.4;
+ }
+ .notice::before, .update-notice::before, .restart-notice::before, .modal-error::before, .diag-error::before,
+ .gallery-error::before, .wizard-action-required::before, .network-banner.network-banner-error::before,
+ .network-banner.network-banner-ok::before {
+ content: "";
+ position: absolute;
+ left: 12px;
+ top: 11px;
+ width: 16px;
+ height: 16px;
+ background: var(--info-sign) no-repeat center / contain;
+ }
+ .notice.error, .update-notice.error, .modal-error, .diag-error, .gallery-error, .network-banner.network-banner-error {
+ border-color: var(--error-border);
+ background: var(--error-fill);
+ }
+ .notice.error::before, .update-notice.error::before, .modal-error::before, .diag-error::before,
+ .gallery-error::before, .network-banner.network-banner-error::before { width: 17px; background-image: var(--error-sign); }
+ .notice.warning, .wizard-action-required { border-color: var(--caution-border); background: var(--caution-fill); }
+ .notice.success, .network-banner.network-banner-ok { border-color: var(--success-border); background: var(--success-fill); }
+ .notice.success::before, .network-banner.network-banner-ok::before { background-image: var(--success-sign); }
+ /* The next step under what the station observed. */
+ .notice .notice-sub { margin-top: 3px; font-weight: 400; color: var(--muted); }
+ .notice a, .gallery-error a { color: inherit; }
+ .notice code { color: var(--text); }
+ .notice pre { margin: 6px 0 0; padding: 6px 8px; background: rgba(0, 0, 0, 0.25); border-radius: 4px; font-size: 0.75rem;
+ font-weight: 400; max-height: 8em; overflow: auto; white-space: pre-wrap; color: #cfd6df; }
+ /* Pills set --pill-pad-y and their own inline padding. Trimming the line box to cap
+ height and baseline centres the label whatever the fallback font's ascent. */
+ .stat-chip, .diag-status-pill, .slot-missing-label, .badge-experimental,
+ .osc-binding-fault, .modal-list-item-badge, .osc-pill:not([data-invalid="true"]),
+ .osc-pill[data-invalid="true"][data-unresolved="true"] {
+ padding-block: var(--pill-pad-y);
+ }
+ @supports (text-box: trim-both cap alphabetic) {
+ .stat-chip, .diag-status-pill, .slot-missing-label, .badge-experimental,
+ .osc-binding-fault, .modal-list-item-badge, .osc-pill:not([data-invalid="true"]),
+ .osc-pill[data-invalid="true"][data-unresolved="true"] {
+ text-box: trim-both cap alphabetic;
+ padding-block: calc((1lh - 1cap) / 2 + var(--pill-pad-y));
+ }
  }
  </style>
 </head>
@@ -2835,13 +2825,13 @@
  // became undecodable since the list rendered, the route returns
  // 404/400 with a JSON error. A bare ``<a download>`` navigation would
  // save that error body as a bogus ``.oftemplate`` with no feedback, so
- // download only a 2xx body (from a Blob) and toast otherwise.
+ // download only a 2xx body (from a Blob) and report the failure otherwise.
+ const saveError = window.OpenFollow.saveError;
+ const card = document.querySelector('#modal-root .modal-card');
  try {
  const res = await fetch('/api/templates/' + encodeURIComponent(tpl.filename) + '/export');
  if (!res.ok) {
- let msg = 'Export failed (HTTP ' + res.status + ')';
- try { const d = await res.json(); if (d && d.error) msg = d.error; } catch (_) {}
- showToast(msg);
+ saveError.show(card, await saveError.fromResponse(res), 'Not exported.');
  return;
  }
  // Prefer the server's Content-Disposition filename: it is already
@@ -2866,7 +2856,7 @@
  // the download on some browsers, especially on slower machines.
  setTimeout(function() { URL.revokeObjectURL(url); }, 10000);
  } catch (err) {
- showToast('Export failed: ' + (err.message || 'unknown error'));
+ saveError.show(card, saveError.UNREACHABLE, 'Not exported.');
  }
  }
  async function onImportClick() {

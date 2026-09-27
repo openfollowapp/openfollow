@@ -81,16 +81,6 @@
     margin-bottom: 0.72rem;
   }
   .wizard-help strong { color: var(--text); }
-  .wizard-action-required {
-    margin-bottom: 12px;
-    padding: 10px 12px;
-    border-radius: 0.8rem;
-    border: 1px solid rgba(255,188,0,0.35);
-    background: rgba(255,188,0,0.13);
-    color: #ffe1a2;
-    font-weight: 600;
-    font-size: 0.88rem;
-  }
   .wizard-tip {
     color: var(--muted);
     font-size: 0.82rem;
@@ -119,8 +109,8 @@
     overflow: hidden;
     transition: border-color 0.3s;
   }
-  .wizard-preview-container.valid { border-color: rgba(125,229,159,0.6); }
-  .wizard-preview-container.invalid { border-color: rgba(255,140,140,0.6); }
+  .wizard-preview-container.valid { border-color: var(--success-line); }
+  .wizard-preview-container.invalid { border-color: var(--error-line); }
   .wizard-preview-container img {
     display: block;
     width: 100%;
@@ -226,8 +216,12 @@
     font-weight: 600;
     margin-top: 0.5rem;
   }
-  .wizard-status.ok { color: var(--ok); }
-  .wizard-status.error { color: var(--danger); }
+  .wizard-status.ok { color: var(--success-text); }
+  .wizard-status.ok::before {
+    content: ""; display: inline-block; width: 1.1em; height: 1.1em; margin-right: 0.35em; vertical-align: -0.2em;
+    background: var(--success-sign-green) no-repeat center / contain;
+  }
+  .wizard-status.error { color: var(--error-text); }
   @media (max-width: 680px) {
     .wizard-step-btn { padding: 0.35rem 0.5rem; font-size: 0.72rem; }
   }
@@ -502,7 +496,7 @@
       Choose the video input that matches your camera setup. The change applies live – the new pipeline starts within ~1 s of saving.
     </p>
 
-    <div id="wizard-video-saved" style="display:none;margin-bottom:0.72rem;padding:10px 12px;border-radius:0.8rem;border:1px solid rgba(125,229,159,0.4);background:rgba(125,229,159,0.1);color:var(--ok);font-weight:600;font-size:0.88rem;"></div>
+    <div id="wizard-video-saved" class="notice success" role="status" style="display:none"></div>
 
     <div class="wizard-nav">
       <button type="button" class="secondary" onclick="wizardGo(1)">Back</button>

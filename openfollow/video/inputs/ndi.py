@@ -310,11 +310,7 @@ class NdiInput(VideoInputBase):
         source_name = cls._esc(config.get("ndi_source_name", ""))
         available, reason = cls.is_available()
         warning = (
-            (
-                f'<div style="color:#c0392b;background:#fdf2f2;padding:8px 12px;'
-                f'border-radius:4px;margin-bottom:8px;font-size:0.9em;">'
-                f"&#9888; NDI not available: {html.escape(reason)}</div>"
-            )
+            (f'<div class="notice error" role="alert">NDI not available: {html.escape(reason)}</div>')
             if not available
             else ""
         )

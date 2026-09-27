@@ -715,14 +715,21 @@
         // any pending edits first so the test fires the address the
         // operator actually sees in the field, not whatever was last
         // saved. saveSelectedZone() returns a Promise.
-        saveSelectedZone().then(function() {
+        saveSelectedZone().then(function(saved) {
+            if (!saved) return null;
             var url = '/api/zones/' + idx + '/test_send'
                 + '?which=' + encodeURIComponent(which);
             return fetch(url, {method: 'POST'});
         }).then(function(r) {
+            if (!r) return null;
             return r.text().then(function(body) { return {ok: r.ok, body: body}; });
         }).then(function(res) {
             if (!pre) return;
+            if (!res) {
+                // Not sent: the line under the actions says why the save failed.
+                pre.setAttribute('hidden', '');
+                return;
+            }
             try {
                 pre.textContent = JSON.stringify(JSON.parse(res.body), null, 2);
             } catch (_) {
@@ -783,7 +790,8 @@
         var idx = state.selectedIndex;
         // Persist any pending edits before cloning so the copy matches
         // what the operator currently sees in the form.
-        saveSelectedZone().then(function() {
+        saveSelectedZone().then(function(saved) {
+            if (!saved) return null;
             return zoneWrite(fetch('/api/zones/' + idx + '/duplicate', {method: 'POST'}),
                 detailsEl.querySelector('.actions'));
         }).then(function(r) { return r ? r.json() : null; })
@@ -973,14 +981,14 @@
         });
     }
 
-    // Returns Promise once save round-trip lands (null when it failed).
-    // Chained from Duplicate and Test send so they reflect current
-    // form state, not last-saved snapshot.
+    // Resolves the save's Response, or null when nothing was saved.
+    // Duplicate and Test send chain on it and stop on null, so they act
+    // on the form the operator sees, never an older saved state.
     function saveSelectedZone() {
-        if (state.selectedIndex < 0) return Promise.resolve();
+        if (state.selectedIndex < 0) return Promise.resolve(null);
         var idx = state.selectedIndex;
         var z = state.zones[idx];
-        if (!z) return Promise.resolve();
+        if (!z) return Promise.resolve(null);
         var body = collectDetailFields();
         // Refuse to save when
         // ``triggered_by`` has any invalid tokens. Silently dropping
@@ -1002,7 +1010,7 @@
                     + 'Comma-separated marker IDs (e.g. 0, 1, 5).'
                     + '</span>';
             }
-            return Promise.resolve();
+            return Promise.resolve(null);
         }
         body.vertices = z.vertices;
         return zoneWrite(fetch('/api/zones/' + idx, {

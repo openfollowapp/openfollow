@@ -3544,6 +3544,8 @@
  if (r.ok) { clearInterval(p); window.location.reload(); }
  }).catch(function() {});
  }, 2000);
+ }, function() {
+ saveError.show(box, saveError.UNREACHABLE, 'Not restarted.');
  });
  }
  // Toggle the <body> gate class. When turning off, uncheck the detection

@@ -2721,9 +2721,16 @@ def test_status_neither_enumerates_nor_probes_the_installation(monkeypatch) -> N
 
     monkeypatch.setattr(mouse3d_module, "check_mouse3d_dependencies", _forbidden)
     monkeypatch.setattr(mouse3d_module, "_backend_puck_ids", _forbidden)
+    # A cold cache, so a version lookup on this path would reach the package metadata.
+    mouse3d_module._backend_version.cache_clear()
     monkeypatch.setattr(mouse3d_module.metadata, "version", _forbidden)
-    for _ in range(5):
-        mgr.status()
+    try:
+        for _ in range(5):
+            mgr.status()
+        # The stats path's fallback before any input manager exists probes nothing either.
+        assert mouse3d_module.idle_mouse3d_status(True).backend_version == ""
+    finally:
+        mouse3d_module._backend_version.cache_clear()
     assert enumerated == []
 
 
@@ -2738,8 +2745,9 @@ def test_the_backend_version_is_read_once(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setattr(mouse3d_module.metadata, "version", _version)
     try:
         mgr = Mouse3DManager(_cfg(enabled=False), backend=_FakeBackend([], {}))
+        again = Mouse3DManager(_cfg(enabled=False), backend=_FakeBackend([], {}))
         assert mgr.status().backend_version == "2.1.0"
-        assert mgr.status().backend_version == "2.1.0"
+        assert again.status().backend_version == "2.1.0"
         assert reads == ["pyspacemouse"]
     finally:
         mouse3d_module._backend_version.cache_clear()

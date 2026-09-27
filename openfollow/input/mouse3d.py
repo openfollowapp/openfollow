@@ -836,6 +836,8 @@ class Mouse3DManager:
         self._supported = backend is not None or _platform_supported()
         # The latest enumeration failure's wording, cleared by the next good pass.
         self._backend_error: str | None = None
+        # Read here, at startup: ``status()`` runs on the stats path and must not probe.
+        self._backend_version = _backend_version()
         self._next_id = itertools.count()
         # Handlers the supervisor's first pass started; None until that pass ran.
         self._first_scan: list[Mouse3DHandler] | None = None
@@ -1033,7 +1035,7 @@ class Mouse3DManager:
             scanned=self.initial_scan_settled(),
             backend=backend,
             backend_error=error,
-            backend_version=_backend_version(),
+            backend_version=self._backend_version,
             devices=tuple(devices),
         )
 
@@ -1141,12 +1143,7 @@ class Mouse3DManager:
 
 def idle_mouse3d_status(enabled: bool) -> Mouse3DStatus:
     """The status before any manager has reported: nothing scanned yet."""
-    return Mouse3DStatus(
-        enabled=enabled,
-        supported=_platform_supported(),
-        scanned=False,
-        backend_version=_backend_version(),
-    )
+    return Mouse3DStatus(enabled=enabled, supported=_platform_supported(), scanned=False)
 
 
 def _device_state(handler: Mouse3DHandler | None) -> tuple[DeviceState, str]:

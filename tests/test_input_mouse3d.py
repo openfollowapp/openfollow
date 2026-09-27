@@ -1487,8 +1487,9 @@ def test_reconcile_skips_start_when_stop_in_flight() -> None:
     info = Mouse3DDeviceInfo(path="/dev/hidraw2", product_name="SpaceNavigator")
     backend = _FakeBackend([info], {"/dev/hidraw2": lambda: FakeDevice([_state(x=0.5)])})
     mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
-    mgr._stop.set()  # a stop() is in flight
-    mgr._reconcile(backend, [info])
+    stop = threading.Event()
+    stop.set()  # this generation's stop() is in flight
+    mgr._reconcile(backend, [info], stop)
     assert mgr._handlers == {}  # nothing registered, so nothing to orphan
 
 
@@ -1690,32 +1691,34 @@ def test_reconcile_adds_then_removes_handlers_sync() -> None:
     )
     mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
     try:
-        mgr._reconcile(backend, [info2, info3])
+        mgr._reconcile(backend, [info2, info3], threading.Event())
         assert sorted(mgr._handlers) == ["/dev/hidraw2", "/dev/hidraw3"]
-        mgr._reconcile(backend, [info2])  # hidraw3 departs -> popped + stopped
+        mgr._reconcile(backend, [info2], threading.Event())  # hidraw3 departs -> popped + stopped
         assert list(mgr._handlers) == ["/dev/hidraw2"]
     finally:
         mgr.stop(wait=True)
 
 
-def test_supervise_runs_one_iteration_then_exits() -> None:
+def test_supervise_reconciles_each_scan_until_stopped(monkeypatch) -> None:  # noqa: ANN001
+    _fast_manager(monkeypatch)
     info = Mouse3DDeviceInfo(path="/dev/hidraw2")
     stop = threading.Event()
     calls = {"n": 0}
 
-    class _OneShotBackend:
+    class _TwoScanBackend:
         def enumerate(self):  # noqa: ANN202
             calls["n"] += 1
-            stop.set()  # end the supervisor loop after this iteration
+            if calls["n"] == 2:
+                stop.set()  # the second scan ends the loop and is not applied
             return [info]
 
         def open(self, path):  # noqa: ANN001, ANN202
             return FakeDevice([_state(x=0.5)])
 
-    mgr = Mouse3DManager(_cfg(enabled=True), backend=_OneShotBackend())
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_TwoScanBackend())
     try:
-        mgr._supervise(stop)  # synchronous: one enumerate + reconcile, then break
-        assert calls["n"] == 1
+        mgr._supervise(stop)  # synchronous: scan + reconcile, scan, then break
+        assert calls["n"] == 2
         assert "/dev/hidraw2" in mgr._handlers
     finally:
         mgr.stop(wait=True)
@@ -2190,6 +2193,83 @@ def test_a_first_scan_that_finds_no_puck_settles(monkeypatch) -> None:  # noqa: 
     try:
         assert _wait_until(mgr.initial_scan_settled)
     finally:
+        mgr.stop(wait=True)
+
+
+class _ScriptedBackend:
+    """Backend whose Nth ``enumerate`` waits on its gate, then returns its list."""
+
+    def __init__(self, script, openers) -> None:  # noqa: ANN001
+        self._script = script  # list[(gate Event | None, list[Mouse3DDeviceInfo])]
+        self._openers = openers
+        self._calls = 0
+        self._lock = threading.Lock()
+        self.entered = [threading.Event() for _ in script]
+
+    def enumerate(self):  # noqa: ANN201
+        with self._lock:
+            call = min(self._calls, len(self._script) - 1)
+            self._calls += 1
+        gate, infos = self._script[call]
+        self.entered[call].set()
+        if gate is not None:
+            gate.wait(2.0)
+        return list(infos)
+
+    def open(self, path: str):  # noqa: ANN201
+        return self._openers[path]()
+
+
+_PUCK_A = Mouse3DDeviceInfo(path="/dev/hidraw2")
+_PUCK_B = Mouse3DDeviceInfo(path="/dev/hidraw3")
+_OPENERS = {"/dev/hidraw2": lambda: FakeDevice(), "/dev/hidraw3": lambda: FakeDevice()}
+
+
+def _restart_while_scanning(mgr: Mouse3DManager, backend: _ScriptedBackend) -> threading.Thread:
+    """Stop and start the manager while its supervisor is inside ``enumerate``."""
+    mgr.start()
+    assert backend.entered[0].wait(2.0)
+    old = mgr._thread
+    assert old is not None
+    mgr.stop()
+    mgr.start()
+    return old
+
+
+def test_a_scan_from_before_a_restart_does_not_drop_a_puck_found_after_it() -> None:
+    stale_gate = threading.Event()
+    backend = _ScriptedBackend([(stale_gate, [_PUCK_A]), (None, [_PUCK_A, _PUCK_B])], _OPENERS)
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    try:
+        old = _restart_while_scanning(mgr, backend)
+        assert _wait_until(lambda: "/dev/hidraw3" in mgr._handlers)
+        puck_b = mgr._handlers["/dev/hidraw3"]
+        stale_gate.set()
+        old.join(2.0)
+        assert mgr._handlers.get("/dev/hidraw3") is puck_b
+        assert [info.path for info in mgr._infos] == ["/dev/hidraw2", "/dev/hidraw3"]
+    finally:
+        stale_gate.set()
+        mgr.stop(wait=True)
+
+
+def test_a_scan_from_before_a_restart_does_not_settle_the_new_first_scan() -> None:
+    stale_gate, fresh_gate = threading.Event(), threading.Event()
+    backend = _ScriptedBackend([(stale_gate, [_PUCK_A]), (fresh_gate, [_PUCK_A, _PUCK_B])], _OPENERS)
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=backend)
+    try:
+        old = _restart_while_scanning(mgr, backend)
+        assert backend.entered[1].wait(2.0)
+        stale_gate.set()
+        old.join(2.0)
+        assert mgr._handlers == {}
+        assert mgr.initial_scan_settled() is False
+        fresh_gate.set()
+        assert _wait_until(mgr.initial_scan_settled)
+        assert sorted(mgr._handlers) == ["/dev/hidraw2", "/dev/hidraw3"]
+    finally:
+        stale_gate.set()
+        fresh_gate.set()
         mgr.stop(wait=True)
 
 

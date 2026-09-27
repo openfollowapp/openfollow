@@ -846,11 +846,11 @@ class Mouse3DManager:
             except Exception:  # noqa: BLE001 - a bad enumeration must not kill the loop
                 logger.debug("3D Mouse enumeration raised", exc_info=True)
                 infos = []
-            self._reconcile(backend, infos)
+            self._reconcile(backend, infos, stop)
             if stop.wait(_ENUMERATE_INTERVAL_S):
                 break
 
-    def _reconcile(self, backend: Mouse3DBackend, infos: list[Mouse3DDeviceInfo]) -> None:
+    def _reconcile(self, backend: Mouse3DBackend, infos: list[Mouse3DDeviceInfo], stop: threading.Event) -> None:
         """Start handlers for new paths, stop handlers for departed ones.
 
         Dedups by hidraw path (``easyhid`` reports one entry per HID collection,
@@ -864,11 +864,11 @@ class Mouse3DManager:
         infos = [deduped[path] for path in sorted(deduped)]
         wanted = set(deduped)
         with self._lock:
-            if self._stop.is_set():
-                # A ``stop()`` is in flight – it sets the event before taking this
-                # lock. Registering and starting handlers now would orphan their
-                # workers: ``stop()`` has already snapshotted the handler set and
-                # would not reap anything added here.
+            if stop.is_set():
+                # This supervisor's generation is over: a ``stop()`` in flight (it
+                # sets the event before taking this lock) would not reap handlers
+                # added now, and after a restart this scan is stale. The event is
+                # the supervisor's own, never ``self._stop``, which a restart replaces.
                 return
             to_add = [info for info in infos if info.path not in self._handlers]
             started: list[Mouse3DHandler] = []

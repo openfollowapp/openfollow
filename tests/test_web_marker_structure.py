@@ -222,13 +222,14 @@ class TestMarkerAddRowReCreate:
         # Seed only when the field is blank and unfocused.
         assert "idIn.value.trim() === ''" in body
 
-    def test_add_row_has_status_feedback(self) -> None:
-        """The Add handler reports success / error via a status element and
-        chains a ``.then`` on the add fetch."""
+    def test_add_row_reports_success_and_failure(self) -> None:
+        """The Add handler reports success in its status element and a failed
+        add on the shared failed-save line, never silently."""
         body = _render_marker()
         assert 'id="add-marker-feedback"' in body
         assert "Added marker" in body
-        assert "Could not add marker" in body
+        assert ".then(writeResult(tr)).then(function(ok)" in body
+        assert "writeFailed(tr, window.OpenFollow.saveError.UNREACHABLE)" in body
 
     def test_add_row_blocks_live_duplicate(self) -> None:
         """Adding a live id is blocked by the duplicate guard."""

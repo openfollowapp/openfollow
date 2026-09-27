@@ -1139,6 +1139,23 @@ def draw_panel(renderer: Any, cr: Any, x: float, y: float, w: float, h: float, t
     cr.show_text(text)
 
 
+def _draw_offline_mark(cr: Any, cx: float, cy: float, r: float) -> None:
+    """Off-white disc with a cross cut into it: the marker's position is not arriving."""
+    cr.save()
+    cr.set_source_rgb(*COLOR_TEXT)
+    cr.arc(cx, cy, r, 0, 6.2832)
+    cr.fill()
+    arm = r * 0.45
+    cr.set_source_rgb(*COLOR_BG_BASE)
+    cr.set_line_width(1.5)
+    cr.move_to(cx - arm, cy - arm)
+    cr.line_to(cx + arm, cy + arm)
+    cr.move_to(cx + arm, cy - arm)
+    cr.line_to(cx - arm, cy + arm)
+    cr.stroke()
+    cr.restore()
+
+
 def draw_marker_card(
     renderer: Any,
     cr: Any,
@@ -1191,15 +1208,13 @@ def draw_marker_card(
         dot_y = y + dot_r + 6
         if t.online:
             cr.set_source_rgb(*COLOR_OK)
-        else:
-            cr.set_source_rgb(*COLOR_DANGER)
-        cr.arc(dot_x, dot_y, dot_r, 0, 6.2832)
-        cr.fill()
-
-        if t.online:
+            cr.arc(dot_x, dot_y, dot_r, 0, 6.2832)
+            cr.fill()
             cr.set_source_rgba(*COLOR_OK, 0.3)
             cr.arc(dot_x, dot_y, dot_r + 1.5, 0, 6.2832)
             cr.stroke()
+        else:
+            _draw_offline_mark(cr, dot_x, dot_y, dot_r + 1.0)
 
         # Controller badge top-left (controlled markers only). 1-based to match
         # the OSC ``:cN`` reference.

@@ -1281,7 +1281,9 @@ class TestMarkerCard:
         assert 2.8 in sel_widths
         assert 2.5 in unsel_widths
 
-    def test_offline_marker_uses_danger_color_for_dot(self) -> None:
+    def test_an_offline_marker_shows_a_crossed_disc(self) -> None:
+        """An off-white disc with a cross cut into it in the card's dark
+        background, drawn in a saved state so its line width stays local."""
         state = _base_state()
         cr = FakeCairo()
         draw_marker_card(
@@ -1295,9 +1297,11 @@ class TestMarkerCard:
             selected=False,
             state=state,
         )
-        # DANGER color is #ff8c8c ≈ (1.0, 0.549, 0.549).
-        danger_set = [c for c in cr.calls if c[0] == "rgb" and c[1:] == (1.0, 0.549, 0.549)]
-        assert danger_set
+        disc = cr.calls.index(("rgb", *COLOR_TEXT))
+        cross = cr.calls.index(("rgb", *COLOR_BG_BASE), disc)
+        assert cr.calls[disc + 1][0] == "arc"
+        assert [c[0] for c in cr.calls[cross:]].count("line_to") >= 2
+        assert cr.saves == cr.restores >= 1
 
     def test_online_marker_draws_extra_glow_ring(self) -> None:
         """An online marker renders a second stroked arc around the dot."""

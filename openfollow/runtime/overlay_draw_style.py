@@ -33,7 +33,7 @@ COLOR_BORDER = (1.0, 1.0, 1.0, 0.12)  # standard border (RGBA)
 CARD_BG_ALPHA = 0.9
 
 # Status indicators
-COLOR_OK = (0.494, 0.898, 0.624)  # #7de59f (RGB, green, online)
+COLOR_OK = (0.361, 0.788, 0.549)  # #5cc98c (RGB, green, online)
 # The HUD's warning red. Status rows, failure panels and a missing controller's
 # card fill with it (the card keeps its marker-coloured border); dark enough
 # that the HUD's normal text stays readable on it.
@@ -111,6 +111,25 @@ def draw_info_sign(cr: Any, cx: float, cy: float, size: float = 13.0, cut: tuple
     cr.fill()
     cr.arc(cx, cy - size * 0.206, size * 0.069, 0, 2 * math.pi)
     cr.fill()
+    cr.restore()
+
+
+def draw_success_sign(
+    cr: Any, cx: float, cy: float, size: float = 13.0, cut: tuple[float, ...] = COLOR_BG_BASE
+) -> None:
+    """Green disc with its check cut out in ``cut``, centred on (cx, cy)."""
+    cr.save()
+    cr.set_source_rgb(*COLOR_OK)
+    cr.arc(cx, cy, size * 0.45, 0, 2 * math.pi)
+    cr.fill()
+    cr.set_source_rgb(*cut)
+    cr.set_line_width(size * 0.1125)
+    cr.set_line_cap(cairo.LINE_CAP_ROUND)
+    cr.set_line_join(cairo.LINE_JOIN_ROUND)
+    cr.move_to(cx - size * 0.2125, cy + size * 0.01875)
+    cr.line_to(cx - size * 0.0625, cy + size * 0.1625)
+    cr.line_to(cx + size * 0.2125, cy - size * 0.1375)
+    cr.stroke()
     cr.restore()
 
 

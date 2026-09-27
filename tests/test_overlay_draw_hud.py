@@ -65,6 +65,7 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_ACCENT,
     COLOR_ACCENT_SOFT,
     COLOR_BG_BASE,
+    COLOR_OK,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
     COLOR_WARNING_BORDER,
@@ -1817,6 +1818,18 @@ class TestButtonDetectionOverlay:
         cr = FakeCairo()
         draw_button_detection_overlay(FakeRenderer(state=state), cr, state, 1600, 900)
         assert "Detection Complete!" in cr.show_text_strings()
+
+    def test_detection_complete_is_green_and_led_by_the_check_sign(self) -> None:
+        bd = ButtonDetectionState(active=True, current_label="", step=4, total_steps=4)
+        state = _base_state(button_detection=bd)
+        cr = FakeCairo()
+        draw_button_detection_overlay(FakeRenderer(state=state), cr, state, 1600, 900)
+        done = next(d for d in cr.texts if d.text == "Detection Complete!")
+        assert done.rgba == (*COLOR_OK, 1.0)
+        # The sign: a green disc left of the text, its check cut out in the panel colour.
+        disc = next(a for a in cr.calls if a[0] == "arc" and a[3] == 20.0 * 0.45)
+        assert disc[1] < done.x
+        assert ("rgb", *COLOR_BG_BASE) in cr.calls
 
     def test_low_height_shrinks_prompt_font(self) -> None:
         """`h < 720` switches the big prompt from font 42 to 32."""

@@ -99,6 +99,9 @@ class FakeCairo:
     def set_line_join(self, join: Any) -> None:
         self.calls.append(("line_join", join))
 
+    def set_line_cap(self, cap: Any) -> None:
+        self.calls.append(("line_cap", cap))
+
     # ------------------------------------------------------------------
     # Geometry
     # ------------------------------------------------------------------

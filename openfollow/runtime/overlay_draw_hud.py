@@ -27,6 +27,7 @@ from openfollow.runtime.overlay_draw_style import (
     ROW_RADIUS,
     draw_card_background,
     draw_rounded_rect,
+    draw_success_sign,
     draw_warning_sign,
     parse_hex,
     speed_color,
@@ -1519,10 +1520,14 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
         cursor_y += ext.height + 24.0
     else:
         renderer._set_ui_font(cr, 18, bold=True)
-        cr.set_source_rgb(*COLOR_OK)
         done_text = "Detection Complete!"
         ext = cr.text_extents(done_text)
-        cr.move_to(panel_x + (panel_w - ext.width) / 2.0, cursor_y + 20.0)
+        sign, gap = 20.0, 8.0
+        text_x = panel_x + (panel_w - ext.width + sign + gap) / 2.0
+        mid_y = cursor_y + 20.0 + ext.y_bearing + ext.height / 2.0
+        draw_success_sign(cr, text_x - gap - sign / 2.0, mid_y, sign)
+        cr.set_source_rgb(*COLOR_OK)
+        cr.move_to(text_x, cursor_y + 20.0)
         cr.show_text(done_text)
         cursor_y += 50.0
 

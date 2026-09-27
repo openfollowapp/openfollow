@@ -1215,7 +1215,10 @@
  .ndi-row { align-items: flex-end; }
  /* A setting shown, not edited here: sized like an input beside it. */
  .value-box { display: block; border-radius: 0.75rem; border: 1px solid var(--border); background: var(--surface); padding: 0.62rem 0.72rem; font-size: 0.93rem; line-height: 1.25; }
- .inset-panel { margin-bottom: 0.72rem; padding: 0.9rem; border-radius: 0.9rem; border: 1px solid var(--border); background: var(--surface); }
+ .inset-panel { padding: 0.9rem; border-radius: 0.9rem; border: 1px solid var(--border); background: var(--surface); }
+ /* A block loaded between a fragment's rows: its parts and the row after it keep the row gap. */
+ .camera-block { display: flex; flex-direction: column; gap: 0.72rem; margin-bottom: 0.72rem; }
+ .camera-block > *, .camera-block > .notice { margin: 0; }
  .htmx-request { opacity: 0.83; }
  /* Metric echo: shows canonical value under length/speed input when imperial display is active. */
  .metric-echo { display: block; margin-top: 2px; color: var(--muted); font-size: 0.8rem; }

@@ -9,11 +9,13 @@ trio the runtime wires, so nothing touches config.txt or the privilege broker.
 
 from __future__ import annotations
 
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -303,6 +305,21 @@ class TestWithoutSetup:
         assert page.notices == [("notice success", "status", "Restarting the station.")]
         assert page.buttons == []
         assert page.value is None
+
+
+@pytest.mark.unit
+def test_the_block_keeps_a_row_gap_before_the_width_row() -> None:
+    """It ends in a row whose own margin ``.row:last-child`` removes, so the
+    block itself has to carry the gap to the Width row below it."""
+    css = (Path(__file__).resolve().parents[1] / "openfollow/web/templates/base.tpl").read_text()
+
+    def margin_bottom(selector: str) -> str:
+        rule = re.search(rf"\n {re.escape(selector)} \{{([^}}]*)\}}", css)
+        assert rule is not None, selector
+        return re.search(r"margin-bottom:\s*([^;]+);", rule.group(1)).group(1)
+
+    assert margin_bottom(".camera-block") == margin_bottom(".row")
+    assert _render(_state()).html.split(">", 3)[2].strip().startswith('<div class="camera-block"')
 
 
 @pytest.mark.unit

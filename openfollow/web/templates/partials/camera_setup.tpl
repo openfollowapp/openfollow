@@ -31,7 +31,7 @@
 % else:
 %     _value = 'Automatic'
 % end
-<div class="group">
+<div class="camera-block">
 % if _banner:
 %     _failed = _banner.get('kind') == 'error'
     <div class="notice {{'error' if _failed else 'success'}}"
@@ -67,8 +67,8 @@
     </div>
 %     end
 %     if _checking:
-    <div class="notice" role="status">Checking the camera…</div>
-    <div hx-get="{{_url}}" hx-trigger="load delay:3s" hx-target="{{_target}}" hx-swap="innerHTML"></div>
+    <div class="notice" role="status"
+         hx-get="{{_url}}" hx-trigger="load delay:3s" hx-target="{{_target}}" hx-swap="innerHTML">Checking the camera…</div>
 %     elif _pending:
     <div class="notice warning" role="status">Takes effect after the next restart.<div class="notice-sub">Running now: {{_running}}</div></div>
     <div class="actions">

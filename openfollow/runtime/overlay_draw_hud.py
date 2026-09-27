@@ -1216,12 +1216,12 @@ def draw_marker_card(
         br, bg, bb = parse_hex(t.color)
         cr.set_source_rgba(br, bg, bb, edge_alpha)
         draw_rounded_rect(cr, x, y, w, h, radius)
-        cr.set_line_width(2.8 if selected else 2.5)
+        cr.set_line_width(4.0 if selected else 3.5)
         cr.stroke()
         if t.identify_flash:
             cr.set_source_rgb(*COLOR_ACCENT)
             draw_rounded_rect(cr, x, y, w, h, radius)
-            cr.set_line_width(4.0)
+            cr.set_line_width(5.0)
             cr.stroke()
 
         renderer._set_ui_font(cr, 10)

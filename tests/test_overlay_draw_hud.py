@@ -1290,11 +1290,9 @@ class TestMarkerCard:
         )
         sel_widths = [c[1] for c in cr_sel.calls if c[0] == "line_width"]
         unsel_widths = [c[1] for c in cr_unsel.calls if c[0] == "line_width"]
-        # Bumped 1px thicker than the original 1.5/1.8 – the chrome
-        # reads better at typical operator viewing distance, and the
-        # selection delta (selected = unselected + 0.3) is preserved.
-        assert 2.8 in sel_widths
-        assert 2.5 in unsel_widths
+        # The selection delta (selected = unselected + 0.5) is what tells them apart.
+        assert 4.0 in sel_widths
+        assert 3.5 in unsel_widths
 
     def test_an_offline_marker_shows_a_crossed_disc(self) -> None:
         """An off-white disc with a cross cut into it in the card's dark

@@ -397,6 +397,8 @@ def build_marker_visual_state(
         for info in controller_info
         if info["marker_id"] is not None
     }
+    # The card an Identify has lit this frame, if any.
+    flash_marker = app._input_manager.identify_flash_marker() if app._input_manager is not None else None
 
     state = overlay_state_pool.acquire()
 
@@ -615,6 +617,7 @@ def build_marker_visual_state(
             td.online = online
             td.controller_idx = ctrl_idx
             td.controller_connected = ctrl_conn
+            td.identify_flash = marker_id == flash_marker
             td.is_controlled = is_controlled
             td.name = name
             td.marker_fader = marker_fader
@@ -630,6 +633,7 @@ def build_marker_visual_state(
                 online=online,
                 controller_idx=ctrl_idx,
                 controller_connected=ctrl_conn,
+                identify_flash=marker_id == flash_marker,
                 is_controlled=is_controlled,
                 name=name,
                 marker_fader=marker_fader,
@@ -827,6 +831,17 @@ def build_marker_visual_state(
                 severity, message = "error", raw
             if message:
                 state.status_flags.append((key, message, severity))
+
+    # One row per missing controller, so it is seen even for a marker with no card.
+    for info in controller_info:
+        if info.get("state") != "missing":
+            continue
+        parts = [f"C{int(info['controller_index']) + 1} missing"]
+        if info["marker_id"] is not None:
+            parts.append(f"marker {info['marker_id']}")
+        if info.get("name"):
+            parts.append(str(info["name"]))
+        state.status_flags.append((f"controller_missing_{info['controller_index']}", " · ".join(parts), "error"))
 
     # Snapshot the store (newest-first), resolve marker name/color for keyed
     # cards, compute each countdown against one frame clock, and cap to

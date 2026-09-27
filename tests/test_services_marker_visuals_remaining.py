@@ -96,11 +96,16 @@ class _FakeInputManager:
         controller_info: list[dict] | None = None,
         keyboard_connected: bool = False,
         mouse3d_connected: bool = False,
+        flash_marker: int | None = None,
     ) -> None:
         self._marker_speeds = marker_speeds or {}
         self._controller_info = controller_info or []
         self._kbd_connected = keyboard_connected
+        self._flash_marker = flash_marker
         self.mouse3d_manager = SimpleNamespace(connected=mouse3d_connected)
+
+    def identify_flash_marker(self) -> int | None:
+        return self._flash_marker
 
     def get_marker_gamepad_speeds(self) -> dict[int, float]:
         return dict(self._marker_speeds)
@@ -1757,3 +1762,63 @@ class TestAttachedDetectionBox:
         detector = SimpleNamespace(detections=[])
         state = _build(app, pool, person_detector=detector)
         assert state.detection_attached_colors == {}
+
+
+class TestMissingControllerSurfaces:
+    """A missing controller shows on its card and in the status badge; Identify lights one card."""
+
+    @staticmethod
+    def _slot(**overrides: Any) -> dict[str, Any]:
+        info: dict[str, Any] = {
+            "controller_index": 0,
+            "name": "GameSir-G7 SE",
+            "state": "connected",
+            "connected": True,
+            "marker_id": 5,
+            "effective_speed": 1.0,
+            "backend": "joystick",
+        }
+        info.update(overrides)
+        return info
+
+    def test_a_missing_controller_gets_a_status_row(self, pool: OverlayStatePool) -> None:
+        app = _build_app(
+            controlled=[5],
+            server_markers={5: _FakeMarker(5)},
+            input_manager=_FakeInputManager(controller_info=[self._slot(state="missing", connected=False)]),
+        )
+        state = _build(app, pool)
+        assert ("controller_missing_0", "C1 missing · marker 5 · GameSir-G7 SE", "error") in state.status_flags
+
+    def test_a_missing_row_leaves_out_what_it_does_not_know(self, pool: OverlayStatePool) -> None:
+        missing = self._slot(controller_index=2, state="missing", connected=False, marker_id=None, name="")
+        app = _build_app(input_manager=_FakeInputManager(controller_info=[missing]))
+        state = _build(app, pool)
+        assert ("controller_missing_2", "C3 missing", "error") in state.status_flags
+
+    @pytest.mark.parametrize("slot_state", ["connected", "reserved"])
+    def test_only_a_missing_controller_raises_a_row(self, pool: OverlayStatePool, slot_state: str) -> None:
+        slot = self._slot(state=slot_state, connected=slot_state == "connected")
+        app = _build_app(controlled=[5], input_manager=_FakeInputManager(controller_info=[slot]))
+        state = _build(app, pool)
+        assert not any(key.startswith("controller_missing") for key, _msg, _sev in state.status_flags)
+
+    def test_identify_lights_only_the_chosen_card(self, pool: OverlayStatePool) -> None:
+        app = _build_app(
+            controlled=[1, 2],
+            viewer=[1, 2],
+            server_markers={1: _FakeMarker(1), 2: _FakeMarker(2)},
+            input_manager=_FakeInputManager(flash_marker=2),
+        )
+        state = _build(app, pool)
+        assert {m.marker_id: m.identify_flash for m in state.markers} == {1: False, 2: True}
+
+    def test_no_identify_lights_no_card(self, pool: OverlayStatePool) -> None:
+        app = _build_app(
+            controlled=[1],
+            viewer=[1],
+            server_markers={1: _FakeMarker(1)},
+            input_manager=_FakeInputManager(),
+        )
+        state = _build(app, pool)
+        assert state.markers[0].identify_flash is False

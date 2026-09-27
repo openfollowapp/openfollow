@@ -40,6 +40,7 @@ class JoystickProtocol(Protocol):
     def get_numbuttons(self) -> int: ...  # pragma: no cover
     def get_numhats(self) -> int: ...  # pragma: no cover
     def quit(self) -> None: ...  # pragma: no cover
+    def rumble(self, low_frequency: float, high_frequency: float, duration: int) -> bool: ...  # pragma: no cover
 
 
 class ControllerProtocol(Protocol):

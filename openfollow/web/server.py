@@ -540,6 +540,10 @@ class ConfigWebServer:
         """Newest release the background online-sync found ("" if up to date)."""
         return self._command_queue.get_update_available()
 
+    def request_slot_action(self, action: str, index: int, ref: str) -> None:
+        """Queue a controller-slot action (``identify`` / ``forget``) for the main loop."""
+        self._command_queue.request_slot_action(action, index, ref)
+
     def whats_new_pending(self) -> bool:
         """True when the page should open the updater's What's new step."""
         return self._command_queue.whats_new_pending()

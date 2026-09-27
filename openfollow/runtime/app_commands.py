@@ -37,6 +37,26 @@ def check_button_detection_request(app: OpenFollowApp) -> None:
         app._exit_button_detection()
 
 
+def check_controller_slot_actions(app: OpenFollowApp) -> None:
+    """Run the Identify / Forget clicks queued from the web Controller Slots table."""
+    input_manager = app._input_manager
+    for action, index, ref in app._web_commands.consume_slot_actions():
+        if input_manager is None:
+            continue
+        # The table the click came from can be a second old; act only on the slot it showed.
+        if input_manager.slot_ref(index) != ref:
+            logger.info("Controller slot C%d changed since it was clicked; %s not applied.", index + 1, action)
+            continue
+        try:
+            if action == "identify":
+                input_manager.identify_slot(index)
+            elif action == "forget":
+                input_manager.forget_slot(index)
+        except Exception:
+            # One failed action must not drop the others already taken off the queue.
+            logger.exception("Controller slot action %s on C%d failed.", action, index + 1)
+
+
 def check_update_request(app: OpenFollowApp) -> None:
     """Check if web UI requested an update operation."""
     # Reap a finished worker before evaluating the guard. A failed update

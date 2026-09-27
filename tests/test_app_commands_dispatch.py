@@ -241,3 +241,72 @@ def test_check_update_rejects_second_request_while_running(monkeypatch) -> None:
     status = app._web_commands.get_update_status()
     assert status["state"] == "running"
     assert "already in progress" in status["message"]
+
+
+# ---------------------------------------------------------------------------
+# check_controller_slot_actions
+# ---------------------------------------------------------------------------
+
+
+class _SlotRecorder:
+    def __init__(self, refs: tuple[str, ...] = ("r0", "r1")) -> None:
+        self.refs = refs
+        self.calls: list[tuple[str, int]] = []
+        self.raises_on: set[int] = set()
+
+    def slot_ref(self, index: int) -> str | None:
+        return self.refs[index] if 0 <= index < len(self.refs) else None
+
+    def identify_slot(self, index: int) -> bool:
+        self.calls.append(("identify", index))
+        if index in self.raises_on:
+            raise RuntimeError("device gone")
+        return True
+
+    def forget_slot(self, index: int) -> bool:
+        self.calls.append(("forget", index))
+        return True
+
+
+def test_slot_actions_run_once_in_the_order_they_were_clicked() -> None:
+    app = _make_app(_input_manager=_SlotRecorder())
+    app._web_commands.request_slot_action("identify", 1, "r1")
+    app._web_commands.request_slot_action("forget", 0, "r0")
+    app_commands.check_controller_slot_actions(app)
+    app_commands.check_controller_slot_actions(app)
+    assert app._input_manager.calls == [("identify", 1), ("forget", 0)]
+
+
+def test_an_unknown_slot_action_does_nothing() -> None:
+    app = _make_app(_input_manager=_SlotRecorder())
+    app._web_commands.request_slot_action("delete", 0, "r0")
+    app_commands.check_controller_slot_actions(app)
+    assert app._input_manager.calls == []
+
+
+@pytest.mark.parametrize(("index", "ref"), [(0, "r1"), (0, ""), (5, "r0")])
+def test_a_slot_that_changed_since_the_click_is_left_alone(caplog, index: int, ref: str) -> None:
+    app = _make_app(_input_manager=_SlotRecorder())
+    app._web_commands.request_slot_action("forget", index, ref)
+    with caplog.at_level("INFO", logger=app_commands.__name__):
+        app_commands.check_controller_slot_actions(app)
+    assert app._input_manager.calls == []
+    assert f"C{index + 1} changed since it was clicked; forget not applied" in caplog.text
+
+
+def test_a_failing_slot_action_does_not_drop_the_next(caplog) -> None:
+    app = _make_app(_input_manager=_SlotRecorder())
+    app._input_manager.raises_on = {0}
+    app._web_commands.request_slot_action("identify", 0, "r0")
+    app._web_commands.request_slot_action("identify", 1, "r1")
+    with caplog.at_level("ERROR", logger=app_commands.__name__):
+        app_commands.check_controller_slot_actions(app)
+    assert app._input_manager.calls == [("identify", 0), ("identify", 1)]
+    assert "Controller slot action identify on C1 failed" in caplog.text
+
+
+def test_slot_actions_without_input_are_dropped() -> None:
+    app = _make_app(_input_manager=None)
+    app._web_commands.request_slot_action("identify", 0, "r0")
+    app_commands.check_controller_slot_actions(app)
+    assert app._web_commands.consume_slot_actions() == []

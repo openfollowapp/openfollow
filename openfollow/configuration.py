@@ -1821,8 +1821,9 @@ class ControllerConfig:
     mapped_controller_name: str = ""
     # SDL GUID of the controller the wizard was last run against; empty if
     # unset. More reliable than the name for detecting that the connected pad
-    # differs from the one calibrated (e.g. a different unit, or the same pad
-    # in a non-X-input hardware mode, which enumerates with a different GUID).
+    # differs from the one calibrated (a different model, or the same pad in a
+    # non-X-input hardware mode, which enumerates with a different GUID). Two
+    # pads of one model share a GUID.
     mapped_controller_guid: str = ""
     # Keyboard mappings – XY movement layout (chooses W/A/S/D vs E/S/D/F)
     key_move_layout: str = "wasd"

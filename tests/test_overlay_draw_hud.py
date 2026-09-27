@@ -61,7 +61,13 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_virtual_fader_card,
     draw_virtual_faders,
 )
-from openfollow.runtime.overlay_draw_style import COLOR_DANGER_TEXT
+from openfollow.runtime.overlay_draw_style import (
+    COLOR_ACCENT,
+    COLOR_ACCENT_SOFT,
+    COLOR_BG_BASE,
+    COLOR_DANGER_BG,
+    COLOR_DANGER_TEXT,
+)
 from openfollow.runtime.overlay_links import LINKS
 from openfollow.runtime.overlay_state import (
     ButtonDetectionState,
@@ -1497,10 +1503,8 @@ class TestMarkerCardRendering:
         # 1-based to match OSC :cN: controller_idx 0 -> "C1".
         assert "C1" in cr.show_text_strings()
 
-    def test_disconnected_pad_renders_muted_badge_suffix(self) -> None:
-        """A bound but disconnected pad still shows the badge so the
-        operator spots the missing pad at a glance – text uses a dot
-        suffix and renders in muted color."""
+    def test_a_missing_controller_turns_its_card_red(self) -> None:
+        """A bound controller that left keeps its slot; the card says so loudly."""
         cr = FakeCairo()
         draw_marker_card(
             FakeRenderer(),
@@ -1513,9 +1517,86 @@ class TestMarkerCardRendering:
             selected=False,
             state=None,
         )
-        # 1-based: controller_idx 1 -> "C2". Disconnected adds the dot suffix.
-        assert any(t.startswith("C2") for t in cr.show_text_strings())
-        assert "C2·" in cr.show_text_strings()
+        # 1-based: controller_idx 1 -> "C2".
+        assert "C2 missing" in cr.show_text_strings()
+        assert ("rgb", *COLOR_DANGER_BG) in cr.calls
+        assert ("rgb", *COLOR_BG_BASE) not in cr.calls
+
+    @staticmethod
+    def _missing_card(name: str) -> tuple[FakeCairo, Any, Any]:
+        cr = FakeCairo()
+        marker = _marker(controller_idx=1, controller_connected=False, is_controlled=True)
+        marker.name = name
+        draw_marker_card(FakeRenderer(), cr, x=0, y=0, w=180, h=64, t=marker, selected=False, state=None)
+        badge = next(d for d in cr.texts if d.text == "C2 missing")
+        label = next(d for d in cr.texts if d.y == 18)
+        return cr, badge, label
+
+    def test_a_name_clears_the_missing_badge(self) -> None:
+        cr, badge, label = self._missing_card("House Left")
+        assert label.text == "House Left"
+        assert label.x >= badge.x + len(badge.text) * 9 * 0.6
+
+    def test_a_name_too_long_beside_the_missing_badge_is_shortened_before_the_dot(self) -> None:
+        _, _, label = self._missing_card("Downstage Centre Left")
+        assert label.text != "Downstage Centre Left" and label.text.startswith("Down")
+        assert label.x + len(label.text) * 13 * 0.6 <= 180 - 18
+
+    def test_a_name_that_fits_centred_stays_centred(self) -> None:
+        cr = FakeCairo()
+        draw_marker_card(
+            FakeRenderer(),
+            cr,
+            x=0,
+            y=0,
+            w=180,
+            h=64,
+            t=_marker(marker_id=7, controller_idx=0, controller_connected=True, is_controlled=True),
+            selected=False,
+            state=None,
+        )
+        label = next(d for d in cr.texts if d.text == "M7")
+        assert label.x == pytest.approx((180 - 2 * 13 * 0.6) / 2)
+
+    def test_a_connected_controller_keeps_the_plain_card(self) -> None:
+        cr = FakeCairo()
+        draw_marker_card(
+            FakeRenderer(),
+            cr,
+            x=0,
+            y=0,
+            w=180,
+            h=64,
+            t=_marker(controller_idx=1, controller_connected=True, is_controlled=True),
+            selected=False,
+            state=None,
+        )
+        assert ("rgb", *COLOR_DANGER_BG) not in cr.calls
+        assert not any(text.endswith("missing") for text in cr.show_text_strings())
+
+    def test_an_unbound_card_is_never_red(self) -> None:
+        cr = FakeCairo()
+        draw_marker_card(
+            FakeRenderer(),
+            cr,
+            x=0,
+            y=0,
+            w=180,
+            h=64,
+            t=_marker(controller_idx=None, controller_connected=False, is_controlled=True),
+            selected=False,
+            state=None,
+        )
+        assert ("rgb", *COLOR_DANGER_BG) not in cr.calls
+
+    @pytest.mark.parametrize("flash", [True, False])
+    def test_identify_flashes_the_card(self, flash: bool) -> None:
+        cr = FakeCairo()
+        marker = _marker(controller_idx=0, controller_connected=True, is_controlled=True)
+        marker.identify_flash = flash
+        draw_marker_card(FakeRenderer(), cr, x=0, y=0, w=180, h=64, t=marker, selected=False, state=None)
+        assert (("rgba", *COLOR_ACCENT_SOFT) in cr.calls) is flash
+        assert (("rgb", *COLOR_ACCENT) in cr.calls) is flash
 
     def test_unbound_controlled_marker_omits_badge(self) -> None:
         cr = FakeCairo()

@@ -470,9 +470,10 @@ class TestInitMarkers:
 
         services.init_markers()
 
-        # Bools / strings / floats / None all dropped; real ints kept.
+        # Bools / strings / floats / None all dropped; real ints kept, and the
+        # controlled 1 is viewed too.
         assert services._app._controlled_ids == [1]
-        assert services._app._viewer_ids == [2]
+        assert services._app._viewer_ids == [2, 1]
 
     def test_dedupes_marker_ids(self, services: AppRuntimeServices) -> None:
         cfg = replace(
@@ -486,7 +487,7 @@ class TestInitMarkers:
         services.init_markers()
 
         assert services._app._controlled_ids == [1, 2, 3]
-        assert services._app._viewer_ids == [2, 4]
+        assert services._app._viewer_ids == [2, 4, 1, 3]
 
 
 # --------------------------------------------------------------------------- #

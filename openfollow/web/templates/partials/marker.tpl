@@ -246,20 +246,6 @@
         return owners.map(o => o.self ? '<strong>' + o.name + '</strong>' : o.name).join('<br>+ ');
     }
 
-    function viewedByLabel(entry, thisStation, peers) {
-        const viewers = [];
-        if (thisStation.viewer_ids.indexOf(entry.id) !== -1) {
-            viewers.push({name: 'this station', self: true});
-        }
-        for (const p of peers) {
-            if (p.viewer_ids.indexOf(entry.id) !== -1) {
-                viewers.push({name: escapeHTML(p.station_name || p.station_id), self: false});
-            }
-        }
-        if (viewers.length === 0) return '–';
-        return viewers.map(v => v.self ? '<strong>' + v.name + '</strong>' : v.name).join(' + ');
-    }
-
     function controlConflict(entry, thisStation, peers) {
         let count = thisStation.controlled_ids.indexOf(entry.id) !== -1 ? 1 : 0;
         for (const p of peers) {
@@ -323,32 +309,74 @@
         return function() { writeFailed(el, window.OpenFollow.saveError.UNREACHABLE); };
     }
 
-    // ---- Selection POST (out-of-band write, same wire as before).
-    function postSelection(root) {
+    // ---- This Station: whether this station views a marker, and whether it
+    // controls it too (a controlled marker is always viewed).
+    const THIS_STATION_STATES = [['control', 'View &amp; Control'], ['view', 'View'], ['hide', 'Hide']];
+    // Saves in flight, and until when a poll may still carry the state from before the last one.
+    let selectionPending = 0;
+    let selectionSettleUntil = 0;
+
+    function thisStationToggle(name, markerId) {
+        return '<div class="seg-toggle seg-toggle--3 seg-toggle--compact" role="radiogroup" aria-label="This station">' +
+            THIS_STATION_STATES.map(function(state) {
+                return '<label class="seg-option"><input type="radio" name="' + name + '" value="' + state[0] + '"' +
+                    (markerId === null ? '' : ' data-marker-id="' + markerId + '"') + ' data-this-station' +
+                    (state[0] === 'hide' ? ' checked' : '') + '><span>' + state[1] + '</span></label>';
+            }).join('') +
+            '</div>';
+    }
+
+    function thisStationState(id, thisStation) {
+        if (thisStation.controlled_ids.indexOf(id) !== -1) return 'control';
+        return thisStation.viewer_ids.indexOf(id) !== -1 ? 'view' : 'hide';
+    }
+
+    // A save's outcome on its row: the background flashes green or red.
+    function flashRow(tr, ok) {
+        if (!tr) return;
+        tr.classList.remove('row-saved', 'row-failed');
+        void tr.offsetWidth;
+        tr.classList.add(ok ? 'row-saved' : 'row-failed');
+        setTimeout(function() { tr.classList.remove('row-saved', 'row-failed'); }, 850);
+    }
+
+    // ---- Selection POST (out-of-band write, same wire as before). ``extra``
+    // adds a marker that has no catalog row yet: the add-row's choice.
+    function postSelection(root, row, extra) {
         const controlled = [];
         const viewer = [];
-        root.querySelectorAll('[data-selection-field="control"]').forEach(function(cb) {
-            if (cb.checked) controlled.push(parseInt(cb.getAttribute('data-marker-id'), 10));
+        function add(id, state) {
+            if (state === 'control') controlled.push(id);
+            if (state !== 'hide') viewer.push(id);
+        }
+        root.querySelectorAll('tr[data-marker-id] input[data-this-station]:checked').forEach(function(radio) {
+            add(parseInt(radio.getAttribute('data-marker-id'), 10), radio.value);
         });
-        root.querySelectorAll('[data-selection-field="view"]').forEach(function(cb) {
-            if (cb.checked) viewer.push(parseInt(cb.getAttribute('data-marker-id'), 10));
-        });
-        const table = root.querySelector('.marker-selection-table');
+        if (extra) add(extra.id, extra.state);
+        const table = root.querySelector('.marker-catalog-table');
+        selectionPending++;
         fetch('/api/markers/selection', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({controlled_ids: controlled, viewer_ids: viewer})
         }).then(writeResult(table)).then(function(ok) {
+            flashRow(row, ok);
             const flash = root.querySelector('#selection-saved-flash');
             if (!ok || !flash) return;
             flash.textContent = 'Saved';
             flash.classList.add('show');
             setTimeout(function() { flash.classList.remove('show'); }, 1200);
-        }).catch(writeUnreachable(table));
+        }).catch(function() {
+            flashRow(row, false);
+            writeUnreachable(table)();
+        }).finally(function() {
+            selectionPending--;
+            selectionSettleUntil = Date.now() + 1600;
+        });
     }
 
     // ---- Row factories: build the row once, attach listeners once.
-    function createCatalogRow(id) {
+    function createCatalogRow(id, root) {
         const tr = document.createElement('tr');
         tr.setAttribute('data-marker-id', String(id));
         // Colour cell is swatch <button>, not native picker. Save handler
@@ -360,7 +388,7 @@
             '<td><button type="button" class="color-swatch-trigger" data-field="color" ' +
                 'data-color-picker="full" aria-label="Marker colour"></button></td>' +
             '<td class="cell-soft" data-cell="controlled-by"></td>' +
-            '<td class="cell-soft" data-cell="viewed-by"></td>' +
+            '<td data-cell="this-station">' + thisStationToggle('this-station-' + id, id) + '</td>' +
             '<td>' +
                 '<span style="display:inline-flex;align-items:center;gap:0.4rem;">' +
                 '<button type="button" class="save-btn small" data-action="save">Save</button>' +
@@ -369,6 +397,9 @@
             '</td>';
         window.OpenFollow.attachColorPicker(tr.querySelector('[data-field="color"]'), {
             mode: 'full',
+        });
+        tr.querySelectorAll('input[data-this-station]').forEach(function(radio) {
+            radio.addEventListener('change', function() { postSelection(root, tr); });
         });
         tr.querySelector('[data-action="save"]').addEventListener('click', function() {
             const name = tr.querySelector('[data-field="name"]').value;
@@ -396,36 +427,18 @@
         const ctrlHTML = controlledByLabel(entry, thisStation, peers) +
             (conflict ? ' <span class="stat-chip off conflict-flag">Conflict</span>' : '');
         setHTMLIfChanged(tr.querySelector('[data-cell="controlled-by"]'), ctrlHTML);
-        setHTMLIfChanged(tr.querySelector('[data-cell="viewed-by"]'), viewedByLabel(entry, thisStation, peers));
-    }
-
-    function createSelectionRow(id, root) {
-        const tr = document.createElement('tr');
-        tr.setAttribute('data-marker-id', String(id));
-        tr.innerHTML =
-            '<td data-cell="id"></td>' +
-            '<td data-cell="name"></td>' +
-            '<td><input type="checkbox" data-selection-field="control" data-marker-id="' + id + '"></td>' +
-            '<td><input type="checkbox" data-selection-field="view" data-marker-id="' + id + '"></td>';
-        // Checkboxes auto-save on change so the 1.5 s catalog poll
-        // can't clobber the operator's in-progress selection.
-        tr.querySelectorAll('[data-selection-field]').forEach(function(cb) {
-            cb.addEventListener('change', function() { postSelection(root); });
-        });
-        return tr;
-    }
-
-    function updateSelectionRow(tr, entry, thisStation) {
-        setTextIfChanged(tr.querySelector('[data-cell="id"]'), String(entry.id));
-        setTextIfChanged(tr.querySelector('[data-cell="name"]'), entry.name || '');
-        setCheckedIfChanged(
-            tr.querySelector('[data-selection-field="control"]'),
-            thisStation.controlled_ids.indexOf(entry.id) !== -1,
-        );
-        setCheckedIfChanged(
-            tr.querySelector('[data-selection-field="view"]'),
-            thisStation.viewer_ids.indexOf(entry.id) !== -1,
-        );
+        // The poll never moves a toggle the operator is on, nor one a save hasn't settled; a new row syncs at once.
+        const toggle = tr.querySelector('[data-cell="this-station"] .seg-toggle');
+        const settled = selectionPending === 0 && Date.now() >= selectionSettleUntil;
+        if (!tr.dataset.synced || (settled && !toggle.contains(document.activeElement))) {
+            const state = thisStationState(entry.id, thisStation);
+            toggle.querySelectorAll('input[data-this-station]').forEach(function(radio) {
+                if (radio.checked !== (radio.value === state)) radio.checked = radio.value === state;
+            });
+            tr.dataset.synced = 'true';
+        }
+        const label = 'This station: ' + (entry.name || ('Marker ' + entry.id));
+        if (toggle.getAttribute('aria-label') !== label) toggle.setAttribute('aria-label', label);
     }
 
     function createAddRow() {
@@ -439,7 +452,8 @@
             '<td><input type="text" id="new-marker-name" maxlength="64"></td>' +
             '<td><button type="button" class="color-swatch-trigger" id="new-marker-color" ' +
                 'data-color-picker="full" aria-label="New marker colour"></button></td>' +
-            '<td colspan="2"><span id="add-marker-feedback" class="add-feedback" aria-live="polite"></span></td>' +
+            '<td><span id="add-marker-feedback" class="add-feedback" aria-live="polite"></span></td>' +
+            '<td data-cell="this-station">' + thisStationToggle('this-station-new', null) + '</td>' +
             '<td><button type="button" class="save-btn" id="add-marker-btn">Add</button></td>';
         const idIn = tr.querySelector('#new-marker-id');
         const nameIn = tr.querySelector('#new-marker-name');
@@ -486,6 +500,9 @@
                 nameIn.value = '';
                 idIn.value = '';
                 const root = document.getElementById('marker-catalog-root');
+                const chosen = tr.querySelector('input[data-this-station]:checked');
+                if (root && chosen && chosen.value !== 'hide') postSelection(root, null, {id: id, state: chosen.value});
+                tr.querySelector('input[data-this-station][value="hide"]').checked = true;
                 if (root) {
                     fetch('/api/markers/catalog')
                         .then(function(r) { return r.json(); })
@@ -533,7 +550,7 @@
     }
 
     // ---- Skeleton: built once per root. The wrapping group divs,
-    // table headers, station-name span, save-flash span, and the
+    // table headers, the save-flash span and the
     // sticky add-row at the bottom of the catalog body never change
     // shape – only their inner data does, which is handled below.
     function ensureSkeleton(root) {
@@ -545,22 +562,11 @@
                 '<table class="marker-catalog-table">' +
                     '<thead><tr>' +
                         '<th>ID</th><th>Name</th><th>Color</th>' +
-                        '<th>Controlled by</th><th>Viewed by</th><th></th>' +
+                        '<th>Controlled by</th>' +
+                        '<th>This Station <span id="selection-saved-flash" class="saved-flash" aria-live="polite"></span></th>' +
+                        '<th></th>' +
                     '</tr></thead>' +
                     '<tbody data-role="catalog-body"></tbody>' +
-                '</table>' +
-            '</div>' +
-            '<div class="group">' +
-                '<h3 class="group-title">This station\'s selection ' +
-                    '<span class="section-note">(<span data-role="station-name"></span>) ' +
-                        '<span id="selection-saved-flash" class="saved-flash" aria-live="polite"></span>' +
-                    '</span>' +
-                '</h3>' +
-                '<table class="marker-selection-table">' +
-                    '<thead><tr>' +
-                        '<th>ID</th><th>Name</th><th>Control</th><th>View</th>' +
-                    '</tr></thead>' +
-                    '<tbody data-role="selection-body"></tbody>' +
                 '</table>' +
             '</div>';
         const catalogBody = root.querySelector('[data-role="catalog-body"]');
@@ -605,28 +611,15 @@
             {station_name: '', controlled_ids: [], viewer_ids: []};
         const peers = data.peer_selections || [];
 
-        setTextIfChanged(
-            root.querySelector('[data-role="station-name"]'),
-            thisStation.station_name || '',
-        );
-
         const catalogBody = root.querySelector('[data-role="catalog-body"]');
         const addRow = catalogBody.querySelector('.add-row');
         reconcileBody(
             catalogBody, entries,
-            function(id) { return createCatalogRow(id); },
+            function(id) { return createCatalogRow(id, root); },
             function(tr, e) { updateCatalogRow(tr, e, thisStation, peers); },
             addRow,
         );
         updateAddRow(addRow, entries, data.next_free_id);
-
-        const selectionBody = root.querySelector('[data-role="selection-body"]');
-        reconcileBody(
-            selectionBody, entries,
-            function(id) { return createSelectionRow(id, root); },
-            function(tr, e) { updateSelectionRow(tr, e, thisStation); },
-            null,
-        );
     }
 
     document.body.addEventListener('htmx:afterRequest', function(evt) {
@@ -647,17 +640,22 @@
 </script>
 
 <style>
-.marker-catalog-table, .marker-selection-table {
+.marker-catalog-table {
     width: 100%;
     border-collapse: collapse;
     margin-top: 0.5rem;
 }
-.marker-catalog-table th, .marker-catalog-table td,
-.marker-selection-table th, .marker-selection-table td {
+.marker-catalog-table th, .marker-catalog-table td {
     padding: 0.4rem 0.6rem;
     border-bottom: 1px solid rgba(255,255,255,0.08);
     text-align: left;
 }
+.marker-catalog-table td[data-cell="this-station"] { white-space: nowrap; }
+/* A This Station save flashes its row's background, green or red, fading back to the row's own. */
+.marker-catalog-table tr.row-saved { animation: row-flash-green 0.8s ease-out; }
+.marker-catalog-table tr.row-failed { animation: row-flash-red 0.8s ease-out; }
+@keyframes row-flash-green { from { background-color: var(--success-chip); } }
+@keyframes row-flash-red { from { background-color: var(--error-chip); } }
 /* Two stations control one marker: the fault-row tint. The control state is a status chip, placed here. */
 .marker-catalog-table tr.conflict { background: var(--error-row); }
 .marker-catalog-table tr.conflict td[data-cell="controlled-by"] { white-space: nowrap; }

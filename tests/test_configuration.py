@@ -33,6 +33,7 @@ from openfollow.configuration import (
     config_to_toml_dict,
     load_config,
     save_config,
+    viewed_with_controlled,
 )
 
 _NEW_BUTTON_FIELDS = (
@@ -673,7 +674,8 @@ def test_save_and_reload_roundtrip(temp_config_path) -> None:
 
     assert reloaded.psn_system_name == "OpenFollow Tests"
     assert reloaded.controlled_marker_ids == [1, 2]
-    assert reloaded.viewer_marker_ids == [2, 3]
+    # A controlled marker is always viewed, so 1 joins the viewed list.
+    assert reloaded.viewer_marker_ids == [2, 3, 1]
 
 
 def test_fader_on_change_marker_source_survives_save_reload(
@@ -3630,7 +3632,8 @@ def test_load_config_strips_zero_and_negative_marker_ids(tmp_path) -> None:
     )
     cfg = load_config(str(path))
     assert cfg.controlled_marker_ids == [1, 5]
-    assert cfg.viewer_marker_ids == [2]
+    # -1 stripped; the controlled 1 and 5 are viewed too.
+    assert cfg.viewer_marker_ids == [2, 1, 5]
 
 
 def test_load_config_dedupes_marker_id_lists(tmp_path) -> None:
@@ -3643,7 +3646,8 @@ def test_load_config_dedupes_marker_id_lists(tmp_path) -> None:
     )
     cfg = load_config(str(path))
     assert cfg.controlled_marker_ids == [1, 2, 3]
-    assert cfg.viewer_marker_ids == [2, 1]
+    # Deduplicated in first-seen order, then the controlled 3 is viewed too.
+    assert cfg.viewer_marker_ids == [2, 1, 3]
 
 
 def test_load_config_strips_bool_array_entries(tmp_path) -> None:
@@ -4629,7 +4633,8 @@ def test_load_config_honours_explicit_viewer_ids_over_fallback(
     )
     cfg = load_config(str(temp_config_path))
     assert cfg.controlled_marker_ids == [1, 2]
-    assert cfg.viewer_marker_ids == [5]
+    # The explicit list leads instead of being replaced by the fallback; the controlled markers join it.
+    assert cfg.viewer_marker_ids == [5, 1, 2]
 
 
 class TestNetworkConfig:
@@ -6092,3 +6097,39 @@ class TestTriggerZonesConfigDropsNonObjectZones:
         zone = TriggerZoneConfig(name="Keep")
         cfg = TriggerZonesConfig(zones=[zone, "junk"])  # type: ignore[list-item]
         assert cfg.zones == [zone]
+
+
+@pytest.mark.parametrize(
+    ("controlled", "viewer", "expected"),
+    [
+        ("[7, 5]", "[5, 6]", [5, 6, 7]),
+        ("[1, 2]", "[2, 1]", [2, 1]),
+        ("[]", "[4]", [4]),
+        ("[3]", "[]", [3]),
+        ("[3, 3, 0]", "[0, 2, 2]", [2, 3]),
+        ("[3]", '"not-a-list"', [3]),
+    ],
+    ids=["adds-unviewed", "already-viewed", "none-controlled", "empty-viewer", "cleaned-first", "non-list-viewer"],
+)
+def test_load_config_views_every_controlled_marker(temp_config_path, controlled, viewer, expected) -> None:
+    """A marker this station controls is always one it views: the viewed list keeps its
+    order and gains any controlled marker it lacked."""
+    temp_config_path.write_text(
+        f"controlled_marker_ids = {controlled}\nviewer_marker_ids = {viewer}\n", encoding="utf-8"
+    )
+    assert load_config(str(temp_config_path)).viewer_marker_ids == expected
+
+
+def test_load_config_says_once_which_markers_it_now_views(temp_config_path, caplog) -> None:
+    """The config is loaded on every request, so the change is logged once per process."""
+    temp_config_path.write_text("controlled_marker_ids = [7, 5]\nviewer_marker_ids = [5]\n", encoding="utf-8")
+    with caplog.at_level("INFO"):
+        load_config(str(temp_config_path))
+        load_config(str(temp_config_path))
+    said = [r.getMessage() for r in caplog.records if "now viewed too" in r.getMessage()]
+    assert len(said) == 1
+    assert "[7]" in said[0]
+
+
+def test_viewed_with_controlled_keeps_the_viewed_order() -> None:
+    assert viewed_with_controlled([9, 1], [4, 1]) == [4, 1, 9]

@@ -64,6 +64,7 @@ from openfollow.configuration import (
     config_write_lock,
     load_config,
     save_config,
+    viewed_with_controlled,
 )
 
 # Module-level so handler closures resolve ``save_catalog`` from this
@@ -3763,10 +3764,18 @@ def _register_marker_catalog_routes(
             response.status = 400
             return json.dumps({"error": "invalid id list"})
 
+        def _keep_order(current: list[int], posted: list[int]) -> list[int]:
+            # Controller slots follow ``controlled_marker_ids`` (C1 = first) and HUD cards
+            # ``viewer_marker_ids``, so ids already listed keep their place and new ones append.
+            kept = [mid for mid in current if mid in posted]
+            return kept + [mid for mid in posted if mid not in kept]
+
         with _config_write_lock:
             cfg = load_config(server.config_path)
-            cfg.controlled_marker_ids = controlled
-            cfg.viewer_marker_ids = viewer
+            cfg.controlled_marker_ids = _keep_order(cfg.controlled_marker_ids, controlled)
+            cfg.viewer_marker_ids = viewed_with_controlled(
+                cfg.controlled_marker_ids, _keep_order(cfg.viewer_marker_ids, viewer)
+            )
             save_config(cfg, server.config_path)
         return json.dumps({"success": True})
 

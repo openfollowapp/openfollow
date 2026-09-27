@@ -2434,6 +2434,17 @@ def _load_backup_data(path: str) -> dict[str, Any] | None:
         return None
 
 
+# Which (config path, marker ids) have been logged as newly viewed, so a config reloaded on every
+# request says it once per process.
+_LOGGED_UNVIEWED: set[tuple[str, tuple[int, ...]]] = set()
+
+
+def viewed_with_controlled(controlled: list[int], viewer: list[int]) -> list[int]:
+    """The viewed markers with every controlled one added: a marker this station controls is always
+    one it views, so it keeps its HUD card and counts in the trigger zones."""
+    return list(viewer) + [mid for mid in controlled if mid not in viewer]
+
+
 def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig:
     """Load config from a TOML file.
 
@@ -2534,6 +2545,11 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
             _seen.add(_v)
             _filtered.append(_v)
         data[_field_name] = _filtered
+    _unviewed = [mid for mid in data["controlled_marker_ids"] if mid not in data["viewer_marker_ids"]]
+    if _unviewed and (path, tuple(_unviewed)) not in _LOGGED_UNVIEWED:
+        _LOGGED_UNVIEWED.add((path, tuple(_unviewed)))
+        logger.info("%s: controlled markers %s are now viewed too; a controlled marker always is", path, _unviewed)
+    data["viewer_marker_ids"] = viewed_with_controlled(data["controlled_marker_ids"], data["viewer_marker_ids"])
 
     # Back-compat: map the old ``vf1_*`` keys onto their ``marker_fader_*``
     # successors (only when the new key is absent) BEFORE ``_filter_known``

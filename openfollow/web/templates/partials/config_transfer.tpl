@@ -35,16 +35,14 @@
                 </button>
                 <span id="config-import-filename" class="field-note" style="margin:0;align-self:center"></span>
             </div>
-            <div id="import-error" class="restart-notice" style="display:none;margin-top:0.72rem;border-color:rgba(255,140,140,0.35);background:rgba(255,140,140,0.13);color:#ffd7d7;"></div>
-            <div class="actions" style="margin-top:0.72rem;">
+            <div class="actions" id="import-actions" style="margin-top:0.72rem;">
                 <button type="button" class="save-btn" id="import-btn" onclick="importConfig()">Import Configuration</button>
             </div>
         </div>
 
         <div class="group">
             <h3 class="group-title">Restore Defaults</h3>
-            <div id="restore-error" class="restart-notice" role="alert" aria-live="assertive" aria-atomic="true" style="display:none;margin-bottom:0.72rem;border-color:rgba(255,140,140,0.35);background:rgba(255,140,140,0.13);color:#ffd7d7;"></div>
-            <div class="actions">
+            <div class="actions" id="restore-actions">
                 <button type="button" class="btn-danger" id="restore-defaults-btn"
                         onclick="restoreDefaults()">Restore Defaults</button>
             </div>
@@ -74,10 +72,13 @@
 <script>
 var _pendingImportData = null;
 
-function _setImportError(msg) {
-    var el = document.getElementById('import-error');
-    if (msg) { el.textContent = msg; el.style.display = 'block'; }
-    else { el.style.display = 'none'; }
+function _transferFailed(info, lead, actionsId) {
+    window.OpenFollow.saveError.show(
+        document.getElementById('config-transfer-section'), info, lead, document.getElementById(actionsId));
+}
+
+function _importFailed(info) {
+    _transferFailed(info, 'Not imported.', 'import-actions');
 }
 
 function exportConfig() {
@@ -85,10 +86,10 @@ function exportConfig() {
 }
 
 function importConfig() {
-    _setImportError('');
+    window.OpenFollow.saveError.clear(document.getElementById('config-transfer-section'));
     var fileInput = document.getElementById('config-import-file');
     if (!fileInput.files.length) {
-        _setImportError('Please select a configuration file.');
+        _importFailed({error: 'No file is selected.', action: 'Choose a configuration file first.'});
         return;
     }
     var btn = document.getElementById('import-btn');
@@ -99,7 +100,7 @@ function importConfig() {
     reader.onerror = function() {
         btn.disabled = false;
         btn.textContent = 'Import Configuration';
-        _setImportError('Could not read the selected file.');
+        _importFailed({error: 'The selected file could not be read.'});
     };
     reader.onload = function(e) {
         var raw = e.target.result;
@@ -107,7 +108,7 @@ function importConfig() {
         catch (err) {
             btn.disabled = false;
             btn.textContent = 'Import Configuration';
-            _setImportError('The selected file is not valid JSON.');
+            _importFailed({error: 'The selected file is not valid JSON.'});
             return;
         }
         _sendImport(raw, '');
@@ -122,13 +123,14 @@ function _sendImport(body, queryParams) {
         headers: {'Content-Type': 'application/json'},
         body: body
     })
-    .then(function(res) { return res.json(); })
-    .then(function(result) {
+    .then(async function(res) {
         btn.disabled = false;
         btn.textContent = 'Import Configuration';
-
-        if (result.error) {
-            _setImportError('Import failed: ' + result.error);
+        var text = await res.text();
+        var result = {};
+        try { result = JSON.parse(text); } catch (e) { /* not JSON: reported below */ }
+        if (!res.ok || result.error) {
+            _importFailed(window.OpenFollow.saveError.fromText(res.status, text));
             return;
         }
         if (result.restarting) {
@@ -153,7 +155,7 @@ function _sendImport(body, queryParams) {
     .catch(function() {
         btn.disabled = false;
         btn.textContent = 'Import Configuration';
-        _setImportError('Import request failed. Check your network connection.');
+        _importFailed(window.OpenFollow.saveError.UNREACHABLE);
     });
 }
 
@@ -177,14 +179,12 @@ function skipImportRestart() {
     _pendingImportData = null;
 }
 
-function _setRestoreError(msg) {
-    var el = document.getElementById('restore-error');
-    if (msg) { el.textContent = msg; el.style.display = 'block'; }
-    else { el.style.display = 'none'; }
+function _restoreFailed(info) {
+    _transferFailed(info, 'Not restored.', 'restore-actions');
 }
 
 async function restoreDefaults() {
-    _setRestoreError('');
+    window.OpenFollow.saveError.clear(document.getElementById('config-transfer-section'));
     var ok = await modalConfirm({
         title: 'Restore defaults?',
         message: 'Every setting goes back to its default and the station restarts. Network '
@@ -200,12 +200,14 @@ async function restoreDefaults() {
     btn.disabled = true;
     btn.textContent = 'Restoring\u2026';
     fetch('/api/config/reset', {method: 'POST'})
-    .then(function(res) { return res.json(); })
-    .then(function(result) {
+    .then(async function(res) {
         btn.disabled = false;
         btn.textContent = 'Restore Defaults';
-        if (!result.success) {
-            _setRestoreError('Restore failed: ' + (result.error || 'unknown error'));
+        var text = await res.text();
+        var result = {};
+        try { result = JSON.parse(text); } catch (e) { /* not JSON: reported below */ }
+        if (!res.ok || !result.success) {
+            _restoreFailed(window.OpenFollow.saveError.fromText(res.status, text));
             return;
         }
         /* The reset restarts the station; wait for it to answer again. */
@@ -214,7 +216,7 @@ async function restoreDefaults() {
     .catch(function() {
         btn.disabled = false;
         btn.textContent = 'Restore Defaults';
-        _setRestoreError('Restore request failed. Check your network connection.');
+        _restoreFailed(window.OpenFollow.saveError.UNREACHABLE);
     });
 }
 

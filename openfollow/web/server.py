@@ -77,6 +77,12 @@ class _QuietHandler(WSGIRequestHandler):
     def log_request(self, *args: object, **kwargs: object) -> None:
         pass
 
+    def get_environ(self) -> dict[str, Any]:
+        env = super().get_environ()
+        # The station address this connection arrived on: one the browser can reach.
+        env["SERVER_ADDR"] = str(self.connection.getsockname()[0])
+        return env
+
 
 class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
     # Per-request threads don't block the UI during slow handlers

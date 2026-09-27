@@ -1306,8 +1306,8 @@ class TestWizardTemplateSafetyPatterns:
         assert "entry.response.ok" in body, (
             "applyAndFinish() must check entry.response.ok before clearing session storage."
         )
-        assert "Failed to save " in body, (
-            "applyAndFinish() must surface a descriptive error message on failed config POSTs."
+        assert "saveError.show(reviewBox, await saveError.fromResponse(entry.response)" in body, (
+            "applyAndFinish() must show why a config POST failed on the Review step."
         )
 
     def test_wizard_nav_uses_nav_landmark(self) -> None:

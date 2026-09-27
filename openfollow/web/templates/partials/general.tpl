@@ -210,7 +210,10 @@ window.onAutostartToggle = async function (input) {
   const seq = ++window._autostartSeq;
   const body = new URLSearchParams();
   if (enable) body.set('autostart', 'on');
+  const saveError = window.OpenFollow.saveError;
+  const box = saveError.boxFor(input);
   let html;
+  let failure = null;
   try {
     const resp = await fetch('/section/general/startup', {
       method: 'POST',
@@ -219,19 +222,19 @@ window.onAutostartToggle = async function (input) {
     });
     // A redirect here is the PIN login; rendering what it returns would put the
     // sign-in page inside the switch's box.
-    if (resp.redirected) throw new Error('Your session has expired. Reload the page and sign in again.');
-    if (!resp.ok) throw new Error('The station answered ' + resp.status + '.');
-    html = await resp.text();
+    if (resp.redirected) failure = { error: 'Your session has expired.', action: 'Reload the page and sign in again.' };
+    else if (!resp.ok) failure = await saveError.fromResponse(resp);
+    else html = await resp.text();
   } catch (err) {
+    failure = saveError.UNREACHABLE;
+  }
+  if (failure) {
     input.disabled = false;
     input.checked = !enable;
-    openModal({
-      title: 'Could not change the setting',
-      bodyHTML: '<p>' + escapeHTML(err && err.message ? err.message : String(err)) + '</p>',
-      footerButtons: [{ label: 'Close', kind: 'primary', onClick: () => closeModal() }],
-    });
+    saveError.show(box, failure, 'Not changed.');
     return;
   }
+  saveError.clear(box);
   window.applyAutostartHtml(html, seq);
 };
 

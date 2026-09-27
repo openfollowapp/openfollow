@@ -394,6 +394,70 @@ def _request_origin_host() -> str | None:
         return None
 
 
+@dataclass(frozen=True)
+class HostRefusal:
+    """A name this station refuses changes through, and the address to use instead."""
+
+    host: str
+    address: str | None
+    href: str | None
+
+    @property
+    def message(self) -> str:
+        return f"This station does not accept changes made through {self.host}."
+
+    @property
+    def action(self) -> str:
+        return f"Open it by its IP address: {self.address}" if self.address else "Open it by its IP address."
+
+
+def _connection_address() -> str | None:
+    """The station address this request's connection arrived on; ``None`` for loopback."""
+    try:
+        addr = ipaddress.ip_address(str(request.environ.get("SERVER_ADDR") or ""))
+    except ValueError:
+        return None
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    # Loopback means a proxy on this box; its address is no use to the browser.
+    if addr.is_loopback or addr.is_unspecified:
+        return None
+    return str(addr)
+
+
+def _host_refusal(host: str | None) -> HostRefusal | None:
+    """Why a change through ``host`` would be refused, or ``None`` when it is accepted."""
+    if host is None or host in _allowed_request_hosts():
+        return None
+    address = _connection_address()
+    href = None
+    if address is not None:
+        port = str(request.environ.get("SERVER_PORT") or "80")
+        netloc = f"[{address}]" if ":" in address else address
+        href = f"http://{netloc}{'' if port == '80' else ':' + port}/"
+    return HostRefusal(host=host, address=address, href=href)
+
+
+def _page_host_context() -> dict[str, Any]:
+    """base.tpl's banner for a page opened through a name its saves will be refused on."""
+    raw = (request.get_header("Host") or "").strip()
+    try:
+        host = urlsplit(f"//{raw}").hostname if raw else None
+    except ValueError:
+        host = None
+    return {"host_refusal": _host_refusal(host)}
+
+
+def _is_navigation() -> bool:
+    """A plain form post the browser will show as a page, not a script's request."""
+    if request.get_header("HX-Request"):
+        return False
+    mode = request.get_header("Sec-Fetch-Mode")
+    if mode is not None:
+        return str(mode) == "navigate"
+    return "text/html" in str(request.get_header("Accept") or "")
+
+
 def _cancel_button_label(cfg: AppConfig) -> str:
     """Return the gamepad button label bound to cancel, for the footer hint.
 
@@ -3966,6 +4030,25 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def _request_scoped_config() -> AppConfig:
         return _request_config(server)
 
+    def _refused(refusal: HostRefusal) -> HTTPResponse:
+        """The 403 for a change made through a refused name, in the shape its caller reads."""
+        if not _is_navigation():
+            body = json.dumps({"error": refusal.message, "action": refusal.action, "href": refusal.href})
+            return HTTPResponse(body=body, status=403, headers={"Content-Type": "application/json"})
+        cfg = _request_scoped_config()
+        page_context = {
+            "host_refusal": refusal,
+            "on_device": _is_on_device_request(),
+            "cancel_button": _cancel_button_label(cfg),
+        }
+        if request.path == "/login":
+            page = template(
+                "login", error=f"Not logged in. {refusal.message}", stats=server.get_runtime_stats(), **page_context
+            )
+        else:
+            page = template("refused", **page_context)
+        return HTTPResponse(body=page, status=403)
+
     @app.hook("before_request")
     def _check_auth() -> Any:
         pin = _request_scoped_config().web_pin
@@ -3977,9 +4060,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # always send the header on a state-changing request; its absence
         # means a non-browser client, which this threat model does not cover.
         if request.method not in _SAFE_HTTP_METHODS:
-            origin_host = _request_origin_host()
-            if origin_host is not None and origin_host not in _allowed_request_hosts():
-                abort(403, "Cross-origin request refused")
+            refusal = _host_refusal(_request_origin_host())
+            if refusal is not None:
+                raise _refused(refusal)
 
         if not pin:
             return
@@ -4085,10 +4168,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             redirect("/")
         return template(
             "login",
-            error=False,
+            error="",
             stats=server.get_runtime_stats(),
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(cfg),
+            **_page_host_context(),
         )
 
     @app.post("/login")
@@ -4128,10 +4212,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         login_throttle.record_failure(remote)
         return template(
             "login",
-            error=True,
+            error="Incorrect PIN",
             stats=server.get_runtime_stats(),
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(cfg),
+            **_page_host_context(),
         )
 
     @app.post("/logout")
@@ -4279,6 +4364,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             written_offer_html=_written_offer_html(),
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(cfg),
+            **_page_host_context(),
         )
 
     @app.get("/about/license.txt")
@@ -4368,6 +4454,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # Update-available banner (General section) + footer flag (base.tpl);
             # read once so the flag and version label can't disagree mid-render.
             **_page_update_context(server),
+            **_page_host_context(),
             # index.tpl includes the General partial directly, so the platform
             # gate for the Startup box has to be supplied here too.
             startup_supported=_startup_settings_supported(),
@@ -8030,7 +8117,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         input_data = _build_input_template_data(config)
         # Footer "Update available" flag: an update is most often discovered
         # while the operator is still in the Setup Wizard.
-        return template("wizard", config=config, **input_data, **_page_update_context(server))
+        return template("wizard", config=config, **input_data, **_page_update_context(server), **_page_host_context())
 
     @app.get("/api/video/snapshot/full")
     def api_video_snapshot_full() -> Any:

@@ -851,6 +851,12 @@ Peer-to-peer config broadcast is HMAC-signed. The web PIN is the HMAC key; the P
 - Cookie is set with `httponly=True`, `path="/"`, **`samesite="strict"`**. Strict blocks the browser from attaching the cookie to any cross-site request, which defeats CSRF without a separate token layer. OpenFollow is LAN-only so the reduced cross-site ergonomics are acceptable.
 - `/login`, `/assets/*`, `/section/statistics` are exempt from auth.
 
+### Refused names and failed saves (`_check_auth`, `static/js/save-feedback.js`)
+- **A change through a name the station does not accept** (an `Origin` / `Referer` host outside `_allowed_request_hosts()`, the CSRF / DNS-rebind defence) is answered by `_refused` in the shape its caller reads: JSON `{error, action, href}` for HTMX and script requests, and a page for a plain form post (`_is_navigation`: `Sec-Fetch-Mode: navigate`, else `Accept: text/html` without `HX-Request`) – the login page with the reason where "Incorrect PIN" sits, or `refused.tpl`. Never Bottle's bare 403 page.
+- **The address offered** is the local address the connection arrived on (`SERVER_ADDR`, recorded by `_QuietHandler.get_environ`): the browser just reached it, and no DNS lookup is involved. Loopback (a proxy on the box) offers none.
+- **On page load**, every full page (index, wizard, login, about) spreads `_page_host_context()`, so a page opened through such a name shows the red banner before anything is edited. The `Host` header decides it; the refusal stays the backstop, because a reverse proxy can make `Host` and `Origin` disagree.
+- **Every save reports failure the same way** (`window.OpenFollow.saveError`): the form's ring flashes red for 0.55 s like the green save flash, and a red line under its actions says what the station observed plus one next step, until the next edit or save. Non-GET HTMX requests are covered globally (`htmx:responseError` / `htmx:sendError`); a script-driven save calls `saveError.show(box, info, lead, near)`. A dialog that closed before its request failed hands the line to the section last clicked. Don't add toasts, alerts or modals for a failed save; the offline update upload keeps the updater's own dialog. `tests/test_save_feedback.py` fails a template or input plugin that saves by script without the helper.
+
 ### Login throttle (`web/login_throttle.py`)
 Per-IP exponential-backoff lockout on PIN authentication. Without this, a 4-digit PIN is exhausted in seconds over a LAN – no rate limit, no attempt counter, no back-off.
 

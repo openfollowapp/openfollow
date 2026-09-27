@@ -3466,9 +3466,14 @@
   }
 
   window.applyAndFinish = function() {
+    var saveError = window.OpenFollow.saveError;
+    var reviewBox = document.querySelector('#wizard-step-6 .section');
     var badLen = invalidLengthFields();
     if (badLen.length) {
-      alert('These fields aren\'t valid lengths – fix them before finishing: ' + badLen.join(', '));
+      saveError.show(reviewBox, {
+        error: 'These fields are not valid lengths: ' + badLen.join(', ') + '.',
+        action: 'Fix them before finishing.',
+      }, 'Not applied.');
       return;
     }
     var state = getState();
@@ -3515,24 +3520,23 @@
           x_offset: gridData.x_offset, y_offset: gridData.y_offset, z_offset: gridData.z_offset,
         }),
       }),
-    ]).then(function(responses) {
+    ]).then(async function(responses) {
       var labeled = [
         { name: 'camera', response: responses[0] },
         { name: 'grid', response: responses[1] },
       ];
-      return Promise.all(labeled.map(function(entry) {
-        if (entry.response.ok) return null;
-        return entry.response.text().then(function(body) {
-          var detail = body ? ': ' + body : '';
-          throw new Error('Failed to save ' + entry.name + ' configuration (' + entry.response.status + ')' + detail);
-        });
-      }));
-    }).then(function() {
+      for (var i = 0; i < labeled.length; i++) {
+        var entry = labeled[i];
+        if (!entry.response.ok) {
+          saveError.show(reviewBox, await saveError.fromResponse(entry.response),
+            'The ' + entry.name + ' settings were not applied.');
+          return;
+        }
+      }
       try { sessionStorage.removeItem(STORAGE_KEY); } catch(e) {}
       window.location.href = '/';
-    }).catch(function(err) {
-      var message = err && err.message ? err.message : 'Failed to save configuration. Please try again.';
-      alert(message);
+    }).catch(function() {
+      saveError.show(reviewBox, saveError.UNREACHABLE, 'Not applied.');
     });
   };
 
@@ -3566,17 +3570,27 @@
     // resolves (Save & Next must not advance while the old source is still
     // active). Rejects on a failed save so the caller's .catch can surface it
     // without advancing.
+    var saveError = window.OpenFollow.saveError;
+    var videoBox = document.querySelector('#wizard-step-2 .section');
     return fetch('/section/video_source', { method: 'POST', body: formData })
-    .then(function(r) {
-      if (!r.ok) throw new Error('Save failed');
+    .then(async function(r) {
+      if (!r.ok) {
+        saveError.show(videoBox, await saveError.fromResponse(r));
+        throw new Error('Save failed');
+      }
+      saveError.clear(videoBox);
       var msgEl = document.getElementById('wizard-video-saved');
       msgEl.textContent = 'Video source saved.';
       msgEl.style.display = 'block';
     });
   };
 
-  window.wizardVideoSaveFailed = function() {
-    alert('Failed to save video source. Please try again.');
+  // A refused save has already said why on the step; this ends the chain and
+  // covers a request that got no answer at all.
+  window.wizardVideoSaveFailed = function(err) {
+    if (err && err.message === 'Save failed') return;
+    window.OpenFollow.saveError.show(
+      document.querySelector('#wizard-step-2 .section'), window.OpenFollow.saveError.UNREACHABLE);
   };
 
   // ---------------------------------------------------------------

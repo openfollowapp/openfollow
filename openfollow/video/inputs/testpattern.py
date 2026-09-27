@@ -354,37 +354,34 @@ class MediaGalleryInput(VideoInputBase):
             'hx-get="/video-input/testpattern/list" hx-trigger="load" hx-target="this" hx-swap="outerHTML"></div>'
             "<script>"
             f"var OPENFOLLOW_MEDIA_MAX_BYTES={max_bytes};"
-            # Surface an inline banner without discarding the loaded tiles - the
-            # server-rendered grid uses the same .gallery-error markup, so an
-            # error never disappears silently and the next render clears it.
-            "function openfollowGalleryError(msg){"
+            # A failed upload rings the form red and says why under the grid,
+            # without discarding the loaded tiles.
+            "function openfollowGalleryError(info){"
             "var g=document.getElementById('gallery-grid');if(!g)return;"
             "g.classList.remove('is-loading');"
-            "var b=g.querySelector('.gallery-error');"
-            "if(!b){b=document.createElement('div');b.className='gallery-error';"
-            "b.setAttribute('role','alert');g.insertBefore(b,g.firstChild);}"
-            "b.textContent=msg;}"
+            "var s=window.OpenFollow.saveError;s.show(s.boxFor(g),info,'Not uploaded.',g);}"
             "function openfollowGalleryUpload(input){"
             "var f=input.files[0];if(!f)return;"
             # Reject over-cap files before the fetch: a browser keeps streaming
             # the body while the server returns early, which resets the socket
             # mid-upload and rejects the fetch with no response to render.
             f"if(f.size>OPENFOLLOW_MEDIA_MAX_BYTES){{openfollowGalleryError("
-            f"'File too large (max {max_mb} MB).');input.value='';return;}}"
+            f"{{error:'File too large (max {max_mb} MB).'}});input.value='';return;}}"
             "var g=document.getElementById('gallery-grid');if(g)g.classList.add('is-loading');"
             "fetch('/video-input/testpattern/upload',{method:'POST',body:f})"
-            ".then(function(r){return r.text().then(function(html){return {ok:r.ok,html:html};});})"
+            ".then(function(r){return r.text().then(function(html){return {ok:r.ok,status:r.status,html:html};});})"
             ".then(function(res){var el=document.getElementById('gallery-grid');if(!el)return;"
+            "if(!res.ok){openfollowGalleryError(window.OpenFollow.saveError.fromText(res.status,res.html));return;}"
             "var t=document.createElement('template');t.innerHTML=(res.html||'').trim();"
             "var node=t.content.firstChild;"
-            # Only swap in a real grid partial. A non-2xx status or a non-grid
-            # body (login redirect, proxy error) would otherwise replace - and
-            # wipe - the grid container, leaving it unrecoverable without reload.
-            "if(!res.ok||!node||node.id!=='gallery-grid'){openfollowGalleryError("
-            "'Upload failed. Check the connection and try again.');return;}"
+            # Only swap in a real grid partial. A non-grid body (login redirect,
+            # proxy error) would otherwise replace - and wipe - the grid
+            # container, leaving it unrecoverable without reload.
+            "if(!node||node.id!=='gallery-grid'){openfollowGalleryError("
+            "{error:'The station did not send the gallery back.',action:'Reload the page and try again.'});return;}"
+            "var s=window.OpenFollow.saveError;s.clear(s.boxFor(el));"
             "el.replaceWith(node);if(window.htmx)htmx.process(document.getElementById('gallery-grid'));})"
-            ".catch(function(){openfollowGalleryError("
-            "'Upload failed. Check the connection and try again.');});"
+            ".catch(function(){openfollowGalleryError(window.OpenFollow.saveError.UNREACHABLE);});"
             "input.value='';}"
             "</script>"
             "</div></div>"

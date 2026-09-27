@@ -1056,6 +1056,25 @@ def test_configwebserver_start_clears_stopping_flag(tmp_path, monkeypatch) -> No
     assert srv._stopping is False
 
 
+def test_quiet_handler_records_the_address_the_connection_arrived_on() -> None:
+    import http.client
+    from types import SimpleNamespace
+
+    from openfollow.web.server import _QuietHandler
+
+    handler = _QuietHandler.__new__(_QuietHandler)
+    handler.server = SimpleNamespace(base_environ={})
+    handler.request_version = "HTTP/1.1"
+    handler.command = "GET"
+    handler.path = "/"
+    handler.client_address = ("198.51.100.7", 50000)
+    handler.headers = http.client.HTTPMessage()
+    handler.connection = SimpleNamespace(getsockname=lambda: ("192.0.2.10", 80))
+    environ = handler.get_environ()
+    assert environ["SERVER_ADDR"] == "192.0.2.10"
+    assert environ["REMOTE_ADDR"] == "198.51.100.7"
+
+
 def test_quiet_handler_log_request_is_noop() -> None:
     from openfollow.web.server import _QuietHandler
 

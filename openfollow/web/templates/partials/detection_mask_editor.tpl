@@ -228,11 +228,21 @@
 
     // -- persistence (JSON CRUD) --
     function jsonFetch(method, path, body) {
-        return fetch(path, {
+        var saveError = window.OpenFollow.saveError;
+        var editor = document.getElementById('detection-mask-editor');
+        var request = fetch(path, {
             method: method,
             headers: body ? { 'Content-Type': 'application/json' } : {},
             body: body ? JSON.stringify(body) : undefined
         });
+        // Callers still get the response; a failed write also says why on the editor.
+        request.then(async function(r) {
+            if (r.ok) saveError.clear(editor);
+            else saveError.show(editor, await saveError.fromResponse(r.clone()), 'Not saved.');
+        }, function() {
+            saveError.show(editor, saveError.UNREACHABLE, 'Not saved.');
+        });
+        return request;
     }
     function setMasterNote() {
         if (!enabledNote) return;

@@ -1,4 +1,4 @@
-% rebase('base.tpl')
+% rebase('base.tpl', host_refusal_note="You can't log in or save here.")
 
 <div class="section" style="max-width:400px;margin:0 auto 1rem;">
     <div class="section-head">
@@ -6,7 +6,7 @@
         <span class="section-note">Enter PIN to access configuration</span>
     </div>
     % if error:
-    <div style="margin-bottom:0.72rem;padding:8px 12px;border-radius:0.8rem;border:1px solid rgba(255,140,140,0.35);background:rgba(255,140,140,0.13);color:#ffd7d7;font-weight:600;font-size:0.88rem;">Incorrect PIN</div>
+    <div style="margin-bottom:0.72rem;padding:8px 12px;border-radius:0.8rem;border:1px solid rgba(255,140,140,0.35);background:rgba(255,140,140,0.13);color:#ffd7d7;font-weight:600;font-size:0.88rem;">{{error}}</div>
     % end
     <form method="POST" action="/login">
         <div class="row">

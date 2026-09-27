@@ -2929,6 +2929,96 @@ def test_allowed_request_hosts_blank_hostname_falls_back(monkeypatch) -> None:
     assert not any(h.endswith(".local") for h in hosts)
 
 
+@pytest.fixture()
+def bound_request():
+    """Bind bottle's thread-local request to a hand-built WSGI environ."""
+    from bottle import request
+
+    def bind(**environ: str) -> None:
+        request.bind({"REQUEST_METHOD": "POST", "PATH_INFO": "/", **environ})
+
+    yield bind
+    request.bind({})
+
+
+@pytest.mark.parametrize(
+    ("server_addr", "port", "address", "href"),
+    [
+        ("192.0.2.10", "80", "192.0.2.10", "http://192.0.2.10/"),
+        ("192.0.2.10", "8080", "192.0.2.10", "http://192.0.2.10:8080/"),
+        ("2001:db8::10", "8080", "2001:db8::10", "http://[2001:db8::10]:8080/"),
+        ("::ffff:192.0.2.10", "80", "192.0.2.10", "http://192.0.2.10/"),
+    ],
+)
+def test_a_refusal_offers_the_address_the_connection_arrived_on(
+    bound_request, server_addr: str, port: str, address: str, href: str
+) -> None:
+    from openfollow.web.routes import _host_refusal
+
+    bound_request(SERVER_ADDR=server_addr, SERVER_PORT=port)
+    refusal = _host_refusal("station.example.com")
+    assert refusal is not None
+    assert (refusal.address, refusal.href) == (address, href)
+    assert refusal.message == "This station does not accept changes made through station.example.com."
+    assert refusal.action == f"Open it by its IP address: {address}"
+
+
+@pytest.mark.parametrize("server_addr", ["127.0.0.1", "::1", "0.0.0.0", "", "not-an-address"])
+def test_a_refusal_offers_no_address_the_browser_cannot_use(bound_request, server_addr: str) -> None:
+    from openfollow.web.routes import _host_refusal
+
+    bound_request(SERVER_ADDR=server_addr, SERVER_PORT="80")
+    refusal = _host_refusal("station.example.com")
+    assert refusal is not None
+    assert (refusal.address, refusal.href) == (None, None)
+    assert refusal.action == "Open it by its IP address."
+
+
+@pytest.mark.parametrize("host", [None, "127.0.0.1", "localhost"])
+def test_an_accepted_name_is_not_refused(bound_request, host: str | None) -> None:
+    from openfollow.web.routes import _host_refusal
+
+    bound_request(SERVER_ADDR="192.0.2.10")
+    assert _host_refusal(host) is None
+
+
+@pytest.mark.parametrize(
+    ("host_header", "refused_host"),
+    [
+        ("station.example.com:8080", "station.example.com"),
+        ("STATION.example.com", "station.example.com"),
+        ("[2001:db8::1]:80", "2001:db8::1"),
+        ("127.0.0.1:8080", None),
+        ("[::1bad", None),
+        ("", None),
+    ],
+)
+def test_a_page_warns_by_the_name_in_its_host_header(bound_request, host_header: str, refused_host: str | None) -> None:
+    from openfollow.web.routes import _page_host_context
+
+    bound_request(REQUEST_METHOD="GET", HTTP_HOST=host_header)
+    refusal = _page_host_context()["host_refusal"]
+    assert (refusal.host if refusal else None) == refused_host
+
+
+@pytest.mark.parametrize(
+    ("headers", "navigation"),
+    [
+        ({"HTTP_HX_REQUEST": "true", "HTTP_SEC_FETCH_MODE": "navigate"}, False),
+        ({"HTTP_SEC_FETCH_MODE": "navigate"}, True),
+        ({"HTTP_SEC_FETCH_MODE": "cors", "HTTP_ACCEPT": "text/html"}, False),
+        ({"HTTP_ACCEPT": "text/html,application/xhtml+xml"}, True),
+        ({"HTTP_ACCEPT": "*/*"}, False),
+        ({}, False),
+    ],
+)
+def test_a_plain_form_post_is_told_apart_from_a_script(bound_request, headers: dict, navigation: bool) -> None:
+    from openfollow.web.routes import _is_navigation
+
+    bound_request(**headers)
+    assert _is_navigation() is navigation
+
+
 # ---------------------------------------------------------------------------
 # OSC destinations: client list + <script>-safe JSON embedding
 # ---------------------------------------------------------------------------

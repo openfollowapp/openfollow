@@ -300,6 +300,29 @@
         if (el.checked !== checked) el.checked = checked;
     }
 
+    // A catalog or selection write that failed: its red line goes under the
+    // table it was made in.
+    function writeFailed(el, info) {
+        const saveError = window.OpenFollow.saveError;
+        saveError.show(saveError.boxFor(el), info, 'Not saved.', el.closest('table'));
+    }
+
+    function writeResult(el) {
+        return async function(resp) {
+            const saveError = window.OpenFollow.saveError;
+            if (resp.ok) {
+                saveError.clear(saveError.boxFor(el));
+                return true;
+            }
+            writeFailed(el, await saveError.fromResponse(resp));
+            return false;
+        };
+    }
+
+    function writeUnreachable(el) {
+        return function() { writeFailed(el, window.OpenFollow.saveError.UNREACHABLE); };
+    }
+
     // ---- Selection POST (out-of-band write, same wire as before).
     function postSelection(root) {
         const controlled = [];
@@ -310,17 +333,18 @@
         root.querySelectorAll('[data-selection-field="view"]').forEach(function(cb) {
             if (cb.checked) viewer.push(parseInt(cb.getAttribute('data-marker-id'), 10));
         });
+        const table = root.querySelector('.marker-selection-table');
         fetch('/api/markers/selection', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({controlled_ids: controlled, viewer_ids: viewer})
-        }).then(function(resp) {
+        }).then(writeResult(table)).then(function(ok) {
             const flash = root.querySelector('#selection-saved-flash');
-            if (!flash) return;
-            flash.textContent = resp.ok ? '✓ saved' : '⚠ save failed';
+            if (!ok || !flash) return;
+            flash.textContent = '✓ saved';
             flash.classList.add('show');
             setTimeout(function() { flash.classList.remove('show'); }, 1200);
-        });
+        }).catch(writeUnreachable(table));
     }
 
     // ---- Row factories: build the row once, attach listeners once.
@@ -353,11 +377,12 @@
                 method: 'PUT',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({name: name, color: color})
-            });
+            }).then(writeResult(tr)).catch(writeUnreachable(tr));
         });
         tr.querySelector('[data-action="delete"]').addEventListener('click', function() {
             if (!confirm('Delete marker ' + id + '?')) return;
-            fetch('/api/markers/catalog/' + id, {method: 'DELETE'});
+            fetch('/api/markers/catalog/' + id, {method: 'DELETE'})
+                .then(writeResult(tr)).catch(writeUnreachable(tr));
         });
         return tr;
     }
@@ -451,8 +476,11 @@
                 method: 'PUT',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({name: name, color: color})
-            }).then(function(resp) {
-                if (!resp.ok) throw new Error('http ' + resp.status);
+            }).then(writeResult(tr)).then(function(ok) {
+                if (!ok) {
+                    flash('', null);
+                    return;
+                }
                 flash('✓ Added marker ' + id, 'ok');
                 // Clear name and id so updateAddRow re-suggests the next-free id.
                 nameIn.value = '';
@@ -465,7 +493,8 @@
                         .catch(function() {});
                 }
             }).catch(function() {
-                flash('⚠ Could not add marker ' + id, 'error');
+                flash('', null);
+                writeFailed(tr, window.OpenFollow.saveError.UNREACHABLE);
             });
         }
 

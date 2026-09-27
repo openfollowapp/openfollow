@@ -21,34 +21,41 @@
 function broadcastAllConfig() {
     var btn = document.getElementById('send-all-btn');
     var result = document.getElementById('send-config-result');
+    var section = document.getElementById('send-config-section');
+    var saveError = window.OpenFollow.saveError;
     btn.disabled = true;
     btn.textContent = 'Sending\u2026';
     result.style.display = 'none';
+    saveError.clear(section);
     fetch('/api/config/broadcast-all', { method: 'POST' })
-        .then(function(res) { return res.json(); })
-        .then(function(data) {
+        .then(async function(res) {
             btn.disabled = false;
             btn.textContent = 'Send All Settings';
+            if (!res.ok) {
+                saveError.show(section, await saveError.fromResponse(res), 'Not sent.');
+                return;
+            }
+            var data = await res.json();
             var total = data.peer_results.length;
             var failed = data.peer_results.filter(function(p) { return !p.success; });
-            if (total === 0) {
-                result.textContent = 'No other stations discovered on the network.';
-                result.className = 'update-notice';
-            } else if (failed.length === 0) {
-                result.textContent = 'Settings sent to ' + total + ' station(s) successfully.';
-                result.className = 'update-notice';
-            } else {
-                result.textContent = 'Sent to ' + (total - failed.length) + '/' + total + ' stations. Failed: ' + failed.map(function(p) { return p.name; }).join(', ');
-                result.className = 'update-notice error';
+            if (failed.length > 0) {
+                saveError.show(section, {
+                    error: 'Not sent to ' + failed.length + ' of ' + total + ' stations: '
+                        + failed.map(function(p) { return p.name || p.ip; }).join(', ') + '.',
+                    action: 'Check that they are switched on, then send again.',
+                }, '');
+                return;
             }
+            result.textContent = total === 0
+                ? 'No other stations discovered on the network.'
+                : 'Settings sent to ' + total + ' station(s) successfully.';
+            result.className = 'update-notice';
             result.style.display = 'block';
         })
         .catch(function() {
             btn.disabled = false;
             btn.textContent = 'Send All Settings';
-            result.textContent = 'Broadcast failed. Check your network connection.';
-            result.className = 'update-notice error';
-            result.style.display = 'block';
+            saveError.show(section, saveError.UNREACHABLE, 'Not sent.');
         });
 }
 </script>

@@ -648,11 +648,9 @@ class GstNativeSinkReceiver:
             logger.info("Video source format: %s", source_format)
         return cast(int, Gst.PadProbeReturn.REMOVE)
 
-    def _handle_refused_start(self) -> None:
+    def _handle_refused_start(self, pipeline: Any) -> None:
         """``set_state(PLAYING)`` failed: classify from the error the element posted, if any."""
-        msg = None
-        if self._pipeline is not None:
-            msg = self._pipeline.get_bus().timed_pop_filtered(200 * Gst.MSECOND, Gst.MessageType.ERROR)
+        msg = pipeline.get_bus().timed_pop_filtered(200 * Gst.MSECOND, Gst.MessageType.ERROR)
         if msg:
             err, dbg = msg.parse_error()
             # The bus carries the same identity a posted ERROR would, so it is
@@ -710,7 +708,7 @@ class GstNativeSinkReceiver:
             if self._pipeline is not None:
                 result = self._pipeline.set_state(Gst.State.PLAYING)
                 if result == Gst.StateChangeReturn.FAILURE:
-                    self._handle_refused_start()
+                    self._handle_refused_start(self._pipeline)
                 else:
                     if self._state.is_placeholder_pipeline:
                         logger.info(
@@ -761,7 +759,7 @@ class GstNativeSinkReceiver:
         if self._pipeline is not None:
             result = self._pipeline.set_state(Gst.State.PLAYING)
             if result == Gst.StateChangeReturn.FAILURE:
-                self._handle_refused_start()
+                self._handle_refused_start(self._pipeline)
             else:
                 if self._state.is_placeholder_pipeline:
                     logger.info("Placeholder pipeline started after source startup failure.")

@@ -15,6 +15,7 @@ from openfollow.input.controller_slots import (
     ControllerSlotTable,
     LiveController,
     SlotEntry,
+    slot_ref,
 )
 from openfollow.input.events import InputEventBus
 from openfollow.input.gamepad import GamepadHandler, GamepadUpdate
@@ -530,6 +531,7 @@ class InputManager:
                 "backend": backend,
                 "port_key": slot.key,
                 "port_label": port_label(slot.key, self._usb_hosts),
+                "slot_ref": slot_ref(slot),
                 "seconds_since_input": None if used is None else max(0.0, now - used),
             }
             if slot.kind == "mouse3d":
@@ -538,6 +540,11 @@ class InputManager:
                 item["serial"] = info.serial if info is not None else ""
             out.append(item)
         return out
+
+    def slot_ref(self, unified_idx: int) -> str | None:
+        """What the slot at ``unified_idx`` holds now, to check a queued action against."""
+        slots = self._controller_slots()
+        return slot_ref(slots[unified_idx]) if 0 <= unified_idx < len(slots) else None
 
     def forget_slot(self, unified_idx: int) -> bool:
         """Silence a missing slot; it keeps its place. Main loop only."""

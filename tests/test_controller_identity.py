@@ -98,6 +98,14 @@ def test_a_bluetooth_pad_is_keyed_by_its_address(tmp_path: Path) -> None:
     assert resolve_key(node, sysfs_root=tmp_path) == "bt:aa:bb:cc:dd:ee:ff"
 
 
+def test_a_bluetooth_pad_behind_a_usb_radio_is_keyed_by_its_address_not_the_radios_socket(tmp_path: Path) -> None:
+    radio = _usb_device(tmp_path, _HOST0, "usb1", "1-1", "1")
+    input_dev = radio / "1-1:1.0" / "bluetooth" / "hci0" / "hci0:256" / "0005:045E:0B13.0005" / "input" / "input10"
+    node = _node(tmp_path, "input", "event7", input_dev)
+    (input_dev / "uniq").write_text("AA:BB:CC:DD:EE:01\n")
+    assert resolve_key(node, sysfs_root=tmp_path) == "bt:aa:bb:cc:dd:ee:01"
+
+
 def test_a_bluetooth_hidraw_node_is_keyed_by_hid_uniq(tmp_path: Path) -> None:
     hid = tmp_path / "devices" / "platform" / "bluetooth" / "hci0" / "hci0:12" / "0005:057E:2009.0003"
     node = _node(tmp_path, "hidraw", "hidraw2", hid)

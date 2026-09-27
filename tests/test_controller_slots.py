@@ -14,6 +14,7 @@ from openfollow.input.controller_slots import (
     RESERVED,
     ControllerSlotTable,
     LiveController,
+    slot_ref,
 )
 
 pytestmark = pytest.mark.unit
@@ -123,6 +124,14 @@ def test_a_returning_controller_reclaims_its_own_slot() -> None:
     assert [s.local_id for s in table.slots] == [8, 9, 2]
 
 
+def test_a_returning_controller_reclaims_before_a_newcomer_arriving_with_it() -> None:
+    table = frozen(pad(0, "usb:h:1"), pad(1, "usb:h:2"))
+    table.update([pad(1, "usb:h:2")], settled=True)
+    # The newcomer's port sorts first, so it is looked at before the owner.
+    table.update([pad(1, "usb:h:2"), pad(5, "usb:h:0"), pad(6, "usb:h:1")], settled=True)
+    assert [s.local_id for s in table.slots] == [6, 1, 5]
+
+
 def test_a_new_controller_takes_the_lowest_missing_slot_of_its_kind() -> None:
     table = frozen(pad(0, "usb:h:1"), pad(1, "usb:h:2"), pad(2, "usb:h:3"))
     table.update([pad(2, "usb:h:3")], settled=True)
@@ -202,6 +211,19 @@ def test_a_reserved_slot_is_reclaimed_by_its_own_socket_first() -> None:
     table.forget(0)
     table.update([pad(2, "usb:h:3"), pad(7, "usb:h:2")], settled=True)
     assert [s.state for s in table.slots] == [RESERVED, CONNECTED, CONNECTED]
+
+
+def test_a_slot_ref_changes_with_whatever_the_row_shows() -> None:
+    table = frozen(pad(0, "usb:h:1", "GameSir"), pad(1, "usb:h:2", "GameSir"))
+    connected, other = (slot_ref(s) for s in table.slots)
+    assert connected != other
+    table.update([pad(1, "usb:h:2", "GameSir")], settled=True)
+    missing = slot_ref(table.slots[0])
+    assert missing != connected
+    table.forget(0)
+    assert slot_ref(table.slots[0]) not in (connected, missing)
+    table.update([pad(1, "usb:h:2", "GameSir"), pad(7, "usb:h:9", "GameSir")], settled=True)
+    assert slot_ref(table.slots[0]) not in (connected, missing)
 
 
 # -- rebuild -----------------------------------------------------------------

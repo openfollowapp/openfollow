@@ -444,6 +444,7 @@ class TestPublishRuntimeStats:
                     "backend": "mouse3d",
                     "port_label": "USB 1 · port 2",
                     "port_key": "usb:platform/xhci-hcd.0:2",
+                    "slot_ref": "mouse3d|usb:platform/xhci-hcd.0:2|SpaceNavigator|connected",
                     "seconds_since_input": 0.25,
                 },
             ]
@@ -464,6 +465,8 @@ class TestPublishRuntimeStats:
         )
         assert (puck["kind"], puck["seconds_since_input"]) == ("mouse3d", 0.25)
         assert (puck["port_key"], reserved["port_key"]) == ("usb:platform/xhci-hcd.0:2", None)
+        assert puck["slot_ref"] == "mouse3d|usb:platform/xhci-hcd.0:2|SpaceNavigator|connected"
+        assert reserved["slot_ref"] == ""
 
     def test_detector_present_delegates_to_performance_stats(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

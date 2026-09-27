@@ -3902,6 +3902,17 @@ class TestIdentify:
         handler, _ = make_handler(stubbed_pygame)
         assert handler.identify(0) is False
 
+    def test_a_rumble_failing_outside_sdl_says_so(self, stubbed_pygame, monkeypatch) -> None:
+        joy = FakeJoystick()
+
+        def _broken(*_args: object) -> bool:
+            raise OSError("driver went away")
+
+        joy.rumble = _broken  # type: ignore[method-assign]
+        _pads(stubbed_pygame, monkeypatch, joy)
+        handler, _ = make_handler(stubbed_pygame)
+        assert handler.identify(0) is False
+
     def test_an_unknown_pad_cannot_be_identified(self, stubbed_pygame) -> None:
         handler, _ = make_handler(stubbed_pygame)
         assert handler.identify(42) is False

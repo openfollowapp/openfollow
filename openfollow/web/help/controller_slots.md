@@ -22,7 +22,7 @@ With exactly one slot, that controller drives whichever marker is selected inste
 ## Actions
 
 - **Identify** – pulses the controller where it can (a pad vibrates, a 3D mouse blinks its light) and flashes its slot's marker card on the Operator Screen. On a missing slot only the card flashes.
-- **Forget** – on a missing slot, silences it: the slot becomes reserved.
+- **Forget** – on a missing slot, silences it: the slot becomes reserved. A reserved slot still counts as a slot, so the other controllers keep their own markers rather than switching to follow the selected one.
 
 ## When a controller comes back
 

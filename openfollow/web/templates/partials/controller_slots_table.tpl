@@ -1,3 +1,4 @@
+% import json
 % items = (controllers or {}).get('items', [])
 % if not items:
 <p class="slot-empty">No controller connected.</p>
@@ -37,10 +38,10 @@
             <td>{{c['marker_id'] if c.get('marker_id') is not None else '-'}}</td>
             <td class="slot-actions">
             % if state != 'reserved':
-                <button type="button" class="secondary" hx-post="/section/controller_slots/identify/{{idx}}" hx-target="#controller-slots-content" hx-swap="innerHTML">Identify</button>
+                <button type="button" class="secondary" hx-post="/section/controller_slots/identify/{{idx}}" hx-vals='{{json.dumps({"ref": c.get("slot_ref", "")})}}' hx-target="#controller-slots-content" hx-swap="innerHTML">Identify</button>
             % end
             % if state == 'missing':
-                <button type="button" class="secondary" hx-post="/section/controller_slots/forget/{{idx}}" hx-target="#controller-slots-content" hx-swap="innerHTML">Forget</button>
+                <button type="button" class="secondary" hx-post="/section/controller_slots/forget/{{idx}}" hx-vals='{{json.dumps({"ref": c.get("slot_ref", "")})}}' hx-target="#controller-slots-content" hx-swap="innerHTML">Forget</button>
             % end
             </td>
         </tr>

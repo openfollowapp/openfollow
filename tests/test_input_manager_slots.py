@@ -298,6 +298,23 @@ def test_identify_on_a_missing_slot_only_flashes_the_card(station) -> None:
     assert manager.identify_flash_marker() == 10
 
 
+def test_a_slot_ref_names_what_the_slot_holds_now(station) -> None:
+    manager, _ = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    before = manager.slot_ref(0)
+    assert before == manager.get_controller_info()[0]["slot_ref"]
+    assert before != manager.slot_ref(1)
+    del manager.gamepad_handler.pads[0]
+    manager.update(0.016)
+    assert manager.slot_ref(0) != before
+    assert manager.slot_ref(0) == manager.get_controller_info()[0]["slot_ref"]
+
+
+@pytest.mark.parametrize("index", [-1, 2])
+def test_no_slot_has_no_ref(station, index: int) -> None:
+    manager, _ = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    assert manager.slot_ref(index) is None
+
+
 @pytest.mark.parametrize("index", [-1, 5])
 def test_identify_on_no_slot_does_nothing(station, index: int) -> None:
     manager, _ = station({0: (_key("1"), "First")})

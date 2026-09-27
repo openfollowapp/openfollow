@@ -1742,7 +1742,7 @@ class GamepadHandler:
             return False
         try:
             return bool(joystick.rumble(_IDENTIFY_STRENGTH, _IDENTIFY_STRENGTH, _IDENTIFY_MS))
-        except pygame.error:
+        except Exception:  # noqa: BLE001 - Identify is best-effort; any backend failure means "no pulse"
             return False
 
     def get_controller_info(self) -> list[dict[str, Any]]:

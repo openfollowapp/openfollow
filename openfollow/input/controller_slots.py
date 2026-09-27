@@ -72,6 +72,11 @@ def _connected(c: LiveController) -> SlotEntry:
     return SlotEntry(kind=c.kind, key=c.key, name=c.name, state=CONNECTED, local_id=c.local_id)
 
 
+def slot_ref(slot: SlotEntry) -> str:
+    """What a slot row was showing, so an action that arrives late can tell the slot changed."""
+    return f"{slot.kind}|{slot.key or ''}|{slot.name}|{slot.state}"
+
+
 class ControllerSlotTable:
     """Session slot assignment. Read :attr:`slots` from any thread; mutate from one."""
 
@@ -122,7 +127,25 @@ class ControllerSlotTable:
             for s in self._slots
         ]
         held = {(s.kind, s.local_id) for s in slots if s.state == CONNECTED}
-        for c in _port_order([c for c in controllers if (c.kind, c.local_id) not in held]):
+        newcomers = _port_order([c for c in controllers if (c.kind, c.local_id) not in held])
+        # Every returning controller reclaims its own slot before any newcomer
+        # falls back to a vacant one, or one arriving in the same frame (a hub
+        # re-enumerating) could take a slot its owner was about to reclaim.
+        waiting = []
+        for c in newcomers:
+            index = next(
+                (
+                    i
+                    for i, s in enumerate(slots)
+                    if c.key is not None and s.state != CONNECTED and s.kind == c.kind and s.key == c.key
+                ),
+                None,
+            )
+            if index is None:
+                waiting.append(c)
+            else:
+                slots[index] = _connected(c)
+        for c in waiting:
             index = self._vacant_for(slots, c)
             if index is None:
                 slots.append(_connected(c))
@@ -133,10 +156,6 @@ class ControllerSlotTable:
     @staticmethod
     def _vacant_for(slots: Sequence[SlotEntry], c: LiveController) -> int | None:
         vacant = [i for i, s in enumerate(slots) if s.state != CONNECTED]
-        if c.key is not None:
-            for i in vacant:
-                if slots[i].kind == c.kind and slots[i].key == c.key:
-                    return i
         if len(slots) == 1 and vacant:
             return 0
         return next((i for i in vacant if slots[i].kind == c.kind), None)

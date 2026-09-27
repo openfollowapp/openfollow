@@ -1214,6 +1214,7 @@ def draw_marker_card(
 
         # Controller badge top-left (controlled markers only). 1-based to match
         # the OSC ``:cN`` reference.
+        badge_right: float | None = None
         if t.is_controlled and t.controller_idx is not None:
             if t.controller_connected:
                 renderer._set_ui_font(cr, 9)
@@ -1225,6 +1226,7 @@ def draw_marker_card(
                 badge = f"C{t.controller_idx + 1} missing"
             cr.move_to(x + 8, y + 14)
             cr.show_text(badge)
+            badge_right = x + 8 + cr.text_extents(badge).width
 
         if selected:
             cr.set_source_rgb(*COLOR_ACCENT)
@@ -1234,7 +1236,16 @@ def draw_marker_card(
         # Catalog name preferred over M<id> synthetic label; fallback when no catalog entry.
         label = t.name if t.name else f"M{t.marker_id}"
         ext = cr.text_extents(label)
-        cr.move_to(x + (w - ext.width) / 2, y + 18)
+        name_x = x + (w - ext.width) / 2
+        # Centred, unless that runs into the badge or the status dot; then
+        # centred in the space between them, shortened if it still won't fit.
+        left = badge_right + 6 if badge_right is not None else x + 8
+        right = x + w - 18
+        if name_x < left or name_x + ext.width > right:
+            label = renderer._truncate_text_to_width(cr, label, right - left)
+            ext = cr.text_extents(label)
+            name_x = left + (right - left - ext.width) / 2
+        cr.move_to(name_x, y + 18)
         cr.show_text(label)
 
         cr.set_source_rgba(*COLOR_TEXT_MUTED)

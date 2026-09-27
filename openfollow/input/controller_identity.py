@@ -41,7 +41,11 @@ def resolve_key(node: str | None, *, sysfs_root: Path | None = None) -> str | No
         device = _class_device(Path(node).name, sysfs_root)
         if device is None:
             return None
-        return _usb_key(device, sysfs_root) or _bluetooth_key(device)
+        # A Bluetooth pad behind a USB radio sits under that radio's USB device;
+        # the radio's socket is not the pad's.
+        if "bluetooth" in device.parts:
+            return _bluetooth_key(device)
+        return _usb_key(device, sysfs_root)
     except OSError:
         return None
 
@@ -69,8 +73,6 @@ def _usb_key(device: Path, sysfs_root: Path) -> str | None:
 
 
 def _bluetooth_key(device: Path) -> str | None:
-    if "bluetooth" not in device.parts:
-        return None
     for node in (device, *device.parents):
         uniq = node / "uniq"
         if uniq.is_file():

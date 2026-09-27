@@ -10,6 +10,7 @@ re-reads the saved file to confirm persistence.
 
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -277,6 +278,7 @@ _SLOT_ITEMS = [
         "connected": False,
         "marker_id": 10,
         "port_label": "USB 2 · port 1",
+        "slot_ref": "gamepad|usb:h:1|GameSir|missing",
         "seconds_since_input": None,
     },
     {
@@ -287,6 +289,7 @@ _SLOT_ITEMS = [
         "connected": True,
         "marker_id": 11,
         "port_label": "USB 1 · port 2",
+        "slot_ref": 'mouse3d|usb:h:2|Space "Navigator" <1>|connected',
         "seconds_since_input": 0.2,
     },
     {
@@ -354,12 +357,18 @@ def test_no_controllers_says_so(slots_server) -> None:
 
 
 @pytest.mark.parametrize(("action", "index"), [("identify", 1), ("forget", 0)])
-def test_slot_actions_are_queued_for_the_main_loop(slots_server, action: str, index: int) -> None:
+def test_slot_actions_are_queued_with_the_slot_the_row_showed(slots_server, action: str, index: int) -> None:
     server, base, _ = slots_server
-    status, body = _post_form(base, f"/section/controller_slots/{action}/{index}", {})
+    _, table = _get(base, "/section/controller_slots")
+    row = _row(table, f"C{index + 1}")
+    ref = _SLOT_ITEMS[index]["slot_ref"]
+    button = row[row.index(f'hx-post="/section/controller_slots/{action}/{index}"') :]
+    vals = button[button.index("hx-vals='") + len("hx-vals='") :]
+    assert json.loads(html.unescape(vals[: vals.index("'")])) == {"ref": ref}
+    status, body = _post_form(base, f"/section/controller_slots/{action}/{index}", {"ref": ref})
     assert status == 200
     assert "slot-table" in body
-    assert server._command_queue.consume_slot_actions() == [(action, index)]
+    assert server._command_queue.consume_slot_actions() == [(action, index, ref)]
 
 
 @pytest.mark.parametrize("path", ["/section/controller_slots/delete/0", "/section/controller_slots/identify/one"])

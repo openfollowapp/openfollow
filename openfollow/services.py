@@ -208,9 +208,10 @@ class WebCommandQueue:
         self._button_detection_cancel_requested = threading.Event()
         self._button_detection_active = threading.Event()
         # Controller-slot actions from the web (identify / forget, by slot
-        # index), drained on the main loop, which owns the slots.
+        # index plus the slot reference the row showed), drained on the main
+        # loop, which owns the slots.
         self._slot_actions_lock = threading.Lock()
-        self._slot_actions: list[tuple[str, int]] = []
+        self._slot_actions: list[tuple[str, int, str]] = []
         self._update_lock = threading.Lock()
         self._update_request: dict[str, str] | None = None
         self._update_status: dict[str, str] = {
@@ -276,12 +277,12 @@ class WebCommandQueue:
     def request_button_detection(self) -> None:
         self._button_detection_requested.set()
 
-    def request_slot_action(self, action: str, index: int) -> None:
-        """Queue ``identify`` or ``forget`` for the controller slot at ``index``."""
+    def request_slot_action(self, action: str, index: int, ref: str) -> None:
+        """Queue ``identify`` or ``forget`` for the slot at ``index`` that showed ``ref``."""
         with self._slot_actions_lock:
-            self._slot_actions.append((action, index))
+            self._slot_actions.append((action, index, ref))
 
-    def consume_slot_actions(self) -> list[tuple[str, int]]:
+    def consume_slot_actions(self) -> list[tuple[str, int, str]]:
         """Take every queued controller-slot action, oldest first."""
         with self._slot_actions_lock:
             actions, self._slot_actions = self._slot_actions, []
@@ -2915,6 +2916,7 @@ class AppRuntimeServices:
                         "backend": str(item["backend"]),
                         "port_label": str(item.get("port_label", "")),
                         "port_key": item.get("port_key"),
+                        "slot_ref": str(item.get("slot_ref", "")),
                         "seconds_since_input": None if since is None else float(since),
                     }
                 )

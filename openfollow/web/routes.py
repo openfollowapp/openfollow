@@ -4443,7 +4443,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/controller_slots/<action:re:identify|forget>/<index:int>")
     def controller_slot_action(action: str, index: int) -> Any:
         """Queue Identify / Forget for one slot; the main loop, which owns the slots, runs it."""
-        server.request_slot_action(action, index)
+        server.request_slot_action(action, index, request.forms.get("ref", ""))
         return template(
             "partials/controller_slots_table", controllers=server.get_runtime_stats().get("controllers", {})
         )

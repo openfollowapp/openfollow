@@ -273,11 +273,11 @@ class TestThisStationToggle:
         assert "if (state !== 'hide') viewer.push(id);" in body
 
     def test_the_add_row_saves_its_choice_with_the_new_marker(self) -> None:
+        """Hide is saved too: re-adding a deleted id must clear a selection the
+        delete's best-effort prune could not write."""
         body = _render_marker()
-        assert (
-            "if (root && chosen && chosen.value !== 'hide') postSelection(root, null, {id: id, state: chosen.value});"
-            in body
-        )
+        assert "if (root && chosen) postSelection(root, null, {id: id, state: chosen.value});" in body
+        assert "chosen.value !== 'hide'" not in body
 
     def test_saves_run_one_at_a_time_and_read_the_toggles_when_sent(self) -> None:
         """Each save posts the whole selection, and the server runs requests in

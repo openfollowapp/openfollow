@@ -512,7 +512,8 @@
                 idIn.value = '';
                 const root = document.getElementById('marker-catalog-root');
                 const chosen = tr.querySelector('input[data-this-station]:checked');
-                if (root && chosen && chosen.value !== 'hide') postSelection(root, null, {id: id, state: chosen.value});
+                // Hide is saved too: a re-added id may still be selected from before its delete.
+                if (root && chosen) postSelection(root, null, {id: id, state: chosen.value});
                 tr.querySelector('input[data-this-station][value="hide"]').checked = true;
                 if (root) {
                     fetch('/api/markers/catalog')

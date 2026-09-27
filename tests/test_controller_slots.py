@@ -226,18 +226,6 @@ def test_a_slot_ref_changes_with_whatever_the_row_shows() -> None:
     assert slot_ref(table.slots[0]) not in (connected, missing)
 
 
-# -- rebuild -----------------------------------------------------------------
-
-
-def test_rebuild_starts_over_from_port_order() -> None:
-    table = frozen(pad(0, "usb:h:1"), pad(1, "usb:h:2"))
-    table.update([pad(1, "usb:h:2")], settled=True)
-    table.rebuild()
-    assert table.seeding
-    table.update([pad(1, "usb:h:2")], settled=True)
-    assert layout(table) == [("gamepad", 1, CONNECTED)]
-
-
 # -- property ----------------------------------------------------------------
 
 _DEVICES = [pad(i, f"usb:h:{i + 1}") for i in range(4)] + [puck(0, "usb:h:9"), pad(10, None)]

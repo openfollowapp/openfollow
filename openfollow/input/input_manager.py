@@ -116,7 +116,6 @@ class InputManager:
         # main loop only, read from any thread via ``_controller_slots``.
         self._clock = time.monotonic
         self._slot_table = ControllerSlotTable()
-        self._slot_kinds_enabled = self._kinds_enabled()
         self._usb_hosts = usb_host_paths()
         # (slot index, clock time it started) of the latest Identify.
         self._identify_flash: tuple[int, float] | None = None
@@ -185,11 +184,11 @@ class InputManager:
             return None
         return server.get_marker(marker_id)
 
-    def _kinds_enabled(self) -> tuple[bool, bool]:
-        return (bool(self.app._config.controller.enabled), bool(self.app._config.mouse3d.enabled))
-
     def _live_controllers(self) -> list[LiveController]:
-        """Controllers attached now, of every kind that is switched on."""
+        """Controllers attached now, of every kind that is switched on.
+
+        A kind switched off leaves its slots missing, like unplugged devices.
+        """
         live: list[LiveController] = []
         if self.app._config.controller.enabled:
             for idx, (key, name) in self.gamepad_handler.device_identities().items():
@@ -202,11 +201,6 @@ class InputManager:
 
     def _refresh_slots(self) -> tuple[SlotEntry, ...]:
         """Fold this frame's controllers into the slot table (main loop only)."""
-        kinds = self._kinds_enabled()
-        if kinds != self._slot_kinds_enabled:
-            # Switching a controller kind on or off is a deliberate reconfiguration.
-            self._slot_kinds_enabled = kinds
-            self._slot_table.rebuild()
         settled = self.mouse3d_manager.initial_scan_settled()
         if self._slot_table.update(self._live_controllers(), settled=settled):
             logger.info("Controller slots: %s", self._describe_slots())

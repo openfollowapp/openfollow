@@ -705,8 +705,9 @@ or 3 s), then frozen:
   slot), else appends;
 - **Forget** (web) makes a missing slot **reserved**: it keeps its place,
   drives no marker, raises no warning;
-- switching gamepads or the 3D mouse on or off rebuilds from port order, and
-  a disabled kind holds no slots.
+- switching gamepads or the 3D mouse off leaves that kind's slots missing,
+  alarms included, and nobody else moves; switched back on, each device
+  reclaims its own slot. A kind that is off at startup holds no slots.
 
 Nothing persists: every start numbers by socket again. 3D mice carry
 session-unique instance ids (like SDL's), so a puck keeps its id while a

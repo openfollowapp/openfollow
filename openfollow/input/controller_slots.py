@@ -96,11 +96,6 @@ class ControllerSlotTable:
     def seeding(self) -> bool:
         return self._seeding
 
-    def rebuild(self) -> None:
-        """Start over from port order, e.g. after a controller kind is switched on or off."""
-        self._seeding = True
-        self._seed_started = self._clock()
-
     def update(self, live: Sequence[LiveController], *, settled: bool) -> bool:
         """Fold this frame's attached controllers in; True when the slots changed.
 

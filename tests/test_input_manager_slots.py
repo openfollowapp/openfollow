@@ -77,9 +77,12 @@ class _Pads:
 class _Pucks:
     """3D mice by instance id."""
 
+    settled_at_start = True
+    initial: dict[int, Mouse3DDeviceInfo] = {}
+
     def __init__(self, config: Any, *, backend: Any = None) -> None:
-        self.devices: dict[int, Mouse3DDeviceInfo] = {}
-        self.settled = True
+        self.devices: dict[int, Mouse3DDeviceInfo] = dict(self.initial)
+        self.settled = self.settled_at_start
         self.inputs: dict[int, float] = {}
         self.leds_ok = True
         self.identified: list[int] = []
@@ -241,22 +244,43 @@ def test_on_a_single_slot_station_a_puck_takes_over_from_a_pad(station) -> None:
     assert [(c["kind"], c["state"]) for c in info] == [("mouse3d", "connected")]
 
 
-def test_switching_gamepads_off_rebuilds_the_slots(station) -> None:
+def _slots(manager: InputManager) -> list[tuple[str, str, int | None]]:
+    return [(c["kind"], c["state"], c["marker_id"]) for c in manager.get_controller_info()]
+
+
+def test_switching_gamepads_off_leaves_their_slots_missing_and_nobody_moves(station) -> None:
     manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")}, mouse3d__enabled=True)
     manager.mouse3d_manager.devices[0] = Mouse3DDeviceInfo(path="/dev/hidraw0", port_key=_key("3"))
     manager.update(0.016)
     app._config.controller.enabled = False
     manager.update(0.016)
-    assert [(c["kind"], c["state"]) for c in manager.get_controller_info()] == [("mouse3d", "connected")]
+    assert _slots(manager) == [("gamepad", "missing", 10), ("gamepad", "missing", 11), ("mouse3d", "connected", 12)]
     app._config.controller.enabled = True
     manager.update(0.016)
-    assert [c["kind"] for c in manager.get_controller_info()] == ["gamepad", "gamepad", "mouse3d"]
+    assert _slots(manager) == [
+        ("gamepad", "connected", 10),
+        ("gamepad", "connected", 11),
+        ("mouse3d", "connected", 12),
+    ]
 
 
-def test_slots_wait_for_the_3d_mouse_scan_before_freezing(station) -> None:
+def test_switching_the_3d_mouse_off_keeps_a_missing_pad_and_the_pad_behind_it(station, monkeypatch) -> None:
+    monkeypatch.setattr(_Pucks, "initial", {0: Mouse3DDeviceInfo(path="/dev/hidraw0", port_key=_key("1"))})
+    manager, app = station({0: (_key("2"), "First"), 1: (_key("3"), "Second")}, mouse3d__enabled=True)
+    assert [c["kind"] for c in manager.get_controller_info()] == ["mouse3d", "gamepad", "gamepad"]
+    del manager.gamepad_handler.pads[0]
+    manager.update(0.016)
+    app._config.mouse3d.enabled = False
+    manager.update(0.016)
+    assert _slots(manager) == [("mouse3d", "missing", 10), ("gamepad", "missing", 11), ("gamepad", "connected", 12)]
+    app._config.mouse3d.enabled = True
+    manager.update(0.016)
+    assert _slots(manager) == [("mouse3d", "connected", 10), ("gamepad", "missing", 11), ("gamepad", "connected", 12)]
+
+
+def test_slots_wait_for_the_3d_mouse_scan_before_freezing(station, monkeypatch) -> None:
+    monkeypatch.setattr(_Pucks, "settled_at_start", False)
     manager, _ = station({0: (_key("2"), "Pad")}, mouse3d__enabled=True)
-    manager.mouse3d_manager.settled = False
-    manager._slot_table.rebuild()
     manager.update(0.016)
     manager.mouse3d_manager.devices[4] = Mouse3DDeviceInfo(path="/dev/hidraw0", port_key=_key("1"))
     manager.mouse3d_manager.settled = True

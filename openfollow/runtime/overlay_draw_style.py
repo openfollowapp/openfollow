@@ -46,6 +46,12 @@ COLOR_WARNING_BORDER = (0.69, 0.149, 0.149)  # #b02626 (RGB)
 FONT_UI_FAMILY = "Inter"
 
 
+# One corner radius per nesting level, so an inner corner is never rounder than its container.
+MODAL_RADIUS = 14.0
+PANEL_RADIUS = 6.0
+ROW_RADIUS = 4.0
+
+
 def draw_rounded_rect(cr: Any, x: float, y: float, w: float, h: float, radius: float) -> None:
     """Draw a rounded rectangle path on the given Cairo context."""
     if radius <= 0:
@@ -91,7 +97,7 @@ def draw_warning_sign(cr: Any, cx: float, cy: float, size: float = 13.0) -> None
     cr.restore()
 
 
-def draw_card_background(cr: Any, x: float, y: float, w: float, h: float, radius: float = 10.0) -> None:
+def draw_card_background(cr: Any, x: float, y: float, w: float, h: float, radius: float = PANEL_RADIUS) -> None:
     """Translucent card fill + soft 1px border – the shared overlay-card chrome.
 
     Used by the operator-message cards and every HUD panel (help, bottom-left

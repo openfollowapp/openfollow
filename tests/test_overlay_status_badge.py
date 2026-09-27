@@ -22,6 +22,7 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_TEXT,
     COLOR_WARNING_BORDER,
     COLOR_WARNING_FILL,
+    PANEL_RADIUS,
 )
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.runtime.overlay_status_badge import (
@@ -37,8 +38,7 @@ from tests._fake_cairo import FakeCairo, FakeRenderer
 
 pytestmark = pytest.mark.unit
 
-# Must match the radius _draw_warning_row passes to draw_rounded_rect.
-_ROW_RADIUS = 8.0
+_ROW_RADIUS = PANEL_RADIUS
 # The badge sits 10 px from the frame's right edge (matches the stats panel).
 _GUTTER = 10.0
 

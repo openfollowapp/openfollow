@@ -12,6 +12,7 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_TEXT,
     COLOR_WARNING_BORDER,
     COLOR_WARNING_FILL,
+    PANEL_RADIUS,
     draw_rounded_rect,
     draw_warning_sign,
 )
@@ -111,7 +112,7 @@ def _draw_warning_row(
     green wash with a filled dot. The overflow row reuses it.
     """
     info = severity == "info"
-    radius = 8.0
+    radius = PANEL_RADIUS
     draw_rounded_rect(cr, x, y, w, h, radius)
     if info:
         cr.set_source_rgba(*COLOR_OK, 0.20)

@@ -22,6 +22,7 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_BORDER,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
+    PANEL_RADIUS,
     draw_card_background,
     parse_hex,
 )
@@ -32,7 +33,7 @@ _MARGIN = 24.0  # gap from the top/bottom screen edge
 _MAX_CARD_W = 460.0
 _CARD_W_FRACTION = 0.6  # of surface width, clamped to _MAX_CARD_W
 _PAD = 12.0
-_RADIUS = 10.0
+_RADIUS = PANEL_RADIUS
 _GAP = 8.0  # between stacked cards / the overflow line
 
 _MSG_SIZE = 11.0

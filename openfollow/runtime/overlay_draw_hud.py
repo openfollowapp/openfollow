@@ -23,6 +23,9 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_TEXT_MUTED,
     COLOR_WARNING_BORDER,
     COLOR_WARNING_FILL,
+    MODAL_RADIUS,
+    PANEL_RADIUS,
+    ROW_RADIUS,
     draw_card_background,
     draw_rounded_rect,
     draw_warning_sign,
@@ -144,9 +147,9 @@ def draw_modal_shell(
     panel_x, panel_y = panel_layout.x, panel_layout.y
     panel_w, panel_h = panel_layout.width, panel_layout.height
 
-    draw_panel_background(renderer, cr, panel_x, panel_y, panel_w, panel_h, radius=14)
+    draw_panel_background(renderer, cr, panel_x, panel_y, panel_w, panel_h, radius=MODAL_RADIUS)
     cr.set_source_rgba(*COLOR_BORDER_SOFT)
-    draw_rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, 14)
+    draw_rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, MODAL_RADIUS)
     cr.set_line_width(1.0)
     cr.stroke()
 
@@ -199,11 +202,11 @@ def draw_selectable_list(
     h: float,
     empty_message: str,
 ) -> None:
-    draw_rounded_rect(cr, x, y, w, h, 10.0)
+    draw_rounded_rect(cr, x, y, w, h, PANEL_RADIUS)
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.26)
     cr.fill()
     cr.set_source_rgba(*COLOR_BORDER_SOFT)
-    draw_rounded_rect(cr, x, y, w, h, 10.0)
+    draw_rounded_rect(cr, x, y, w, h, PANEL_RADIUS)
     cr.set_line_width(1.0)
     cr.stroke()
 
@@ -234,10 +237,10 @@ def draw_selectable_list(
         is_selected = item_idx == selected_idx
         if is_selected:
             cr.set_source_rgba(*COLOR_ACCENT_SOFT)
-            draw_rounded_rect(cr, row_x, row_y, row_w, row_h, 7.0)
+            draw_rounded_rect(cr, row_x, row_y, row_w, row_h, ROW_RADIUS)
             cr.fill()
             cr.set_source_rgba(COLOR_ACCENT[0], COLOR_ACCENT[1], COLOR_ACCENT[2], 0.42)
-            draw_rounded_rect(cr, row_x, row_y, row_w, row_h, 7.0)
+            draw_rounded_rect(cr, row_x, row_y, row_w, row_h, ROW_RADIUS)
             cr.set_line_width(1.1)
             cr.stroke()
             renderer._set_ui_font(cr, 12, bold=True)
@@ -297,7 +300,7 @@ def draw_selection_menu(
     help_h = help_sections_height(help_secs)
     if help_h > 0:
         block_h = help_h + 14.0
-        draw_panel_background(renderer, cr, content_x, cursor_y, content_w, block_h, radius=10)
+        draw_panel_background(renderer, cr, content_x, cursor_y, content_w, block_h, radius=PANEL_RADIUS)
         draw_help_block(
             renderer,
             cr,
@@ -463,7 +466,7 @@ def draw_url_editor(
     box_y = panel_y + 84.0
     box_w = panel_w - 48.0
     box_h = 56.0
-    draw_panel_background(renderer, cr, box_x, box_y, box_w, box_h, radius=10)
+    draw_panel_background(renderer, cr, box_x, box_y, box_w, box_h, radius=PANEL_RADIUS)
 
     renderer._set_ui_font(cr, 18.0)
     cr.set_source_rgba(*COLOR_TEXT)
@@ -564,7 +567,7 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
             cursor_y,
             content_w,
             block_h,
-            radius=10,
+            radius=PANEL_RADIUS,
         )
         draw_help_block(
             renderer,
@@ -668,7 +671,7 @@ def _draw_settings_info_card(
         rows.append(("Unbound controllers:", joined))
     row_h = 20.0
     card_h = row_h * len(rows) + 14.0
-    draw_panel_background(renderer, cr, x, y, w, card_h, radius=10)
+    draw_panel_background(renderer, cr, x, y, w, card_h, radius=PANEL_RADIUS)
     row_y = y + 17.0
     label_w = 110.0
     for label, value in rows:
@@ -722,11 +725,11 @@ def _draw_settings_error_box(
         body_h += 4.0
     card_h = pad * 2 + title_size + 6.0 + body_h
 
-    draw_rounded_rect(cr, x, y, w, card_h, 10.0)
+    draw_rounded_rect(cr, x, y, w, card_h, PANEL_RADIUS)
     cr.set_source_rgba(*COLOR_WARNING_FILL)
     cr.fill()
     cr.set_source_rgb(*COLOR_WARNING_BORDER)
-    draw_rounded_rect(cr, x, y, w, card_h, 10.0)
+    draw_rounded_rect(cr, x, y, w, card_h, PANEL_RADIUS)
     cr.set_line_width(2.0)
     cr.stroke()
 
@@ -968,7 +971,7 @@ def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> Non
             panel_y = icon_y + icon_size + 4.0
             panel_w = max(160.0, min(220.0, w - 20.0))
             panel_h = help_h + 20.0
-            draw_panel_background(renderer, cr, panel_x, panel_y, panel_w, panel_h, radius=11)
+            draw_panel_background(renderer, cr, panel_x, panel_y, panel_w, panel_h, radius=PANEL_RADIUS)
             draw_help_block(
                 renderer,
                 cr,
@@ -1081,15 +1084,15 @@ def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: 
     # condition for the Settings menu's red-bordered error box.
     in_error = bool(state.settings_menu_banner or state.error_message or state.video_failure_text)
     if in_error:
-        draw_rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, 11)
+        draw_rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, PANEL_RADIUS)
         cr.set_source_rgba(*COLOR_WARNING_FILL)
         cr.fill()
         cr.set_source_rgb(*COLOR_WARNING_BORDER)
-        draw_rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, 11)
+        draw_rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, PANEL_RADIUS)
         cr.set_line_width(1.6)
         cr.stroke()
     else:
-        draw_panel_background(renderer, cr, panel_x, panel_y, panel_w, panel_h, radius=11)
+        draw_panel_background(renderer, cr, panel_x, panel_y, panel_w, panel_h, radius=PANEL_RADIUS)
 
     row1_y = panel_y + 20
     row2_y = panel_y + 40
@@ -1125,7 +1128,9 @@ def draw_system_stats(renderer: Any, cr: Any, state: OverlayState, w: int) -> No
     draw_panel(renderer, cr, panel_x, 10, panel_w, panel_h, stats_text, 11)
 
 
-def draw_panel_background(renderer: Any, cr: Any, x: float, y: float, w: float, h: float, radius: float = 10) -> None:
+def draw_panel_background(
+    renderer: Any, cr: Any, x: float, y: float, w: float, h: float, radius: float = PANEL_RADIUS
+) -> None:
     # Shared overlay-card chrome (translucent fill + soft border) so every
     # panel reads in the same visual language as the operator-message cards.
     draw_card_background(cr, x, y, w, h, radius)
@@ -1171,7 +1176,7 @@ def draw_marker_card(
     selected: bool,
     state: OverlayState | None = None,
 ) -> None:
-    radius = 10
+    radius = PANEL_RADIUS
 
     # Viewer-only markers: use Cairo group for uniform alpha; skip grouping for controlled markers (hot path).
     use_group = not t.is_controlled
@@ -1379,7 +1384,7 @@ def draw_virtual_fader_card(
       "(not picked up)" suffix when the fader's pickup gate
       hasn't engaged yet.
     """
-    draw_panel_background(renderer, cr, x, y, w, h, radius=8)
+    draw_panel_background(renderer, cr, x, y, w, h, radius=PANEL_RADIUS)
 
     # baseline-ish; matches the marker card's internal vertical rhythm.
     text_y = y + h * 0.65
@@ -1599,7 +1604,7 @@ def draw_pi_network_screen(
     if net.banner:
         bar_h = 36.0
         cr.set_source_rgba(0.13, 0.13, 0.17, 0.95)
-        draw_rounded_rect(cr, content_x, cursor_y, content_w, bar_h, 8.0)
+        draw_rounded_rect(cr, content_x, cursor_y, content_w, bar_h, ROW_RADIUS)
         cr.fill()
         renderer._set_ui_font(cr, 12, bold=True)
         cr.set_source_rgba(*COLOR_TEXT)
@@ -1611,11 +1616,11 @@ def draw_pi_network_screen(
     # Container panel for the row list.
     list_y = cursor_y
     list_h = max(160.0, panel_y + panel_h - cursor_y - 14.0)
-    draw_rounded_rect(cr, content_x, list_y, content_w, list_h, 10.0)
+    draw_rounded_rect(cr, content_x, list_y, content_w, list_h, PANEL_RADIUS)
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.26)
     cr.fill()
     cr.set_source_rgba(*COLOR_BORDER_SOFT)
-    draw_rounded_rect(cr, content_x, list_y, content_w, list_h, 10.0)
+    draw_rounded_rect(cr, content_x, list_y, content_w, list_h, PANEL_RADIUS)
     cr.set_line_width(1.0)
     cr.stroke()
 
@@ -1651,17 +1656,17 @@ def draw_pi_network_screen(
             box_h = action_row_h
             if is_selected:
                 cr.set_source_rgba(*COLOR_ACCENT_SOFT)
-                draw_rounded_rect(cr, box_x, row_y, box_w, box_h, 7.0)
+                draw_rounded_rect(cr, box_x, row_y, box_w, box_h, ROW_RADIUS)
                 cr.fill()
                 cr.set_source_rgba(COLOR_ACCENT[0], COLOR_ACCENT[1], COLOR_ACCENT[2], 0.42)
-                draw_rounded_rect(cr, box_x, row_y, box_w, box_h, 7.0)
+                draw_rounded_rect(cr, box_x, row_y, box_w, box_h, ROW_RADIUS)
                 cr.set_line_width(1.1)
                 cr.stroke()
                 renderer._set_ui_font(cr, 12, bold=True)
                 cr.set_source_rgb(*COLOR_TEXT)
             else:
                 cr.set_source_rgba(0.18, 0.18, 0.22, 0.7)
-                draw_rounded_rect(cr, box_x, row_y, box_w, box_h, 7.0)
+                draw_rounded_rect(cr, box_x, row_y, box_w, box_h, ROW_RADIUS)
                 cr.fill()
                 renderer._set_ui_font(cr, 12)
                 cr.set_source_rgba(*COLOR_TEXT)
@@ -1676,7 +1681,7 @@ def draw_pi_network_screen(
         is_selected = idx == selected_idx
         if is_selected:
             cr.set_source_rgba(*COLOR_ACCENT_SOFT)
-            draw_rounded_rect(cr, inner_x, row_y - 2.0, inner_w, data_row_h, 6.0)
+            draw_rounded_rect(cr, inner_x, row_y - 2.0, inner_w, data_row_h, ROW_RADIUS)
             cr.fill()
         label_x = inner_x + 14.0
         value_x = inner_x + 180.0
@@ -1804,7 +1809,7 @@ def draw_pi_network_field_edit(
     box_w = panel_w - 48.0
     box_h = 52.0
     cr.set_source_rgba(0.12, 0.12, 0.16, 0.95)
-    draw_rounded_rect(cr, box_x, box_y, box_w, box_h, 10.0)
+    draw_rounded_rect(cr, box_x, box_y, box_w, box_h, PANEL_RADIUS)
     cr.fill()
 
     renderer._set_ui_font(cr, 18.0)

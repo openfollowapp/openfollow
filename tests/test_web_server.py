@@ -10,6 +10,7 @@ re-reads the saved file to confirm persistence.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -18,6 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import wsgiref.util
 
 import pytest
 
@@ -5965,6 +5967,44 @@ def test_a_refused_unlock_says_why_on_the_login_page(pin_protected_server) -> No
     assert f"Not logged in. {_REFUSED_SENTENCE}" in body
     assert "You can&#039;t log in or save here." in body
     assert "Set-Cookie" not in response_headers
+
+
+def _refused_login_post(tmp_path, declared_length: int, body: bytes) -> tuple[str, io.BytesIO]:
+    """POST the login form through a refused name straight into the WSGI app."""
+    server = ConfigWebServer(config_path=str(tmp_path / "config.toml"))
+    stream = io.BytesIO(body)
+    environ: dict[str, object] = {}
+    wsgiref.util.setup_testing_defaults(environ)
+    environ.update(
+        {
+            "REQUEST_METHOD": "POST",
+            "PATH_INFO": "/login",
+            "CONTENT_TYPE": "application/x-www-form-urlencoded",
+            "CONTENT_LENGTH": str(declared_length),
+            "HTTP_ORIGIN": _REFUSED_ORIGIN,
+            "HTTP_SEC_FETCH_MODE": "navigate",
+            "SERVER_ADDR": "192.0.2.10",
+            "wsgi.input": stream,
+        }
+    )
+    status: list[str] = []
+    b"".join(server._app(environ, lambda s, _headers, _exc=None: status.append(s)))
+    return status[0], stream
+
+
+def test_a_refusal_reads_the_body_first_so_closing_does_not_reset_its_answer(tmp_path) -> None:
+    # Closing a connection with unread request data resets it, which can drop
+    # the refusal before the browser reads it.
+    body = b"pin=sekret"
+    status, stream = _refused_login_post(tmp_path, len(body), body)
+    assert status.startswith("403")
+    assert stream.tell() == len(body)
+
+
+def test_a_refusal_does_not_read_a_body_past_the_pre_auth_cap(tmp_path) -> None:
+    status, stream = _refused_login_post(tmp_path, peer_auth.MAX_SIGNED_BODY_SIZE + 1, b"pin=sekret")
+    assert status.startswith("403")
+    assert stream.tell() == 0
 
 
 def test_the_refused_name_is_escaped(live_server) -> None:

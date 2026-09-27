@@ -413,7 +413,8 @@ def test_statistics_name_each_missing_controller(slots_server) -> None:
     _, base, _ = slots_server
     _, body = _get(base, "/section/statistics")
     assert "1 connected · 1 missing" in body
-    box = body[body.index('<div class="notice error" role="alert">') :]
+    # No role: the panel is swapped every second, and the announcer speaks the box.
+    box = body[body.index('<div class="notice error">') :]
     assert box.index("<div>C1 missing · marker 10 · GameSir (USB 2 · port 1)</div>") < box.index("</div>\n")
 
 
@@ -760,6 +761,8 @@ def test_video_source_failure_fragment_carries_the_box(live_server, monkeypatch)
     assert "Check the camera is powered." in body
     # Its own id namespace, or the Statistics poll steals the node.
     assert 'id="video-error-source-' in body
+    # The same polite live region as the section's own render of the box.
+    assert 'role="status" aria-live="polite" aria-atomic="true"' in body
     # The pipeline's own wording is not shown where there is a classification.
     assert "Could not open resource." not in body
 

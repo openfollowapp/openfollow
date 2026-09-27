@@ -4605,7 +4605,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             action=action,
             token=token,
             scope="source",
-            assertive=False,
+            live="status",
         )
 
     @app.get("/section/general/network_state")

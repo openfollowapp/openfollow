@@ -158,3 +158,11 @@ def test_the_announcer_sits_outside_the_panel_it_speaks_for(status_server) -> No
     assert "statistics-section" in parser.found
     announcer = page.index('id="statistics-alerts"')
     assert "C1 missing · GameSir" in page[announcer : page.index("</div>", announcer)]
+
+
+def test_the_announcer_swaps_only_itself(status_server) -> None:
+    base, _ = status_server
+    _, page = _request(base, "/")
+    start = page.index('<div id="statistics-alerts"')
+    tag = page[start : page.index(">", start)]
+    assert 'hx-target="this"' in tag

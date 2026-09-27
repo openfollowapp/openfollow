@@ -4,7 +4,7 @@
 % from openfollow.web.live_alerts import statistics_alerts
 % alerts = statistics_alerts(stats)
 <div id="statistics-alerts" class="visually-hidden" role="alert" aria-live="assertive" aria-atomic="true"
-     hx-get="/section/statistics/alerts?key={{alerts.key()}}" hx-trigger="every 1s" hx-swap="outerHTML">
+     hx-get="/section/statistics/alerts?key={{alerts.key()}}" hx-trigger="every 1s" hx-target="this" hx-swap="outerHTML">
 % for line in alerts.spoken():
     <p>{{line}}</p>
 % end

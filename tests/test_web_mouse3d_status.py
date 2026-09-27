@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+from html.parser import HTMLParser
 from typing import Any
 
 import pytest
@@ -122,3 +123,42 @@ def test_the_section_renders_the_block_above_its_form() -> None:
     )
     assert html.index('id="mouse3d-status"') < html.index('name="enabled"')
     assert "is not supported by this version of OpenFollow." in html
+
+
+class _EffectiveTarget(HTMLParser):
+    """The ``hx-target`` htmx resolves for the element polling ``path``: its own, else inherited."""
+
+    _VOID = {"br", "hr", "img", "input", "link", "meta"}
+
+    def __init__(self, path: str) -> None:
+        super().__init__()
+        self._path = path
+        self._targets: list[str | None] = []
+        self.target: str | None = None
+        self.found = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        a = dict(attrs)
+        own = a.get("hx-target")
+        if (a.get("hx-get") or "").startswith(self._path) and not self.found:
+            self.found = True
+            inherited = next((t for t in reversed(self._targets) if t is not None), None)
+            self.target = own if own is not None else inherited
+        if tag not in self._VOID:
+            self._targets.append(own)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag not in self._VOID and self._targets:
+            self._targets.pop()
+
+
+def test_the_poll_swaps_only_itself_inside_the_sections_form() -> None:
+    """The form targets the whole section for Save; a poll that inherited that
+    target would replace the section with the status block."""
+    html = template(
+        "partials/mouse3d", config=AppConfig(), mouse3d_status=_block(devices=[_device(DeviceState.NO_PROFILE)])
+    )
+    parser = _EffectiveTarget("/section/mouse3d/status")
+    parser.feed(html)
+    assert parser.found
+    assert parser.target == "this"

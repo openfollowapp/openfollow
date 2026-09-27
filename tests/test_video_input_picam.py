@@ -66,18 +66,19 @@ class TestDiscoverCameras:
     def test_lists_each_camera_by_id_and_model(self) -> None:
         gst = _gst_with_cameras(
             [
+                # Camera Module 3 Wide: libcamera's model is not the node name.
                 _FakeDevice(
-                    "/base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36",
-                    "camera-properties, api.libcamera.Location=(int)2, api.libcamera.Model=(string)ov5647, "
+                    "/base/axi/pcie@1000120000/rp1/i2c@88000/imx708@1a",
+                    "camera-properties, api.libcamera.Location=(int)2, api.libcamera.Model=(string)imx708_wide, "
                     "api.libcamera.Rotation=(int)0",
                 ),
-                _FakeDevice("/base/axi/pcie@1000120000/rp1/i2c@80000/imx708@1a", "camera-properties"),
+                _FakeDevice("/base/axi/pcie@1000120000/rp1/i2c@80000/ov5647@36", "camera-properties"),
             ]
         )
         assert _discover(gst) == [
-            {"model": "ov5647", "path": "/base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36"},
+            {"model": "imx708_wide", "path": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx708@1a"},
             # No model property: the sensor node name stands in.
-            {"model": "imx708", "path": "/base/axi/pcie@1000120000/rp1/i2c@80000/imx708@1a"},
+            {"model": "ov5647", "path": "/base/axi/pcie@1000120000/rp1/i2c@80000/ov5647@36"},
         ]
         assert gst.finds == ["libcameraprovider"]
 

@@ -31,6 +31,7 @@ from openfollow.configuration import (
     MidiPatch,
     OscDestinationConfig,
     OscTransmitterConfig,
+    OscTransmittersConfig,
     StreamTrigger,
     VirtualFaderConfig,
     VirtualFadersConfig,
@@ -847,6 +848,29 @@ def test_effective_default_marker_id_resolution() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("marker_id", "name", "label"),
+    [
+        (5, "Lead", "Lead (5)"),
+        (5, None, "Marker 5"),
+        (5, "Marker 5", "Marker 5"),
+        (5, "Truss 5 SL", "Truss 5 SL"),
+        (5, "Lead 15", "Lead 15 (5)"),
+        (15, "Lead 5", "Lead 5 (15)"),
+        (5, "  ", "Marker 5"),
+    ],
+)
+def test_a_marker_label_names_its_id_once(marker_id: int, name: str | None, label: str) -> None:
+    """A name that already carries the id as a whole number is not followed by it again."""
+    cfg = AppConfig(
+        controlled_marker_ids=[marker_id],
+        osc_transmitters=OscTransmittersConfig(transmitters=[OscTransmitterConfig(id="r1", markers=[str(marker_id)])]),
+    )
+    catalog = _FakeCatalog({} if name is None else {marker_id: name})
+    assert _osc_binding_marker_display(cfg, catalog)["r1"]["header"] == label
+
+
 def test_marker_display_multi_marker_all_nested() -> None:
     """A row with >1 markers nests every marker (primary included) as a chip
     – no header badge – so they read uniformly."""
@@ -862,7 +886,7 @@ def test_marker_display_multi_marker_all_nested() -> None:
     display = _osc_binding_marker_display(cfg, catalog)
     assert display["r1"]["header"] is None
     assert display["r1"]["nested"] == [
-        {"label": "Marker 1 (1)", "controlled": True},
+        {"label": "Marker 1", "controlled": True},
         {"label": "Sänger (3)", "controlled": True},
         {"label": "Gitarre (7)", "controlled": True},
     ]
@@ -886,7 +910,7 @@ def test_marker_display_single_marker_uses_header() -> None:
     )
     display = _osc_binding_marker_display(cfg, _FakeCatalog({1: "Lead"}))
     assert display["ok"] == {"header": "Lead (1)", "nested": [], "markers_unusable": False}
-    assert display["bad"] == {"header": "Marker 5 (5)", "nested": [], "markers_unusable": True}
+    assert display["bad"] == {"header": "Marker 5", "nested": [], "markers_unusable": True}
 
 
 @pytest.mark.unit
@@ -904,8 +928,8 @@ def test_marker_display_multi_marker_flags_uncontrolled_chip() -> None:
     display = _osc_binding_marker_display(cfg, _FakeCatalog({}))
     assert display["r1"]["header"] is None
     assert display["r1"]["nested"] == [
-        {"label": "Marker 1 (1)", "controlled": True},
-        {"label": "Marker 5 (5)", "controlled": False},
+        {"label": "Marker 1", "controlled": True},
+        {"label": "Marker 5", "controlled": False},
     ]
     assert display["r1"]["markers_unusable"] is False
 
@@ -926,7 +950,7 @@ def test_marker_display_all_token_nests_controlled() -> None:
     # Controlled markers, id-sorted; missing catalog name falls back to "Marker N".
     assert display["r1"]["nested"] == [
         {"label": "Diva (2)", "controlled": True},
-        {"label": "Marker 5 (5)", "controlled": True},
+        {"label": "Marker 5", "controlled": True},
     ]
     assert display["r1"]["markers_unusable"] is False
 
@@ -1606,8 +1630,8 @@ def test_initial_page_render_shows_nested_markers(live_server) -> None:
     status, body = _get(base, "/")
     assert status == 200
     assert 'class="osc-binding-nested"' in body
-    assert "Marker 1 (1)" in body
-    assert "Marker 3 (3)" in body
+    assert "Marker 1" in body
+    assert "Marker 3" in body
 
 
 def test_add_with_unknown_template_id_falls_back_to_blank_row(live_server) -> None:

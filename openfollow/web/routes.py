@@ -1955,18 +1955,21 @@ def _effective_default_marker_id(
     return min(candidates) if candidates else None
 
 
-def _osc_binding_marker_label(token: str, catalog: Any) -> str:
-    """Human label for one resolved ``markers`` token, shown in the row
-    summary badge + the nested secondary chips.
-
-    Numeric ids render as ``"<catalog name> (<id>)"`` (falling back to
-    ``"Marker <id>"``); controller aliases render as ``"Controller cN"``."""
-    if token.startswith("c"):
-        return f"Controller {token}"
-    mid = int(token)
+def _catalog_marker_label(mid: int, catalog: Any) -> str:
+    """``"<catalog name> (<id>)"``, falling back to ``Marker <id>``; a name that already carries
+    the id as a number (``Marker 5``, ``Truss 5 SL``) is not repeated as ``(5)``."""
     entry = catalog.get(mid) if catalog is not None else None
     name = (entry.name.strip() if entry is not None and entry.name else "") or f"Marker {mid}"
-    return f"{name} ({mid})"
+    return name if re.search(rf"(?<!\d){mid}(?!\d)", name) else f"{name} ({mid})"
+
+
+def _osc_binding_marker_label(token: str, catalog: Any) -> str:
+    """Human label for one resolved ``markers`` token, shown in the row
+    summary badge + the nested secondary chips: the catalog label for a
+    numeric id, ``"Controller cN"`` for a controller alias."""
+    if token.startswith("c"):
+        return f"Controller {token}"
+    return _catalog_marker_label(int(token), catalog)
 
 
 def _controller_slots_view(server: ConfigWebServer) -> dict[str, Any]:
@@ -1980,8 +1983,7 @@ def _controller_slots_view(server: ConfigWebServer) -> dict[str, Any]:
         if item.get("marker_id") is not None:
             mid = int(item["marker_id"])
             entry = catalog.get(mid) if catalog is not None else None
-            name = entry.name.strip() if entry is not None and entry.name else ""
-            item["marker_label"] = f"{name} ({mid})" if name else f"Marker {mid}"
+            item["marker_label"] = _catalog_marker_label(mid, catalog)
             item["marker_color"] = (
                 entry.color if entry is not None else AUTO_PICK_ORDER[mid % len(AUTO_PICK_ORDER)].lower()
             )

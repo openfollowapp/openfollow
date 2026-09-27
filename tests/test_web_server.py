@@ -28,6 +28,8 @@ import openfollow
 import openfollow.services as services_module
 import openfollow.web.discovery as discovery_module
 from openfollow.configuration import AppConfig, load_config, save_config
+from openfollow.marker_catalog import MarkerCatalog
+from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.web import peer_auth
 from openfollow.web import whats_new as whats_new_module
 from openfollow.web.server import ConfigWebServer
@@ -315,6 +317,8 @@ def slots_server(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
     stats: dict = {"controllers": {"connected_count": 1, "missing_count": 1, "items": list(_SLOT_ITEMS)}}
+    catalog = MarkerCatalog()
+    catalog.upsert(10, "Lead & <Keys>", "#E0A030")
     with live_on_free_port(
         lambda port: ConfigWebServer(
             config_path=str(tmp_path / "config.toml"),
@@ -322,6 +326,7 @@ def slots_server(tmp_path, monkeypatch):
             port=port,
             system_name="TestSystem",
             runtime_stats_provider=lambda: stats,
+            marker_catalog_provider=lambda: catalog,
         )
     ) as (server, base):
         yield server, base, stats
@@ -330,6 +335,20 @@ def slots_server(tmp_path, monkeypatch):
 def _row(body: str, slot: str) -> str:
     start = body.index(f'<th scope="row">{slot}</th>')
     return body[start : body.index("</tr>", start)]
+
+
+@pytest.mark.parametrize("path", ["/section/controller_slots", "/"])
+def test_controller_slots_name_each_marker_in_its_colour(slots_server, path: str) -> None:
+    """A slot's marker reads as its HUD card does: the catalog name and colour, or
+    ``Marker <id>`` in the palette colour while the catalog has no entry."""
+    _, base, _ = slots_server
+    _, body = _get(base, path)
+    named, unnamed, empty = _row(body, "C1"), _row(body, "C2"), _row(body, "C3")
+    assert '<span class="slot-marker-dot" style="--marker-color: #e0a030"></span>Lead &amp; &lt;Keys&gt; (10)' in named
+    palette = AUTO_PICK_ORDER[11 % len(AUTO_PICK_ORDER)].lower()
+    assert f'<span class="slot-marker-dot" style="--marker-color: {palette}"></span>Marker 11</span>' in unnamed
+    assert "slot-marker" not in empty
+    assert "<td>-</td>" in empty
 
 
 def test_controller_slots_table_shows_every_state(slots_server) -> None:

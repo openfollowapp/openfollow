@@ -1186,6 +1186,9 @@
  box-sizing: content-box; width: 10px; height: 10px; margin: -2.6px 1.4px -2.6px -2.6px;
  border: 2px solid var(--success-mark-muted); background: var(--success-mark); background-clip: content-box;
  }
+ .slot-marker { display: inline-flex; align-items: center; gap: 0.45rem; }
+ /* The marker's own colour, as on its HUD card and catalog swatch. */
+ .slot-marker-dot { flex: none; width: 0.7rem; height: 0.7rem; border-radius: 50%; background: var(--marker-color, var(--muted)); }
  .slot-actions { white-space: nowrap; text-align: right; }
  .slot-actions button { margin: 0 0 0 6px; padding: 4px 10px; }
  .peer-item.offline .peer-status {

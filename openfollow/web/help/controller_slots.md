@@ -17,7 +17,7 @@ With exactly one slot, that controller drives whichever marker is selected inste
   - **Connected** – the dot lights while the controller is being used (a stick moved or a button held).
   - **Missing** – the controller was unplugged or dropped out, or its kind (Gamepads or 3D Mouse) was switched off. Its slot and marker stay put, so nobody else changes marker. The marker card turns red on the Operator Screen, and the status corner and the Statistics panel name it.
   - **Reserved** – a missing slot that was forgotten. It keeps its place in the numbering but drives no marker and raises no warning.
-- **Marker** – the marker this slot drives right now.
+- **Marker** – the marker this slot drives right now, by its catalog name and ID, with a dot in its colour. A marker the catalog has no entry for reads `Marker 5`.
 
 ## Actions
 

@@ -35,7 +35,11 @@
                 <span class="slot-reserved-label">Reserved</span>
             % end
             </td>
-            <td>{{c['marker_id'] if c.get('marker_id') is not None else '-'}}</td>
+            % if c.get('marker_id') is not None:
+            <td><span class="slot-marker"><span class="slot-marker-dot" style="--marker-color: {{c.get('marker_color', '')}}"></span>{{c.get('marker_label') or c['marker_id']}}</span></td>
+            % else:
+            <td>-</td>
+            % end
             <td class="slot-actions">
             % if state != 'reserved':
                 <button type="button" class="secondary" hx-post="/section/controller_slots/identify/{{idx}}" hx-vals='{{json.dumps({"ref": c.get("slot_ref", "")})}}' hx-target="#controller-slots-content" hx-swap="innerHTML">Identify</button>

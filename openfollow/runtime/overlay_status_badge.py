@@ -7,15 +7,13 @@ from __future__ import annotations
 import math
 from typing import Any
 
-import cairo
-
 from openfollow.runtime.overlay_draw_style import (
-    COLOR_DANGER_BG,
     COLOR_OK,
     COLOR_TEXT,
     COLOR_WARNING_BORDER,
     COLOR_WARNING_FILL,
     draw_rounded_rect,
+    draw_warning_sign,
 )
 from openfollow.runtime.overlay_state import OverlayState
 
@@ -97,32 +95,6 @@ def draw_status_badge(
         )
 
 
-def _draw_warning_sign(cr: Any, cx: float, cy: float) -> None:
-    """Off-white warning triangle with its "!" in the row's red."""
-    size = 13.0
-    half = size * 0.58
-    cr.save()
-    cr.set_line_join(cairo.LINE_JOIN_ROUND)
-    cr.set_line_width(2.0)
-    cr.move_to(cx, cy - size * 0.55)
-    cr.line_to(cx - half, cy + size * 0.45)
-    cr.line_to(cx + half, cy + size * 0.45)
-    cr.close_path()
-    cr.set_source_rgb(*COLOR_TEXT)
-    cr.fill_preserve()
-    cr.stroke()
-    mark_h = size * 0.62
-    bar_w = mark_h * 0.2
-    bar_h = mark_h * 0.52
-    bar_top = cy + 1.2 - mark_h * 0.42
-    cr.set_source_rgb(*COLOR_DANGER_BG)
-    cr.rectangle(cx - bar_w / 2, bar_top, bar_w, bar_h)
-    cr.fill()
-    cr.arc(cx, bar_top + bar_h + bar_w * 1.25, bar_w * 0.62, 0, 2 * math.pi)
-    cr.fill()
-    cr.restore()
-
-
 def _draw_warning_row(
     renderer: Any,
     cr: Any,
@@ -158,7 +130,7 @@ def _draw_warning_row(
         cr.arc(glyph_cx, glyph_cy, 4.0, 0, 2 * math.pi)
         cr.fill()
     else:
-        _draw_warning_sign(cr, glyph_cx, glyph_cy)
+        draw_warning_sign(cr, glyph_cx, glyph_cy)
 
     # Message text – bold, truncated.
     renderer._set_ui_font(cr, _ROW_FONT_SIZE, bold=True)

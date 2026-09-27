@@ -2425,6 +2425,16 @@ class TestTheDeviceBoxMatchesTheBrowser:
         assert lead.bold is True
         assert action.font_size == lead.font_size
 
+    def test_the_box_leads_with_the_warning_sign(self) -> None:
+        """The same sign as the status rows, with every text line beside it."""
+        cr = self._draws()
+        kinds = [c[0] for c in cr.calls]
+        apex = next(c for c in cr.calls[kinds.index("line_join") :] if c[0] == "move_to")
+        label = self._find(cr, "ERROR")
+        assert label.x > apex[1] + 8
+        assert self._find(cr, "Nothing answered").x == label.x
+        assert self._find(cr, "Check the camera").x == label.x
+
     def test_the_text_keeps_the_huds_own_colours(self) -> None:
         """The box carries the red; its text reads like every other HUD text:
         the observation in the normal colour, the label and next step muted."""

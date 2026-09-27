@@ -25,6 +25,7 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_WARNING_FILL,
     draw_card_background,
     draw_rounded_rect,
+    draw_warning_sign,
     parse_hex,
     speed_color,
 )
@@ -705,15 +706,16 @@ def _draw_settings_error_box(
     pad = 12.0
     title_size = 11.0
     body_size = 13.0
+    sign_size = 16.0
+    text_x = x + pad + sign_size + 10.0
+    text_w = x + w - pad - text_x
     # Same size as the observation, per the web ``.notice-sub``: weight and
     # opacity carry the subordination, and a smaller face on a projected screen
     # costs legibility the distinction is not worth.
     action_size = body_size
-    body_lines = _wrap_error_message(renderer, cr, message, w - 2 * pad, body_size)
+    body_lines = _wrap_error_message(renderer, cr, message, text_w, body_size)
     body_line_h = body_size + 6.0
-    action_lines = (
-        _wrap_error_message(renderer, cr, action, w - 2 * pad, action_size, bold=False) if action.strip() else []
-    )
+    action_lines = _wrap_error_message(renderer, cr, action, text_w, action_size, bold=False) if action.strip() else []
     action_line_h = action_size + 6.0
     body_h = body_line_h * len(body_lines) + action_line_h * len(action_lines)
     if action_lines:
@@ -728,16 +730,18 @@ def _draw_settings_error_box(
     cr.set_line_width(2.0)
     cr.stroke()
 
+    draw_warning_sign(cr, x + pad + sign_size / 2, y + pad + sign_size / 2, size=sign_size)
+
     renderer._set_ui_font(cr, title_size, bold=True)
     cr.set_source_rgba(*COLOR_TEXT_MUTED)
-    cr.move_to(x + pad, y + pad + title_size - 2.0)
+    cr.move_to(text_x, y + pad + title_size - 2.0)
     cr.show_text(label)
 
     renderer._set_ui_font(cr, body_size, bold=True)
     cr.set_source_rgb(*COLOR_TEXT)
     line_y = y + pad + title_size + 6.0 + body_size
     for line in body_lines:
-        cr.move_to(x + pad, line_y)
+        cr.move_to(text_x, line_y)
         cr.show_text(line)
         line_y += body_line_h
 
@@ -746,7 +750,7 @@ def _draw_settings_error_box(
         renderer._set_ui_font(cr, action_size, bold=False)
         cr.set_source_rgba(*COLOR_TEXT_MUTED)
         for line in action_lines:
-            cr.move_to(x + pad, line_y)
+            cr.move_to(text_x, line_y)
             cr.show_text(line)
             line_y += action_line_h
     return y + card_h + 10.0

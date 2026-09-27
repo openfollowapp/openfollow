@@ -7,6 +7,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import cairo
+
 # ==================================================================
 # Color Palette (adapted from web UI)
 # ==================================================================
@@ -62,6 +64,31 @@ def draw_rounded_rect(cr: Any, x: float, y: float, w: float, h: float, radius: f
     cr.line_to(x, y + radius)
     cr.arc(x + radius, y + radius, radius, math.pi, 3 * math.pi / 2)
     cr.close_path()
+
+
+def draw_warning_sign(cr: Any, cx: float, cy: float, size: float = 13.0) -> None:
+    """Off-white warning triangle with its "!" in the warning red, centred on (cx, cy)."""
+    half = size * 0.58
+    cr.save()
+    cr.set_line_join(cairo.LINE_JOIN_ROUND)
+    cr.set_line_width(size * 0.154)
+    cr.move_to(cx, cy - size * 0.55)
+    cr.line_to(cx - half, cy + size * 0.45)
+    cr.line_to(cx + half, cy + size * 0.45)
+    cr.close_path()
+    cr.set_source_rgb(*COLOR_TEXT)
+    cr.fill_preserve()
+    cr.stroke()
+    mark_h = size * 0.62
+    bar_w = mark_h * 0.2
+    bar_h = mark_h * 0.52
+    bar_top = cy + size * 0.092 - mark_h * 0.42
+    cr.set_source_rgb(*COLOR_DANGER_BG)
+    cr.rectangle(cx - bar_w / 2, bar_top, bar_w, bar_h)
+    cr.fill()
+    cr.arc(cx, bar_top + bar_h + bar_w * 1.25, bar_w * 0.62, 0, 2 * math.pi)
+    cr.fill()
+    cr.restore()
 
 
 def draw_card_background(cr: Any, x: float, y: float, w: float, h: float, radius: float = 10.0) -> None:

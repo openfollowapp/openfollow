@@ -1831,6 +1831,22 @@ class TestButtonDetectionOverlay:
         assert disc[1] < done.x
         assert ("rgb", *COLOR_BG_BASE) in cr.calls
 
+    def test_a_step_in_progress_counts_from_one(self) -> None:
+        bd = ButtonDetectionState(active=True, current_label="B", step=1, total_steps=4)
+        state = _base_state(button_detection=bd)
+        cr = FakeCairo()
+        draw_button_detection_overlay(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert "Step 2 of 4  \u2013  Press Esc to cancel" in cr.show_text_strings()
+
+    def test_a_finished_run_says_so_instead_of_a_step_past_the_end(self) -> None:
+        bd = ButtonDetectionState(active=True, current_label="", step=4, total_steps=4)
+        state = _base_state(button_detection=bd)
+        cr = FakeCairo()
+        draw_button_detection_overlay(FakeRenderer(state=state), cr, state, 1600, 900)
+        texts = cr.show_text_strings()
+        assert "All 4 steps done  \u2013  Press Esc to close" in texts
+        assert not any(t.startswith("Step 5") for t in texts)
+
     def test_low_height_shrinks_prompt_font(self) -> None:
         """`h < 720` switches the big prompt from font 42 to 32."""
         bd = ButtonDetectionState(active=True, current_label="A", step=0, total_steps=2)

@@ -1484,6 +1484,10 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
 
     draw_modal_scrim(cr, w, h, alpha=0.72)
 
+    if bd.step >= bd.total_steps:
+        subtitle = f"All {bd.total_steps} steps done  \u2013  Press Esc to close"
+    else:
+        subtitle = f"Step {bd.step + 1} of {bd.total_steps}  \u2013  Press Esc to cancel"
     panel_w = min(w * 0.52, 520.0)
     panel_h = min(h * 0.78, 520.0)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
@@ -1492,7 +1496,7 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
         w,
         h,
         title="BUTTON DETECTION",
-        subtitle=f"Step {bd.step + 1} of {bd.total_steps}  \u2013  Press Esc to cancel",
+        subtitle=subtitle,
         panel_w=panel_w,
         panel_h=panel_h,
     )

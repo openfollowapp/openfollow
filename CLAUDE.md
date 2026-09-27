@@ -378,7 +378,7 @@ operator on a stage cannot open. The pipeline's own wording ("Could not open
 resource for reading and writing.") is **not** shown to an operator: it reads as
 a second, unrelated fault and nothing can be done with it. It stays in
 `/api/stats` and the diagnostics bundle, and stands in for the sentence only
-where there is no classification at all. `where` must already be redacted – it reaches the HUD and the PIN-exempt
+where there is no classification at all. `where` must already be redacted – it reaches the HUD and
 `/section/statistics`. `UNKNOWN` renders **no** sentence on any surface: it
 would sit above the element's own wording and contradict it.
 
@@ -895,7 +895,7 @@ Peer-to-peer config broadcast is HMAC-signed. The web PIN is the HMAC key; the P
 ### Browser auth (`_check_auth` + `login_submit`)
 - `web_pin` non-empty → every non-asset route requires either a valid HMAC signature (peer path above) or the `_openfollow_auth` cookie.
 - Cookie is set with `httponly=True`, `path="/"`, **`samesite="strict"`**. Strict blocks the browser from attaching the cookie to any cross-site request, which defeats CSRF without a separate token layer. OpenFollow is LAN-only so the reduced cross-site ergonomics are acceptable.
-- `/login`, `/assets/*`, `/section/statistics` are exempt from auth.
+- `/login`, `/assets/*` and the About pages are exempt from auth. The login page shows no station state.
 
 ### Refused names and failed saves (`_check_auth`, `static/js/save-feedback.js`)
 - **A change through a name the station does not accept** (an `Origin` / `Referer` host outside `_allowed_request_hosts()`, the CSRF / DNS-rebind defence) is answered by `_refused` in the shape its caller reads: JSON `{error, action, href}` for HTMX and script requests, and a page for a plain form post (`_is_navigation`: `Sec-Fetch-Mode: navigate`, else `Accept: text/html` without `HX-Request`) – the login page with the reason where "Incorrect PIN" sits, or `refused.tpl`. Never Bottle's bare 403 page.
@@ -923,7 +923,7 @@ Stream URLs carry credentials inline (RTSP userinfo, the SRT `?passphrase=`), so
 
 Three surfaces consume it, and **a new one that displays, logs, or exports a stream URL must too**:
 
-- **The status marker** ([`video/connection_status.py`](openfollow/video/connection_status.py)) redacts in `set_disconnected` / `set_reconnecting`, the two writers that take free text. They are handed GStreamer's raw error/debug string, which for an `rtspsrc` auth failure carries the full `location`; `error_message` is rendered on the projected HUD, served from `/api/stats`, and shown **verbatim** in the Video panel's failure banner, so redacting at the writer is what makes rendering it safe. `/section/statistics` is exempt from the web PIN, so a reader that redacted at the render site instead would publish the camera password to anything on the LAN the day someone added a second one.
+- **The status marker** ([`video/connection_status.py`](openfollow/video/connection_status.py)) redacts in `set_disconnected` / `set_reconnecting`, the two writers that take free text. They are handed GStreamer's raw error/debug string, which for an `rtspsrc` auth failure carries the full `location`; `error_message` is rendered on the projected HUD, served from `/api/stats`, and shown **verbatim** in the Video panel's failure banner, so redacting at the writer is what makes rendering it safe. A reader that redacted at the render site instead would publish the camera password on the next surface someone added.
 - **The diagnostics config dump** – `redact_config_secrets` collapses `_SECRET_CONFIG_KEYS` (`web_pin`, `rtsp_user`, `rtsp_password`, `srt_passphrase`) to `"***"` / `"(empty)"`, whether a login is *set* being the whole useful content, and runs `_URI_CONFIG_KEYS` (`rtsp_url`, `srt_host`) through `redact_uri`. A value in an unparsed shape **fails closed** to `"***"`. Add a new credential or URL-valued field to the matching set.
 - **`redact_log_line`** is the single redactor for log content: the bundle's log tail, its failure extract, worker-thread tracebacks, and the `/api/diagnostics/log-tail` route. **Do not add a log path that bypasses it.**
 

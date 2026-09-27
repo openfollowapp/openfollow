@@ -24,8 +24,7 @@
 % source_fps_text = ("%.1f fps" % video.get("source_fps", 0.0)) if video_connected else "N/A"
 % # The boxes carry no role: this panel is swapped every second, and the
 % # announcer beside it speaks their text once per change (web/live_alerts.py).
-% # Both are credential-free - the status marker redacts on the way in, and
-% # this partial is exempt from the web PIN.
+% # Both are credential-free - the status marker redacts on the way in.
 % alerts = statistics_alerts(stats)
 % output_resolution = system.get("output_resolution")
 % output_text = ("%dx%d" % (output_resolution["width"], output_resolution["height"])) if output_resolution else "N/A (no display)"

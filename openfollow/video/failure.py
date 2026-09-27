@@ -202,8 +202,8 @@ def failure_chip(failure: VideoFailure) -> str:
 def failure_sentence(failure: VideoFailure, *, where: str = "", kind: SourceKind = SourceKind.REMOTE) -> str:
     """One sentence naming what was observed, for an operator.
 
-    ``where`` MUST already be redacted: it reaches the HUD and the PIN-exempt
-    stats route. Anything but ``REMOTE`` connects nowhere, so the wording does
+    ``where`` MUST already be redacted: it reaches the HUD and the stats
+    route. Anything but ``REMOTE`` connects nowhere, so the wording does
     not report that nothing "answered" a request never made.
     """
     template = _SENTENCES.get(failure, _SENTENCES[VideoFailure.UNKNOWN])

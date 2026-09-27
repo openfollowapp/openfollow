@@ -4081,9 +4081,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "cancel_button": _cancel_button_label(cfg),
         }
         if request.path == "/login":
-            page = template(
-                "login", error=f"Not logged in. {refusal.message}", stats=server.get_runtime_stats(), **page_context
-            )
+            page = template("login", error=f"Not logged in. {refusal.message}", **page_context)
         else:
             page = template("refused", **page_context)
         return HTTPResponse(body=page, status=403)
@@ -4110,7 +4108,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if (
             path == "/login"
             or path.startswith("/assets/")
-            or path == "/section/statistics"
             # About / license pages are AGPLv3 §5(d) "Appropriate Legal
             # Notices" reachable pre-auth; they expose no privileged state.
             or path == "/about"
@@ -4208,7 +4205,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         return template(
             "login",
             error="",
-            stats=server.get_runtime_stats(),
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(cfg),
             **_page_host_context(),
@@ -4252,7 +4248,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         return template(
             "login",
             error="Incorrect PIN",
-            stats=server.get_runtime_stats(),
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(cfg),
             **_page_host_context(),

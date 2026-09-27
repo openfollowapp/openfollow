@@ -1522,6 +1522,16 @@ def test_login_endpoint_remains_accessible_without_auth(pin_protected_server) ->
     assert "pin" in body.lower()
 
 
+@pytest.mark.parametrize("pin", [None, "definitely-wrong"], ids=["page", "wrong-pin"])
+def test_the_login_page_shows_no_station_state(pin_protected_server, pin: str | None) -> None:
+    _, base, _ = pin_protected_server
+    status, body = _get(base, "/login") if pin is None else _post_form(base, "/login", {"pin": pin})
+    assert status == 200
+    assert 'id="statistics-section"' not in body
+    assert "/section/statistics" not in body
+    assert 'class="stat-panel"' not in body
+
+
 def test_privilege_modal_poll_unauth_returns_empty_no_redirect(pin_protected_server) -> None:
     server, base, _ = pin_protected_server
     # Park a privilege request so an authenticated poll would have
@@ -3244,15 +3254,20 @@ def test_auth_assets_path_bypasses_auth(pin_protected_server) -> None:
     assert status not in (401, 302, 303)
 
 
-def test_auth_statistics_path_bypasses_auth(pin_protected_server) -> None:
+@pytest.mark.parametrize("path", ["/section/statistics", "/section/statistics/alerts"])
+def test_auth_statistics_needs_the_pin(pin_protected_server, path: str) -> None:
+    """Station state (video source, errors, controller names) is not shown before login."""
     _, base, _ = pin_protected_server
-    req = urllib.request.Request(f"{base}/section/statistics", method="GET")
+    req = urllib.request.Request(f"{base}{path}", headers={"HX-Request": "true"}, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
-            status = r.status
+            hx_redirect = r.headers.get("HX-Redirect", "")
+            body = r.read()
     except urllib.error.HTTPError as e:
-        status = e.code
-    assert status == 200
+        hx_redirect = e.headers.get("HX-Redirect", "")
+        body = e.read()
+    assert hx_redirect == "/login"
+    assert b'class="stat-panel"' not in body
 
 
 def test_auth_signed_request_over_declared_content_length_is_rejected(

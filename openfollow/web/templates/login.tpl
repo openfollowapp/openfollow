@@ -20,15 +20,3 @@
         </div>
     </form>
 </div>
-
-<div class="section" id="statistics-section" data-fold-key="statistics" data-fold-default="expanded">
-    <div class="section-head">
-        <h2>Live Statistics</h2>
-    </div>
-    <div id="statistics-section-content"
-         hx-get="/section/statistics"
-         hx-trigger="every 1s"
-         hx-swap="innerHTML">
-        % include('partials/statistics.tpl', stats=stats)
-    </div>
-</div>

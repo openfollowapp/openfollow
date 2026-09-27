@@ -7,11 +7,13 @@
 </div>
 
 % for peer in peers:
-<div class="peer-item {{'online' if peer.is_online else 'offline'}}">
+% # Every other station opens in a new window, offline ones at their last known address.
+% host = '[' + peer.ip + ']' if ':' in peer.ip else peer.ip
+<a class="peer-item {{'online' if peer.is_online else 'offline'}}" href="http://{{host}}:{{peer.web_port}}/" target="_blank" rel="noopener noreferrer">
     <span class="peer-status">{{'●' if peer.is_online else '○'}}</span>
-    <span class="peer-name">{{peer.name}}</span>
+    <span class="peer-name">{{peer.name}}<span class="visually-hidden"> (opens in a new window)</span></span>
     <span class="peer-address">{{peer.ip}}:{{peer.web_port}}</span>
-</div>
+</a>
 % end
 
 % if not peers:

@@ -1193,6 +1193,15 @@
  border: 3px solid var(--error-mark); background-color: var(--error-mark-muted);
  }
  .peer-name { flex: 1; font-weight: 600; }
+ /* Another station's row is a link to its web UI: an external-link mark after the name, underlined under the pointer. */
+ a.peer-item { color: inherit; text-decoration: none; }
+ a.peer-item .peer-name::after {
+ content: ""; display: inline-block; width: 0.8em; height: 0.8em; margin-left: 0.4em; vertical-align: -0.05em;
+ background: var(--muted); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 2.5h4.5V7'/%3E%3Cpath d='M13.5 2.5 7 9'/%3E%3Cpath d='M11.5 9.5v3.5a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5V5a.5.5 0 0 1 .5-.5h3.5'/%3E%3C/svg%3E") no-repeat center / contain; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 2.5h4.5V7'/%3E%3Cpath d='M13.5 2.5 7 9'/%3E%3Cpath d='M11.5 9.5v3.5a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5V5a.5.5 0 0 1 .5-.5h3.5'/%3E%3C/svg%3E") no-repeat center / contain;
+ }
+ a.peer-item:hover .peer-name { text-decoration: underline; text-underline-offset: 3px; }
+ a.peer-item:hover .peer-name::after { background: var(--text); }
+ a.peer-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
  .peer-name em { color: var(--muted); font-style: italic; font-weight: 400; }
  .peer-address { color: var(--muted); font-size: 0.84rem; }
  .no-peers { color: var(--muted); padding: 14px; text-align: center; font-style: italic; }

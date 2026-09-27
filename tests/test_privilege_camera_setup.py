@@ -62,18 +62,50 @@ def test_from_nothing_it_starts_now() -> None:
     assert (state, changed) == (after, True)
 
 
-def test_switching_a_live_camera_unloads_it_first() -> None:
+def _release(broker: _Broker, answer: bool = True):  # noqa: ANN202
+    """Stands in for stopping the pipeline; logged beside the broker's calls to show the order."""
+
+    def _stop() -> bool:
+        broker.calls.append(("release", []))
+        return answer
+
+    return _stop
+
+
+def test_switching_a_live_camera_stops_the_pipeline_then_unloads_it() -> None:
     broker = _Broker()
     before = _state(configured=OV, managed=True, active=(OV,), live=OV)
-    apply_camera(broker, IMX, read=_reads(before, before))
-    assert [name for name, _ in broker.calls] == ["camera.config_write", "camera.overlay_unload", "camera.overlay_load"]
-    assert broker.calls[1] == ("camera.overlay_unload", ["unload", "ov5647,cam0"])
+    _after, changed = apply_camera(broker, IMX, read=_reads(before, before), release=_release(broker))
+    assert [name for name, _ in broker.calls] == [
+        "camera.config_write",
+        "release",
+        "camera.overlay_unload",
+        "camera.overlay_load",
+    ]
+    assert broker.calls[2] == ("camera.overlay_unload", ["unload", "ov5647,cam0"])
+    assert changed is True
+
+
+def test_a_pipeline_that_does_not_stop_leaves_the_camera_for_a_restart() -> None:
+    """Unloading under a streaming pipeline would wedge it for good."""
+    broker = _Broker()
+    before = _state(configured=OV, managed=True, active=(OV,), live=OV)
+    after = _state(configured=IMX, managed=True, active=(OV,), live=OV, pending=True)
+    state, changed = apply_camera(broker, IMX, read=_reads(before, after), release=_release(broker, False))
+    assert [name for name, _ in broker.calls] == ["camera.config_write", "release"]
+    assert (state, changed) == (after, False)
+
+
+def test_nothing_to_unload_needs_no_release() -> None:
+    broker = _Broker()
+    apply_camera(broker, OV, read=_reads(_state(), _state()), release=_release(broker))
+    assert [name for name, _ in broker.calls] == ["camera.config_write", "camera.overlay_load"]
 
 
 def test_the_same_live_camera_is_not_reloaded() -> None:
     broker = _Broker()
     before = _state(configured=OV, managed=True, active=(OV,), live=OV)
-    _state_after, changed = apply_camera(broker, OV, read=_reads(before, before))
+    _state_after, changed = apply_camera(broker, OV, read=_reads(before, before), release=_release(broker))
     assert [name for name, _ in broker.calls] == ["camera.config_write"]
     assert changed is False
 
@@ -81,9 +113,10 @@ def test_the_same_live_camera_is_not_reloaded() -> None:
 def test_automatic_unloads_a_live_camera() -> None:
     broker = _Broker()
     before = _state(configured=OV, managed=True, active=(OV,), live=OV)
-    _after, changed = apply_camera(broker, None, read=_reads(before, _state()))
+    _after, changed = apply_camera(broker, None, read=_reads(before, _state()), release=_release(broker))
     assert broker.calls == [
         ("camera.config_write", ["write", "automatic"]),
+        ("release", []),
         ("camera.overlay_unload", ["unload", "ov5647,cam0"]),
     ]
     assert changed is True
@@ -94,7 +127,7 @@ def test_a_camera_loaded_at_boot_only_changes_config() -> None:
     broker = _Broker()
     before = _state(configured=OV, managed=False, active=(OV,))
     after = _state(configured=IMX, managed=True, active=(OV,), pending=True)
-    state, changed = apply_camera(broker, IMX, read=_reads(before, after))
+    state, changed = apply_camera(broker, IMX, read=_reads(before, after), release=_release(broker))
     assert [name for name, _ in broker.calls] == ["camera.config_write"]
     assert (state.pending, changed) == (True, False)
 

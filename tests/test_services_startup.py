@@ -911,7 +911,7 @@ def test_camera_setup_apply_rebuilds_the_pipeline_only_after_a_live_change(monke
     services = _camera_services(monkeypatch)
     seen: list[object] = []
 
-    def _apply(_broker, choice):  # noqa: ANN001, ANN202
+    def _apply(_broker, choice, release):  # noqa: ANN001, ANN202
         seen.append(choice)
         return _camera_state(configured=choice), changed
 
@@ -925,14 +925,14 @@ def test_camera_setup_apply_rebuilds_the_pipeline_only_after_a_live_change(monke
 def test_camera_setup_apply_automatic_passes_none(monkeypatch) -> None:  # noqa: ANN001
     services = _camera_services(monkeypatch)
     seen: list[object] = []
-    _stub_camera(monkeypatch, apply=lambda _b, choice: (seen.append(choice) or _camera_state(), False))
+    _stub_camera(monkeypatch, apply=lambda _b, choice, release: (seen.append(choice) or _camera_state(), False))
     assert services._handle_camera_setup_apply("automatic")["ok"] is True
     assert seen == [None]
 
 
 def test_camera_setup_apply_refuses_a_token_that_is_no_camera(monkeypatch) -> None:  # noqa: ANN001
     services = _camera_services(monkeypatch)
-    _stub_camera(monkeypatch, read=_camera_state, apply=lambda *_a: pytest.fail("must not apply"))
+    _stub_camera(monkeypatch, read=_camera_state, apply=lambda *_a, **_kw: pytest.fail("must not apply"))
     result = services._handle_camera_setup_apply("../etc,cam0")
     assert (result["ok"], result["error"], result["available"]) == (
         False,
@@ -944,7 +944,7 @@ def test_camera_setup_apply_refuses_a_token_that_is_no_camera(monkeypatch) -> No
 def test_camera_setup_apply_reports_a_refused_change(monkeypatch) -> None:  # noqa: ANN001
     from openfollow.privilege.broker import PrivilegeError
 
-    def _refuse(*_a):  # noqa: ANN002, ANN202
+    def _refuse(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
         raise PrivilegeError("Name the Pi camera in the boot configuration: This user is not in the sudoers file.")
 
     services = _camera_services(monkeypatch)
@@ -953,6 +953,58 @@ def test_camera_setup_apply_reports_a_refused_change(monkeypatch) -> None:  # no
     assert (result["ok"], result["error"]) == (False, "This user is not in the sudoers file.")
     assert result["sensors"] == ["imx708", "ov5647"]  # re-read from the host
     assert services._app._web_commands.consume_video_rebuild_requested() is False
+
+
+@pytest.mark.parametrize("refused", [False, True], ids=["applied", "unload-refused"])
+def test_camera_setup_rebuilds_after_every_release(monkeypatch, refused) -> None:  # noqa: ANN001
+    """A pipeline stopped for an unload is built again, whether or not the change went through."""
+    from openfollow.privilege.broker import PrivilegeError
+
+    monkeypatch.setattr(services_module, "_CAMERA_RELEASE_TIMEOUT_S", 0.01)  # no main loop answers here
+    services = _camera_services(monkeypatch)
+    answers: list[bool] = []
+
+    def _apply(_broker, _choice, release):  # noqa: ANN001, ANN202
+        answers.append(release())
+        if refused:
+            raise PrivilegeError("Stop the Pi camera started earlier: refused")
+        return _camera_state(pending=True), False
+
+    _stub_camera(monkeypatch, read=_camera_state, apply=_apply)
+    result = services._handle_camera_setup_apply("imx708,cam0")
+    assert answers == [False]  # unanswered: apply_camera leaves the camera loaded
+    assert result["ok"] is not refused
+    assert services._app._web_commands.consume_video_rebuild_requested() is True
+
+
+def test_camera_setup_applies_one_change_at_a_time(monkeypatch) -> None:  # noqa: ANN001
+    import threading
+
+    services = _camera_services(monkeypatch)
+    inside: list[str] = []
+    first_in = threading.Event()
+    let_first_finish = threading.Event()
+
+    def _apply(_broker, choice, release):  # noqa: ANN001, ANN202
+        inside.append(f"enter {choice.sensor}")
+        if choice.sensor == "ov5647":
+            first_in.set()
+            let_first_finish.wait(5)
+        inside.append(f"leave {choice.sensor}")
+        return _camera_state(), False
+
+    _stub_camera(monkeypatch, apply=_apply)
+    first = threading.Thread(target=services._handle_camera_setup_apply, args=("ov5647,cam0",))
+    first.start()
+    first_in.wait(5)
+    second = threading.Thread(target=services._handle_camera_setup_apply, args=("imx708,cam0",))
+    second.start()
+    second.join(timeout=0.2)
+    assert second.is_alive()  # held at the lock while the first change runs
+    let_first_finish.set()
+    first.join(5)
+    second.join(5)
+    assert inside == ["enter ov5647", "leave ov5647", "enter imx708", "leave imx708"]
 
 
 def test_camera_setup_without_a_broker(monkeypatch) -> None:  # noqa: ANN001

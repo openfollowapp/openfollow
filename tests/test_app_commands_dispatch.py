@@ -9,6 +9,7 @@ SimpleNamespace app graph.
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -313,53 +314,103 @@ def test_slot_actions_without_input_are_dropped() -> None:
 
 
 # ---------------------------------------------------------------------------
-# check_video_rebuild_request
+# check_camera_setup_requests
 # ---------------------------------------------------------------------------
 
 
-class _SwapRecorder:
-    def __init__(self, source_type: str = "picam", *, raises: bool = False) -> None:
+class _Picam:
+    """Records what the main loop does to the Pi Camera pipeline."""
+
+    def __init__(self, source_type: str = "picam", *, fails: str = "") -> None:
         self._source_type = source_type
         self._input_config = {"picam_width": 1920}
-        self._raises = raises
+        self._fails = fails
+        self.calls: list[str] = []
         self.swaps: list[tuple[str, dict]] = []
 
+    def release_source(self) -> None:
+        self.calls.append("release")
+        if self._fails == "release":
+            raise RuntimeError("pipeline stuck")
+
     def swap_input(self, source_type: str, config: dict) -> None:
+        self.calls.append("rebuild")
         self.swaps.append((source_type, config))
-        if self._raises:
+        if self._fails == "rebuild":
             raise RuntimeError("pipeline stuck")
 
 
+def _release_from_web(app, timeout: float = 5.0) -> bool:  # noqa: ANN001
+    """The web thread's answer to a release, with the main loop polling as it does."""
+    answer: list[bool] = []
+    worker = threading.Thread(target=lambda: answer.append(app._web_commands.release_camera(timeout)))
+    worker.start()
+    while worker.is_alive():
+        app_commands.check_camera_setup_requests(app)
+        worker.join(timeout=0.005)
+    return answer[0]
+
+
 def test_a_live_camera_rebuilds_the_pi_camera_pipeline_once() -> None:
-    receiver = _SwapRecorder()
+    receiver = _Picam()
     app = _make_app(_video_receiver=receiver)
     app._web_commands.request_video_rebuild()
-    app_commands.check_video_rebuild_request(app)
-    app_commands.check_video_rebuild_request(app)
+    app_commands.check_camera_setup_requests(app)
+    app_commands.check_camera_setup_requests(app)
     assert receiver.swaps == [("picam", {"picam_width": 1920})]
     # Its own copy: the rebuild must not share the receiver's dict.
     assert receiver.swaps[0][1] is not receiver._input_config
 
 
-def test_no_request_rebuilds_nothing() -> None:
-    receiver = _SwapRecorder()
-    app_commands.check_video_rebuild_request(_make_app(_video_receiver=receiver))
-    assert receiver.swaps == []
+def test_no_request_touches_nothing() -> None:
+    receiver = _Picam()
+    app_commands.check_camera_setup_requests(_make_app(_video_receiver=receiver))
+    assert receiver.calls == []
 
 
-@pytest.mark.parametrize("receiver", [None, _SwapRecorder("rtsp")], ids=["no-receiver", "another-source"])
-def test_only_an_active_pi_camera_is_rebuilt(receiver) -> None:  # noqa: ANN001
+def test_a_release_stops_the_pipeline_and_answers_the_web_thread() -> None:
+    receiver = _Picam()
     app = _make_app(_video_receiver=receiver)
+    assert _release_from_web(app) is True
+    assert receiver.calls == ["release"]
+
+
+def test_release_before_rebuild_in_one_pass() -> None:
+    receiver = _Picam()
+    app = _make_app(_video_receiver=receiver)
+    assert app._web_commands.release_camera(0) is False  # the web side stopped waiting; the request stands
     app._web_commands.request_video_rebuild()
-    app_commands.check_video_rebuild_request(app)
-    assert receiver is None or receiver.swaps == []
+    app_commands.check_camera_setup_requests(app)
+    assert receiver.calls == ["release", "rebuild"]
+
+
+@pytest.mark.parametrize("receiver", [None, _Picam("rtsp")], ids=["no-receiver", "another-source"])
+def test_only_an_active_pi_camera_is_touched(receiver) -> None:  # noqa: ANN001
+    app = _make_app(_video_receiver=receiver)
+    assert _release_from_web(app) is True  # nothing streams from the camera: safe to unload
+    app._web_commands.request_video_rebuild()
+    app_commands.check_camera_setup_requests(app)
+    assert receiver is None or receiver.calls == []
     assert app._web_commands.consume_video_rebuild_requested() is False  # taken off the queue
 
 
+def test_a_stuck_pipeline_is_not_confirmed(caplog) -> None:  # noqa: ANN001
+    receiver = _Picam(fails="release")
+    app = _make_app(_video_receiver=receiver)
+    with caplog.at_level("ERROR", logger=app_commands.__name__):
+        assert _release_from_web(app, timeout=0.2) is False
+    assert receiver.calls == ["release"]
+    assert "Stopping the Pi Camera pipeline failed." in caplog.text
+
+
 def test_a_failed_rebuild_is_logged_not_raised(caplog) -> None:  # noqa: ANN001
-    receiver = _SwapRecorder(raises=True)
+    receiver = _Picam(fails="rebuild")
     app = _make_app(_video_receiver=receiver)
     app._web_commands.request_video_rebuild()
     with caplog.at_level("ERROR", logger=app_commands.__name__):
-        app_commands.check_video_rebuild_request(app)
+        app_commands.check_camera_setup_requests(app)
     assert "Rebuilding the Pi Camera pipeline failed." in caplog.text
+
+
+def test_an_unanswered_release_times_out() -> None:
+    assert _make_app()._web_commands.release_camera(0.01) is False

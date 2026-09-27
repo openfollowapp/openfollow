@@ -24,13 +24,16 @@ def apply_camera(
     choice: Camera | None,
     *,
     read: Callable[[], CameraSetupState] = read_camera_setup,
+    release: Callable[[], bool] = lambda: True,
 ) -> tuple[CameraSetupState, bool]:
     """Name *choice* in config.txt (None: back to auto-detect), and load it now if possible.
 
     Returns the state afterwards, and whether the loaded camera changed, so the
     caller can rebuild a Pi Camera pipeline. A camera loaded at boot cannot be
     unloaded while running: then only config.txt changes, and the state reports
-    a pending restart. Raises :class:`PrivilegeError` when the change is refused.
+    a pending restart. *release* runs before a live camera is unloaded and must
+    stop anything streaming from it; when it returns False the change waits for
+    a restart too. Raises :class:`PrivilegeError` when the change is refused.
     """
     state = read()
     if not state.available:
@@ -48,6 +51,8 @@ def apply_camera(
     loaded_at_boot = [camera for camera in state.active if camera != state.live]
     if not loaded_at_boot:
         if state.live is not None and state.live != choice:
+            if not release():
+                return read(), False
             broker.run(
                 CAMERA_OVERLAY_UNLOAD,
                 [CAMERA_SETUP_SCRIPT, "unload", state.live.token()],

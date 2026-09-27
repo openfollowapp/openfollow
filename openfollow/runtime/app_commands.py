@@ -57,16 +57,25 @@ def check_controller_slot_actions(app: OpenFollowApp) -> None:
             logger.exception("Controller slot action %s on C%d failed.", action, index + 1)
 
 
-def check_video_rebuild_request(app: OpenFollowApp) -> None:
-    """Rebuild the Pi Camera pipeline after the web camera setup started a camera live."""
-    if not app._web_commands.consume_video_rebuild_requested():
-        return
+def check_camera_setup_requests(app: OpenFollowApp) -> None:
+    """Stop, then rebuild, the Pi Camera pipeline around a live change from the web camera setup."""
+    web_commands = app._web_commands
     receiver = app._video_receiver
-    if receiver is None or receiver._source_type != "picam":
+    picam = receiver if receiver is not None and receiver._source_type == "picam" else None
+    if web_commands.consume_camera_release_requested():
+        try:
+            if picam is not None:
+                picam.release_source()
+        except Exception:
+            # Unconfirmed: the web side leaves the loaded camera alone.
+            logger.exception("Stopping the Pi Camera pipeline failed.")
+        else:
+            web_commands.confirm_camera_released()
+    if not web_commands.consume_video_rebuild_requested() or picam is None:
         return
     logger.info("Pi camera set up from the web UI; rebuilding the Pi Camera pipeline.")
     try:
-        receiver.swap_input(receiver._source_type, dict(receiver._input_config))
+        picam.swap_input(picam._source_type, dict(picam._input_config))
     except Exception:
         logger.exception("Rebuilding the Pi Camera pipeline failed.")
 

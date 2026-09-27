@@ -3699,6 +3699,67 @@ class TestSwapInput:
         assert "FakeAlt" in r._status_marker.error_message
 
 
+class TestReleaseSource:
+    """Stopping the pipeline so its device can be removed, then building it again."""
+
+    def _armed(self, fake_glib) -> Any:  # noqa: ANN001
+        """A receiver streaming, with every timer that could rebuild or poke its pipeline pending."""
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline = FakePipeline()
+        r._state.set_resolution(1920, 1080)
+        r._state.connection_timeout_id = fake_glib.timeout_add(1000, lambda: False)
+        r._state.reconnect_source_id = fake_glib.timeout_add(1000, lambda: False)
+        r._heal_source_id = fake_glib.timeout_add(1000, lambda: False)
+        r._watchdog_source_id = fake_glib.timeout_add(1000, lambda: False)
+        r._discovery_source_id = fake_glib.timeout_add(1000, lambda: False)
+        return r
+
+    def test_the_pipeline_reaches_null_and_nothing_restarts_it(
+        self, fake_gst, fake_glib, fake_input_pair, monkeypatch
+    ) -> None:
+        r = self._armed(fake_glib)
+        pipeline = r._pipeline
+        monkeypatch.setattr(threading, "Thread", _SyncSwapThread)
+
+        r.release_source()
+
+        assert FakeState.NULL in pipeline.state_changes
+        assert r._pipeline is None
+        # A timer left pending would start the source again while its device is going away.
+        assert fake_glib.timers == {}
+        assert r.resolution == (0, 0)
+        assert r.connected is False
+
+    def test_swap_input_builds_it_again(self, fake_gst, fake_glib, fake_input_pair, monkeypatch) -> None:
+        r = self._armed(fake_glib)
+        monkeypatch.setattr(threading, "Thread", _SyncSwapThread)
+        new_pipeline = FakePipeline()
+        FakeInput.create_pipeline_result = new_pipeline
+
+        r.release_source()
+        r.swap_input("fake", {"fake_source": "cam-1"})
+
+        assert r._pipeline is new_pipeline
+
+    def test_a_pipeline_that_does_not_stop_raises(self, fake_gst, fake_glib, fake_input_pair, monkeypatch) -> None:
+        from openfollow.video.receiver import PipelineStuckError
+
+        class StuckThread(_SyncSwapThread):
+            def start(self) -> None:
+                pass
+
+            def is_alive(self) -> bool:
+                return True
+
+        r = self._armed(fake_glib)
+        pipeline = r._pipeline
+        monkeypatch.setattr(threading, "Thread", StuckThread)
+
+        with pytest.raises(PipelineStuckError, match="release_source: prior pipeline did not reach NULL"):
+            r.release_source()
+        assert r._pipeline is pipeline  # kept, so the next swap re-enters the guard
+
+
 # --------------------------------------------------------------------------- #
 # swap_detection_branch – (live detector pipeline rebuild)
 # --------------------------------------------------------------------------- #

@@ -591,7 +591,7 @@ class TestDelegators:
             ("_check_update_request", "runtime_check_update_request", ()),
             ("_check_button_detection_request", "runtime_check_button_detection_request", ()),
             ("_check_controller_slot_actions", "runtime_check_controller_slot_actions", ()),
-            ("_check_video_rebuild_request", "runtime_check_video_rebuild_request", ()),
+            ("_check_camera_setup_requests", "runtime_check_camera_setup_requests", ()),
             ("_process_source_selection_input", "runtime_process_source_selection_input", ()),
             ("_process_iface_selection_input", "runtime_process_iface_selection_input", ()),
             ("_enter_source_selection", "runtime_enter_source_selection", ()),

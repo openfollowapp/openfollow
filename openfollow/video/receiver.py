@@ -410,6 +410,22 @@ class GstNativeSinkReceiver:
         self._bus_handler.teardown_bus(pipeline)
         self._pipeline = None
 
+    def release_source(self) -> None:
+        """Stop the pipeline so its device can be removed; ``swap_input`` builds it again.
+
+        A device that vanishes under a running pipeline leaves it unable to
+        reach NULL. Raises ``PipelineStuckError`` when this one does not.
+        Only runs on GTK main thread.
+        """
+        self._cancel_connection_timeout()
+        self._cancel_reconnect()
+        self._cancel_heal()
+        self._cancel_watchdog()
+        self._cancel_discovery()
+        self._null_transition_current_pipeline(swap_label="release_source")
+        self._reset_video_flow_state()
+        self._status_marker.set_disconnected()
+
     def swap_input(
         self,
         source_type: str,

@@ -183,6 +183,7 @@ _AUTOSTART_CHANGE_FAILED = "The setting could not be changed."
 
 
 _NO_BROKER = "Elevated actions are not available on this build."
+_CAMERA_RELEASE_TIMEOUT_S = 5.0
 
 
 def _camera_setup_view(state: Any) -> dict[str, Any]:
@@ -231,8 +232,10 @@ class WebCommandQueue:
         # loop, which owns the slots.
         self._slot_actions_lock = threading.Lock()
         self._slot_actions: list[tuple[str, int, str]] = []
-        # The web camera setup loaded a Pi camera live: the main loop rebuilds
-        # the Pi Camera pipeline so the running station picks it up.
+        # The web camera setup changes a Pi camera live: the main loop stops the
+        # Pi Camera pipeline before an overlay is unloaded, and rebuilds it after.
+        self._camera_release_requested = threading.Event()
+        self._camera_released = threading.Event()
         self._video_rebuild_requested = threading.Event()
         self._update_lock = threading.Lock()
         self._update_request: dict[str, str] | None = None
@@ -309,6 +312,21 @@ class WebCommandQueue:
         with self._slot_actions_lock:
             actions, self._slot_actions = self._slot_actions, []
         return actions
+
+    def release_camera(self, timeout: float) -> bool:
+        """Web thread: have the main loop stop the Pi Camera pipeline; ``True`` once it has."""
+        self._camera_released.clear()
+        self._camera_release_requested.set()
+        return self._camera_released.wait(timeout)
+
+    def consume_camera_release_requested(self) -> bool:
+        if self._camera_release_requested.is_set():
+            self._camera_release_requested.clear()
+            return True
+        return False
+
+    def confirm_camera_released(self) -> None:
+        self._camera_released.set()
 
     def request_video_rebuild(self) -> None:
         self._video_rebuild_requested.set()
@@ -601,6 +619,7 @@ class AppRuntimeServices:
         self._app = app
         self._shutdown_in_progress = False
         self._is_pi = self._is_raspberry_pi()
+        self._camera_setup_lock = threading.Lock()
         # Central registry of input-binding ownership, pre-populated with
         # the movement-key reservations under owner "system:movement".
         from openfollow.configuration import RESERVED_MOVEMENT_KEYS
@@ -2366,12 +2385,24 @@ class AppRuntimeServices:
                 "error": "That is not a camera this station offers.",
                 **_camera_setup_view(read_camera_setup()),
             }
-        try:
-            state, changed = apply_camera(broker, choice)
-        except PrivilegeError as exc:
-            return {"ok": False, "error": _autostart_failure_text(exc), **_camera_setup_view(read_camera_setup())}
-        if changed:
-            self._app._web_commands.request_video_rebuild()
+        web_commands = self._app._web_commands
+        released = False
+
+        def _release() -> bool:
+            nonlocal released
+            released = True
+            return bool(web_commands.release_camera(_CAMERA_RELEASE_TIMEOUT_S))
+
+        # One change at a time: two interleaved would each unload what the other loaded.
+        with self._camera_setup_lock:
+            try:
+                state, changed = apply_camera(broker, choice, release=_release)
+            except PrivilegeError as exc:
+                if released:
+                    web_commands.request_video_rebuild()
+                return {"ok": False, "error": _autostart_failure_text(exc), **_camera_setup_view(read_camera_setup())}
+            if changed or released:
+                web_commands.request_video_rebuild()
         return {"ok": True, **_camera_setup_view(state)}
 
     def _handle_camera_setup_restart(self) -> dict[str, Any]:

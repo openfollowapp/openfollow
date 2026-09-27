@@ -461,7 +461,12 @@ block (with `camera_auto_detect=0`) under `[all]`, comments out hand-written
 camera lines, and loads/unloads the overlay live with `dtoverlay`;
 `/run/openfollow-camera` records what it loaded and the boot-time lines, so the
 page can tell "running" from "takes effect after the next restart". A
-boot-loaded overlay cannot be unloaded live.
+boot-loaded overlay cannot be unloaded live. **Never unload under a streaming
+pipeline**: the device vanishes under `libcamerasrc`, which then never reaches
+NULL, and every later swap refuses. `apply_camera`'s `release` callback first
+has the main loop stop the Pi Camera pipeline (`receiver.release_source()`, via
+`WebCommandQueue.release_camera`); unanswered, the change waits for a restart
+instead.
 
 ### Placeholder pipeline vs source state
 The "No Signal" placeholder is a black `videotestsrc` pinned at 1920x1080 @ 30 that feeds the **shared** sink, and both sink probes are attached once for that sink's lifetime – so its caps reach the same writer the real source uses. `ReceiverStateMachine.set_resolution` / `set_source_framerate` / `set_source_format` therefore refuse while `is_placeholder_pipeline`, mirroring `mark_frame_received`, and `_create_placeholder_pipeline` calls `clear_source_caps()` rather than writing its own geometry in. **Do not publish placeholder caps as source state**: `video.resolution` / `source_fps` are what the Statistics panel reports as the feed's own, and what `update_video` shapes the window from – a source that has never delivered a frame would otherwise present as a working 1080p feed and pin the window to 16:9 for the session.

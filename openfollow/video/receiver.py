@@ -648,6 +648,31 @@ class GstNativeSinkReceiver:
             logger.info("Video source format: %s", source_format)
         return cast(int, Gst.PadProbeReturn.REMOVE)
 
+    def _handle_refused_start(self) -> None:
+        """``set_state(PLAYING)`` failed: classify from the error the element posted, if any."""
+        msg = None
+        if self._pipeline is not None:
+            msg = self._pipeline.get_bus().timed_pop_filtered(200 * Gst.MSECOND, Gst.MessageType.ERROR)
+        if msg:
+            err, dbg = msg.parse_error()
+            # The bus carries the same identity a posted ERROR would, so it is
+            # classified the same way rather than flattened into a string the
+            # taxonomy cannot read.
+            bus_error = BusError(
+                message=getattr(err, "message", "") or "Unknown error",
+                domain=str(getattr(err, "domain", "") or ""),
+                code=int(getattr(err, "code", 0) or 0),
+                debug=str(dbg or ""),
+            )
+            error_msg = f"{bus_error.message} – {bus_error.debug}"
+            logger.error("%s pipeline error: %s", self._input.display_name, error_msg)
+            self._schedule_reconnect(error_msg, bus_error)
+            return
+        # Nothing on the bus: the failure is this station's own.
+        error_msg = f"{self._input.display_name} pipeline failed to start"
+        logger.error("%s pipeline error: %s", self._input.display_name, error_msg)
+        self._schedule_reconnect(error_msg, failure=VideoFailure.UNKNOWN)
+
     def get_sink_widget(self) -> Any:
         """Return the GTK widget from shared gtksink."""
         sink = self._get_shared_sink()
@@ -685,27 +710,7 @@ class GstNativeSinkReceiver:
             if self._pipeline is not None:
                 result = self._pipeline.set_state(Gst.State.PLAYING)
                 if result == Gst.StateChangeReturn.FAILURE:
-                    bus = self._pipeline.get_bus()
-                    msg = bus.timed_pop_filtered(200 * Gst.MSECOND, Gst.MessageType.ERROR)
-                    if msg:
-                        err, dbg = msg.parse_error()
-                        # The bus carries the same identity a posted ERROR would,
-                        # so it is classified the same way rather than flattened
-                        # into a string the taxonomy cannot read.
-                        bus_error = BusError(
-                            message=getattr(err, "message", "") or "Unknown error",
-                            domain=str(getattr(err, "domain", "") or ""),
-                            code=int(getattr(err, "code", 0) or 0),
-                            debug=str(dbg or ""),
-                        )
-                        error_msg = f"{bus_error.message} – {bus_error.debug}"
-                        logger.error("%s pipeline error: %s", self._input.display_name, error_msg)
-                        self._schedule_reconnect(error_msg, bus_error)
-                    else:
-                        # Nothing on the bus: the failure is this station's own.
-                        error_msg = f"{self._input.display_name} pipeline failed to start"
-                        logger.error("%s pipeline error: %s", self._input.display_name, error_msg)
-                        self._schedule_reconnect(error_msg, failure=VideoFailure.UNKNOWN)
+                    self._handle_refused_start()
                 else:
                     if self._state.is_placeholder_pipeline:
                         logger.info(
@@ -756,8 +761,7 @@ class GstNativeSinkReceiver:
         if self._pipeline is not None:
             result = self._pipeline.set_state(Gst.State.PLAYING)
             if result == Gst.StateChangeReturn.FAILURE:
-                logger.error("Pipeline set_state(PLAYING) returned FAILURE.")
-                self._schedule_reconnect("Pipeline failed to start", failure=VideoFailure.UNKNOWN)
+                self._handle_refused_start()
             else:
                 if self._state.is_placeholder_pipeline:
                     logger.info("Placeholder pipeline started after source startup failure.")

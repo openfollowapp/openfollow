@@ -2,15 +2,14 @@
 # Copyright (C) 2026 OpenFollow Project
 """Raspberry Pi CSI/MIPI camera input plugin via libcamerasrc.
 
-Builds a ``libcamerasrc`` raw-video pipeline and discovers connected cameras by
-parsing ``rpicam-hello --list-cameras``.
+Builds a ``libcamerasrc`` raw-video pipeline and discovers connected cameras
+through GStreamer's libcamera device provider, from the same package.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-import subprocess
 import sys
 from collections.abc import Callable
 from typing import Any
@@ -29,32 +28,31 @@ logger = logging.getLogger(__name__)
 
 
 def _discover_cameras() -> list[dict[str, str]]:
-    """Parse rpicam-hello output to find connected cameras."""
-    try:
-        result = subprocess.run(
-            ["rpicam-hello", "--list-cameras"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        output = result.stdout + result.stderr
-    except (OSError, subprocess.TimeoutExpired):
-        return []
+    """Cameras libcamera can see, as ``{"model", "path"}``; ``path`` is what ``camera-name`` takes.
 
+    Listed through GStreamer's libcamera device provider, which shares
+    libcamerasrc's camera manager, so a camera already streaming is still listed.
+    """
+    try:
+        from gi.repository import Gst
+    except ImportError:
+        return []
+    factory = Gst.DeviceProviderFactory.find("libcameraprovider")
+    if factory is None:
+        return []
+    try:
+        devices = factory.get().get_devices()
+    except Exception:  # noqa: BLE001 - a failed probe lists nothing rather than failing the page
+        logger.debug("Pi Camera discovery failed", exc_info=True)
+        return []
     cameras: list[dict[str, str]] = []
-    # Match lines like: 0 : imx219 [3280x2464 ...] (/base/axi/...)
-    for match in re.finditer(
-        r"^(\d+)\s*:\s*(\S+)\s*\[.*?\]\s*\(([^)]+)\)",
-        output,
-        re.MULTILINE,
-    ):
-        cameras.append(
-            {
-                "index": match.group(1),
-                "model": match.group(2),
-                "path": match.group(3),
-            }
-        )
+    for device in devices:
+        path = str(device.get_display_name())
+        props = device.get_properties()
+        # The string form, not the structure getters GStreamer 1.26.2 broke.
+        match = re.search(r"api\.libcamera\.Model=\(string\)([^,;\s]+)", props.to_string() if props else "")
+        model = match.group(1) if match else path.rsplit("/", 1)[-1].split("@", 1)[0]
+        cameras.append({"model": model, "path": path})
     return cameras
 
 
@@ -205,7 +203,7 @@ class PiCamInput(VideoInputBase):
 
     @classmethod
     def discover_sources(cls, timeout: float = 2.0) -> list[str]:
-        """Discover connected Pi cameras via rpicam-hello."""
+        """Discover connected Pi cameras through libcamera."""
         cameras = _discover_cameras()
         return [cam["path"] for cam in cameras]
 
@@ -288,8 +286,7 @@ class PiCamInput(VideoInputBase):
         if camera_name:
             # Side-effect free: this runs on the GTK main thread on hot paths
             # (per-stats publish, play(), every reconnect/watchdog event), so it
-            # must NOT spawn the blocking ``rpicam-hello`` scan (5s timeout, and
-            # it contends with libcamerasrc for the device). Derive the label
-            # from the stored path's basename instead of discovering the model.
+            # must NOT probe for cameras. Derive the label from the stored path's
+            # basename instead of discovering the model.
             return f"{camera_name.split('/')[-1]} ({width}x{height}@{framerate})"
         return f"Pi Camera ({width}x{height}@{framerate})"

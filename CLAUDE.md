@@ -444,6 +444,12 @@ YUV420 default: on a CM5 with libcamera 0.7.1 that negotiated a raw stream and
 failed outright. Colorimetry is **not** pinned: one the ISP adjusts fails
 negotiation. `v4l2.py` is a different mechanism (driver-preference order) and
 is left open deliberately.
+Cameras are listed through GStreamer's libcamera device provider (the
+`gstreamer1.0-libcamera` package the pipeline needs), which shares
+libcamerasrc's camera manager and so lists a camera that is already streaming.
+`rpicam-apps` is not a dependency. A start that `set_state(PLAYING)` refuses
+(no camera present) is classified from the element's bus error in both `play()`
+branches, so a missing Pi Camera reads as not found, not unknown.
 
 ### Placeholder pipeline vs source state
 The "No Signal" placeholder is a black `videotestsrc` pinned at 1920x1080 @ 30 that feeds the **shared** sink, and both sink probes are attached once for that sink's lifetime – so its caps reach the same writer the real source uses. `ReceiverStateMachine.set_resolution` / `set_source_framerate` / `set_source_format` therefore refuse while `is_placeholder_pipeline`, mirroring `mark_frame_received`, and `_create_placeholder_pipeline` calls `clear_source_caps()` rather than writing its own geometry in. **Do not publish placeholder caps as source state**: `video.resolution` / `source_fps` are what the Statistics panel reports as the feed's own, and what `update_video` shapes the window from – a source that has never delivered a frame would otherwise present as a working 1080p feed and pin the window to 16:9 for the session.

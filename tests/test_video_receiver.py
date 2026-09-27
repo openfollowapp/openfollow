@@ -44,6 +44,7 @@ from openfollow.video.connection_status import ConnectionStatus
 from openfollow.video.failure import (
     RESOURCE_DOMAIN,
     RESOURCE_NOT_AUTHORIZED,
+    RESOURCE_NOT_FOUND,
     RESOURCE_OPEN_READ,
     STREAM_CODEC_NOT_FOUND,
     STREAM_DOMAIN,
@@ -973,6 +974,58 @@ class TestPlaySourceSelection:
 
         r.play()
         assert fake_glib.timers  # reconnect scheduled
+
+
+class TestARefusedStartIsClassified:
+    """``set_state(PLAYING)`` can fail before any bus message is handled - a Pi
+    Camera with no camera present does. The element's own error is on the bus
+    by then, and says what failed; flattening it read as "failed for a reason
+    this station does not recognise"."""
+
+    @pytest.fixture(params=[True, False], ids=["with-picker", "without-picker"])
+    def picker(self, request, monkeypatch, fake_input_cls):
+        monkeypatch.setattr(
+            FakeInput,
+            "_capabilities",
+            InputCapabilities(
+                has_source_selection=request.param,
+                has_source_discovery=request.param,
+                discovery_interval=0.5,
+                selection_title="SELECT FAKE",
+                hotkey="n",
+            ),
+        )
+        return request.param
+
+    @staticmethod
+    def _refusing(message: Any) -> FakePipeline:
+        return FakePipeline(
+            set_state_returns={FakeState.PLAYING: FakeStateChangeReturn.FAILURE},
+            bus=FakeBus(pop_message=message),
+        )
+
+    def test_the_element_error_names_the_failure(self, fake_gst, fake_glib, picker) -> None:
+        class _Err:
+            message = "Could not find a camera named '/base/cam@36'."
+            domain = RESOURCE_DOMAIN
+            code = RESOURCE_NOT_FOUND
+
+        class _Msg:
+            def parse_error(self) -> tuple[_Err, str]:
+                return _Err(), "gst_libcamera_src_open (): libcamera::CameraMananger::get() returned nullptr"
+
+        FakeInput.create_pipeline_result = self._refusing(_Msg())
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r.play()
+        assert r.status_marker.failure == VideoFailure.STREAM_NOT_FOUND
+        assert fake_glib.timers  # retries unchanged
+
+    def test_an_empty_bus_stays_this_stations_own_failure(self, fake_gst, fake_glib, picker) -> None:
+        FakeInput.create_pipeline_result = self._refusing(None)
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r.play()
+        assert r.status_marker.failure == VideoFailure.UNKNOWN
+        assert fake_glib.timers
 
 
 # --------------------------------------------------------------------------- #

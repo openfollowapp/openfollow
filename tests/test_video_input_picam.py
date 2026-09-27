@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -21,78 +21,79 @@ pytestmark = pytest.mark.unit
 # --------------------------------------------------------------------------- #
 
 
-class _FakeCompleted:
-    def __init__(self, stdout: str = "", stderr: str = "") -> None:
-        self.stdout = stdout
-        self.stderr = stderr
+class _FakeDevice:
+    def __init__(self, path: str, props: str | None) -> None:
+        self._path = path
+        self._props = props
+
+    def get_display_name(self) -> str:
+        return self._path
+
+    def get_properties(self) -> SimpleNamespace | None:
+        return None if self._props is None else SimpleNamespace(to_string=lambda: self._props)
+
+
+def _gst_with_cameras(devices: object, *, provider: bool = True) -> SimpleNamespace:
+    """A Gst whose libcamera device provider lists *devices* (or raises it)."""
+
+    def _get_devices() -> list[_FakeDevice]:
+        if isinstance(devices, Exception):
+            raise devices
+        return list(devices)  # type: ignore[call-overload]
+
+    factory = SimpleNamespace(get=lambda: SimpleNamespace(get_devices=_get_devices))
+    finds: list[str] = []
+
+    def _find(name: str) -> SimpleNamespace | None:
+        finds.append(name)
+        return factory if provider else None
+
+    return SimpleNamespace(DeviceProviderFactory=SimpleNamespace(find=_find), finds=finds)
+
+
+def _discover(gst: SimpleNamespace) -> list[dict[str, str]]:
+    from gi.repository import Gst  # noqa: F401
+
+    with patch("gi.repository.Gst", gst):
+        return _discover_cameras()
 
 
 class TestDiscoverCameras:
-    def test_parses_rpicam_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        sample = (
-            "Available cameras\n"
-            "-----------------\n"
-            "0 : imx219 [3280x2464 10-bit RGGB] (/base/axi/pcie@120000/rp1/i2c@88000/imx219@10)\n"
-            "1 : imx477 [4056x3040 12-bit RGGB] (/base/axi/pcie@120000/rp1/i2c@80000/imx477@1a)\n"
+    """Listed through GStreamer's libcamera device provider, the package the
+    pipeline itself needs; rpicam-hello is not part of the install, so a scan
+    through it found nothing on a station that was streaming its camera."""
+
+    def test_lists_each_camera_by_id_and_model(self) -> None:
+        gst = _gst_with_cameras(
+            [
+                _FakeDevice(
+                    "/base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36",
+                    "camera-properties, api.libcamera.Location=(int)2, api.libcamera.Model=(string)ov5647, "
+                    "api.libcamera.Rotation=(int)0",
+                ),
+                _FakeDevice("/base/axi/pcie@1000120000/rp1/i2c@80000/imx708@1a", "camera-properties"),
+            ]
         )
-        monkeypatch.setattr(
-            subprocess,
-            "run",
-            lambda *a, **k: _FakeCompleted(stdout=sample),
-        )
-        cams = _discover_cameras()
-        assert cams == [
-            {
-                "index": "0",
-                "model": "imx219",
-                "path": "/base/axi/pcie@120000/rp1/i2c@88000/imx219@10",
-            },
-            {
-                "index": "1",
-                "model": "imx477",
-                "path": "/base/axi/pcie@120000/rp1/i2c@80000/imx477@1a",
-            },
+        assert _discover(gst) == [
+            {"model": "ov5647", "path": "/base/axi/pcie@1000120000/rp1/i2c@88000/ov5647@36"},
+            # No model property: the sensor node name stands in.
+            {"model": "imx708", "path": "/base/axi/pcie@1000120000/rp1/i2c@80000/imx708@1a"},
+        ]
+        assert gst.finds == ["libcameraprovider"]
+
+    def test_a_device_without_properties_is_still_listed(self) -> None:
+        assert _discover(_gst_with_cameras([_FakeDevice("/base/cam@10", None)])) == [
+            {"model": "cam", "path": "/base/cam@10"}
         ]
 
-    def test_reads_stderr_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Some rpicam-hello builds print to stderr – the parser merges both."""
-        sample = "0 : imx708 [4608x2592 10-bit RGGB] (/base/axi/camera)"
-        monkeypatch.setattr(
-            subprocess,
-            "run",
-            lambda *a, **k: _FakeCompleted(stderr=sample),
-        )
-        assert _discover_cameras()[0]["model"] == "imx708"
+    def test_no_libcamera_provider_lists_nothing(self) -> None:
+        assert _discover(_gst_with_cameras([], provider=False)) == []
 
-    def test_file_not_found_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def _raise(*a, **k):
-            raise FileNotFoundError("rpicam-hello")
+    def test_a_provider_that_fails_lists_nothing(self) -> None:
+        assert _discover(_gst_with_cameras(RuntimeError("libcamera"))) == []
 
-        monkeypatch.setattr(subprocess, "run", _raise)
-        assert _discover_cameras() == []
-
-    def test_timeout_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def _raise(*a, **k):
-            raise subprocess.TimeoutExpired(cmd="rpicam-hello", timeout=5)
-
-        monkeypatch.setattr(subprocess, "run", _raise)
-        assert _discover_cameras() == []
-
-    @pytest.mark.parametrize(
-        "exc",
-        [
-            PermissionError("rpicam-hello not executable"),
-            OSError(8, "Exec format error"),
-        ],
-    )
-    def test_os_error_returns_empty(self, monkeypatch: pytest.MonkeyPatch, exc: OSError) -> None:
-        # A non-executable / wrong-arch binary raises an OSError variable other
-        # than FileNotFoundError; discovery must degrade to an empty list so the
-        # web camera dropdown doesn't surface a 500 instead of "no cameras".
-        def _raise(*a, **k):
-            raise exc
-
-        monkeypatch.setattr(subprocess, "run", _raise)
+    def test_no_gstreamer_bindings_lists_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setitem(sys.modules, "gi.repository", None)
         assert _discover_cameras() == []
 
 

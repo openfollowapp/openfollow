@@ -565,7 +565,7 @@ x, y, z: float          # PSN coords
 color: str              # hex from the marker catalog
 radius: float           # ball_size from config
 speed: float | None     # scalar m/s; None → shows as 0.00
-online: bool            # green dot = online, red dot = offline
+online: bool            # green dot = online, off-white crossed disc = offline
 name: str               # marker label
 controller_idx: int | None    # bound gamepad slot, or None
 controller_connected: bool    # is that pad currently plugged in
@@ -581,7 +581,7 @@ marker_fader: float | None    # per-marker fader value, or None
 - **Right side:** marker cards (one per viewer marker)
 
 ### Marker card (180×64px)
-- **Top-right dot:** online status (green/red, radius 4px)
+- **Top-right mark:** online status: a green dot (radius 4px) when online, an off-white disc with a cut-out cross when offline
 - **y+18:** Marker ID ("T0"), yellow if selected
 - **y+34:** Coordinates (x, y, z in metres)
 - **y+47:** Speed text "X.XX m/s"

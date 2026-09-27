@@ -3692,6 +3692,20 @@ class TestStickPrimingAfterDetection:
         dx, _dy, _dz = result.movements[0]
         assert dx == pytest.approx(app._config.marker.move_speed * handler._apply_deadzone(-0.9))
 
+    def test_a_stick_still_being_ignored_does_not_count_as_use(self, stubbed_pygame) -> None:
+        # A stick resting just past the deadzone after connect moves nothing, so
+        # the activity dot must not claim the pad is in use.
+        joy = FakeJoystick(num_buttons=12, num_axes=6)
+        joy.set_axis(0, -0.9)
+        handler = self._detect(stubbed_pygame, joy, clock=_Clock())
+        handler.update(0.016)
+        assert handler.last_input() == {}
+        joy.set_axis(0, 0.0)
+        handler.update(0.016)
+        joy.set_axis(0, -0.9)
+        handler.update(0.016)
+        assert handler.last_input() == {0: 50.0}
+
     def test_phantom_does_not_drive_marker_fader(self, stubbed_pygame) -> None:
         bus = _FakeFaderBus()
         cfg = ControllerConfig(marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
@@ -3843,6 +3857,7 @@ class TestLastInput:
     def test_a_deflected_stick_counts(self, stubbed_pygame, monkeypatch) -> None:
         joy = FakeJoystick()
         handler, _ = self._handler(stubbed_pygame, monkeypatch, joy)
+        handler.update(0.016)  # at rest once, so the stick is trusted
         joy._axes[0] = 0.9
         handler.update(0.016)
         assert 0 in handler.last_input()

@@ -1435,14 +1435,15 @@ class GamepadHandler:
 
                 # Read left stick for X/Y
                 dx, dy, _ = self._read_axes(controller_idx, joystick)
-                if dx or dy:
-                    self._last_input[controller_idx] = self._clock()
 
                 # Discard a stale stick reading from a pad that hasn't centered
                 # since (re)detection, so a restart can't fling the marker.
                 stick_primed = self._update_stick_priming(controller_idx, dx, dy)
                 if not stick_primed:
                     dx = dy = 0.0
+                # Counted as use only once it can reach the marker.
+                if dx or dy:
+                    self._last_input[controller_idx] = self._clock()
 
                 # Normalize diagonal stick input to prevent faster diagonal movement
                 mag_xy = math.sqrt(dx * dx + dy * dy)

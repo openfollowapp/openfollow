@@ -312,9 +312,12 @@
     // ---- This Station: whether this station views a marker, and whether it
     // controls it too (a controlled marker is always viewed).
     const THIS_STATION_STATES = [['control', 'View &amp; Control'], ['view', 'View'], ['hide', 'Hide']];
-    // Saves in flight, and until when a poll may still carry the state from before the last one.
+    // Saves queued or in flight, and until when a poll may still carry the state from before the last one.
     let selectionPending = 0;
     let selectionSettleUntil = 0;
+    // Saves run one at a time: each posts the whole selection, and two in flight
+    // could commit out of order and put back the older one.
+    let selectionQueue = Promise.resolve();
 
     function thisStationToggle(name, markerId) {
         return '<div class="seg-toggle seg-toggle--3 seg-toggle--compact" role="radiogroup" aria-label="This station">' +
@@ -343,6 +346,18 @@
     // ---- Selection POST (out-of-band write, same wire as before). ``extra``
     // adds a marker that has no catalog row yet: the add-row's choice.
     function postSelection(root, row, extra) {
+        selectionPending++;
+        selectionQueue = selectionQueue
+            .then(function() { return saveSelection(root, row, extra); })
+            .catch(function() {})
+            .then(function() {
+                selectionPending--;
+                selectionSettleUntil = Date.now() + 1600;
+            });
+    }
+
+    // Reads the toggles when it is sent, so a queued save carries the latest selection.
+    function saveSelection(root, row, extra) {
         const controlled = [];
         const viewer = [];
         function add(id, state) {
@@ -354,8 +369,7 @@
         });
         if (extra) add(extra.id, extra.state);
         const table = root.querySelector('.marker-catalog-table');
-        selectionPending++;
-        fetch('/api/markers/selection', {
+        return fetch('/api/markers/selection', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({controlled_ids: controlled, viewer_ids: viewer})
@@ -369,9 +383,6 @@
         }).catch(function() {
             flashRow(row, false);
             writeUnreachable(table)();
-        }).finally(function() {
-            selectionPending--;
-            selectionSettleUntil = Date.now() + 1600;
         });
     }
 

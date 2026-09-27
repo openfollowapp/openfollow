@@ -279,6 +279,21 @@ class TestThisStationToggle:
             in body
         )
 
+    def test_saves_run_one_at_a_time_and_read_the_toggles_when_sent(self) -> None:
+        """Each save posts the whole selection, and the server runs requests in
+        parallel: two in flight could commit out of order and put back the older one."""
+        body = _render_marker()
+        start = body.index("function postSelection(root, row, extra) {")
+        post = body[start : body.index("\n    }\n", start)]
+        assert "selectionQueue = selectionQueue" in post
+        assert ".then(function() { return saveSelection(root, row, extra); })" in post
+        # The snapshot is taken inside the queued save, not when the click happened.
+        assert "querySelectorAll" not in post
+        save = body[body.index("function saveSelection(root, row, extra) {") :]
+        assert save.index("root.querySelectorAll('tr[data-marker-id] input[data-this-station]:checked')") < save.index(
+            "fetch('/api/markers/selection'"
+        )
+
     def test_the_poll_never_moves_a_toggle_mid_save(self) -> None:
         body = _render_marker()
         assert "const settled = selectionPending === 0 && Date.now() >= selectionSettleUntil;" in body

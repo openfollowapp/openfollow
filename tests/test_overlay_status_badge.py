@@ -6,7 +6,7 @@ The badge surfaces ``OverlayState.status_flags`` entries as rows. Empty
 list ⇒ nothing draws; non-empty ⇒ one row per active flag, with overflow
 rolled into a single "+N more" tail row to bound the on-screen footprint.
 Each entry carries a severity – ``"error"`` (warning red, warning sign) or
-``"info"`` (green, filled dot).
+``"info"`` (blue, the "i" sign).
 
 Driven against the project's :class:`FakeCairo` so the tests stay fast
 and don't need an actual Cairo surface.
@@ -18,7 +18,9 @@ import pytest
 
 from openfollow.runtime.overlay_draw_style import (
     COLOR_DANGER_BG,
-    COLOR_OK,
+    COLOR_INFO_BG,
+    COLOR_INFO_BORDER,
+    COLOR_INFO_FILL,
     COLOR_TEXT,
     COLOR_WARNING_BORDER,
     COLOR_WARNING_FILL,
@@ -125,28 +127,27 @@ class TestSingleFlag:
 
 
 class TestSeverity:
-    def test_info_row_uses_ok_green_and_a_circle_glyph(self) -> None:
-        """An ``"info"`` row is green (``COLOR_OK``) and draws a filled dot
-        (an ``arc``) rather than the error triangle."""
+    def test_info_row_uses_the_info_blue_and_the_i_sign(self) -> None:
+        """An ``"info"`` row takes the info fill and border and leads with the
+        off-white "i" sign, its "i" cut out in the info blue, not the triangle."""
         cr = FakeCairo()
         state = _state_with_flags(("update_available", "Update available", "info"))
         draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
-        rgb_calls = [c for c in cr.calls if c[0] == "rgb"]
-        assert any(tuple(round(v, 3) for v in c[1:]) == tuple(round(v, 3) for v in COLOR_OK) for c in rgb_calls)
-        # The info glyph is a circle → at least one arc is recorded. (The
-        # rounded-rect corners are also arcs, so just assert the green colour
-        # was set, then a circle exists.)
-        assert cr.arcs, "info glyph should draw an arc"
+        assert ("rgba", *COLOR_INFO_FILL) in cr.calls
+        assert ("rgb", *COLOR_INFO_BORDER) in cr.calls
+        assert ("rgb", *COLOR_INFO_BG) in cr.calls
+        assert cr.fill_preserves == 0, "no warning triangle"
         # No warning red anywhere on a pure-info badge.
         assert ("rgb", *COLOR_WARNING_BORDER) not in cr.calls
         assert ("rgba", *COLOR_WARNING_FILL) not in cr.calls
 
-    def test_error_row_uses_no_info_green(self) -> None:
+    def test_error_row_uses_no_info_blue(self) -> None:
         cr = FakeCairo()
         state = _state_with_flags(("midi_unavailable", "Backend down", "error"))
         draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
         assert ("rgb", *COLOR_WARNING_BORDER) in cr.calls
-        assert ("rgb", *COLOR_OK) not in cr.calls
+        assert ("rgb", *COLOR_INFO_BORDER) not in cr.calls
+        assert ("rgba", *COLOR_INFO_FILL) not in cr.calls
 
 
 class TestMultipleFlags:
@@ -194,7 +195,7 @@ class TestOverflow:
 
     def test_overflow_tail_is_info_when_all_hidden_rows_are_info(self) -> None:
         """The "+N more" tail only goes red if a hidden row is an error; an
-        all-info stack keeps a green tail."""
+        all-info stack keeps a blue tail."""
         cr = FakeCairo()
         flags = [(f"src_{i}", f"info {i}", "info") for i in range(_MAX_VISIBLE_ROWS + 1)]
         state = _state_with_flags(*flags)

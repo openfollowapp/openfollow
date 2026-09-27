@@ -34,13 +34,15 @@ CARD_BG_ALPHA = 0.9
 
 # Status indicators
 COLOR_OK = (0.494, 0.898, 0.624)  # #7de59f (RGB, green, online)
-COLOR_DANGER = (1.0, 0.549, 0.549)  # #ff8c8c (RGB, red, offline)
 # The HUD's warning red. Status rows, failure panels and a missing controller's
 # card fill with it (the card keeps its marker-coloured border); dark enough
 # that the HUD's normal text stays readable on it.
 COLOR_DANGER_BG = (0.42, 0.08, 0.08)  # #6b1414 (RGB)
 COLOR_WARNING_FILL = (*COLOR_DANGER_BG, 0.8)  # #6b1414 at 80% (RGBA)
 COLOR_WARNING_BORDER = (0.69, 0.149, 0.149)  # #b02626 (RGB)
+COLOR_INFO_BG = (0.09, 0.239, 0.42)  # #173d6b (RGB)
+COLOR_INFO_FILL = (*COLOR_INFO_BG, 0.8)  # #173d6b at 80% (RGBA)
+COLOR_INFO_BORDER = (0.149, 0.392, 0.69)  # #2664b0 (RGB)
 
 # Typography
 FONT_UI_FAMILY = "Inter"
@@ -93,6 +95,21 @@ def draw_warning_sign(cr: Any, cx: float, cy: float, size: float = 13.0) -> None
     cr.rectangle(cx - bar_w / 2, bar_top, bar_w, bar_h)
     cr.fill()
     cr.arc(cx, bar_top + bar_h + bar_w * 1.25, bar_w * 0.62, 0, 2 * math.pi)
+    cr.fill()
+    cr.restore()
+
+
+def draw_info_sign(cr: Any, cx: float, cy: float, size: float = 13.0, cut: tuple[float, ...] = COLOR_BG_BASE) -> None:
+    """Off-white disc with its "i" cut out in ``cut``, centred on (cx, cy)."""
+    cr.save()
+    cr.set_source_rgb(*COLOR_TEXT)
+    cr.arc(cx, cy, size * 0.45, 0, 2 * math.pi)
+    cr.fill()
+    cr.set_source_rgb(*cut)
+    stem_w = size * 0.1125
+    cr.rectangle(cx - stem_w / 2, cy - size * 0.0875, stem_w, size * 0.325)
+    cr.fill()
+    cr.arc(cx, cy - size * 0.206, size * 0.069, 0, 2 * math.pi)
     cr.fill()
     cr.restore()
 

@@ -4,15 +4,17 @@
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 from openfollow.runtime.overlay_draw_style import (
-    COLOR_OK,
+    COLOR_INFO_BG,
+    COLOR_INFO_BORDER,
+    COLOR_INFO_FILL,
     COLOR_TEXT,
     COLOR_WARNING_BORDER,
     COLOR_WARNING_FILL,
     PANEL_RADIUS,
+    draw_info_sign,
     draw_rounded_rect,
     draw_warning_sign,
 )
@@ -108,28 +110,26 @@ def _draw_warning_row(
 ) -> None:
     """One badge row: background, severity glyph, message text.
 
-    ``"error"`` is the HUD's warning red with a warning sign, ``"info"`` a
-    green wash with a filled dot. The overflow row reuses it.
+    ``"error"`` is the HUD's warning red with a warning sign, ``"info"`` the
+    info blue with an "i" sign. The overflow row reuses it.
     """
     info = severity == "info"
     radius = PANEL_RADIUS
     draw_rounded_rect(cr, x, y, w, h, radius)
     if info:
-        cr.set_source_rgba(*COLOR_OK, 0.20)
+        cr.set_source_rgba(*COLOR_INFO_FILL)
     else:
         cr.set_source_rgba(*COLOR_WARNING_FILL)
     cr.fill()
     draw_rounded_rect(cr, x, y, w, h, radius)
-    cr.set_source_rgb(*(COLOR_OK if info else COLOR_WARNING_BORDER))
+    cr.set_source_rgb(*(COLOR_INFO_BORDER if info else COLOR_WARNING_BORDER))
     cr.set_line_width(1.6)
     cr.stroke()
 
     glyph_cx = x + _ICON_PAD + 6.0
     glyph_cy = y + h * 0.5
     if info:
-        cr.set_source_rgb(*COLOR_OK)
-        cr.arc(glyph_cx, glyph_cy, 4.0, 0, 2 * math.pi)
-        cr.fill()
+        draw_info_sign(cr, glyph_cx, glyph_cy, cut=COLOR_INFO_BG)
     else:
         draw_warning_sign(cr, glyph_cx, glyph_cy)
 

@@ -115,7 +115,6 @@ COLOR_BORDER = _style.COLOR_BORDER
 
 # Status indicators
 COLOR_OK = _style.COLOR_OK
-COLOR_DANGER = _style.COLOR_DANGER
 
 # Typography
 FONT_UI_FAMILY = _style.FONT_UI_FAMILY

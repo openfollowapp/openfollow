@@ -817,7 +817,7 @@ def build_marker_visual_state(
             # A subsystem writes either a plain message string (the
             # back-compat form, styled as an "error") or a
             # ``(severity, message)`` tuple to choose "error" (red) vs
-            # "info" (green) badge styling. Be defensive about the tuple's
+            # "info" (blue) badge styling. Be defensive about the tuple's
             # arity – this runs on the per-frame overlay-build path, so a
             # malformed writer (wrong-length tuple) must degrade rather than
             # raise ValueError and abort the frame. An empty tuple was

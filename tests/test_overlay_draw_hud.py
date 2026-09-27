@@ -173,6 +173,20 @@ class TestModalScrim:
 class TestAboutScreen:
     """The on-screen About screen renders the AGPLv3 notice using pure Cairo text."""
 
+    def test_about_safety_line_is_off_white_in_two_even_lines(self) -> None:
+        cr = FakeCairo()
+        draw_about_screen(FakeRenderer(), cr, OverlayState(), 1920, 1080)
+        start = next(i for i, d in enumerate(cr.texts) if d.text.startswith("OpenFollow is intended"))
+        first, second = cr.texts[start], cr.texts[start + 1]
+        assert second.text.endswith("safety critical applications.")
+        assert all(d.rgba == (*COLOR_TEXT, 1.0) and d.bold for d in (first, second))
+        # Even: the two lines differ by less than one word, not a greedy full line plus a remainder.
+        widths = [cr.text_extents(d.text).width for d in (first, second)]
+        longest_word = max(cr.text_extents(w).width for w in (first.text + " " + second.text).split())
+        assert abs(widths[0] - widths[1]) <= longest_word
+        # No sign above it.
+        assert ("rgb", *COLOR_BG_BASE) not in cr.calls
+
     def test_about_screen_renders_name_version_and_notice(self) -> None:
         from openfollow import __version__
 

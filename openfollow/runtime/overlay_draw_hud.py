@@ -17,7 +17,6 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_ACCENT_SOFT,
     COLOR_BG_BASE,
     COLOR_BORDER_SOFT,
-    COLOR_DANGER,
     COLOR_OK,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
@@ -875,10 +874,12 @@ def draw_about_screen(renderer: Any, cr: Any, state: OverlayState, w: int, h: in
         bold: bool = False,
         gap: float = 16.0,
         line_gap: float = 2.0,
+        balanced: bool = False,
     ) -> None:
         """Greedy word-wrap a paragraph to the panel width, drawing each
         wrapped line centered. Tight ``line_gap`` between a paragraph's
-        own lines; the larger ``gap`` applies only after its last line."""
+        own lines; the larger ``gap`` applies only after its last line.
+        ``balanced`` evens out a two-line wrap."""
         renderer._set_ui_font(cr, size, bold=bold)
         max_w = panel_w - 64.0
         wrapped: list[str] = []
@@ -895,6 +896,17 @@ def draw_about_screen(renderer: Any, cr: Any, state: OverlayState, w: int, h: in
         # final line; the empty-``current`` arm is defensive only.
         if current:  # pragma: no branch
             wrapped.append(current)
+        if balanced and len(wrapped) == 2:
+            # The break that keeps the wider line shortest; the greedy break is
+            # one of the candidates, so the result always fits.
+            words = text.split()
+            split = min(
+                range(1, len(words)),
+                key=lambda i: max(
+                    cr.text_extents(" ".join(words[:i])).width, cr.text_extents(" ".join(words[i:])).width
+                ),
+            )
+            wrapped = [" ".join(words[:split]), " ".join(words[split:])]
         for i, ln in enumerate(wrapped):
             last = i == len(wrapped) - 1
             _line(ln, size, color, bold=bold, gap=gap if last else line_gap)
@@ -944,9 +956,10 @@ def draw_about_screen(renderer: Any, cr: Any, state: OverlayState, w: int, h: in
         "OpenFollow is intended to coordinate visual and audio elements of a "
         "production and should not be used for safety critical applications.",
         12,
-        COLOR_DANGER,
+        COLOR_TEXT,
         bold=True,
         gap=4.0,
+        balanced=True,
     )
 
 

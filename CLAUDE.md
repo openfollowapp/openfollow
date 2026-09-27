@@ -718,6 +718,9 @@ when OpenFollow lets go, and left alone when the puck vanished, so the blink
 ends lit; `get_controller_info` carries each slot's state, kind, port
 label and time since last use for the web Controller Slots table.
 
+### 3D Mouse status (`input/mouse3d_status.py`)
+`Mouse3DManager.status()` reports what the supervisor already holds and never enumerates or imports: the backend is `ok`, `not_installed`, or `could_not_start` (enumeration raised; easyhid without libhidapi binds the interpreter and raises `AttributeError`), and every attached puck is `open`, `opening`, `no_profile`, `not_permitted` or `open_failed`. Unprofiled pucks are enumerated and reported but never opened. hidapi drops the errno of a refused open, so `_PySpaceMouseBackend.open` checks `os.access` on the node and raises `PermissionError`. `/api/stats` publishes the block as `mouse3d` (its values are a wire interface), the bundle renders it as E10, and the web section shows only faults: its poll answers 204 while `status_key` is unchanged, so a `role="alert"` box is inserted once per change. **macOS is unsupported by platform** (`_platform_supported`): the real backend never starts there and the section shows one Info line; an injected backend bypasses the gate, as it bypasses the dependency check. Lift the gate with the pyspacemouse release whose `open_by_path` accepts macOS hidapi paths.
+
 ### Speed per marker (`AppConfig.marker_move_speeds`)
 Move speed is stored **per marker** in a `dict[int, float]` keyed by
 `marker_id` (default empty). The global `MarkerConfig.move_speed` is the

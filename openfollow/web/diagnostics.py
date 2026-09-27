@@ -2717,6 +2717,47 @@ def collect_gamepad_runtime(p: DiagnosticsProviders) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Section E10 – 3D Mouse (what the supervisor observed)
+# ---------------------------------------------------------------------------
+
+
+def collect_mouse3d(p: DiagnosticsProviders) -> list[str]:
+    """Every attached puck and why it isn't in use, with the raw open error."""
+    if p.runtime_stats is None:
+        return ["  [not applicable: runtime stats provider not wired]"]
+    stats, err = _safely_value(p.runtime_stats, "runtime_stats", {})
+    if err is not None:
+        return [f"  {err}"]
+    block = (stats or {}).get("mouse3d")
+    if not block:
+        return ["  [no 3D Mouse status published]"]
+    if not block.get("supported", True):
+        enabled = "yes" if block.get("enabled") else "no"
+        return [f"  enabled: {enabled}", "  [not scanned: 3D Mouse is not supported on this platform by this version]"]
+    if not block.get("enabled"):
+        return ["  enabled: no", "  [not scanned: 3D Mouse is disabled]"]
+    backend = block.get("backend", "ok")
+    rows = [f"  enabled: yes · backend: {backend} (pyspacemouse {block.get('backend_version') or 'version unknown'})"]
+    if backend != "ok":
+        rows.append(f"      error:   {block.get('backend_error') or '(none)'}")
+        rows.append("  [no devices listed: the backend could not look]")
+        return rows
+    devices = block.get("devices") or []
+    if not devices:
+        rows.append("  [no 3D Mouse connected]" if block.get("scanned") else "  [first scan not finished]")
+        return rows
+    for device in devices:
+        rows.append(f"  {device.get('product_name') or '(unnamed)'}")
+        rows.append(f"      usb:     {device.get('usb_id', '')}")
+        rows.append(f"      path:    {device.get('path', '')}")
+        rows.append(f"      port:    {device.get('port_key') or '(none)'}")
+        rows.append(f"      state:   {device.get('state', '')}")
+        if device.get("error"):
+            rows.append(f"      error:   {device['error']}")
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Section G – device permissions / privilege broker state
 # ---------------------------------------------------------------------------
 
@@ -2813,6 +2854,7 @@ class DiagnosticsBundle:
     e7_net: list[str] = field(default_factory=list)
     e8_usb: list[str] = field(default_factory=list)
     e9_gamepad: list[str] = field(default_factory=list)
+    e10_mouse3d: list[str] = field(default_factory=list)
     f_io: list[str] = field(default_factory=list)
     g_permissions: list[str] = field(default_factory=list)
 
@@ -2840,6 +2882,7 @@ _BUNDLE_SECTIONS: tuple[tuple[str, str], ...] = (
     ("E7. Network interfaces", "e7_net"),
     ("E8. USB devices", "e8_usb"),
     ("E9. Gamepad controllers", "e9_gamepad"),
+    ("E10. 3D Mouse", "e10_mouse3d"),
     ("F. Recent I/O activity", "f_io"),
     ("G. Device permissions", "g_permissions"),
 )
@@ -2933,6 +2976,7 @@ def collect_bundle(
         "e7_net": collect_network_interfaces,
         "e8_usb": lambda: collect_usb(p),
         "e9_gamepad": lambda: collect_gamepad_runtime(p),
+        "e10_mouse3d": lambda: collect_mouse3d(p),
         "f_io": lambda: collect_recent_io(p),
         "g_permissions": lambda: collect_device_permissions(p),
     }

@@ -1753,20 +1753,31 @@ def test_pyspacemouse_backend_enumerate_filters_dedups_and_sorts(monkeypatch) ->
     assert infos[0].product_name == "Nav"
 
 
-def test_pyspacemouse_backend_enumerate_survives_missing_lib(monkeypatch) -> None:  # noqa: ANN001
+def test_pyspacemouse_backend_enumerate_raises_when_easyhid_is_missing(monkeypatch) -> None:  # noqa: ANN001
+    # "Cannot look" must never read as "nothing plugged in".
     monkeypatch.setitem(sys.modules, "easyhid", None)  # `from easyhid import ...` -> ImportError
-    assert _PySpaceMouseBackend().enumerate() == []
+    with pytest.raises(ImportError):
+        _PySpaceMouseBackend().enumerate()
 
 
-def test_pyspacemouse_backend_enumerate_survives_find_oserror(monkeypatch) -> None:  # noqa: ANN001
+@pytest.mark.parametrize(
+    "exc",
+    [
+        OSError("libhidapi missing"),
+        # What easyhid raises with no libhidapi: it binds the interpreter itself.
+        AttributeError("function/symbol 'hid_enumerate' not found in library '<None>'"),
+    ],
+)
+def test_pyspacemouse_backend_enumerate_raises_when_listing_fails(monkeypatch, exc) -> None:  # noqa: ANN001
     class _Enum:
         def find(self):  # noqa: ANN202
-            raise OSError("libhidapi missing")
+            raise exc
 
     fake_easyhid = types.ModuleType("easyhid")
     fake_easyhid.Enumeration = _Enum
     monkeypatch.setitem(sys.modules, "easyhid", fake_easyhid)
-    assert _PySpaceMouseBackend().enumerate() == []
+    with pytest.raises(type(exc)):
+        _PySpaceMouseBackend().enumerate()
 
 
 def test_pyspacemouse_backend_open_delegates_to_open_by_path(monkeypatch) -> None:  # noqa: ANN001
@@ -2039,8 +2050,11 @@ def _enumerate_with(monkeypatch, devices):  # noqa: ANN001, ANN202
 def test_enumerate_names_an_unprofiled_puck_once(monkeypatch, caplog) -> None:  # noqa: ANN001
     backend = _enumerate_with(monkeypatch, [_fake_hid_device(0x046D, 0xC628, "/dev/hidraw4", name="Notebooks")])
     with caplog.at_level(logging.WARNING, logger="openfollow.input.mouse3d"):
-        assert backend.enumerate() == []
-        assert backend.enumerate() == []  # a second pass must not repeat it
+        first = backend.enumerate()
+        second = backend.enumerate()  # a second pass must not repeat the log line
+    # Reported, flagged, never dropped: the status names it.
+    assert [(i.path, i.product_name, i.profiled) for i in first] == [("/dev/hidraw4", "Notebooks", False)]
+    assert second == first
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
     assert "046d:c628" in warnings[0].getMessage()

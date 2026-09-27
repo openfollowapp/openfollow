@@ -29,7 +29,7 @@
      hx-swap="innerHTML">
 % if show_failure:
 %     token = video_error_token(video_failure_text, video_error_message, video_failure_action)
-%     include('partials/video_error_box.tpl', failure_text=video_failure_text, error_message=video_error_message, action=video_failure_action, token=token, scope='source', assertive=False)
+%     include('partials/video_error_box.tpl', failure_text=video_failure_text, error_message=video_error_message, action=video_failure_action, token=token, scope='source', live='status')
 % end
 </div>
 

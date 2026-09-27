@@ -65,6 +65,7 @@ from openfollow.configuration import (
     load_config,
     save_config,
 )
+from openfollow.input.mouse3d_status import status_key
 
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
@@ -99,6 +100,7 @@ from openfollow.units import UnitSystem, parse_length, parse_speed
 from openfollow.web import diagnostics, peer_auth
 from openfollow.web._md import render_help_markdown
 from openfollow.web.labels import video_error_token
+from openfollow.web.live_alerts import statistics_alerts
 from openfollow.web.login_throttle import LoginThrottle
 from openfollow.web.whats_new import load_whats_new
 
@@ -1970,6 +1972,11 @@ def _osc_binding_marker_label(token: str, catalog: Any) -> str:
     if token.startswith("c"):
         return f"Controller {token}"
     return _catalog_marker_label(int(token), catalog)
+
+
+def _mouse3d_status_view(server: ConfigWebServer) -> dict[str, Any]:
+    """The 3D Mouse status block from the main loop's latest stats snapshot."""
+    return dict(server.get_runtime_stats().get("mouse3d") or {})
 
 
 def _controller_slots_view(server: ConfigWebServer) -> dict[str, Any]:
@@ -4553,6 +4560,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Get the live runtime statistics partial."""
         return template("partials/statistics", stats=server.get_runtime_stats())
 
+    @app.get("/section/statistics/alerts")
+    def get_statistics_alerts() -> Any:
+        """The Live Statistics announcer; 204 while its text is unchanged."""
+        stats = server.get_runtime_stats()
+        if request.query.get("key") == statistics_alerts(stats).key():
+            return HTTPResponse(status=204)
+        return template("partials/statistics_alerts", stats=stats)
+
     @app.get("/section/controller_slots")
     def get_controller_slots() -> Any:
         """The Controller Slots table, from the main loop's latest stats snapshot."""
@@ -5055,6 +5070,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             extra["psn_source_advisory"] = server.get_psn_source_advisory()
         elif name == "video_source":
             extra.update(_build_input_template_data(config, server.get_runtime_stats().get("video")))
+        elif name == "mouse3d":
+            extra["mouse3d_status"] = _mouse3d_status_view(server)
         elif name in ("controller", "gamepad"):
             extra["button_names"] = sorted(VALID_BUTTON_NAMES)
             extra["detection_started"] = server.is_button_detection_active()
@@ -5380,7 +5397,15 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update 3D Mouse settings."""
         bool_fields = ("enabled", *(f"invert_{axis}" for axis in MOUSE3D_AXES))
         cfg = _save_section_from_form("mouse3d", bool_fields=bool_fields)
-        return template("partials/mouse3d", config=cfg, saved=True)
+        return template("partials/mouse3d", config=cfg, saved=True, mouse3d_status=_mouse3d_status_view(server))
+
+    @app.get("/section/mouse3d/status")
+    def get_mouse3d_status() -> Any:
+        """The 3D Mouse status block; 204 while what it shows is unchanged."""
+        block = _mouse3d_status_view(server)
+        if request.query.get("key") == status_key(block):
+            return HTTPResponse(status=204)
+        return template("partials/mouse3d_status", mouse3d_status=block)
 
     @app.get("/section/mouse3d/detect")
     def detect_mouse3d_button() -> Any:

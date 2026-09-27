@@ -27,6 +27,7 @@ from openfollow.configuration import (
     HotkeyTrigger,
 )
 from openfollow.input import InputManager
+from openfollow.input.mouse3d import idle_mouse3d_status
 from openfollow.otp import OtpServer
 from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
@@ -2763,6 +2764,7 @@ class AppRuntimeServices:
                 "mapped_count": 0,
                 "items": [],
             },
+            "mouse3d": idle_mouse3d_status(cfg.mouse3d.enabled).to_dict(),
             "playback": self._frame_metrics.snapshot(),
             "tracking": {
                 "enabled": bool(cfg.detection.enabled),
@@ -2901,6 +2903,11 @@ class AppRuntimeServices:
 
         controller_items: list[dict[str, Any]] = []
         input_manager = getattr(app, "_input_manager", None)
+        mouse3d_status = (
+            input_manager.mouse3d_manager.status()
+            if input_manager is not None
+            else idle_mouse3d_status(cfg.mouse3d.enabled)
+        )
         if input_manager is not None:
             for item in input_manager.get_controller_info():
                 since = item.get("seconds_since_input")
@@ -2970,6 +2977,7 @@ class AppRuntimeServices:
                 ),
                 "items": controller_items,
             },
+            "mouse3d": mouse3d_status.to_dict(),
             "playback": playback_snapshot,
             "tracking": detection_snapshot,
         }

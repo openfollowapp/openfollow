@@ -204,7 +204,7 @@ def test_mouse3d_looped_inputs_have_validation_markup() -> None:
     from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, AppConfig
     from openfollow.web import server as _server_module  # noqa: F401 - registers tpl path
 
-    html = template("partials/mouse3d", config=AppConfig())
+    html = template("partials/mouse3d", config=AppConfig(), mouse3d_status={})
     collector = _InputCollector()
     collector.feed(html)
     by_name = {attrs.get("name", ""): attrs for attrs in collector.inputs}

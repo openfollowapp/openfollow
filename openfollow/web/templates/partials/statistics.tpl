@@ -1,5 +1,6 @@
 % import hashlib
 % from openfollow.web.labels import pretty_label, video_error_token, video_signal_label
+% from openfollow.web.live_alerts import DETECTION_MISSING_STEP, statistics_alerts
 % system = stats.get("system", {})
 % video = stats.get("video", {})
 % resolution = video.get("resolution", {})
@@ -21,18 +22,11 @@
 % input_h = resolution.get("height", 0)
 % input_resolution = ("%dx%d" % (input_w, input_h)) if video_connected and input_w and input_h else "N/A"
 % source_fps_text = ("%.1f fps" % video.get("source_fps", 0.0)) if video_connected else "N/A"
+% # The boxes carry no role: this panel is swapped every second, and the
+% # announcer beside it speaks their text once per change (web/live_alerts.py).
 % # Both are credential-free - the status marker redacts on the way in, and
 % # this partial is exempt from the web PIN.
-% video_error = str(video.get("error_message") or "")
-% # The classification leads; the element's own wording stays under it.
-% # "unknown" contributes no sentence - it would contradict that line.
-% video_failure = str(video.get("failure") or "none")
-% video_failure_action = str(video.get("failure_action") or "")
-% video_failure_text = str(video.get("failure_text") or "") if video_failure not in ("none", "unknown") else ""
-% show_video_error = bool(video_error or video_failure_text) and not video_connected
-% # Identifies the node by what it says, so the 1 Hz poll below re-uses the
-% # existing element while the reason is unchanged (see the banner's comment).
-% video_error_token = video_error_token(video_failure_text, video_error, video_failure_action)
+% alerts = statistics_alerts(stats)
 % output_resolution = system.get("output_resolution")
 % output_text = ("%dx%d" % (output_resolution["width"], output_resolution["height"])) if output_resolution else "N/A (no display)"
 % tracking_state = "Off"
@@ -43,11 +37,10 @@
 %         tracking_state = "Running" if tracking_running else "Idle"
 %     end
 % end
-% # Missing deps always force a warn chip so "Running" can't render green while
-% # the package probe is reporting a broken install. Banner, on the other hand,
-% # is only useful when the user has actually opted into detection.
+% # Missing deps always force the error chip so "Running" can't render green
+% # while the package probe is reporting a broken install.
 % if tracking_missing and tracking_enabled:
-%     tracking_chip_class = "warn"
+%     tracking_chip_class = "off"
 % elif tracking_running:
 %     tracking_chip_class = "ok"
 % elif tracking_enabled:
@@ -55,7 +48,6 @@
 % else:
 %     tracking_chip_class = ""
 % end
-% show_missing_banner = bool(tracking_missing) and tracking_enabled
 % frame_age = playback.get("seconds_since_last_frame")
 % # The watchdog flag alone is not enough: it is set from the housekeeping
 % # timeout, which is the same main loop the frame clock is on, so a block
@@ -78,8 +70,8 @@
             <h3 class="stat-panel-title">Video</h3>
             <span class="stat-chip {{'ok' if video_connected else 'off'}}">{{video_state}}</span>
         </div>
-% if show_video_error:
-%     include('partials/video_error_box.tpl', failure_text=video_failure_text, error_message=video_error, action=video_failure_action, token=video_error_token, scope='stats', assertive=True)
+% if alerts.video is not None:
+%     include('partials/video_error_box.tpl', failure_text=alerts.video[0], error_message='', action=alerts.video[1], token=video_error_token(alerts.video[0], '', alerts.video[1]), scope='stats', live='')
 % end
         <dl class="metric-list">
             <div class="metric-row">
@@ -109,11 +101,10 @@
         <div class="stat-panel-head">
             <h3 class="stat-panel-title">Device</h3>
         </div>
-% missing_controllers = [c for c in controllers.get('items', []) if c.get('state') == 'missing']
-% if missing_controllers:
-        <div class="notice error" role="alert">
-% for c in missing_controllers:
-            <div>C{{int(c.get('controller_index', 0)) + 1}} missing{{(' · marker %s' % c['marker_id']) if c.get('marker_id') is not None else ''}}{{(' · ' + c['name']) if c.get('name') else ''}}{{(' (' + c['port_label'] + ')') if c.get('port_label') else ''}}</div>
+% if alerts.controllers:
+        <div class="notice error">
+% for line in alerts.controllers:
+            <div>{{line}}</div>
 % end
         </div>
 % end
@@ -160,10 +151,10 @@
             <h3 class="stat-panel-title">Person Detection</h3>
             <span class="stat-chip{{(" " + tracking_chip_class) if tracking_chip_class else ""}}">{{tracking_state}}</span>
         </div>
-% if show_missing_banner:
-        <div class="notice error" role="alert">
-            <div>Missing packages: {{', '.join(tracking_missing)}}.</div>
-            <div class="notice-sub">Install them from the Person Detection section, then restart.</div>
+% if alerts.detection is not None:
+        <div class="notice error">
+            <div>{{alerts.detection}}</div>
+            <div class="notice-sub">{{DETECTION_MISSING_STEP}}</div>
         </div>
 % end
         <dl class="metric-list">

@@ -25,6 +25,7 @@ import pytest
 
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig
+from openfollow.input.mouse3d_status import Mouse3DStatus
 from openfollow.services import AppRuntimeServices
 from openfollow.video.failure import ConnectionPhase, SourceKind, VideoFailure
 
@@ -126,9 +127,18 @@ class _FakeDetector:
     }
 
 
+class _FakeMouse3DManager:
+    def __init__(self, status: Mouse3DStatus | None = None) -> None:
+        self._status = status or Mouse3DStatus(enabled=False, supported=True, scanned=True)
+
+    def status(self) -> Mouse3DStatus:
+        return self._status
+
+
 class _FakeInputManager:
-    def __init__(self, items: list[dict] | None = None) -> None:
+    def __init__(self, items: list[dict] | None = None, mouse3d: Mouse3DStatus | None = None) -> None:
         self._items = items or []
+        self.mouse3d_manager = _FakeMouse3DManager(mouse3d)
 
     def get_controller_info(self) -> list[dict]:
         return list(self._items)
@@ -175,7 +185,7 @@ def services(monkeypatch: pytest.MonkeyPatch) -> AppRuntimeServices:
 class TestDefaultRuntimeStatsSnapshot:
     def test_payload_shape(self, services: AppRuntimeServices) -> None:
         snap = services._default_runtime_stats_snapshot()
-        assert set(snap) == {"timestamp", "system", "video", "controllers", "playback", "tracking"}
+        assert set(snap) == {"timestamp", "system", "video", "controllers", "mouse3d", "playback", "tracking"}
         assert snap["system"]["cpu_percent"] == 0.0
         assert snap["video"]["connected"] is False
         assert snap["controllers"]["items"] == []

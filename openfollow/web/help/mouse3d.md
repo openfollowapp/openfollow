@@ -7,9 +7,20 @@ Steer the selected marker with a 6DOF "3D Mouse" – a spring-centred puck you p
 - **On its own** it drives whichever marker is currently selected, the same as the keyboard and the on-screen mouse; use the marker-cycle buttons (below) to change which marker it steers.
 - **Alongside other controllers** it's pinned to its own marker by its USB socket, the way two gamepads each keep their own marker, so two operators don't fight over one selection. The marker-cycle buttons go quiet in this mode, since each controller already owns a marker.
 
-**Device not found.** If no 3D Mouse is connected the section still saves, but nothing moves. On a fresh device, plug the unit in and the connection is picked up automatically; unplugging and re-plugging recovers on its own.
-
 **The light.** A puck with a light keeps it on while OpenFollow has the puck open and can use it, and turns it off when the 3D Mouse is switched off here or the station stops. A puck that stays dark while the 3D Mouse is enabled is not being read.
+
+## Status
+
+A box at the top of this section appears only when something keeps a 3D Mouse from working. When the 3D Mouse is off, or every connected unit works, the top stays empty; Controller Slots lists the units in use and the marker each one drives.
+
+- **No 3D Mouse connected** – OpenFollow is looking and has found none. This is the normal state with nothing plugged in; a unit plugged in later, or unplugged and plugged back in, is picked up on its own.
+- **Support is not installed** or **could not start** – the software OpenFollow reads a 3D Mouse through is missing or broken on this station, so no unit can be read, whatever is plugged in.
+- **Not supported by this version of OpenFollow** – the unit is a 3Dconnexion device, but this version has no profile for the model, so it can't read its axes and buttons. Nothing in the station's setup causes this.
+- **Not allowed to open it** – the unit was found, but the station's device permissions keep OpenFollow from reading it.
+- **Could not be opened** – the unit was found, but opening it failed for another reason.
+- **Not supported on macOS** – this version of OpenFollow can't read a 3D Mouse on a Mac, so it doesn't look for one. The settings here still save, and travel with a config export to other stations.
+
+Each box names the unit by its product name and USB ID (`vendor:product`), the same ID the diagnostics bundle lists.
 
 ## Axis mapping
 

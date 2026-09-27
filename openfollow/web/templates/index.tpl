@@ -39,6 +39,7 @@
              hx-swap="innerHTML">
             % include('partials/statistics.tpl', stats=stats)
         </div>
+        % include('partials/statistics_alerts.tpl', stats=stats)
     </div>
     % # The section shell renders once; only its live cards poll every 5s
     % # (see partials/diagnostics.tpl ``#diagnostics-live``), so the head /
@@ -83,7 +84,7 @@
     % include('partials/gamepad.tpl', config=config, saved=False, button_names=button_names)
     % include('partials/keyboard.tpl', config=config, saved=False)
     % include('partials/mouse.tpl', config=config, saved=False)
-    % include('partials/mouse3d.tpl', config=config, saved=False)
+    % include('partials/mouse3d.tpl', config=config, saved=False, mouse3d_status=stats.get('mouse3d') or {})
     % include('partials/osc.tpl', config=config, saved=False)
     % include('partials/operator_messages.tpl', config=config, saved=False)
     % # MIDI page: Devices and Virtual Faders sections. Config constants

@@ -5,6 +5,7 @@
     <div class="section-head">
         <h2>3D Mouse Input</h2>
     </div>
+    % include('partials/mouse3d_status.tpl', mouse3d_status=mouse3d_status)
 
     <div class="group">
         <div class="row">

@@ -23,13 +23,18 @@
 %# distinguishes a source still retrying from one that has given up, in its
 %# Pipeline row, without anything that moves.
 %#
-%# Params: failure_text, error_message, action, token, scope, assertive.
+%# ``live`` is the box's own live-region role: ``status`` or none. Live
+%# Statistics passes none, because its announcer speaks the box.
+%#
+%# Params: failure_text, error_message, action, token, scope, live.
 %
         <div class="notice error">
+% if live:
             <div id="video-error-{{scope}}-{{token}}" hx-preserve="true"
-                 role="{{'alert' if assertive else 'status'}}"
-                 aria-live="{{'assertive' if assertive else 'polite'}}"
-                 aria-atomic="true">
+                 role="{{live}}" aria-live="polite" aria-atomic="true">
+% else:
+            <div id="video-error-{{scope}}-{{token}}" hx-preserve="true">
+% end
                 <div>{{failure_text or error_message}}</div>
 % if action:
                 <div class="notice-sub">{{action}}</div>

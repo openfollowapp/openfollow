@@ -172,11 +172,12 @@ class TestVideoFailureBanner:
         panel = _panel(_render(video={"connected": False, "error_message": self._ERROR}), "Video")
         assert panel.index('class="notice error"') < panel.index('<dl class="metric-list">')
 
-    def test_it_announces_itself_assertively(self) -> None:
+    def test_it_leaves_announcing_to_the_announcer(self) -> None:
+        """The panel is swapped every second, so a role here would be announced
+        every second; the Live Statistics announcer speaks this box instead."""
         banner = self._banner()
-        assert 'role="alert"' in banner
-        assert 'aria-live="assertive"' in banner
-        assert 'aria-atomic="true"' in banner
+        assert "role=" not in banner
+        assert "aria-live" not in banner
 
     def test_it_reuses_the_shared_notice_style(self) -> None:
         """``.notice.error`` from base.tpl, not another one-off inline-styled

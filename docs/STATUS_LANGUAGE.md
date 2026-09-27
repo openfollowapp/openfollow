@@ -13,8 +13,8 @@ with the reasoning, before adding the variant.
 
 | Level | Means | Examples |
 |---|---|---|
-| **Error** | It does not work, and will not until someone acts | Video unreachable, a refused save, a missing controller, an OSC binding that can never fire, a marker two stations control |
-| **Caution** | It works, with a limitation worth knowing | A feature marked experimental, a marker no station controls, detection unavailable |
+| **Error** | It does not work, and will not until someone acts | Video unreachable, a refused save, a missing controller, an OSC binding that can never fire, a marker two stations control, detection or 3D Mouse support unavailable |
+| **Caution** | It works, with a limitation worth knowing | A feature marked experimental, a marker no station controls |
 | **Info** | Nothing is wrong; progress or a fact | Starting, idle, restarting, an update is available, a value Save will correct |
 | **Success** | Something just worked, or is healthy | Saved, connected, running, marker added |
 
@@ -85,6 +85,13 @@ sentence.
 The dialog and diagnostics errors, the Media Gallery error, the network
 result, the Detection progress and result, the Statistics warning and the NDI
 box are all one of these four. Do not add an inline-styled box.
+
+A box that a poll re-renders must not carry `role="alert"`: every swap inserts
+it again, and a screen reader announces it again. `hx-preserve` does not help,
+because htmx moves the preserved node out of the page and back in. Either the
+poll answers 204 while what it shows is unchanged (the 3D Mouse section), or
+the box has no role and an announcer outside the swap speaks it (Live
+Statistics, `web/live_alerts.py`).
 
 ### Status chips
 

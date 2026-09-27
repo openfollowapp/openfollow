@@ -25,14 +25,18 @@ import importlib.util
 import io
 import itertools
 import logging
+import os
+import sys
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from importlib import metadata
 from typing import TYPE_CHECKING, Any, Protocol
 
 from openfollow.configuration import MOUSE3D_AXES, _coerce_float
 from openfollow.input.controller_identity import resolve_key
+from openfollow.input.mouse3d_status import BackendState, DeviceState, Mouse3DDeviceStatus, Mouse3DStatus
 from openfollow.input.shaping import shape_axis
 
 if TYPE_CHECKING:
@@ -83,6 +87,24 @@ _SPACEMOUSE_PID_HI = 0xC6FF
 
 # How often the manager re-enumerates connected pucks (hotplug), seconds.
 _ENUMERATE_INTERVAL_S = 1.5
+
+
+def _platform_supported() -> bool:
+    """False on macOS, where the backend cannot read a puck at all.
+
+    hidapi device paths there are not filesystem paths, which ``open_by_path``
+    requires, and easyhid's library loader takes its Linux branch.
+    """
+    return sys.platform != "darwin"
+
+
+@functools.cache
+def _backend_version() -> str:
+    """The installed pyspacemouse, which decides the models that have a profile."""
+    try:
+        return metadata.version("pyspacemouse")
+    except metadata.PackageNotFoundError:
+        return ""
 
 
 def _looks_like_puck(vendor_id: int, product_id: int) -> bool:
@@ -143,6 +165,8 @@ class Mouse3DDeviceInfo:
     product_id: int = 0
     # The socket the puck is plugged into (see controller_identity), or None.
     port_key: str | None = None
+    # False for a 3Dconnexion device the backend holds no profile for; never opened.
+    profiled: bool = True
 
 
 class Mouse3DBackend(Protocol):
@@ -167,23 +191,24 @@ class _PySpaceMouseBackend:
         self._unprofiled_warned: set[tuple[int, int]] = set()
 
     def enumerate(self) -> list[Mouse3DDeviceInfo]:
-        try:
-            from easyhid import Enumeration  # lazy: dlopens libhidapi (may raise OSError)
-        except (ImportError, OSError) as exc:
-            logger.debug("3D Mouse enumeration unavailable: %s", exc)
-            return []
-        try:
-            devices = Enumeration().find()
-        except OSError as exc:
-            logger.debug("3D Mouse enumeration failed: %s", exc)
-            return []
+        """Every attached puck, profiled or not, one per hidraw node.
+
+        Raises when the HID library won't load or can't list devices, so that
+        is never mistaken for nothing being plugged in. Without libhidapi,
+        easyhid binds the interpreter itself and the first call raises
+        ``AttributeError``.
+        """
+        from easyhid import Enumeration  # lazy: dlopens libhidapi
+
         by_path: dict[str, Mouse3DDeviceInfo] = {}
-        for dev in devices:
+        for dev in Enumeration().find():
             vid = int(getattr(dev, "vendor_id", 0) or 0)
             pid = int(getattr(dev, "product_id", 0) or 0)
-            if not _is_supported_puck(vid, pid):
+            profiled = _is_supported_puck(vid, pid)
+            if not profiled:
+                if not _looks_like_puck(vid, pid):
+                    continue
                 self._note_unprofiled(vid, pid, dev)
-                continue
             path = getattr(dev, "path", None)
             if isinstance(path, bytes):
                 path = path.decode("utf-8", "replace")
@@ -196,17 +221,12 @@ class _PySpaceMouseBackend:
                 vendor_id=vid,
                 product_id=pid,
                 port_key=resolve_key(path),
+                profiled=profiled,
             )
         return [by_path[p] for p in sorted(by_path)]
 
     def _note_unprofiled(self, vendor_id: int, product_id: int, dev: Any) -> None:
-        """Name a 3Dconnexion device the backend holds no profile for, once.
-
-        Skipping it silently would leave a connected puck simply absent, with
-        nothing on the device or in the log to say why.
-        """
-        if not _looks_like_puck(vendor_id, product_id):
-            return
+        """Name a 3Dconnexion device the backend holds no profile for, once."""
         key = (vendor_id, product_id)
         if key in self._unprofiled_warned:
             return
@@ -219,11 +239,21 @@ class _PySpaceMouseBackend:
         )
 
     def open(self, path: str) -> Any:
+        """Open one puck; a node this process may not read raises ``PermissionError``.
+
+        hidapi reports a refused open without its errno, so the node's own
+        access is what tells a permission problem from any other failure.
+        """
         import pyspacemouse  # lazy
 
-        # ``open_by_path`` prints to stdout on success; keep the log clean.
-        with contextlib.redirect_stdout(io.StringIO()):
-            return pyspacemouse.open_by_path(path)
+        try:
+            # ``open_by_path`` prints to stdout on success; keep the log clean.
+            with contextlib.redirect_stdout(io.StringIO()):
+                return pyspacemouse.open_by_path(path)
+        except Exception as exc:
+            if os.path.exists(path) and not os.access(path, os.R_OK | os.W_OK):
+                raise PermissionError(f"{path} is not readable and writable by this process") from exc
+            raise
 
 
 def check_mouse3d_dependencies() -> list[str]:
@@ -327,6 +357,8 @@ class Mouse3DHandler:
         self._pending_edges: set[int] = set()  # guarded by ``_lock``
         # One warning per run of unexpected open refusals; see ``_open_device``.
         self._open_refusal_logged = False
+        # Why the latest open failed, cleared by a successful one. Guarded by ``_lock``.
+        self._open_error: tuple[DeviceState, str] | None = None
         # Set once the worker's first open attempt has finished, either way.
         self._first_attempt = threading.Event()
         self._last_input_at: float | None = None
@@ -477,6 +509,12 @@ class Mouse3DHandler:
     def first_attempt_done(self) -> bool:
         """Whether the first try to open the device has finished."""
         return self._first_attempt.is_set()
+
+    @property
+    def open_error(self) -> tuple[DeviceState, str] | None:
+        """Why the latest open failed and its own wording, or None after a good open."""
+        with self._lock:
+            return self._open_error
 
     @property
     def last_input_at(self) -> float | None:
@@ -687,6 +725,7 @@ class Mouse3DHandler:
             # device" (pyspacemouse raises RuntimeError) – both retryable, so the
             # reconnect loop keeps polling instead of dying.
             logger.debug("3D Mouse open failed: %s", exc)
+            self._note_open_error(exc)
             return None
         except Exception as exc:  # noqa: BLE001 - a refused open must never kill the read thread
             # The loop reopens every backoff, so a refusal that will never
@@ -697,11 +736,21 @@ class Mouse3DHandler:
                 exc,
             )
             self._open_refusal_logged = True
+            self._note_open_error(exc)
             return None
         # An opener returns a falsy value when no device is present.
-        if device:
-            self._open_refusal_logged = False
-        return device or None
+        if not device:
+            self._note_open_error(None)
+            return None
+        self._open_refusal_logged = False
+        with self._lock:
+            self._open_error = None
+        return device
+
+    def _note_open_error(self, exc: BaseException | None) -> None:
+        state = DeviceState.NOT_PERMITTED if isinstance(exc, PermissionError) else DeviceState.OPEN_FAILED
+        with self._lock:
+            self._open_error = (state, "no device" if exc is None else str(exc) or type(exc).__name__)
 
     def _pump(self, device: Any, stop: threading.Event) -> bool:
         """Pump device readings into ``_snapshot`` until stop or disconnect.
@@ -779,10 +828,14 @@ class Mouse3DManager:
         self._detect_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        # Ordered by sorted path; keyed handlers open one node each.
+        # Every attached puck by sorted path; only profiled ones get a handler.
         self._infos: list[Mouse3DDeviceInfo] = []
         self._handlers: dict[str, Mouse3DHandler] = {}
         self._available = backend is not None or not check_mouse3d_dependencies()
+        # An injected backend is not the pyspacemouse one the platform gate is about.
+        self._supported = backend is not None or _platform_supported()
+        # The latest enumeration failure's wording, cleared by the next good pass.
+        self._backend_error: str | None = None
         self._next_id = itertools.count()
         # Handlers the supervisor's first pass started; None until that pass ran.
         self._first_scan: list[Mouse3DHandler] | None = None
@@ -793,7 +846,7 @@ class Mouse3DManager:
         """Start the enumeration supervisor (idempotent, no-op when disabled)."""
         if self._thread is not None and self._thread.is_alive():
             return
-        if not self._cfg.enabled:
+        if not self._cfg.enabled or not self._supported:
             return
         if self._backend is None and check_mouse3d_dependencies():
             with self._lock:
@@ -803,6 +856,7 @@ class Mouse3DManager:
         self._stop = stop
         with self._lock:
             self._first_scan = None
+            self._backend_error = None
         self._thread = threading.Thread(target=self._supervise, args=(stop,), daemon=True, name="Mouse3DMgr")
         self._thread.start()
 
@@ -843,12 +897,25 @@ class Mouse3DManager:
         while not stop.is_set():
             try:
                 infos = backend.enumerate()
-            except Exception:  # noqa: BLE001 - a bad enumeration must not kill the loop
-                logger.debug("3D Mouse enumeration raised", exc_info=True)
+            except Exception as exc:  # noqa: BLE001 - a bad enumeration must not kill the loop
+                self._note_backend_error(exc)
                 infos = []
+            else:
+                self._note_backend_error(None)
             self._reconcile(backend, infos, stop)
             if stop.wait(_ENUMERATE_INTERVAL_S):
                 break
+
+    def _note_backend_error(self, exc: BaseException | None) -> None:
+        """Keep the enumeration failure for the status; log each episode once."""
+        error = None if exc is None else str(exc) or type(exc).__name__
+        with self._lock:
+            previous = self._backend_error
+            self._backend_error = error
+        if error is not None and previous is None:
+            logger.warning("3D Mouse support could not start (HID library): %s", error)
+        elif error is None and previous is not None:
+            logger.info("3D Mouse support started after an earlier failure")
 
     def _reconcile(self, backend: Mouse3DBackend, infos: list[Mouse3DDeviceInfo], stop: threading.Event) -> None:
         """Start handlers for new paths, stop handlers for departed ones.
@@ -862,7 +929,7 @@ class Mouse3DManager:
             if info.path and info.path not in deduped:
                 deduped[info.path] = info
         infos = [deduped[path] for path in sorted(deduped)]
-        wanted = set(deduped)
+        wanted = {info.path for info in infos if info.profiled}
         with self._lock:
             if stop.is_set():
                 # This supervisor's generation is over: a ``stop()`` in flight (it
@@ -870,7 +937,7 @@ class Mouse3DManager:
                 # added now, and after a restart this scan is stale. The event is
                 # the supervisor's own, never ``self._stop``, which a restart replaces.
                 return
-            to_add = [info for info in infos if info.path not in self._handlers]
+            to_add = [info for info in infos if info.path in wanted and info.path not in self._handlers]
             started: list[Mouse3DHandler] = []
             for info in to_add:
                 handler = Mouse3DHandler(
@@ -930,6 +997,46 @@ class Mouse3DManager:
             first = self._first_scan
         return first is not None and all(handler.first_attempt_done for handler in first)
 
+    def status(self) -> Mouse3DStatus:
+        """What the subsystem observed, for the web section, ``/api/stats`` and the bundle.
+
+        Reads what the supervisor already holds: it never enumerates or imports.
+        """
+        with self._lock:
+            enabled = bool(self._cfg.enabled)
+            available = self._available
+            backend_error = self._backend_error
+            pairs = [(info, self._handlers.get(info.path)) for info in self._infos]
+        if not available:
+            backend, error = BackendState.NOT_INSTALLED, "pyspacemouse is not installed"
+        elif backend_error is not None:
+            backend, error = BackendState.COULD_NOT_START, backend_error
+        else:
+            backend, error = BackendState.OK, ""
+        devices = []
+        for info, handler in pairs:
+            state, detail = _device_state(info, handler)
+            devices.append(
+                Mouse3DDeviceStatus(
+                    path=info.path,
+                    product_name=info.product_name,
+                    vendor_id=info.vendor_id,
+                    product_id=info.product_id,
+                    port_key=info.port_key,
+                    state=state,
+                    error=detail,
+                )
+            )
+        return Mouse3DStatus(
+            enabled=enabled,
+            supported=self._supported,
+            scanned=self.initial_scan_settled(),
+            backend=backend,
+            backend_error=error,
+            backend_version=_backend_version(),
+            devices=tuple(devices),
+        )
+
     def connected_ids(self) -> list[int]:
         """Instance ids of open pucks, in sorted-path order."""
         return [handler.instance_id for _info, handler in self._connected_ordered()]
@@ -986,6 +1093,8 @@ class Mouse3DManager:
 
     def _poll_devices_button(self, timeout: float) -> int | None:
         """One-shot open+poll of every enumerated puck (feature disabled path)."""
+        if not self._supported:
+            return None
         try:
             backend = self._resolve_backend()
             infos = backend.enumerate()
@@ -994,6 +1103,8 @@ class Mouse3DManager:
         devices: list[Any] = []
         try:
             for info in infos:
+                if not info.profiled:
+                    continue
                 try:
                     device = backend.open(info.path)
                 except Exception as exc:  # noqa: BLE001 - detect is best-effort, one puck must not stop it
@@ -1026,6 +1137,30 @@ class Mouse3DManager:
     def update(self, dt: float) -> dict[int, Mouse3DUpdate]:
         """Per-device results keyed by instance id (only connected pucks)."""
         return {handler.instance_id: handler.update(dt) for _info, handler in self._connected_ordered()}
+
+
+def idle_mouse3d_status(enabled: bool) -> Mouse3DStatus:
+    """The status before any manager has reported: nothing scanned yet."""
+    return Mouse3DStatus(
+        enabled=enabled,
+        supported=_platform_supported(),
+        scanned=False,
+        backend_version=_backend_version(),
+    )
+
+
+def _device_state(info: Mouse3DDeviceInfo, handler: Mouse3DHandler | None) -> tuple[DeviceState, str]:
+    """One puck's state and the wording of its latest open failure."""
+    if not info.profiled:
+        return DeviceState.NO_PROFILE, ""
+    if handler is None:
+        return DeviceState.OPENING, ""
+    if handler.connected:
+        return DeviceState.OPEN, ""
+    error = handler.open_error
+    if error is None:
+        return DeviceState.OPENING, ""
+    return error
 
 
 def _has_led(device: Any) -> bool:

@@ -1181,6 +1181,7 @@
  color: var(--text); background: var(--error-chip); border: 1px solid var(--error-line);
  }
  .slot-reserved-label, .slot-empty { color: var(--muted); }
+ .m3d-empty { margin: 0 0 12px; color: var(--muted); }
  .slot-activity { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--muted); margin: 0 4px 0 0; vertical-align: middle; }
  .slot-activity.is-active {
  box-sizing: content-box; width: 10px; height: 10px; margin: -2.6px 1.4px -2.6px -2.6px;

@@ -1179,6 +1179,10 @@ def _draw_offline_mark(cr: Any, cx: float, cy: float, r: float) -> None:
     cr.restore()
 
 
+_CARD_BORDER_W = 3.5
+_CARD_BORDER_W_SELECTED = 4.0
+
+
 def draw_marker_card(
     renderer: Any,
     cr: Any,
@@ -1211,12 +1215,10 @@ def draw_marker_card(
             draw_rounded_rect(cr, x, y, w, h, radius)
             cr.fill()
 
-        # Selection differentiates via edge_alpha + line_width.
-        edge_alpha = 0.95 if selected else 0.62
-        br, bg, bb = parse_hex(t.color)
-        cr.set_source_rgba(br, bg, bb, edge_alpha)
+        # Solid, so neither the video nor the card fill tints it; selection reads by width.
+        cr.set_source_rgb(*parse_hex(t.color))
         draw_rounded_rect(cr, x, y, w, h, radius)
-        cr.set_line_width(4.0 if selected else 3.5)
+        cr.set_line_width(_CARD_BORDER_W_SELECTED if selected else _CARD_BORDER_W)
         cr.stroke()
         if t.identify_flash:
             cr.set_source_rgb(*COLOR_ACCENT)
@@ -1227,13 +1229,17 @@ def draw_marker_card(
         renderer._set_ui_font(cr, 10)
 
         dot_r = 4.5
-        dot_x = x + w - dot_r - 6
-        dot_y = y + dot_r + 6
+        ring_w = 2.5
+        # 2 px clear of the selected border's inner edge, ring included.
+        inset = _CARD_BORDER_W_SELECTED / 2 + 2.0 + dot_r + 1.5 + ring_w / 2
+        dot_x = x + w - inset
+        dot_y = y + inset
         if t.online:
             cr.set_source_rgb(*COLOR_OK)
             cr.arc(dot_x, dot_y, dot_r, 0, 6.2832)
             cr.fill()
             cr.set_source_rgba(*COLOR_OK, 0.3)
+            cr.set_line_width(ring_w)
             cr.arc(dot_x, dot_y, dot_r + 1.5, 0, 6.2832)
             cr.stroke()
         else:

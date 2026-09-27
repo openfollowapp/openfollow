@@ -1467,13 +1467,27 @@ class TestMarkerCardRendering:
             selected=False,
             state=None,
         )
-        # The marker-colour stroke is the first rgba with alpha 0.62 (unselected).
-        marker_color_strokes = [
-            c
-            for c in cr.calls
-            if c[0] == "rgba" and c[1:3] == (1.0, 0.0) and c[3] == 0.0 and c[4] == pytest.approx(0.62)
-        ]
-        assert marker_color_strokes
+        # Solid marker colour, so the video and the card fill cannot tint it.
+        assert ("rgb", 1.0, 0.0, 0.0) in cr.calls
+        assert not any(c[0] == "rgba" and c[1:4] == (1.0, 0.0, 0.0) for c in cr.calls)
+
+    @pytest.mark.parametrize("selected", [True, False])
+    def test_the_online_dot_clears_the_border_by_2px(self, selected: bool) -> None:
+        def card(sel: bool) -> FakeCairo:
+            cr = FakeCairo()
+            draw_marker_card(FakeRenderer(), cr, x=x, y=y, w=w, h=64, t=_marker(online=True), selected=sel, state=None)
+            return cr
+
+        x, y, w = 100.0, 50.0, 180.0
+        # The dot never moves with selection, so it clears the selected (widest) border.
+        border_w = next(c[1] for c in card(True).calls if c[0] == "line_width")
+        cr = card(selected)
+        ring = next(i for i, c in enumerate(cr.calls) if c[0] == "arc" and c[3] == 6.0 and c[5] - c[4] > 6)
+        ring_w = next(c[1] for c in reversed(cr.calls[:ring]) if c[0] == "line_width")
+        _, cx, cy, r, *_ = cr.calls[ring]
+        outer = r + ring_w / 2
+        assert (x + w) - cx - outer - border_w / 2 >= 2.0
+        assert cy - y - outer - border_w / 2 >= 2.0
 
     def test_body_fill_uses_solid_color_not_gradient(self) -> None:
         """The body fill flattened from LinearGradient to a solid COLOR_BG_BASE."""

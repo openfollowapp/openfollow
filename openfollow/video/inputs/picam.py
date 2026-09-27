@@ -14,6 +14,7 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+from openfollow.privilege.camera_config import is_raspberry_pi
 from openfollow.video.failure import SourceKind
 from openfollow.video.inputs._base import (
     ConfigField,
@@ -102,6 +103,9 @@ class PiCamInput(VideoInputBase):
         # Camera) and on Windows there is no equivalent backend.
         if not sys.platform.startswith("linux"):
             return False, "Pi Camera is Linux/Raspberry Pi-only"
+        # Listed on any Pi, camera or not, so its camera setup is reachable.
+        if not is_raspberry_pi():
+            return False, "Pi Camera needs a Raspberry Pi"
         try:
             from gi.repository import Gst
 
@@ -249,6 +253,9 @@ class PiCamInput(VideoInputBase):
             '                min="1" max="120">'
             "    </div>"
             "</div>"
+            # Inside the Video Source form: its own target, or htmx hands it the form's.
+            '<div id="picam-camera-setup" hx-get="/section/video_source/camera-setup"'
+            ' hx-trigger="load" hx-target="this" hx-swap="innerHTML"></div>'
         )
 
     @classmethod

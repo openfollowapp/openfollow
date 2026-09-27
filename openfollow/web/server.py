@@ -56,6 +56,9 @@ _FALLBACK_PORTS: tuple[int, ...] = (8080, 2010)
 _LOCAL_IP_REFRESH_TTL = 5.0
 
 _AUTOSTART_UNREADABLE = "Could not read whether this service starts at boot."
+_CAMERA_SETUP_UNAVAILABLE = "Camera setup is not available on this build."
+_CAMERA_SETUP_UNREADABLE = "Could not read this station's camera configuration."
+_CAMERA_SETUP_FAILED = "The camera setting could not be changed."
 _AUTOSTART_CHANGE_FAILED = "The setting could not be changed."
 
 
@@ -186,6 +189,10 @@ class ConfigWebServer:
         # Boot-autostart switch: host state on read, broker-elevated write.
         autostart_state_provider: (Callable[[str], dict[str, Any]] | None) = None,
         autostart_apply_handler: (Callable[[str, bool], dict[str, Any]] | None) = None,
+        # Pi camera setup: config.txt read as the service, changed through the broker.
+        camera_setup_state_provider: Callable[[], dict[str, Any]] | None = None,
+        camera_setup_apply_handler: Callable[[str], dict[str, Any]] | None = None,
+        camera_setup_restart_handler: Callable[[], dict[str, Any]] | None = None,
         # Shared marker catalog (id/name/color) + multicast sync.
         # The inline catalog UI in the Markers & Zones tab (rendered
         # via the ``/api/markers/catalog`` poll) and the ``/api/markers/*``
@@ -257,6 +264,9 @@ class ConfigWebServer:
         self._privilege_states_provider = privilege_states_provider
         self._autostart_state_provider = autostart_state_provider
         self._autostart_apply_handler = autostart_apply_handler
+        self._camera_setup_state_provider = camera_setup_state_provider
+        self._camera_setup_apply_handler = camera_setup_apply_handler
+        self._camera_setup_restart_handler = camera_setup_restart_handler
         self._marker_catalog_provider = marker_catalog_provider
         self._marker_catalog_sync_provider = marker_catalog_sync_provider
         # Public so ``_build_diagnostics_providers`` can pass it straight
@@ -433,6 +443,36 @@ class ConfigWebServer:
             # itself is in the log above.
             logger.exception("Autostart apply handler raised")
             return {"ok": False, "error": _AUTOSTART_CHANGE_FAILED, **_autostart_unavailable(_AUTOSTART_UNREADABLE)}
+
+    def get_camera_setup(self) -> dict[str, Any]:
+        """The Pi camera the boot configuration names; unavailable when not wired or unreadable."""
+        if self._camera_setup_state_provider is None:
+            return {"available": False, "reason": _CAMERA_SETUP_UNAVAILABLE}
+        try:
+            return dict(self._camera_setup_state_provider())
+        except Exception:  # noqa: BLE001
+            logger.exception("Camera setup state provider raised")
+            return {"available": False, "reason": _CAMERA_SETUP_UNREADABLE}
+
+    def apply_camera_setup(self, token: str) -> dict[str, Any]:
+        """Name a camera (``sensor,camN`` or ``automatic``); always returns a result dict."""
+        if self._camera_setup_apply_handler is None:
+            return {"ok": False, "error": _CAMERA_SETUP_UNAVAILABLE, "available": False}
+        try:
+            return dict(self._camera_setup_apply_handler(token))
+        except Exception:  # noqa: BLE001
+            logger.exception("Camera setup apply handler raised")
+            return {"ok": False, "error": _CAMERA_SETUP_FAILED, **self.get_camera_setup()}
+
+    def restart_for_camera(self) -> dict[str, Any]:
+        """Reboot the station so a camera change that waits for a restart applies."""
+        if self._camera_setup_restart_handler is None:
+            return {"ok": False, "error": _CAMERA_SETUP_UNAVAILABLE}
+        try:
+            return dict(self._camera_setup_restart_handler())
+        except Exception:  # noqa: BLE001
+            logger.exception("Camera setup restart handler raised")
+            return {"ok": False, "error": _CAMERA_SETUP_FAILED}
 
     def get_psn_source_advisory(self) -> dict[str, str]:
         """Startup advisory when pinned PSN source iface unavailable; returns status/banner/resolved_ip."""

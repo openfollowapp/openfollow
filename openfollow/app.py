@@ -46,6 +46,9 @@ from openfollow.runtime.app_commands import (
     check_update_request as runtime_check_update_request,
 )
 from openfollow.runtime.app_commands import (
+    check_video_rebuild_request as runtime_check_video_rebuild_request,
+)
+from openfollow.runtime.app_commands import (
     restart_app as runtime_restart_app,
 )
 from openfollow.runtime.app_modes import (
@@ -527,6 +530,9 @@ class OpenFollowApp:
 
     def _check_controller_slot_actions(self) -> None:
         runtime_check_controller_slot_actions(self)
+
+    def _check_video_rebuild_request(self) -> None:
+        runtime_check_video_rebuild_request(self)
 
     def _run_deb_update(self, request: dict[str, str]) -> None:
         runtime_run_deb_update(self, request)

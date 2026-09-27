@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from openfollow.privilege.camera_config import AUTOMATIC, CAMERA_TOKEN_RE, CHOICE_TOKEN_RE, HELPER_PATH
+
 # Network capabilities – dhcpcd writes via tee, NM via nmcli + systemctl.
 
 # Wildcard probe_argv needs placeholder to match sudoers rule correctly.
@@ -508,6 +510,49 @@ SYSTEM_SET_CLOCK = Capability(
 )
 
 
+# Camera setup: the root helper names the Pi camera in config.txt, and loads or
+# unloads its overlay without a restart. One token per call, bounded by an
+# anchored regex (commas escaped for sudoers); the helper checks it again,
+# together with the overlay file's existence, before touching boot config.
+CAMERA_SETUP_SCRIPT = str(HELPER_PATH)
+_CHOICE_SUDOERS = CHOICE_TOKEN_RE.replace(",", "\\,")
+_CAMERA_SUDOERS = CAMERA_TOKEN_RE.replace(",", "\\,")
+
+CAMERA_CONFIG_WRITE = Capability(
+    name="camera.config_write",
+    probe_argv=(CAMERA_SETUP_SCRIPT, "write", _PROBE_PLACEHOLDER),
+    description="Name the Pi camera in the boot configuration",
+    sudoers_pattern=f"{CAMERA_SETUP_SCRIPT} write {_CHOICE_SUDOERS}",
+    arg_pattern=CHOICE_TOKEN_RE,
+    probe_arg=AUTOMATIC,
+)
+
+CAMERA_OVERLAY_LOAD = Capability(
+    name="camera.overlay_load",
+    probe_argv=(CAMERA_SETUP_SCRIPT, "load", _PROBE_PLACEHOLDER),
+    description="Start a Pi camera without a restart",
+    sudoers_pattern=f"{CAMERA_SETUP_SCRIPT} load {_CAMERA_SUDOERS}",
+    arg_pattern=CAMERA_TOKEN_RE,
+    probe_arg="ov5647,cam0",
+)
+
+CAMERA_OVERLAY_UNLOAD = Capability(
+    name="camera.overlay_unload",
+    probe_argv=(CAMERA_SETUP_SCRIPT, "unload", _PROBE_PLACEHOLDER),
+    description="Stop a Pi camera started without a restart",
+    sudoers_pattern=f"{CAMERA_SETUP_SCRIPT} unload {_CAMERA_SUDOERS}",
+    arg_pattern=CAMERA_TOKEN_RE,
+    probe_arg="ov5647,cam0",
+)
+
+SYSTEM_REBOOT = Capability(
+    name="system.reboot",
+    probe_argv=("/usr/bin/systemctl", "reboot"),
+    description="Restart the station",
+    sudoers_pattern="/usr/bin/systemctl reboot",
+)
+
+
 # Registry of every capability the broker knows about. Ordering is the
 # order capabilities appear in the diagnostics bundle's permissions section.
 ALL_CAPABILITIES: tuple[Capability, ...] = (
@@ -532,6 +577,11 @@ ALL_CAPABILITIES: tuple[Capability, ...] = (
     PACKAGE_SELF_UPDATE,
     # system clock (auto time-sync)
     SYSTEM_SET_CLOCK,
+    # Pi camera setup
+    CAMERA_CONFIG_WRITE,
+    CAMERA_OVERLAY_LOAD,
+    CAMERA_OVERLAY_UNLOAD,
+    SYSTEM_REBOOT,
     # network apply
     NETWORK_DHCPCD_RENEW,
     NETWORK_DHCPCD_RELEASE,

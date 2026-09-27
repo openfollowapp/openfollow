@@ -247,6 +247,9 @@ install -m 0644 "$REPO_ROOT/packaging/udev/99-openfollow-3dmouse.rules" \
 install -m 0755 "$DEBIAN_DIR/splash.sh"                           "$SHARE/splash.sh"
 install -m 0755 "$DEBIAN_DIR/session.sh"                          "$SHARE/session.sh"
 install -m 0755 "$DEBIAN_DIR/apply-update.sh"                     "$SHARE/apply-update.sh"
+# Root helper for the web Pi camera setup (sudoers: camera.* capabilities): a
+# copy of the stdlib-only module, so root runs nothing from the venv.
+install -m 0755 "$REPO_ROOT/openfollow/privilege/camera_config.py"   "$SHARE/camera-setup"
 # NDI is not bundled (closed-source SDK); this helper builds + installs it
 # post-install. See https://openfollow.app/docs/ndi-install.html.
 install -m 0755 "$REPO_ROOT/scripts/install-ndi.sh"               "$SHARE/install-ndi.sh"

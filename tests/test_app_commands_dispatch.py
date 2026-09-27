@@ -310,3 +310,56 @@ def test_slot_actions_without_input_are_dropped() -> None:
     app._web_commands.request_slot_action("identify", 0, "r0")
     app_commands.check_controller_slot_actions(app)
     assert app._web_commands.consume_slot_actions() == []
+
+
+# ---------------------------------------------------------------------------
+# check_video_rebuild_request
+# ---------------------------------------------------------------------------
+
+
+class _SwapRecorder:
+    def __init__(self, source_type: str = "picam", *, raises: bool = False) -> None:
+        self._source_type = source_type
+        self._input_config = {"picam_width": 1920}
+        self._raises = raises
+        self.swaps: list[tuple[str, dict]] = []
+
+    def swap_input(self, source_type: str, config: dict) -> None:
+        self.swaps.append((source_type, config))
+        if self._raises:
+            raise RuntimeError("pipeline stuck")
+
+
+def test_a_live_camera_rebuilds_the_pi_camera_pipeline_once() -> None:
+    receiver = _SwapRecorder()
+    app = _make_app(_video_receiver=receiver)
+    app._web_commands.request_video_rebuild()
+    app_commands.check_video_rebuild_request(app)
+    app_commands.check_video_rebuild_request(app)
+    assert receiver.swaps == [("picam", {"picam_width": 1920})]
+    # Its own copy: the rebuild must not share the receiver's dict.
+    assert receiver.swaps[0][1] is not receiver._input_config
+
+
+def test_no_request_rebuilds_nothing() -> None:
+    receiver = _SwapRecorder()
+    app_commands.check_video_rebuild_request(_make_app(_video_receiver=receiver))
+    assert receiver.swaps == []
+
+
+@pytest.mark.parametrize("receiver", [None, _SwapRecorder("rtsp")], ids=["no-receiver", "another-source"])
+def test_only_an_active_pi_camera_is_rebuilt(receiver) -> None:  # noqa: ANN001
+    app = _make_app(_video_receiver=receiver)
+    app._web_commands.request_video_rebuild()
+    app_commands.check_video_rebuild_request(app)
+    assert receiver is None or receiver.swaps == []
+    assert app._web_commands.consume_video_rebuild_requested() is False  # taken off the queue
+
+
+def test_a_failed_rebuild_is_logged_not_raised(caplog) -> None:  # noqa: ANN001
+    receiver = _SwapRecorder(raises=True)
+    app = _make_app(_video_receiver=receiver)
+    app._web_commands.request_video_rebuild()
+    with caplog.at_level("ERROR", logger=app_commands.__name__):
+        app_commands.check_video_rebuild_request(app)
+    assert "Rebuilding the Pi Camera pipeline failed." in caplog.text

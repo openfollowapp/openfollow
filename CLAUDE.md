@@ -451,6 +451,18 @@ libcamerasrc's camera manager and so lists a camera that is already streaming.
 (no camera present) is classified from the element's bus error in both `play()`
 branches, so a missing Pi Camera reads as not found, not unknown.
 
+**Camera setup** (Video Source → Pi Camera) names the sensor and connector in
+`config.txt` (a Compute Module never auto-detects its camera).
+`privilege/camera_config.py` owns the parsing, the state read and the root CLI:
+the `.deb` installs a copy of that **stdlib-only** file as
+`/usr/share/openfollow/camera-setup`, run by `python3 -I`, so root never imports
+from the venv (keep it stdlib-only). It rewrites an `# --- OpenFollow camera ---`
+block (with `camera_auto_detect=0`) under `[all]`, comments out hand-written
+camera lines, and loads/unloads the overlay live with `dtoverlay`;
+`/run/openfollow-camera` records what it loaded and the boot-time lines, so the
+page can tell "running" from "takes effect after the next restart". A
+boot-loaded overlay cannot be unloaded live.
+
 ### Placeholder pipeline vs source state
 The "No Signal" placeholder is a black `videotestsrc` pinned at 1920x1080 @ 30 that feeds the **shared** sink, and both sink probes are attached once for that sink's lifetime – so its caps reach the same writer the real source uses. `ReceiverStateMachine.set_resolution` / `set_source_framerate` / `set_source_format` therefore refuse while `is_placeholder_pipeline`, mirroring `mark_frame_received`, and `_create_placeholder_pipeline` calls `clear_source_caps()` rather than writing its own geometry in. **Do not publish placeholder caps as source state**: `video.resolution` / `source_fps` are what the Statistics panel reports as the feed's own, and what `update_video` shapes the window from – a source that has never delivered a frame would otherwise present as a working 1080p feed and pin the window to 16:9 for the session.
 

@@ -323,6 +323,20 @@ class TestGetSourceLabel:
 
 
 class TestPiCamIsAvailable:
+    @pytest.fixture(autouse=True)
+    def _on_a_pi(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(picam_module, "is_raspberry_pi", lambda: True)
+
+    def test_unavailable_on_linux_that_is_not_a_pi(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Listed on any Pi so its camera setup is reachable, and nowhere else."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(picam_module, "is_raspberry_pi", lambda: False)
+        fake = make_fake_gst(known_factories={"libcamerasrc": object()})
+        with patch("gi.repository.Gst", fake):
+            ok, reason = PiCamInput.is_available()
+        assert ok is False
+        assert reason == "Pi Camera needs a Raspberry Pi"
+
     def test_unavailable_off_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sys, "platform", "darwin")
         ok, reason = PiCamInput.is_available()
@@ -360,3 +374,13 @@ class TestPiCamIsAvailable:
             ok, reason = PiCamInput.is_available()
         assert ok is False
         assert "GStreamer not available" in reason
+
+
+class TestCameraSetupInTheSettings:
+    def test_the_setup_loads_into_its_own_target(self) -> None:
+        """It sits inside the Video Source form, whose target is the whole section."""
+        html = PiCamInput.web_ui_html({})
+        assert (
+            '<div id="picam-camera-setup" hx-get="/section/video_source/camera-setup"'
+            ' hx-trigger="load" hx-target="this" hx-swap="innerHTML"></div>'
+        ) in html

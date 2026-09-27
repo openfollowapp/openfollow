@@ -4034,7 +4034,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """The 403 for a change made through a refused name, in the shape its caller reads."""
         # Closing with unread request data resets the connection, which can drop
         # this answer before the browser reads it. Past the pre-auth cap, leave it.
-        if 0 < request.content_length <= peer_auth.MAX_SIGNED_BODY_SIZE:
+        try:
+            length = request.content_length
+        except ValueError:  # a malformed Content-Length: read nothing, still refuse
+            length = -1
+        if 0 < length <= peer_auth.MAX_SIGNED_BODY_SIZE:
             request.body.read()
         if not _is_navigation():
             body = json.dumps({"error": refusal.message, "action": refusal.action, "href": refusal.href})

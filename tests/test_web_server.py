@@ -6104,7 +6104,7 @@ def test_a_refused_unlock_says_why_on_the_login_page(pin_protected_server) -> No
     assert "Set-Cookie" not in response_headers
 
 
-def _refused_login_post(tmp_path, declared_length: int, body: bytes) -> tuple[str, io.BytesIO]:
+def _refused_login_post(tmp_path, declared_length: int | str, body: bytes) -> tuple[str, io.BytesIO]:
     """POST the login form through a refused name straight into the WSGI app."""
     server = ConfigWebServer(config_path=str(tmp_path / "config.toml"))
     stream = io.BytesIO(body)
@@ -6138,6 +6138,13 @@ def test_a_refusal_reads_the_body_first_so_closing_does_not_reset_its_answer(tmp
 
 def test_a_refusal_does_not_read_a_body_past_the_pre_auth_cap(tmp_path) -> None:
     status, stream = _refused_login_post(tmp_path, peer_auth.MAX_SIGNED_BODY_SIZE + 1, b"pin=sekret")
+    assert status.startswith("403")
+    assert stream.tell() == 0
+
+
+@pytest.mark.parametrize("declared", ["abc", "", "-5"])
+def test_a_refusal_with_a_missing_or_malformed_length_still_refuses(tmp_path, declared: str) -> None:
+    status, stream = _refused_login_post(tmp_path, declared, b"pin=sekret")
     assert status.startswith("403")
     assert stream.tell() == 0
 

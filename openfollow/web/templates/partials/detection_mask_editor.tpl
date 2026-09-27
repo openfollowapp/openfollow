@@ -15,7 +15,7 @@
         <button type="button" class="dme-btn" data-dme="new">+ New Mask</button>
         <button type="button" class="dme-btn dme-hidden" data-dme="finish">Finish Polygon</button>
         <button type="button" class="dme-btn dme-hidden" data-dme="cancel">Cancel</button>
-        <button type="button" class="dme-btn" data-dme="delete" disabled>Delete Selected</button>
+        <button type="button" class="dme-btn danger" data-dme="delete" disabled>Delete Selected</button>
         <button type="button" class="dme-btn" data-dme="refresh">Refresh Image</button>
     </div>
 
@@ -45,6 +45,8 @@
     }
     #detection-mask-editor .dme-btn:hover { background: rgba(255,255,255,0.12); }
     #detection-mask-editor .dme-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #detection-mask-editor .dme-btn.danger { color: var(--error-text); border-color: var(--error-line); }
+    #detection-mask-editor .dme-btn.danger:hover:not(:disabled) { background: var(--error-row); }
     #detection-mask-editor .dme-stage {
         position: relative; width: 100%; max-width: 960px; line-height: 0;
         border-radius: 8px; overflow: hidden; background: #000;
@@ -64,15 +66,16 @@
         display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 6px;
         border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.04);
     }
-    #detection-mask-editor .dme-row.dme-selected { border-color: rgba(120,200,120,0.7); background: rgba(120,200,120,0.10); }
+    #detection-mask-editor .dme-row.dme-selected { border-color: var(--accent); background: var(--accent-soft); }
     #detection-mask-editor .dme-row input[type="text"] {
         flex: 1 1 auto; min-width: 0; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.14);
         border-radius: 4px; color: inherit; padding: 4px 6px; font-size: 0.85rem;
     }
     #detection-mask-editor .dme-row .dme-count { font-size: 0.75rem; color: rgba(255,255,255,0.5); white-space: nowrap; }
     #detection-mask-editor .dme-row button {
-        background: none; border: none; color: rgba(255,160,160,0.9); cursor: pointer; font-size: 0.85rem; padding: 2px 6px;
+        background: none; border: none; border-radius: 0.4rem; color: var(--error-text); cursor: pointer; font-size: 0.85rem; padding: 2px 6px;
     }
+    #detection-mask-editor .dme-row button:hover { background: var(--error-row); }
 </style>
 
 <script>
@@ -142,10 +145,10 @@
         masks.forEach(function(m, i) {
             if (m.vertices.length < 2) return;
             var isSel = (i === selected);
-            var color = m.enabled ? '#5ad17a' : '#9aa0a6';
+            var color = m.enabled ? '#5cc98c' : '#9aa0a6';
             var poly = el('polygon', {
                 points: pointsAttr(m.vertices),
-                fill: m.enabled ? 'rgba(90,209,122,0.18)' : 'rgba(154,160,166,0.10)',
+                fill: m.enabled ? 'rgba(92,201,140,0.18)' : 'rgba(154,160,166,0.10)',
                 stroke: color,
                 'stroke-width': isSel ? 3 : 2,
                 'stroke-dasharray': m.enabled ? '' : '8 6',
@@ -172,14 +175,14 @@
         if (draft) {
             if (draft.length >= 2) {
                 svg.appendChild(el('polyline', {
-                    points: pointsAttr(draft), fill: 'none', stroke: '#5ad17a',
+                    points: pointsAttr(draft), fill: 'none', stroke: '#5cc98c',
                     'stroke-width': 2, 'stroke-dasharray': '6 5', 'vector-effect': 'non-scaling-stroke'
                 }));
             }
             draft.forEach(function(v, vi) {
                 svg.appendChild(el('circle', {
                     cx: v[0] * imgW, cy: v[1] * imgH, r: vi === 0 ? 8 : 6,
-                    fill: vi === 0 ? '#ffcc55' : '#5ad17a', 'vector-effect': 'non-scaling-stroke'
+                    fill: vi === 0 ? '#ffbc00' : '#5cc98c', 'vector-effect': 'non-scaling-stroke'
                 }));
             });
         }

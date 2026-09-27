@@ -217,7 +217,7 @@ def test_update_banner_and_footer_flag_shown_when_available(live_server, monkeyp
     status, body = _get(base, "/")
     assert status == 200
     assert "is ready to install" in body  # General-section banner
-    assert "Update available: v0.4.0" in body  # footer flag
+    assert '<span class="update-flag">Update available: v0.4.0</span>' in body  # footer flag
 
     status_section, section = _get(base, "/section/general")
     assert status_section == 200
@@ -236,7 +236,7 @@ def test_wizard_page_shows_update_footer_flag(live_server, monkeypatch) -> None:
 
     status, body = _get(base, "/wizard")
     assert status == 200
-    assert "Update available: v0.4.0" in body  # footer flag
+    assert '<span class="update-flag">Update available: v0.4.0</span>' in body  # footer flag
 
 
 def test_update_banner_and_footer_hidden_on_unsupported_platform(live_server, monkeypatch) -> None:
@@ -252,7 +252,7 @@ def test_update_banner_and_footer_hidden_on_unsupported_platform(live_server, mo
     status, body = _get(base, "/")
     assert status == 200
     assert "is ready to install" not in body
-    assert "(Update available: v" not in body
+    assert '<span class="update-flag">' not in body
 
     status_section, section = _get(base, "/section/general")
     assert status_section == 200
@@ -265,10 +265,10 @@ def test_update_banner_hidden_when_up_to_date(live_server) -> None:
 
     status, body = _get(base, "/")
     assert status == 200
-    # Banner copy + the rendered footer flag are both absent (the ``.update-flag``
-    # CSS class is always defined in base.tpl, so assert on the visible text).
+    # Banner copy and the rendered footer flag are both absent (the ``.update-flag``
+    # class also appears in base.tpl's CSS, so assert on the element).
     assert "is ready to install" not in body
-    assert "(Update available: v" not in body
+    assert '<span class="update-flag">' not in body
 
 
 _SLOT_ITEMS = [

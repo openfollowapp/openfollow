@@ -24,7 +24,8 @@ _STATUS_CLASS = re.compile(
     r"modal-list-item-badge|slot-row|slot-missing|slot-missing-label|slot-activity|osc-binding-fault|"
     r"osc-binding-row|osc-binding-enabled-dot|osc-binding-nested-row|osc-pill|peer-item|peer-status|toast|"
     r"save-error|save-failed|field-error-msg|field-warn-msg|field-note-msg|conflict-flag|not-controlled|"
-    r"add-feedback|saved-flash|wizard-status|wizard-preview-container|awaiting-password)(?![\w-])"
+    r"add-feedback|saved-flash|wizard-status|wizard-preview-container|awaiting-password|wizard-field-error|"
+    r"update-flag|danger|btn-danger|modal-list-item-delete|gallery-del|dme-row)(?![\w-])"
 )
 _COLOUR = re.compile(r"#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)")
 # Greys, whites and the off-white text: neutral, so a literal is fine.
@@ -149,7 +150,8 @@ def test_the_save_flashes_use_the_level_line(keyframes: str, token: str) -> None
 _RETIRED = (
     "#ffd7d7", "#ffd6d6", "#ff8a8a", "#f55", "#6cf07a", "#c0392b", "#fdf2f2", "#d6ffd9", "#d6e6ff",
     "#c8ffd8", "#ffe1a2", "#ffe7ae", "#9fc9ff", "#d5e9ff", "#ffd7a8", "#ff7070", "#ffb066", "#ff5c5c",
-    "255,76,76", "120,180,255", "76,175,80", "255,120,120",
+    "255,76,76", "120,180,255", "76,175,80", "255,120,120", "#ff8c8c", "#7de59f", "#ffd166", "#5ad17a",
+    "#ffcc55", "255,140,140", "125,229,159", "159,201,255", "120,200,120", "255,160,160", "90,209,122",
 )  # fmt: skip
 
 
@@ -172,3 +174,36 @@ def test_a_retired_status_colour_stays_gone(colour: str) -> None:
         )
     ]
     assert found == []
+
+
+@pytest.mark.parametrize("token", ["--ok", "--danger", "--btn-danger-border"])
+def test_a_retired_colour_token_stays_gone(token: str) -> None:
+    assert token not in _root_tokens()
+    assert [path.name for path in _markup_sources() if f"var({token})" in path.read_text(encoding="utf-8")] == []
+
+
+def _hover_backgrounds() -> dict[str, str]:
+    """Each ``:hover`` selector in the templates' CSS, mapped to the background it sets."""
+    found = {}
+    for _, css in _style_blocks():
+        for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+            background = re.search(r"background(?:-color)?\s*:\s*([^;]+);", body)
+            for part in selector.split(","):
+                if ":hover" in part and background:
+                    found[" ".join(part.split())] = background.group(1).strip()
+    return found
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        ".btn-danger:hover:not(:disabled)",
+        "button.danger:hover:not(:disabled)",
+        ".modal-list-item-delete:hover",
+        ".gallery-del:hover",
+        "#detection-mask-editor .dme-row button:hover",
+        "#detection-mask-editor .dme-btn.danger:hover:not(:disabled)",
+    ],
+)
+def test_every_destructive_control_darkens_to_the_fault_row_tint(control: str) -> None:
+    assert _hover_backgrounds().get(control) == "var(--error-row)"

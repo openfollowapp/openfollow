@@ -100,7 +100,8 @@ table row: "Missing" (Controller Slots), "Conflict" and "Not controlled"
 
 Free text inside a row, like the OSC binding fault pill's list of reasons:
 chip colours, radius 0.4rem, 0.7rem mixed-case text. A state word is a chip,
-never a row pill.
+never a row pill. The footer's "Update available: v0.4.4" is one too, in the
+info chip colours.
 
 ### OSC placeholder pills
 
@@ -173,6 +174,30 @@ toast.
 
 The toast only confirms: success fill and border over the opaque dark base,
 off-white text, led by the success sign. A failure never uses the toast.
+
+### Destructive actions
+
+Delete, Discard, Restore Defaults and Restart are not states, but red already
+means "stop or lose something", so they take the error red rather than a second,
+paler one:
+
+| Control | Look |
+|---|---|
+| Danger button (`button.danger`, `.btn-danger`, a dialog's confirm) | Outline: `--error-text` text on a `--error-line` border |
+| Text-only delete (Templates dialog, Detection Masks, Media Gallery ×) | `--error-text` |
+| Any of them under the pointer | `--error-row` fill; a disabled one does not react |
+
+### Selection and drawings
+
+Selection is the accent, never a level colour: the selected Media Gallery tile,
+the active Setup Wizard step and the selected Detection Mask take a gold border
+on `--accent-soft`. A finished Setup Wizard step is `--success-text`.
+
+Drawings use the text tones: the Setup Wizard's axes keep X red, Y green,
+Z blue as `#f44848`, `#5cc98c` and `#4f8dd9`, labels at full strength and lines at
+their own alpha; drawn Detection Mask shapes are `--success-mark`, and the
+first corner of one being drawn is the accent. A drawing sets these as SVG
+attributes, so it spells the token's value.
 
 ### HUD
 

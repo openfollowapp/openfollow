@@ -42,8 +42,6 @@
  --muted: rgba(247, 245, 233, 0.68);
  --accent: #ffbc00;
  --accent-soft: rgba(255, 188, 0, 0.12);
- --ok: #7de59f;
- --danger: #ff8c8c;
  /* Status language, one token set per level: see docs/STATUS_LANGUAGE.md. */
  --error-fill: rgba(107, 20, 20, 0.8);
  --error-border: #b02626;
@@ -90,7 +88,6 @@
  --btn-primary-bg: var(--accent);
  --btn-neutral-bg: rgba(255, 255, 255, 0.12);
  --btn-secondary-border: rgba(255, 188, 0, 0.42);
- --btn-danger-border: rgba(255, 140, 140, 0.42);
  --btn-transition: transform 0.17s ease, filter 0.17s ease;
  /* width of the inline help drawer. While the drawer is
  open this same size is applied as <body> padding-right, so the
@@ -627,7 +624,7 @@
  text-decoration: none;
  cursor: pointer;
  }
- .gallery-del { color: var(--danger); }
+ .gallery-del { color: var(--error-text); }
  .top-bar-actions {
  display: flex;
  justify-content: flex-end;
@@ -811,8 +808,8 @@
  /* Danger – destructive (Delete, Discard). */
  .btn-danger, button.danger {
  background: transparent;
- border: 1px solid var(--btn-danger-border);
- color: var(--danger);
+ border: 1px solid var(--error-line);
+ color: var(--error-text);
  font-weight: 600;
  }
  /* Neutral – low-emphasis dismiss actions (e.g. the network-edit
@@ -1132,7 +1129,11 @@
  }
  .license-footer a:hover { text-decoration: underline; }
  .license-footer .sep { opacity: 0.5; margin: 0 0.4rem; }
- .license-footer .update-flag { color: #ffd166; font-weight: 600; margin-left: 0.4rem; }
+ .license-footer .update-flag {
+ display: inline-block; margin-left: 0.4rem; vertical-align: 1px; border-radius: 0.4rem;
+ --pill-pad-y: 0.1rem; padding-inline: 0.45rem; font-size: 0.7rem; font-weight: 500;
+ color: var(--text); background: var(--info-chip); border: 1px solid var(--info-line);
+ }
  /* Full verbatim license text on the /about page. Scrollable so the
  ~660-line AGPLv3 doesn't dominate the page, monospace + preserved
  wrapping so the FSF formatting stays intact. */
@@ -1167,7 +1168,7 @@
  .peer-status {
  flex: none; box-sizing: content-box; width: 10px; height: 10px; margin: 0 3px;
  border: 2px solid var(--success-mark-muted); border-radius: 999px;
- background: var(--success-mark); background-clip: content-box; color: var(--ok); font-size: 0;
+ background: var(--success-mark); background-clip: content-box; font-size: 0;
  }
  /* Controller Slots table (Input tab). */
  .slot-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
@@ -1188,7 +1189,7 @@
  .slot-actions { white-space: nowrap; text-align: right; }
  .slot-actions button { margin: 0 0 0 6px; padding: 4px 10px; }
  .peer-item.offline .peer-status {
- color: var(--danger); width: 8px; height: 8px;
+ width: 8px; height: 8px;
  border: 3px solid var(--error-mark); background-color: var(--error-mark-muted);
  }
  .peer-name { flex: 1; font-weight: 600; }
@@ -1940,8 +1941,8 @@
  }
  .modal-footer button.danger {
  background: transparent;
- color: var(--danger);
- border-color: var(--btn-danger-border);
+ color: var(--error-text);
+ border-color: var(--error-line);
  }
  /* Progress row: spinner + status text, used by the locked update modal. */
  .modal-progress { display: flex; align-items: center; gap: 0.7rem; }
@@ -2017,8 +2018,7 @@
  .modal-list-item-apply:hover { background: rgba(255, 188, 0, 0.16); }
  .modal-list-item-export { color: var(--muted); }
  .modal-list-item-export:hover { background: rgba(255, 255, 255, 0.1); }
- .modal-list-item-delete { color: var(--danger); }
- .modal-list-item-delete:hover { background: rgba(255, 140, 140, 0.14); }
+ .modal-list-item-delete { color: var(--error-text); }
  .modal-empty {
  color: var(--muted);
  font-style: italic;
@@ -2065,18 +2065,21 @@
  .notice .notice-sub { margin-top: 3px; font-weight: 400; color: var(--muted); }
  .notice a, .gallery-error a { color: inherit; }
  .notice code { color: var(--text); }
+ /* Destructive controls: the error text, and the fault-row tint under the pointer. */
+ .btn-danger:hover:not(:disabled), button.danger:hover:not(:disabled), .modal-list-item-delete:hover,
+ .gallery-del:hover { background: var(--error-row); }
  .notice pre { margin: 6px 0 0; padding: 6px 8px; background: rgba(0, 0, 0, 0.25); border-radius: 4px; font-size: 0.75rem;
  font-weight: 400; max-height: 8em; overflow: auto; white-space: pre-wrap; color: #cfd6df; }
  /* Pills set --pill-pad-y and their own inline padding. Trimming the line box to cap
  height and baseline centres the label whatever the fallback font's ascent. */
  .stat-chip, .diag-status-pill, .slot-missing-label, .badge-experimental,
- .osc-binding-fault, .modal-list-item-badge, .osc-pill:not([data-invalid="true"]),
+ .osc-binding-fault, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
  .osc-pill[data-invalid="true"][data-unresolved="true"] {
  padding-block: var(--pill-pad-y);
  }
  @supports (text-box: trim-both cap alphabetic) {
  .stat-chip, .diag-status-pill, .slot-missing-label, .badge-experimental,
- .osc-binding-fault, .modal-list-item-badge, .osc-pill:not([data-invalid="true"]),
+ .osc-binding-fault, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
  .osc-pill[data-invalid="true"][data-unresolved="true"] {
  text-box: trim-both cap alphabetic;
  padding-block: calc((1lh - 1cap) / 2 + var(--pill-pad-y));
@@ -2125,7 +2128,7 @@
  <footer class="license-footer" role="contentinfo">
  OpenFollow v{{__version__}}{{ ' (' + __commit__ + ')' if __commit__ else '' }}
  % if defined('update_supported') and update_supported and defined('update_available') and update_available:
- <span class="update-flag">(Update available: v{{latest_version}})</span>
+ <span class="update-flag">Update available: v{{latest_version}}</span>
  % end
  <span class="sep">·</span>
  © 2026 The OpenFollow Project

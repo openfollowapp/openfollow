@@ -301,6 +301,12 @@ def test_mask_editor_collapse_outspecifies_its_own_display_rules() -> None:
     assert "#detection-mask-editor.is-collapsed > :not(.section-head)" in html
 
 
+def test_deleting_the_selected_mask_is_a_danger_button() -> None:
+    assert (
+        '<button type="button" class="dme-btn danger" data-dme="delete" disabled>Delete Selected</button>' in _render()
+    )
+
+
 def test_draw_only_toolbar_buttons_hidden_via_class_not_attribute() -> None:
     # The global ``button { display }`` rule (author origin) defeats the UA
     # ``[hidden]`` rule, so the draw-only buttons must hide via the

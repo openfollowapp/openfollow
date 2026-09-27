@@ -57,7 +57,7 @@
     border-color: rgba(255,188,0,0.35);
   }
   .wizard-step-btn.completed {
-    color: var(--ok);
+    color: var(--success-text);
   }
   .wizard-content { display: none; }
   .wizard-content.active { display: block; }
@@ -88,7 +88,8 @@
     margin-top: 0.5rem;
   }
   .wizard-field-error {
-    color: var(--danger);
+    color: var(--error-text);
+    font-weight: 600;
     font-size: 0.8rem;
     margin-top: 0.25rem;
   }
@@ -284,14 +285,14 @@
       <line id="pp-sight-2" stroke="rgba(255,255,255,0.12)" stroke-width="1" stroke-dasharray="4,4"/>
       <line id="pp-sight-3" stroke="rgba(255,255,255,0.12)" stroke-width="1" stroke-dasharray="4,4"/>
       <!-- Measurement lines -->
-      <line id="pp-x-line" stroke="rgba(255,140,140,0.4)" stroke-width="1" stroke-dasharray="4,3" style="display:none"/>
-      <text id="pp-x-label" fill="rgba(255,140,140,0.6)" font-size="9" font-weight="600" style="display:none"></text>
-      <line id="pp-y-line" stroke="rgba(125,229,159,0.4)" stroke-width="1" stroke-dasharray="4,3"/>
-      <text id="pp-y-label" fill="rgba(125,229,159,0.6)" font-size="9" font-weight="600"></text>
+      <line id="pp-x-line" stroke="rgba(244,72,72,0.4)" stroke-width="1" stroke-dasharray="4,3" style="display:none"/>
+      <text id="pp-x-label" fill="#f44848" font-size="9" font-weight="600" style="display:none"></text>
+      <line id="pp-y-line" stroke="rgba(92,201,140,0.4)" stroke-width="1" stroke-dasharray="4,3"/>
+      <text id="pp-y-label" fill="#5cc98c" font-size="9" font-weight="600"></text>
       <!-- Z axis line (camera floor to camera) -->
-      <line id="pp-z-line" stroke="rgba(159,201,255,0.5)" stroke-width="1.5" stroke-dasharray="4,3"/>
-      <text id="pp-z-label" fill="rgba(159,201,255,0.6)" font-size="9" font-weight="600" style="display:none"></text>
-      <circle id="pp-floor-dot" r="3" fill="none" stroke="rgba(159,201,255,0.5)" stroke-width="1" style="display:none"/>
+      <line id="pp-z-line" stroke="rgba(79,141,217,0.5)" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <text id="pp-z-label" fill="#4f8dd9" font-size="9" font-weight="600" style="display:none"></text>
+      <circle id="pp-floor-dot" r="3" fill="none" stroke="rgba(79,141,217,0.5)" stroke-width="1" style="display:none"/>
       <!-- Camera body -->
       <polygon id="pp-cam-body" fill="rgba(255,255,255,0.12)" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
       <polygon id="pp-cam-lens" fill="rgba(255,255,255,0.2)" stroke="rgba(255,255,255,0.5)" stroke-width="1"/>
@@ -301,16 +302,16 @@
       <text id="pp-us-label" fill="rgba(247,245,233,0.3)" font-size="9" font-weight="600" text-anchor="middle">UPSTAGE</text>
       <!-- PSN axis indicator -->
       <defs>
-        <marker id="ppArrowR" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="rgba(255,140,140,0.8)"/></marker>
-        <marker id="ppArrowG" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="rgba(125,229,159,0.8)"/></marker>
-        <marker id="ppArrowB" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="rgba(159,201,255,0.8)"/></marker>
+        <marker id="ppArrowR" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="rgba(244,72,72,0.8)"/></marker>
+        <marker id="ppArrowG" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="rgba(92,201,140,0.8)"/></marker>
+        <marker id="ppArrowB" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="rgba(79,141,217,0.8)"/></marker>
       </defs>
-      <line id="pp-axis-x" stroke="rgba(255,140,140,0.8)" stroke-width="1.5" marker-end="url(#ppArrowR)"/>
-      <text id="pp-axis-x-label" fill="rgba(255,140,140,0.8)" font-size="10" font-weight="600">X+</text>
-      <line id="pp-axis-y" stroke="rgba(125,229,159,0.8)" stroke-width="1.5" marker-end="url(#ppArrowG)"/>
-      <text id="pp-axis-y-label" fill="rgba(125,229,159,0.8)" font-size="10" font-weight="600">Y+</text>
-      <line id="pp-axis-z" stroke="rgba(159,201,255,0.8)" stroke-width="1.5" marker-end="url(#ppArrowB)"/>
-      <text id="pp-axis-z-label" fill="rgba(159,201,255,0.8)" font-size="10" font-weight="600">Z+</text>
+      <line id="pp-axis-x" stroke="rgba(244,72,72,0.8)" stroke-width="1.5" marker-end="url(#ppArrowR)"/>
+      <text id="pp-axis-x-label" fill="#f44848" font-size="10" font-weight="600">X+</text>
+      <line id="pp-axis-y" stroke="rgba(92,201,140,0.8)" stroke-width="1.5" marker-end="url(#ppArrowG)"/>
+      <text id="pp-axis-y-label" fill="#5cc98c" font-size="10" font-weight="600">Y+</text>
+      <line id="pp-axis-z" stroke="rgba(79,141,217,0.8)" stroke-width="1.5" marker-end="url(#ppArrowB)"/>
+      <text id="pp-axis-z-label" fill="#4f8dd9" font-size="10" font-weight="600">Z+</text>
     </svg>
 
     <div class="wizard-help">
@@ -346,8 +347,8 @@
       <g id="gs-grid-lines"></g>
       <rect id="gs-grid" rx="2" fill="rgba(255,188,0,0.06)" stroke="rgba(255,188,0,0.5)" stroke-width="1.5"/>
       <!-- Diagonal line (dynamic) -->
-      <line id="gs-diag" stroke="rgba(159,201,255,0.4)" stroke-width="1" stroke-dasharray="6,4"/>
-      <text id="gs-diag-text" fill="rgba(159,201,255,0.7)" font-size="10" font-weight="600" text-anchor="middle"></text>
+      <line id="gs-diag" stroke="rgba(79,141,217,0.4)" stroke-width="1" stroke-dasharray="6,4"/>
+      <text id="gs-diag-text" fill="#4f8dd9" font-size="10" font-weight="600" text-anchor="middle"></text>
       <!-- Corner labels -->
       <text id="gs-label-dsl" fill="rgba(247,245,233,0.68)" font-size="10" font-weight="600">DSL</text>
       <text id="gs-label-dsr" fill="rgba(247,245,233,0.68)" font-size="10" font-weight="600">DSR</text>
@@ -371,18 +372,18 @@
       </g>
       <text id="gs-ref-label" fill="#ffbc00" font-size="9" font-weight="700">REF</text>
       <!-- Offset arrows (only shown when offset != 0) -->
-      <line id="gs-off-x" stroke="rgba(255,140,140,0.6)" stroke-width="1.5" marker-end="url(#arrowR)"/>
-      <text id="gs-off-x-label" fill="rgba(255,140,140,0.8)" font-size="9" font-weight="600"></text>
-      <line id="gs-off-y" stroke="rgba(125,229,159,0.6)" stroke-width="1.5" marker-end="url(#arrowG)"/>
-      <text id="gs-off-y-label" fill="rgba(125,229,159,0.8)" font-size="9" font-weight="600"></text>
+      <line id="gs-off-x" stroke="rgba(244,72,72,0.6)" stroke-width="1.5" marker-end="url(#arrowR)"/>
+      <text id="gs-off-x-label" fill="#f44848" font-size="9" font-weight="600"></text>
+      <line id="gs-off-y" stroke="rgba(92,201,140,0.6)" stroke-width="1.5" marker-end="url(#arrowG)"/>
+      <text id="gs-off-y-label" fill="#5cc98c" font-size="9" font-weight="600"></text>
       <!-- Z offset label (shown when z_offset != 0) -->
-      <text id="gs-off-z-label" fill="rgba(159,201,255,0.8)" font-size="9" font-weight="600"></text>
+      <text id="gs-off-z-label" fill="#4f8dd9" font-size="9" font-weight="600"></text>
       <!-- Downstage / Upstage labels -->
       <text id="gs-ds-label" fill="rgba(247,245,233,0.35)" font-size="9" font-weight="600" text-anchor="middle">DOWNSTAGE</text>
       <text id="gs-us-label" fill="rgba(247,245,233,0.35)" font-size="9" font-weight="600" text-anchor="middle">UPSTAGE</text>
       <defs>
-        <marker id="arrowR" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="rgba(255,140,140,0.8)"/></marker>
-        <marker id="arrowG" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="rgba(125,229,159,0.8)"/></marker>
+        <marker id="arrowR" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="rgba(244,72,72,0.8)"/></marker>
+        <marker id="arrowG" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="rgba(92,201,140,0.8)"/></marker>
       </defs>
     </svg>
 
@@ -527,9 +528,9 @@
       <text id="cp-label-usr" fill="rgba(247,245,233,0.5)" font-size="9" font-weight="600">USR</text>
       <text id="cp-label-usl" fill="rgba(247,245,233,0.5)" font-size="9" font-weight="600">USL</text>
       <!-- Grid Z offset indicator (ref ground to grid plane) -->
-      <line id="cp-gz-line" stroke="rgba(159,201,255,0.5)" stroke-width="1" stroke-dasharray="4,3"/>
-      <text id="cp-gz-label" fill="rgba(159,201,255,0.8)" font-size="9" font-weight="600"></text>
-      <circle id="cp-gz-dot" r="3" fill="rgba(159,201,255,0.4)"/>
+      <line id="cp-gz-line" stroke="rgba(79,141,217,0.5)" stroke-width="1" stroke-dasharray="4,3"/>
+      <text id="cp-gz-label" fill="#4f8dd9" font-size="9" font-weight="600"></text>
+      <circle id="cp-gz-dot" r="3" fill="rgba(79,141,217,0.4)"/>
       <!-- Reference point on grid plane -->
       <g id="cp-ref">
         <circle r="5" fill="none" stroke="#ffbc00" stroke-width="1.5"/>
@@ -542,16 +543,16 @@
       <polygon id="cp-cam-lens" fill="rgba(255,255,255,0.2)" stroke="rgba(255,255,255,0.5)" stroke-width="1"/>
       <text id="cp-cam-label" fill="rgba(247,245,233,0.68)" font-size="10" font-weight="600">Camera</text>
       <!-- X measurement line (ref to cam floor X) -->
-      <line id="cp-x-line" stroke="rgba(255,140,140,0.5)" stroke-width="1.5"/>
-      <text id="cp-x-label" fill="rgba(255,140,140,0.8)" font-size="9" font-weight="600"></text>
+      <line id="cp-x-line" stroke="rgba(244,72,72,0.5)" stroke-width="1.5"/>
+      <text id="cp-x-label" fill="#f44848" font-size="9" font-weight="600"></text>
       <!-- Y measurement line (ref+X to cam floor) -->
-      <line id="cp-y-line" stroke="rgba(125,229,159,0.5)" stroke-width="1.5"/>
-      <text id="cp-y-label" fill="rgba(125,229,159,0.8)" font-size="9" font-weight="600"></text>
+      <line id="cp-y-line" stroke="rgba(92,201,140,0.5)" stroke-width="1.5"/>
+      <text id="cp-y-label" fill="#5cc98c" font-size="9" font-weight="600"></text>
       <!-- Vertical pole (Z height) -->
-      <line id="cp-z-line" stroke="rgba(159,201,255,0.5)" stroke-width="1" stroke-dasharray="4,3"/>
-      <text id="cp-z-label" fill="rgba(159,201,255,0.8)" font-size="9" font-weight="600"></text>
+      <line id="cp-z-line" stroke="rgba(79,141,217,0.5)" stroke-width="1" stroke-dasharray="4,3"/>
+      <text id="cp-z-label" fill="#4f8dd9" font-size="9" font-weight="600"></text>
       <!-- Floor projection dot -->
-      <circle id="cp-floor-dot" r="3" fill="rgba(159,201,255,0.4)"/>
+      <circle id="cp-floor-dot" r="3" fill="rgba(79,141,217,0.4)"/>
       <!-- Dashed line from camera to ref -->
       <line id="cp-sight-line" stroke="rgba(255,255,255,0.15)" stroke-width="1" stroke-dasharray="4,4"/>
       <!-- FOV frustum edges (lens to ground footprint corners) -->
@@ -822,7 +823,7 @@
     <div id="review-container" class="wizard-preview-container" style="display:none;">
       <img id="review-image" alt="Camera snapshot">
       <svg id="review-overlay" class="wizard-overlay" xmlns="http://www.w3.org/2000/svg">
-        <polygon id="review-quad" fill="rgba(255,188,0,0.06)" stroke="rgba(125,229,159,0.6)" stroke-width="2" points="0,0"/>
+        <polygon id="review-quad" fill="rgba(255,188,0,0.06)" stroke="rgba(92,201,140,0.8)" stroke-width="2" points="0,0"/>
         <g id="review-zoff"></g>
         <g id="review-corners"></g>
         <g id="review-ref"></g>

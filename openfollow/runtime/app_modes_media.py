@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from openfollow.runtime.diagnostics_export import DiagnosticsExport
 
 EXPORT_TITLE = "SAVE DIAGNOSTICS"
-PICKER_SUBTITLE = "Pick a drive, Enter to save, Esc to cancel."
+PICKER_SUBTITLE = "Pick a USB storage device, Enter to save, Esc to cancel."
 DIAGNOSTICS = "diagnostics"
 BADGE_KEY = "diagnostics_export"
 SUCCESS_BADGE_S = 15.0
@@ -229,9 +229,9 @@ def badge_row(status: ExportStatus) -> tuple[str, str]:
 def export_screen_lines(status: ExportStatus) -> tuple[str, str, bool | None]:
     """``(what is happening or happened, the next step, ok)`` for the export screen; ``ok`` is None while it runs."""
     if status.phase == COLLECTING:
-        return "Collecting diagnostics (up to 20 s)", "It carries on if you go back.", None
+        return "Collecting diagnostics", "The export continues in the background.", None
     if status.phase == WRITING:
-        return f"Writing to {status.drive}", "It carries on if you go back.", None
+        return f"Writing to {status.drive}", "The export continues in the background.", None
     if status.ok:
         return status.message, status.action, True
-    return status.message, "Pick a drive to try again.", False
+    return status.message, "Pick a USB storage device to try again.", False

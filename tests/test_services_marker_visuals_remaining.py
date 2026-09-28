@@ -384,7 +384,8 @@ class TestVideoAndMenuState:
         assert _build(app, pool).about_active is False
 
     @pytest.mark.parametrize(
-        ("listed", "empty"), [(True, "No USB drive found. Plug one in."), (False, "Looking for drives")]
+        ("listed", "empty"),
+        [(True, "No USB storage device found. Plug one in."), (False, "Looking for USB storage devices")],
     )
     def test_drive_picker_rows_sync_to_overlay_state(self, pool: OverlayStatePool, listed: bool, empty: str) -> None:
         from openfollow.runtime.removable_media import Media
@@ -405,9 +406,11 @@ class TestVideoAndMenuState:
             "SanDisk Ultra · FAT32 · 32 GB",
         ]
         assert (state.media_picker_index, state.media_picker_empty) == (1, empty)
+        assert state.media_picker_enabled == [False, True]
         app._media_picker_active = False
         state = _build(app, pool)
         assert (state.media_picker_active, state.media_picker_items, state.media_picker_index) == (False, [], -1)
+        assert state.media_picker_enabled == []
 
     def test_export_screen_lines_sync_to_overlay_state(self, pool: OverlayStatePool) -> None:
         from openfollow.runtime.diagnostics_export import WRITING, ExportStatus
@@ -419,7 +422,7 @@ class TestVideoAndMenuState:
         )
         state = _build(app, pool)
         assert state.media_export_active is True
-        assert state.media_export_lines == ("Writing to SanDisk Ultra", "It carries on if you go back.", None)
+        assert state.media_export_lines == ("Writing to SanDisk Ultra", "The export continues in the background.", None)
         app._runtime_services.diagnostics_export = None
         state = _build(app, pool)
         assert (state.media_export_active, state.media_export_lines) == (False, ("", "", None))

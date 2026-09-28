@@ -59,7 +59,7 @@ class TestRun:
         ("build_error", "write_error", "message"),
         [
             (RuntimeError("boom"), None, "The diagnostics could not be collected."),
-            (None, MediaError("The drive is full."), "The drive is full."),
+            (None, MediaError("The USB storage device is full."), "The USB storage device is full."),
             (None, RuntimeError("boom"), "The file could not be saved."),
         ],
         ids=["collect-failed", "drive-refused", "write-crashed"],

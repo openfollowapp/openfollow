@@ -117,15 +117,15 @@ def write_exclusive(directory: Path, name: str, data: bytes) -> str:
             raise _write_error(exc) from exc
         os.close(fd)
         return candidate
-    raise MediaWriteError(EXIT_NAME_TAKEN, "Every name for this file is already taken on the drive.")
+    raise MediaWriteError(EXIT_NAME_TAKEN, "Every name for this file is already taken on the USB storage device.")
 
 
 def _write_error(exc: OSError) -> MediaWriteError:
     if exc.errno == errno.ENOSPC:
-        return MediaWriteError(EXIT_FULL, "The drive is full.")
+        return MediaWriteError(EXIT_FULL, "The USB storage device is full.")
     if exc.errno == errno.EROFS:
-        return MediaWriteError(EXIT_WRITE_FAILED, "The drive is read-only.")
-    return MediaWriteError(EXIT_WRITE_FAILED, "The file could not be written to the drive.")
+        return MediaWriteError(EXIT_WRITE_FAILED, "The USB storage device is read-only.")
+    return MediaWriteError(EXIT_WRITE_FAILED, "The file could not be written to the USB storage device.")
 
 
 def _remove_quietly(path: Path) -> None:
@@ -208,15 +208,17 @@ def _check_device(device: str, lsblk: str) -> str:
     except (subprocess.SubprocessError, OSError, ValueError):
         found = None
     if found is None:
-        raise MediaWriteError(EXIT_NOT_REMOVABLE, "That drive is no longer attached.")
+        raise MediaWriteError(EXIT_NOT_REMOVABLE, "That USB storage device is no longer attached.")
     node, disk = found
     if disk.get("tran") != "usb" or is_system_disk(disk):
-        raise MediaWriteError(EXIT_NOT_REMOVABLE, "That is not a removable USB drive.")
+        raise MediaWriteError(EXIT_NOT_REMOVABLE, "That is not a removable USB storage device.")
     if _mountpoints(node):
-        raise MediaWriteError(EXIT_MOUNTED, "The drive is already mounted.")
+        raise MediaWriteError(EXIT_MOUNTED, "The USB storage device is already mounted.")
     mount_type = MOUNT_TYPES.get(node.get("fstype") or "")
     if mount_type is None:
-        raise MediaWriteError(EXIT_UNSUPPORTED, "The drive's format can't be written. Use FAT32, exFAT or NTFS.")
+        raise MediaWriteError(
+            EXIT_UNSUPPORTED, "The USB storage device's format can't be written. Use FAT32, exFAT or NTFS."
+        )
     return mount_type
 
 
@@ -241,7 +243,7 @@ def _write_to_device(
             check=False,
         )
         if mounted.returncode != 0:
-            raise MediaWriteError(EXIT_MOUNT_FAILED, "The drive could not be mounted.")
+            raise MediaWriteError(EXIT_MOUNT_FAILED, "The USB storage device could not be mounted.")
         try:
             written = write_exclusive(mountpoint, name, data)
         finally:
@@ -249,7 +251,7 @@ def _write_to_device(
         if not unmounted:
             raise MediaWriteError(
                 EXIT_UNMOUNT_FAILED,
-                f"{written} was written, but the drive could not be unmounted. Wait before removing it.",
+                f"{written} was written, but the USB storage device could not be unmounted. Wait before removing it.",
             )
         return written
     finally:

@@ -8,6 +8,9 @@ button-detection wizard, Pi network screens)."""
 
 from __future__ import annotations
 
+import math
+import time
+from collections.abc import Sequence
 from typing import Any, cast
 
 import cairo
@@ -175,6 +178,10 @@ def draw_modal_shell(
 # Settings list rows are 30px on a 14px pad (see ``draw_selectable_list``); the
 # documentation pointer takes what the rows leave.
 _LIST_ITEM_H = 30.0
+# The crossed disc leading a list row that can't be picked.
+_ROW_MARK_R = 6.0
+# One turn of the progress spinner, as the web UI's.
+_SPIN_PERIOD_S = 0.7
 _LIST_PADDING = 14.0
 _LIST_MIN_H = 80.0
 _DOCS_GAP = 10.0
@@ -201,7 +208,9 @@ def draw_selectable_list(
     w: float,
     h: float,
     empty_message: str,
+    disabled: Sequence[bool] = (),
 ) -> None:
+    """A scrolling list; a row flagged in *disabled* is led by the crossed disc (it can't be picked)."""
     draw_rounded_rect(cr, x, y, w, h, PANEL_RADIUS)
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.26)
     cr.fill()
@@ -249,8 +258,12 @@ def draw_selectable_list(
             renderer._set_ui_font(cr, 11.5)
             cr.set_source_rgba(*COLOR_TEXT_MUTED)
 
-        text = renderer._truncate_text_to_width(cr, items[item_idx], text_max_w)
-        cr.move_to(row_x + 10.0, row_y + row_h / 2.0 + 4.0)
+        text_x = row_x + 10.0
+        if item_idx < len(disabled) and disabled[item_idx]:
+            _draw_offline_mark(cr, text_x + _ROW_MARK_R, row_y + row_h / 2.0, _ROW_MARK_R)
+            text_x += 2 * _ROW_MARK_R + 8.0
+        text = renderer._truncate_text_to_width(cr, items[item_idx], text_max_w - (text_x - row_x - 10.0))
+        cr.move_to(text_x, row_y + row_h / 2.0 + 4.0)
         cr.show_text(text)
 
     if scroll_offset > 0:
@@ -278,6 +291,7 @@ def draw_selection_menu(
     items: list[str],
     selected_idx: int,
     empty_message: str,
+    disabled: Sequence[bool] = (),
 ) -> None:
     panel_w = min(w * 0.52, 760.0)
     panel_h = min(h * 0.84, 720.0)
@@ -322,6 +336,7 @@ def draw_selection_menu(
         w=content_w,
         h=list_h,
         empty_message=empty_message,
+        disabled=disabled,
     )
 
 
@@ -342,11 +357,30 @@ def draw_media_picker_overlay(renderer: Any, cr: Any, state: OverlayState, w: in
         items=state.media_picker_items,
         selected_idx=state.media_picker_index,
         empty_message=state.media_picker_empty,
+        disabled=[not enabled for enabled in state.media_picker_enabled],
     )
 
 
-def draw_media_export_overlay(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    """The export's progress, then what happened and the one next step."""
+def draw_spinner(cr: Any, cx: float, cy: float, r: float, now: float) -> None:
+    """An accent arc turning on a faint ring, like the web UI's; the display tick redraws it."""
+    start = (now % _SPIN_PERIOD_S) / _SPIN_PERIOD_S * 2 * math.pi
+    cr.save()
+    cr.set_line_width(2.0)
+    cr.set_source_rgba(*COLOR_ACCENT, 0.25)
+    cr.new_sub_path()
+    cr.arc(cx, cy, r, 0, 2 * math.pi)
+    cr.stroke()
+    cr.set_source_rgb(*COLOR_ACCENT)
+    cr.new_sub_path()
+    cr.arc(cx, cy, r, start, start + math.pi / 2)
+    cr.stroke()
+    cr.restore()
+
+
+def draw_media_export_overlay(
+    renderer: Any, cr: Any, state: OverlayState, w: int, h: int, now: float | None = None
+) -> None:
+    """The export's progress under a spinner, then what happened and the one next step."""
     from openfollow.runtime.app_modes_media import EXPORT_TITLE
 
     headline, next_step, ok = state.media_export_lines
@@ -357,15 +391,17 @@ def draw_media_export_overlay(renderer: Any, cr: Any, state: OverlayState, w: in
         w,
         h,
         title=EXPORT_TITLE,
-        subtitle="Esc to go back." if ok is None else "Enter to pick a drive, Esc to go back.",
+        subtitle="Esc to go back." if ok is None else "Enter to pick a USB storage device, Esc to go back.",
         panel_w=min(w * 0.52, 760.0),
         panel_h=190.0,
     )
     text_x = panel_x + 28.0
     line_y = panel_y + 108.0
-    if ok is not None:
+    if ok is None:
+        draw_spinner(cr, text_x + 8.0, line_y - 6.0, 8.0, time.monotonic() if now is None else now)
+    else:
         (draw_success_sign if ok else draw_warning_sign)(cr, text_x + 8.0, line_y - 6.0, 16.0)
-        text_x += 28.0
+    text_x += 28.0
     width = panel_x + panel_w - 28.0 - text_x
     renderer._set_ui_font(cr, 16, bold=True)
     cr.set_source_rgb(*COLOR_TEXT)
@@ -1215,7 +1251,7 @@ def draw_panel(renderer: Any, cr: Any, x: float, y: float, w: float, h: float, t
 
 
 def _draw_offline_mark(cr: Any, cx: float, cy: float, r: float) -> None:
-    """Off-white disc with a cross cut into it: the marker's position is not arriving."""
+    """Off-white disc with a cross cut into it: an offline marker, a drive that can't be written."""
     cr.save()
     cr.set_source_rgb(*COLOR_TEXT)
     cr.arc(cx, cy, r, 0, 6.2832)

@@ -72,14 +72,14 @@
         %# Its own save box, so a failed save flashes and explains right here.
         <div class="save-flash drive-save">
             <div class="actions">
-                <label for="diagnostics-drive">Drive</label>
+                <label for="diagnostics-drive">USB storage device</label>
                 <select id="diagnostics-drive" name="media_id"
                         hx-get="/api/diagnostics/drives"
                         hx-trigger="load, focus"
                         hx-include="this"
                         hx-target="this"
                         hx-swap="innerHTML">
-                    <option value="" disabled selected>Looking for drives</option>
+                    <option value="" disabled selected>Looking for USB storage devices</option>
                 </select>
                 <button type="button" class="secondary"
                         hx-post="/api/diagnostics/save-to-drive"
@@ -89,9 +89,9 @@
                         hx-indicator="#diagnostics-drive-busy"
                         hx-disabled-elt="this"
                         hx-on::before-request="document.getElementById('diagnostics-drive-result').replaceChildren()">
-                    Save to drive
+                    Save to USB storage device
                 </button>
-                <span id="diagnostics-drive-busy" class="drive-save-busy">Collecting diagnostics (up to 20 s)</span>
+                <span id="diagnostics-drive-busy" class="drive-save-busy"><span class="modal-spinner" aria-hidden="true"></span>Collecting diagnostics</span>
             </div>
             <div id="diagnostics-drive-result"></div>
         </div>

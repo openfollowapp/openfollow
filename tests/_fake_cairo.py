@@ -119,6 +119,9 @@ class FakeCairo:
         self.rects.append((x, y, w, h))
         self.calls.append(("rectangle", x, y, w, h))
 
+    def new_sub_path(self) -> None:
+        self.calls.append(("new_sub_path",))
+
     def arc(self, cx: float, cy: float, r: float, a0: float, a1: float) -> None:
         self.arcs.append((cx, cy, r))
         self.calls.append(("arc", cx, cy, r, a0, a1))

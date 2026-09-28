@@ -145,7 +145,7 @@ def _fs_name(fstype: str | None, version: str | None = None) -> str:
 
 def _drive_name(disk: dict[str, Any]) -> str:
     parts = [str(disk.get(key) or "").strip() for key in ("vendor", "model")]
-    return " ".join(p for p in parts if p) or "USB drive"
+    return " ".join(p for p in parts if p) or "USB storage device"
 
 
 def _linux_media(tree: dict[str, Any], can_mount: bool) -> list[Media]:
@@ -205,7 +205,7 @@ def _mac_media(run: Runner) -> list[Media]:
             if not info.get("FilesystemType") or info.get("VolumeName") == "EFI":
                 continue
             mountpoint = info.get("MountPoint") or None
-            name = str(info.get("MediaName") or info.get("VolumeName") or "USB drive").strip()
+            name = str(info.get("MediaName") or info.get("VolumeName") or "USB storage device").strip()
             if mountpoint is None:
                 writable, reason = False, "not mounted"
             elif not info.get("WritableVolume") or not os.access(mountpoint, os.W_OK):
@@ -268,7 +268,7 @@ def write_file(
         raise MediaError(str(exc)) from exc
     media = next((m for m in list_media(broker, platform=platform, run=run) if m.id == media_id), None)
     if media is None:
-        raise MediaError("That drive is no longer attached.")
+        raise MediaError("That USB storage device is no longer attached.")
     if not media.writable:
         raise MediaError(f"{media.name} can't be written: {media.reason}.")
     if media.mountpoint is not None:
@@ -292,7 +292,7 @@ def _write_through_helper(media: Media, filename: str, data: bytes, broker: Priv
         proc = broker.run(
             MEDIA_WRITE,
             [MEDIA_WRITE_SCRIPT, "write", media.device],
-            reason="Save a file to a removable drive",
+            reason="Save a file to a USB storage device",
             stdin=filename.encode() + b"\n" + data,
             allow_prompt=False,
             timeout=_WRITE_TIMEOUT_S,

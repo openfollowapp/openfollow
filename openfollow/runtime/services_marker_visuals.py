@@ -267,11 +267,15 @@ def _populate_media_overlay(app: Any, state: OverlayState) -> None:
         media, listed = media_modes.picker_rows(app)
         state.media_picker_title = app._media_picker_title
         state.media_picker_items = [m.label if m.writable else f"{m.label} ({m.reason})" for m in media]
+        state.media_picker_enabled = [m.writable for m in media]
         state.media_picker_index = media_modes.picker_index(app, media)
-        state.media_picker_empty = "No USB drive found. Plug one in." if listed else "Looking for drives"
+        state.media_picker_empty = (
+            "No USB storage device found. Plug one in." if listed else "Looking for USB storage devices"
+        )
     else:
         state.media_picker_title = ""
         state.media_picker_items = []
+        state.media_picker_enabled = []
         state.media_picker_index = -1
         state.media_picker_empty = ""
     export = media_modes.diagnostics_export(app)

@@ -4978,7 +4978,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/api/diagnostics/drives")
     def api_diagnostics_drives() -> Any:
-        """``<option>`` rows for the Save to drive select, listed afresh on every call."""
+        """``<option>`` rows for the Save to USB storage device select, listed afresh on every call."""
         provider = server.media_list_provider
         return template(
             "partials/diagnostics_drives",
@@ -4993,13 +4993,17 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         export, provider = server.diagnostics_export, server.media_list_provider
         if export is None or provider is None:
-            return _save_failed(503, "Saving to a drive is not available on this station.")
+            return _save_failed(503, "Saving to a USB storage device is not available on this station.")
         media_id = request.forms.getunicode("media_id") or ""
         media = next((m for m in provider() if m.id == media_id), None)
         if media is None:
-            return _save_failed(400, "That drive is no longer attached.", "Pick a drive, then save again.")
+            return _save_failed(
+                400, "That USB storage device is no longer attached.", "Pick a USB storage device, then save again."
+            )
         if not media.writable:
-            return _save_failed(400, f"{media.name} can't be written: {media.reason}.", "Pick another drive.")
+            return _save_failed(
+                400, f"{media.name} can't be written: {media.reason}.", "Pick another USB storage device."
+            )
         try:
             status = export.run(media.id, media.name, WEB)
         except ExportBusy as exc:

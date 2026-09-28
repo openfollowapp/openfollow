@@ -89,9 +89,9 @@ class TestWriteExclusive:
     @pytest.mark.parametrize(
         ("err", "code", "text"),
         [
-            (errno.ENOSPC, mw.EXIT_FULL, "The drive is full."),
-            (errno.EROFS, mw.EXIT_WRITE_FAILED, "The drive is read-only."),
-            (errno.EIO, mw.EXIT_WRITE_FAILED, "The file could not be written to the drive."),
+            (errno.ENOSPC, mw.EXIT_FULL, "The USB storage device is full."),
+            (errno.EROFS, mw.EXIT_WRITE_FAILED, "The USB storage device is read-only."),
+            (errno.EIO, mw.EXIT_WRITE_FAILED, "The file could not be written to the USB storage device."),
         ],
         ids=["full", "read-only", "io-error"],
     )
@@ -269,20 +269,28 @@ class TestRootHelper:
     @pytest.mark.parametrize(
         ("devices", "code", "text"),
         [
-            ([*_STATION], mw.EXIT_NOT_REMOVABLE, "That drive is no longer attached."),
+            ([*_STATION], mw.EXIT_NOT_REMOVABLE, "That USB storage device is no longer attached."),
             (
                 [*_STATION, _disk("/dev/sda", "sata", _part("/dev/sda1"))],
                 mw.EXIT_NOT_REMOVABLE,
-                "That is not a removable USB drive.",
+                "That is not a removable USB storage device.",
             ),
             (
                 [_disk("/dev/sda", "usb", _part("/dev/sda1"), _part("/dev/sda2", "ext4", ["/"]))],
                 mw.EXIT_NOT_REMOVABLE,
-                "That is not a removable USB drive.",
+                "That is not a removable USB storage device.",
             ),
-            (_stick(mountpoints=["/media/pi/STICK"]), mw.EXIT_MOUNTED, "The drive is already mounted."),
-            (_stick("apfs"), mw.EXIT_UNSUPPORTED, "The drive's format can't be written. Use FAT32, exFAT or NTFS."),
-            (_stick(None), mw.EXIT_UNSUPPORTED, "The drive's format can't be written. Use FAT32, exFAT or NTFS."),
+            (_stick(mountpoints=["/media/pi/STICK"]), mw.EXIT_MOUNTED, "The USB storage device is already mounted."),
+            (
+                _stick("apfs"),
+                mw.EXIT_UNSUPPORTED,
+                "The USB storage device's format can't be written. Use FAT32, exFAT or NTFS.",
+            ),
+            (
+                _stick(None),
+                mw.EXIT_UNSUPPORTED,
+                "The USB storage device's format can't be written. Use FAT32, exFAT or NTFS.",
+            ),
         ],
         ids=["gone", "not-usb", "usb-root-disk", "already-mounted", "apfs", "no-filesystem"],
     )
@@ -305,7 +313,7 @@ class TestRootHelper:
         assert host.run(["write", "/dev/sda1"], b"b.txt\nx") == (
             mw.EXIT_NOT_REMOVABLE,
             "",
-            "That is not a removable USB drive.",
+            "That is not a removable USB storage device.",
         )
 
     def test_a_flat_list_still_sees_a_mounted_partition(self, tmp_path: Path) -> None:
@@ -326,7 +334,7 @@ class TestRootHelper:
         assert host.run(["write", "/dev/sda1"], b"b.txt\nx") == (
             mw.EXIT_MOUNT_FAILED,
             "",
-            "The drive could not be mounted.",
+            "The USB storage device could not be mounted.",
         )
         assert [line.split()[0] for line in host.log()] == ["mount"]
         assert list(host.run_dir.iterdir()) == []
@@ -337,14 +345,14 @@ class TestRootHelper:
 
         monkeypatch.setattr(mw.os, "write", _full)
         host = _Host(tmp_path, _stick())
-        assert host.run(["write", "/dev/sda1"], b"b.txt\nx") == (mw.EXIT_FULL, "", "The drive is full.")
+        assert host.run(["write", "/dev/sda1"], b"b.txt\nx") == (mw.EXIT_FULL, "", "The USB storage device is full.")
         assert [line.split()[0] for line in host.log()] == ["mount", "umount"]
 
     def test_a_failed_unmount_is_reported(self, tmp_path: Path) -> None:
         host = _Host(tmp_path, _stick(), umount_rc=32)
         code, out, err = host.run(["write", "/dev/sda1"], b"b.txt\nx")
         assert (code, out) == (mw.EXIT_UNMOUNT_FAILED, "")
-        assert err == "b.txt was written, but the drive could not be unmounted. Wait before removing it."
+        assert err == "b.txt was written, but the USB storage device could not be unmounted. Wait before removing it."
 
     def test_an_unmount_that_cannot_run(self, tmp_path: Path) -> None:
         host = _Host(tmp_path, _stick())

@@ -140,7 +140,7 @@ class TestLinuxListing:
         assert media["sdb1"].label == "Generic SD Reader · exFAT · 128 GB"
         assert media["sdc1"].label == "WD Passport (MAC) · APFS · 2.0 TB"
         assert media["sdc2"].label == "WD Passport (WIN) · NTFS · 500 GB"
-        assert media["sdf"].label == "USB drive · FAT16 · 2.0 GB"
+        assert media["sdf"].label == "USB storage device · FAT16 · 2.0 GB"
         assert media["sdh1"].label == "Blank · no filesystem · 512 B"
         assert (media["sda1"].name, media["sda1"].device) == ("SanDisk Ultra", "/dev/sda1")
 
@@ -287,8 +287,8 @@ class TestWriting:
         )
 
     def test_the_helpers_sentence_is_what_the_operator_reads(self, tmp_path: Path) -> None:
-        broker = _Broker(error="Write a file to a removable drive: The drive is full.")
-        with pytest.raises(MediaError, match=r"^The drive is full\.$"):
+        broker = _Broker(error="Write a file to a USB storage device: The USB storage device is full.")
+        with pytest.raises(MediaError, match=r"^The USB storage device is full\.$"):
             write_file("sda1", "b.txt", b"x", broker, platform="linux", run=_linux(_tree(tmp_path)))
 
     def test_a_refusal_without_a_description_reads_whole(self, tmp_path: Path) -> None:
@@ -299,8 +299,8 @@ class TestWriting:
         ("media_id", "filename", "text"),
         [
             ("sda1", "../b.txt", "That is not a file name OpenFollow writes."),
-            ("/dev/sda1", "b.txt", "That drive is no longer attached."),
-            ("mmcblk0p2", "b.txt", "That drive is no longer attached."),
+            ("/dev/sda1", "b.txt", "That USB storage device is no longer attached."),
+            ("mmcblk0p2", "b.txt", "That USB storage device is no longer attached."),
             ("sdc1", "b.txt", "WD Passport (MAC) can't be written: APFS can't be written."),
         ],
         ids=["bad-name", "a-path-not-an-id", "the-root-disk", "not-writable"],
@@ -318,5 +318,5 @@ class TestWriting:
             raise OSError(28, "No space left on device")
 
         monkeypatch.setattr(mw.os, "write", _full)
-        with pytest.raises(MediaError, match=r"^The drive is full\.$"):
+        with pytest.raises(MediaError, match=r"^The USB storage device is full\.$"):
             write_file("sdb1", "b.txt", b"x", _Broker(), platform="linux", run=_linux(_tree(tmp_path)))

@@ -245,6 +245,8 @@ class OverlayState:
     media_picker_active: bool = False
     media_picker_title: str = ""
     media_picker_items: list[str] = field(default_factory=list)
+    # Parallel to ``media_picker_items``: False for a drive that can't be written.
+    media_picker_enabled: list[bool] = field(default_factory=list)
     media_picker_index: int = -1
     media_picker_empty: str = ""
     media_export_active: bool = False
@@ -374,6 +376,7 @@ class OverlayState:
         self.media_picker_active = False
         self.media_picker_title = ""
         self.media_picker_items.clear()
+        self.media_picker_enabled.clear()
         self.media_picker_index = -1
         self.media_picker_empty = ""
         self.media_export_active = False

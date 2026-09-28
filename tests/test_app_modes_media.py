@@ -103,8 +103,8 @@ class TestEntering:
         assert (app._media_export_active, app._media_picker_active) == (True, False)
 
     def test_a_failure_the_badge_points_to_shows_its_reason_and_clears_the_row(self) -> None:
-        app = _app(export=_Export(_done(False, message="The drive is full.")))
-        app._runtime_services._status_flags[mm.BADGE_KEY] = ("error", "Export failed: The drive is full")
+        app = _app(export=_Export(_done(False, message="The USB storage device is full.")))
+        app._runtime_services._status_flags[mm.BADGE_KEY] = ("error", "Export failed: The USB storage device is full")
         mm.enter_diagnostics_export(app)
         assert app._media_export_active is True
         assert app._runtime_services._status_flags[mm.BADGE_KEY] is None
@@ -296,10 +296,13 @@ class TestStatusCorner:
         assert app._runtime_services._status_flags[mm.BADGE_KEY] is None
 
     def test_a_failure_stays(self) -> None:
-        app = _app(export=_Export(_done(False, message="The drive is full.")))
+        app = _app(export=_Export(_done(False, message="The USB storage device is full.")))
         mm.check_diagnostics_export(app, now=100.0)
         mm.check_diagnostics_export(app, now=10_000.0)
-        assert app._runtime_services._status_flags[mm.BADGE_KEY] == ("error", "Export failed: The drive is full")
+        assert app._runtime_services._status_flags[mm.BADGE_KEY] == (
+            "error",
+            "Export failed: The USB storage device is full",
+        )
 
     def test_a_later_success_replaces_a_failure(self) -> None:
         export = _Export(_done(False, generation=1))
@@ -342,14 +345,17 @@ class TestStatusCorner:
     [
         (
             ExportStatus(COLLECTING, HUD, "SanDisk Ultra"),
-            ("Collecting diagnostics (up to 20 s)", "It carries on if you go back.", None),
+            ("Collecting diagnostics", "The export continues in the background.", None),
         ),
         (
             ExportStatus(WRITING, HUD, "SanDisk Ultra"),
-            ("Writing to SanDisk Ultra", "It carries on if you go back.", None),
+            ("Writing to SanDisk Ultra", "The export continues in the background.", None),
         ),
         (_done(True), ("Saved b.txt to SanDisk Ultra.", "It can be removed now.", True)),
-        (_done(False, message="The drive is full."), ("The drive is full.", "Pick a drive to try again.", False)),
+        (
+            _done(False, message="The USB storage device is full."),
+            ("The USB storage device is full.", "Pick a USB storage device to try again.", False),
+        ),
     ],
     ids=["collecting", "writing", "saved", "failed"],
 )

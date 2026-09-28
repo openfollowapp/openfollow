@@ -861,7 +861,7 @@ def test_diagnostics_routes_require_pin_when_set(
 
 
 # ---------------------------------------------------------------------------
-# Save to drive
+# Save to USB storage device
 # ---------------------------------------------------------------------------
 
 
@@ -916,7 +916,7 @@ def test_no_drive_says_so(live_server, wired: bool) -> None:
     if wired:
         server.media_list_provider = list
     _, body, _ = _get(base, "/api/diagnostics/drives")
-    assert "No USB drive found. Plug one in." in body
+    assert "No USB storage device found. Plug one in." in body
 
 
 def test_save_to_drive_writes_the_bundle_and_confirms(live_server) -> None:
@@ -934,9 +934,9 @@ def test_save_to_drive_writes_the_bundle_and_confirms(live_server) -> None:
 @pytest.mark.parametrize(
     ("media_id", "status", "error"),
     [
-        ("sdz9", 400, "That drive is no longer attached."),
-        ("/dev/sda1", 400, "That drive is no longer attached."),
-        ("", 400, "That drive is no longer attached."),
+        ("sdz9", 400, "That USB storage device is no longer attached."),
+        ("/dev/sda1", 400, "That USB storage device is no longer attached."),
+        ("", 400, "That USB storage device is no longer attached."),
         ("sdc1", 400, "WD Passport (MAC) can't be written: APFS can't be written."),
     ],
     ids=["unknown-id", "a-path", "nothing-picked", "not-writable"],
@@ -954,12 +954,12 @@ def test_save_to_drive_reports_a_failed_write(live_server) -> None:
     from openfollow.runtime.removable_media import MediaError
 
     def _full() -> None:
-        raise MediaError("The drive is full.")
+        raise MediaError("The USB storage device is full.")
 
     server, base, _ = live_server
     _wire_drives(server, write=_full)
     status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": "sda1"})
-    assert (status, json.loads(body)) == (422, {"error": "The drive is full.", "action": ""})
+    assert (status, json.loads(body)) == (422, {"error": "The USB storage device is full.", "action": ""})
 
 
 def test_save_to_drive_while_another_export_runs(live_server) -> None:
@@ -979,7 +979,10 @@ def test_save_to_drive_while_another_export_runs(live_server) -> None:
 def test_save_to_drive_where_it_is_not_wired(live_server) -> None:
     _, base, _ = live_server
     status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": "sda1"})
-    assert (status, json.loads(body)["error"]) == (503, "Saving to a drive is not available on this station.")
+    assert (status, json.loads(body)["error"]) == (
+        503,
+        "Saving to a USB storage device is not available on this station.",
+    )
 
 
 def test_the_page_offers_save_to_drive_in_its_own_save_box(live_server) -> None:

@@ -1177,8 +1177,9 @@
  .drive-save { margin-top: 0.8rem; }
  .drive-save .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
  .drive-save select { min-width: 16rem; max-width: 100%; }
- .drive-save-busy { display: none; color: var(--muted); font-size: 0.86rem; }
- .drive-save-busy.htmx-request { display: inline; }
+ .drive-save-busy { display: none; align-items: center; gap: 0.5rem; color: var(--muted); font-size: 0.86rem; }
+ .drive-save-busy.htmx-request { display: inline-flex; }
+ .drive-save-busy .modal-spinner { width: 1rem; height: 1rem; }
  .drive-saved { margin: 0.5rem 0 0; color: var(--success-text); font-weight: 600; }
  .drive-saved-next { color: var(--muted); font-weight: 400; }
  .drive-saved::before {

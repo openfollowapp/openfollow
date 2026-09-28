@@ -314,7 +314,13 @@ class WebCommandQueue:
         return actions
 
     def release_camera(self, timeout: float) -> bool:
-        """Web thread: have the main loop stop the Pi Camera pipeline; ``True`` once it has."""
+        """Web thread: have the main loop stop the Pi Camera pipeline; ``True`` once it has.
+
+        A rebuild an earlier change left pending is dropped: served in the same
+        pass as this release, it would restart the camera this change is about
+        to unload. The change asking for the release requests its own rebuild.
+        """
+        self._video_rebuild_requested.clear()
         self._camera_released.clear()
         self._camera_release_requested.set()
         return self._camera_released.wait(timeout)

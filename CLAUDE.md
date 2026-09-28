@@ -458,7 +458,9 @@ the `.deb` installs a copy of that **stdlib-only** file as
 `/usr/share/openfollow/camera-setup`, run by `python3 -I`, so root never imports
 from the venv (keep it stdlib-only). It rewrites an `# --- OpenFollow camera ---`
 block (with `camera_auto_detect=0`) under `[all]`, comments out hand-written
-camera lines, and loads/unloads the overlay live with `dtoverlay`;
+camera lines, and loads/unloads the overlay live with `dtoverlay`. Markers that
+don't pair up (`MalformedBlockError`) leave the file untouched and the setup
+unavailable, since an unclosed block would claim every later line;
 `/run/openfollow-camera` records what it loaded and the boot-time lines, so the
 page can tell "running" from "takes effect after the next restart". A
 boot-loaded overlay cannot be unloaded live. **Never unload under a streaming
@@ -466,7 +468,8 @@ pipeline**: the device vanishes under `libcamerasrc`, which then never reaches
 NULL, and every later swap refuses. `apply_camera`'s `release` callback first
 has the main loop stop the Pi Camera pipeline (`receiver.release_source()`, via
 `WebCommandQueue.release_camera`); unanswered, the change waits for a restart
-instead. The block (`partials/camera_setup.tpl`, loaded into the Pi Camera
+instead. `release_camera` drops a rebuild an earlier change left pending, or
+the same housekeeping pass would restart the camera about to be unloaded. The block (`partials/camera_setup.tpl`, loaded into the Pi Camera
 fragment) owns the **Camera** row: what libcamera detects plus what config.txt
 names, with Raspberry Pi module names (`MODULE_NAMES`). It renders
 `picam_camera_name` only when there is a choice (2+ cameras, or a saved one

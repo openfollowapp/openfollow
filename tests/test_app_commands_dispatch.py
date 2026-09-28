@@ -384,6 +384,19 @@ def test_release_before_rebuild_in_one_pass() -> None:
     assert receiver.calls == ["release", "rebuild"]
 
 
+def test_a_new_release_drops_a_rebuild_an_earlier_change_left_pending() -> None:
+    receiver = _Picam()
+    app = _make_app(_video_receiver=receiver)
+    app._web_commands.request_video_rebuild()  # the first change is done; its rebuild waits for a pass
+    assert app._web_commands.release_camera(0) is False  # the next change asks first
+    app_commands.check_camera_setup_requests(app)
+    # Nothing restarted under the unload that follows the release.
+    assert receiver.calls == ["release"]
+    app._web_commands.request_video_rebuild()  # the next change, done
+    app_commands.check_camera_setup_requests(app)
+    assert receiver.calls == ["release", "rebuild"]
+
+
 @pytest.mark.parametrize("receiver", [None, _Picam("rtsp")], ids=["no-receiver", "another-source"])
 def test_only_an_active_pi_camera_is_touched(receiver) -> None:  # noqa: ANN001
     app = _make_app(_video_receiver=receiver)

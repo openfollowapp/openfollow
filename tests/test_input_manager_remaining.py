@@ -102,8 +102,8 @@ class _FakeGamepadHandler:
     def get_controller_effective_speeds(self) -> dict[int, float]:
         return dict(_FakeGamepadHandler.effective_speeds)
 
-    def device_identities(self) -> dict[int, tuple[str | None, str]]:
-        return {idx: (None, f"Pad {idx}") for idx in self.joysticks}
+    def device_identities(self) -> dict[int, tuple[str | None, str, tuple[str, ...]]]:
+        return {idx: (None, f"Pad {idx}", ()) for idx in self.joysticks}
 
     def last_input(self) -> dict[int, float]:
         return {}

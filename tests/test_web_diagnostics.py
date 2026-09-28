@@ -3553,6 +3553,21 @@ def test_collect_runtime_state_lists_every_controller_slot() -> None:
     assert "key" not in rows[second + 1]
 
 
+def test_collect_runtime_state_names_what_each_controller_cannot_do() -> None:
+    stats = _stats()
+    stats["controllers"] = {
+        "items": [
+            {"controller_index": 0, "state": "connected", "name": "GameSir", "notes": ["cannot_identify"]},
+            {"controller_index": 1, "state": "connected", "name": "Xbox", "notes": []},
+        ],
+    }
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    first = next(i for i, row in enumerate(rows) if "GameSir" in row)
+    assert rows[first + 1] == "         notes cannot_identify"
+    second = next(i for i, row in enumerate(rows) if "Xbox" in row)
+    assert "notes" not in rows[second + 1]
+
+
 def test_collect_runtime_state_reports_not_wired() -> None:
     assert "not wired" in diag.collect_runtime_state(diag.DiagnosticsProviders())[0]
 

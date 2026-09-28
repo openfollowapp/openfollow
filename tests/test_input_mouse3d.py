@@ -695,8 +695,8 @@ class _FakeGamepadHandler:
             for idx in sorted(self.joysticks)
         ]
 
-    def device_identities(self) -> dict[int, tuple[str | None, str]]:
-        return dict.fromkeys(self.joysticks, (None, "Pad"))
+    def device_identities(self) -> dict[int, tuple[str | None, str, tuple[str, ...]]]:
+        return dict.fromkeys(self.joysticks, (None, "Pad", ()))
 
     def last_input(self) -> dict[int, float]:
         return {}
@@ -738,6 +738,9 @@ class _FakeMouse3DManager:
 
     def connected_ids(self) -> list[int]:
         return list(range(len(self.devices))) if self.connected else []
+
+    def led_ids(self) -> set[int]:
+        return set(self.connected_ids())
 
     def connected_devices(self) -> dict[int, Mouse3DDeviceInfo]:
         return dict(enumerate(self.devices)) if self.connected else {}
@@ -2318,6 +2321,18 @@ def test_the_manager_reports_last_use_by_instance_id() -> None:
     idle.instance_id = 5
     _seed_manager(mgr, {"/dev/hidraw2": used, "/dev/hidraw3": idle})
     assert mgr.last_input() == {4: 3.0}
+
+
+def test_the_manager_names_the_open_pucks_identify_can_blink() -> None:
+    mgr = Mouse3DManager(_cfg(enabled=True), backend=_FakeBackend([], {}))
+    lit = _connected_handler(path="/dev/hidraw2")
+    lit.instance_id, lit._has_led = 4, True
+    dark = _connected_handler(path="/dev/hidraw3")
+    dark.instance_id, dark._has_led = 5, False
+    gone = _connected_handler(path="/dev/hidraw4")
+    gone.instance_id, gone._has_led, gone._connected = 6, True, False
+    _seed_manager(mgr, {"/dev/hidraw2": lit, "/dev/hidraw3": dark, "/dev/hidraw4": gone})
+    assert mgr.led_ids() == {4}
 
 
 @pytest.mark.parametrize(

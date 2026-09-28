@@ -12,13 +12,19 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from openfollow.input.controller_identity import natural_sort_key
 
 CONNECTED = "connected"
 MISSING = "missing"
 RESERVED = "reserved"
+
+# What a slot's controller can't do. Published through /api/stats, so the
+# values are a wire interface.
+NOTE_BUTTONS_UNRECOGNISED = "buttons_unrecognised"
+NOTE_BUTTON_MAP_OTHER_MODEL = "button_map_other_model"
+NOTE_CANNOT_IDENTIFY = "cannot_identify"
 
 # The first 3D-mouse scan normally settles well inside this; it bounds a puck
 # that never answers so gamepads are not left unfrozen.
@@ -36,17 +42,23 @@ class LiveController:
     local_id: int
     key: str | None
     name: str
+    notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class SlotEntry:
-    """One slot. ``local_id`` is set only while the slot is connected."""
+    """One slot. ``local_id`` is set only while the slot is connected.
+
+    ``notes`` follow the controller while it is connected and stay with the slot
+    once it goes missing. They never count as a change of the slot table.
+    """
 
     kind: str
     key: str | None
     name: str
     state: str
     local_id: int | None = None
+    notes: tuple[str, ...] = field(default=(), compare=False)
 
 
 def _port_order(controllers: Sequence[LiveController]) -> list[LiveController]:
@@ -69,7 +81,7 @@ def _unique_keys(controllers: Sequence[LiveController]) -> list[LiveController]:
 
 
 def _connected(c: LiveController) -> SlotEntry:
-    return SlotEntry(kind=c.kind, key=c.key, name=c.name, state=CONNECTED, local_id=c.local_id)
+    return SlotEntry(kind=c.kind, key=c.key, name=c.name, state=CONNECTED, local_id=c.local_id, notes=c.notes)
 
 
 def slot_ref(slot: SlotEntry) -> str:
@@ -114,13 +126,15 @@ class ControllerSlotTable:
         return changed
 
     def _frozen_update(self, controllers: Sequence[LiveController]) -> tuple[SlotEntry, ...]:
-        by_id = {(c.kind, c.local_id): c for c in controllers}
-        slots = [
-            replace(s, state=MISSING, local_id=None)
-            if s.state == CONNECTED and (s.kind, s.local_id) not in by_id
-            else s
-            for s in self._slots
-        ]
+        by_id: dict[tuple[str, int | None], LiveController] = {(c.kind, c.local_id): c for c in controllers}
+
+        def carried(s: SlotEntry) -> SlotEntry:
+            if s.state != CONNECTED:
+                return s
+            live = by_id.get((s.kind, s.local_id))
+            return replace(s, state=MISSING, local_id=None) if live is None else replace(s, notes=live.notes)
+
+        slots = [carried(s) for s in self._slots]
         held = {(s.kind, s.local_id) for s in slots if s.state == CONNECTED}
         newcomers = _port_order([c for c in controllers if (c.kind, c.local_id) not in held])
         # Every returning controller reclaims its own slot before any newcomer

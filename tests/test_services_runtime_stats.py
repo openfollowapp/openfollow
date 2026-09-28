@@ -526,6 +526,25 @@ class TestPublishRuntimeStats:
         assert puck["slot_ref"] == "mouse3d|usb:platform/xhci-hcd.0:2|SpaceNavigator|connected"
         assert reserved["slot_ref"] == ""
 
+    def test_controller_items_publish_what_each_controller_cannot_do(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        item = {"name": "Pad", "connected": True, "marker_id": None, "effective_speed": 0.0, "backend": "joystick"}
+        mgr = _FakeInputManager(
+            [
+                {**item, "controller_index": 0, "notes": ["buttons_unrecognised", "cannot_identify"]},
+                {**item, "controller_index": 1},
+            ]
+        )
+        self._prime(services, input_manager=mgr)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        items = services.get_runtime_stats_snapshot()["controllers"]["items"]
+        assert [i["notes"] for i in items] == [["buttons_unrecognised", "cannot_identify"], []]
+
     def test_detector_present_delegates_to_performance_stats(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:

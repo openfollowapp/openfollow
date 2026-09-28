@@ -1186,6 +1186,13 @@
  }
  .slot-state.missing { color: var(--text); background: var(--error-chip); border-color: var(--error-line); }
  .slot-port { display: block; color: var(--muted); font-size: 0.8rem; }
+ /* What the controller can't do: caution where it affects control, a plain fact otherwise. */
+ .slot-notes { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 3px; }
+ .slot-note {
+ border-radius: 0.4rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem; font-size: 0.7rem; font-weight: 500; white-space: nowrap;
+ color: var(--text); background: var(--caution-chip); border: 1px solid var(--caution-line);
+ }
+ .slot-note-fact { font-size: 0.78rem; color: var(--muted); white-space: nowrap; }
  .slot-empty { color: var(--muted); }
  .m3d-empty { margin: 0 0 12px; color: var(--muted); }
  .slot-activity { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--muted); margin: 0 0 0 7px; vertical-align: middle; }
@@ -2091,13 +2098,13 @@
  font-weight: 400; max-height: 8em; overflow: auto; white-space: pre-wrap; color: #cfd6df; }
  /* Pills set --pill-pad-y and their own inline padding. Trimming the line box to cap
  height and baseline centres the label whatever the fallback font's ascent. */
- .stat-chip, .diag-status-pill, .slot-state, .badge-experimental,
+ .stat-chip, .diag-status-pill, .slot-state, .slot-note, .badge-experimental,
  .osc-binding-fault, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
  .osc-pill[data-invalid="true"][data-unresolved="true"] {
  padding-block: var(--pill-pad-y);
  }
  @supports (text-box: trim-both cap alphabetic) {
- .stat-chip, .diag-status-pill, .slot-state, .badge-experimental,
+ .stat-chip, .diag-status-pill, .slot-state, .slot-note, .badge-experimental,
  .osc-binding-fault, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
  .osc-pill[data-invalid="true"][data-unresolved="true"] {
  text-box: trim-both cap alphabetic;

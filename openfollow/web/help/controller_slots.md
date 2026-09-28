@@ -10,7 +10,10 @@ With exactly one slot, that controller drives whichever marker is selected inste
 
 ## Columns
 
-- **Controller** – the device's name as it reports it. Two identical pads show the same name; the port tells them apart. While the controller is connected, the dot after its name lights up as it is used (a stick moved or a button held).
+- **Controller** – the device's name as it reports it. Two identical pads show the same name; the port tells them apart. While the controller is connected, the dot after its name lights up as it is used (a stick moved or a button held). Below the name, notes say what the controller can't do; a controller that can do everything shows none, and a missing slot keeps the notes of the controller it last held.
+  - **Buttons not recognised** – the station knows no layout for this pad and no Button Detection Map is saved, so a button may not do what its label says.
+  - **Button map is for another model** – the saved Button Detection Map was made on a different model, so a button may not do what its label says.
+  - **Can't identify** – nothing on the controller can be pulsed: it cannot vibrate and has no light the station can drive. Identify only flashes its marker card.
 - **Connection** – the kind (`Gamepad` or `3D Mouse`), the slot's state, and the socket below them.
   - **Connected** – the controller is plugged in and drives the slot's marker.
   - **Missing** – the controller was unplugged or dropped out, or its kind (Gamepads or 3D Mouse) was switched off. Its slot and marker stay put, so nobody else changes marker. The marker card turns red on the Operator Screen, and the status corner and the Statistics panel name it.

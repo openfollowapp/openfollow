@@ -525,6 +525,8 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
         )
         if item.get("port_key"):
             rows.append(f"         key {item['port_key']}")
+        if item.get("notes"):
+            rows.append(f"         notes {', '.join(item['notes'])}")
     system = stats.get("system") or {}
     out_res = system.get("output_resolution")
     rows.append(f"  Output resolution:      {_fmt_resolution(out_res) if out_res else '- (no canvas)'}")

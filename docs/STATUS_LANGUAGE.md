@@ -112,7 +112,10 @@ info chip colours.
 
 The one state word that is a row pill is the Controller Slots state, which
 shares a line with the controller's kind: "Connected" and "Reserved" in the
-neutral chip colours, "Missing" in the error chip colours.
+neutral chip colours, "Missing" in the error chip colours. The notes under a
+controller's name are caution row pills where they affect control ("Buttons not
+recognised", "Button map is for another model"); "Can't identify" is a fact,
+not a fault, and is plain `--muted` text.
 
 ### OSC placeholder pills
 

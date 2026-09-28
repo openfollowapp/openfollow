@@ -27,6 +27,11 @@ import pytest
 
 import openfollow.input.gamepad as gp
 from openfollow.configuration import AppConfig, ControllerConfig, MarkerConfig
+from openfollow.input.controller_slots import (
+    NOTE_BUTTON_MAP_OTHER_MODEL,
+    NOTE_BUTTONS_UNRECOGNISED,
+    NOTE_CANNOT_IDENTIFY,
+)
 from openfollow.input.gamepad import (
     BUMPER_LEFT_BUTTON_INDICES,
     BUMPER_RIGHT_BUTTON_INDICES,
@@ -212,7 +217,15 @@ def stubbed_pygame(monkeypatch):
 
     events: list[object] = []
     posted: list[object] = []
-    state = {"count": 0, "factories": {}, "instance_ids": {}, "lookup": False, "pucks": set(), "paths": {}}
+    state = {
+        "count": 0,
+        "factories": {},
+        "instance_ids": {},
+        "lookup": False,
+        "pucks": set(),
+        "paths": {},
+        "rumble": {},
+    }
 
     monkeypatch.setattr(pygame, "get_init", lambda: True)
     monkeypatch.setattr(pygame, "init", lambda: None)
@@ -235,6 +248,7 @@ def stubbed_pygame(monkeypatch):
     monkeypatch.setattr(gp, "_instance_id_lookup_available", lambda: state["lookup"])
     monkeypatch.setattr(gp, "_is_spacemouse", lambda idx: idx in state["pucks"])
     monkeypatch.setattr(gp, "_device_path", lambda idx: state["paths"].get(idx))
+    monkeypatch.setattr(gp, "_can_rumble", lambda instance_id: state["rumble"].get(instance_id))
     monkeypatch.setattr(pygame.event, "get", lambda: list(events))
     monkeypatch.setattr(pygame.event, "post", lambda e: posted.append(e))
 
@@ -3806,19 +3820,112 @@ class TestPortKey:
             keys={"/dev/input/event0": "usb:h:2", "/dev/input/event1": "usb:h:1"},
         )
         handler, _ = make_handler(stubbed_pygame)
-        assert handler.device_identities() == {0: ("usb:h:2", "Left"), 1: ("usb:h:1", "Right")}
+        assert {i: v[:2] for i, v in handler.device_identities().items()} == {
+            0: ("usb:h:2", "Left"),
+            1: ("usb:h:1", "Right"),
+        }
         assert [(info.index, info.port_key) for info in handler.runtime_snapshot()] == [(0, "usb:h:2"), (1, "usb:h:1")]
 
     def test_a_pad_with_no_socket_has_no_key(self, stubbed_pygame, monkeypatch) -> None:
         _pads(stubbed_pygame, monkeypatch, FakeJoystick(name="Wireless"))
         handler, _ = make_handler(stubbed_pygame)
-        assert handler.device_identities() == {0: (None, "Wireless")}
+        assert {i: v[:2] for i, v in handler.device_identities().items()} == {0: (None, "Wireless")}
 
     def test_the_connect_log_names_the_socket(self, stubbed_pygame, monkeypatch, caplog) -> None:
         _pads(stubbed_pygame, monkeypatch, FakeJoystick(), keys={"/dev/input/event0": "usb:h:1"})
         with caplog.at_level("INFO", logger=gp.__name__):
             make_handler(stubbed_pygame)
         assert "port: usb:h:1" in caplog.text
+
+
+class TestRumbleLookup:
+    """Whether SDL can rumble a pad, asked once when it opens."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_lookup(self):
+        lookup = gp._sdl_device_fn
+        lookup.cache_clear()
+        yield
+        lookup.cache_clear()
+
+    def test_both_queries_resolve_in_pygames_own_sdl(self) -> None:
+        assert gp._sdl_device_fn("SDL_JoystickFromInstanceID", ctypes.c_void_p, ctypes.c_int32) is not None
+        assert gp._sdl_device_fn("SDL_JoystickHasRumble", ctypes.c_int, ctypes.c_void_p) is not None
+
+    def test_a_pad_that_is_not_open_is_unknown(self) -> None:
+        # Real call into the SDL pygame loaded; no open joystick has this id.
+        assert gp._can_rumble(10_000) is None
+
+    @pytest.mark.parametrize(("answer", "expected"), [(1, True), (0, False)])
+    def test_reports_what_sdl_answers_for_that_pad(self, monkeypatch, answer: int, expected: bool) -> None:
+        queries = {
+            "SDL_JoystickFromInstanceID": lambda instance_id: 0xBEEF if instance_id == 3 else None,
+            "SDL_JoystickHasRumble": lambda joystick: answer if joystick == 0xBEEF else -1,
+        }
+        monkeypatch.setattr(gp, "_sdl_device_fn", lambda symbol, _restype, _argtype: queries[symbol])
+        assert gp._can_rumble(3) is expected
+
+    def test_an_sdl_without_the_queries_is_unknown(self, monkeypatch) -> None:
+        monkeypatch.setattr(gp, "_sdl_device_fn", lambda *_args: None)
+        assert gp._can_rumble(3) is None
+
+    def test_each_pad_records_the_answer_when_it_opens(self, stubbed_pygame, monkeypatch) -> None:
+        _pads(stubbed_pygame, monkeypatch, FakeJoystick(name="Xbox"), FakeJoystick(name="GameSir"), FakeJoystick())
+        stubbed_pygame["state"]["rumble"] = {0: True, 1: False}
+        handler, _ = make_handler(stubbed_pygame)
+        assert {i: cap.can_rumble for i, cap in handler.capabilities.items()} == {0: True, 1: False, 2: None}
+
+
+class TestControllerNotes:
+    """What the Controller Slots row says a pad can't do."""
+
+    @pytest.mark.parametrize(
+        ("backend", "calibration", "can_rumble", "expected"),
+        [
+            ("sdl2_controller", {}, True, ()),
+            ("sdl2_controller", {}, None, ()),
+            ("joystick", {}, True, (NOTE_BUTTONS_UNRECOGNISED,)),
+            ("joystick", {"mapped_controller_guid": "pad"}, True, ()),
+            ("joystick", {"mapped_controller_guid": "other"}, True, (NOTE_BUTTON_MAP_OTHER_MODEL,)),
+            ("sdl2_controller", {"mapped_controller_guid": "other"}, True, (NOTE_BUTTON_MAP_OTHER_MODEL,)),
+            ("sdl2_controller", {"button_raw_indices": {"A": 0}}, True, ()),
+            ("sdl2_controller", {}, False, (NOTE_CANNOT_IDENTIFY,)),
+            ("joystick", {}, False, (NOTE_BUTTONS_UNRECOGNISED, NOTE_CANNOT_IDENTIFY)),
+        ],
+        ids=[
+            "fully-capable",
+            "rumble-unknown",
+            "unmapped-no-button-map",
+            "unmapped-but-its-own-map",
+            "unmapped-map-for-another-model",
+            "mapped-map-for-another-model",
+            "map-without-identity",
+            "cannot-rumble",
+            "unmapped-and-cannot-rumble",
+        ],
+    )
+    def test_each_note_appears_exactly_in_its_condition(
+        self, stubbed_pygame, backend: str, calibration: dict, can_rumble: bool | None, expected: tuple[str, ...]
+    ) -> None:
+        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(**calibration))
+        cap = ControllerCapabilities(backend=backend, guid="pad", can_rumble=can_rumble)
+        assert handler.controller_notes(cap) == expected
+
+    def test_saving_a_button_map_changes_the_notes(self, stubbed_pygame) -> None:
+        handler, app = make_handler(stubbed_pygame)
+        cap = ControllerCapabilities(backend="joystick", guid="pad", can_rumble=True)
+        assert handler.controller_notes(cap) == (NOTE_BUTTONS_UNRECOGNISED,)
+        app._config.controller.mapped_controller_guid = "other"
+        handler.apply_config()
+        assert handler.controller_notes(cap) == (NOTE_BUTTON_MAP_OTHER_MODEL,)
+
+    def test_every_open_pad_reports_its_notes(self, stubbed_pygame, monkeypatch) -> None:
+        _pads(stubbed_pygame, monkeypatch, FakeJoystick(name="GameSir"), keys={"/dev/input/event0": "usb:h:1"})
+        stubbed_pygame["state"]["rumble"] = {0: False}
+        handler, _ = make_handler(stubbed_pygame)
+        assert handler.device_identities() == {
+            0: ("usb:h:1", "GameSir", (NOTE_BUTTONS_UNRECOGNISED, NOTE_CANNOT_IDENTIFY)),
+        }
 
 
 class TestLastInput:

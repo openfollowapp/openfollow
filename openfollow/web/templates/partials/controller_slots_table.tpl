@@ -1,4 +1,5 @@
 % import json
+% NOTES = {'buttons_unrecognised': ('slot-note', 'Buttons not recognised'), 'button_map_other_model': ('slot-note', 'Button map is for another model'), 'cannot_identify': ('slot-note-fact', "Can't identify")}
 % items = (controllers or {}).get('items', [])
 % if not items:
 <p class="slot-empty">No controller connected.</p>
@@ -20,11 +21,19 @@
     % since = c.get('seconds_since_input')
     % in_use = state == 'connected' and since is not None and since < 1.5
     % ref = json.dumps({"ref": c.get("slot_ref", "")})
+    % notes = [NOTES[n] for n in c.get('notes') or [] if n in NOTES]
         <tr class="slot-row slot-{{state}}">
             <th scope="row">C{{idx + 1}}</th>
             <td>{{c.get('name') or '-'}}\\
             % if state == 'connected':
 <span class="slot-activity{{' is-active' if in_use else ''}}" role="img" aria-label="{{'In use' if in_use else 'Idle'}}"></span>\\
+            % end
+            % if notes:
+<div class="slot-notes">\\
+                % for cls, label in notes:
+<span class="{{cls}}">{{label}}</span>\\
+                % end
+</div>\\
             % end
 </td>
             <td>

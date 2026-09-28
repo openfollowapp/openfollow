@@ -2928,6 +2928,7 @@ class AppRuntimeServices:
                         "port_key": item.get("port_key"),
                         "slot_ref": str(item.get("slot_ref", "")),
                         "seconds_since_input": None if since is None else float(since),
+                        "notes": [str(note) for note in item.get("notes") or ()],
                     }
                 )
 

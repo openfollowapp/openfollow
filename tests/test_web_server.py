@@ -366,6 +366,29 @@ def test_controller_slots_table_shows_every_state(slots_server) -> None:
     assert '<span class="slot-port">no stable port</span>' in reserved
 
 
+def test_each_slot_lists_what_its_controller_cannot_do(slots_server) -> None:
+    _, base, stats = slots_server
+    items = stats["controllers"]["items"]
+    items[0] = {**_SLOT_ITEMS[0], "notes": ["buttons_unrecognised", "cannot_identify"]}
+    items[1] = {**_SLOT_ITEMS[1], "notes": ["button_map_other_model"]}
+    items[2] = {**_SLOT_ITEMS[2], "notes": ["a_note_from_a_newer_station"]}
+    _, body = _get(base, "/section/controller_slots")
+    assert (
+        '<div class="slot-notes"><span class="slot-note">Buttons not recognised</span>'
+        '<span class="slot-note-fact">Can&#039;t identify</span></div>'
+    ) in _row(body, "C1")
+    assert '<div class="slot-notes"><span class="slot-note">Button map is for another model</span></div>' in (
+        _row(body, "C2")
+    )
+    assert "slot-notes" not in _row(body, "C3")
+
+
+def test_a_controller_that_can_do_everything_has_no_notes(slots_server) -> None:
+    _, base, _ = slots_server
+    _, body = _get(base, "/section/controller_slots")
+    assert "slot-notes" not in body.split("<tbody>", 1)[1]
+
+
 def test_the_activity_dot_follows_a_connected_controllers_name(slots_server) -> None:
     _, base, _ = slots_server
     _, body = _get(base, "/section/controller_slots")

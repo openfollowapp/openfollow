@@ -433,6 +433,12 @@ class Mouse3DHandler:
         with self._lock:
             return self._connected
 
+    @property
+    def has_led(self) -> bool:
+        """Whether the puck has an LED Identify can blink; set each time it opens."""
+        with self._lock:
+            return self._has_led
+
     def latest_button(self) -> int | None:
         """Return a currently-pressed button index from the latest snapshot."""
         with self._lock:
@@ -1046,6 +1052,10 @@ class Mouse3DManager:
     def connected_devices(self) -> dict[int, Mouse3DDeviceInfo]:
         """Identity of each open puck, by instance id."""
         return {handler.instance_id: info for info, handler in self._connected_ordered()}
+
+    def led_ids(self) -> set[int]:
+        """Instance ids of open pucks with an LED Identify can blink."""
+        return {handler.instance_id for _info, handler in self._connected_ordered() if handler.has_led}
 
     def last_input(self) -> dict[int, float]:
         """Instance id -> clock time of that puck's latest deflection or held button."""

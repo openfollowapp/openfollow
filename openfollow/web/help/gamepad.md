@@ -24,7 +24,7 @@ Use this panel when your controller's layout doesn't match the standard Xbox ref
 
 The detection table shows each physical button (A, B, X, Y, LB, RB, Back, Start, D-Pad directions), the logical name OpenFollow assigned it, and the raw hardware ID. LT and RT trigger state (normal or swapped) is shown beneath the table.
 
-> Re-run the wizard if you swap to a different model or change the controller's mode; another pad of the same model shares the mapping. A GUID mismatch is reported in the diagnostics bundle under Gamepad controllers.
+> Re-run the wizard if you swap to a different model or change the controller's mode; another pad of the same model shares the mapping. A pad of another model shows **Button map is for another model** on its Controller Slots row, and the diagnostics bundle reports the GUID mismatch under Gamepad controllers.
 
 ## Button Mapping
 

@@ -11,6 +11,8 @@ from hypothesis import strategies as st
 from openfollow.input.controller_slots import (
     CONNECTED,
     MISSING,
+    NOTE_BUTTON_MAP_OTHER_MODEL,
+    NOTE_CANNOT_IDENTIFY,
     RESERVED,
     ControllerSlotTable,
     LiveController,
@@ -28,8 +30,8 @@ class _Clock:
         return self.now
 
 
-def pad(local_id: int, key: str | None, name: str = "Pad") -> LiveController:
-    return LiveController(kind="gamepad", local_id=local_id, key=key, name=name)
+def pad(local_id: int, key: str | None, name: str = "Pad", notes: tuple[str, ...] = ()) -> LiveController:
+    return LiveController(kind="gamepad", local_id=local_id, key=key, name=name, notes=notes)
 
 
 def puck(local_id: int, key: str | None, name: str = "3D Mouse") -> LiveController:
@@ -176,6 +178,33 @@ def test_a_puck_reconnecting_under_the_same_id_keeps_its_slot() -> None:
 def test_an_unchanged_frame_reports_no_change() -> None:
     table = frozen(pad(0, "usb:h:1"))
     assert not table.update([pad(0, "usb:h:1")], settled=True)
+
+
+# -- notes -------------------------------------------------------------------
+
+
+def test_a_slot_carries_its_controllers_notes_from_the_first_frame() -> None:
+    table = frozen(pad(0, "usb:h:1", notes=(NOTE_CANNOT_IDENTIFY,)), pad(1, "usb:h:2"))
+    assert [s.notes for s in table.slots] == [(NOTE_CANNOT_IDENTIFY,), ()]
+
+
+def test_a_connected_slots_notes_follow_its_controller_without_counting_as_a_change() -> None:
+    table = frozen(pad(0, "usb:h:1"))
+    assert not table.update([pad(0, "usb:h:1", notes=(NOTE_BUTTON_MAP_OTHER_MODEL,))], settled=True)
+    assert table.slots[0].notes == (NOTE_BUTTON_MAP_OTHER_MODEL,)
+
+
+def test_a_missing_slot_keeps_the_notes_of_the_controller_it_last_held() -> None:
+    table = frozen(pad(0, "usb:h:1", notes=(NOTE_CANNOT_IDENTIFY,)), pad(1, "usb:h:2"))
+    table.update([pad(1, "usb:h:2")], settled=True)
+    assert (table.slots[0].state, table.slots[0].notes) == (MISSING, (NOTE_CANNOT_IDENTIFY,))
+
+
+def test_a_controller_taking_over_a_missing_slot_brings_its_own_notes() -> None:
+    table = frozen(pad(0, "usb:h:1", notes=(NOTE_CANNOT_IDENTIFY,)), pad(1, "usb:h:2"))
+    table.update([pad(1, "usb:h:2")], settled=True)
+    table.update([pad(1, "usb:h:2"), pad(5, "usb:h:9")], settled=True)
+    assert (table.slots[0].local_id, table.slots[0].notes) == (5, ())
 
 
 # -- forget ------------------------------------------------------------------

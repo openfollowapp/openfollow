@@ -11,6 +11,7 @@ import pytest
 
 import openfollow.input.input_manager as input_manager_module
 from openfollow.configuration import AppConfig
+from openfollow.input.controller_slots import NOTE_BUTTON_MAP_OTHER_MODEL, NOTE_CANNOT_IDENTIFY
 from openfollow.input.gamepad import GamepadUpdate
 from openfollow.input.input_manager import InputManager
 from openfollow.input.mouse3d import Mouse3DDeviceInfo, Mouse3DUpdate
@@ -34,10 +35,11 @@ class _Keyboard:
 
 
 class _Pads:
-    """Gamepads by SDL instance id: ``pads[id] = (port key, name)``."""
+    """Gamepads by SDL instance id: ``pads[id] = (port key, name)``, ``notes[id]`` what each can't do."""
 
     def __init__(self, app: Any, **_kwargs: Any) -> None:
         self.pads: dict[int, tuple[str | None, str]] = dict(_Pads.initial)
+        self.notes: dict[int, tuple[str, ...]] = {}
         self.inputs: dict[int, float] = {}
         self.rumbles_ok: dict[int, bool] = {}
         self.identified: list[int] = []
@@ -51,8 +53,8 @@ class _Pads:
     def update(self, _dt: float) -> GamepadUpdate:
         return GamepadUpdate()
 
-    def device_identities(self) -> dict[int, tuple[str | None, str]]:
-        return dict(self.pads)
+    def device_identities(self) -> dict[int, tuple[str | None, str, tuple[str, ...]]]:
+        return {idx: (key, name, self.notes.get(idx, ())) for idx, (key, name) in self.pads.items()}
 
     def last_input(self) -> dict[int, float]:
         return dict(self.inputs)
@@ -85,6 +87,7 @@ class _Pucks:
         self.settled = self.settled_at_start
         self.inputs: dict[int, float] = {}
         self.leds_ok = True
+        self.without_led: set[int] = set()
         self.identified: list[int] = []
 
     def start(self) -> None:
@@ -101,6 +104,9 @@ class _Pucks:
 
     def initial_scan_settled(self) -> bool:
         return self.settled
+
+    def led_ids(self) -> set[int]:
+        return set(self.devices) - self.without_led
 
     def last_input(self) -> dict[int, float]:
         return dict(self.inputs)
@@ -320,6 +326,41 @@ def test_identify_on_a_missing_slot_only_flashes_the_card(station) -> None:
     assert manager.identify_slot(0) is False
     assert manager.gamepad_handler.identified == []
     assert manager.identify_flash_marker() == 10
+
+
+def test_each_slot_reports_what_its_pad_cannot_do(station) -> None:
+    manager, _ = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    manager.gamepad_handler.notes[0] = (NOTE_CANNOT_IDENTIFY,)
+    manager.update(0.016)
+    assert [c["notes"] for c in manager.get_controller_info()] == [[NOTE_CANNOT_IDENTIFY], []]
+    manager.gamepad_handler.notes[1] = (NOTE_BUTTON_MAP_OTHER_MODEL,)
+    manager.update(0.016)
+    notes = [c["notes"] for c in manager.get_controller_info()]
+    assert notes == [[NOTE_CANNOT_IDENTIFY], [NOTE_BUTTON_MAP_OTHER_MODEL]]
+
+
+def test_a_puck_without_an_led_cannot_be_identified(station) -> None:
+    manager, _ = station({}, mouse3d__enabled=True)
+    manager.mouse3d_manager.devices = {
+        2: Mouse3DDeviceInfo(path="/dev/hidraw0"),
+        3: Mouse3DDeviceInfo(path="/dev/hidraw1"),
+    }
+    manager.mouse3d_manager.without_led = {3}
+    manager.update(0.016)
+    assert [c["notes"] for c in manager.get_controller_info()] == [[], [NOTE_CANNOT_IDENTIFY]]
+
+
+def test_a_missing_slot_keeps_its_notes_and_a_reserved_one_raises_none(station) -> None:
+    manager, _ = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    manager.gamepad_handler.notes[0] = (NOTE_CANNOT_IDENTIFY,)
+    manager.update(0.016)
+    del manager.gamepad_handler.pads[0]
+    manager.update(0.016)
+    first = manager.get_controller_info()[0]
+    assert (first["state"], first["notes"]) == ("missing", [NOTE_CANNOT_IDENTIFY])
+    assert manager.forget_slot(0)
+    first = manager.get_controller_info()[0]
+    assert (first["state"], first["notes"]) == ("reserved", [])
 
 
 def test_a_slot_ref_names_what_the_slot_holds_now(station) -> None:

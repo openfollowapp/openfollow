@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from openfollow.input.controller_identity import port_label, usb_host_paths
 from openfollow.input.controller_slots import (
     CONNECTED,
+    NOTE_CANNOT_IDENTIFY,
     RESERVED,
     ControllerSlotTable,
     LiveController,
@@ -191,12 +192,14 @@ class InputManager:
         """
         live: list[LiveController] = []
         if self.app._config.controller.enabled:
-            for idx, (key, name) in self.gamepad_handler.device_identities().items():
-                live.append(LiveController(kind="gamepad", local_id=idx, key=key, name=name))
+            for idx, (key, name, notes) in self.gamepad_handler.device_identities().items():
+                live.append(LiveController(kind="gamepad", local_id=idx, key=key, name=name, notes=notes))
         if self.app._config.mouse3d.enabled:
+            with_led = self.mouse3d_manager.led_ids()
             for idx, info in self.mouse3d_manager.connected_devices().items():
                 name = info.product_name or MOUSE3D_NAME
-                live.append(LiveController(kind="mouse3d", local_id=idx, key=info.port_key, name=name))
+                notes = () if idx in with_led else (NOTE_CANNOT_IDENTIFY,)
+                live.append(LiveController(kind="mouse3d", local_id=idx, key=info.port_key, name=name, notes=notes))
         return live
 
     def _refresh_slots(self) -> tuple[SlotEntry, ...]:
@@ -493,6 +496,8 @@ class InputManager:
         its marker) or ``reserved`` (forgotten: drives nothing). ``marker_id``
         mirrors the routing, so the badge sits where movement goes.
         ``seconds_since_input`` is ``None`` until the device has been used.
+        ``notes`` says what the controller can't do (``NOTE_*``); a missing slot
+        keeps its last controller's, a reserved one raises none.
         """
         gamepad_info = {int(item["controller_index"]): item for item in self.gamepad_handler.get_controller_info()}
         mouse_devices = self.mouse3d_manager.connected_devices()
@@ -527,6 +532,7 @@ class InputManager:
                 "port_label": port_label(slot.key, self._usb_hosts),
                 "slot_ref": slot_ref(slot),
                 "seconds_since_input": None if used is None else max(0.0, now - used),
+                "notes": [] if slot.state == RESERVED else list(slot.notes),
             }
             if slot.kind == "mouse3d":
                 info = mouse_devices.get(slot.local_id) if slot.local_id is not None else None

@@ -25,6 +25,11 @@ except ImportError:  # pragma: no cover - depends on runtime pygame build
 
 from openfollow.input._joystick_protocol import ControllerProtocol, JoystickProtocol
 from openfollow.input.controller_identity import resolve_key
+from openfollow.input.controller_slots import (
+    NOTE_BUTTON_MAP_OTHER_MODEL,
+    NOTE_BUTTONS_UNRECOGNISED,
+    NOTE_CANNOT_IDENTIFY,
+)
 from openfollow.input.shaping import apply_curve, shape_axis
 
 if TYPE_CHECKING:
@@ -36,8 +41,8 @@ logger = logging.getLogger(__name__)
 
 
 @functools.cache
-def _sdl_device_fn(symbol: str, restype: Any) -> Callable[[int], Any] | None:
-    """An SDL per-device-index query, from the SDL pygame itself loaded.
+def _sdl_device_fn(symbol: str, restype: Any, argtype: Any = ctypes.c_int) -> Callable[[Any], Any] | None:
+    """A one-argument SDL query, from the SDL pygame itself loaded.
 
     Resolved through pygame's joystick module so the symbol comes from pygame's
     own SDL rather than another copy in the process (OpenCV bundles one). None
@@ -51,8 +56,8 @@ def _sdl_device_fn(symbol: str, restype: Any) -> Callable[[int], Any] | None:
     except (OSError, AttributeError):
         return None
     fn.restype = restype
-    fn.argtypes = [ctypes.c_int]
-    return cast(Callable[[int], Any], fn)
+    fn.argtypes = [argtype]
+    return cast(Callable[[Any], Any], fn)
 
 
 def _sdl_device_instance_id_fn() -> Callable[[int], int] | None:
@@ -67,6 +72,16 @@ def _device_instance_id(device_index: int) -> int | None:
         return None
     instance_id = int(fn(device_index))
     return instance_id if instance_id >= 0 else None
+
+
+def _can_rumble(instance_id: int) -> bool | None:
+    """Whether SDL can rumble the open pad ``instance_id``; ``None`` if it can't be asked."""
+    joystick_for = _sdl_device_fn("SDL_JoystickFromInstanceID", ctypes.c_void_p, ctypes.c_int32)
+    has_rumble = _sdl_device_fn("SDL_JoystickHasRumble", ctypes.c_int, ctypes.c_void_p)
+    if joystick_for is None or has_rumble is None:
+        return None
+    joystick = joystick_for(instance_id)
+    return bool(has_rumble(joystick)) if joystick else None
 
 
 def _device_path(device_index: int) -> str | None:
@@ -260,6 +275,8 @@ class ControllerCapabilities:
     num_hats: int = 0
     # The socket the pad is plugged into (see controller_identity), or None.
     port_key: str | None = None
+    # SDL's answer when the pad opened; None when it couldn't be asked.
+    can_rumble: bool | None = None
 
 
 @dataclass
@@ -715,9 +732,10 @@ class GamepadHandler:
             num_buttons=_safe_call(joy.get_numbuttons, 0),
             num_hats=_safe_call(joy.get_numhats, 0),
             port_key=resolve_key(_device_path(device_index)),
+            can_rumble=_can_rumble(key),
         )
         logger.info(
-            "Gamepad instance %s connected via %s: %s (GUID: %s, port: %s, axes=%s, buttons=%s)",
+            "Gamepad instance %s connected via %s: %s (GUID: %s, port: %s, axes=%s, buttons=%s, rumble=%s)",
             key,
             backend,
             cap.name,
@@ -725,6 +743,7 @@ class GamepadHandler:
             cap.port_key or "none",
             cap.num_axes,
             cap.num_buttons,
+            {True: "yes", False: "no", None: "unknown"}[cap.can_rumble],
         )
         return _OpenedDevice(key=key, joy=joy, ctrl=ctrl_obj, cap=cap, baseline=baseline)
 
@@ -1233,6 +1252,18 @@ class GamepadHandler:
         # tell whether the pad matches, so don't cry mismatch.
         return True
 
+    def controller_notes(self, cap: ControllerCapabilities) -> tuple[str, ...]:
+        """What the Controller Slots row says this pad can't do, in display order."""
+        notes: list[str] = []
+        if not self._is_calibrated and cap.backend == "joystick":
+            notes.append(NOTE_BUTTONS_UNRECOGNISED)
+        elif not self._identity_matches_calibration(cap):
+            notes.append(NOTE_BUTTON_MAP_OTHER_MODEL)
+        # Rumble is the only thing Identify can pulse on a pad.
+        if cap.can_rumble is False:
+            notes.append(NOTE_CANNOT_IDENTIFY)
+        return tuple(notes)
+
     def runtime_snapshot(self) -> list[ControllerRuntimeInfo]:
         """Live per-controller snapshot for the diagnostics bundle and the
         calibration-mismatch check. Ordered by controller index for stable
@@ -1730,11 +1761,15 @@ class GamepadHandler:
         """Instance id -> clock time of that pad's latest movement or held button."""
         return dict(self._last_input)
 
-    def device_identities(self) -> dict[int, tuple[str | None, str]]:
-        """Instance id -> (port key, name) of every open pad."""
+    def device_identities(self) -> dict[int, tuple[str | None, str, tuple[str, ...]]]:
+        """Instance id -> (port key, name, notes) of every open pad."""
         with self._capabilities_lock:
             caps = dict(self.capabilities)
-        return {idx: (caps[idx].port_key, caps[idx].name) for idx in self.joysticks if idx in caps}
+        return {
+            idx: (caps[idx].port_key, caps[idx].name, self.controller_notes(caps[idx]))
+            for idx in self.joysticks
+            if idx in caps
+        }
 
     def identify(self, instance_id: int) -> bool:
         """Rumble one pad so it can be picked out by hand; False if it can't rumble."""

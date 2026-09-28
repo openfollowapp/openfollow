@@ -86,9 +86,9 @@ class _FakeGamepadHandler:
     def get_controller_effective_speeds(self) -> dict[int, float]:
         return dict(self.effective_speeds)
 
-    def device_identities(self) -> dict[int, tuple[str | None, str]]:
+    def device_identities(self) -> dict[int, tuple[str | None, str, tuple[str, ...]]]:
         names = {int(item["controller_index"]): item.get("name", "") for item in self.controller_info}
-        return {idx: (None, names.get(idx, f"Pad {idx}")) for idx in self.joysticks}
+        return {idx: (None, names.get(idx, f"Pad {idx}"), ()) for idx in self.joysticks}
 
     def last_input(self) -> dict[int, float]:
         return {}
@@ -458,6 +458,7 @@ def test_single_gamepad_controller_info_reports_selected_marker(monkeypatch) -> 
             "port_label": "no stable port",
             "slot_ref": "gamepad||Solo|connected",
             "seconds_since_input": None,
+            "notes": [],
         },
     ]
 

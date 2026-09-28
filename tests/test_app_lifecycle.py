@@ -253,6 +253,19 @@ class TestRun:
         app._check_pi_network_worker()
         assert app._pi_network_pending_result is None
 
+    def test_check_diagnostics_export_posts_a_finished_hud_export(self, patched_ctor) -> None:  # noqa: ANN001
+        from openfollow.runtime.diagnostics_export import DONE, HUD, ExportStatus
+
+        app = OpenFollowApp(config_path=patched_ctor.cfg_path)
+        app._runtime_services.diagnostics_export = SimpleNamespace(
+            status=lambda: ExportStatus(DONE, HUD, "SanDisk Ultra", True, "Saved b.txt to SanDisk Ultra.", 1)
+        )
+        app._check_diagnostics_export()
+        assert app._runtime_services._status_flags["diagnostics_export"] == (
+            "info",
+            "Diagnostics saved to SanDisk Ultra",
+        )
+
     def test_loopback_resolution_logs_degraded_warning_not_ready(
         self,
         patched_ctor,

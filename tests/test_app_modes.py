@@ -390,21 +390,21 @@ class TestSettingsMenu:
         app = self._make_app(has_controller=False, has_source_selection=False)
         enter_settings_menu(app)
         # Menu order: 0 Network, 1 Change Video Source, 2 Button Detection
-        # (disabled), 3 Open Web UI (disabled), 4 Restart.
-        # Park on Change
-        # Video Source (1), ArrowDown skips 2 + 3 to Restart (4).
+        # (disabled), 3 Open Web UI (disabled), 4 Export Diagnostics (no
+        # export wired), 5 Restart. Park on Change Video Source (1),
+        # ArrowDown skips 2 to 4 and lands on Restart (5).
         app._settings_menu_index = 1
         handle_key_press(app, "ArrowDown")
-        assert app._settings_menu_index == 4
+        assert app._settings_menu_index == 5
 
     def test_key_arrow_up_wraps_to_last_enabled_item(self) -> None:
         app = self._make_app()
         enter_settings_menu(app)
         assert app._settings_menu_index == 0
         handle_key_press(app, "ArrowUp")
-        # 6 items total (Network, Change Video Source, Button Detection,
-        # Open Web UI, Restart, About) – wrap to About at index 5.
-        assert app._settings_menu_index == 5
+        # 7 items total (Network, Change Video Source, Button Detection,
+        # Open Web UI, Export Diagnostics, Restart, About) – wrap to About at 6.
+        assert app._settings_menu_index == 6
 
     def test_key_escape_cancels_menu(self) -> None:
         app = self._make_app()
@@ -415,7 +415,7 @@ class TestSettingsMenu:
     def test_about_opens_from_menu_and_escape_returns(self) -> None:
         app = self._make_app()
         enter_settings_menu(app)
-        app._settings_menu_index = 5  # About (last row)
+        app._settings_menu_index = 6  # About (last row)
         handle_key_press(app, "Enter")
         assert app._about_active is True
         assert app._settings_menu_active is False
@@ -427,7 +427,7 @@ class TestSettingsMenu:
         """Enter (not just Escape) backs out of the read-only About screen."""
         app = self._make_app()
         enter_settings_menu(app)
-        app._settings_menu_index = 5
+        app._settings_menu_index = 6
         handle_key_press(app, "Enter")  # open
         handle_key_press(app, "Enter")  # confirm/dismiss
         assert app._about_active is False
@@ -443,7 +443,7 @@ class TestSettingsMenu:
     def test_confirm_restart_calls_restart(self) -> None:
         app = self._make_app()
         enter_settings_menu(app)
-        app._settings_menu_index = 4  # Restart
+        app._settings_menu_index = 5  # Restart
         handle_key_press(app, "Enter")
         assert app._restart_called is True
 

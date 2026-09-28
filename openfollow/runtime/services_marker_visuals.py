@@ -258,6 +258,31 @@ def sync_ui_config(state: OverlayState, cfg: Any) -> None:
         state.unit_system = UnitSystem.METRIC
 
 
+def _populate_media_overlay(app: Any, state: OverlayState) -> None:
+    """The drive picker's rows and the export screen's lines, from the refresher and the shared export."""
+    from openfollow.runtime import app_modes_media as media_modes
+
+    state.media_picker_active = bool(getattr(app, "_media_picker_active", False))
+    if state.media_picker_active:
+        media, listed = media_modes.picker_rows(app)
+        state.media_picker_title = app._media_picker_title
+        state.media_picker_items = [m.label if m.writable else f"{m.label} ({m.reason})" for m in media]
+        state.media_picker_index = media_modes.picker_index(app, media)
+        state.media_picker_empty = "No USB drive found. Plug one in." if listed else "Looking for drives"
+    else:
+        state.media_picker_title = ""
+        state.media_picker_items = []
+        state.media_picker_index = -1
+        state.media_picker_empty = ""
+    export = media_modes.diagnostics_export(app)
+    state.media_export_active = bool(getattr(app, "_media_export_active", False)) and export is not None
+    state.media_export_lines = (
+        media_modes.export_screen_lines(export.status())
+        if export is not None and state.media_export_active
+        else ("", "", None)
+    )
+
+
 def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
     """Snapshot the Network screens for draw-pass consumption."""
     target = state.pi_network
@@ -525,6 +550,7 @@ def build_marker_visual_state(
         state.settings_menu_banner = ""
 
     state.about_active = getattr(app, "_about_active", False)
+    _populate_media_overlay(app, state)
 
     _populate_pi_network_overlay(app, state)
 

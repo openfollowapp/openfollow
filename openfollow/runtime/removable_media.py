@@ -20,6 +20,7 @@ import os
 import plistlib
 import subprocess  # nosec B404
 import sys
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,6 +82,46 @@ class WriteResult:
 
 class MediaError(Exception):
     """A file that was not saved; ``str()`` is what the operator reads."""
+
+
+class MediaWatch:
+    """Lists drives on a worker thread about once a second while started, so no frame waits on ``lsblk``."""
+
+    def __init__(self, list_fn: Callable[[], list[Media]], interval_s: float = 1.0) -> None:
+        self._list_fn = list_fn
+        self._interval_s = interval_s
+        self._lock = threading.Lock()
+        self._media: list[Media] = []
+        self._listed = False
+        self._stop: threading.Event | None = None
+
+    def start(self) -> None:
+        if self._stop is not None:
+            return
+        # A fresh event per start, so a worker outliving stop() never serves the next one.
+        stop = threading.Event()
+        self._stop = stop
+        with self._lock:
+            self._media, self._listed = [], False
+        threading.Thread(target=self._run, args=(stop,), daemon=True, name="MediaWatch").start()
+
+    def stop(self) -> None:
+        if self._stop is not None:
+            self._stop.set()
+            self._stop = None
+
+    def snapshot(self) -> tuple[list[Media], bool]:
+        """The latest drives, and whether a listing has finished since ``start``."""
+        with self._lock:
+            return list(self._media), self._listed
+
+    def _run(self, stop: threading.Event) -> None:
+        while not stop.is_set():
+            media = self._list_fn()
+            with self._lock:
+                if not stop.is_set():
+                    self._media, self._listed = media, True
+            stop.wait(self._interval_s)
 
 
 def _size(n: int) -> str:

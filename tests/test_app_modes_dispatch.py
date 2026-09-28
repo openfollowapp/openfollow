@@ -1425,8 +1425,9 @@ def _make_settings_menu_app(*, has_controller=True, has_source=True, menu_index=
 def test_build_settings_menu_items_disables_controller_dependent_items(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """6 rows total. Change Video Source enabled whenever ANY video receiver
-    exists; Button Detection requires a connected controller."""
+    """7 rows total. Change Video Source enabled whenever ANY video receiver
+    exists; Button Detection requires a connected controller; the export
+    needs the diagnostics export wired."""
     from openfollow.runtime import webkit_browser
 
     monkeypatch.setattr(webkit_browser, "AVAILABLE", True)
@@ -1437,14 +1438,16 @@ def test_build_settings_menu_items_disables_controller_dependent_items(
         "Change Video Source",
         "Button Detection",
         "Open Web UI",
+        "Export Diagnostics File for Support",
         "Restart",
         "About",
     ]
     assert enabled[0] is True  # Network
     assert enabled[1] is True  # Change Video Source – receiver exists
     assert enabled[3] is True  # Open Web UI – WebKit mocked True
-    assert enabled[4] is True  # Restart
-    assert enabled[5] is True  # About – always available (no prerequisites)
+    assert enabled[4] is False  # Export Diagnostics – no export wired
+    assert enabled[5] is True  # Restart
+    assert enabled[6] is True  # About – always available (no prerequisites)
     # Button Detection disabled by missing controller.
     assert enabled[2] is False
 
@@ -1514,6 +1517,19 @@ def test_settings_menu_action_returns_none_for_invalid_index() -> None:
     assert app_modes._settings_menu_action(app, 0) == "network"
 
 
+def test_the_export_row_is_enabled_once_the_export_is_wired_and_opens_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openfollow.runtime import app_modes_media
+
+    app = _make_settings_menu_app(has_controller=True, has_source=True, menu_index=4)
+    app._runtime_services = SimpleNamespace(diagnostics_export=object(), _status_flags={})
+    _labels, enabled, _reasons = app_modes.build_settings_menu_items(app)
+    assert enabled[4] is True
+    opened: list[object] = []
+    monkeypatch.setattr(app_modes_media, "enter_diagnostics_export", opened.append)
+    app_modes._settings_menu_confirm(app)
+    assert opened == [app]
+
+
 def test_enter_settings_menu_is_idempotent_when_already_active() -> None:
     app = SimpleNamespace(_settings_menu_active=True, _settings_menu_index=4)
     app_modes.enter_settings_menu(app)
@@ -1528,7 +1544,8 @@ def test_settings_menu_move_skips_disabled_items(
     # has_controller=False disables Button Detection (2);
     # WebKit unavailable disables Open Web UI (3) – Linux-only gating (macOS
     # opens the default browser, so its row is always enabled there).
-    # ArrowDown from Network (0) lands on Restart (4).
+    # No export wired disables Export Diagnostics (4).
+    # ArrowDown from Network (0) lands on Restart (5).
     import sys as _sys
 
     from openfollow.runtime import webkit_browser
@@ -1537,7 +1554,7 @@ def test_settings_menu_move_skips_disabled_items(
     monkeypatch.setattr(_sys, "platform", "linux")
     app = _make_settings_menu_app(has_controller=False, has_source=None, menu_index=0)
     app_modes._settings_menu_move(app, +1)
-    assert app._settings_menu_index == 4
+    assert app._settings_menu_index == 5
 
 
 def test_settings_menu_move_no_op_when_no_items_enabled() -> None:
@@ -1571,7 +1588,7 @@ def test_settings_menu_confirm_no_op_on_disabled_row() -> None:
         (1, "_enter_source_type_selection"),
         (2, "_enter_button_detection"),
         (3, "_enter_browser"),
-        (4, "_restart_app"),
+        (5, "_restart_app"),
     ],
 )
 def test_settings_menu_confirm_dispatches_to_correct_app_callback(
@@ -2962,7 +2979,7 @@ def test_process_button_detection_noop_when_input_manager_none() -> None:
 
 def test_settings_menu_confirm_about_enters_about_screen() -> None:
     """The About row opens the read-only About screen and closes the menu."""
-    app = _make_settings_menu_app(has_controller=True, has_source=True, menu_index=5)
+    app = _make_settings_menu_app(has_controller=True, has_source=True, menu_index=6)
     app._settings_menu_active = True
     app._settings_menu_banner = ""
     app._about_active = False
@@ -3118,3 +3135,29 @@ def test_process_input_modal_entry_sets_suspended_without_clearing() -> None:
     app_modes.process_input(app, 0.016)
     assert cleared == []
     assert app._marker_control_suspended is True
+
+
+@pytest.mark.parametrize("flag", ["_media_picker_active", "_media_export_active"])
+def test_the_drive_screens_own_the_gamepad_while_open(monkeypatch: pytest.MonkeyPatch, flag: str) -> None:
+    from openfollow.runtime import app_modes_media
+
+    app = _make_process_input_app()
+    setattr(app, flag, True)
+    app._marker_control_suspended = False
+    handled: list[object] = []
+    monkeypatch.setattr(app_modes_media, "process_media_input", lambda a: handled.append(a) or True)
+    app_modes.process_input(app, 0.016)
+    assert handled == [app]
+    assert app._marker_control_suspended is True
+
+
+@pytest.mark.parametrize("flag", ["_media_picker_active", "_media_export_active"])
+def test_the_drive_screens_own_the_keyboard_while_open(monkeypatch: pytest.MonkeyPatch, flag: str) -> None:
+    from openfollow.runtime import app_modes_media
+
+    app = SimpleNamespace(_button_detection=None, _settings_menu_active=False, _about_active=False, **{flag: True})
+    keys: list[str] = []
+    monkeypatch.setattr(app_modes_media, "handle_media_key", lambda a, key: keys.append(key) or True)
+    app_modes.handle_key_press(app, "Enter")
+    assert keys == ["Enter"]
+    assert app_modes._exclusive_mode_active(app) is True

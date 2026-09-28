@@ -325,6 +325,58 @@ def draw_selection_menu(
     )
 
 
+def draw_media_picker_overlay(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
+    """The drive picker: one row per partition, a drive that can't be written listed with why."""
+    from openfollow.runtime.app_modes_media import PICKER_SUBTITLE
+
+    draw_modal_scrim(cr, w, h)
+    draw_selection_menu(
+        renderer,
+        cr,
+        state,
+        w,
+        h,
+        title=state.media_picker_title,
+        subtitle=PICKER_SUBTITLE,
+        mode="media-picker",
+        items=state.media_picker_items,
+        selected_idx=state.media_picker_index,
+        empty_message=state.media_picker_empty,
+    )
+
+
+def draw_media_export_overlay(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
+    """The export's progress, then what happened and the one next step."""
+    from openfollow.runtime.app_modes_media import EXPORT_TITLE
+
+    headline, next_step, ok = state.media_export_lines
+    draw_modal_scrim(cr, w, h)
+    panel_x, panel_y, panel_w, _ = draw_modal_shell(
+        renderer,
+        cr,
+        w,
+        h,
+        title=EXPORT_TITLE,
+        subtitle="Esc to go back." if ok is None else "Enter to pick a drive, Esc to go back.",
+        panel_w=min(w * 0.52, 760.0),
+        panel_h=190.0,
+    )
+    text_x = panel_x + 28.0
+    line_y = panel_y + 108.0
+    if ok is not None:
+        (draw_success_sign if ok else draw_warning_sign)(cr, text_x + 8.0, line_y - 6.0, 16.0)
+        text_x += 28.0
+    width = panel_x + panel_w - 28.0 - text_x
+    renderer._set_ui_font(cr, 16, bold=True)
+    cr.set_source_rgb(*COLOR_TEXT)
+    cr.move_to(text_x, line_y)
+    cr.show_text(renderer._truncate_text_to_width(cr, headline, width))
+    renderer._set_ui_font(cr, 13)
+    cr.set_source_rgba(*COLOR_TEXT_MUTED)
+    cr.move_to(text_x, line_y + 28.0)
+    cr.show_text(renderer._truncate_text_to_width(cr, next_step, width))
+
+
 def draw_source_selection(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
     draw_selection_menu(
         renderer,

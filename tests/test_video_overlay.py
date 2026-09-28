@@ -86,6 +86,8 @@ def patched_passes(monkeypatch):
 
     for name in (
         "draw_about_overlay_pass",
+        "draw_media_picker_overlay_pass",
+        "draw_media_export_overlay_pass",
         "draw_button_detection_overlay_pass",
         "draw_hud_pass",
         "draw_iface_selection_overlay_pass",
@@ -132,6 +134,19 @@ class TestDrawDispatch:
         renderer.state.about_active = True
         renderer.draw(FakeCairo(), 1280, 720)
         assert patched_passes == ["draw_about_overlay_pass"]
+
+    @pytest.mark.parametrize(
+        ("flag", "draw_pass"),
+        [
+            ("media_picker_active", "draw_media_picker_overlay_pass"),
+            ("media_export_active", "draw_media_export_overlay_pass"),
+        ],
+    )
+    def test_the_drive_picker_and_export_screen_take_the_modal_slot(self, patched_passes, flag, draw_pass) -> None:  # noqa: ANN001
+        renderer = CairoOverlayRenderer()
+        setattr(renderer.state, flag, True)
+        renderer.draw(FakeCairo(), 1280, 720)
+        assert patched_passes == [draw_pass]
 
     def test_iface_selection_dispatches_iface_overlay(self, patched_passes) -> None:
         renderer = CairoOverlayRenderer()

@@ -383,6 +383,47 @@ class TestVideoAndMenuState:
         app._about_active = False
         assert _build(app, pool).about_active is False
 
+    @pytest.mark.parametrize(
+        ("listed", "empty"), [(True, "No USB drive found. Plug one in."), (False, "Looking for drives")]
+    )
+    def test_drive_picker_rows_sync_to_overlay_state(self, pool: OverlayStatePool, listed: bool, empty: str) -> None:
+        from openfollow.runtime.removable_media import Media
+
+        media = [
+            Media("sdc1", "/dev/sdc1", "WD", "WD · APFS · 2.0 TB", None, False, "APFS can't be written"),
+            Media("sda1", "/dev/sda1", "SanDisk Ultra", "SanDisk Ultra · FAT32 · 32 GB", None, True),
+        ]
+        app = _build_app()
+        app._media_picker_active = True
+        app._media_picker_title = "SAVE DIAGNOSTICS"
+        app._media_picker_selected = ""
+        app._media_watch = SimpleNamespace(snapshot=lambda: (media, listed))
+        state = _build(app, pool)
+        assert (state.media_picker_active, state.media_picker_title) == (True, "SAVE DIAGNOSTICS")
+        assert state.media_picker_items == [
+            "WD · APFS · 2.0 TB (APFS can't be written)",
+            "SanDisk Ultra · FAT32 · 32 GB",
+        ]
+        assert (state.media_picker_index, state.media_picker_empty) == (1, empty)
+        app._media_picker_active = False
+        state = _build(app, pool)
+        assert (state.media_picker_active, state.media_picker_items, state.media_picker_index) == (False, [], -1)
+
+    def test_export_screen_lines_sync_to_overlay_state(self, pool: OverlayStatePool) -> None:
+        from openfollow.runtime.diagnostics_export import WRITING, ExportStatus
+
+        app = _build_app()
+        app._media_export_active = True
+        app._runtime_services.diagnostics_export = SimpleNamespace(
+            status=lambda: ExportStatus(WRITING, "hud", "SanDisk Ultra", generation=1)
+        )
+        state = _build(app, pool)
+        assert state.media_export_active is True
+        assert state.media_export_lines == ("Writing to SanDisk Ultra", "It carries on if you go back.", None)
+        app._runtime_services.diagnostics_export = None
+        state = _build(app, pool)
+        assert (state.media_export_active, state.media_export_lines) == (False, ("", "", None))
+
     def test_settings_menu_active_builds_items(self, pool: OverlayStatePool, monkeypatch: pytest.MonkeyPatch) -> None:
         app = _build_app(settings_menu_active=True)
         app._settings_menu_index = 2

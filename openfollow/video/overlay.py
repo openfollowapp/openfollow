@@ -31,6 +31,12 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_iface_selection_overlay as draw_iface_selection_overlay_pass,
 )
 from openfollow.runtime.overlay_draw_hud import (
+    draw_media_export_overlay as draw_media_export_overlay_pass,
+)
+from openfollow.runtime.overlay_draw_hud import (
+    draw_media_picker_overlay as draw_media_picker_overlay_pass,
+)
+from openfollow.runtime.overlay_draw_hud import (
     draw_pi_network_field_edit_overlay as draw_pi_network_field_edit_overlay_pass,
 )
 from openfollow.runtime.overlay_draw_hud import (
@@ -288,6 +294,14 @@ class CairoOverlayRenderer:
             # same modal-priority slot.
             if state.about_active:
                 self._draw_about_overlay(cr, state, width, height)
+                return
+
+            # Drive picker + diagnostics export screen, opened from Settings.
+            if state.media_picker_active:
+                draw_media_picker_overlay_pass(self, cr, state, width, height)
+                return
+            if state.media_export_active:
+                draw_media_export_overlay_pass(self, cr, state, width, height)
                 return
 
             # Network screens: same modal-priority slot as iface / source-type.

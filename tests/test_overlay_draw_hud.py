@@ -2572,3 +2572,68 @@ class TestSettingsMenuLinkColumns:
         draw_settings_menu(FakeRenderer(state=state), cr, state, 640, 320)
         blob = " ".join(cr.show_text_strings())
         assert "openfollow.app/docs" not in blob
+
+
+class TestDriveScreens:
+    """Settings → Export Diagnostics File for Support: the drive picker and the export screen."""
+
+    def test_the_picker_lists_every_drive_and_why_one_cannot_be_written(self) -> None:
+        from openfollow.runtime.overlay_draw_hud import draw_media_picker_overlay
+
+        state = OverlayState()
+        state.media_picker_title = "SAVE DIAGNOSTICS"
+        state.media_picker_items = [
+            "SanDisk Ultra · FAT32 · 32 GB",
+            "WD Passport (MAC) · APFS · 2.0 TB (APFS can't be written)",
+        ]
+        state.media_picker_index = 0
+        cr = FakeCairo()
+        draw_media_picker_overlay(FakeRenderer(), cr, state, 1920, 1080)
+        texts = cr.show_text_strings()
+        assert "SAVE DIAGNOSTICS" in texts
+        assert "Pick a drive, Enter to save, Esc to cancel." in texts
+        assert any("SanDisk Ultra · FAT32 · 32 GB" in t for t in texts)
+        assert any("(APFS can't be written)" in t for t in texts)
+
+    def test_the_picker_says_when_no_drive_is_attached(self) -> None:
+        from openfollow.runtime.overlay_draw_hud import draw_media_picker_overlay
+
+        state = OverlayState()
+        state.media_picker_title = "SAVE DIAGNOSTICS"
+        state.media_picker_empty = "No USB drive found. Plug one in."
+        cr = FakeCairo()
+        draw_media_picker_overlay(FakeRenderer(), cr, state, 1920, 1080)
+        assert any("No USB drive found. Plug one in." in t for t in cr.show_text_strings())
+
+    @pytest.mark.parametrize(
+        ("lines", "subtitle", "sign"),
+        [
+            (("Collecting diagnostics (up to 20 s)", "It carries on if you go back.", None), "Esc to go back.", None),
+            (
+                ("Saved ofdiag-rig.txt to SanDisk Ultra.", "It can be removed now.", True),
+                "Enter to pick a drive, Esc to go back.",
+                "success",
+            ),
+            (
+                ("The drive is full.", "Pick a drive to try again.", False),
+                "Enter to pick a drive, Esc to go back.",
+                "warning",
+            ),
+        ],
+        ids=["running", "saved", "failed"],
+    )
+    def test_the_export_screen_says_what_happened_and_the_next_step(self, monkeypatch, lines, subtitle, sign) -> None:  # noqa: ANN001
+        import openfollow.runtime.overlay_draw_hud as hud
+
+        signs: list[str] = []
+        monkeypatch.setattr(hud, "draw_success_sign", lambda *a, **k: signs.append("success"))
+        monkeypatch.setattr(hud, "draw_warning_sign", lambda *a, **k: signs.append("warning"))
+        state = OverlayState()
+        state.media_export_lines = lines
+        cr = FakeCairo()
+        hud.draw_media_export_overlay(FakeRenderer(), cr, state, 1920, 1080)
+        texts = cr.show_text_strings()
+        assert ["SAVE DIAGNOSTICS", subtitle, lines[0], lines[1]] == [
+            t for t in texts if t in {"SAVE DIAGNOSTICS", subtitle, lines[0], lines[1]}
+        ]
+        assert signs == ([] if sign is None else [sign])

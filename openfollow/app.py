@@ -214,6 +214,7 @@ if TYPE_CHECKING:
     from openfollow.psn import Marker, PsnReceiver, PsnServer
     from openfollow.rttrpm import RttrpmServer
     from openfollow.runtime.marker_velocity import MarkerVelocityState
+    from openfollow.runtime.removable_media import MediaWatch
     from openfollow.runtime.services_detection_pin import DetectionPinState
     from openfollow.scene.camera import Camera
     from openfollow.video.receiver import GstNativeSinkReceiver
@@ -338,6 +339,16 @@ class OpenFollowApp:
         self._marker_control_suspended: bool = False
 
         self._about_active: bool = False
+
+        # Drive picker + diagnostics export screen (runtime/app_modes_media.py).
+        self._media_picker_active: bool = False
+        self._media_picker_title: str = ""
+        self._media_picker_action: str = ""
+        self._media_picker_selected: str = ""
+        self._media_watch: MediaWatch | None = None
+        self._media_export_active: bool = False
+        self._media_export_seen: int = 0
+        self._media_export_badge_at: float | None = None
 
         from openfollow.network.adapter import (
             Ipv4Config as _Ipv4Config,
@@ -521,6 +532,11 @@ class OpenFollowApp:
         from openfollow.runtime.app_modes_network import drain_pi_network_worker
 
         drain_pi_network_worker(self)
+
+    def _check_diagnostics_export(self) -> None:
+        from openfollow.runtime.app_modes_media import check_diagnostics_export
+
+        check_diagnostics_export(self)
 
     def _check_update_request(self) -> None:
         runtime_check_update_request(self)

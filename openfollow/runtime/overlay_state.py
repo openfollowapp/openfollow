@@ -241,6 +241,15 @@ class OverlayState:
     settings_menu_banner: str = ""
     # About / license screen – read-only, no extra payload.
     about_active: bool = False
+    # Drive picker + diagnostics export screen.
+    media_picker_active: bool = False
+    media_picker_title: str = ""
+    media_picker_items: list[str] = field(default_factory=list)
+    media_picker_index: int = -1
+    media_picker_empty: str = ""
+    media_export_active: bool = False
+    # ``(headline, next step, ok)``; ``ok`` is None while the export runs.
+    media_export_lines: tuple[str, str, bool | None] = ("", "", None)
     # Pi Network screens: submenu, main screen, sub-pickers, editor.
     pi_network: PiNetworkOverlayState = field(default_factory=PiNetworkOverlayState)
     # Person detection bounding boxes
@@ -362,6 +371,13 @@ class OverlayState:
         self.settings_selected_index = 0
         self.settings_menu_banner = ""
         self.about_active = False
+        self.media_picker_active = False
+        self.media_picker_title = ""
+        self.media_picker_items.clear()
+        self.media_picker_index = -1
+        self.media_picker_empty = ""
+        self.media_export_active = False
+        self.media_export_lines = ("", "", None)
         self.pi_network.reset()
         self.detections = []
         self.detection_show_boxes = False

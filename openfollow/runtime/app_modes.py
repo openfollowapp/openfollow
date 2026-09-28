@@ -42,6 +42,8 @@ def process_input(app: OpenFollowApp, dt: float) -> None:
         getattr(app, "_button_detection", None) is not None
         or getattr(app, "_settings_menu_active", False)
         or getattr(app, "_about_active", False)
+        or getattr(app, "_media_picker_active", False)
+        or getattr(app, "_media_export_active", False)
         or getattr(app, "_pi_network_field_edit_active", False)
         or getattr(app, "_pi_network_method_picker_active", False)
         or getattr(app, "_pi_network_iface_picker_active", False)
@@ -74,6 +76,12 @@ def process_input(app: OpenFollowApp, dt: float) -> None:
     # backs out instead of leaking to marker movement beneath it.
     if getattr(app, "_about_active", False):
         process_about_input(app)
+        return
+
+    # Drive picker + diagnostics export screen, opened from the Settings menu.
+    from openfollow.runtime.app_modes_media import process_media_input
+
+    if process_media_input(app):
         return
 
     # Network submenu + Pi network sub-screens. Order matters – deeper
@@ -259,6 +267,7 @@ _SETTINGS_MENU_ITEMS: tuple[tuple[str, str], ...] = (
     ("Change Video Source", "change_video_source"),
     ("Button Detection", "button_detection"),
     ("Open Web UI", "web_ui"),
+    ("Export Diagnostics File for Support", "export_diagnostics"),
     ("Restart", "restart"),
     # Read-only license/version screen. Reachable without the embedded WebKit
     # browser so the AGPLv3 notice is always available on the device.
@@ -366,6 +375,10 @@ def build_settings_menu_items(
                 is_enabled = has_browser
                 if not is_enabled:
                     reason = _web_ui_disabled_reason()
+        elif action == "export_diagnostics":
+            from openfollow.runtime.app_modes_media import diagnostics_export
+
+            is_enabled = diagnostics_export(app) is not None
         else:
             is_enabled = True
         enabled.append(is_enabled)
@@ -490,11 +503,16 @@ def _settings_menu_confirm(app: OpenFollowApp) -> None:
             open_web_ui_external(app)
         else:
             app._enter_browser()
+    elif action == "export_diagnostics":
+        from openfollow.runtime.app_modes_media import enter_diagnostics_export
+
+        enter_diagnostics_export(app)
     elif action == "restart":
         app._restart_app()
     # pragma: no branch – exhaustive elif chain over the static action set
-    # (network / change_video_source / button_detection / web_ui / restart /
-    # about); the final arm always matches, so there's no fall-through.
+    # (network / change_video_source / button_detection / web_ui /
+    # export_diagnostics / restart / about); the final arm always matches,
+    # so there's no fall-through.
     elif action == "about":  # pragma: no branch
         enter_about(app)
 
@@ -628,6 +646,11 @@ def handle_key_press(app: OpenFollowApp, key: str) -> None:
     if getattr(app, "_about_active", False):
         if key in ("Enter", "Escape"):
             exit_about(app)
+        return
+
+    from openfollow.runtime.app_modes_media import handle_media_key
+
+    if handle_media_key(app, key):
         return
 
     # Field editor text comes in via ``on_key_down`` (like the URL editor):
@@ -1648,6 +1671,8 @@ def check_video_disconnect_banner(app: OpenFollowApp) -> None:
         or app._browser_active
         or app._button_detection is not None
         or getattr(app, "_pi_network_active", False)
+        or getattr(app, "_media_picker_active", False)
+        or getattr(app, "_media_export_active", False)
     ):
         return
 
@@ -1800,6 +1825,8 @@ def _exclusive_mode_active(app: OpenFollowApp) -> bool:
         getattr(app, "_button_detection", None) is not None
         or getattr(app, "_settings_menu_active", False)
         or getattr(app, "_about_active", False)
+        or getattr(app, "_media_picker_active", False)
+        or getattr(app, "_media_export_active", False)
         or getattr(app, "_pi_network_field_edit_active", False)
         or getattr(app, "_pi_network_method_picker_active", False)
         or getattr(app, "_pi_network_iface_picker_active", False)

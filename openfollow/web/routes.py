@@ -2913,6 +2913,12 @@ def _detection_models_dir(cfg: AppConfig) -> dict[str, str]:
     return {"dir": str(directory), "configured": str(cfg.detection.model or "")}
 
 
+def _save_failed(status: int, error: str, action: str = "") -> HTTPResponse:
+    """A refused or failed save, in the ``{error, action}`` shape the save-feedback line reads."""
+    body = json.dumps({"error": error, "action": action})
+    return HTTPResponse(body=body, status=status, headers={"Content-Type": "application/json"})
+
+
 def build_diagnostics_bundle(server: ConfigWebServer, cfg: AppConfig | None = None) -> tuple[str, str]:
     """The diagnostics bundle as ``(filename, text)``, with the station's own copy written.
 
@@ -4969,6 +4975,38 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         response.content_type = "text/plain; charset=utf-8"
         response.headers["Content-Disposition"] = f'attachment; filename="{fname}"'
         return text
+
+    @app.get("/api/diagnostics/drives")
+    def api_diagnostics_drives() -> Any:
+        """``<option>`` rows for the Save to drive select, listed afresh on every call."""
+        provider = server.media_list_provider
+        return template(
+            "partials/diagnostics_drives",
+            media=provider() if provider is not None else [],
+            selected=request.query.getunicode("media_id") or "",
+        )
+
+    @app.post("/api/diagnostics/save-to-drive")
+    def api_diagnostics_save_to_drive() -> Any:
+        """Save the bundle to the picked drive; only an id from a fresh listing is accepted, never a path."""
+        from openfollow.runtime.diagnostics_export import WEB, ExportBusy
+
+        export, provider = server.diagnostics_export, server.media_list_provider
+        if export is None or provider is None:
+            return _save_failed(503, "Saving to a drive is not available on this station.")
+        media_id = request.forms.getunicode("media_id") or ""
+        media = next((m for m in provider() if m.id == media_id), None)
+        if media is None:
+            return _save_failed(400, "That drive is no longer attached.", "Pick a drive, then save again.")
+        if not media.writable:
+            return _save_failed(400, f"{media.name} can't be written: {media.reason}.", "Pick another drive.")
+        try:
+            status = export.run(media.id, media.name, WEB)
+        except ExportBusy as exc:
+            return _save_failed(409, str(exc), "Wait for it to finish, then save again.")
+        if not status.ok:
+            return _save_failed(422, status.message)
+        return template("partials/diagnostics_drive_saved", message=status.message)
 
     @app.get("/api/diagnostics/log-tail")
     def api_diagnostics_log_tail() -> Any:

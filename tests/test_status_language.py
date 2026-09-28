@@ -25,7 +25,7 @@ _STATUS_CLASS = re.compile(
     r"osc-binding-row|osc-binding-enabled-dot|osc-binding-nested-row|osc-pill|peer-item|peer-status|toast|"
     r"save-error|save-failed|field-error-msg|field-warn-msg|field-note-msg|conflict-flag|not-controlled|"
     r"add-feedback|saved-flash|wizard-status|wizard-preview-container|awaiting-password|wizard-field-error|"
-    r"update-flag|danger|btn-danger|modal-list-item-delete|gallery-del|dme-row)(?![\w-])"
+    r"update-flag|drive-saved|danger|btn-danger|modal-list-item-delete|gallery-del|dme-row)(?![\w-])"
 )
 _COLOUR = re.compile(r"#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)")
 # Greys, whites and the off-white text: neutral, so a literal is fine.

@@ -17,6 +17,8 @@ from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
 if TYPE_CHECKING:
     from openfollow.logging_setup import RingBufferLogHandler
     from openfollow.network.adapter import ApplyResult
+    from openfollow.runtime.diagnostics_export import DiagnosticsExport
+    from openfollow.runtime.removable_media import Media
 
 from bottle import TEMPLATE_PATH, Bottle
 
@@ -214,6 +216,9 @@ class ConfigWebServer:
         camera_names_provider: Callable[[], list[str]] | None = None,
         # Startup PSN-source advisory when pinned iface unavailable; optional for tests.
         psn_source_advisory_provider: (Callable[[], dict[str, str]] | None) = None,
+        # Removable drives and the one-at-a-time bundle export to them; None where unwired.
+        media_list_provider: Callable[[], list[Media]] | None = None,
+        diagnostics_export: DiagnosticsExport | None = None,
     ) -> None:
         self._config_path = os.path.abspath(config_path)
         self._host = host
@@ -279,6 +284,8 @@ class ConfigWebServer:
         self.recent_midi_events_provider = recent_midi_events_provider
         self.midi_port_names_provider = midi_port_names_provider
         self.camera_names_provider = camera_names_provider
+        self.media_list_provider = media_list_provider
+        self.diagnostics_export = diagnostics_export
         self._started_at = time.monotonic()
         self._app = Bottle()
         # Guards the HTTP-server slot assignment in ``_run`` against ``stop()``.

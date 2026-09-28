@@ -12,6 +12,7 @@ the private-IP allowlist on the peer probe).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -842,6 +843,7 @@ def test_diagnostics_routes_require_pin_when_set(
             "/section/diagnostics",
             "/api/diagnostics/bundle",
             "/api/diagnostics/log-tail",
+            "/api/diagnostics/drives",
         ):
             status, _, _ = _get(base, path, follow_redirects=False)
             # The auth hook redirects to ``/login`` (302/303) for HTML
@@ -849,9 +851,142 @@ def test_diagnostics_routes_require_pin_when_set(
             assert status in (302, 303, 401), f"{path} not pin-gated (got {status})"
         # ``/api/diagnostics/test-peers`` is the POST route that returns
         # operator-visible data and performs outbound HTTP requests.
-        post_status, _ = _post(base, "/api/diagnostics/test-peers", {})
-        assert post_status in (302, 303, 401), f"/api/diagnostics/test-peers not pin-gated (got {post_status})"
+        for path in ("/api/diagnostics/test-peers", "/api/diagnostics/save-to-drive"):
+            post_status, _ = _post(base, path, {})
+            assert post_status in (302, 303, 401), f"{path} not pin-gated (got {post_status})"
     finally:
         # Reset PIN so the fixture's teardown isn't fighting auth.
         cfg.web_pin = ""
         save_config(cfg, cfg_path)
+
+
+# ---------------------------------------------------------------------------
+# Save to drive
+# ---------------------------------------------------------------------------
+
+
+def _drives() -> list:
+    from openfollow.runtime.removable_media import Media
+
+    return [
+        Media("sda1", "/dev/sda1", "SanDisk Ultra", "SanDisk Ultra · FAT32 · 32 GB", None, True),
+        Media(
+            "sdc1",
+            "/dev/sdc1",
+            "WD Passport (MAC)",
+            "WD Passport (MAC) · APFS · 2.0 TB",
+            None,
+            False,
+            "APFS can't be written",
+        ),
+    ]
+
+
+def _wire_drives(server, *, write=None):  # noqa: ANN001, ANN202
+    from openfollow.runtime.diagnostics_export import DiagnosticsExport
+    from openfollow.runtime.removable_media import WriteResult
+
+    written: list[tuple[str, str, bytes]] = []
+
+    def _write(media_id: str, filename: str, data: bytes) -> WriteResult:
+        written.append((media_id, filename, data))
+        if write is not None:
+            write()
+        return WriteResult(filename, _drives()[0], f"Saved {filename} to SanDisk Ultra.")
+
+    server.media_list_provider = _drives
+    server.diagnostics_export = DiagnosticsExport(lambda: ("ofdiag-TestSystem-20260928T101500Z.txt", "bundle"), _write)
+    return written
+
+
+def test_the_drive_list_shows_every_drive_and_why_one_cannot_be_written(live_server) -> None:
+    server, base, _ = live_server
+    _wire_drives(server)
+    status, body, _ = _get(base, "/api/diagnostics/drives?media_id=sda1")
+    assert status == 200
+    assert '<option value="sda1" selected>SanDisk Ultra · FAT32 · 32 GB</option>' in body
+    assert (
+        '<option value="sdc1" disabled>WD Passport (MAC) · APFS · 2.0 TB (APFS can&#039;t be written)</option>' in body
+    )
+
+
+@pytest.mark.parametrize("wired", [True, False], ids=["no-drives", "unwired"])
+def test_no_drive_says_so(live_server, wired: bool) -> None:
+    server, base, _ = live_server
+    if wired:
+        server.media_list_provider = list
+    _, body, _ = _get(base, "/api/diagnostics/drives")
+    assert "No USB drive found. Plug one in." in body
+
+
+def test_save_to_drive_writes_the_bundle_and_confirms(live_server) -> None:
+    server, base, _ = live_server
+    written = _wire_drives(server)
+    status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": "sda1"})
+    assert status == 200
+    assert (
+        '<p class="drive-saved" role="status">Saved ofdiag-TestSystem-20260928T101500Z.txt to SanDisk Ultra.</p>'
+        in body
+    )
+    assert written == [("sda1", "ofdiag-TestSystem-20260928T101500Z.txt", b"bundle")]
+
+
+@pytest.mark.parametrize(
+    ("media_id", "status", "error"),
+    [
+        ("sdz9", 400, "That drive is no longer attached."),
+        ("/dev/sda1", 400, "That drive is no longer attached."),
+        ("", 400, "That drive is no longer attached."),
+        ("sdc1", 400, "WD Passport (MAC) can't be written: APFS can't be written."),
+    ],
+    ids=["unknown-id", "a-path", "nothing-picked", "not-writable"],
+)
+def test_save_to_drive_accepts_only_a_listed_writable_drive(
+    live_server, media_id: str, status: int, error: str
+) -> None:
+    server, base, _ = live_server
+    written = _wire_drives(server)
+    got, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": media_id})
+    assert (got, json.loads(body)["error"], written) == (status, error, [])
+
+
+def test_save_to_drive_reports_a_failed_write(live_server) -> None:
+    from openfollow.runtime.removable_media import MediaError
+
+    def _full() -> None:
+        raise MediaError("The drive is full.")
+
+    server, base, _ = live_server
+    _wire_drives(server, write=_full)
+    status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": "sda1"})
+    assert (status, json.loads(body)) == (422, {"error": "The drive is full.", "action": ""})
+
+
+def test_save_to_drive_while_another_export_runs(live_server) -> None:
+    server, base, _ = live_server
+    _wire_drives(server)
+    server.diagnostics_export._slot.acquire()
+    try:
+        status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": "sda1"})
+    finally:
+        server.diagnostics_export._slot.release()
+    assert (status, json.loads(body)) == (
+        409,
+        {"error": "Another diagnostics export is still running.", "action": "Wait for it to finish, then save again."},
+    )
+
+
+def test_save_to_drive_where_it_is_not_wired(live_server) -> None:
+    _, base, _ = live_server
+    status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": "sda1"})
+    assert (status, json.loads(body)["error"]) == (503, "Saving to a drive is not available on this station.")
+
+
+def test_the_page_offers_save_to_drive_in_its_own_save_box(live_server) -> None:
+    _, base, _ = live_server
+    _, body, _ = _get(base, "/")
+    box = body[body.index('<div class="save-flash drive-save">') :]
+    box = box[: box.index('<div id="diagnostics-drive-result">')]
+    assert 'hx-get="/api/diagnostics/drives"' in box and 'hx-trigger="load, focus"' in box
+    assert 'hx-post="/api/diagnostics/save-to-drive"' in box and 'hx-include="#diagnostics-drive"' in box
+    assert '<div class="actions">' in box

@@ -69,6 +69,32 @@
                 Restart application
             </button>
         </div>
+        %# Its own save box, so a failed save flashes and explains right here.
+        <div class="save-flash drive-save">
+            <div class="actions">
+                <label for="diagnostics-drive">Drive</label>
+                <select id="diagnostics-drive" name="media_id"
+                        hx-get="/api/diagnostics/drives"
+                        hx-trigger="load, focus"
+                        hx-include="this"
+                        hx-target="this"
+                        hx-swap="innerHTML">
+                    <option value="" disabled selected>Looking for drives</option>
+                </select>
+                <button type="button" class="secondary"
+                        hx-post="/api/diagnostics/save-to-drive"
+                        hx-include="#diagnostics-drive"
+                        hx-target="#diagnostics-drive-result"
+                        hx-swap="innerHTML"
+                        hx-indicator="#diagnostics-drive-busy"
+                        hx-disabled-elt="this"
+                        hx-on::before-request="document.getElementById('diagnostics-drive-result').replaceChildren()">
+                    Save to drive
+                </button>
+                <span id="diagnostics-drive-busy" class="drive-save-busy">Collecting diagnostics (up to 20 s)</span>
+            </div>
+            <div id="diagnostics-drive-result"></div>
+        </div>
         %# Operator-loaded output (peer probe results / log tail). The 5s poll
         %# only swaps ``#diagnostics-live`` above, so these slots keep whatever
         %# the operator loaded without needing ``hx-preserve``.

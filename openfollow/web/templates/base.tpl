@@ -1173,6 +1173,17 @@
  border: 2px solid var(--success-mark-muted); border-radius: 999px;
  background: var(--success-mark); background-clip: content-box; font-size: 0;
  }
+ /* Diagnostics: save the bundle to a drive. */
+ .drive-save { margin-top: 0.8rem; }
+ .drive-save .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+ .drive-save select { min-width: 16rem; max-width: 100%; }
+ .drive-save-busy { display: none; color: var(--muted); font-size: 0.86rem; }
+ .drive-save-busy.htmx-request { display: inline; }
+ .drive-saved { margin: 0.5rem 0 0; color: var(--success-text); font-weight: 600; }
+ .drive-saved::before {
+ content: ""; display: inline-block; width: 1.1em; height: 1.1em; margin-right: 0.35em; vertical-align: -0.2em;
+ background: var(--success-sign-green) no-repeat center / contain;
+ }
  /* Controller Slots table (Input tab). */
  .slot-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
  .slot-table th, .slot-table td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--border-soft); }

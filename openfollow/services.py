@@ -76,6 +76,7 @@ if TYPE_CHECKING:
     )
     from openfollow.privilege import PrivilegeBroker  # noqa: F401
     from openfollow.psn.marker import Marker
+    from openfollow.runtime.diagnostics_export import DiagnosticsExport
     from openfollow.video.detection import PersonDetector
     from openfollow.web import ConfigWebServer  # noqa: F401
 
@@ -760,6 +761,8 @@ class AppRuntimeServices:
         self._privilege_broker = PrivilegeBroker(
             prompter=_prompt_for_password if web_commands is not None else None,
         )
+        # Saving the diagnostics bundle to a drive; built with the web server it collects through.
+        self.diagnostics_export: DiagnosticsExport | None = None
         _ = Prompter  # keep import alive for typing.TYPE_CHECKING readers
 
         # Network adapter: auto-detect NM / dhcpcd / psutil at startup.
@@ -2011,9 +2014,13 @@ class AppRuntimeServices:
             raise
 
     def init_web_server(self) -> None:
+        from openfollow.runtime.diagnostics_export import DiagnosticsExport
+        from openfollow.runtime.removable_media import list_media, write_file
         from openfollow.web import ConfigWebServer  # noqa: F811
+        from openfollow.web.routes import build_diagnostics_bundle
 
-        self._app._web_server = ConfigWebServer(
+        broker = self._privilege_broker
+        server = ConfigWebServer(
             config_path=self._app._config_path,
             host=self._resolve_web_bind(),
             port=self._app._config.web_port,
@@ -2094,8 +2101,15 @@ class AppRuntimeServices:
             camera_names_provider=self._camera_names_provider,
             # Startup PSN-source advisory for the PSN section.
             psn_source_advisory_provider=self._psn_source_advisory,
+            media_list_provider=lambda: list_media(broker),
         )
-        self._app._web_server.start()
+        self.diagnostics_export = DiagnosticsExport(
+            build=lambda: build_diagnostics_bundle(server),
+            write=lambda media_id, filename, data: write_file(media_id, filename, data, broker),
+        )
+        server.diagnostics_export = self.diagnostics_export
+        self._app._web_server = server
+        server.start()
 
     def _psn_source_advisory(self) -> dict[str, str]:
         """Web provider: the startup PSN-source advisory recorded by

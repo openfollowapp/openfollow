@@ -37,6 +37,7 @@ __all__ = [
     "CameraSetupState",
     "HELPER_PATH",
     "MODULE_NAMES",
+    "MalformedBlockError",
     "camera_label",
     "camera_lines",
     "configured_camera",
@@ -148,20 +149,35 @@ def _camera_from_line(line: str) -> Camera | None:
     return Camera(name, port)
 
 
+class MalformedBlockError(ValueError):
+    """OpenFollow's markers in ``config.txt`` do not pair up, so no line can be trusted to be ours."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "config.txt has an OpenFollow camera block with a missing or extra marker, so it is left as it is."
+        )
+
+
 def _split_block(lines: list[str]) -> tuple[list[str], list[str]]:
-    """``config.txt`` lines outside OpenFollow's block, and the lines inside it."""
+    """``config.txt`` lines outside OpenFollow's block, and the lines inside it.
+
+    Raises :class:`MalformedBlockError` unless every begin marker is closed by an
+    end marker before the next begin: an unclosed block would claim, and a
+    rewrite delete, every line after it.
+    """
     outside: list[str] = []
     inside: list[str] = []
     in_block = False
     for line in lines:
         stripped = line.strip()
-        if stripped == BLOCK_BEGIN:
-            in_block = True
-            continue
-        if stripped == BLOCK_END:
-            in_block = False
+        if stripped in (BLOCK_BEGIN, BLOCK_END):
+            if (stripped == BLOCK_BEGIN) == in_block:
+                raise MalformedBlockError()
+            in_block = not in_block
             continue
         (inside if in_block else outside).append(line)
+    if in_block:
+        raise MalformedBlockError()
     return outside, inside
 
 
@@ -238,7 +254,10 @@ def read_camera_setup(
         return CameraSetupState(available=False, reason="This station has no Raspberry Pi boot configuration.")
     if not helper_path.exists():
         return CameraSetupState(available=False, reason="Camera setup is not installed on this station.")
-    configured, managed = configured_camera(text)
+    try:
+        configured, managed = configured_camera(text)
+    except MalformedBlockError as exc:
+        return CameraSetupState(available=False, reason=str(exc))
     # Before its first change in a boot the helper keeps config.txt's camera
     # lines as they were at boot; until then the file itself is that state.
     boot_text = _read(boot_file)
@@ -312,10 +331,14 @@ def main(
     if command == "write":
         try:
             text = config_path.read_text(encoding="utf-8")
+            updated = rewrite_config(text, camera)
             if not boot_file.exists():
                 _record(boot_file, "".join(line + "\n" for line in text.splitlines() if _camera_from_line(line)))
             config_path.with_name(config_path.name + ".openfollow-bak").write_text(text, encoding="utf-8")
-            _write_atomic(config_path, rewrite_config(text, camera))
+            _write_atomic(config_path, updated)
+        except MalformedBlockError as exc:
+            print(exc, file=sys.stderr)
+            return 1
         except OSError as exc:
             print(f"could not write {config_path}: {exc.strerror or exc}", file=sys.stderr)
             return 1

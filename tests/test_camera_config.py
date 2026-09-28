@@ -19,6 +19,7 @@ from openfollow.privilege.camera_config import (
     BLOCK_END,
     TAKEN_OVER,
     Camera,
+    MalformedBlockError,
     camera_label,
     camera_lines,
     configured_camera,
@@ -157,6 +158,29 @@ class TestRewriting:
         assert camera_lines(rewrite_config("", OV)) == [OV]
 
 
+# Markers that don't pair up. An unclosed block would claim every later line.
+_UNPAIRED = [
+    f"{BLOCK_BEGIN}\ndtoverlay=ov5647,cam0\n[pi5]\ndtoverlay=vc4-kms-v3d\n",
+    f"dtoverlay=vc4-kms-v3d\n{BLOCK_END}\n",
+    f"{BLOCK_BEGIN}\n{BLOCK_BEGIN}\ndtoverlay=ov5647,cam0\n{BLOCK_END}\n",
+    f"{BLOCK_BEGIN}\ndtoverlay=ov5647,cam0\n{BLOCK_END}\n{BLOCK_END}\n",
+]
+_UNPAIRED_IDS = ["unclosed", "end-without-begin", "begin-twice", "end-twice"]
+
+
+class TestMalformedBlock:
+    @pytest.mark.parametrize("block", _UNPAIRED, ids=_UNPAIRED_IDS)
+    def test_rewriting_refuses(self, block: str) -> None:
+        with pytest.raises(MalformedBlockError):
+            rewrite_config(_APPLIANCE + block, IMX)
+
+    def test_two_complete_blocks_become_one(self) -> None:
+        text = rewrite_config(_APPLIANCE, OV) + f"{BLOCK_BEGIN}\ndtoverlay=imx219,cam1\n{BLOCK_END}\n"
+        out = rewrite_config(text, IMX)
+        assert out.count(BLOCK_BEGIN) == 1
+        assert camera_lines(out) == [IMX]
+
+
 def _station(tmp_path: Path, config: str = _APPLIANCE, *, pi: bool = True, helper: bool = True) -> dict[str, Path]:
     paths = {
         "config_path": tmp_path / "config.txt",
@@ -191,6 +215,11 @@ class TestStateRead:
     def test_no_helper_installed(self, tmp_path: Path) -> None:
         state = read_camera_setup(**_station(tmp_path, helper=False))
         assert (state.available, state.reason) == (False, "Camera setup is not installed on this station.")
+
+    @pytest.mark.parametrize("block", _UNPAIRED, ids=_UNPAIRED_IDS)
+    def test_unpaired_markers_offer_no_setup(self, tmp_path: Path, block: str) -> None:
+        state = read_camera_setup(**_station(tmp_path, _APPLIANCE + block))
+        assert (state.available, state.reason) == (False, str(MalformedBlockError()))
 
     def test_lists_only_camera_overlays(self, tmp_path: Path) -> None:
         assert read_camera_setup(**_station(tmp_path)).sensors == ("imx219", "imx708_wide", "ov5647")
@@ -320,6 +349,15 @@ class TestRootHelper:
         assert main(["write", AUTOMATIC], **_cli(paths)) == 0
         assert paths["boot_file"].read_text() == "dtoverlay=ov5647,cam0\n"  # still what the station booted with
         assert configured_camera(paths["config_path"].read_text()) == (None, False)
+
+    @pytest.mark.parametrize("block", _UNPAIRED, ids=_UNPAIRED_IDS)
+    def test_unpaired_markers_write_nothing(self, tmp_path: Path, block: str, capsys) -> None:  # noqa: ANN001
+        paths = _station(tmp_path, _APPLIANCE + block)
+        assert main(["write", "imx708_wide,cam1"], **_cli(paths)) == 1
+        assert paths["config_path"].read_text() == _APPLIANCE + block
+        assert not (tmp_path / "config.txt.openfollow-bak").exists()
+        assert not paths["boot_file"].exists()
+        assert "missing or extra marker" in capsys.readouterr().err
 
     def test_a_failed_write_leaves_config_txt_whole(self, tmp_path: Path, monkeypatch, capsys) -> None:  # noqa: ANN001
         paths = _station(tmp_path)

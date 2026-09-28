@@ -16,7 +16,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -1428,6 +1428,98 @@ def test_format_bundle_header_identifies_version_and_platform(monkeypatch) -> No
     assert header[0] == "openfollow diagnostics bundle"
     assert header[1] == "version: 9.9.9"
     assert header[2] == "platform: arm64 (aarch64)"
+
+
+class _Unnamed(tzinfo):
+    """An offset with no abbreviation, which ``timezone`` cannot express."""
+
+    def utcoffset(self, dt: datetime | None) -> timedelta:
+        return timedelta(hours=1)
+
+    def tzname(self, dt: datetime | None) -> None:
+        return None
+
+    def dst(self, dt: datetime | None) -> timedelta:
+        return timedelta(0)
+
+
+def _local(hours: float, abbrev: str | None) -> datetime:
+    zone = timezone(timedelta(hours=hours), abbrev) if abbrev else _Unnamed()
+    return datetime(2026, 9, 28, 17, 53, 2, tzinfo=zone)
+
+
+def _link(tmp_path: Path, target: str) -> Path:
+    link = tmp_path / "localtime"
+    link.symlink_to(target)
+    return link
+
+
+@pytest.mark.parametrize(
+    ("environ", "target", "local", "zone"),
+    [
+        ({}, "/usr/share/zoneinfo/Europe/London", _local(1, "BST"), "UTC+01:00 (Europe/London)"),
+        ({}, "/var/db/timezone/zoneinfo/Europe/Berlin", _local(2, "CEST"), "UTC+02:00 (Europe/Berlin)"),
+        ({}, "../usr/share/zoneinfo/Etc/UTC", _local(0, "UTC"), "UTC+00:00 (Etc/UTC)"),
+        ({}, "/usr/share/zoneinfo/America/New_York", _local(-4, "EDT"), "UTC-04:00 (America/New_York)"),
+        ({}, "/usr/share/zoneinfo/Asia/Kolkata", _local(5.5, "IST"), "UTC+05:30 (Asia/Kolkata)"),
+        ({"TZ": "Europe/Berlin"}, "/usr/share/zoneinfo/Europe/London", _local(2, "CEST"), "UTC+02:00 (Europe/Berlin)"),
+        ({"TZ": ":Europe/Berlin"}, None, _local(2, "CEST"), "UTC+02:00 (Europe/Berlin)"),
+        ({"TZ": ""}, None, _local(1, "BST"), "UTC+01:00 (BST)"),
+        ({}, None, _local(1, "BST"), "UTC+01:00 (BST)"),
+        ({}, None, _local(1, None), "UTC+01:00"),
+        ({}, "/somewhere/else", _local(1, "BST"), "UTC+01:00 (BST)"),
+    ],
+    ids=[
+        "debian-link",
+        "macos-link",
+        "relative-link",
+        "negative-offset",
+        "half-hour-offset",
+        "tz-outranks-the-link",
+        "tz-with-colon",
+        "empty-tz",
+        "no-link-abbreviation",
+        "nothing-but-the-offset",
+        "link-outside-zoneinfo",
+    ],
+)
+def test_station_zone_names_the_offset_and_the_zone(tmp_path, environ, target, local, zone) -> None:  # noqa: ANN001
+    localtime = _link(tmp_path, target) if target else tmp_path / "missing"
+    assert diag.station_zone(local, environ=environ, localtime=localtime) == zone
+
+
+def test_station_zone_reads_a_copied_localtime_as_no_name(tmp_path) -> None:
+    copied = tmp_path / "localtime"
+    copied.write_bytes(b"TZif2")
+    assert diag.station_zone(_local(1, "BST"), environ={}, localtime=copied) == "UTC+01:00 (BST)"
+
+
+def test_format_bundle_header_says_which_zone_the_log_times_are_in(monkeypatch) -> None:
+    seen: list[datetime] = []
+
+    def zone(local: datetime, **_kw: object) -> str:
+        seen.append(local)
+        return "UTC+01:00 (Europe/London)"
+
+    class _Ticking(datetime):
+        """A second passes on every read, so a zone read apart from the stamp lands on another second."""
+
+        calls = 0
+
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001, ANN206
+            cls.calls += 1
+            return datetime(2026, 9, 28, 16, 53, cls.calls, tzinfo=timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(diag, "station_zone", zone)
+    monkeypatch.setattr(diag, "datetime", _Ticking)
+    bundle = diag.collect_bundle()
+    header = diag.format_bundle(bundle).splitlines()[:5]
+    assert header[3:] == [f"generated: {bundle.generated_at}", "log times: station time, UTC+01:00 (Europe/London)"]
+    # Read at the moment the bundle is stamped, so the two lines describe one clock reading.
+    (local,) = seen
+    assert local.utcoffset() is not None
+    assert local.astimezone(timezone.utc).isoformat(timespec="seconds") == bundle.generated_at
 
 
 # ---------------------------------------------------------------------------

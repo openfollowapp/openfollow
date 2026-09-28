@@ -27,7 +27,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
@@ -2833,6 +2833,8 @@ class DiagnosticsBundle:
     """
 
     generated_at: str = ""
+    # The zone of the log section's unzoned times, read when ``generated_at`` was.
+    log_times: str = ""
     app_version: str = ""
     platform_label: str = ""
     host_label: str = ""
@@ -2889,6 +2891,26 @@ _BUNDLE_SECTIONS: tuple[tuple[str, str], ...] = (
     ("F. Recent I/O activity", "f_io"),
     ("G. Device permissions", "g_permissions"),
 )
+
+
+def station_zone(
+    local: datetime, *, environ: Mapping[str, str] = os.environ, localtime: Path = Path("/etc/localtime")
+) -> str:
+    """``UTC+01:00 (Europe/London)``: the offset of ``local`` and the zone journald and logging print in.
+
+    The name comes from ``TZ``, else the ``zoneinfo/`` path ``/etc/localtime`` links to (Linux and
+    macOS both), else the abbreviation, else it is left out.
+    """
+    offset = local.strftime("%z")
+    label = f"UTC{offset[:3]}:{offset[3:5]}"
+    name = environ.get("TZ", "").lstrip(":").rpartition("zoneinfo/")[2]
+    if not name:
+        try:
+            name = os.readlink(localtime).partition("zoneinfo/")[2]
+        except OSError:
+            name = ""
+    name = name or local.tzname() or ""
+    return f"{label} ({name})" if name else label
 
 
 def collect_bundle(
@@ -2983,8 +3005,10 @@ def collect_bundle(
         "f_io": lambda: collect_recent_io(p),
         "g_permissions": lambda: collect_device_permissions(p),
     }
+    now = datetime.now(timezone.utc)
     bundle = DiagnosticsBundle(
-        generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        generated_at=now.isoformat(timespec="seconds"),
+        log_times=station_zone(now.astimezone()),
         app_version=openfollow.__version__,
         platform_label=_platform_label(),
         host_label=f"{platform.node()} ({platform.platform()})",
@@ -3014,6 +3038,7 @@ def format_bundle(bundle: DiagnosticsBundle) -> str:
         f"version: {bundle.app_version}",
         f"platform: {bundle.platform_label}",
         f"generated: {bundle.generated_at}",
+        f"log times: station time, {bundle.log_times}",
         f"host: {bundle.host_label}",
         f"service status: {bundle.service_status}",
         f"redactions: {bundle.redactions_applied}",

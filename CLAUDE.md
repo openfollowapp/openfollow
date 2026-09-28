@@ -441,7 +441,7 @@ otherwise.
 **The Pi Camera's capsfilter pins `format=I420`.** Left open, libcamerasrc takes
 the lowest-sorting fourcc it offers (raw Bayer or greyscale), not the camera's
 YUV420 default: on a CM5 with libcamera 0.7.1 that negotiated a raw stream and
-failed outright. Colorimetry is **not** pinned: one the ISP adjusts fails
+failed outright. Colorimetry is **not** pinned: a value the ISP adjusts can fail
 negotiation. `v4l2.py` is a different mechanism (driver-preference order) and
 is left open deliberately.
 Cameras are listed through GStreamer's libcamera device provider (the

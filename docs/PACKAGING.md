@@ -56,6 +56,7 @@ is Pi-only).
 /usr/share/openfollow/{openfollow.svg,splash.png,splash.sh,config.example.toml,install-ndi.sh,install-detection.sh}
 /usr/share/openfollow/scripts/export_onnx.py   model-export script (Download Model action shells out to it)
 /usr/share/openfollow/models/{yolo26n,yolo26s,yolo26m}.onnx   pre-shipped quality tiers (Fastest/Fast/Balanced)
+/usr/share/openfollow/write-to-media         root helper: saves one file to an unmounted USB drive (media.write)
 /var/lib/openfollow/                       service user home + WorkingDirectory (config.toml)
 /var/lib/openfollow/config.example.toml    first-boot seed; bootstrap copies it to config.toml
 ```
@@ -76,6 +77,19 @@ needs an uplink, so set `OF_DEB_SKIP_MODELS=1` to build on an offline host.
 The service runs as a dedicated `openfollow` login user (created by `postinst`)
 with `loginctl enable-linger` so `/run/user/<uid>` exists at boot for the Cage
 Wayland session. The unit binds web port 80 via `AmbientCapabilities=CAP_NET_BIND_SERVICE`.
+
+### Root helper for removable drives
+
+`/usr/share/openfollow/write-to-media` is a copy of the stdlib-only
+`openfollow/privilege/media_writer.py`, run by root as `python3 -I` so it never
+imports from the venv. The `media.write` grant in the sudoers drop-in (rendered
+from the capability registry) admits exactly one form:
+`write-to-media write ^/dev/sd[a-z]+[0-9]*$` – USB mass storage, card readers
+included – with the file name and bytes on stdin. The helper checks the drive
+again itself (USB, not a disk carrying `/`, `/boot/firmware` or `/mnt/nvme`,
+unmounted, FAT32 / exFAT / NTFS / ext4), mounts it `nosuid,nodev,noexec` under
+`/run/openfollow-media`, writes without overwriting, syncs and unmounts on every
+path. The Pi kernel carries exFAT and `ntfs3` as modules, loaded by `mount`.
 
 ## Build it
 

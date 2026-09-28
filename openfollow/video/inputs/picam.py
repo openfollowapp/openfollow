@@ -158,7 +158,7 @@ class PiCamInput(VideoInputBase):
         # --- Caps filter for format, resolution and framerate ---
         # Left open, libcamera takes the lowest-sorting format it offers (raw
         # Bayer or greyscale), not the camera's YUV420 default. Colorimetry stays
-        # open: one the ISP adjusts fails negotiation outright.
+        # open: a value the ISP adjusts can fail negotiation outright.
         capsfilter = make("capsfilter", "capsfilter")
         caps_str = (
             f"video/x-raw,format=(string)I420,width=(int){width},height=(int){height},framerate=(fraction){framerate}/1"

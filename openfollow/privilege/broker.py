@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
-from typing import Final
+from typing import Final, cast
 
 from openfollow.privilege.capabilities import (
     Capability,
@@ -175,7 +175,7 @@ class PrivilegeBroker:
         cwd: str | None = None,
         timeout: float = _DEFAULT_RUN_TIMEOUT_S,
         reason: str = "",
-        stdin: str | None = None,
+        stdin: str | bytes | None = None,
         allow_prompt: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         """Run sudo argv for capability, prompting if needed. Raises PrivilegeError on failure.
@@ -185,7 +185,13 @@ class PrivilegeBroker:
         call raises instead of prompting. Background callers (e.g. auto
         time-sync) pass this so a sync can never pop an unsolicited prompt,
         regardless of a stale PASSWORDLESS cache verdict.
+
+        ``bytes`` on stdin need ``allow_prompt=False``: a prompted run sends the
+        password down the same pipe. The output still comes back as text.
         """
+        binary = isinstance(stdin, bytes)
+        if binary and allow_prompt:
+            raise ValueError("bytes on stdin need allow_prompt=False")
         # Defence-in-depth: in-process allow-set must match the sudoers rule,
         # so a caller can't pair a capability with an arbitrary argv.
         try:
@@ -202,18 +208,19 @@ class PrivilegeBroker:
 
         # Try non-interactive first regardless of cached_state (warm timestamp cache helps).
         try:
-            proc = subprocess.run(
+            raw = subprocess.run(
                 ["sudo", "-n", *argv],
                 cwd=run_cwd,
                 input=stdin,
                 capture_output=True,
-                text=True,
+                text=not binary,
                 timeout=timeout,
                 check=False,
                 env=env,
             )
         except subprocess.TimeoutExpired as exc:
             raise PrivilegeError(f"{capability.description}: timed out after {timeout:g}s.") from exc
+        proc = _decoded(raw) if binary else raw
         if proc.returncode == 0:
             return proc
         stderr = (proc.stderr or "").strip()
@@ -244,7 +251,7 @@ class PrivilegeBroker:
                 cwd=run_cwd,
                 timeout=timeout,
                 env=env,
-                extra_stdin=stdin,
+                extra_stdin=cast(str | None, stdin),
             )
         finally:
             # Best-effort wipe of the locally-held password. CPython
@@ -284,6 +291,16 @@ class PrivilegeBroker:
             # Successful; caller invalidates cache if needed.
             return proc
         raise PrivilegeError(_format_failure(capability, proc))
+
+
+def _decoded(proc: subprocess.CompletedProcess[bytes]) -> subprocess.CompletedProcess[str]:
+    """A binary run's result with its output as text, the way every caller reads it."""
+    return subprocess.CompletedProcess(
+        proc.args,
+        proc.returncode,
+        (proc.stdout or b"").decode("utf-8", "replace"),
+        (proc.stderr or b"").decode("utf-8", "replace"),
+    )
 
 
 def _format_failure(

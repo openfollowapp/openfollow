@@ -629,6 +629,67 @@ class TestRunNeedsPassword:
             )
 
 
+class TestBinaryStdin:
+    """Bytes on stdin, for files that are not text; never on a prompted run."""
+
+    def _passwordless(self, broker) -> None:  # noqa: ANN001
+        broker._cache[NETWORK_DHCPCD_CONF_WRITE_TMP.name] = (
+            __import__("time").monotonic(),
+            CapabilityState.PASSWORDLESS,
+        )
+
+    def test_bytes_go_through_unchanged_and_the_output_comes_back_as_text(self, broker, monkeypatch) -> None:
+        self._passwordless(broker)
+        seen: list[dict] = []
+
+        def _run(argv, **kw):  # noqa: ANN001, ANN003, ANN202
+            seen.append(kw)
+            return subprocess.CompletedProcess(argv, 0, b"wrote ofdiag-rig.txt\n", b"")
+
+        monkeypatch.setattr("openfollow.privilege.broker.subprocess.run", _run)
+        proc = broker.run(
+            NETWORK_DHCPCD_CONF_WRITE_TMP,
+            ["/usr/bin/tee", "/etc/dhcpcd.conf.tmp"],
+            stdin=b"\x00\xffbinary",
+            allow_prompt=False,
+        )
+        assert (seen[0]["input"], seen[0]["text"]) == (b"\x00\xffbinary", False)
+        assert proc.stdout == "wrote ofdiag-rig.txt\n"
+
+    def test_a_failure_reads_the_decoded_error(self, broker, monkeypatch) -> None:
+        self._passwordless(broker)
+        monkeypatch.setattr(
+            "openfollow.privilege.broker.subprocess.run",
+            lambda argv, **kw: subprocess.CompletedProcess(argv, 4, b"", b"the drive is full\xff\n"),
+        )
+        with pytest.raises(PrivilegeError, match="the drive is full"):
+            broker.run(
+                NETWORK_DHCPCD_CONF_WRITE_TMP, ["/usr/bin/tee", "/etc/dhcpcd.conf.tmp"], stdin=b"x", allow_prompt=False
+            )
+
+    def test_bytes_are_refused_where_a_password_could_share_the_pipe(self, broker, monkeypatch) -> None:
+        def _run(argv, **kw):  # noqa: ANN001, ANN003, ANN202
+            raise AssertionError("nothing may run")
+
+        monkeypatch.setattr("openfollow.privilege.broker.subprocess.run", _run)
+        with pytest.raises(ValueError, match="allow_prompt=False"):
+            broker.run(NETWORK_DHCPCD_CONF_WRITE_TMP, ["/usr/bin/tee", "/etc/dhcpcd.conf.tmp"], stdin=b"x")
+
+    def test_a_password_requirement_fails_instead_of_prompting(self, broker, monkeypatch) -> None:
+        self._passwordless(broker)
+        monkeypatch.setattr(
+            "openfollow.privilege.broker.subprocess.run",
+            lambda argv, **kw: subprocess.CompletedProcess(
+                argv, 1, b"", f"sudo: {_PASSWORD_REQUIRED_MARKER}\n".encode()
+            ),
+        )
+        broker.set_prompter(lambda cap, reason: pytest.fail("no prompt for bytes"))
+        with pytest.raises(PrivilegeError, match="prompting is disabled"):
+            broker.run(
+                NETWORK_DHCPCD_CONF_WRITE_TMP, ["/usr/bin/tee", "/etc/dhcpcd.conf.tmp"], stdin=b"x", allow_prompt=False
+            )
+
+
 class TestRunUnavailable:
     def test_unavailable_raises_immediately(self, broker, monkeypatch) -> None:
         broker._cache[SERVICE_RESTART.name] = (

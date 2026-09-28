@@ -2070,7 +2070,17 @@ def test_collect_cpu_handles_percpu_raises(monkeypatch) -> None:
 
     monkeypatch.setattr(psutil, "cpu_percent", boom)
     rows = diag.collect_cpu()
-    assert any("per-core" in r and "[unavailable" in r for r in rows)
+    assert "  per-core %                   [unavailable: OSError('perf counter')]" in rows
+
+
+def test_collect_cpu_per_core_row_is_a_single_percent_in_the_value_column(monkeypatch) -> None:
+    import psutil
+
+    monkeypatch.setattr(psutil, "cpu_percent", lambda *a, **kw: [33.3, 50.0])
+    rows = diag.collect_cpu()
+    assert "  per-core % (200 ms)           33.3  50.0" in rows
+    # Values start where every other row's value does.
+    assert rows[-1].index("33.3") - 1 == rows[0].index(str(psutil.cpu_count()))
 
 
 def test_collect_memory_disk_handles_disk_oserror(monkeypatch) -> None:

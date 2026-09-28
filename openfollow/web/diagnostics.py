@@ -1819,9 +1819,9 @@ def collect_cpu() -> list[str]:
         )
     try:
         sample = psutil.cpu_percent(interval=0.2, percpu=True)
-        rows.append("  per-core %% (200 ms)         " + " ".join(f"{p:>5.1f}" for p in sample))
+        rows.append("  per-core % (200 ms)          " + " ".join(f"{p:>5.1f}" for p in sample))
     except Exception as exc:  # noqa: BLE001
-        rows.append(f"  per-core %%                  [unavailable: {exc!r}]")
+        rows.append(f"  per-core %                   [unavailable: {exc!r}]")
     return rows
 
 

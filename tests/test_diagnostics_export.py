@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 
 import pytest
@@ -81,6 +82,29 @@ class TestRun:
         # The slot is free again.
         export._build, export._write = (lambda: ("b.txt", "x")), (lambda *a: _saved("b.txt"))
         assert export.run("sda1", "SanDisk Ultra", de.WEB).ok is True
+
+
+class TestJournal:
+    """Each save leaves one line in the journal, which the next bundle's log tail carries."""
+
+    def test_a_saved_bundle_names_the_file_it_got_and_the_device(self, caplog: pytest.LogCaptureFixture) -> None:
+        export = DiagnosticsExport(lambda: ("ofdiag-rig.txt", "x"), lambda *a: _saved("ofdiag-rig-1.txt"))
+        with caplog.at_level(logging.DEBUG, logger=de.__name__):
+            export.run("sda1", "SanDisk Ultra", de.HUD)
+        assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+            (logging.INFO, "Saved the diagnostics bundle as ofdiag-rig-1.txt to SanDisk Ultra (/dev/sda1).")
+        ]
+
+    def test_a_refused_save_is_a_warning_with_its_reason(self, caplog: pytest.LogCaptureFixture) -> None:
+        def write(*_a: object) -> WriteResult:
+            raise MediaError("The USB storage device is full.")
+
+        export = DiagnosticsExport(lambda: ("ofdiag-rig.txt", "x"), write)
+        with caplog.at_level(logging.DEBUG, logger=de.__name__):
+            export.run("sda1", "SanDisk Ultra", de.WEB)
+        assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+            (logging.WARNING, "Saving the diagnostics bundle to SanDisk Ultra failed: The USB storage device is full.")
+        ]
 
 
 class TestOneAtATime:

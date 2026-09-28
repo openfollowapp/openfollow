@@ -112,9 +112,12 @@ class DiagnosticsExport:
         try:
             result = self._write(media_id, filename, text.encode("utf-8"))
         except MediaError as exc:
+            logger.warning("Saving the diagnostics bundle to %s failed: %s", self.status().drive, exc)
             self._finish(False, str(exc))
         except Exception:
             logger.exception("Saving the diagnostics bundle failed.")
             self._finish(False, "The file could not be saved.")
         else:
+            media = result.media
+            logger.info("Saved the diagnostics bundle as %s to %s (%s).", result.filename, media.name, media.device)
             self._finish(True, result.message, result.action)

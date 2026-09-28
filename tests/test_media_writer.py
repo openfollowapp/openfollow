@@ -354,6 +354,18 @@ class TestRootHelper:
         assert (code, out) == (mw.EXIT_UNMOUNT_FAILED, "")
         assert err == "b.txt was written, but the USB storage device could not be unmounted. Wait before removing it."
 
+    def test_a_failed_write_whose_unmount_fails_says_to_wait(self, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+        def _full(_fd: int, _data: object) -> int:
+            raise OSError(errno.ENOSPC, "full")
+
+        monkeypatch.setattr(mw.os, "write", _full)
+        host = _Host(tmp_path, _stick(), umount_rc=32)
+        assert host.run(["write", "/dev/sda1"], b"b.txt\nx") == (
+            mw.EXIT_UNMOUNT_FAILED,
+            "",
+            "The USB storage device is full. It could not be unmounted either. Wait before removing it.",
+        )
+
     def test_an_unmount_that_cannot_run(self, tmp_path: Path) -> None:
         host = _Host(tmp_path, _stick())
         host.umount = str(tmp_path / "missing-umount")

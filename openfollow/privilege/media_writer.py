@@ -246,9 +246,14 @@ def _write_to_device(
             raise MediaWriteError(EXIT_MOUNT_FAILED, "The USB storage device could not be mounted.")
         try:
             written = write_exclusive(mountpoint, name, data)
-        finally:
-            unmounted = _run_quietly([umount, str(mountpoint)])
-        if not unmounted:
+        except MediaWriteError as exc:
+            # Still mounted outranks why the write failed: pulling the device now can corrupt it.
+            if not _run_quietly([umount, str(mountpoint)]):
+                raise MediaWriteError(
+                    EXIT_UNMOUNT_FAILED, f"{exc} It could not be unmounted either. Wait before removing it."
+                ) from exc
+            raise
+        if not _run_quietly([umount, str(mountpoint)]):
             raise MediaWriteError(
                 EXIT_UNMOUNT_FAILED,
                 f"{written} was written, but the USB storage device could not be unmounted. Wait before removing it.",

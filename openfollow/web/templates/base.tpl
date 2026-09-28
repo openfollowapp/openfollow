@@ -455,9 +455,9 @@
  letter-spacing: 0.06em;
  text-transform: uppercase;
  font-weight: 700;
- border: 1px solid var(--border);
- color: var(--text);
- background: var(--surface);
+ border: 1px solid rgba(255, 255, 255, 0.18);
+ color: rgba(247, 245, 233, 0.88);
+ background: rgba(255, 255, 255, 0.05);
  white-space: nowrap;
  }
  .stat-chip.off, .stat-chip.warn, .stat-chip.info, .stat-chip.ok { color: var(--text); }
@@ -1182,7 +1182,7 @@
  .slot-state {
  display: inline-block; margin-left: 0.4rem; border-radius: 0.4rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem;
  font-size: 0.7rem; font-weight: 500; white-space: nowrap;
- color: var(--text); background: var(--surface); border: 1px solid var(--border);
+ color: rgba(247, 245, 233, 0.88); background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.18);
  }
  .slot-state.missing { color: var(--text); background: var(--error-chip); border-color: var(--error-line); }
  .slot-port { display: block; color: var(--muted); font-size: 0.8rem; }

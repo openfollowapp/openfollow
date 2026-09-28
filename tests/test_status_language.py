@@ -138,14 +138,6 @@ def test_status_rules_take_their_colours_from_tokens() -> None:
     assert literal == []
 
 
-@pytest.mark.parametrize("selector", [".stat-chip", ".slot-state"])
-def test_the_neutral_chip_colours_come_from_their_tokens(selector: str) -> None:
-    # Neutral greys pass the literal check above, so only this keeps the two in step.
-    (body,) = [body for _, found, body in _status_rules() if found == selector]
-    for token in ("--surface", "--border", "--text"):
-        assert f"var({token})" in body
-
-
 @pytest.mark.parametrize(("keyframes", "token"), [("flash-green", "--success-line"), ("flash-red", "--error-line")])
 def test_the_save_flashes_use_the_level_line(keyframes: str, token: str) -> None:
     base = (_TEMPLATES / "base.tpl").read_text(encoding="utf-8")

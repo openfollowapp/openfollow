@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any
 
-from openfollow.runtime.diagnostics_export import COLLECTING, DONE, HUD, WRITING, ExportStatus
+from openfollow.runtime.diagnostics_export import COLLECTING, DONE, HUD, RETRY, WEB, WRITING, ExportStatus
 from openfollow.runtime.removable_media import Media, MediaWatch, list_media
 
 if TYPE_CHECKING:
@@ -55,14 +55,17 @@ def _back_to_settings(app: OpenFollowApp) -> None:
 # --- entering -----------------------------------------------------------------------------------
 
 
+def _is_failure(flag: object) -> bool:
+    return isinstance(flag, tuple) and flag[0] == "error"
+
+
 def enter_diagnostics_export(app: OpenFollowApp) -> None:
     """The Settings row: the running export's progress, the failure the badge points to, else the picker."""
     export = diagnostics_export(app)
     if export is None:
         return
     flags = _status_flags(app)
-    flag = flags.get(BADGE_KEY)
-    failed = isinstance(flag, tuple) and flag[0] == "error"
+    failed = _is_failure(flags.get(BADGE_KEY))
     # Opening the export is where a failure's reason is read, so the badge row goes.
     flags[BADGE_KEY] = None
     app._media_export_badge_at = None
@@ -209,11 +212,14 @@ def check_diagnostics_export(app: OpenFollowApp, now: float | None = None) -> No
     now = time.monotonic() if now is None else now
     flags = _status_flags(app)
     status = export.status()
-    if status.phase == DONE and status.origin == HUD and status.generation != app._media_export_seen:
+    if status.phase == DONE and status.generation != app._media_export_seen:
         app._media_export_seen = status.generation
-        if not app._media_export_active:
+        if status.origin == HUD and not app._media_export_active:
             flags[BADGE_KEY] = badge_row(status)
             app._media_export_badge_at = now if status.ok else None
+        elif status.origin == WEB and status.ok and _is_failure(flags.get(BADGE_KEY)):
+            # A web export posts nothing, but its success makes a failure row stale.
+            flags[BADGE_KEY] = None
     posted = app._media_export_badge_at
     if posted is not None and now - posted >= SUCCESS_BADGE_S:
         flags[BADGE_KEY] = None
@@ -234,4 +240,4 @@ def export_screen_lines(status: ExportStatus) -> tuple[str, str, bool | None]:
         return f"Writing to {status.drive}", "The export continues in the background.", None
     if status.ok:
         return status.message, status.action, True
-    return status.message, "Pick a USB storage device to try again.", False
+    return status.message, RETRY, False

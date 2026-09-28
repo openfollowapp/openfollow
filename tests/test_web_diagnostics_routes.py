@@ -959,7 +959,10 @@ def test_save_to_drive_reports_a_failed_write(live_server) -> None:
     server, base, _ = live_server
     _wire_drives(server, write=_full)
     status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": "sda1"})
-    assert (status, json.loads(body)) == (422, {"error": "The USB storage device is full.", "action": ""})
+    assert (status, json.loads(body)) == (
+        422,
+        {"error": "The USB storage device is full.", "action": "Pick a USB storage device to try again."},
+    )
 
 
 def test_save_to_drive_while_another_export_runs(live_server) -> None:

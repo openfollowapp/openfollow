@@ -4989,7 +4989,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/api/diagnostics/save-to-drive")
     def api_diagnostics_save_to_drive() -> Any:
         """Save the bundle to the picked drive; only an id from a fresh listing is accepted, never a path."""
-        from openfollow.runtime.diagnostics_export import WEB, ExportBusy
+        from openfollow.runtime.diagnostics_export import RETRY, WEB, ExportBusy
 
         export, provider = server.diagnostics_export, server.media_list_provider
         if export is None or provider is None:
@@ -5009,7 +5009,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         except ExportBusy as exc:
             return _save_failed(409, str(exc), "Wait for it to finish, then save again.")
         if not status.ok:
-            return _save_failed(422, status.message)
+            return _save_failed(422, status.message, RETRY)
         return template("partials/diagnostics_drive_saved", message=status.message, action=status.action)
 
     @app.get("/api/diagnostics/log-tail")

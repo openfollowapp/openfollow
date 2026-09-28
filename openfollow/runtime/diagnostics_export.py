@@ -27,6 +27,9 @@ DONE = "done"
 HUD = "hud"
 WEB = "web"
 
+# The next step after a failed export, on the Operator Screen and the web UI alike.
+RETRY = "Pick a USB storage device to try again."
+
 
 @dataclass(frozen=True)
 class ExportStatus:

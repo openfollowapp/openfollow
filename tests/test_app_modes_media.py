@@ -312,6 +312,27 @@ class TestStatusCorner:
         mm.check_diagnostics_export(app, now=2.0)
         assert app._runtime_services._status_flags[mm.BADGE_KEY][0] == "info"
 
+    def test_a_later_web_success_clears_a_failure_without_posting(self) -> None:
+        export = _Export(_done(False, generation=1))
+        app = _app(export=export)
+        mm.check_diagnostics_export(app, now=1.0)
+        export._status = _done(True, origin=WEB, generation=2)
+        mm.check_diagnostics_export(app, now=2.0)
+        assert app._runtime_services._status_flags[mm.BADGE_KEY] is None
+
+    @pytest.mark.parametrize(
+        ("first_ok", "web_ok", "kind"),
+        [(True, True, "info"), (False, False, "error")],
+        ids=["web-success-keeps-a-success-row", "web-failure-keeps-a-failure-row"],
+    )
+    def test_any_other_web_result_leaves_the_row(self, first_ok: bool, web_ok: bool, kind: str) -> None:
+        export = _Export(_done(first_ok, generation=1))
+        app = _app(export=export)
+        mm.check_diagnostics_export(app, now=1.0)
+        export._status = _done(web_ok, origin=WEB, generation=2)
+        mm.check_diagnostics_export(app, now=2.0)
+        assert app._runtime_services._status_flags[mm.BADGE_KEY][0] == kind
+
     def test_a_result_shown_on_screen_is_not_posted(self) -> None:
         app = _app(export=_Export(_done(True)))
         app._media_export_active = True

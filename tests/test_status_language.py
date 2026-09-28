@@ -21,7 +21,7 @@ _LEVELS = ("error", "caution", "info", "success")
 _STATUS_CLASS = re.compile(
     r"\.(notice|update-notice|restart-notice|modal-error|diag-error|gallery-error|wizard-action-required|"
     r"network-banner(?:-error|-ok)?|stat-chip|diag-status-pill|diag-event-status|badge-experimental|"
-    r"modal-list-item-badge|slot-row|slot-missing|slot-missing-label|slot-activity|osc-binding-fault|"
+    r"modal-list-item-badge|slot-row|slot-missing|slot-state|slot-activity|osc-binding-fault|"
     r"osc-binding-row|osc-binding-enabled-dot|osc-binding-nested-row|osc-pill|peer-item|peer-status|toast|"
     r"save-error|save-failed|field-error-msg|field-warn-msg|field-note-msg|conflict-flag|not-controlled|"
     r"add-feedback|saved-flash|wizard-status|wizard-preview-container|awaiting-password|wizard-field-error|"

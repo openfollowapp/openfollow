@@ -488,7 +488,7 @@ class TestPublishRuntimeStats:
                     "marker_id": None,
                     "effective_speed": 0.0,
                     "backend": "",
-                    "port_label": "USB 2 · port 1",
+                    "port_label": "USB 2, port 1",
                     "seconds_since_input": None,
                 },
                 {
@@ -500,7 +500,7 @@ class TestPublishRuntimeStats:
                     "marker_id": 11,
                     "effective_speed": 2.0,
                     "backend": "mouse3d",
-                    "port_label": "USB 1 · port 2",
+                    "port_label": "USB 1, port 2",
                     "port_key": "usb:platform/xhci-hcd.0:2",
                     "slot_ref": "mouse3d|usb:platform/xhci-hcd.0:2|SpaceNavigator|connected",
                     "seconds_since_input": 0.25,
@@ -518,7 +518,7 @@ class TestPublishRuntimeStats:
         reserved, puck = c["items"]
         assert (reserved["state"], reserved["port_label"], reserved["seconds_since_input"]) == (
             "reserved",
-            "USB 2 · port 1",
+            "USB 2, port 1",
             None,
         )
         assert (puck["kind"], puck["seconds_since_input"]) == ("mouse3d", 0.25)

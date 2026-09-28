@@ -222,9 +222,9 @@ def test_no_usb_bus_numbers_nothing(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("key", "label"),
     [
-        (f"usb:{_HOST1}:1", "USB 2 · port 1"),
-        (f"usb:{_HOST0}:1.4", "USB 1 · port 1.4"),
-        ("usb:platform/unknown-host:2", "USB · port 2"),
+        (f"usb:{_HOST1}:1", "USB 2, port 1"),
+        (f"usb:{_HOST0}:1.4", "USB 1, port 1.4"),
+        ("usb:platform/unknown-host:2", "USB port 2"),
         ("bt:aa:bb:cc:dd:ee:ff", "Bluetooth"),
         (None, "no stable port"),
         ("mystery:1", "no stable port"),

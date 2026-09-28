@@ -198,7 +198,7 @@ def test_a_departed_pad_leaves_its_slot_missing_and_nobody_moves(station) -> Non
     assert manager._gamepad_marker_id(1) == 11
     assert manager.marker_cycle_active() is False
     info = manager.get_controller_info()[0]
-    assert (info["name"], info["connected"], info["port_label"]) == ("First", False, "USB 1 · port 1")
+    assert (info["name"], info["connected"], info["port_label"]) == ("First", False, "USB 1, port 1")
 
 
 def test_a_replugged_pad_reclaims_its_slot(station) -> None:
@@ -365,7 +365,7 @@ def test_controller_info_reports_recent_use(station) -> None:
 def test_slot_changes_are_logged_with_their_sockets(station, caplog) -> None:
     with caplog.at_level("INFO", logger=input_manager_module.__name__):
         manager, _ = station({0: (_key("1"), "GameSir"), 1: (None, "Wireless")})
-    assert "Controller slots: C1 GameSir (USB 1 · port 1), C2 Wireless (no stable port)" in caplog.text
+    assert "Controller slots: C1 GameSir (USB 1, port 1), C2 Wireless (no stable port)" in caplog.text
     caplog.clear()
     with caplog.at_level("INFO", logger=input_manager_module.__name__):
         manager.update(0.016)

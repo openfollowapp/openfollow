@@ -100,8 +100,8 @@ or no modifier for neutral. Pill-shaped, uppercase, `--<level>-chip` fill,
 solid `--<level>-line` border, off-white text, **no icon**. "Starting" and
 "Idle" are info; "Off" is neutral. The OSC diagnostics health pill and the
 Experimental badge (caution) are chips too, and so are the state words in a
-table row: "Missing" (Controller Slots), "Conflict" and "Not controlled"
-(caution) in the marker catalog. A row places a chip, it never restyles one.
+table row: "Conflict" and "Not controlled" (caution) in the marker catalog. A
+row places a chip, it never restyles one.
 
 ### Small row pills
 
@@ -109,6 +109,10 @@ Free text inside a row, like the OSC binding fault pill's list of reasons:
 chip colours, radius 0.4rem, 0.7rem mixed-case text. A state word is a chip,
 never a row pill. The footer's "Update available: v0.4.4" is one too, in the
 info chip colours.
+
+The one state word that is a row pill is the Controller Slots state, which
+shares a line with the controller's kind: "Connected" and "Reserved" in the
+neutral chip colours, "Missing" in the error chip colours.
 
 ### OSC placeholder pills
 
@@ -151,7 +155,7 @@ and a -2.6px margin so names stay aligned with the grey dot.
 
 | Row | Look |
 |---|---|
-| A fault row (missing controller slot, marker conflict) | `--error-row` tint, the state as an error chip, no outline |
+| A fault row (missing controller slot, marker conflict) | `--error-row` tint, the state in error colours, no outline |
 | Station list: this station | Info box colours: `--info-fill` and `--info-border` |
 | Station list: online | Success box colours |
 | Station list: offline | `--error-row` tint with an `--error-line` border; never faded |
@@ -184,9 +188,9 @@ off-white text, led by the success sign. A failure never uses the toast.
 
 ### Destructive actions
 
-Delete, Discard, Restore Defaults and Restart are not states, but red already
-means "stop or lose something", so they take the error red rather than a second,
-paler one:
+Delete, Discard, Forget, Restore Defaults and Restart are not states, but red
+already means "stop or lose something", so they take the error red rather than a
+second, paler one:
 
 | Control | Look |
 |---|---|

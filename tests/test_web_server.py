@@ -281,7 +281,8 @@ _SLOT_ITEMS = [
         "state": "missing",
         "connected": False,
         "marker_id": 10,
-        "port_label": "USB 2 · port 1",
+        "port_label": "USB 2, port 1",
+        "port_key": "usb:h:1",
         "slot_ref": "gamepad|usb:h:1|GameSir|missing",
         "seconds_since_input": None,
     },
@@ -292,7 +293,8 @@ _SLOT_ITEMS = [
         "state": "connected",
         "connected": True,
         "marker_id": 11,
-        "port_label": "USB 1 · port 2",
+        "port_label": "USB 1, port 2",
+        "port_key": "usb:h:2",
         "slot_ref": 'mouse3d|usb:h:2|Space "Navigator" <1>|connected',
         "seconds_since_input": 0.2,
     },
@@ -303,7 +305,8 @@ _SLOT_ITEMS = [
         "state": "reserved",
         "connected": False,
         "marker_id": None,
-        "port_label": "USB 1 · port 1",
+        "port_label": "no stable port",
+        "port_key": None,
         "seconds_since_input": None,
     },
 ]
@@ -356,11 +359,40 @@ def test_controller_slots_table_shows_every_state(slots_server) -> None:
     status, body = _get(base, "/section/controller_slots")
     assert status == 200
     missing, connected, reserved = _row(body, "C1"), _row(body, "C2"), _row(body, "C3")
-    assert "GameSir" in missing and "USB 2 · port 1" in missing and "Missing" in missing
-    assert "/identify/0" in missing and "/forget/0" in missing
-    assert "3D Mouse" in connected and 'class="slot-activity is-active"' in connected
-    assert "/identify/1" in connected and "/forget/" not in connected
-    assert "Reserved" in reserved and "<button" not in reserved
+    assert '<span class="slot-kind">Gamepad<span class="slot-state missing">Missing</span></span>' in missing
+    assert '<span class="slot-port">on USB 2, port 1</span>' in missing
+    assert '<span class="slot-kind">3D Mouse<span class="slot-state">Connected</span></span>' in connected
+    assert '<span class="slot-kind">Gamepad<span class="slot-state">Reserved</span></span>' in reserved
+    assert '<span class="slot-port">no stable port</span>' in reserved
+
+
+def test_the_activity_dot_follows_a_connected_controllers_name(slots_server) -> None:
+    _, base, _ = slots_server
+    _, body = _get(base, "/section/controller_slots")
+    assert '<td>SpaceNavigator<span class="slot-activity is-active" role="img" aria-label="In use"></span></td>' in (
+        _row(body, "C2")
+    )
+    assert "slot-activity" not in _row(body, "C1") and "slot-activity" not in _row(body, "C3")
+
+
+def test_each_slot_offers_only_the_action_its_state_allows(slots_server) -> None:
+    """Identify on a connected slot, Forget (destructive) on a missing one, nothing on a reserved one."""
+    _, base, _ = slots_server
+    _, body = _get(base, "/section/controller_slots")
+    missing, connected, reserved = _row(body, "C1"), _row(body, "C2"), _row(body, "C3")
+    assert '<button type="button" class="danger" hx-post="/section/controller_slots/forget/0"' in missing
+    assert "/identify/" not in missing
+    assert '<button type="button" class="secondary" hx-post="/section/controller_slots/identify/1"' in connected
+    assert "/forget/" not in connected
+    assert "<button" not in reserved
+
+
+def test_the_slot_actions_sit_at_the_right_edge(slots_server) -> None:
+    # ``.slot-table td`` aligns every cell left; a bare ``.slot-actions`` rule loses to it.
+    _, base, _ = slots_server
+    _, page = _get(base, "/")
+    rule = page[page.index(".slot-table td.slot-actions {") :]
+    assert "text-align: right;" in rule[: rule.index("}")]
 
 
 def test_an_idle_controller_has_an_unlit_dot(slots_server) -> None:
@@ -415,7 +447,7 @@ def test_statistics_name_each_missing_controller(slots_server) -> None:
     assert "1 connected · 1 missing" in body
     # No role: the panel is swapped every second, and the announcer speaks the box.
     box = body[body.index('<div class="notice error">') :]
-    assert box.index("<div>C1 missing · marker 10 · GameSir (USB 2 · port 1)</div>") < box.index("</div>\n")
+    assert box.index("<div>C1 missing · marker 10 · GameSir (USB 2, port 1)</div>") < box.index("</div>\n")
 
 
 def test_statistics_without_missing_controllers_raise_no_warning(slots_server) -> None:

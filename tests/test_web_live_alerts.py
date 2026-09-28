@@ -19,7 +19,7 @@ _MISSING_PAD = {
     "state": "missing",
     "marker_id": 5,
     "name": "Xbox Wireless Controller",
-    "port_label": "USB 2 · port 2",
+    "port_label": "USB 2, port 2",
 }
 
 
@@ -46,7 +46,7 @@ def _all_three() -> dict[str, Any]:
 def test_everything_the_boxes_say_is_spoken_in_page_order() -> None:
     assert statistics_alerts(_all_three()).spoken() == [
         "Nothing answered at the camera's address. Check the address and port.",
-        "C2 missing · marker 5 · Xbox Wireless Controller (USB 2 · port 2)",
+        "C2 missing · marker 5 · Xbox Wireless Controller (USB 2, port 2)",
         "Missing packages: onnxruntime. Install them from the Person Detection section, then restart.",
     ]
 

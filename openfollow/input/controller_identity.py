@@ -116,7 +116,7 @@ def _scan_usb_host_paths(sysfs_root: Path) -> tuple[str, ...]:
 
 
 def port_label(key: str | None, hosts: Sequence[str] = ()) -> str:
-    """Short, readable name of a socket: ``USB 2 · port 1.4``."""
+    """Short, readable name of a socket: ``USB 2, port 1.4``."""
     if key is None:
         return "no stable port"
     if key.startswith(BT_KEY_PREFIX):
@@ -124,8 +124,8 @@ def port_label(key: str | None, hosts: Sequence[str] = ()) -> str:
     if key.startswith(USB_KEY_PREFIX):
         host, _sep, devpath = key[len(USB_KEY_PREFIX) :].rpartition(":")
         if host in hosts:
-            return f"USB {hosts.index(host) + 1} · port {devpath}"
-        return f"USB · port {devpath}"
+            return f"USB {hosts.index(host) + 1}, port {devpath}"
+        return f"USB port {devpath}"
     return "no stable port"
 
 

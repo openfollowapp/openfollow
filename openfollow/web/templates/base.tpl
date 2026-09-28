@@ -1175,25 +1175,28 @@
  }
  /* Controller Slots table (Input tab). */
  .slot-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
- .slot-table th, .slot-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border-soft); }
+ .slot-table th, .slot-table td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--border-soft); }
  .slot-table thead th { color: var(--muted); font-weight: 600; font-size: 0.8rem; }
  .slot-row.slot-missing { background: var(--error-row); }
- .slot-missing-label {
- display: inline-block; border-radius: 999px; --pill-pad-y: 0.14rem; padding-inline: 0.55rem;
- font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 700; white-space: nowrap;
- color: var(--text); background: var(--error-chip); border: 1px solid var(--error-line);
+ /* Grey while the slot needs nothing, red when its controller is missing. */
+ .slot-state {
+ display: inline-block; margin-left: 0.4rem; border-radius: 0.4rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem;
+ font-size: 0.7rem; font-weight: 500; white-space: nowrap;
+ color: rgba(247, 245, 233, 0.88); background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.18);
  }
- .slot-reserved-label, .slot-empty { color: var(--muted); }
+ .slot-state.missing { color: var(--text); background: var(--error-chip); border-color: var(--error-line); }
+ .slot-port { display: block; color: var(--muted); font-size: 0.8rem; }
+ .slot-empty { color: var(--muted); }
  .m3d-empty { margin: 0 0 12px; color: var(--muted); }
- .slot-activity { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--muted); margin: 0 4px 0 0; vertical-align: middle; }
+ .slot-activity { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--muted); margin: 0 0 0 7px; vertical-align: middle; }
  .slot-activity.is-active {
- box-sizing: content-box; width: 10px; height: 10px; margin: -2.6px 1.4px -2.6px -2.6px;
+ box-sizing: content-box; width: 10px; height: 10px; margin: -2.6px -2.6px -2.6px 4.4px;
  border: 2px solid var(--success-mark-muted); background: var(--success-mark); background-clip: content-box;
  }
  .slot-marker { display: inline-flex; align-items: center; gap: 0.45rem; }
  /* The marker's own colour, as on its HUD card and catalog swatch. */
  .slot-marker-dot { flex: none; width: 0.7rem; height: 0.7rem; border-radius: 50%; background: var(--marker-color, var(--muted)); }
- .slot-actions { white-space: nowrap; text-align: right; }
+ .slot-table td.slot-actions { white-space: nowrap; text-align: right; }
  .slot-actions button { margin: 0 0 0 6px; padding: 4px 10px; }
  .peer-item.offline .peer-status {
  width: 8px; height: 8px;
@@ -2088,13 +2091,13 @@
  font-weight: 400; max-height: 8em; overflow: auto; white-space: pre-wrap; color: #cfd6df; }
  /* Pills set --pill-pad-y and their own inline padding. Trimming the line box to cap
  height and baseline centres the label whatever the fallback font's ascent. */
- .stat-chip, .diag-status-pill, .slot-missing-label, .badge-experimental,
+ .stat-chip, .diag-status-pill, .slot-state, .badge-experimental,
  .osc-binding-fault, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
  .osc-pill[data-invalid="true"][data-unresolved="true"] {
  padding-block: var(--pill-pad-y);
  }
  @supports (text-box: trim-both cap alphabetic) {
- .stat-chip, .diag-status-pill, .slot-missing-label, .badge-experimental,
+ .stat-chip, .diag-status-pill, .slot-state, .badge-experimental,
  .osc-binding-fault, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
  .osc-pill[data-invalid="true"][data-unresolved="true"] {
  text-box: trim-both cap alphabetic;

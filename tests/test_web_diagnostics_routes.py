@@ -13,11 +13,13 @@ the private-IP allowlist on the peer probe).
 from __future__ import annotations
 
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterator
+from datetime import datetime
 
 import pytest
 
@@ -293,6 +295,27 @@ def test_section_diagnostics_no_warning_when_journalctl_works(
 # ---------------------------------------------------------------------------
 
 
+def test_api_diagnostics_bundle_download_and_disk_copy_share_one_name(live_server, monkeypatch, tmp_path) -> None:
+    """Read from one clock reading: a clock that moves a second per call would otherwise name the two apart."""
+    import openfollow.web.routes as routes_module
+    from openfollow.web import diagnostics
+
+    class _TickingClock(datetime):
+        calls = 0
+
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001, ANN206
+            cls.calls += 1
+            return datetime(2026, 9, 28, 10, 15, cls.calls, tzinfo=tz)
+
+    monkeypatch.setattr(routes_module, "datetime", _TickingClock)
+    monkeypatch.setattr(diagnostics, "default_disk_root", lambda: tmp_path / "bundles")
+    _, base, _ = live_server
+    _, _, headers = _get(base, "/api/diagnostics/bundle")
+    (on_disk,) = (tmp_path / "bundles").iterdir()
+    assert f'filename="{on_disk.name}"' in headers.get("Content-Disposition", "")
+
+
 def test_api_diagnostics_bundle_returns_text_attachment(
     live_server,
     monkeypatch,
@@ -316,13 +339,13 @@ def test_api_diagnostics_bundle_returns_text_attachment(
     assert headers.get("Content-Type", "").startswith("text/plain")
     disposition = headers.get("Content-Disposition", "")
     assert "attachment" in disposition
-    assert "openfollow-diagnostics-TestSystem-" in disposition
-    # Release version + architecture make the download self-identifying.
+    match = re.search(r'filename="(ofdiag-TestSystem-\d{8}T\d{6}Z\.txt)"', disposition)
+    assert match is not None, disposition
+    # The station's own copy carries the download's name.
+    assert [p.name for p in (tmp_path / "bundles").iterdir()] == [match.group(1)]
+    # Version and platform live in the header, not the name.
     import openfollow
 
-    assert disposition.endswith(
-        f'-{diagnostics._sanitise_name(openfollow.__version__)}-{diagnostics._platform_arch()}.txt"'
-    )
     assert f"version: {openfollow.__version__}" in body
     assert f"platform: {diagnostics._platform_label()}" in body
     # Body has every section header from the bundle.

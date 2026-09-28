@@ -4915,8 +4915,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.get("/api/diagnostics/bundle")
     def api_diagnostics_bundle() -> Any:
         """Build the full bundle, write a copy to disk, return as text
-        download. Filename:
-        ``openfollow-diagnostics-<system>-<ts>-<version>-<arch>.txt``."""
+        download. Filename: ``ofdiag-<system>-<ts>.txt``, the same on disk."""
         cfg = _request_scoped_config()
         # Size the operator's configured detection model store alongside
         # the SD card so the storage breakdown shows where models live
@@ -4946,17 +4945,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # Best-effort on-disk copy. Failure (read-only fs, no perms)
         # logs but does not break the download – operators on locked-
         # down deployments still get the bundle through the browser.
+        written_at = datetime.now(timezone.utc)
         diagnostics.write_bundle_to_disk(
             text,
             system_name=server.system_name,
+            ts=written_at,
         )
         # Reuse the disk writer's filename helper so ``system_name`` lands
         # sanitised – an operator-configurable value can otherwise inject
         # double-quotes / newlines into the ``Content-Disposition`` header.
-        fname = diagnostics.bundle_filename(
-            server.system_name,
-            datetime.now(timezone.utc),
-        )
+        fname = diagnostics.bundle_filename(server.system_name, written_at)
         response.content_type = "text/plain; charset=utf-8"
         response.headers["Content-Disposition"] = f'attachment; filename="{fname}"'
         return text
@@ -7688,25 +7686,24 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/api/config/export")
     def api_export_config() -> Any:
-        """Export the full config as a downloadable ``.openfollowsettings`` file.
+        """Export the full config as a downloadable ``.ofsettings`` file.
 
         The payload is still JSON (content-type ``application/json``); only
         the download filename uses the custom extension so exported settings
         are recognisable and round-trip through the import picker, which
-        filters on ``.openfollowsettings``. The filename is just the
-        sanitised system name plus the extension – no ``openfollow-``
-        prefix, since "openfollow" already lives in the extension.
+        accepts ``.ofsettings`` and the earlier ``.openfollowsettings``. The
+        filename is the sanitised system name plus the extension.
         ``psn_system_name`` is guaranteed non-empty (``AppConfig``
         post-init falls back to the default) and the sanitiser maps each
         disallowed character to ``-`` rather than dropping it, so
-        ``safe_name`` is never empty (no bare ``.openfollowsettings``).
+        ``safe_name`` is never empty (no bare ``.ofsettings``).
         """
         cfg = _request_scoped_config()
         safe_name = _safe_content_disposition_name(cfg.psn_system_name)
         response.content_type = "application/json"
         response.set_header(
             "Content-Disposition",
-            f'attachment; filename="{safe_name}.openfollowsettings"',
+            f'attachment; filename="{safe_name}.ofsettings"',
         )
         return json.dumps(_config_dict_redacted(cfg), indent=2)
 

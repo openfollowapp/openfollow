@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import platform
+import re
 import socket
 import subprocess
 import sys
@@ -1701,9 +1702,13 @@ def test_write_bundle_to_disk_round_trip(tmp_path) -> None:
     assert path is not None
     assert path.exists()
     assert path.read_text() == "hello"
-    # Filename: openfollow-diagnostics-<sanitised>-<ts>-<version>-<arch>.txt
-    assert path.name.startswith("openfollow-diagnostics-Rig_One-")
-    assert path.name.endswith(f"-{diag._sanitise_name(openfollow.__version__)}-{diag._platform_arch()}.txt")
+    assert re.fullmatch(r"ofdiag-Rig_One-\d{8}T\d{6}Z\.txt", path.name)
+
+
+def test_write_bundle_to_disk_uses_the_timestamp_it_is_given(tmp_path) -> None:
+    ts = datetime(2026, 9, 28, 10, 15, 0, tzinfo=timezone.utc)
+    path = diag.write_bundle_to_disk("x", system_name="rig", root=tmp_path, ts=ts)
+    assert path is not None and path.name == diag.bundle_filename("rig", ts)
 
 
 def test_write_bundle_to_disk_retention_prunes(tmp_path) -> None:
@@ -1729,19 +1734,31 @@ def test_write_bundle_to_disk_retention_prunes(tmp_path) -> None:
     assert new.name in remaining
 
 
-def test_write_bundle_to_disk_per_system_retention(tmp_path) -> None:
-    """Two systems sharing the same dir don't evict each other.
-    The prune is filename-prefix-scoped, not directory-scoped."""
+def test_retention_counts_every_station_name_newest_by_timestamp(tmp_path) -> None:
+    """A renamed station's bundles are pruned too, oldest first by the time in
+    the name: its old name sorts after the new one, so a sort by name would
+    delete the bundle just written."""
     base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
     for i in range(4):
-        (tmp_path / diag.bundle_filename("alpha", base_ts.replace(hour=i))).write_text("alpha")
-    for i in range(4):
-        (tmp_path / diag.bundle_filename("beta", base_ts.replace(hour=i))).write_text("beta")
-    diag.write_bundle_to_disk("new-alpha", system_name="alpha", root=tmp_path, retention=2)
-    alpha_files = sorted(p.name for p in tmp_path.iterdir() if "alpha" in p.name)
-    beta_files = sorted(p.name for p in tmp_path.iterdir() if "beta" in p.name)
-    assert len(alpha_files) == 2  # pruned to retention=2
-    assert len(beta_files) == 4  # untouched
+        (tmp_path / diag.bundle_filename("Zulu-Rig", base_ts.replace(hour=i))).write_text("old")
+    new = diag.write_bundle_to_disk("new", system_name="Alpha", root=tmp_path, retention=2, ts=base_ts.replace(day=2))
+    assert new is not None
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        [new.name, diag.bundle_filename("Zulu-Rig", base_ts.replace(hour=3))]
+    )
+
+
+def test_retention_leaves_every_other_file_alone(tmp_path) -> None:
+    """Bundles in the earlier ``openfollow-diagnostics-…`` shape, or anything else
+    in the directory, are neither counted nor pruned, so a new bundle survives
+    its own prune."""
+    others = [f"openfollow-diagnostics-rig-2026010{i}T000000Z-0.4.3-arm64.txt" for i in range(1, 10)]
+    others += ["openfollow-diagnostics-rig-20251231T000000Z-0.4.3-arm64.txt", "notes.txt", "ofdiag-rig-latest.txt"]
+    for name in others:
+        (tmp_path / name).write_text("keep")
+    new = diag.write_bundle_to_disk("new", system_name="rig", root=tmp_path, retention=1)
+    assert new is not None and new.exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([*others, new.name])
 
 
 def test_write_bundle_to_disk_failure_returns_none(monkeypatch, tmp_path) -> None:
@@ -1769,36 +1786,9 @@ def test_default_disk_root_falls_back_to_home(monkeypatch, tmp_path) -> None:
     assert root == Path(str(tmp_path)) / ".openfollow" / "diagnostics"
 
 
-def test_bundle_filename_shape(monkeypatch) -> None:
-    monkeypatch.setattr(openfollow, "__version__", "0.4.0")
-    monkeypatch.setattr(diag, "_platform_arch", lambda: "arm64")
+def test_bundle_filename_shape() -> None:
     ts = datetime(2026, 5, 7, 12, 34, 56, tzinfo=timezone.utc)
-    name = diag.bundle_filename("Rig One", ts)
-    assert name == "openfollow-diagnostics-Rig_One-20260507T123456Z-0.4.0-arm64.txt"
-
-
-def test_bundle_filename_sanitises_local_version(monkeypatch) -> None:
-    """A PEP 440 local version (``0.0.0+unknown``, what a non-checkout
-    install without metadata reports) carries a ``+`` – illegal in the
-    ``Content-Disposition`` filename token and awkward on disk."""
-    monkeypatch.setattr(openfollow, "__version__", "0.0.0+unknown")
-    monkeypatch.setattr(diag, "_platform_arch", lambda: "amd64")
-    ts = datetime(2026, 5, 7, 12, 34, 56, tzinfo=timezone.utc)
-    assert diag.bundle_filename("rig", ts) == "openfollow-diagnostics-rig-20260507T123456Z-0.0.0_unknown-amd64.txt"
-
-
-def test_bundle_filename_sorts_chronologically_across_a_version_bump(monkeypatch) -> None:
-    """Retention prunes by filename sort, so the timestamp must dominate
-    the version. ``0.10.0`` sorts *before* ``0.4.0`` lexicographically – a
-    version ahead of the timestamp would make retention evict the newer
-    bundle first."""
-    monkeypatch.setattr(diag, "_platform_arch", lambda: "arm64")
-    ts = datetime(2026, 5, 7, 12, 0, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr(openfollow, "__version__", "0.4.0")
-    older = diag.bundle_filename("rig", ts)
-    monkeypatch.setattr(openfollow, "__version__", "0.10.0")
-    newer = diag.bundle_filename("rig", ts.replace(hour=13))
-    assert older < newer
+    assert diag.bundle_filename("Rig One", ts) == "ofdiag-Rig_One-20260507T123456Z.txt"
 
 
 # ---------------------------------------------------------------------------
@@ -2831,7 +2821,7 @@ def test_prune_old_bundles_handles_iterdir_oserror(monkeypatch, tmp_path) -> Non
         raise OSError("denied")
 
     monkeypatch.setattr(Path, "iterdir", boom)
-    diag._prune_old_bundles(tmp_path, "rig", 3)  # must not raise
+    diag._prune_old_bundles(tmp_path, 3)  # must not raise
 
 
 def test_prune_old_bundles_handles_unlink_oserror(monkeypatch, tmp_path) -> None:
@@ -2844,7 +2834,7 @@ def test_prune_old_bundles_handles_unlink_oserror(monkeypatch, tmp_path) -> None
 
     monkeypatch.setattr(Path, "unlink", boom)
     # Must not raise even though every unlink fails.
-    diag._prune_old_bundles(tmp_path, "rig", 0)
+    diag._prune_old_bundles(tmp_path, 0)
     assert len(list(tmp_path.iterdir())) == 3  # unlinks all swallowed
 
 
@@ -2852,7 +2842,7 @@ def test_prune_old_bundles_negative_retention_clamped_to_zero(tmp_path) -> None:
     base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
     for i in range(2):
         (tmp_path / diag.bundle_filename("rig", base_ts.replace(hour=i))).write_text("x")
-    diag._prune_old_bundles(tmp_path, "rig", -5)
+    diag._prune_old_bundles(tmp_path, -5)
     assert list(tmp_path.iterdir()) == []  # retention < 0 clamped to 0
 
 

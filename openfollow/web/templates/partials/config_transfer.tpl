@@ -25,8 +25,8 @@
                 Load a previously exported configuration file.
                 The device's network IP address will be preserved.
             </p>
-            <label for="config-import-file">Configuration File (.openfollowsettings)</label>
-            <input type="file" id="config-import-file" accept=".openfollowsettings" style="display:none"
+            <label for="config-import-file">Configuration File (.ofsettings)</label>
+            <input type="file" id="config-import-file" accept=".ofsettings,.openfollowsettings" style="display:none"
                    onchange="document.getElementById('config-import-filename').textContent = this.files[0] ? this.files[0].name : ''">
             <div class="actions">
                 <button type="button" class="btn-secondary"

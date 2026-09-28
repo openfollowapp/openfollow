@@ -3030,11 +3030,13 @@ def format_bundle(bundle: DiagnosticsBundle) -> str:
 # ---------------------------------------------------------------------------
 
 
-# Filename shape: ``openfollow-diagnostics-<sanitised-name>-
-# <utc-timestamp>-<version>-<arch>.txt``. Underscores in the system name go
-# through verbatim; everything outside [A-Za-z0-9._-] is replaced with ``_``
-# so a name with spaces / slashes lands cleanly.
+# Filename shape: ``ofdiag-<sanitised-name>-<utc-timestamp>.txt``. Everything
+# outside [A-Za-z0-9._-] in the system name is replaced with ``_`` so a name
+# with spaces / slashes lands cleanly.
 _NAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
+_TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"
+# The timestamp is the last field, so a station name with dashes still parses.
+_BUNDLE_NAME_RE = re.compile(r"ofdiag-[A-Za-z0-9._-]+-(\d{8}T\d{6}Z)\.txt")
 
 
 def _sanitise_name(name: str) -> str:
@@ -3043,22 +3045,12 @@ def _sanitise_name(name: str) -> str:
 
 
 def bundle_filename(system_name: str, ts: datetime) -> str:
-    """Return the canonical filename for a diagnostics bundle.
+    """``ofdiag-<station>-<UTC timestamp>.txt``.
 
-    ``system_name``, the release version, and the architecture label are each
-    sanitised to ``[A-Za-z0-9._-]`` to prevent breaking header quoting or the
-    on-disk filename (a local version like ``0.0.0+unknown`` carries a ``+``).
-
-    Version and architecture trail the timestamp rather than preceding it:
-    :func:`_prune_old_bundles` sorts candidates by filename and relies on that
-    sort being chronological, which a leading version string would break
-    (``0.10.0`` sorts before ``0.4.0``, so retention would evict the newer
-    bundle first).
+    ``system_name`` is sanitised to ``[A-Za-z0-9._-]`` so it can break neither
+    the ``Content-Disposition`` quoting nor the on-disk name.
     """
-    name = _sanitise_name(system_name)
-    version = _sanitise_name(openfollow.__version__)
-    arch = _sanitise_name(_platform_arch())
-    return f"openfollow-diagnostics-{name}-{ts.strftime('%Y%m%dT%H%M%SZ')}-{version}-{arch}.txt"
+    return f"ofdiag-{_sanitise_name(system_name)}-{ts.strftime(_TIMESTAMP_FORMAT)}.txt"
 
 
 def default_disk_root() -> Path:
@@ -3082,12 +3074,12 @@ def write_bundle_to_disk(
     system_name: str = "openfollow",
     root: Path | None = None,
     retention: int = 10,
+    ts: datetime | None = None,
 ) -> Path | None:
     """Write the bundle to disk and prune older copies to retention limit.
 
     Returns the written path on success, None on failure (write errors are
-    logged but never raised). Retention prune is per-system to support
-    multi-system installs with different hostnames.
+    logged but never raised). Pass the download's ``ts`` so both carry one name.
     """
     root = root or default_disk_root()
     try:
@@ -3095,30 +3087,30 @@ def write_bundle_to_disk(
     except OSError as exc:
         logger.warning("diagnostics: cannot create %s (%s)", root, exc)
         return None
-    fname = bundle_filename(system_name, datetime.now(timezone.utc))
+    fname = bundle_filename(system_name, ts or datetime.now(timezone.utc))
     path = root / fname
     try:
         path.write_text(text, encoding="utf-8")
     except OSError as exc:
         logger.warning("diagnostics: cannot write %s (%s)", path, exc)
         return None
-    _prune_old_bundles(root, system_name, retention)
+    _prune_old_bundles(root, retention)
     return path
 
 
-def _prune_old_bundles(root: Path, system_name: str, retention: int) -> None:
-    prefix = f"openfollow-diagnostics-{_sanitise_name(system_name)}-"
+def _prune_old_bundles(root: Path, retention: int) -> None:
+    """Keep the ``retention`` newest bundles in ``root``, whichever station name wrote them.
+
+    Ordered by the timestamp in the name, since the name itself sorts by
+    station first; a renamed station's bundles are pruned like any other.
+    Files of any other shape are never touched.
+    """
     try:
-        candidates = sorted(
-            (p for p in root.iterdir() if p.name.startswith(prefix) and p.suffix == ".txt"),
-            key=lambda p: p.name,  # filename includes UTC timestamp; sort is monotone
-        )
+        dated = sorted((m.group(1), p) for p in root.iterdir() if (m := _BUNDLE_NAME_RE.fullmatch(p.name)))
     except OSError:
         return
-    if retention < 0:
-        retention = 0
-    excess = len(candidates) - retention
-    for p in candidates[: max(0, excess)]:
+    excess = len(dated) - max(retention, 0)
+    for _ts, p in dated[: max(0, excess)]:
         try:
             p.unlink()
         except OSError:

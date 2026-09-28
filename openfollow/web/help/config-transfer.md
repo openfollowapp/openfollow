@@ -1,10 +1,10 @@
 # Configuration
 
-Move a station's full settings in and out as a single `.openfollowsettings` file – duplicate a config across stations, archive a rig before changes, or recover from a snapshot – and put every setting back to its default.
+Move a station's full settings in and out as a single `.ofsettings` file – duplicate a config across stations, archive a rig before changes, or recover from a snapshot – and put every setting back to its default.
 
-**Export Configuration** – downloads the current configuration as a `.openfollowsettings` file containing every saved setting (camera, grid, markers, zones, OSC, MIDI, input, display).
+**Export Configuration** – downloads the current configuration as a `.ofsettings` file containing every saved setting (camera, grid, markers, zones, OSC, MIDI, input, display).
 
-**Configuration File (.openfollowsettings)** – select a `.openfollowsettings` file previously exported from any OpenFollow station; it's validated before anything is applied.
+**Configuration File (.ofsettings)** – select a `.ofsettings` file previously exported from any OpenFollow station; it's validated before anything is applied. Files exported by earlier versions, ending `.openfollowsettings`, import the same way.
 
 **Import Configuration** – applies the selected file. The station's network IP is preserved; every other setting is replaced. If any imported setting needs a restart, a confirmation dialogue appears first; otherwise the page reloads automatically.
 

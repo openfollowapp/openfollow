@@ -2692,7 +2692,7 @@ def test_run_package_command_truncates_to_bounded_tail(monkeypatch) -> None:
 
 def test_api_config_export_returns_json_attachment(live_server) -> None:
     """/api/config/export returns the full config as a JSON-bodied attachment
-    named ``<psn_system_name>.openfollowsettings`` (content-type stays JSON;
+    named ``<psn_system_name>.ofsettings`` (content-type stays JSON;
     only the download extension is custom)."""
     server, base = live_server
     # The filename comes from the on-disk config's psn_system_name, not the
@@ -2708,13 +2708,19 @@ def test_api_config_export_returns_json_attachment(live_server) -> None:
         assert resp.headers.get("Content-Type", "").startswith("application/json")
         disposition = resp.headers.get("Content-Disposition", "")
         assert "attachment" in disposition
-        # Full filename token, tightly pinned: the sanitised system name plus
-        # the extension, with no "openfollow-" prefix (it lives in the extension).
-        assert 'filename="ExportedName.openfollowsettings"' in disposition
+        # Full filename token, tightly pinned: the sanitised system name plus the extension.
+        assert 'filename="ExportedName.ofsettings"' in disposition
         body = json.loads(resp.read().decode())
     # Exported config must contain the top-level sections.
     assert "camera" in body
     assert "grid" in body
+
+
+def test_import_picker_accepts_both_settings_extensions(live_server) -> None:
+    """Stations exported ``.openfollowsettings`` before ``.ofsettings``; those files must keep importing."""
+    _, base = live_server
+    _, body = _get(base, "/")
+    assert 'id="config-import-file" accept=".ofsettings,.openfollowsettings"' in body
 
 
 def test_api_config_export_sanitises_unsafe_system_name(

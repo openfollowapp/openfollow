@@ -18,6 +18,7 @@ import pytest
 
 import openfollow.privilege.media_writer as mw
 from openfollow.privilege.media_writer import MediaWriteError, check_name, main, write_exclusive
+from tests._lsblk_samples import HELPER_LIST, HELPER_TREE
 
 pytestmark = pytest.mark.unit
 
@@ -289,6 +290,31 @@ class TestRootHelper:
         host = _Host(tmp_path, devices)
         assert host.run(["write", "/dev/sda1"], b"b.txt\nx") == (code, "", text)
         assert host.log() == []
+
+    @pytest.mark.parametrize("sample", [HELPER_TREE, HELPER_LIST], ids=["tree", "flat-list"])
+    def test_a_real_stick_is_found_on_its_disk_whichever_shape_lsblk_prints(self, tmp_path: Path, sample: dict) -> None:
+        host = _Host(tmp_path, sample["blockdevices"])
+        assert host.run(["write", "/dev/sda2"], b"b.txt\nx")[0] == 0
+
+    def test_a_flat_list_still_knows_the_stations_own_disk(self, tmp_path: Path) -> None:
+        import copy
+
+        devices = copy.deepcopy(HELPER_LIST["blockdevices"])
+        next(d for d in devices if d["name"] == "sda2")["mountpoints"] = ["/"]
+        host = _Host(tmp_path, devices)
+        assert host.run(["write", "/dev/sda1"], b"b.txt\nx") == (
+            mw.EXIT_NOT_REMOVABLE,
+            "",
+            "That is not a removable USB drive.",
+        )
+
+    def test_a_flat_list_still_sees_a_mounted_partition(self, tmp_path: Path) -> None:
+        import copy
+
+        devices = copy.deepcopy(HELPER_LIST["blockdevices"])
+        next(d for d in devices if d["name"] == "sda2")["mountpoints"] = ["/media/stick"]
+        host = _Host(tmp_path, devices)
+        assert host.run(["write", "/dev/sda2"], b"b.txt\nx")[0] == mw.EXIT_MOUNTED
 
     def test_an_unreadable_device_list_is_no_drive(self, tmp_path: Path) -> None:
         host = _Host(tmp_path, _stick())

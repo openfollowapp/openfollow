@@ -16,6 +16,7 @@ import openfollow.runtime.removable_media as rm
 from openfollow.privilege.broker import PrivilegeError
 from openfollow.privilege.capabilities import MEDIA_WRITE, MEDIA_WRITE_SCRIPT, CapabilityState
 from openfollow.runtime.removable_media import MediaError, list_media, write_file
+from tests._lsblk_samples import APP_LIST, APP_TREE
 
 pytestmark = pytest.mark.unit
 
@@ -165,6 +166,11 @@ class TestLinuxListing:
         monkeypatch.setattr(rm.os, "access", lambda path, mode: False)
         media = _by_id(list_media(_Broker(), platform="linux", run=_linux(_tree(tmp_path))))
         assert (media["sdb1"].writable, media["sdb1"].reason) == (False, "mounted read-only")
+
+    @pytest.mark.parametrize("sample", [APP_TREE, APP_LIST], ids=["tree", "flat-list"])
+    def test_a_mac_formatted_stick_lists_its_volume_not_its_efi_partition(self, sample: dict) -> None:
+        media = list_media(_Broker(), platform="linux", run=_linux(sample))
+        assert [(m.id, m.label, m.writable) for m in media] == [("sda2", "SanDisk Ultra · FAT32 · 31 GB", True)]
 
     def test_a_failed_listing_is_no_drives(self, caplog) -> None:  # noqa: ANN001
         def run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:

@@ -36,6 +36,7 @@ __all__ = [
     "check_name",
     "is_system_disk",
     "main",
+    "nest_devices",
     "write_exclusive",
 ]
 
@@ -147,14 +148,35 @@ def _walk(
         yield from _walk(node.get("children") or [], node if parent is None else parent)
 
 
+def nest_devices(tree: dict[str, Any]) -> list[dict[str, Any]]:
+    """The disks with their partitions under them, whichever shape ``lsblk -J`` printed.
+
+    It nests only when its output carries the tree column (``NAME``); a flat
+    list is nested again through ``PKNAME``, so a partition is never read as
+    its own disk.
+    """
+    top: list[dict[str, Any]] = tree.get("blockdevices") or []
+    if any(node.get("children") for node in top):
+        return top
+    by_name = {node.get("name"): dict(node) for node in top}
+    disks: list[dict[str, Any]] = []
+    for node in by_name.values():
+        parent = by_name.get(node.get("pkname"))
+        if parent is None or parent is node:
+            disks.append(node)
+        else:
+            parent.setdefault("children", []).append(node)
+    return disks
+
+
 def is_system_disk(disk: dict[str, Any]) -> bool:
     """Whether *disk*, or any partition on it, carries one of the station's own mounts."""
     return any(SYSTEM_MOUNTS.intersection(_mountpoints(node)) for node, _ in _walk([disk]))
 
 
-def _find(tree: dict[str, Any], device: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+def _find(disks: list[dict[str, Any]], device: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """The node for *device* and the disk it sits on."""
-    for node, parent in _walk(tree.get("blockdevices") or []):
+    for node, parent in _walk(disks):
         if node.get("path") == device:
             return node, parent or node
     return None
@@ -176,13 +198,13 @@ def _check_device(device: str, lsblk: str) -> str:
     """The mount type for *device*, once it is known to be an unmounted USB drive of a kind we write."""
     try:
         out = subprocess.run(  # noqa: S603  # nosec B603
-            [lsblk, "-J", "-o", "PATH,TYPE,TRAN,FSTYPE,MOUNTPOINTS"],
+            [lsblk, "-J", "-o", "NAME,PATH,PKNAME,TYPE,TRAN,FSTYPE,MOUNTPOINTS"],
             capture_output=True,
             text=True,
             timeout=_TIMEOUT_S,
             check=True,
         ).stdout
-        found = _find(json.loads(out), device)
+        found = _find(nest_devices(json.loads(out)), device)
     except (subprocess.SubprocessError, OSError, ValueError):
         found = None
     if found is None:

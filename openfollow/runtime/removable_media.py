@@ -33,12 +33,15 @@ from openfollow.privilege.media_writer import (
     MediaWriteError,
     check_name,
     is_system_disk,
+    nest_devices,
     write_exclusive,
 )
 
 logger = logging.getLogger(__name__)
 
-_LSBLK_COLUMNS = "NAME,PATH,TYPE,TRAN,FSTYPE,FSVER,LABEL,SIZE,MOUNTPOINTS,VENDOR,MODEL"
+_LSBLK_COLUMNS = "NAME,PATH,PKNAME,TYPE,TRAN,FSTYPE,FSVER,LABEL,PARTTYPE,SIZE,MOUNTPOINTS,VENDOR,MODEL"
+# The EFI system partition (GPT GUID, MBR id) a Mac or PC puts ahead of the volume; a file there is hidden.
+_EFI_PARTTYPES = frozenset({"c12a7328-f81f-11d2-ba4b-00a0c93ec93b", "0xef"})
 _PROBE_TIMEOUT_S = 5.0
 # Mounting, writing and syncing a slow stick; the helper bounds each step itself.
 _WRITE_TIMEOUT_S = 120.0
@@ -147,13 +150,15 @@ def _drive_name(disk: dict[str, Any]) -> str:
 
 def _linux_media(tree: dict[str, Any], can_mount: bool) -> list[Media]:
     media: list[Media] = []
-    for disk in tree.get("blockdevices") or []:
+    for disk in nest_devices(tree):
         if disk.get("tran") != "usb" or is_system_disk(disk) or not int(disk.get("size") or 0):
             continue
         # A drive formatted without a partition table carries the filesystem itself.
-        parts = [c for c in disk.get("children") or [] if c.get("type") == "part"] or (
-            [disk] if disk.get("fstype") else []
-        )
+        parts = [
+            c
+            for c in disk.get("children") or []
+            if c.get("type") == "part" and str(c.get("parttype") or "").lower() not in _EFI_PARTTYPES
+        ] or ([disk] if disk.get("fstype") and not disk.get("children") else [])
         name = _drive_name(disk)
         for part in parts:
             fstype = part.get("fstype")

@@ -200,6 +200,16 @@ def test_a_missing_slot_keeps_the_notes_of_the_controller_it_last_held() -> None
     assert (table.slots[0].state, table.slots[0].notes) == (MISSING, (NOTE_CANNOT_IDENTIFY,))
 
 
+def test_forgetting_a_slot_clears_its_notes() -> None:
+    table = frozen(pad(0, "usb:h:1", notes=(NOTE_CANNOT_IDENTIFY,)), pad(1, "usb:h:2"))
+    table.update([pad(1, "usb:h:2")], settled=True)
+    assert table.forget(0)
+    assert (table.slots[0].state, table.slots[0].notes) == (RESERVED, ())
+    # A frame after the forget leaves them cleared.
+    table.update([pad(1, "usb:h:2")], settled=True)
+    assert table.slots[0].notes == ()
+
+
 def test_a_controller_taking_over_a_missing_slot_brings_its_own_notes() -> None:
     table = frozen(pad(0, "usb:h:1", notes=(NOTE_CANNOT_IDENTIFY,)), pad(1, "usb:h:2"))
     table.update([pad(1, "usb:h:2")], settled=True)

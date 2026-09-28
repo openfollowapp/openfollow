@@ -497,7 +497,7 @@ class InputManager:
         mirrors the routing, so the badge sits where movement goes.
         ``seconds_since_input`` is ``None`` until the device has been used.
         ``notes`` says what the controller can't do (``NOTE_*``); a missing slot
-        keeps its last controller's, a reserved one raises none.
+        keeps its last controller's.
         """
         gamepad_info = {int(item["controller_index"]): item for item in self.gamepad_handler.get_controller_info()}
         mouse_devices = self.mouse3d_manager.connected_devices()
@@ -532,7 +532,7 @@ class InputManager:
                 "port_label": port_label(slot.key, self._usb_hosts),
                 "slot_ref": slot_ref(slot),
                 "seconds_since_input": None if used is None else max(0.0, now - used),
-                "notes": [] if slot.state == RESERVED else list(slot.notes),
+                "notes": list(slot.notes),
             }
             if slot.kind == "mouse3d":
                 info = mouse_devices.get(slot.local_id) if slot.local_id is not None else None

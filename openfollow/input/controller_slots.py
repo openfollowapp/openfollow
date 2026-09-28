@@ -49,8 +49,9 @@ class LiveController:
 class SlotEntry:
     """One slot. ``local_id`` is set only while the slot is connected.
 
-    ``notes`` follow the controller while it is connected and stay with the slot
-    once it goes missing. They never count as a change of the slot table.
+    ``notes`` follow the controller while it is connected, stay with the slot
+    once it goes missing and are cleared when it is forgotten. They never count
+    as a change of the slot table.
     """
 
     kind: str
@@ -170,10 +171,10 @@ class ControllerSlotTable:
         return next((i for i in vacant if slots[i].kind == c.kind), None)
 
     def forget(self, index: int) -> bool:
-        """Silence a missing slot: it keeps its position but drives no marker."""
+        """Silence a missing slot: it keeps its position but drives no marker and raises no notes."""
         if not 0 <= index < len(self._slots) or self._slots[index].state != MISSING:
             return False
         slots = list(self._slots)
-        slots[index] = replace(slots[index], state=RESERVED)
+        slots[index] = replace(slots[index], state=RESERVED, notes=())
         self._slots = tuple(slots)
         return True

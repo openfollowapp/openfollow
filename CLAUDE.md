@@ -726,8 +726,7 @@ joystick backend, no Button Detection Map), `button_map_other_model` (the saved
 map's identity doesn't match) and `cannot_identify` (nothing Identify can pulse:
 a pad SDL can't rumble, read once at open with `SDL_JoystickHasRumble`, or a
 puck without an LED). Notes follow the controller while connected, never count
-as a slot-table change, stay on a missing slot and are dropped for a reserved
-one.
+as a slot-table change, stay on a missing slot and are cleared by `forget()`.
 
 ### 3D Mouse status (`input/mouse3d_status.py`)
 `Mouse3DManager.status()` reports what the supervisor already holds and never enumerates or imports: the backend is `ok`, `not_installed`, or `could_not_start` (enumeration raised; easyhid without libhidapi binds the interpreter and raises `AttributeError`), and every attached puck is `open`, `opening`, `no_profile`, `not_permitted` or `open_failed`. Unprofiled pucks are enumerated and reported but never opened. hidapi drops the errno of a refused open, so `_PySpaceMouseBackend.open` checks `os.access` on the node and raises `PermissionError`. `/api/stats` publishes the block as `mouse3d` (its values are a wire interface), the bundle renders it as E10, and the web section shows only faults: its poll answers 204 while `status_key` is unchanged, so a `role="alert"` box is inserted once per change. **macOS is unsupported by platform** (`_platform_supported`): the real backend never starts there and the section shows one Info line; an injected backend bypasses the gate, as it bypasses the dependency check. Lift the gate with the pyspacemouse release whose `open_by_path` accepts macOS hidapi paths.

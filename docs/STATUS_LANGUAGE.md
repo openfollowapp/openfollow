@@ -45,6 +45,9 @@ or inline `style` colours.
 | `--<level>-mark-muted` (dot centre or ring) | `#e04848` at 40% | none | none | `#5cc98c` at 40% |
 | `--error-row` (row tint) | `hsl(2 64% 14%)`, opaque | | | |
 
+The neutral chip (a feature off on purpose, a slot that needs nothing) takes the
+page's own greys: `--surface` fill, `--border` outline and `--text` label.
+
 Text inside a box, chip or row is the normal off-white `--text`, with the next
 step in `--muted`. Never pink, never a tinted text colour on a tinted fill.
 

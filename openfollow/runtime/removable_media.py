@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import plistlib
+import re
 import subprocess  # nosec B404
 import sys
 import threading
@@ -193,10 +194,20 @@ def _mac_fs_name(info: dict[str, Any]) -> str:
     return _fs_name(fstype)
 
 
+def _mac_system_disks(run: Runner) -> set[str]:
+    """The disks under ``/``: its own, and the physical ones its APFS container sits on (an externally booted Mac)."""
+    root = plistlib.loads(_output(run, ["/usr/sbin/diskutil", "info", "-plist", "/"]).encode())
+    stores = [str(s.get("APFSPhysicalStore") or "") for s in root.get("APFSPhysicalStores") or []]
+    return {str(root.get("ParentWholeDisk") or "")} | {re.sub(r"s\d+$", "", s) for s in stores if s}
+
+
 def _mac_media(run: Runner) -> list[Media]:
     listing = plistlib.loads(_output(run, ["/usr/sbin/diskutil", "list", "-plist", "external", "physical"]).encode())
+    system = _mac_system_disks(run)
     media: list[Media] = []
     for disk in listing.get("AllDisksAndPartitions") or []:
+        if disk.get("DeviceIdentifier") in system:
+            continue
         for part in disk.get("Partitions") or [disk]:
             ident = part.get("DeviceIdentifier")
             if not ident:

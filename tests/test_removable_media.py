@@ -228,6 +228,8 @@ def _mac_fixture(tmp_path: Path):  # noqa: ANN202
             "TotalSize": 10**9,
         },  # fmt: skip
         "disk8s1": {"Content": "Apple_APFS"},
+        # The running system: an APFS volume on the internal disk's container.
+        "/": {"ParentWholeDisk": "disk3", "APFSPhysicalStores": [{"APFSPhysicalStore": "disk0s2"}]},
     }
     layout = [
         {"DeviceIdentifier": "disk4", "Partitions": [{"DeviceIdentifier": "disk4s1"}]},
@@ -248,6 +250,20 @@ class TestMacListing:
             "disk6s1": ("CARD · exFAT · 64 GB", False, "not mounted"),
             "disk7": ("Old Stick · FAT · 1.0 GB", True, ""),
         }
+
+    @pytest.mark.parametrize(
+        "root",
+        [
+            {"ParentWholeDisk": "disk9", "APFSPhysicalStores": [{"APFSPhysicalStore": "disk5s2"}]},
+            {"ParentWholeDisk": "disk5"},
+        ],
+        ids=["apfs-container-on-it", "hfs-volume-on-it"],
+    )
+    def test_never_the_disk_an_externally_booted_mac_runs_from(self, tmp_path: Path, root: dict[str, Any]) -> None:
+        volumes, layout = _mac_fixture(tmp_path)
+        volumes["/"] = root
+        media = list_media(platform="darwin", run=_mac(volumes, layout))
+        assert [m.id for m in media] == ["disk4s1", "disk6s1", "disk7"]
 
     def test_a_listing_diskutil_cannot_parse(self) -> None:
         def run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:

@@ -3759,6 +3759,52 @@ class TestReleaseSource:
             r.release_source()
         assert r._pipeline is pipeline  # kept, so the next swap re-enters the guard
 
+    def test_a_running_discovery_finishes_before_the_pipeline_stops(
+        self, fake_gst, fake_glib, fake_input_pair, monkeypatch
+    ) -> None:
+        r = self._armed(fake_glib)
+        pipeline = r._pipeline
+        joins: list[tuple[float | None, bool]] = []
+
+        class FinishingDiscovery:
+            def join(self, timeout: float | None = None) -> None:
+                joins.append((timeout, FakeState.NULL in pipeline.state_changes))
+
+            def is_alive(self) -> bool:
+                return False
+
+        r._discovery_thread = FinishingDiscovery()  # type: ignore[assignment]
+        monkeypatch.setattr(threading, "Thread", _SyncSwapThread)
+
+        r.release_source()
+
+        # Joined once, before the pipeline was told to stop.
+        assert joins == [(3.0, False)]
+        assert FakeState.NULL in pipeline.state_changes
+        assert r._discovery_thread is None
+
+    def test_a_discovery_that_does_not_stop_raises_and_keeps_the_pipeline(
+        self, fake_gst, fake_glib, fake_input_pair, monkeypatch
+    ) -> None:
+        from openfollow.video.receiver import PipelineStuckError
+
+        class StuckDiscovery:
+            def join(self, timeout: float | None = None) -> None:
+                return None
+
+            def is_alive(self) -> bool:
+                return True
+
+        r = self._armed(fake_glib)
+        pipeline = r._pipeline
+        r._discovery_thread = StuckDiscovery()  # type: ignore[assignment]
+
+        with pytest.raises(PipelineStuckError, match="release_source: prior discovery thread did not stop"):
+            r.release_source()
+        assert r._pipeline is pipeline
+        assert FakeState.NULL not in pipeline.state_changes
+        assert r._discovery_thread is not None
+
 
 # --------------------------------------------------------------------------- #
 # swap_detection_branch – (live detector pipeline rebuild)

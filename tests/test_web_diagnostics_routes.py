@@ -892,7 +892,7 @@ def _wire_drives(server, *, write=None):  # noqa: ANN001, ANN202
         written.append((media_id, filename, data))
         if write is not None:
             write()
-        return WriteResult(filename, _drives()[0], f"Saved {filename} to SanDisk Ultra.")
+        return WriteResult(filename, _drives()[0], f"Saved {filename} to SanDisk Ultra.", "It can be removed now.")
 
     server.media_list_provider = _drives
     server.diagnostics_export = DiagnosticsExport(lambda: ("ofdiag-TestSystem-20260928T101500Z.txt", "bundle"), _write)
@@ -925,8 +925,8 @@ def test_save_to_drive_writes_the_bundle_and_confirms(live_server) -> None:
     status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": "sda1"})
     assert status == 200
     assert (
-        '<p class="drive-saved" role="status">Saved ofdiag-TestSystem-20260928T101500Z.txt to SanDisk Ultra.</p>'
-        in body
+        '<p class="drive-saved" role="status">Saved ofdiag-TestSystem-20260928T101500Z.txt to SanDisk Ultra. '
+        '<span class="drive-saved-next">It can be removed now.</span></p>' in body
     )
     assert written == [("sda1", "ofdiag-TestSystem-20260928T101500Z.txt", b"bundle")]
 

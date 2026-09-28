@@ -257,11 +257,14 @@ class TestWriting:
         result = write_file("sdb1", "ofdiag-rig.txt", b"new", _Broker(), platform="linux", run=_linux(tree))
         assert result.filename == "ofdiag-rig-1.txt"
         assert (tmp_path / "CARD" / "ofdiag-rig-1.txt").read_bytes() == b"new"
-        assert result.message == "Saved ofdiag-rig-1.txt to Generic SD Reader."
+        assert (result.message, result.action) == (
+            "Saved ofdiag-rig-1.txt to Generic SD Reader.",
+            "Unmount it before removing it.",
+        )
 
     def test_macos_says_to_eject_it(self, tmp_path: Path) -> None:
         result = write_file("disk4s1", "b.txt", b"x", platform="darwin", run=_mac(*_mac_fixture(tmp_path)))
-        assert result.message == "Saved b.txt to STICK. Eject it in Finder before unplugging it."
+        assert (result.message, result.action) == ("Saved b.txt to STICK.", "Eject it in Finder before unplugging it.")
 
     def test_an_unmounted_drive_goes_through_the_helper_without_prompting(self, tmp_path: Path) -> None:
         broker = _Broker(stdout="ofdiag-rig-2.txt\n")
@@ -271,7 +274,11 @@ class TestWriting:
         (call,) = broker.calls
         assert call["argv"] == [MEDIA_WRITE_SCRIPT, "write", "/dev/sda1"]
         assert (call["stdin"], call["allow_prompt"]) == (b"ofdiag-rig.txt\n\x00data", False)
-        assert (result.filename, result.media.id) == ("ofdiag-rig-2.txt", "sda1")
+        assert (result.filename, result.media.id, result.action) == (
+            "ofdiag-rig-2.txt",
+            "sda1",
+            "It can be removed now.",
+        )
 
     def test_the_helpers_sentence_is_what_the_operator_reads(self, tmp_path: Path) -> None:
         broker = _Broker(error="Write a file to a removable drive: The drive is full.")

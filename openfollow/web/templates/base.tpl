@@ -1180,6 +1180,7 @@
  .drive-save-busy { display: none; color: var(--muted); font-size: 0.86rem; }
  .drive-save-busy.htmx-request { display: inline; }
  .drive-saved { margin: 0.5rem 0 0; color: var(--success-text); font-weight: 600; }
+ .drive-saved-next { color: var(--muted); font-weight: 400; }
  .drive-saved::before {
  content: ""; display: inline-block; width: 1.1em; height: 1.1em; margin-right: 0.35em; vertical-align: -0.2em;
  background: var(--success-sign-green) no-repeat center / contain;

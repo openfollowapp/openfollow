@@ -38,6 +38,8 @@ class ExportStatus:
     ok: bool | None = None
     message: str = ""
     generation: int = 0
+    # The one next step, on success.
+    action: str = ""
 
 
 class ExportBusy(Exception):
@@ -87,15 +89,15 @@ class DiagnosticsExport:
 
     def _begin(self, drive: str, origin: str) -> None:
         with self._lock:
-            self._status = ExportStatus(COLLECTING, origin, drive, None, "", self._status.generation + 1)
+            self._status = ExportStatus(COLLECTING, origin, drive, generation=self._status.generation + 1)
 
     def _set_phase(self, phase: str) -> None:
         with self._lock:
             self._status = replace(self._status, phase=phase)
 
-    def _finish(self, ok: bool, message: str) -> None:
+    def _finish(self, ok: bool, message: str, action: str = "") -> None:
         with self._lock:
-            self._status = replace(self._status, phase=DONE, ok=ok, message=message)
+            self._status = replace(self._status, phase=DONE, ok=ok, message=message, action=action)
         self._slot.release()
 
     def _export(self, media_id: str) -> None:
@@ -115,4 +117,4 @@ class DiagnosticsExport:
             logger.exception("Saving the diagnostics bundle failed.")
             self._finish(False, "The file could not be saved.")
         else:
-            self._finish(True, result.message)
+            self._finish(True, result.message, result.action)

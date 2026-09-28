@@ -5006,7 +5006,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return _save_failed(409, str(exc), "Wait for it to finish, then save again.")
         if not status.ok:
             return _save_failed(422, status.message)
-        return template("partials/diagnostics_drive_saved", message=status.message)
+        return template("partials/diagnostics_drive_saved", message=status.message, action=status.action)
 
     @app.get("/api/diagnostics/log-tail")
     def api_diagnostics_log_tail() -> Any:

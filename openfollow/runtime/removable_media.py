@@ -71,11 +71,12 @@ class Media:
 
 @dataclass(frozen=True)
 class WriteResult:
-    """A file that was saved: the name it got and the drive it is on."""
+    """A file that was saved: the name it got, the drive it is on, what happened and the one next step."""
 
     filename: str
     media: Media
     message: str
+    action: str
 
 
 class MediaError(Exception):
@@ -229,13 +230,15 @@ def write_file(
             written = write_exclusive(Path(media.mountpoint), filename, data)
         except MediaWriteError as exc:
             raise MediaError(str(exc)) from exc
+        # Only what the station mounted does it unmount again.
+        action = (
+            "Eject it in Finder before unplugging it." if platform == "darwin" else "Unmount it before removing it."
+        )
     else:
         # Listed writable while unmounted only when the grant is passwordless, which takes a broker.
         written = _write_through_helper(media, filename, data, cast(PrivilegeBroker, broker))
-    message = f"Saved {written} to {media.name}."
-    if platform == "darwin":
-        message += " Eject it in Finder before unplugging it."
-    return WriteResult(filename=written, media=media, message=message)
+        action = "It can be removed now."
+    return WriteResult(written, media, f"Saved {written} to {media.name}.", action)
 
 
 def _write_through_helper(media: Media, filename: str, data: bytes, broker: PrivilegeBroker) -> str:

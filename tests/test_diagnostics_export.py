@@ -18,7 +18,7 @@ _STICK = Media("sda1", "/dev/sda1", "SanDisk Ultra", "SanDisk Ultra · FAT32 · 
 
 
 def _saved(name: str) -> WriteResult:
-    return WriteResult(name, _STICK, f"Saved {name} to SanDisk Ultra.")
+    return WriteResult(name, _STICK, f"Saved {name} to SanDisk Ultra.", "It can be removed now.")
 
 
 class TestRun:
@@ -41,7 +41,13 @@ class TestRun:
         assert phases == [de.COLLECTING, de.WRITING]
         assert writes == [("sda1", "ofdiag-rig.txt", "bündle".encode())]
         assert status == ExportStatus(
-            de.DONE, de.WEB, "SanDisk Ultra", True, "Saved ofdiag-rig.txt to SanDisk Ultra.", 1
+            de.DONE,
+            de.WEB,
+            "SanDisk Ultra",
+            True,
+            "Saved ofdiag-rig.txt to SanDisk Ultra.",
+            1,
+            "It can be removed now.",
         )
 
     def test_each_export_counts(self) -> None:

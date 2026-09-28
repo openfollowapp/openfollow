@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 from openfollow.privilege.camera_config import AUTOMATIC, CAMERA_TOKEN_RE, CHOICE_TOKEN_RE, HELPER_PATH
+from openfollow.privilege.media_writer import DEVICE_RE
+from openfollow.privilege.media_writer import HELPER_PATH as MEDIA_HELPER_PATH
 
 # Network capabilities – dhcpcd writes via tee, NM via nmcli + systemctl.
 
@@ -545,6 +547,19 @@ CAMERA_OVERLAY_UNLOAD = Capability(
     probe_arg="ov5647,cam0",
 )
 
+MEDIA_WRITE_SCRIPT = str(MEDIA_HELPER_PATH)
+
+# The stdlib helper re-checks the device (USB, not a system disk, unmounted),
+# the file name, the size and the filesystem, since it is the process that mounts.
+MEDIA_WRITE = Capability(
+    name="media.write",
+    probe_argv=(MEDIA_WRITE_SCRIPT, "write", _PROBE_PLACEHOLDER),
+    description="Write a file to a removable drive",
+    sudoers_pattern=f"{MEDIA_WRITE_SCRIPT} write {DEVICE_RE}",
+    arg_pattern=DEVICE_RE,
+    probe_arg="/dev/sda1",
+)
+
 SYSTEM_REBOOT = Capability(
     name="system.reboot",
     probe_argv=("/usr/bin/systemctl", "reboot"),
@@ -593,6 +608,8 @@ ALL_CAPABILITIES: tuple[Capability, ...] = (
     NETWORK_DHCPCD_RELOAD,
     # logs
     LOG_READ_SUDO,
+    # removable drives
+    MEDIA_WRITE,
 )
 
 

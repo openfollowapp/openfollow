@@ -1004,6 +1004,7 @@
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/share/openfollow/camera-setup load ^(imx|ov|arducam|irs)[a-z0-9_-]*\,cam[01]$
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/share/openfollow/camera-setup unload ^(imx|ov|arducam|irs)[a-z0-9_-]*\,cam[01]$
           {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
+          {{ openfollow_user }} ALL=(root) NOPASSWD: /usr/share/openfollow/write-to-media write ^/dev/sd[a-z]+[0-9]*$
 
     - name: Remove legacy openfollow-update sudoers drop-in
       ansible.builtin.file:

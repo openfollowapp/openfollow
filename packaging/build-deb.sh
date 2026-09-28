@@ -250,6 +250,8 @@ install -m 0755 "$DEBIAN_DIR/apply-update.sh"                     "$SHARE/apply-
 # Root helper for the web Pi camera setup (sudoers: camera.* capabilities): a
 # copy of the stdlib-only module, so root runs nothing from the venv.
 install -m 0755 "$REPO_ROOT/openfollow/privilege/camera_config.py"   "$SHARE/camera-setup"
+# Root runs this stdlib-only copy with python3 -I, never the venv's.
+install -m 0755 "$REPO_ROOT/openfollow/privilege/media_writer.py" "$SHARE/write-to-media"
 # NDI is not bundled (closed-source SDK); this helper builds + installs it
 # post-install. See https://openfollow.app/docs/ndi-install.html.
 install -m 0755 "$REPO_ROOT/scripts/install-ndi.sh"               "$SHARE/install-ndi.sh"

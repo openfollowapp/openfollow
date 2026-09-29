@@ -100,10 +100,10 @@ def _check_sticks(field: str, form: Mapping[str, str]) -> BindingCheck:
     move = form.get("move_xy_stick", "") or ""
     fader = form.get("marker_fader_stick", "") or ""
     if field == "marker_fader_stick":
-        if fader and fader == f"{move}_y":
+        if fader in STICK_LABELS and fader == f"{move}_y":
             return BindingCheck(error=f"{STICK_LABELS[move]} moves the marker (Move X/Y).")
         return BindingCheck()
-    if fader and fader == f"{move}_y":
+    if fader in STICK_LABELS and fader == f"{move}_y":
         shown = STICK_LABELS[fader]
         return BindingCheck(
             note=f"{shown} taken from {STICK_FIELD_LABELS['marker_fader_stick']}",

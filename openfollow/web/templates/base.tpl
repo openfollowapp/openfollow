@@ -3561,7 +3561,7 @@
  const def = defaults[sel.name];
  if (def !== undefined) sel.value = def;
  });
- window.OpenFollow.clearBindingNotes(container);
+ window.OpenFollow.clearBindingNotes(container, Object.keys(defaults));
  refreshFormGate(container.closest('form'));
  }
  function resetKeyboardMappingDefaults(container) {
@@ -3578,7 +3578,7 @@
  const def = defaults[el.name];
  if (def !== undefined) el.value = def;
  });
- window.OpenFollow.clearBindingNotes(container);
+ window.OpenFollow.clearBindingNotes(container, Object.keys(defaults));
  refreshFormGate(container.closest('form'));
  }
  // Restart button (lives in the Diagnostics partial). Defined here

@@ -53,6 +53,12 @@ def test_moving_the_marker_off_a_stick_with_no_fader_rechecks_nothing() -> None:
     assert check.recheck == ()
 
 
+@pytest.mark.parametrize("field", ["marker_fader_stick", "move_xy_stick"])
+def test_an_unknown_stick_is_no_clash(field: str) -> None:
+    check = check_binding("gamepad", field, {"move_xy_stick": "bogus", "marker_fader_stick": "bogus_y"})
+    assert (check.error, check.moved) == ("", ())
+
+
 def test_a_fader_on_the_other_stick_is_no_error() -> None:
     check = check_binding("gamepad", "marker_fader_stick", {"marker_fader_stick": "right_y", "move_xy_stick": "left"})
     assert check.error == ""

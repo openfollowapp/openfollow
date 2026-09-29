@@ -52,16 +52,17 @@
   }
   document.addEventListener('htmx:afterSwap', markOverlap);
 
-  // Reset to Defaults sets values without an event, so every note it leaves is stale.
+  // Reset to Defaults sets ``names`` without an event, so their notes are stale;
+  // any other field in the container keeps its own.
   window.OpenFollow = window.OpenFollow || {};
-  window.OpenFollow.clearBindingNotes = function (container) {
-    container.querySelectorAll('[data-binding-lost]').forEach(function (el) {
+  window.OpenFollow.clearBindingNotes = function (container, names) {
+    names.forEach(function (name) {
+      var el = container.querySelector('[name="' + CSS.escape(name) + '"]');
+      if (!el) return;
       el.removeAttribute('data-binding-lost');
-    });
-    container.querySelectorAll('[aria-describedby]').forEach(function (el) {
+      el.setAttribute('aria-invalid', 'false');
       var span = document.getElementById(el.getAttribute('aria-describedby'));
       if (span && span.classList.contains('field-error')) span.innerHTML = '';
-      el.setAttribute('aria-invalid', 'false');
     });
   };
 })();

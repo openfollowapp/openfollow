@@ -366,6 +366,45 @@ class TestRootHelper:
             "The USB storage device is full. It could not be unmounted either. Wait before removing it.",
         )
 
+    @pytest.mark.parametrize("fail_on_call", [1, 2], ids=["close-after-a-good-write", "close-after-a-failed-write"])
+    def test_a_close_that_fails_still_unmounts(self, tmp_path: Path, monkeypatch, fail_on_call: int) -> None:  # noqa: ANN001
+        class _Os:
+            """The helper's ``os`` with a failing close; subprocess keeps the real one."""
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(os, name)
+
+            @staticmethod
+            def close(fd: int) -> None:
+                os.close(fd)
+                raise OSError(errno.EIO, "I/O error")
+
+            @staticmethod
+            def write(fd: int, data: bytes) -> int:
+                if fail_on_call == 2:
+                    raise OSError(errno.ENOSPC, "full")
+                return os.write(fd, data)
+
+        monkeypatch.setattr(mw, "os", _Os())
+        host = _Host(tmp_path, _stick())
+        code, _, err = host.run(["write", "/dev/sda1"], b"b.txt\nx")
+        assert (code, err) == (
+            (mw.EXIT_WRITE_FAILED, "The file could not be written to the USB storage device.")
+            if fail_on_call == 1
+            else (mw.EXIT_FULL, "The USB storage device is full.")
+        )
+        assert [line.split()[0] for line in host.log()] == ["mount", "umount"]
+        assert host.written() == {}
+
+    def test_an_unexpected_error_still_unmounts(self, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+        def boom(*_a: object) -> str:
+            raise RuntimeError("unexpected")
+
+        monkeypatch.setattr(mw, "write_exclusive", boom)
+        host = _Host(tmp_path, _stick())
+        assert host.run(["write", "/dev/sda1"], b"b.txt\nx")[:2] == (mw.EXIT_WRITE_FAILED, "")
+        assert [line.split()[0] for line in host.log()] == ["mount", "umount"]
+
     def test_an_unmount_that_cannot_run(self, tmp_path: Path) -> None:
         host = _Host(tmp_path, _stick())
         host.umount = str(tmp_path / "missing-umount")

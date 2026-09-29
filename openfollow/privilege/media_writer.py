@@ -57,6 +57,7 @@ MOUNT_TYPES = {"vfat": "vfat", "exfat": "exfat", "ntfs": "ntfs3", "ext4": "ext4"
 # A disk carrying any of these is the station's own, whatever its bus.
 SYSTEM_MOUNTS = frozenset({"/", "/boot/firmware", "/mnt/nvme"})
 _MAX_SUFFIX = 99
+_WRITE_FAILED = "The file could not be written to the USB storage device."
 _NAME_LINE_MAX = 256
 _TIMEOUT_S = 60
 
@@ -112,10 +113,14 @@ def write_exclusive(directory: Path, name: str, data: bytes) -> str:
                 view = view[os.write(fd, view) :]
             os.fsync(fd)
         except OSError as exc:
-            os.close(fd)
+            _close_quietly(fd)
             _remove_quietly(directory / candidate)
             raise _write_error(exc) from exc
-        os.close(fd)
+        try:
+            os.close(fd)
+        except OSError as exc:
+            _remove_quietly(directory / candidate)
+            raise _write_error(exc) from exc
         return candidate
     raise MediaWriteError(EXIT_NAME_TAKEN, "Every name for this file is already taken on the USB storage device.")
 
@@ -125,7 +130,14 @@ def _write_error(exc: OSError) -> MediaWriteError:
         return MediaWriteError(EXIT_FULL, "The USB storage device is full.")
     if exc.errno == errno.EROFS:
         return MediaWriteError(EXIT_WRITE_FAILED, "The USB storage device is read-only.")
-    return MediaWriteError(EXIT_WRITE_FAILED, "The file could not be written to the USB storage device.")
+    return MediaWriteError(EXIT_WRITE_FAILED, _WRITE_FAILED)
+
+
+def _close_quietly(fd: int) -> None:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
 
 
 def _remove_quietly(path: Path) -> None:
@@ -246,13 +258,14 @@ def _write_to_device(
             raise MediaWriteError(EXIT_MOUNT_FAILED, "The USB storage device could not be mounted.")
         try:
             written = write_exclusive(mountpoint, name, data)
-        except MediaWriteError as exc:
+        except Exception as exc:
+            error = exc if isinstance(exc, MediaWriteError) else MediaWriteError(EXIT_WRITE_FAILED, _WRITE_FAILED)
             # Still mounted outranks why the write failed: pulling the device now can corrupt it.
             if not _run_quietly([umount, str(mountpoint)]):
                 raise MediaWriteError(
-                    EXIT_UNMOUNT_FAILED, f"{exc} It could not be unmounted either. Wait before removing it."
+                    EXIT_UNMOUNT_FAILED, f"{error} It could not be unmounted either. Wait before removing it."
                 ) from exc
-            raise
+            raise error from exc
         if not _run_quietly([umount, str(mountpoint)]):
             raise MediaWriteError(
                 EXIT_UNMOUNT_FAILED,

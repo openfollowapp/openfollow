@@ -429,6 +429,23 @@ class TestMediaWatch:
         # The listing that finished after the stop is not served.
         assert watch.snapshot() == ([STICK], True)
 
+    def test_a_listing_that_raises_lists_nothing_and_the_worker_carries_on(self, caplog) -> None:  # noqa: ANN001
+        calls: list[int] = []
+        stop = threading.Event()
+
+        def list_fn() -> list[Media]:
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("unexpected listing")
+            stop.set()
+            return [CARD]
+
+        watch = MediaWatch(list_fn, interval_s=0)
+        watch._run(stop)
+        assert calls == [1, 1]
+        assert watch.snapshot() == ([], True)
+        assert "unexpected listing" in caplog.text
+
     def test_start_runs_one_worker_and_stop_ends_it(self, monkeypatch) -> None:  # noqa: ANN001
         started: list[threading.Event] = []
 

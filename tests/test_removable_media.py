@@ -278,6 +278,14 @@ class TestMacListing:
         media = list_media(platform="darwin", run=_mac(volumes, layout))
         assert [m.id for m in media] == ["disk4s1", "disk6s1", "disk7"]
 
+    def test_a_listing_with_broken_xml_is_no_drives(self, caplog) -> None:  # noqa: ANN001
+        def run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(argv, 0, '<?xml version="1.0"?><plist><dict><key>x</oops>', "")
+
+        with caplog.at_level("WARNING", logger=rm.__name__):
+            assert list_media(platform="darwin", run=run) == []
+        assert "Listing removable drives failed" in caplog.text
+
     def test_a_listing_diskutil_cannot_parse(self) -> None:
         def run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
             return subprocess.CompletedProcess(argv, 0, "not a plist", "")

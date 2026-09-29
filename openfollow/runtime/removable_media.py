@@ -128,7 +128,12 @@ class MediaWatch:
 
     def _run(self, stop: threading.Event) -> None:
         while not stop.is_set():
-            media = self._list_fn()
+            try:
+                media = self._list_fn()
+            except Exception:
+                # A dead worker would leave the picker "looking" until it is reopened.
+                logger.exception("Listing removable drives failed.")
+                media = []
             with self._lock:
                 if not stop.is_set():
                     self._media, self._listed = media, True
@@ -265,7 +270,7 @@ def list_media(
             return _linux_media(tree, _can_mount(broker))
         if platform == "darwin":
             return _mac_media(run)
-    except (OSError, subprocess.SubprocessError, ValueError, plistlib.InvalidFileException) as exc:
+    except Exception as exc:  # noqa: BLE001 – it parses another tool's output; any failure there is a failed listing
         logger.warning("Listing removable drives failed: %s", exc)
     return []
 

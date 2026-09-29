@@ -25,7 +25,8 @@ if TYPE_CHECKING:
     from openfollow.runtime.diagnostics_export import DiagnosticsExport
 
 EXPORT_TITLE = "SAVE DIAGNOSTICS"
-PICKER_SUBTITLE = "Pick a USB storage device, Enter to save, Esc to cancel."
+PICKER_SUBTITLE = "Choose a USB storage device and confirm to save."
+EXPORT_SUBTITLE = "The diagnostics file for support, to a USB storage device."
 DIAGNOSTICS = "diagnostics"
 BADGE_KEY = "diagnostics_export"
 SUCCESS_BADGE_S = 15.0

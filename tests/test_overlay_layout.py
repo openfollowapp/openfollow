@@ -714,3 +714,30 @@ def test_selectable_list_layout_no_scroll_when_selected_within_visible() -> None
     # `max_visible` will be ≥ 2 with this height, so selected_idx=1 fits.
     assert layout.scroll_offset == 0
     assert layout.max_visible >= 2
+
+
+@pytest.mark.parametrize(
+    ("mode", "keyboard", "controller"),
+    [
+        (
+            "media-picker",
+            ["Arrow Up/Down: Select USB storage device", "Enter: Save to it", "Esc: Cancel"],
+            ["D-Pad Up/Down: Select USB storage device", "X: Save to it", "Y: Cancel"],
+        ),
+        ("media-export", ["Esc: Back to Settings"], ["Y: Back to Settings"]),
+        (
+            "media-export-done",
+            ["Enter: Pick a USB storage device", "Esc: Back to Settings"],
+            ["X: Pick a USB storage device", "Y: Back to Settings"],
+        ),
+    ],
+    ids=["picker", "export-running", "export-ended"],
+)
+def test_build_help_sections_drive_screens_name_the_bound_buttons(mode: str, keyboard: list, controller: list) -> None:
+    sections = build_help_sections(
+        mode=mode,
+        keyboard_connected=True,
+        controller_connected=True,
+        button_labels={"menu_confirm": "X", "menu_cancel": "Y"},
+    )
+    assert sections == [("Keyboard", keyboard), ("Controller", controller)]

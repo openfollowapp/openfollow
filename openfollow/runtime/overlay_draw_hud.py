@@ -381,9 +381,12 @@ def draw_media_export_overlay(
     renderer: Any, cr: Any, state: OverlayState, w: int, h: int, now: float | None = None
 ) -> None:
     """The export's progress under a spinner, then what happened and the one next step."""
-    from openfollow.runtime.app_modes_media import EXPORT_TITLE
+    from openfollow.runtime.app_modes_media import EXPORT_SUBTITLE, EXPORT_TITLE
 
     headline, next_step, ok = state.media_export_lines
+    help_secs = _help_sections_for(renderer, "media-export" if ok is None else "media-export-done", state)
+    help_h = help_sections_height(help_secs)
+    block_h = help_h + 14.0 if help_h > 0 else 0.0
     draw_modal_scrim(cr, w, h)
     panel_x, panel_y, panel_w, _ = draw_modal_shell(
         renderer,
@@ -391,10 +394,14 @@ def draw_media_export_overlay(
         w,
         h,
         title=EXPORT_TITLE,
-        subtitle="Esc to go back." if ok is None else "Enter to pick a USB storage device, Esc to go back.",
+        subtitle=EXPORT_SUBTITLE,
         panel_w=min(w * 0.52, 760.0),
-        panel_h=190.0,
+        panel_h=190.0 + (block_h + 12.0 if block_h else 0.0),
     )
+    if block_h:
+        block_x, block_y, block_w = panel_x + 16.0, panel_y + 172.0, panel_w - 32.0
+        draw_panel_background(renderer, cr, block_x, block_y, block_w, block_h, radius=PANEL_RADIUS)
+        draw_help_block(renderer, cr, block_x + 10.0, block_y + 13.0, block_w - 20.0, help_secs)
     text_x = panel_x + 28.0
     line_y = panel_y + 108.0
     if ok is None:

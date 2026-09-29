@@ -336,6 +336,23 @@ def build_help_sections(
             controller = [
                 "Press the prompted button",
             ]
+    elif mode == "media-picker":
+        if keyboard_connected:
+            keyboard = ["Arrow Up/Down: Select USB storage device", "Enter: Save to it", "Esc: Cancel"]
+        if controller_connected:
+            controller = [
+                "D-Pad Up/Down: Select USB storage device",
+                f"{_btn('menu_confirm', 'A')}: Save to it",
+                f"{_btn('menu_cancel', 'B')}: Cancel",
+            ]
+    elif mode in ("media-export", "media-export-done"):
+        # Once the export has ended, confirm picks a device for the next one.
+        ended = mode == "media-export-done"
+        if keyboard_connected:
+            keyboard = [*(["Enter: Pick a USB storage device"] if ended else []), "Esc: Back to Settings"]
+        if controller_connected:
+            confirm = f"{_btn('menu_confirm', 'A')}: Pick a USB storage device"
+            controller = [*([confirm] if ended else []), f"{_btn('menu_cancel', 'B')}: Back to Settings"]
     elif mode == "settings":
         if keyboard_connected:
             keyboard = [

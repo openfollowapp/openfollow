@@ -2591,7 +2591,7 @@ class TestDriveScreens:
         draw_media_picker_overlay(FakeRenderer(), cr, state, 1920, 1080)
         texts = cr.show_text_strings()
         assert "SAVE DIAGNOSTICS" in texts
-        assert "Pick a USB storage device, Enter to save, Esc to cancel." in texts
+        assert "Choose a USB storage device and confirm to save." in texts
         assert any("SanDisk Ultra · FAT32 · 32 GB" in t for t in texts)
         assert any("(APFS can't be written)" in t for t in texts)
 
@@ -2610,17 +2610,17 @@ class TestDriveScreens:
         [
             (
                 ("Collecting diagnostics", "The export continues in the background.", None),
-                "Esc to go back.",
+                "The diagnostics file for support, to a USB storage device.",
                 None,
             ),
             (
                 ("Saved ofdiag-rig.txt to SanDisk Ultra.", "It can be removed now.", True),
-                "Enter to pick a USB storage device, Esc to go back.",
+                "The diagnostics file for support, to a USB storage device.",
                 "success",
             ),
             (
                 ("The USB storage device is full.", "Pick a USB storage device to try again.", False),
-                "Enter to pick a USB storage device, Esc to go back.",
+                "The diagnostics file for support, to a USB storage device.",
                 "warning",
             ),
         ],
@@ -2641,6 +2641,36 @@ class TestDriveScreens:
             t for t in texts if t in {"SAVE DIAGNOSTICS", subtitle, lines[0], lines[1]}
         ]
         assert signs == ([] if sign is None else [sign])
+
+    def test_the_picker_names_the_keys_and_the_bound_buttons(self) -> None:
+        from openfollow.runtime.overlay_draw_hud import draw_media_picker_overlay
+
+        state = OverlayState()
+        state.media_picker_title = "SAVE DIAGNOSTICS"
+        state.keyboard_connected = state.controller_connected = True
+        state.button_labels = {"menu_confirm": "A", "menu_cancel": "B"}
+        cr = FakeCairo()
+        draw_media_picker_overlay(FakeRenderer(), cr, state, 1920, 1080)
+        texts = " | ".join(cr.show_text_strings())
+        assert "Enter: Save to it" in texts and "A: Save to it" in texts and "B: Cancel" in texts
+
+    @pytest.mark.parametrize(
+        ("ok", "enter"),
+        [(None, False), (True, True), (False, True)],
+        ids=["running", "saved", "failed"],
+    )
+    def test_the_export_screen_names_the_keys_and_the_bound_buttons(self, ok, enter: bool) -> None:  # noqa: ANN001
+        from openfollow.runtime.overlay_draw_hud import draw_media_export_overlay
+
+        state = OverlayState()
+        state.media_export_lines = ("x", "y", ok)
+        state.keyboard_connected = state.controller_connected = True
+        state.button_labels = {"menu_confirm": "A", "menu_cancel": "B"}
+        cr = FakeCairo()
+        draw_media_export_overlay(FakeRenderer(), cr, state, 1920, 1080, now=0.0)
+        texts = " | ".join(cr.show_text_strings())
+        assert "B: Back to Settings" in texts and "Esc: Back to Settings" in texts
+        assert ("A: Pick a USB storage device" in texts) is enter
 
     def test_a_drive_that_cannot_be_written_is_led_by_the_crossed_disc(self, monkeypatch) -> None:  # noqa: ANN001
         import openfollow.runtime.overlay_draw_hud as hud

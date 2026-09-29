@@ -1744,6 +1744,7 @@ _NOTICE_LINE_H = 16.0
 _NOTICE_PAD = 7.0
 _NOTICE_SIGN = 14.0
 _NOTICE_MAX_LINES = 3
+_NOTICE_GAP = 8.0
 
 
 def _draw_network_status_row(renderer: Any, cr: Any, x: float, y: float, w: float, level: str, text: str) -> float:
@@ -1851,8 +1852,13 @@ def draw_pi_network_screen(
             continue
 
         if kind == "notice":
+            # Clear of the rows above it, which would otherwise touch its border.
+            if idx > 0 and net.rows[idx - 1].get("kind") not in ("notice", "header"):
+                row_y += _NOTICE_GAP
             level = str(row.get("level") or "info")
             row_y += _draw_network_status_row(renderer, cr, inner_x, row_y, inner_w, level, label) + 6.0
+            if idx + 1 < len(net.rows) and net.rows[idx + 1].get("kind") == "header":
+                row_y += spacing_after_section
             continue
 
         if kind == "action":

@@ -2349,6 +2349,22 @@ class TestDrawPiNetworkScreen:
         assert ("rgb", *border) in cr.calls
         assert next(t for t in cr.texts if "served only" in t.text).rgba == (*COLOR_TEXT, 1.0)
 
+    def test_a_notice_keeps_clear_of_the_row_above_and_the_heading_below(self) -> None:
+        rows = [
+            {"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "192.0.2.10"},
+            {"kind": "notice", "level": "info", "label": "Web UI is served only at 192.0.2.10"},
+            {"kind": "header", "label": "If you still can't reach it"},
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        row = next(t for t in cr.texts if t.text == "eth0")
+        notice = next(t for t in cr.texts if "served only" in t.text)
+        heading = next(t for t in cr.texts if t.text == "IF YOU STILL CAN'T REACH IT")
+        # Baseline to baseline: a data row followed by an unspaced notice sat 27px apart, the heading 35px below.
+        assert notice.y - row.y > 30
+        assert heading.y - notice.y > 40
+
     def test_an_error_notice_leads_with_the_warning_sign(self) -> None:
         rows = [{"kind": "notice", "level": "error", "label": "eth0 has no lease", "value": ""}]
         state = _base_state(pi_network=_network_state(rows=rows))

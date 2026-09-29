@@ -26,6 +26,7 @@ zones live as separate boxes on the same tab.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 from bottle import template
@@ -333,3 +334,12 @@ class TestMarkerTableTextSize:
         )
         assert len(classes) == 3
         assert all("small" in c.split() for c in classes), classes
+
+    def test_the_this_station_toggle_reads_in_normal_case_at_the_button_size(self) -> None:
+        # Its options are labels, so without this they take the form label's caps and spacing.
+        base = (Path(__file__).resolve().parents[1] / "openfollow/web/templates/base.tpl").read_text(encoding="utf-8")
+        css = re.sub(r"/\*.*?\*/", "", "".join(re.findall(r"<style[^>]*>(.*?)</style>", base, re.S)), flags=re.S)
+        rules = {sel.strip(): body for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)}
+        assert "text-transform: none" in rules[".seg-toggle .seg-option"]
+        assert "letter-spacing: normal" in rules[".seg-toggle .seg-option"]
+        assert "font-size: var(--btn-font-sm)" in rules[".seg-toggle--compact .seg-option > span"]

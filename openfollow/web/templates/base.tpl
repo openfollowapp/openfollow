@@ -402,7 +402,8 @@
  /* Segmented two-option toggle (Tracking Mode): equal-width cells. */
  .seg-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 30rem; padding: 4px; border: 1px solid var(--border-soft); border-radius: 0.7rem; background: rgba(0, 0, 0, 0.22); }
  .seg-toggle--3 { grid-template-columns: repeat(3, 1fr); max-width: 36rem; }
- .seg-toggle .seg-option { margin: 0; display: flex; cursor: pointer; }
+ /* An option is a <label>: it reads in normal case, not the form label's caps. */
+ .seg-toggle .seg-option { margin: 0; display: flex; cursor: pointer; text-transform: none; letter-spacing: normal; }
  .seg-toggle .seg-option input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
  .seg-toggle .seg-option > span { flex: 1; display: flex; flex-direction: column; gap: 1px; padding: 0.4rem 0.95rem; border-radius: 0.5rem; color: var(--muted); text-align: center; transition: background 0.12s, color 0.12s; }
  .seg-toggle .seg-option > span strong { font-size: 0.9rem; font-weight: 700; }
@@ -411,7 +412,7 @@
  .seg-toggle .seg-option input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
  /* Row-sized: one line, no sub-label, as wide as its labels. */
  .seg-toggle--compact { display: inline-grid; grid-template-columns: repeat(3, auto); gap: 2px; max-width: none; padding: 2px; border-radius: 0.55rem; }
- .seg-toggle--compact .seg-option > span { padding: 0.22rem 0.6rem; border-radius: 0.4rem; font-size: 0.78rem; font-weight: 700; white-space: nowrap; }
+ .seg-toggle--compact .seg-option > span { padding: 0.22rem 0.6rem; border-radius: 0.4rem; font-size: var(--btn-font-sm); font-weight: 700; white-space: nowrap; }
  .tier-list { display: flex; flex-direction: column; gap: 6px; max-width: 32rem; }
  .tier-option { margin: 0; display: flex; cursor: pointer; }
  .tier-option input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }

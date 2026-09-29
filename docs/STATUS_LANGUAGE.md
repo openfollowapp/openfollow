@@ -201,6 +201,28 @@ second, paler one:
 | Text-only delete (Templates dialog, Detection Masks, Media Gallery ×) | `--error-text` |
 | Any of them under the pointer | `--error-row` fill; a disabled one does not react |
 
+### Confirmation
+
+A question before an action is asked in OpenFollow's own modal, never the
+browser's `confirm()`, `alert()` or `prompt()`. The browser's dialog is titled
+with the station's address, has no danger button, and once a browser has muted
+a page's dialogs it answers "no" without showing anything, so the action
+silently never happens.
+
+- The title asks about the action ("Delete zone?"), the text says what it
+  costs, and the buttons are Cancel and one named after the action ("Delete",
+  "Restart"), never "OK".
+- A destructive action (above) confirms with the danger button.
+- Esc, the close button and the backdrop cancel.
+- A script awaits `modalConfirm({title, message, confirmLabel, danger})` from
+  `base.tpl`. An `hx-confirm` goes through the same modal: it names its button
+  with `data-confirm-label` and its title with `data-confirm-title`, and a
+  destructive one adds `data-confirm-danger`.
+
+[`tests/test_save_feedback.py`](../tests/test_save_feedback.py) fails a native
+dialog, an `hx-confirm` without a named button, and a destructive confirm
+without the danger button.
+
 ### Selection and drawings
 
 Selection is the accent, never a level colour: the selected Media Gallery tile,
@@ -260,7 +282,8 @@ with whatever is under it. Two numbers that set the tokens:
 3. Use the tokens and component classes. No literal colours, alphas or radii
    in templates, partials or scripts.
 4. Never: a pink or light red, a low-alpha red on the page, the gold accent for
-   a state, an icon in a chip, a toast for a failure, a new corner radius.
+   a state, an icon in a chip, a toast for a failure, a new corner radius, a
+   browser dialog.
 5. Check the contrast of every text on its real background.
 6. Compare variants rendered together in one image on a flat background. Two
    separate screenshots sit on different parts of the page gradient and cannot

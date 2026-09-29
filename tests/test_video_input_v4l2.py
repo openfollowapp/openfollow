@@ -265,6 +265,8 @@ class TestV4l2Discovery:
             return _FakeOpen("ok\n")
 
         monkeypatch.setattr("builtins.open", _fake_open)
+        # Otherwise the capture probe ioctls whatever the host has at /dev/video1.
+        monkeypatch.setattr(v4l2_module, "_node_supports_video_capture", lambda path: True)
 
         result = _discover_v4l2_devices()
 

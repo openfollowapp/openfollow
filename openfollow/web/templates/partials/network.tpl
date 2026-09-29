@@ -99,7 +99,7 @@
                      data-mode="{{'edit' if _row_edit else 'view'}}" data-method="{{_rmethod}}" {{!_force}}>
                 <summary class="net-iface-summary">
                     <span class="ia-dot {{'up' if _addr else 'down'}}" aria-hidden="true"></span>
-                    <span class="net-iface-name"><code>{{_name}}</code></span>
+                    <span class="net-iface-name">{{_name}}</span>
                     % if _name and _name == _session:
                     %# Guards the operator against editing the adapter whose
                     %# address is answering their own session.

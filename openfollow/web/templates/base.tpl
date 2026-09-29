@@ -878,7 +878,8 @@
  /* Only the row being edited is accented - expanding a row to read it is not
     a state worth marking, but the one row that will take a write is. */
  .net-iface-row[data-mode="edit"] { border-color: var(--accent); }
- .net-iface-name code { font-size: 0.9rem; }
+ /* A name, read like the station names: the UI font, not monospace. */
+ .net-iface-name { font-weight: 600; }
  .net-iface-addr { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
  /* How the address was come by: a neutral row pill, in the Controller Slots state's grey. */
  .net-iface-method-badge {

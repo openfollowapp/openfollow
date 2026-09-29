@@ -953,8 +953,8 @@ def test_status_lists_every_interface(net_server) -> None:
     _fake, base = net_server
     status, body = _get(base, "/section/network/status")
     assert status == 200
-    assert "<code>eth0</code>" in body
-    assert "<code>wlan0</code>" in body
+    assert '<span class="net-iface-name">eth0</span>' in body
+    assert '<span class="net-iface-name">wlan0</span>' in body
 
 
 def test_no_row_is_forced_open_on_an_ordinary_render(net_server) -> None:

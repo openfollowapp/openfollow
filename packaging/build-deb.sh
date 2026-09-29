@@ -320,6 +320,10 @@ sed -e "s|@VERSION@|$deb_version|g" \
 for s in postinst prerm postrm; do
   install -m 0755 "$DEBIAN_DIR/$s" "$STAGE/DEBIAN/$s"
 done
+# The settings backup runs before the new files are unpacked, so the preinst
+# carries its own copy of the stdlib-only program.
+"$DEBIAN_DIR/render-preinst.sh" "$DEBIAN_DIR/preinst.in" \
+  "$REPO_ROOT/openfollow/privilege/settings_backup.py" "$STAGE/DEBIAN/preinst"
 
 # --- build --------------------------------------------------------------------
 mkdir -p "$OUT_DIR"

@@ -5441,3 +5441,70 @@ def test_runtime_state_names_the_format_the_source_delivered(source_format: str,
     assert rows.index(f"    source format         {shown}") == 1 + next(
         i for i, row in enumerate(rows) if "source framerate" in row
     )
+
+
+# --- E5c. Settings backups ----------------------------------------------------
+
+
+def _backups(state: Path) -> Path:
+    backup_dir = state / "backups"
+    backup_dir.mkdir()
+    (backup_dir / "old-v0.4.2-20260101T000000Z.ofbackup").write_bytes(b"psn_pin = secret-a")
+    (backup_dir / "brave-otter-v0.4.3-20260929T180000Z.ofbackup").write_bytes(b"web_pin = secret-b!")
+    (backup_dir / "notes.txt").write_text("not an archive")
+    return backup_dir
+
+
+def test_collect_settings_backups_lists_names_and_sizes_newest_first(tmp_path: Path) -> None:
+    _backups(tmp_path)
+    rows = diag.collect_settings_backups(tmp_path)
+    text = "\n".join(rows)
+    assert text.index("brave-otter-v0.4.3-20260929T180000Z.ofbackup  19 B") < text.index(
+        "old-v0.4.2-20260101T000000Z.ofbackup  18 B"
+    )
+    assert "notes.txt" not in text
+    assert "secret" not in text
+    assert "Last attempt: not recorded" in text
+
+
+def test_collect_settings_backups_reports_the_last_failure(tmp_path: Path) -> None:
+    backup_dir = _backups(tmp_path)
+    (backup_dir / "last-backup.json").write_text(
+        '{"from": "0.4.3", "to": "0.4.4", "archive": "", "error": "No space left on device", "ts": "T"}'
+    )
+    assert "  Last attempt: T, v0.4.3 -> v0.4.4, failed: No space left on device" in diag.collect_settings_backups(
+        tmp_path
+    )
+
+
+def test_collect_settings_backups_reports_the_last_archive(tmp_path: Path) -> None:
+    backup_dir = _backups(tmp_path)
+    (backup_dir / "last-backup.json").write_text(
+        '{"from": "0.4.3", "to": "0.4.4", "archive": "a.ofbackup", "error": "", "ts": "T"}'
+    )
+    assert "  Last attempt: T, v0.4.3 -> v0.4.4, saved a.ofbackup" in diag.collect_settings_backups(tmp_path)
+
+
+def test_collect_settings_backups_without_archives(tmp_path: Path) -> None:
+    (tmp_path / "backups").mkdir()
+    assert "  Archives: none" in diag.collect_settings_backups(tmp_path)
+
+
+def test_collect_settings_backups_without_the_folder(tmp_path: Path, monkeypatch) -> None:
+    from openfollow.privilege import settings_backup
+
+    monkeypatch.setattr(settings_backup, "STATE_DIR", tmp_path)
+    assert diag.collect_settings_backups() == [f"  [not applicable: no {tmp_path / 'backups'}]"]
+
+
+def test_collect_settings_backups_an_archive_that_vanishes(tmp_path: Path, monkeypatch) -> None:
+    from openfollow.privilege import settings_backup
+
+    (tmp_path / "backups").mkdir()
+    gone = tmp_path / "backups" / "gone-v0.4.2-20260101T000000Z.ofbackup"
+    monkeypatch.setattr(settings_backup, "list_archives", lambda _dir: [gone])
+    assert f"    {gone.name}  [unavailable: No such file or directory]" in diag.collect_settings_backups(tmp_path)
+
+
+def test_the_bundle_carries_the_settings_backups_section() -> None:
+    assert ("E5c. Settings backups", "e5c_backups") in diag._BUNDLE_SECTIONS

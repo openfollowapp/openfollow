@@ -1,0 +1,25 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# Debian preinst: on upgrade, archive the station's settings before the new
+# files are unpacked. The embedded program is openfollow/privilege/
+# settings_backup.py (render-preinst.sh inlines it: nothing from the package is
+# on disk yet). A failed backup never fails the install.
+set -u
+
+case "${1:-}" in
+  upgrade) ;;
+  *) exit 0 ;;
+esac
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "openfollow: settings backup skipped: python3 not found" >&2
+  exit 0
+fi
+
+python3 -I - "$@" <<'OPENFOLLOW_SETTINGS_BACKUP' \
+  || echo "openfollow: settings backup failed, continuing the install" >&2
+@SETTINGS_BACKUP_PY@
+OPENFOLLOW_SETTINGS_BACKUP
+
+exit 0

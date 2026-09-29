@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import openfollow
 from openfollow.logging_setup import RingBufferLogHandler
+from openfollow.privilege import settings_backup
 from openfollow.uri_redaction import redact_uri, redact_uris_in_text
 
 if TYPE_CHECKING:
@@ -1952,6 +1953,34 @@ def _du_kib(path: Path, *, timeout_s: float) -> int | None:
         return None
 
 
+def collect_settings_backups(state_dir: Path | None = None) -> list[str]:
+    """The pre-update settings archives by name and size, and the last attempt.
+
+    Never their contents: an archive holds the web PIN and stream credentials.
+    """
+    state_dir = state_dir or settings_backup.STATE_DIR
+    backup_dir = state_dir / settings_backup.BACKUP_DIR_NAME
+    if not backup_dir.is_dir():
+        return [f"  [not applicable: no {backup_dir}]"]
+    rows = [f"  Folder: {backup_dir}"]
+    archives = settings_backup.list_archives(backup_dir)
+    if not archives:
+        rows.append("  Archives: none")
+    for archive in reversed(archives):
+        try:
+            size = f"{archive.stat().st_size} B"
+        except OSError as exc:
+            size = f"[unavailable: {exc.strerror or exc!s}]"
+        rows.append(f"    {archive.name}  {size}")
+    record = settings_backup.read_record(state_dir)
+    if record is None:
+        rows.append("  Last attempt: not recorded")
+    else:
+        outcome = f"failed: {record.error}" if record.error else f"saved {record.archive}"
+        rows.append(f"  Last attempt: {record.ts}, v{record.from_version} -> v{record.to_version}, {outcome}")
+    return rows
+
+
 def collect_storage_breakdown(
     *,
     repo_root: Path | None = None,
@@ -2884,6 +2913,7 @@ class DiagnosticsBundle:
     e4_cpu: list[str] = field(default_factory=list)
     e5_memdisk: list[str] = field(default_factory=list)
     e5b_storage: list[str] = field(default_factory=list)
+    e5c_backups: list[str] = field(default_factory=list)
     e6_health: list[str] = field(default_factory=list)
     e7_net: list[str] = field(default_factory=list)
     e8_usb: list[str] = field(default_factory=list)
@@ -2912,6 +2942,7 @@ _BUNDLE_SECTIONS: tuple[tuple[str, str], ...] = (
     ("E4. CPU", "e4_cpu"),
     ("E5. Memory + disk", "e5_memdisk"),
     ("E5b. Storage breakdown", "e5b_storage"),
+    ("E5c. Settings backups", "e5c_backups"),
     ("E6. System health", "e6_health"),
     ("E7. Network interfaces", "e7_net"),
     ("E8. USB devices", "e8_usb"),
@@ -3026,6 +3057,7 @@ def collect_bundle(
             extra_paths=extra_storage_paths,
             budget_s=remaining(_STORAGE_SECTION_BUDGET_S),
         ),
+        "e5c_backups": collect_settings_backups,
         "e6_health": collect_system_health,
         "e7_net": collect_network_interfaces,
         "e8_usb": lambda: collect_usb(p),

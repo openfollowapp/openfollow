@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from openfollow.privilege.settings_backup import BACKUP_DIR_NAME, STATE_DIR, read_record
 from openfollow.web._md import render_help_markdown
 
 WHATS_NEW_FILE = Path(__file__).resolve().parent / "whatsnew" / "whatsnew.md"
@@ -20,6 +21,19 @@ WHATS_NEW_FILE = Path(__file__).resolve().parent / "whatsnew" / "whatsnew.md"
 _VERSION_LINE_RE = re.compile(r"v?(\d+(?:\.\d+)*)\S*")
 # Release segment only: a candidate build (``0.4.4rc1``) shows its release's notes.
 _RELEASE_RE = re.compile(r"v?(\d+(?:\.\d+)*)")
+
+
+# Debian spells ``0.4.4rc1`` as ``0.4.4~rc1`` and ``.dev0`` as ``~dev0``.
+_VERSION_NOISE_RE = re.compile(r"[~+\-]|\.(?=[a-z])")
+
+
+@dataclass(frozen=True)
+class BackupNote:
+    """What the pre-update settings backup left behind: a box's two lines and its level."""
+
+    level: str
+    text: str
+    step: str
 
 
 @dataclass(frozen=True)
@@ -51,3 +65,30 @@ def load_whats_new(installed_version: str, path: Path | None = None) -> WhatsNew
     if installed is None or version_line.group(1) != installed:
         return none
     return WhatsNew(version=installed_version, matches=True, html=render_help_markdown(body))
+
+
+def _same_version(package_version: str, installed_version: str) -> bool:
+    def canonical(version: str) -> str:
+        return _VERSION_NOISE_RE.sub("", version.strip().lower())
+
+    return bool(package_version) and canonical(package_version) == canonical(installed_version)
+
+
+def load_backup_note(installed_version: str, state_dir: Path | None = None) -> BackupNote | None:
+    """The backup the update to ``installed_version`` made, or ``None`` when it made none."""
+    state_dir = state_dir or STATE_DIR
+    record = read_record(state_dir)
+    if record is None or not _same_version(record.to_version, installed_version):
+        return None
+    where = state_dir / BACKUP_DIR_NAME
+    if record.error:
+        return BackupNote(
+            level="warning",
+            text=f"The settings could not be backed up before the update: {record.error}",
+            step="Export the configuration under General to keep a copy.",
+        )
+    return BackupNote(
+        level="success",
+        text=f"The settings of v{record.from_version} were backed up before the update.",
+        step=f"Saved as {record.archive} in {where}.",
+    )

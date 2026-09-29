@@ -4,11 +4,21 @@ Install a newer OpenFollow release and restart the service – no SSH session ne
 
 **Installed** shows the version currently running on this device.
 
-**Check & Install Latest** queries GitHub for the newest published release. If it is newer than the installed version, a confirmation dialog appears; confirming downloads the signed update bundle (`.ofupdate`) for this device's architecture, verifies it, and installs it. Progress is shown in a locked dialog and the page reloads automatically once the new version is up. The reloaded page then opens **What's new**: the installed release's notes, or a pointer to the full release notes when the package carries none. It appears once per update on this station, and closing it marks it seen. If the device is already current, you'll see an "already up to date" message and nothing is changed.
+**Check & Install Latest** queries GitHub for the newest published release. If it is newer than the installed version, a confirmation dialog appears; confirming downloads the signed update bundle (`.ofupdate`) for this device's architecture, verifies it, and installs it. Progress is shown in a locked dialog and the page reloads automatically once the new version is up. The reloaded page then opens **What's new**: the installed release's notes, or a pointer to the full release notes when the package carries none. It appears once per update on this station, and closing it marks it seen. It also names the settings backup the update made, or why it couldn't make one. If the device is already current, you'll see an "already up to date" message and nothing is changed.
 
 The install runs detached from the running service (the package restarts the service itself), so the device briefly goes away and comes back on the new version. If the updater is missing the privilege it needs, install fails with a hint to run **Apply Permissions** on the Device page first.
 
 > **Needs internet.** This option reaches `api.github.com` and the release download. On an isolated show LAN with no uplink, use **Offline install** instead.
+
+## Settings backup
+
+Before an update installs, the station saves its settings: the configuration, the marker catalog and your own templates. The Media Gallery and the detection models are not included. Backups are kept in `/var/lib/openfollow/backups/`, one per install, named after the station, the version it came from and the time, for example `brave-otter-v0.4.3-20260929T180000Z.ofbackup`. The ten newest are kept.
+
+The backup holds the web PIN and stream passwords, so only the OpenFollow service user can read it.
+
+If the backup can't be made, for example because the disk is full, the update still installs: the update is often the fix. On a full disk the oldest backups are deleted to make room first, but never the most recent one. To keep a copy of your own, use **Export Configuration** under **General → Configuration** before updating.
+
+To restore a backup, stop the service, then extract `config.toml` and `templates/user/` from the archive into `/var/lib/openfollow/` as the `openfollow` user, and copy `markers.toml` back to the path its `manifest.json` names. A backup is a gzip tar, so `tar xzf` opens it.
 
 ## What's verified before install
 

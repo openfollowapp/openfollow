@@ -2719,13 +2719,18 @@
  } catch (err) {
  return;
  }
+ const backup = notes.backup
+ ? '<div class="notice ' + (notes.backup.level === 'warning' ? 'warning' : 'success') + '">'
+ + '<div>' + escapeHTML(notes.backup.text) + '</div>'
+ + '<div class="notice-sub">' + escapeHTML(notes.backup.step) + '</div></div>'
+ : '';
  openModal({
  title: notes.matches ? "What's new in v" + notes.version : 'Updated to v' + notes.version,
  size: 'large',
- bodyHTML: notes.matches
+ bodyHTML: backup + (notes.matches
  ? notes.html
  : '<p>Find the full release notes and changes on '
- + '<a href="https://openfollow.app/docs" target="_blank" rel="noopener noreferrer">openfollow.app/docs</a>.</p>',
+ + '<a href="https://openfollow.app/docs" target="_blank" rel="noopener noreferrer">openfollow.app/docs</a>.</p>'),
  footerButtons: [{ label: 'Continue', kind: 'primary', onClick: () => closeModal() }],
  onClose: () => { fetch('/api/whats-new/dismiss', { method: 'POST' }).catch(() => {}); },
  });

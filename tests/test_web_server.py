@@ -527,13 +527,39 @@ def test_whats_new_serves_the_notes_for_the_installed_release(live_server, tmp_p
     notes = tmp_path / "whatsnew.md"
     notes.write_text(f"v{openfollow.__version__}\n\n## Controllers\n", encoding="utf-8")
     monkeypatch.setattr(whats_new_module, "WHATS_NEW_FILE", notes)
+    monkeypatch.setattr(whats_new_module, "STATE_DIR", tmp_path)
     status, data = _get_json(base, "/api/whats-new")
     assert status == 200
-    assert data == {"version": openfollow.__version__, "matches": True, "html": "<h2>Controllers</h2>\n"}
+    assert data == {
+        "version": openfollow.__version__,
+        "matches": True,
+        "html": "<h2>Controllers</h2>\n",
+        "backup": None,
+    }
 
     notes.write_text("v0.0.1\n\n## Something older\n", encoding="utf-8")
     _, data = _get_json(base, "/api/whats-new")
-    assert data == {"version": openfollow.__version__, "matches": False, "html": ""}
+    assert data == {"version": openfollow.__version__, "matches": False, "html": "", "backup": None}
+
+
+def test_whats_new_names_the_settings_backup_the_update_made(live_server, tmp_path, monkeypatch) -> None:
+    _, base = live_server
+    monkeypatch.setattr(whats_new_module, "STATE_DIR", tmp_path)
+    (tmp_path / "backups").mkdir()
+    record = {"from": "0.0.1", "to": openfollow.__version__, "archive": "", "error": "Disk full", "ts": ""}
+    (tmp_path / "backups" / "last-backup.json").write_text(json.dumps(record), encoding="utf-8")
+    _, data = _get_json(base, "/api/whats-new")
+    assert data["backup"]["level"] == "warning"
+    assert "Disk full" in data["backup"]["text"]
+
+
+def test_whats_new_escapes_the_backup_note(live_server) -> None:
+    _, base = live_server
+    _, body = _get(base, "/")
+    opener = body[body.index("async function openfollowShowWhatsNew()") :]
+    opener = opener[: opener.index("``modalChooseTemplate``")]
+    assert "escapeHTML(notes.backup.text)" in opener
+    assert "escapeHTML(notes.backup.step)" in opener
 
 
 def test_whats_new_without_notes_points_to_the_docs_and_any_close_dismisses(live_server) -> None:

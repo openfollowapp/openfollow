@@ -108,7 +108,7 @@ from openfollow.web.bindings import check_binding, osc_row_overlap, osc_trigger_
 from openfollow.web.labels import video_error_token
 from openfollow.web.live_alerts import statistics_alerts
 from openfollow.web.login_throttle import LoginThrottle
-from openfollow.web.whats_new import load_whats_new
+from openfollow.web.whats_new import load_backup_note, load_whats_new
 
 logger = logging.getLogger(__name__)
 
@@ -7675,8 +7675,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def api_whats_new() -> Any:
         """The installed release's What's new; ``html`` is empty when the bundled notes describe another."""
         notes = load_whats_new(openfollow.__version__)
+        backup = load_backup_note(openfollow.__version__)
         response.content_type = "application/json"
-        return json.dumps({"version": notes.version, "matches": notes.matches, "html": notes.html})
+        return json.dumps(
+            {
+                "version": notes.version,
+                "matches": notes.matches,
+                "html": notes.html,
+                "backup": None if backup is None else {"level": backup.level, "text": backup.text, "step": backup.step},
+            }
+        )
 
     @app.post("/api/whats-new/dismiss")
     def api_whats_new_dismiss() -> Any:

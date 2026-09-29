@@ -45,6 +45,7 @@ is Pi-only).
 | `packaging/debian/openfollow-splash.service` + `splash.sh` | Boot splash unit + KMS launcher. |
 | `packaging/debian/render-splash.sh` | Pre-renders the splash PNG at build time. |
 | `packaging/debian/{postinst,prerm,postrm}` | Create the `openfollow` user + linger, enable/disable the units. |
+| `packaging/debian/preinst.in` + `render-preinst.sh` | On upgrade, back up the station's settings before the new files unpack (see [Settings backups](#settings-backups)). |
 | `.github/workflows/release-deb.yml` | Release CI: builds the `.deb`, signs it into an `.ofupdate` bundle, and attaches both to the release – natively per arch on GitHub-hosted `ubuntu-24.04-arm` (arm64) and `ubuntu-24.04` (amd64) runners (each inside a `debian:trixie` container). |
 
 ## Install layout
@@ -59,6 +60,7 @@ is Pi-only).
 /usr/share/openfollow/write-to-media         root helper: saves one file to an unmounted USB drive (media.write)
 /var/lib/openfollow/                       service user home + WorkingDirectory (config.toml)
 /var/lib/openfollow/config.example.toml    first-boot seed; bootstrap copies it to config.toml
+/var/lib/openfollow/backups/               pre-update settings archives (*.ofbackup) + last-backup.json
 ```
 
 The example is shipped into `/var/lib/openfollow/` (not just `/usr/share`) because
@@ -134,6 +136,53 @@ web UI at `http://<host-ip>/`.
 
 > In a chroot/image-build context (no running systemd), the maintainer scripts
 > enable the units but skip the live start – exactly what `rpi-image-gen` needs.
+
+## Settings backups
+
+Every upgrade, reinstall and downgrade through the package manager archives the
+station's settings first, whichever route started it: *Check & Install
+Latest*, an offline `.ofupdate`, or a hand-run `apt` / `dpkg`. The package's
+`preinst` does it on `upgrade`, before the new files are unpacked, so it covers
+the release that introduces it.
+
+- **What goes in:** `config.toml`, the marker catalog (`markers.toml`, or
+  wherever `markers_catalog_path` points), `templates/user/`, and a
+  `manifest.json` recording each file's original path, the from / to versions
+  and the UTC time. A missing source is skipped and listed in the manifest. The
+  Media Gallery and the detection models are left out: an update never rewrites
+  them, and they are large.
+- **Where:** `/var/lib/openfollow/backups/<station>-v<old>-<YYYYMMDDTHHMMSSZ>.ofbackup`,
+  a gzip tar. `<station>` is `psn_system_name` without a leading `OpenFollow `,
+  and it and the version are reduced to `[A-Za-z0-9._-]` (`0.4.4~rc1` becomes
+  `v0.4.4-rc1`); the manifest keeps the exact version.
+- **Retention:** the ten newest archives by the timestamp in the name,
+  whatever the station was called.
+- **Secrets:** `config.toml` carries the web PIN and stream credentials, so the
+  folder is `0700` and each archive `0600`, owned by the service user. The
+  archives are never exported or peer-broadcast; the diagnostics bundle (E5c)
+  lists them by name and size only.
+- **Runs as the service user.** The `preinst` is root, but it reads the
+  sources as `openfollow`: that user can write `config.toml`, and so the path
+  it names, so a root reader would copy any file on the box into an archive
+  that user owns.
+- **A failed backup never fails the install.** On a full disk it deletes the
+  oldest archives one at a time and retries, never the newest one that already
+  existed; if it still doesn't fit, or anything else goes wrong, the install
+  continues. The outcome goes to `last-backup.json`, which What's new and the
+  diagnostics bundle read.
+
+The backup program is `openfollow/privilege/settings_backup.py`. Nothing from
+the package is on disk when the `preinst` runs, so `render-preinst.sh` inlines
+the program into `preinst.in` at build time; keep it standard-library only.
+
+To restore by hand:
+
+```bash
+sudo systemctl stop openfollow
+sudo -u openfollow tar xzf /var/lib/openfollow/backups/<file>.ofbackup -C /var/lib/openfollow config.toml templates/user
+# markers.toml: copy it back to the path manifest.json names
+sudo systemctl start openfollow
+```
 
 ## Release flow
 

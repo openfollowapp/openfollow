@@ -5,13 +5,14 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 from pathlib import Path
 
 import pytest
 import tomllib
 
 from openfollow.web import whats_new as whats_new_module
-from openfollow.web.whats_new import load_whats_new
+from openfollow.web.whats_new import load_backup_note, load_whats_new
 
 pytestmark = pytest.mark.unit
 
@@ -107,3 +108,66 @@ def test_the_shipped_notes_render_for_their_release() -> None:
     notes = load_whats_new(first_line.lstrip("v"))
     assert notes.matches
     assert "This Station" in notes.html
+
+
+# --- the settings backup the update left behind -------------------------------
+
+
+def _record(state: Path, **fields: str) -> None:
+    body = {"from": "0.4.3", "to": "0.4.4", "archive": "brave-otter-v0.4.3-20260929T180000Z.ofbackup", "error": ""}
+    body.update(fields, ts="2026-09-29T18:00:00+00:00")
+    (state / "backups").mkdir(exist_ok=True)
+    (state / "backups" / "last-backup.json").write_text(json.dumps(body), encoding="utf-8")
+
+
+def test_a_backup_names_its_archive(tmp_path: Path) -> None:
+    _record(tmp_path)
+    note = load_backup_note("0.4.4", tmp_path)
+    assert note is not None
+    assert note.level == "success"
+    assert "v0.4.3" in note.text
+    assert "brave-otter-v0.4.3-20260929T180000Z.ofbackup" in note.step
+    assert str(tmp_path / "backups") in note.step
+
+
+def test_a_failed_backup_is_a_caution_with_its_reason(tmp_path: Path) -> None:
+    _record(tmp_path, archive="", error="No space left on device")
+    note = load_backup_note("0.4.4", tmp_path)
+    assert note is not None
+    assert note.level == "warning"
+    assert "No space left on device" in note.text
+    assert "Export" in note.step
+
+
+@pytest.mark.parametrize(
+    ("package_version", "installed"),
+    [
+        ("0.4.4", "0.4.4"),
+        ("0.4.4~rc1", "0.4.4rc1"),
+        ("0.4.4~dev0", "0.4.4.dev0"),
+        ("0.2.4~rc9-citest", "0.2.4rc9+citest"),
+    ],
+)
+def test_the_package_version_matches_the_installed_release(
+    tmp_path: Path, package_version: str, installed: str
+) -> None:
+    _record(tmp_path, to=package_version)
+    assert load_backup_note(installed, tmp_path) is not None
+
+
+@pytest.mark.parametrize(
+    ("package_version", "installed"), [("0.4.3", "0.4.4"), ("0.4.4~rc1", "0.4.4rc2"), ("", "0.4.4")]
+)
+def test_a_record_from_another_install_is_not_shown(tmp_path: Path, package_version: str, installed: str) -> None:
+    _record(tmp_path, to=package_version)
+    assert load_backup_note(installed, tmp_path) is None
+
+
+def test_no_record_means_no_note(tmp_path: Path) -> None:
+    assert load_backup_note("0.4.4", tmp_path) is None
+
+
+def test_the_note_reads_the_station_state_folder_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _record(tmp_path)
+    monkeypatch.setattr(whats_new_module, "STATE_DIR", tmp_path)
+    assert load_backup_note("0.4.4") is not None

@@ -371,8 +371,10 @@ class TestRunPasswordless:
             return subprocess.CompletedProcess(argv, 5, "", "unit not found")
 
         monkeypatch.setattr("openfollow.privilege.broker.subprocess.run", _run)
-        with pytest.raises(PrivilegeError, match="unit not found"):
+        with pytest.raises(PrivilegeError, match="unit not found") as exc:
             broker.run(SERVICE_RESTART, ["/usr/bin/systemctl", "restart", "x"])
+        # The command's own exit status and words, apart from the capability's description.
+        assert (exc.value.returncode, exc.value.detail) == (5, "unit not found")
 
 
 def _make_two_phase_runner(prompt_then_succeed_input: list[str | None]) -> object:
@@ -457,8 +459,10 @@ class TestRunNeedsPassword:
 
         monkeypatch.setattr("openfollow.privilege.broker.subprocess.run", _run)
         broker.set_prompter(lambda cap, reason: "hunter2")
-        with pytest.raises(PrivilegeError, match="timed out"):
+        with pytest.raises(PrivilegeError, match="timed out") as exc:
             broker.run(NETWORK_NM_CON_MOD, ["/usr/bin/nmcli", "con", "mod", "x"])
+        # Nothing exited, so there is no status or output of the command's own.
+        assert (exc.value.returncode, exc.value.detail) == (None, "")
 
     def test_password_attempt_nonzero_raises_with_failure_format(
         self,
@@ -488,8 +492,9 @@ class TestRunNeedsPassword:
 
         monkeypatch.setattr("openfollow.privilege.broker.subprocess.run", _run)
         broker.set_prompter(lambda cap, reason: "hunter2")
-        with pytest.raises(PrivilegeError, match="nmcli: not found"):
+        with pytest.raises(PrivilegeError, match="nmcli: not found") as exc:
             broker.run(NETWORK_NM_CON_MOD, ["/usr/bin/nmcli", "con", "mod", "x"])
+        assert (exc.value.returncode, exc.value.detail) == (2, "nmcli: not found")
 
     def test_warm_sudo_cache_skips_prompt(self, broker, monkeypatch) -> None:
         broker._cache[NETWORK_NM_CON_MOD.name] = (

@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+import openfollow.privilege.media_writer as mw
 import openfollow.runtime.removable_media as rm
 from openfollow.privilege.broker import PrivilegeError
 from openfollow.privilege.capabilities import MEDIA_WRITE, MEDIA_WRITE_SCRIPT, CapabilityState
@@ -98,11 +99,17 @@ def _tree(tmp_path: Path) -> dict[str, Any]:
 
 class _Broker:
     def __init__(
-        self, state: CapabilityState = CapabilityState.PASSWORDLESS, *, stdout: str = "", error: str = ""
+        self,
+        state: CapabilityState = CapabilityState.PASSWORDLESS,
+        *,
+        stdout: str = "",
+        error: PrivilegeError | None = None,
+        state_after_error: CapabilityState | None = None,
     ) -> None:
         self._state = state
         self._stdout = stdout
         self._error = error
+        self._state_after_error = state_after_error
         self.calls: list[dict[str, Any]] = []
 
     def state(self, capability: object) -> CapabilityState:
@@ -113,8 +120,14 @@ class _Broker:
         MEDIA_WRITE.assert_argv_allowed(argv)
         self.calls.append({"capability": capability, "argv": argv, **kw})
         if self._error:
-            raise PrivilegeError(self._error)
+            # A failed run can change the verdict, as a password requirement does.
+            self._state = self._state_after_error or self._state
+            raise self._error
         return subprocess.CompletedProcess(argv, 0, self._stdout, "")
+
+
+def _helper_exit(code: int, sentence: str) -> PrivilegeError:
+    return PrivilegeError(f"{MEDIA_WRITE.description}: {sentence}", returncode=code, detail=sentence)
 
 
 def _linux(tree: dict[str, Any]):  # noqa: ANN202
@@ -302,14 +315,52 @@ class TestWriting:
             "It can be removed now.",
         )
 
-    def test_the_helpers_sentence_is_what_the_operator_reads(self, tmp_path: Path) -> None:
-        broker = _Broker(error="Write a file to a USB storage device: The USB storage device is full.")
-        with pytest.raises(MediaError, match=r"^The USB storage device is full\.$"):
+    @pytest.mark.parametrize(
+        ("error", "state_after", "sentence", "action"),
+        [
+            (_helper_exit(mw.EXIT_FULL, "The device is full."), None, "The device is full.", ""),
+            (
+                _helper_exit(mw.EXIT_UNMOUNT_FAILED, "b.txt was written, but not unmounted."),
+                None,
+                "b.txt was written, but not unmounted.",
+                "Wait before removing it.",
+            ),
+            (
+                PrivilegeError(f"{MEDIA_WRITE.description}: timed out after 180s."),
+                None,
+                "The USB storage device could not be written.",
+                "",
+            ),
+            (
+                PrivilegeError("x: Traceback", returncode=1, detail="Traceback (most recent call last):\nRuntimeError"),
+                None,
+                "The USB storage device could not be written.",
+                "",
+            ),
+            (
+                PrivilegeError(f"{MEDIA_WRITE.description}: password required but prompting is disabled here."),
+                CapabilityState.NEEDS_PASSWORD,
+                "Writing to a USB storage device needs Apply Permissions.",
+                "Run Apply Permissions on the Device page, then try again.",
+            ),
+        ],
+        ids=["helper-sentence", "written-but-still-mounted", "timed-out", "helper-crashed", "grant-gone"],
+    )
+    def test_what_the_operator_reads_when_the_helper_fails(
+        self,
+        tmp_path: Path,
+        caplog,
+        error: PrivilegeError,
+        state_after,
+        sentence: str,
+        action: str,  # noqa: ANN001
+    ) -> None:
+        broker = _Broker(error=error, state_after_error=state_after)
+        with pytest.raises(MediaError) as exc:
             write_file("sda1", "b.txt", b"x", broker, platform="linux", run=_linux(_tree(tmp_path)))
-
-    def test_a_refusal_without_a_description_reads_whole(self, tmp_path: Path) -> None:
-        with pytest.raises(MediaError, match="^timed out$"):
-            write_file("sda1", "b.txt", b"x", _Broker(error="timed out"), platform="linux", run=_linux(_tree(tmp_path)))
+        assert (str(exc.value), exc.value.action) == (sentence, action)
+        # Anything that is not the helper's own sentence goes to the log in full.
+        assert (str(error) in caplog.text) is (error.detail == "" or error.returncode == 1)
 
     @pytest.mark.parametrize(
         ("media_id", "filename", "text"),

@@ -5009,7 +5009,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         except ExportBusy as exc:
             return _save_failed(409, str(exc), "Wait for it to finish, then save again.")
         if not status.ok:
-            return _save_failed(422, status.message, RETRY)
+            return _save_failed(422, status.message, status.action or RETRY)
         return template("partials/diagnostics_drive_saved", message=status.message, action=status.action)
 
     @app.get("/api/diagnostics/log-tail")

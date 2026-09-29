@@ -352,9 +352,9 @@ class TestRootHelper:
         host = _Host(tmp_path, _stick(), umount_rc=32)
         code, out, err = host.run(["write", "/dev/sda1"], b"b.txt\nx")
         assert (code, out) == (mw.EXIT_UNMOUNT_FAILED, "")
-        assert err == "b.txt was written, but the USB storage device could not be unmounted. Wait before removing it."
+        assert err == "b.txt was written, but the USB storage device could not be unmounted."
 
-    def test_a_failed_write_whose_unmount_fails_says_to_wait(self, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    def test_a_failed_write_whose_unmount_fails_reports_both(self, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
         def _full(_fd: int, _data: object) -> int:
             raise OSError(errno.ENOSPC, "full")
 
@@ -363,7 +363,7 @@ class TestRootHelper:
         assert host.run(["write", "/dev/sda1"], b"b.txt\nx") == (
             mw.EXIT_UNMOUNT_FAILED,
             "",
-            "The USB storage device is full. It could not be unmounted either. Wait before removing it.",
+            "The USB storage device is full. It could not be unmounted either.",
         )
 
     @pytest.mark.parametrize("fail_on_call", [1, 2], ids=["close-after-a-good-write", "close-after-a-failed-write"])

@@ -965,6 +965,21 @@ def test_save_to_drive_reports_a_failed_write(live_server) -> None:
     )
 
 
+def test_save_to_drive_gives_a_failures_own_next_step(live_server) -> None:
+    from openfollow.runtime.removable_media import MediaError
+
+    def _still_mounted() -> None:
+        raise MediaError("b.txt was written, but it could not be unmounted.", action="Wait before removing it.")
+
+    server, base, _ = live_server
+    _wire_drives(server, write=_still_mounted)
+    status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": "sda1"})
+    assert (status, json.loads(body)) == (
+        422,
+        {"error": "b.txt was written, but it could not be unmounted.", "action": "Wait before removing it."},
+    )
+
+
 def test_save_to_drive_while_another_export_runs(live_server) -> None:
     server, base, _ = live_server
     _wire_drives(server)

@@ -41,7 +41,7 @@ class ExportStatus:
     ok: bool | None = None
     message: str = ""
     generation: int = 0
-    # The one next step, on success.
+    # The one next step: on success, or a failure's own when retrying is not it.
     action: str = ""
 
 
@@ -116,7 +116,7 @@ class DiagnosticsExport:
             result = self._write(media_id, filename, text.encode("utf-8"))
         except MediaError as exc:
             logger.warning("Saving the diagnostics bundle to %s failed: %s", self.status().drive, exc)
-            self._finish(False, str(exc))
+            self._finish(False, str(exc), exc.action)
         except Exception:
             logger.exception("Saving the diagnostics bundle failed.")
             self._finish(False, "The file could not be saved.")

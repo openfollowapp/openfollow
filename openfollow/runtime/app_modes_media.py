@@ -240,4 +240,4 @@ def export_screen_lines(status: ExportStatus) -> tuple[str, str, bool | None]:
         return f"Writing to {status.drive}", "The export continues in the background.", None
     if status.ok:
         return status.message, status.action, True
-    return status.message, RETRY, False
+    return status.message, status.action or RETRY, False

@@ -30,7 +30,9 @@ from typing import Any, cast
 from openfollow.privilege.broker import PrivilegeBroker, PrivilegeError
 from openfollow.privilege.capabilities import MEDIA_WRITE, MEDIA_WRITE_SCRIPT, CapabilityState
 from openfollow.privilege.media_writer import (
+    EXIT_UNMOUNT_FAILED,
     MOUNT_TYPES,
+    SENTENCE_EXITS,
     MediaWriteError,
     check_name,
     is_system_disk,
@@ -85,7 +87,11 @@ class WriteResult:
 
 
 class MediaError(Exception):
-    """A file that was not saved; ``str()`` is what the operator reads."""
+    """A file that was not saved; ``str()`` is what the operator reads, ``action`` a next step other than retrying."""
+
+    def __init__(self, message: str, *, action: str = "") -> None:
+        super().__init__(message)
+        self.action = action
 
 
 class MediaWatch:
@@ -309,6 +315,15 @@ def _write_through_helper(media: Media, filename: str, data: bytes, broker: Priv
             timeout=_WRITE_TIMEOUT_S,
         )
     except PrivilegeError as exc:
-        # The helper's own sentence follows the capability's description.
-        raise MediaError(str(exc).partition(": ")[2] or str(exc)) from exc
+        if exc.returncode in SENTENCE_EXITS and exc.detail:
+            wait = exc.returncode == EXIT_UNMOUNT_FAILED
+            raise MediaError(exc.detail.splitlines()[-1], action="Wait before removing it." if wait else "") from exc
+        # Not the helper's sentence (a timeout, a crash, a lost grant): the operator reads ours, the log the rest.
+        logger.warning("Writing to %s failed: %s", media.device, exc)
+        if broker.state(MEDIA_WRITE) is not CapabilityState.PASSWORDLESS:
+            raise MediaError(
+                "Writing to a USB storage device needs Apply Permissions.",
+                action="Run Apply Permissions on the Device page, then try again.",
+            ) from exc
+        raise MediaError("The USB storage device could not be written.") from exc
     return proc.stdout.strip() or filename

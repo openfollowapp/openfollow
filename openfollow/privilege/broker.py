@@ -60,7 +60,16 @@ def _has_nopasswd_option(listing: str) -> bool:
 
 
 class PrivilegeError(RuntimeError):
-    """Raised when privileged operation fails (missing sudo, cancelled, or exit error)."""
+    """Raised when privileged operation fails (missing sudo, cancelled, or exit error).
+
+    When the command itself ran and exited non-zero, ``returncode`` and ``detail`` (its own
+    stderr, else stdout) are set, so a caller can read the command's words apart from ours.
+    """
+
+    def __init__(self, message: str, *, returncode: int | None = None, detail: str = "") -> None:
+        super().__init__(message)
+        self.returncode = returncode
+        self.detail = detail
 
 
 Prompter = Callable[[Capability, str], "str | None"]
@@ -226,7 +235,7 @@ class PrivilegeBroker:
         stderr = (proc.stderr or "").strip()
         if _PASSWORD_REQUIRED_MARKER not in stderr.lower():
             # Non-password failure (command exited non-zero or user not in sudoers).
-            raise PrivilegeError(_format_failure(capability, proc))
+            raise _exit_failure(capability, proc)
         # Invalidate cache; re-probe after password succeeds.
         self.invalidate(capability)
 
@@ -290,7 +299,7 @@ class PrivilegeBroker:
         if proc.returncode == 0:
             # Successful; caller invalidates cache if needed.
             return proc
-        raise PrivilegeError(_format_failure(capability, proc))
+        raise _exit_failure(capability, proc)
 
 
 def _decoded(proc: subprocess.CompletedProcess[bytes]) -> subprocess.CompletedProcess[str]:
@@ -301,6 +310,11 @@ def _decoded(proc: subprocess.CompletedProcess[bytes]) -> subprocess.CompletedPr
         (proc.stdout or b"").decode("utf-8", "replace"),
         (proc.stderr or b"").decode("utf-8", "replace"),
     )
+
+
+def _exit_failure(capability: Capability, proc: subprocess.CompletedProcess[str]) -> PrivilegeError:
+    detail = (proc.stderr or proc.stdout or "").strip()
+    return PrivilegeError(_format_failure(capability, proc), returncode=proc.returncode, detail=detail)
 
 
 def _format_failure(

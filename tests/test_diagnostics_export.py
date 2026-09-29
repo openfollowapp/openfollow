@@ -107,6 +107,18 @@ class TestJournal:
         ]
 
 
+def test_a_failure_with_its_own_next_step_keeps_it() -> None:
+    def write(*_a: object) -> WriteResult:
+        raise MediaError("b.txt was written, but it could not be unmounted.", action="Wait before removing it.")
+
+    status = DiagnosticsExport(lambda: ("b.txt", "x"), write).run("sda1", "SanDisk Ultra", de.WEB)
+    assert (status.ok, status.message, status.action) == (
+        False,
+        "b.txt was written, but it could not be unmounted.",
+        "Wait before removing it.",
+    )
+
+
 class TestOneAtATime:
     def test_a_second_export_is_refused_while_one_runs(self) -> None:
         release = threading.Event()

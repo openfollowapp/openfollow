@@ -377,8 +377,12 @@ class TestStatusCorner:
             _done(False, message="The USB storage device is full."),
             ("The USB storage device is full.", "Pick a USB storage device to try again.", False),
         ),
+        (
+            ExportStatus(DONE, HUD, "SanDisk Ultra", False, "b.txt was written, but not unmounted.", 1, "Wait."),
+            ("b.txt was written, but not unmounted.", "Wait.", False),
+        ),
     ],
-    ids=["collecting", "writing", "saved", "failed"],
+    ids=["collecting", "writing", "saved", "failed", "failed-with-its-own-next-step"],
 )
 def test_the_export_screen_says_what_is_happening_and_the_next_step(status: ExportStatus, lines: tuple) -> None:
     assert mm.export_screen_lines(status) == lines

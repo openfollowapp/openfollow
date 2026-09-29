@@ -72,6 +72,8 @@ EXIT_TOO_LARGE = 9
 EXIT_WRITE_FAILED = 10
 EXIT_NAME_TAKEN = 11
 EXIT_UNMOUNT_FAILED = 12
+# Exits whose one stderr line is the operator's sentence; EXIT_USAGE is the caller's mistake.
+SENTENCE_EXITS = frozenset(range(EXIT_BAD_NAME, EXIT_UNMOUNT_FAILED + 1))
 
 
 class MediaWriteError(Exception):
@@ -262,14 +264,12 @@ def _write_to_device(
             error = exc if isinstance(exc, MediaWriteError) else MediaWriteError(EXIT_WRITE_FAILED, _WRITE_FAILED)
             # Still mounted outranks why the write failed: pulling the device now can corrupt it.
             if not _run_quietly([umount, str(mountpoint)]):
-                raise MediaWriteError(
-                    EXIT_UNMOUNT_FAILED, f"{error} It could not be unmounted either. Wait before removing it."
-                ) from exc
+                raise MediaWriteError(EXIT_UNMOUNT_FAILED, f"{error} It could not be unmounted either.") from exc
             raise error from exc
         if not _run_quietly([umount, str(mountpoint)]):
             raise MediaWriteError(
                 EXIT_UNMOUNT_FAILED,
-                f"{written} was written, but the USB storage device could not be unmounted. Wait before removing it.",
+                f"{written} was written, but the USB storage device could not be unmounted.",
             )
         return written
     finally:

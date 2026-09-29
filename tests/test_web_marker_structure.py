@@ -25,6 +25,8 @@ zones live as separate boxes on the same tab.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from bottle import template
 
@@ -304,3 +306,30 @@ class TestThisStationToggle:
         assert "tr.classList.add(ok ? 'row-saved' : 'row-failed');" in body
         assert "@keyframes row-flash-green { from { background-color: var(--success-chip); } }" in body
         assert "@keyframes row-flash-red { from { background-color: var(--error-chip); } }" in body
+
+
+class TestMarkerTableTextSize:
+    """Everything in the catalog table reads at the size of its row buttons; its chips keep their own."""
+
+    @staticmethod
+    def _font_sizes() -> dict[str, list[str]]:
+        css = "".join(re.findall(r"<style[^>]*>(.*?)</style>", _render_marker(), re.S))
+        css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        return {
+            selector.strip(): re.findall(r"font-size\s*:\s*([^;]+)", body)
+            for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)
+            if "marker-catalog-table" in selector or "saved-flash" in selector
+        }
+
+    def test_the_table_sets_one_size_and_nothing_inside_sets_another(self) -> None:
+        sizes = self._font_sizes()
+        assert sizes[".marker-catalog-table"] == ["var(--btn-font-sm)"]
+        others = [f"{sel}: {v}" for sel, vs in sizes.items() if sel != ".marker-catalog-table" for v in vs]
+        assert [o for o in others if not o.endswith(": inherit")] == []
+
+    def test_every_text_button_in_the_table_is_small(self) -> None:
+        classes = re.findall(
+            r'<button type="button" class="([^"]+)"[^>]*>(?:Save|Delete|Add)</button>', _render_marker()
+        )
+        assert len(classes) == 3
+        assert all("small" in c.split() for c in classes), classes

@@ -218,6 +218,8 @@ class ConfigWebServer:
         psn_source_advisory_provider: (Callable[[], dict[str, str]] | None) = None,
         # Removable drives and the one-at-a-time bundle export to them; None where unwired.
         media_list_provider: Callable[[], list[Media]] | None = None,
+        # The same listing for diagnostics, raising where the picker's lists nothing.
+        media_scan_provider: Callable[[], list[Media]] | None = None,
         diagnostics_export: DiagnosticsExport | None = None,
     ) -> None:
         self._config_path = os.path.abspath(config_path)
@@ -285,6 +287,7 @@ class ConfigWebServer:
         self.midi_port_names_provider = midi_port_names_provider
         self.camera_names_provider = camera_names_provider
         self.media_list_provider = media_list_provider
+        self.media_scan_provider = media_scan_provider
         self.diagnostics_export = diagnostics_export
         self._started_at = time.monotonic()
         self._app = Bottle()

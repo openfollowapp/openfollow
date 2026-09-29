@@ -16,7 +16,7 @@ import openfollow.privilege.media_writer as mw
 import openfollow.runtime.removable_media as rm
 from openfollow.privilege.broker import PrivilegeError
 from openfollow.privilege.capabilities import MEDIA_WRITE, MEDIA_WRITE_SCRIPT, CapabilityState
-from openfollow.runtime.removable_media import MediaError, list_media, write_file
+from openfollow.runtime.removable_media import MediaError, list_media, scan_media, write_file
 from tests._lsblk_samples import APP_LIST, APP_TREE
 
 pytestmark = pytest.mark.unit
@@ -185,6 +185,18 @@ class TestLinuxListing:
         media = list_media(_Broker(), platform="linux", run=_linux(sample))
         assert [(m.id, m.label, m.writable) for m in media] == [("sda2", "SanDisk Ultra · FAT32 · 31 GB", True)]
 
+    def test_each_partition_names_the_disk_it_sits_on(self, tmp_path: Path) -> None:
+        media = list_media(_Broker(), platform="linux", run=_linux(_tree(tmp_path)))
+        assert {m.id: m.disk for m in media} == {
+            "sda1": "sda",
+            "sdb1": "sdb",
+            "sdc1": "sdc",
+            "sdc2": "sdc",
+            "sdf": "sdf",
+            "sdh1": "sdh",
+        }
+        assert [m.disk for m in list_media(_Broker(), platform="linux", run=_linux(APP_LIST))] == ["sda"]
+
     def test_a_failed_listing_is_no_drives(self, caplog) -> None:  # noqa: ANN001
         def run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
             raise FileNotFoundError("lsblk")
@@ -192,6 +204,16 @@ class TestLinuxListing:
         with caplog.at_level("WARNING", logger=rm.__name__):
             assert list_media(_Broker(), platform="linux", run=run) == []
         assert "Listing removable drives failed" in caplog.text
+
+    def test_a_failed_scan_says_so_instead_of_listing_nothing(self) -> None:
+        def run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+            raise subprocess.CalledProcessError(1, argv)
+
+        with pytest.raises(MediaError, match="USB storage devices could not be listed"):
+            scan_media(_Broker(), platform="linux", run=run)
+
+    def test_a_scan_on_another_platform_finds_nothing(self) -> None:
+        assert scan_media(platform="win32", run=subprocess.run) == []
 
     def test_another_platform_lists_nothing(self) -> None:
         def run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
@@ -268,6 +290,15 @@ class TestMacListing:
             "disk7": ("Old Stick · FAT · 1.0 GB", True, ""),
         }
 
+    def test_each_volume_names_the_disk_it_sits_on(self, tmp_path: Path) -> None:
+        media = list_media(platform="darwin", run=_mac(*_mac_fixture(tmp_path)))
+        assert {m.id: m.disk for m in media} == {
+            "disk4s1": "disk4",
+            "disk5s2": "disk5",
+            "disk6s1": "disk6",
+            "disk7": "disk7",
+        }
+
     @pytest.mark.parametrize(
         "root",
         [
@@ -318,6 +349,8 @@ class TestMacListing:
         assert [(m.id, m.device, m.label, m.writable) for m in media] == [
             ("disk10s1", "/dev/disk10s1", "MACSTICK · APFS · 64 GB", True)
         ]
+        # The physical disk, which is what the USB device lists, not the synthesized container.
+        assert media[0].disk == "disk9"
         result = write_file("disk10s1", "b.txt", b"x", platform="darwin", run=run)
         assert (result.filename, (stick / "b.txt").read_bytes()) == ("b.txt", b"x")
 

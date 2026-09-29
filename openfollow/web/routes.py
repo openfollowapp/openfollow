@@ -3061,6 +3061,7 @@ def _build_diagnostics_providers(
         # USB-visibility cross-reference indices.
         midi_port_names=server.midi_port_names_provider,
         camera_names=server.camera_names_provider,
+        removable_media=server.media_scan_provider,
     )
 
 

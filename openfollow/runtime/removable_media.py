@@ -66,7 +66,7 @@ Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
 @dataclass(frozen=True)
 class Media:
-    """One partition a file could go to. ``id`` is the kernel's name for it (``sda1``, ``disk4s1``)."""
+    """One partition a file could go to. ``id`` and ``disk`` are the kernel's names (``sda1`` on ``sda``)."""
 
     id: str
     device: str
@@ -75,6 +75,7 @@ class Media:
     mountpoint: str | None
     writable: bool
     reason: str = ""
+    disk: str = ""
 
 
 @dataclass(frozen=True)
@@ -194,6 +195,7 @@ def _linux_media(tree: dict[str, Any], can_mount: bool) -> list[Media]:
                     mountpoint=mountpoint,
                     writable=writable,
                     reason=reason,
+                    disk=str(disk.get("name")),
                 )
             )
     return media
@@ -261,6 +263,7 @@ def _mac_media(run: Runner) -> list[Media]:
                     mountpoint=mountpoint,
                     writable=writable,
                     reason=reason,
+                    disk=str(disk.get("DeviceIdentifier") or ""),
                 )
             )
     return media
@@ -274,13 +277,16 @@ def _can_mount(broker: PrivilegeBroker | None) -> bool:
     return broker is not None and broker.state(MEDIA_WRITE) is CapabilityState.PASSWORDLESS
 
 
-def list_media(
+def scan_media(
     broker: PrivilegeBroker | None = None,
     *,
     platform: str = sys.platform,
     run: Runner = subprocess.run,
 ) -> list[Media]:
-    """Every removable partition, writable or not (the reason says why not); never the station's own disks."""
+    """Every removable partition, writable or not (the reason says why not); never the station's own disks.
+
+    Raises :class:`MediaError` when the listing itself fails, for a caller that must tell that apart from none.
+    """
     try:
         if platform.startswith("linux"):
             tree = json.loads(_output(run, ["/usr/bin/lsblk", "-J", "-b", "-o", _LSBLK_COLUMNS]))
@@ -288,8 +294,22 @@ def list_media(
         if platform == "darwin":
             return _mac_media(run)
     except Exception as exc:  # noqa: BLE001 – it parses another tool's output; any failure there is a failed listing
-        logger.warning("Listing removable drives failed: %s", exc)
+        raise MediaError(f"USB storage devices could not be listed: {exc}") from exc
     return []
+
+
+def list_media(
+    broker: PrivilegeBroker | None = None,
+    *,
+    platform: str = sys.platform,
+    run: Runner = subprocess.run,
+) -> list[Media]:
+    """:func:`scan_media` for a picker: a failed listing is logged and lists nothing."""
+    try:
+        return scan_media(broker, platform=platform, run=run)
+    except MediaError as exc:
+        logger.warning("Listing removable drives failed: %s", exc)
+        return []
 
 
 def write_file(

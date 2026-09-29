@@ -32,11 +32,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import openfollow
 from openfollow.logging_setup import RingBufferLogHandler
 from openfollow.uri_redaction import redact_uri, redact_uris_in_text
+
+if TYPE_CHECKING:
+    from openfollow.runtime.removable_media import Media
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +209,8 @@ class DiagnosticsProviders:
     # for every device, with a footer note explaining why.
     midi_port_names: Callable[[], list[str]] | None = None
     camera_names: Callable[[], list[str]] | None = None
+    # What the USB storage device picker lists; matched to USB devices by disk.
+    removable_media: Callable[[], list[Media]] | None = None
 
     # Live per-controller snapshot for the dedicated gamepad section and the
     # USB visibility column.
@@ -2296,6 +2301,8 @@ class UsbDevice:
     manufacturer: str = ""
     serial: str = ""
     is_hub: bool = False
+    # Kernel names of the disks it carries (``sda``, ``disk4``), never a partition's.
+    disks: tuple[str, ...] = ()
 
 
 # macOS speed enum → human; covers what ``system_profiler`` emits.
@@ -2340,6 +2347,7 @@ def _walk_macos(node: dict[str, Any], out: list[UsbDevice]) -> None:
                 manufacturer=(node.get("manufacturer") or "").strip(),
                 serial=(node.get("serial_num") or "").strip(),
                 is_hub=is_hub,
+                disks=tuple(str(m["bsd_name"]) for m in node.get("Media") or [] if m.get("bsd_name")),
             )
         )
     for child in node.get("_items") or []:
@@ -2363,14 +2371,35 @@ def collect_usb_devices_macos() -> list[UsbDevice]:
     return devices
 
 
-def collect_usb_devices_linux(sysfs_root: Path | None = None) -> list[UsbDevice]:
+def _usb_disk_owners(block_root: Path) -> dict[str, list[str]]:
+    """``{usb device: [disk, ...]}``: each disk in ``/sys/block`` resolved up to the USB device above it."""
+    owners: dict[str, list[str]] = {}
+    try:
+        disks = sorted(block_root.iterdir())
+    except OSError:
+        return owners
+    for disk in disks:
+        owner = next((d for d in disk.resolve().parents if (d / "idVendor").is_file()), None)
+        if owner is not None:
+            owners.setdefault(owner.name, []).append(disk.name)
+    return owners
+
+
+_USB_SYSFS = Path("/sys/bus/usb/devices")
+_BLOCK_SYSFS = Path("/sys/block")
+
+
+def collect_usb_devices_linux(sysfs_root: Path | None = None, block_root: Path | None = None) -> list[UsbDevice]:
     """Read ``/sys/bus/usb/devices/*/{idVendor,idProduct,product,
     manufacturer,serial,speed,bDeviceClass}`` directly. No
     subprocess, no parser fragility – the kernel's exposing
     structured fields and we're just reading them."""
-    root = sysfs_root or Path("/sys/bus/usb/devices")
+    root = sysfs_root or _USB_SYSFS
     if not root.exists():
         return []
+    # The host's disks only beside the host's sysfs: a caller's own tree reads none unless it names block_root.
+    block = block_root if block_root is not None else (_BLOCK_SYSFS if sysfs_root is None else None)
+    owners = _usb_disk_owners(block) if block is not None else {}
     devices: list[UsbDevice] = []
     # Guard against ``OSError`` / ``PermissionError`` from
     # ``iterdir()`` – sysfs can exist but be unreadable on
@@ -2389,7 +2418,8 @@ def collect_usb_devices_linux(sysfs_root: Path | None = None) -> list[UsbDevice]
         if not idv and not idp:
             continue
         speed_raw = _read_sysfs(entry, "speed")
-        speed = f"{speed_raw} Mb/s" if speed_raw and speed_raw.isdigit() else (speed_raw or "?")
+        # Mb/s; a low-speed device reports "1.5".
+        speed = f"{speed_raw} Mb/s" if re.fullmatch(r"\d+(?:\.\d+)?", speed_raw) else (speed_raw or "?")
         dclass = _read_sysfs(entry, "bDeviceClass")
         # USB device class 09 = hub. Match name fallback so
         # devices that describe themselves through their interface
@@ -2405,6 +2435,7 @@ def collect_usb_devices_linux(sysfs_root: Path | None = None) -> list[UsbDevice]
                 manufacturer=_read_sysfs(entry, "manufacturer") or "",
                 serial=_read_sysfs(entry, "serial") or "",
                 is_hub=is_hub,
+                disks=tuple(owners.get(entry.name, ())),
             )
         )
     return devices
@@ -2504,11 +2535,14 @@ def render_usb_table(
     midi_ports: list[str] | None,
     gamepads: list[dict[str, Any]] | None,
     cameras: list[str] | None,
+    mice: list[dict[str, Any]] | None = None,
+    media: list[Media] | None = None,
 ) -> list[str]:
     """Render the USB section as a fixed-width table. Each non-hub
     device gets a "visibility" cell that cross-references the
     device against each input subsystem's enumeration: gamepads by
-    the USB ids in their SDL GUID, everything else by product /
+    the USB ids in their SDL GUID, 3D mice by the USB ids their status
+    reports, storage by the disks it carries, everything else by product /
     manufacturer string. Operator question this answers in one
     glance: "is the kernel seeing this device, and is OpenFollow
     picking it up?"
@@ -2519,7 +2553,10 @@ def render_usb_table(
     _h = f"  {'Bus':<5}  {'VID:PID':<9}  {'Speed':<10}  {'Name':<34}  {'Manufacturer':<18}  {'Serial':<17}  OpenFollow"
     _sep = f"  {'-' * 5}  {'-' * 9}  {'-' * 10}  {'-' * 34}  {'-' * 18}  {'-' * 17}  {'-' * 24}"
     rows: list[str] = [_h, _sep]
-    counts = {"hub": 0, "midi": 0, "gamepad": 0, "camera": 0, "other": 0, "unclaimed": 0}
+    counts = {"hub": 0, "midi": 0, "gamepad": 0, "camera": 0, "mouse3d": 0, "storage": 0, "other": 0, "unclaimed": 0}
+    mice_by_usb_id: dict[str, list[dict[str, Any]]] = {}
+    for mouse in mice or []:
+        mice_by_usb_id.setdefault(str(mouse.get("usb_id")), []).append(mouse)
     # A pad is matched by its GUID ids only when a device carries them: SDL's
     # macOS backend puts ids in the GUID that no USB device has.
     usb_ids = {f"{d.vid}:{d.pid}" for d in devices}
@@ -2539,14 +2576,31 @@ def render_usb_table(
         else:
             haystack = " | ".join(s for s in (d.name.lower(), d.manufacturer.lower()) if s)
             vis = ""
-            raw = _best_usb_match(haystack, midi_ports or [])
+            # Exact matches (USB ids, disks) before any name match, which a shared token can mislead.
+            usb_id = f"{d.vid}:{d.pid}"
+            same_model = mice_by_usb_id.get(usb_id)
+            # A pad's name comes from its driver ("Generic X-Box pad" on xpad) and often
+            # shares no token with the USB product string.
+            raw = gamepad_by_usb_id.get(usb_id)
             if raw:
-                vis = f"MIDI: {raw}"
-                counts["midi"] += 1
+                vis = f"gamepad: {raw}"
+                counts["gamepad"] += 1
+            elif same_model:
+                name = next((m["product_name"] for m in same_model if m.get("product_name")), usb_id)
+                # Pucks of one model share their USB ids, so each row carries every state among them.
+                states = [s for s in dict.fromkeys(str(m.get("state") or "") for m in same_model) if s]
+                vis = f"3D mouse: {name}" + (f" ({', '.join(states)})" if states and states != ["open"] else "")
+                counts["mouse3d"] += 1
+            elif d.disks:
+                vis = f"storage: {_storage_state(d.disks, media)}"
+                counts["storage"] += 1
             if not vis:
-                # USB ids first: a pad's name comes from its driver ("Generic X-Box
-                # pad" on xpad) and often shares no token with the USB product string.
-                raw = gamepad_by_usb_id.get(f"{d.vid}:{d.pid}") or _best_usb_match(haystack, gamepad_names)
+                raw = _best_usb_match(haystack, midi_ports or [])
+                if raw:
+                    vis = f"MIDI: {raw}"
+                    counts["midi"] += 1
+            if not vis:
+                raw = _best_usb_match(haystack, gamepad_names)
                 if raw:
                     vis = f"gamepad: {raw}"
                     counts["gamepad"] += 1
@@ -2556,9 +2610,9 @@ def render_usb_table(
                     vis = f"camera: {raw}"
                     counts["camera"] += 1
             if not vis:
-                any_index = any(x is not None for x in (midi_ports, gamepads, cameras))
+                any_index = any(x is not None for x in (midi_ports, gamepads, cameras, mice, media))
                 if any_index:
-                    vis = "?  endpoint device, no MIDI, gamepad or camera match"
+                    vis = "?  endpoint device, no MIDI, gamepad, camera, 3D mouse or storage match"
                     counts["unclaimed"] += 1
                 else:
                     vis = "–"
@@ -2576,6 +2630,8 @@ def render_usb_table(
         f"{counts['midi']} MIDI, "
         f"{counts['gamepad']} gamepad, "
         f"{counts['camera']} camera, "
+        f"{counts['mouse3d']} 3D mouse, "
+        f"{counts['storage']} storage, "
         f"{counts['other'] + counts['unclaimed']} other endpoint)"
     )
     notes = []
@@ -2585,9 +2641,25 @@ def render_usb_table(
         notes.append("gamepad subsystem not available")
     if cameras is None:
         notes.append("camera subsystem not available")
+    if mice is None:
+        notes.append("3D mouse status not available")
+    if media is None:
+        notes.append("storage listing not available")
     if notes:
         rows.append("  [note: visibility column degraded – " + ", ".join(notes) + "]")
     return rows
+
+
+def _storage_state(disks: tuple[str, ...], media: list[Media] | None) -> str:
+    """Whether the picker can write to any partition on these disks, else every reason it gives."""
+    if media is None:
+        return "not checked"
+    parts = [m for m in media if m.disk in disks]
+    if not parts:
+        return "not offered"
+    if any(m.writable for m in parts):
+        return "writable"
+    return ", ".join(dict.fromkeys(m.reason for m in parts))
 
 
 def collect_usb(p: DiagnosticsProviders) -> list[str]:
@@ -2618,7 +2690,20 @@ def collect_usb(p: DiagnosticsProviders) -> list[str]:
         cam, err = _safely_value(p.camera_names, "camera_names", None)
         if err is not None:
             provider_errors.append(err)
-    rows = render_usb_table(devices, midi_ports=midi, gamepads=gp, cameras=cam)
+    mice: list[dict[str, Any]] | None = None
+    if p.runtime_stats is not None:
+        stats, err = _safely_value(p.runtime_stats, "runtime_stats", {})
+        if err is not None:
+            provider_errors.append(err)
+        block = (stats or {}).get("mouse3d")
+        # A disabled or unsupported 3D Mouse publishes a block with no devices: nothing to match.
+        mice = None if block is None else list(block.get("devices") or [])
+    media: list[Media] | None = None
+    if p.removable_media is not None:
+        media, err = _safely_value(p.removable_media, "removable_media", None)
+        if err is not None:
+            provider_errors.append(err)
+    rows = render_usb_table(devices, midi_ports=midi, gamepads=gp, cameras=cam, mice=mice, media=media)
     for sentinel in provider_errors:
         rows.append(f"  {sentinel}")
     return rows

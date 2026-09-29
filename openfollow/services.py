@@ -2015,7 +2015,7 @@ class AppRuntimeServices:
 
     def init_web_server(self) -> None:
         from openfollow.runtime.diagnostics_export import DiagnosticsExport
-        from openfollow.runtime.removable_media import list_media, write_file
+        from openfollow.runtime.removable_media import list_media, scan_media, write_file
         from openfollow.web import ConfigWebServer  # noqa: F811
         from openfollow.web.routes import build_diagnostics_bundle
 
@@ -2102,6 +2102,7 @@ class AppRuntimeServices:
             # Startup PSN-source advisory for the PSN section.
             psn_source_advisory_provider=self._psn_source_advisory,
             media_list_provider=lambda: list_media(broker),
+            media_scan_provider=lambda: scan_media(broker),
         )
         self.diagnostics_export = DiagnosticsExport(
             build=lambda: build_diagnostics_bundle(server),

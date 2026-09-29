@@ -318,6 +318,55 @@ def test_api_diagnostics_bundle_download_and_disk_copy_share_one_name(live_serve
     assert f'filename="{on_disk.name}"' in headers.get("Content-Disposition", "")
 
 
+def test_api_diagnostics_bundle_usb_table_names_the_3d_mouse_and_the_stick(live_server, monkeypatch, tmp_path) -> None:
+    from openfollow.runtime.removable_media import Media
+    from openfollow.web import diagnostics
+
+    server, base, _ = live_server
+    monkeypatch.setattr(diagnostics, "default_disk_root", lambda: tmp_path / "bundles")
+    monkeypatch.setattr(diagnostics.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        diagnostics,
+        "collect_usb_devices_linux",
+        lambda: [
+            diagnostics.UsbDevice(vid="046d", pid="c626", name="SpaceNavigator"),
+            diagnostics.UsbDevice(vid="0781", pid="5581", name="Ultra", disks=("sda",)),
+        ],
+    )
+    puck = {"usb_id": "046d:c626", "product_name": "SpaceNavigator", "state": "open"}
+    server._runtime_stats_provider = lambda: {"mouse3d": {"enabled": True, "devices": [puck]}}
+    server.media_scan_provider = lambda: [
+        Media("sda2", "/dev/sda2", "SanDisk Ultra", "", None, False, "APFS can't be written", "sda")
+    ]
+    _, body, _ = _get(base, "/api/diagnostics/bundle")
+    usb = body[body.index("=== E8. USB devices ===") :]
+    assert "3D mouse: SpaceNavigator" in usb
+    assert "storage: APFS can't be written" in usb
+
+
+def test_api_diagnostics_bundle_usb_table_says_when_the_listing_failed(live_server, monkeypatch, tmp_path) -> None:
+    from openfollow.runtime.removable_media import MediaError
+    from openfollow.web import diagnostics
+
+    def failed() -> list:
+        raise MediaError("USB storage devices could not be listed.")
+
+    server, base, _ = live_server
+    monkeypatch.setattr(diagnostics, "default_disk_root", lambda: tmp_path / "bundles")
+    monkeypatch.setattr(diagnostics.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        diagnostics,
+        "collect_usb_devices_linux",
+        lambda: [diagnostics.UsbDevice(vid="0781", pid="5581", name="Ultra", disks=("sda",))],
+    )
+    server.media_scan_provider = failed
+    _, body, _ = _get(base, "/api/diagnostics/bundle")
+    usb = body[body.index("=== E8. USB devices ===") : body.index("=== E9.")]
+    assert "storage: not checked" in usb
+    assert "storage listing not available" in usb
+    assert "USB storage devices could not be listed." in usb
+
+
 def test_api_diagnostics_bundle_returns_text_attachment(
     live_server,
     monkeypatch,

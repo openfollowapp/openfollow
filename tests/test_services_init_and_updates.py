@@ -1023,6 +1023,29 @@ class TestInitWebServer:
         assert kwargs["midi_port_names_provider"]() == []
         assert isinstance(kwargs["camera_names_provider"](), list)
 
+    def test_the_picker_lists_quietly_and_diagnostics_hears_a_failed_listing(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+
+        from openfollow import web
+        from openfollow.runtime import removable_media
+        from openfollow.runtime.removable_media import MediaError
+
+        def listing_fails(_run: object, argv: list[str]) -> str:
+            raise subprocess.CalledProcessError(1, argv)
+
+        monkeypatch.setattr(web, "ConfigWebServer", _FakeWebServer)
+        # lsblk on Linux, diskutil on macOS: whichever this host runs fails.
+        monkeypatch.setattr(removable_media, "_output", listing_fails)
+        services._preview_provider = SimpleNamespace(get_snapshot=lambda: None)
+        services._snapshot_provider = SimpleNamespace(get_snapshot=lambda: None)
+        services.init_web_server()
+        kwargs = services._app._web_server.kwargs
+        assert kwargs["media_list_provider"]() == []
+        with pytest.raises(MediaError):
+            kwargs["media_scan_provider"]()
+
     def test_status_provider_delegates_to_attached_manager(
         self,
         services: AppRuntimeServices,

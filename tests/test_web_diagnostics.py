@@ -25,6 +25,7 @@ import pytest
 
 import openfollow
 from openfollow.logging_setup import RingBufferLogHandler
+from openfollow.runtime.removable_media import Media
 from openfollow.web import diagnostics as diag
 
 pytestmark = pytest.mark.unit
@@ -996,7 +997,7 @@ def test_render_usb_table_generic_token_does_not_steal_name() -> None:
     # "gamesir" token – exactly once.
     assert joined.count("gamepad: GameSir-G7 SE Controller for Xbox") == 1
     # Bare "Controller" must not claim GameSir name without distinctive overlap.
-    assert "?  endpoint device, no MIDI, gamepad or camera match" in joined
+    assert "?  endpoint device, no MIDI, gamepad, camera, 3D mouse or storage match" in joined
 
 
 _PRO2_GUID = "03008665c82d00001e20000014010000"  # SDL GUID of an 8BitDo Pro 2 on xpad: 2dc8:201e
@@ -1099,7 +1100,7 @@ def test_render_usb_table_ignores_a_guid_without_usable_ids(guid: object, vid: s
     )
     joined = "\n".join(out)
     assert "gamepad:" not in joined
-    assert "?  endpoint device, no MIDI, gamepad or camera match" in joined
+    assert "?  endpoint device, no MIDI, gamepad, camera, 3D mouse or storage match" in joined
 
 
 def test_usb_match_score_does_not_double_count_repeated_tokens() -> None:
@@ -1261,12 +1262,89 @@ def test_collect_usb_linux_reads_sysfs(tmp_path) -> None:
     (hub / "idProduct").write_text("0b40")
     (hub / "bDeviceClass").write_text("09")
 
-    devices = diag.collect_usb_devices_linux(sysfs_root=tmp_path)
+    devices = diag.collect_usb_devices_linux(sysfs_root=tmp_path, block_root=tmp_path / "no-block")
     names_by_pid = {d.pid: d for d in devices}
     assert names_by_pid["0031"].name == "MIDI Mix"
     assert names_by_pid["0031"].speed == "12 Mb/s"
     assert names_by_pid["0031"].is_hub is False
     assert names_by_pid["0b40"].is_hub is True
+
+
+def _usb_sysfs(tmp_path: Path) -> tuple[Path, Path]:
+    """A stick on 3-2 and the SD card, shaped like a Pi 5's sysfs: bus and block entries link into devices/."""
+    usb = tmp_path / "devices" / "xhci-hcd.1" / "usb3"
+    stick = usb / "3-2"
+    (stick / "3-2:1.0" / "host0" / "target0:0:0" / "0:0:0:0" / "block" / "sda").mkdir(parents=True)
+    (stick / "idVendor").write_text("0781")
+    (stick / "idProduct").write_text("5581")
+    (stick / "product").write_text("Ultra")
+    (usb / "idVendor").write_text("1d6b")
+    (usb / "idProduct").write_text("0002")
+    (usb / "bDeviceClass").write_text("09")
+    card = tmp_path / "devices" / "mmc" / "mmc0:0001" / "block" / "mmcblk0"
+    card.mkdir(parents=True)
+    bus, block = tmp_path / "bus", tmp_path / "block"
+    bus.mkdir()
+    block.mkdir()
+    (bus / "usb3").symlink_to(usb)
+    (bus / "3-2").symlink_to(stick)
+    (block / "sda").symlink_to(stick / "3-2:1.0" / "host0" / "target0:0:0" / "0:0:0:0" / "block" / "sda")
+    (block / "mmcblk0").symlink_to(card)
+    return bus, block
+
+
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [("1.5", "1.5 Mb/s"), ("12", "12 Mb/s"), ("480", "480 Mb/s"), ("5000", "5000 Mb/s"), ("", "?"), ("fast", "fast")],
+    ids=["low-speed", "full-speed", "high-speed", "super-speed", "missing", "not-a-number"],
+)
+def test_collect_usb_linux_reads_the_speed_in_mbps(tmp_path, raw: str, shown: str) -> None:
+    device = tmp_path / "1-1"
+    device.mkdir()
+    (device / "idVendor").write_text("046d")
+    (device / "idProduct").write_text("c626")
+    (device / "speed").write_text(raw)
+    (device_speed,) = [d.speed for d in diag.collect_usb_devices_linux(sysfs_root=tmp_path, block_root=tmp_path / "x")]
+    assert device_speed == shown
+
+
+def test_collect_usb_linux_names_the_disks_each_device_carries(tmp_path) -> None:
+    bus, block = _usb_sysfs(tmp_path)
+    devices = {d.pid: d for d in diag.collect_usb_devices_linux(sysfs_root=bus, block_root=block)}
+    assert devices["5581"].disks == ("sda",)
+    # The root hub above it carries none, and the SD card belongs to no USB device.
+    assert devices["0002"].disks == ()
+
+
+def test_collect_usb_linux_reads_the_hosts_disks_only_with_the_hosts_sysfs(tmp_path, monkeypatch) -> None:
+    bus, block = _usb_sysfs(tmp_path)
+    monkeypatch.setattr(diag, "_USB_SYSFS", bus)
+    monkeypatch.setattr(diag, "_BLOCK_SYSFS", block)
+    by_default = {d.pid: d.disks for d in diag.collect_usb_devices_linux()}
+    # A caller's own tree (a test's) reads no disks unless it names them, so the host's never leak in.
+    own_tree = {d.pid: d.disks for d in diag.collect_usb_devices_linux(sysfs_root=bus)}
+    assert (by_default["5581"], own_tree["5581"]) == (("sda",), ())
+
+
+def test_collect_usb_linux_lists_devices_without_disks_when_block_is_unreadable(tmp_path) -> None:
+    bus, _ = _usb_sysfs(tmp_path)
+    devices = diag.collect_usb_devices_linux(sysfs_root=bus, block_root=tmp_path / "missing")
+    assert [(d.pid, d.disks) for d in devices] == [("5581", ()), ("0002", ())]
+
+
+def test_walk_macos_names_the_disks_under_a_storage_device() -> None:
+    # The shape system_profiler -json gives a Mac-formatted stick.
+    stick = {
+        "_name": "Ultra",
+        "vendor_id": "0x0781  (SanDisk Corporation)",
+        "product_id": "0x5581",
+        "Media": [
+            {"_name": "Ultra", "bsd_name": "disk4", "volumes": [{"bsd_name": "disk4s1"}, {"bsd_name": "disk4s2"}]}
+        ],
+    }
+    out: list[diag.UsbDevice] = []
+    diag._walk_macos({"_name": "USB 3.1 Bus", "_items": [stick, {"_name": "Mouse", "vendor_id": "0x046d"}]}, out)
+    assert [(d.name, d.disks) for d in out] == [("Ultra", ("disk4",)), ("Mouse", ())]
 
 
 def test_collect_usb_linux_handles_unreadable_sysfs(tmp_path, monkeypatch) -> None:
@@ -1325,6 +1403,128 @@ def test_render_usb_table_visibility_matches_midi() -> None:
     assert "1 hubs" in joined
     assert "1 MIDI" in joined
     assert "1 gamepad" in joined
+
+
+_PUCK_USB = diag.UsbDevice(vid="046d", pid="c626", name="SpaceNavigator", manufacturer="3Dconnexion")
+_STICK_USB = diag.UsbDevice(vid="0781", pid="5581", name="Ultra", manufacturer="SanDisk", disks=("sda",))
+
+
+def _part(ident: str, disk: str, writable: bool = True, reason: str = "") -> Media:
+    return Media(ident, f"/dev/{ident}", "SanDisk Ultra", "SanDisk Ultra · FAT32 · 31 GB", None, writable, reason, disk)
+
+
+def _cell(out: list[str], vidpid: str) -> str:
+    """The OpenFollow column of the device's row: everything after the fixed-width Serial column."""
+    row = next(r for r in out if vidpid in r)
+    return row[2 + 5 + 2 + 9 + 2 + 10 + 2 + 34 + 2 + 18 + 2 + 17 + 2 :]
+
+
+def _usb_table(devices: list[diag.UsbDevice], **kw: Any) -> list[str]:
+    return diag.render_usb_table(devices, midi_ports=[], gamepads=[], cameras=[], **kw)
+
+
+@pytest.mark.parametrize(
+    ("state", "cell"),
+    [
+        ("open", "3D mouse: SpaceNavigator"),
+        ("no_profile", "3D mouse: SpaceNavigator (no_profile)"),
+        ("not_permitted", "3D mouse: SpaceNavigator (not_permitted)"),
+    ],
+)
+def test_render_usb_table_matches_a_3d_mouse_by_its_usb_ids(state: str, cell: str) -> None:
+    mice = [{"usb_id": "046d:c626", "product_name": "SpaceNavigator", "state": state}]
+    out = _usb_table([_PUCK_USB], mice=mice, media=[])
+    assert _cell(out, "046d:c626") == cell
+
+
+@pytest.mark.parametrize(
+    ("states", "cell"),
+    [
+        (["open", "open"], "3D mouse: SpaceNavigator"),
+        (["open", "not_permitted"], "3D mouse: SpaceNavigator (open, not_permitted)"),
+        (["no_profile", "no_profile"], "3D mouse: SpaceNavigator (no_profile)"),
+    ],
+    ids=["both-open", "one-refused", "both-unprofiled"],
+)
+def test_render_usb_table_gives_identical_3d_mice_every_state_they_share(states: list[str], cell: str) -> None:
+    # Two pucks of one model share their USB ids, so neither row can be tied to one status.
+    mice = [{"usb_id": "046d:c626", "product_name": "SpaceNavigator", "state": state} for state in states]
+    out = _usb_table([_PUCK_USB, _PUCK_USB], mice=mice, media=[])
+    assert [_cell([row], "046d:c626") for row in out if "046d:c626" in row] == [cell, cell]
+
+
+def test_render_usb_table_names_an_unnamed_3d_mouse_by_its_ids() -> None:
+    out = _usb_table([_PUCK_USB], mice=[{"usb_id": "046d:c626", "product_name": "", "state": "open"}], media=[])
+    assert _cell(out, "046d:c626") == "3D mouse: 046d:c626"
+
+
+def test_render_usb_table_leaves_a_3d_mouse_the_status_does_not_report_unmatched() -> None:
+    # macOS: the 3D Mouse subsystem never scans, so a puck there has no status to match.
+    out = _usb_table([_PUCK_USB], mice=[], media=[])
+    assert _cell(out, "046d:c626") == "?  endpoint device, no MIDI, gamepad, camera, 3D mouse or storage match"
+
+
+@pytest.mark.parametrize(
+    ("media", "cell"),
+    [
+        ([_part("sda2", "sda")], "storage: writable"),
+        ([_part("sda1", "sda", False, "APFS can't be written"), _part("sda2", "sda")], "storage: writable"),
+        ([_part("sda1", "sda", False, "needs Apply Permissions")], "storage: needs Apply Permissions"),
+        (
+            [
+                _part("sda1", "sda", False, "APFS can't be written"),
+                _part("sda2", "sda", False, "mounted read-only"),
+                _part("sda3", "sda", False, "APFS can't be written"),
+            ],
+            "storage: APFS can't be written, mounted read-only",
+        ),
+        ([_part("sdb1", "sdb")], "storage: not offered"),
+        ([], "storage: not offered"),
+    ],
+    ids=["writable", "one-of-two-writable", "why-not", "every-reason-once", "other-disk-only", "nothing-listed"],
+)
+def test_render_usb_table_says_whether_a_usb_storage_device_can_be_written(media: list[Media], cell: str) -> None:
+    out = _usb_table([_STICK_USB], mice=[], media=media)
+    assert _cell(out, "0781:5581") == cell
+
+
+@pytest.mark.parametrize(
+    ("device", "names", "cell"),
+    [
+        (
+            diag.UsbDevice(vid="0781", pid="5581", name="Ultra Capture", manufacturer="SanDisk", disks=("sda",)),
+            {"cameras": ["Ultra Capture HDMI"]},
+            "storage: writable",
+        ),
+        (
+            diag.UsbDevice(vid="046d", pid="c626", name="SpaceNavigator", manufacturer="3Dconnexion"),
+            {"midi_ports": ["SpaceNavigator MIDI 1"]},
+            "3D mouse: SpaceNavigator",
+        ),
+    ],
+    ids=["storage-over-a-camera-name", "3d-mouse-over-a-midi-name"],
+)
+def test_render_usb_table_ranks_exact_matches_above_name_matches(device, names: dict, cell: str) -> None:  # noqa: ANN001
+    lists = {"midi_ports": [], "gamepads": [], "cameras": [], **names}
+    mice = [{"usb_id": "046d:c626", "product_name": "SpaceNavigator", "state": "open"}]
+    out = diag.render_usb_table([device], mice=mice, media=[_part("sda1", "sda")], **lists)
+    assert _cell(out, f"{device.vid}:{device.pid}") == cell
+
+
+def test_render_usb_table_counts_3d_mice_and_storage_apart_from_other_endpoints() -> None:
+    other = diag.UsbDevice(vid="2bd9", pid="0011", name="Mystery Device")
+    mice = [{"usb_id": "046d:c626", "product_name": "SpaceNavigator", "state": "open"}]
+    out = _usb_table([_PUCK_USB, _STICK_USB, other], mice=mice, media=[_part("sda1", "sda")])
+    assert "  Total: 3 devices (0 hubs, 0 MIDI, 0 gamepad, 0 camera, 1 3D mouse, 1 storage, 1 other endpoint)" in out
+
+
+def test_render_usb_table_notes_what_it_could_not_check() -> None:
+    out = _usb_table([_PUCK_USB, _STICK_USB], mice=None, media=None)
+    assert _cell(out, "0781:5581") == "storage: not checked"
+    assert _cell(out, "046d:c626") == "?  endpoint device, no MIDI, gamepad, camera, 3D mouse or storage match"
+    assert (
+        out[-1] == "  [note: visibility column degraded – 3D mouse status not available, storage listing not available]"
+    )
 
 
 def test_render_usb_table_degrades_when_subsystems_missing() -> None:
@@ -2090,6 +2290,62 @@ def test_collect_usb_dispatches_to_macos_branch(monkeypatch) -> None:
     rows = diag.collect_usb(p)
     joined = "\n".join(rows)
     assert "MIDI: MIDI Mix" in joined
+
+
+def _linux_usb(monkeypatch, devices: list[diag.UsbDevice]) -> None:  # noqa: ANN001
+    monkeypatch.setattr(diag.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(diag, "collect_usb_devices_linux", lambda: devices)
+
+
+def _mouse3d_stats(**block: Any) -> dict[str, Any]:
+    return {"mouse3d": block}
+
+
+def test_collect_usb_matches_3d_mice_from_runtime_stats_and_storage_from_the_listing(monkeypatch) -> None:
+    _linux_usb(monkeypatch, [_PUCK_USB, _STICK_USB])
+    p = diag.DiagnosticsProviders(
+        runtime_stats=lambda: _mouse3d_stats(
+            enabled=True, devices=[{"usb_id": "046d:c626", "product_name": "SpaceNavigator", "state": "open"}]
+        ),
+        removable_media=lambda: [_part("sda2", "sda")],
+    )
+    out = diag.collect_usb(p)
+    assert _cell(out, "046d:c626") == "3D mouse: SpaceNavigator"
+    assert _cell(out, "0781:5581") == "storage: writable"
+    assert not any("3D mouse status" in r or "storage listing" in r for r in out)
+
+
+def test_collect_usb_takes_a_disabled_3d_mouse_as_nothing_to_match(monkeypatch) -> None:
+    _linux_usb(monkeypatch, [_PUCK_USB])
+    p = diag.DiagnosticsProviders(runtime_stats=lambda: _mouse3d_stats(enabled=False), removable_media=list)
+    out = diag.collect_usb(p)
+    assert _cell(out, "046d:c626").startswith("?  endpoint device")
+    assert not any("3D mouse status" in r for r in out)
+
+
+def _raise() -> Any:
+    raise RuntimeError("boom")
+
+
+@pytest.mark.parametrize(
+    ("providers", "notes", "sentinels"),
+    [
+        ({}, "3D mouse status not available, storage listing not available", 0),
+        ({"runtime_stats": dict, "removable_media": list}, "3D mouse status not available", 0),
+        (
+            {"runtime_stats": _raise, "removable_media": _raise},
+            "3D mouse status not available, storage listing not available",
+            2,
+        ),
+    ],
+    ids=["not-wired", "no-3d-mouse-block", "providers-raise"],
+)
+def test_collect_usb_notes_what_it_could_not_check(monkeypatch, providers: dict, notes: str, sentinels: int) -> None:
+    _linux_usb(monkeypatch, [_PUCK_USB, _STICK_USB])
+    out = diag.collect_usb(diag.DiagnosticsProviders(**providers))
+    unwired = "MIDI subsystem not available, gamepad subsystem not available, camera subsystem not available"
+    assert f"  [note: visibility column degraded – {unwired}, {notes}]" in out
+    assert sum("[unavailable:" in r for r in out) == sentinels
 
 
 def test_cpu_brand_linux_proc_cpuinfo(monkeypatch) -> None:
@@ -3344,6 +3600,7 @@ def _io_server(**overrides: Any) -> Any:
         "recent_midi_events_provider": lambda: [{"type": "note_on"}],
         "midi_port_names_provider": lambda: ["nanoKONTROL2"],
         "camera_names_provider": lambda: ["USB Capture HDMI"],
+        "media_scan_provider": lambda: [],
         "get_privilege_capability_states": lambda: {},
         "crash_restarts_provider": lambda: 0,
         "online_sync_status_provider": lambda: {},
@@ -3387,6 +3644,7 @@ def test_build_diagnostics_providers_wires_io_fields() -> None:
     assert providers.recent_midi_events is server.recent_midi_events_provider
     assert providers.midi_port_names is server.midi_port_names_provider
     assert providers.camera_names is server.camera_names_provider
+    assert providers.removable_media is server.media_scan_provider
     assert providers.gamepad_runtime is server.gamepad_runtime_provider
 
 

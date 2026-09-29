@@ -32,7 +32,7 @@
  <h3 class="group-title">MIDI Patches</h3>
  % if config.midi.patches:
  <div class="row">
- <table class="grid-table">
+ <table class="data-table">
  <thead>
  <tr>
  <th style="width:3rem">ID</th>
@@ -68,7 +68,7 @@
  % end
  </select>
  </td>
- <td class="actions-cell">
+ <td class="row-actions">
  <button type="submit" form="patch-{{patch.id}}-form" class="save-btn small">Save</button>
  <button type="button" class="danger small"
  hx-post="/section/midi/patches/{{patch.id}}/delete"

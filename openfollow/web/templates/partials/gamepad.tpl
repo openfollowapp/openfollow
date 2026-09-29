@@ -75,12 +75,12 @@
                     ]
                     _hat_names = {-1: 'hat Up', -2: 'hat Down', -3: 'hat Left', -4: 'hat Right'}
                 %>
-                <table style="width:100%;font-size:0.82em;border-collapse:collapse;">
+                <table class="data-table">
                     <thead>
-                        <tr style="color:var(--muted);text-align:left;">
-                            <th style="padding:0.25rem 0.5rem;border-bottom:1px solid var(--border);">Physical Button</th>
-                            <th style="padding:0.25rem 0.5rem;border-bottom:1px solid var(--border);">Detected As</th>
-                            <th style="padding:0.25rem 0.5rem;border-bottom:1px solid var(--border);">Raw ID</th>
+                        <tr>
+                            <th>Physical Button</th>
+                            <th>Detected As</th>
+                            <th>Raw ID</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -93,9 +93,9 @@
                             raw_display = ('–' if raw_idx is None else 'axis ' + str(-100 - raw_idx) if raw_idx <= -100 else _hat_names.get(raw_idx, 'hat ' + str(raw_idx)) if raw_idx < 0 else 'btn ' + str(raw_idx))
                         %>
                         <tr>
-                            <td style="padding:0.2rem 0.5rem;">{{pretty_label(wiz_key)}}</td>
-                            <td style="padding:0.2rem 0.5rem;{{'color:var(--accent);font-weight:600;' if not is_default else 'color:var(--muted);'}}">{{pretty_label(val_display)}}</td>
-                            <td style="padding:0.2rem 0.5rem;color:var(--muted);font-family:monospace;">{{raw_display}}</td>
+                            <td>{{pretty_label(wiz_key)}}</td>
+                            <td style="{{'color:var(--accent);font-weight:600;' if not is_default else 'color:var(--muted);'}}">{{pretty_label(val_display)}}</td>
+                            <td style="color:var(--muted);font-family:monospace;">{{raw_display}}</td>
                         </tr>
                         % if field is not None:
                         <input type="hidden" name="{{field}}" value="{{val}}">

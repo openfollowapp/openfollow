@@ -400,11 +400,9 @@
                 'data-color-picker="full" aria-label="Marker colour"></button></td>' +
             '<td class="cell-soft" data-cell="controlled-by"></td>' +
             '<td data-cell="this-station">' + thisStationToggle('this-station-' + id, id) + '</td>' +
-            '<td>' +
-                '<span style="display:inline-flex;align-items:center;gap:0.4rem;">' +
+            '<td class="row-actions">' +
                 '<button type="button" class="save-btn small" data-action="save">Save</button>' +
                 '<button type="button" class="danger small" data-action="delete">Delete</button>' +
-                '</span>' +
             '</td>';
         window.OpenFollow.attachColorPicker(tr.querySelector('[data-field="color"]'), {
             mode: 'full',
@@ -471,7 +469,7 @@
                 'data-color-picker="full" aria-label="New marker colour"></button></td>' +
             '<td><span id="add-marker-feedback" class="add-feedback" aria-live="polite"></span></td>' +
             '<td data-cell="this-station">' + thisStationToggle('this-station-new', null) + '</td>' +
-            '<td><button type="button" class="save-btn small" id="add-marker-btn">Add</button></td>';
+            '<td class="row-actions"><button type="button" class="save-btn small" id="add-marker-btn">Add</button></td>';
         const idIn = tr.querySelector('#new-marker-id');
         const nameIn = tr.querySelector('#new-marker-name');
         const colorTrigger = tr.querySelector('#new-marker-color');
@@ -577,7 +575,7 @@
             '<div class="group">' +
                 '<h3 class="group-title">Shared catalog</h3>' +
                 '<p class="cell-soft">Synced across all stations on the LAN.</p>' +
-                '<table class="marker-catalog-table">' +
+                '<table class="marker-catalog-table data-table">' +
                     '<thead><tr>' +
                         '<th>ID</th><th>Name</th><th>Color</th>' +
                         '<th>Controlled by</th>' +
@@ -658,18 +656,7 @@
 </script>
 
 <style>
-/* One text size in the table: its row buttons' own. Chips keep theirs. */
-.marker-catalog-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 0.5rem;
-    font-size: var(--btn-font-sm);
-}
-.marker-catalog-table th, .marker-catalog-table td {
-    padding: 0.4rem 0.6rem;
-    border-bottom: 1px solid rgba(255,255,255,0.08);
-    text-align: left;
-}
+.marker-catalog-table { margin-top: 0.5rem; }
 .marker-catalog-table td[data-cell="this-station"] { white-space: nowrap; }
 /* A This Station save flashes its row's background, green or red, fading back to the row's own. */
 .marker-catalog-table tr.row-saved { animation: row-flash-green 0.8s ease-out; }
@@ -695,7 +682,6 @@
     content: ""; display: inline-block; width: 1.1em; height: 1.1em; margin-right: 0.35em; vertical-align: -0.2em;
     background: var(--success-sign-green) no-repeat center / contain;
 }
-.marker-catalog-table input { font-size: inherit; }
 .marker-catalog-table input[type="text"] {
     width: 100%;
     box-sizing: border-box;

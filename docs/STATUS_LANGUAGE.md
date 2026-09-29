@@ -156,6 +156,15 @@ rounds down at 1x and the two drift apart), `background-clip: content-box` (or
 the fill shows through the translucent border and the muted ring vanishes),
 and a -2.6px margin so names stay aligned with the grey dot.
 
+### Tables
+
+Every table is `.data-table`: text at the row buttons' size (`--btn-font-sm`),
+cells vertically centred, headers muted and semi-bold at that size, rows divided
+by `--border-soft`. A row's actions sit in `td.row-actions` at the right edge,
+as small buttons. A table sets none of this itself; the chips and row pills in
+it keep their own size. [`tests/test_web_tables.py`](../tests/test_web_tables.py)
+holds the line.
+
 ### Table rows
 
 | Row | Look |

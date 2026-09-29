@@ -1188,10 +1188,14 @@
  border: 2px solid var(--success-mark-muted); border-radius: 999px;
  background: var(--success-mark); background-clip: content-box; font-size: 0;
  }
+ /* Every table: one text size (the row buttons'), centred cells, muted headers, a row's actions at the right edge. */
+ .data-table { width: 100%; border-collapse: collapse; font-size: var(--btn-font-sm); }
+ .data-table th, .data-table td { text-align: left; vertical-align: middle; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border-soft); }
+ .data-table thead th { color: var(--muted); font-weight: 600; }
+ .data-table input, .data-table select { font-size: inherit; }
+ .data-table td.row-actions { white-space: nowrap; text-align: right; }
+ .data-table td.row-actions > * + * { margin-left: 0.4rem; }
  /* Controller Slots table (Input tab). */
- .slot-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
- .slot-table th, .slot-table td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--border-soft); }
- .slot-table thead th { color: var(--muted); font-weight: 600; font-size: 0.8rem; }
  .slot-row.slot-missing { background: var(--error-row); }
  /* Grey while the slot needs nothing, red when its controller is missing. */
  .slot-state {
@@ -1200,14 +1204,14 @@
  color: rgba(247, 245, 233, 0.88); background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.18);
  }
  .slot-state.missing { color: var(--text); background: var(--error-chip); border-color: var(--error-line); }
- .slot-port { display: block; color: var(--muted); font-size: 0.8rem; }
+ .slot-port { display: block; color: var(--muted); }
  /* What the controller can't do: caution where it affects control, a plain fact otherwise. */
  .slot-notes { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 3px; }
  .slot-note {
  border-radius: 0.4rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem; font-size: 0.7rem; font-weight: 500; white-space: nowrap;
  color: var(--text); background: var(--caution-chip); border: 1px solid var(--caution-line);
  }
- .slot-note-fact { font-size: 0.78rem; color: var(--muted); white-space: nowrap; }
+ .slot-note-fact { color: var(--muted); white-space: nowrap; }
  .slot-empty { color: var(--muted); }
  .m3d-empty { margin: 0 0 12px; color: var(--muted); }
  .slot-activity { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--muted); margin: 0 0 0 7px; vertical-align: middle; }
@@ -1218,8 +1222,6 @@
  .slot-marker { display: inline-flex; align-items: center; gap: 0.45rem; }
  /* The marker's own colour, as on its HUD card and catalog swatch. */
  .slot-marker-dot { flex: none; width: 0.7rem; height: 0.7rem; border-radius: 50%; background: var(--marker-color, var(--muted)); }
- .slot-table td.slot-actions { white-space: nowrap; text-align: right; }
- .slot-actions button { margin: 0 0 0 6px; padding: 4px 10px; }
  .peer-item.offline .peer-status {
  width: 8px; height: 8px;
  border: 3px solid var(--error-mark); background-color: var(--error-mark-muted);

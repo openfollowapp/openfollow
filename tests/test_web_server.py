@@ -403,18 +403,20 @@ def test_each_slot_offers_only_the_action_its_state_allows(slots_server) -> None
     _, base, _ = slots_server
     _, body = _get(base, "/section/controller_slots")
     missing, connected, reserved = _row(body, "C1"), _row(body, "C2"), _row(body, "C3")
-    assert '<button type="button" class="danger" hx-post="/section/controller_slots/forget/0"' in missing
+    assert '<button type="button" class="danger small" hx-post="/section/controller_slots/forget/0"' in missing
     assert "/identify/" not in missing
-    assert '<button type="button" class="secondary" hx-post="/section/controller_slots/identify/1"' in connected
+    assert '<button type="button" class="secondary small" hx-post="/section/controller_slots/identify/1"' in connected
     assert "/forget/" not in connected
     assert "<button" not in reserved
 
 
 def test_the_slot_actions_sit_at_the_right_edge(slots_server) -> None:
-    # ``.slot-table td`` aligns every cell left; a bare ``.slot-actions`` rule loses to it.
+    # ``.data-table td`` aligns every cell left; a bare ``.row-actions`` rule loses to it.
     _, base, _ = slots_server
     _, page = _get(base, "/")
-    rule = page[page.index(".slot-table td.slot-actions {") :]
+    _, body = _get(base, "/section/controller_slots")
+    assert '<td class="row-actions">' in body
+    rule = page[page.index(".data-table td.row-actions {") :]
     assert "text-align: right;" in rule[: rule.index("}")]
 
 

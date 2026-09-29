@@ -5041,7 +5041,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # Numeric fields escape too, guarding future shape changes.
         esc = html_mod.escape
         rows: list[str] = [
-            "<table class='grid-table'><thead><tr><th>Peer</th><th>Address</th><th>Result</th></tr></thead><tbody>"
+            "<table class='data-table'><thead><tr><th>Peer</th><th>Address</th><th>Result</th></tr></thead><tbody>"
         ]
         for r in results:
             if r["ok"]:

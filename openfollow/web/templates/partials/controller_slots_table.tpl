@@ -4,7 +4,7 @@
 % if not items:
 <p class="slot-empty">No controller connected.</p>
 % else:
-<table class="slot-table">
+<table class="slot-table data-table">
     <thead>
         <tr>
             <th scope="col">Slot</th>
@@ -45,11 +45,11 @@
             % else:
             <td>-</td>
             % end
-            <td class="slot-actions">
+            <td class="row-actions">
             % if state == 'connected':
-                <button type="button" class="secondary" hx-post="/section/controller_slots/identify/{{idx}}" hx-vals='{{ref}}' hx-target="#controller-slots-content" hx-swap="innerHTML">Identify</button>
+                <button type="button" class="secondary small" hx-post="/section/controller_slots/identify/{{idx}}" hx-vals='{{ref}}' hx-target="#controller-slots-content" hx-swap="innerHTML">Identify</button>
             % elif state == 'missing':
-                <button type="button" class="danger" hx-post="/section/controller_slots/forget/{{idx}}" hx-vals='{{ref}}' hx-target="#controller-slots-content" hx-swap="innerHTML">Forget</button>
+                <button type="button" class="danger small" hx-post="/section/controller_slots/forget/{{idx}}" hx-vals='{{ref}}' hx-target="#controller-slots-content" hx-swap="innerHTML">Forget</button>
             % end
             </td>
         </tr>

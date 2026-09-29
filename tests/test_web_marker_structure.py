@@ -322,11 +322,10 @@ class TestMarkerTableTextSize:
             if "marker-catalog-table" in selector or "saved-flash" in selector
         }
 
-    def test_the_table_sets_one_size_and_nothing_inside_sets_another(self) -> None:
-        sizes = self._font_sizes()
-        assert sizes[".marker-catalog-table"] == ["var(--btn-font-sm)"]
-        others = [f"{sel}: {v}" for sel, vs in sizes.items() if sel != ".marker-catalog-table" for v in vs]
-        assert [o for o in others if not o.endswith(": inherit")] == []
+    def test_the_table_takes_the_shared_size_and_sets_none_of_its_own(self) -> None:
+        assert '<table class="marker-catalog-table data-table">' in _render_marker()
+        sizes = [f"{sel}: {v}" for sel, vs in self._font_sizes().items() for v in vs]
+        assert [s for s in sizes if not s.endswith(": inherit")] == []
 
     def test_every_text_button_in_the_table_is_small(self) -> None:
         classes = re.findall(

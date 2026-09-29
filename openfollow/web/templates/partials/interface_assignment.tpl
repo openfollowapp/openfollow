@@ -83,7 +83,9 @@
         %# server cannot do under itself while serving this request.
         % if defined('web_bind_restart') and web_bind_restart:
         <button type="submit" class="save-btn"
-                hx-post="/section/interface_assignment?restart=1">Save &amp; Restart</button>
+                hx-post="/section/interface_assignment?restart=1"
+                hx-confirm="Outputs pause until OpenFollow is back. The web UI may then answer at a different address."
+                data-confirm-title="Restart OpenFollow?" data-confirm-label="Restart" data-confirm-danger>Save &amp; Restart</button>
         % end
         <button type="button" id="refresh-iface-assignment" class="secondary"
                 hx-get="/section/interface_assignment"

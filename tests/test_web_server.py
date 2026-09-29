@@ -1196,6 +1196,11 @@ def test_interface_assignment_web_ui_pin_offers_a_restart(live_server, monkeypat
 
     _status, body = _get(base, "/section/interface_assignment")
     assert "/section/interface_assignment?restart=1" in body
+    # Restarting pauses every output, so it asks first, with the danger button.
+    button = body.split('hx-post="/section/interface_assignment?restart=1"', 1)[1].split(">", 1)[0]
+    assert 'data-confirm-label="Restart"' in button
+    assert "data-confirm-danger" in button
+    assert body.count("hx-confirm=") == 1
 
 
 def test_interface_assignment_offers_a_restart_for_a_pin_to_a_down_interface(

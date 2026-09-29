@@ -40,7 +40,7 @@ This is the one row that does **not** stop when its interface goes away. It fall
 
 Two things stay true whichever way this row is set. The screen on the station always reaches the UI, so the built-in browser keeps working. And the station's own **Network** screen, reached with the Settings key, can put the UI back on every interface without a working web page – it lists the addresses that reach the station and offers **Serve web UI on all interfaces**. That is the way back if you pin this row to the wrong interface.
 
-Changing this row takes effect on restart: the web UI cannot move the socket it is answering your request on. The panel offers **Save & Restart** while the saved pin and the running one differ, and tells you the address to use afterwards.
+Changing this row takes effect on restart: the web UI cannot move the socket it is answering your request on. The panel offers **Save & Restart** while the saved pin and the running one differ, and tells you the address to use afterwards. It asks before restarting, because every output pauses until OpenFollow is back.
 
 For the same reason this row is the one exception to *the address is allowed to change*, above. The data planes re-resolve their interface and follow a new lease on their own; the web UI holds the address it opened with until the next restart. If the pinned interface is on DHCP and its address moves, the UI keeps answering at the old one until you restart the station. The station's own **Network** screen says so in as many words, listing the addresses that really reach it and naming the bind that no longer does.
 

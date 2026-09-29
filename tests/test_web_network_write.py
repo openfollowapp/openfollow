@@ -1292,6 +1292,20 @@ def test_a_row_without_a_method_carries_no_empty_pill(net_server) -> None:
     assert "net-iface-method-badge" not in wlan
 
 
+def test_an_open_row_leaves_as_much_room_below_its_buttons_as_above_its_form() -> None:
+    """The buttons are the last thing in an open row; at the row's normal padding they sat on its border."""
+    import re
+    from pathlib import Path
+
+    css = (Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "base.tpl").read_text(
+        encoding="utf-8"
+    )
+    rules = {" ".join(sel.split()): body for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)}
+    below = re.search(r"padding-bottom:\s*([^;]+);", rules[".net-iface-row[open]"]).group(1)
+    above = re.search(r"margin-top:\s*([^;]+);", rules[".net-iface-row[open] > .net-iface-form"]).group(1)
+    assert below == above
+
+
 def test_every_network_banner_kind_is_drawn_as_a_box() -> None:
     """A kind without a rule in the shared box block renders as bare text."""
     import re

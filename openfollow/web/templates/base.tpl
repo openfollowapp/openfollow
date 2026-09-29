@@ -873,6 +873,7 @@
  .net-iface-list { margin-bottom: 0.6rem; }
  .net-iface-row { margin-bottom: 0.6rem; border: 1px solid var(--border-soft); border-radius: 0.6rem; padding: 0.5rem 0.8rem; background: var(--surface); }
  .net-iface-summary { display: flex; gap: 0.6rem; align-items: center; cursor: pointer; padding-bottom: 0.2rem; }
+ .net-iface-row[open] { padding-bottom: 0.9rem; }
  .net-iface-row[open] > .net-iface-form { margin-top: 0.9rem; }
  /* Only the row being edited is accented - expanding a row to read it is not
     a state worth marking, but the one row that will take a write is. */

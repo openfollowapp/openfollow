@@ -261,6 +261,7 @@ def sync_ui_config(state: OverlayState, cfg: Any) -> None:
 def _populate_media_overlay(app: Any, state: OverlayState) -> None:
     """The drive picker's rows and the export screen's lines, from the refresher and the shared export."""
     from openfollow.runtime import app_modes_media as media_modes
+    from openfollow.runtime.diagnostics_export import status_lines
 
     state.media_picker_active = bool(getattr(app, "_media_picker_active", False))
     if state.media_picker_active:
@@ -281,9 +282,7 @@ def _populate_media_overlay(app: Any, state: OverlayState) -> None:
     export = media_modes.diagnostics_export(app)
     state.media_export_active = bool(getattr(app, "_media_export_active", False)) and export is not None
     state.media_export_lines = (
-        media_modes.export_screen_lines(export.status())
-        if export is not None and state.media_export_active
-        else ("", "", None)
+        status_lines(export.status()) if export is not None and state.media_export_active else ("", "", None)
     )
 
 

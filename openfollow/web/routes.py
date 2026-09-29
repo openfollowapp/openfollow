@@ -76,6 +76,7 @@ from openfollow.network.adapter import Ipv4Config, Ipv4Method
 from openfollow.network.validate import parse_prefix, validate_apply
 from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.privilege.camera_config import AUTOMATIC
+from openfollow.runtime.diagnostics_export import WEB, ExportStatus, status_lines
 from openfollow.templates import (
     TEMPLATE_FILE_SUFFIX,
     TEMPLATE_LEGACY_SUFFIX,
@@ -2913,6 +2914,22 @@ def _detection_models_dir(cfg: AppConfig) -> dict[str, str]:
     return {"dir": str(directory), "configured": str(cfg.detection.model or "")}
 
 
+_DRIVE_SAVE_UNWIRED = "Saving to a USB storage device is not available on this station."
+
+
+def _export_status(status: ExportStatus) -> dict[str, Any]:
+    """The export's status for the web dialog, in the Operator Screen's words."""
+    headline, next_step, ok = status_lines(status)
+    return {
+        "phase": status.phase,
+        "origin": status.origin,
+        "generation": status.generation,
+        "ok": ok,
+        "headline": headline,
+        "next_step": next_step,
+    }
+
+
 def _save_failed(status: int, error: str, action: str = "") -> HTTPResponse:
     """A refused or failed save, in the ``{error, action}`` shape the save-feedback line reads."""
     body = json.dumps({"error": error, "action": action})
@@ -4978,26 +4995,38 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/api/diagnostics/drives")
     def api_diagnostics_drives() -> Any:
-        """``<option>`` rows for the Save to USB storage device select, listed afresh on every call."""
+        """The USB storage devices for the Save dialog, listed afresh; one that can't be written says why."""
         provider = server.media_list_provider
-        return template(
-            "partials/diagnostics_drives",
-            media=provider() if provider is not None else [],
-            selected=request.query.getunicode("media_id") or "",
-        )
+        if provider is None:
+            return _save_failed(503, _DRIVE_SAVE_UNWIRED)
+        return {
+            "media": [{"id": m.id, "label": m.label, "writable": m.writable, "reason": m.reason} for m in provider()]
+        }
 
-    @app.post("/api/diagnostics/save-to-drive")
-    def api_diagnostics_save_to_drive() -> Any:
-        """Save the bundle to the picked drive; only an id from a fresh listing is accepted, never a path."""
-        from openfollow.runtime.diagnostics_export import RETRY, WEB, ExportBusy
+    @app.get("/api/diagnostics/export")
+    def api_diagnostics_export_status() -> Any:
+        """Where the save to a USB storage device is, worded as the Operator Screen words it.
 
+        ``?generation=N`` asks for the dialog's own web export, which a newer one may already have replaced.
+        """
+        export = server.diagnostics_export
+        if export is None:
+            return _save_failed(503, _DRIVE_SAVE_UNWIRED)
+        mine = export.last_done(WEB)
+        if mine is not None and request.query.get("generation") == str(mine.generation):
+            return _export_status(mine)
+        return _export_status(export.status())
+
+    @app.post("/api/diagnostics/export")
+    def api_diagnostics_export_start() -> Any:
+        """Start saving the bundle to the picked device, on the export's worker; only a freshly listed id is taken."""
         export, provider = server.diagnostics_export, server.media_list_provider
         if export is None or provider is None:
-            return _save_failed(503, "Saving to a USB storage device is not available on this station.")
+            return _save_failed(503, _DRIVE_SAVE_UNWIRED)
         media_id = request.forms.getunicode("media_id") or ""
         listed = provider()
         if not media_id:
-            # The select submits nothing when no option can be picked.
+            # Nothing is picked when no row can be.
             if not listed:
                 return _save_failed(400, "No USB storage device is attached.", "Plug one in, then save again.")
             if not any(m.writable for m in listed):
@@ -5014,13 +5043,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return _save_failed(
                 400, f"{media.name} can't be written: {media.reason}.", "Pick another USB storage device."
             )
-        try:
-            status = export.run(media.id, media.name, WEB)
-        except ExportBusy as exc:
-            return _save_failed(409, str(exc), "Wait for it to finish, then save again.")
-        if not status.ok:
-            return _save_failed(422, status.message, status.action or RETRY)
-        return template("partials/diagnostics_drive_saved", message=status.message, action=status.action)
+        if not export.start(media.id, media.name, WEB):
+            return _save_failed(
+                409, "Another diagnostics export is still running.", "Wait for it to finish, then save again."
+            )
+        response.status = 202
+        return _export_status(export.status())
 
     @app.get("/api/diagnostics/log-tail")
     def api_diagnostics_log_tail() -> Any:

@@ -44,6 +44,10 @@
             <a class="save-btn btn-link" href="/api/diagnostics/bundle" download>
                 Download diagnostics bundle
             </a>
+            %# Its dialog's steps live in ``base.tpl``, like Restart's confirm below.
+            <button type="button" class="secondary" onclick="openfollowSaveToDrive()">
+                Save to USB storage device
+            </button>
             <button type="button" class="secondary"
                     hx-post="/api/diagnostics/test-peers"
                     hx-target="#diagnostics-probe-results"
@@ -68,32 +72,6 @@
                     onclick="confirmRestartApp()">
                 Restart application
             </button>
-        </div>
-        %# Its own save box, so a failed save flashes and explains right here.
-        <div class="save-flash drive-save">
-            <div class="actions">
-                <label for="diagnostics-drive">USB storage device</label>
-                <select id="diagnostics-drive" name="media_id"
-                        hx-get="/api/diagnostics/drives"
-                        hx-trigger="load, mouseenter from:closest .drive-save, keyup[key=='Tab']"
-                        hx-include="this"
-                        hx-target="this"
-                        hx-swap="innerHTML">
-                    <option value="" disabled selected>Looking for USB storage devices</option>
-                </select>
-                <button type="button" class="secondary"
-                        hx-post="/api/diagnostics/save-to-drive"
-                        hx-include="#diagnostics-drive"
-                        hx-target="#diagnostics-drive-result"
-                        hx-swap="innerHTML"
-                        hx-indicator="#diagnostics-drive-busy"
-                        hx-disabled-elt="this"
-                        hx-on::before-request="document.getElementById('diagnostics-drive-result').replaceChildren()">
-                    Save to USB storage device
-                </button>
-                <span id="diagnostics-drive-busy" class="drive-save-busy"><span class="modal-spinner" aria-hidden="true"></span>Collecting diagnostics</span>
-            </div>
-            <div id="diagnostics-drive-result"></div>
         </div>
         %# Operator-loaded output (peer probe results / log tail). The 5s poll
         %# only swaps ``#diagnostics-live`` above, so these slots keep whatever

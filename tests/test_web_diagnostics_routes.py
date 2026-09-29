@@ -21,6 +21,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Iterator
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -844,6 +845,7 @@ def test_diagnostics_routes_require_pin_when_set(
             "/api/diagnostics/bundle",
             "/api/diagnostics/log-tail",
             "/api/diagnostics/drives",
+            "/api/diagnostics/export",
         ):
             status, _, _ = _get(base, path, follow_redirects=False)
             # The auth hook redirects to ``/login`` (302/303) for HTML
@@ -851,7 +853,7 @@ def test_diagnostics_routes_require_pin_when_set(
             assert status in (302, 303, 401), f"{path} not pin-gated (got {status})"
         # ``/api/diagnostics/test-peers`` is the POST route that returns
         # operator-visible data and performs outbound HTTP requests.
-        for path in ("/api/diagnostics/test-peers", "/api/diagnostics/save-to-drive"):
+        for path in ("/api/diagnostics/test-peers", "/api/diagnostics/export"):
             post_status, _ = _post(base, path, {})
             assert post_status in (302, 303, 401), f"{path} not pin-gated (got {post_status})"
     finally:
@@ -882,8 +884,21 @@ def _drives() -> list:
     ]
 
 
-def _wire_drives(server, *, write=None):  # noqa: ANN001, ANN202
-    from openfollow.runtime.diagnostics_export import DiagnosticsExport
+class _InlineThread:
+    """The export's worker, run inside start(): a started save has finished when the POST returns."""
+
+    def __init__(self, target, args, daemon, name) -> None:  # noqa: ANN001
+        self._target, self._args = target, args
+
+    def start(self) -> None:
+        self._target(*self._args)
+
+
+def _wire_drives(server, monkeypatch=None, *, write=None, build=None):  # noqa: ANN001, ANN202
+    import threading
+    from types import SimpleNamespace
+
+    import openfollow.runtime.diagnostics_export as de
     from openfollow.runtime.removable_media import WriteResult
 
     written: list[tuple[str, str, bytes]] = []
@@ -894,89 +909,157 @@ def _wire_drives(server, *, write=None):  # noqa: ANN001, ANN202
             write()
         return WriteResult(filename, _drives()[0], f"Saved {filename} to SanDisk Ultra.", "It can be removed now.")
 
+    if monkeypatch is not None:
+        monkeypatch.setattr(de, "threading", SimpleNamespace(Thread=_InlineThread, Lock=threading.Lock))
     server.media_list_provider = _drives
-    server.diagnostics_export = DiagnosticsExport(lambda: ("ofdiag-TestSystem-20260928T101500Z.txt", "bundle"), _write)
+    server.diagnostics_export = de.DiagnosticsExport(
+        build or (lambda: ("ofdiag-TestSystem-20260928T101500Z.txt", "bundle")), _write
+    )
     return written
 
 
-def test_the_drive_list_shows_every_drive_and_why_one_cannot_be_written(live_server) -> None:
+def test_the_drive_list_is_every_device_and_why_one_cannot_be_written(live_server) -> None:
     server, base, _ = live_server
     _wire_drives(server)
-    status, body, _ = _get(base, "/api/diagnostics/drives?media_id=sda1")
-    assert status == 200
-    assert '<option value="sda1" selected>SanDisk Ultra · FAT32 · 32 GB</option>' in body
-    assert (
-        '<option value="sdc1" disabled>WD Passport (MAC) · APFS · 2.0 TB (APFS can&#039;t be written)</option>' in body
+    status, body, _ = _get(base, "/api/diagnostics/drives")
+    assert (status, json.loads(body)) == (
+        200,
+        {
+            "media": [
+                {"id": "sda1", "label": "SanDisk Ultra · FAT32 · 32 GB", "writable": True, "reason": ""},
+                {
+                    "id": "sdc1",
+                    "label": "WD Passport (MAC) · APFS · 2.0 TB",
+                    "writable": False,
+                    "reason": "APFS can't be written",
+                },
+            ]
+        },
     )
 
 
-@pytest.mark.parametrize("wired", [True, False], ids=["no-drives", "unwired"])
-def test_no_drive_says_so(live_server, wired: bool) -> None:
-    server, base, _ = live_server
-    if wired:
-        server.media_list_provider = list
-    _, body, _ = _get(base, "/api/diagnostics/drives")
-    assert "No USB storage device found. Plug one in." in body
-
-
-def test_save_to_drive_writes_the_bundle_and_confirms(live_server) -> None:
-    server, base, _ = live_server
-    written = _wire_drives(server)
-    status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": "sda1"})
-    assert status == 200
-    assert (
-        '<p class="drive-saved" role="status">Saved ofdiag-TestSystem-20260928T101500Z.txt to SanDisk Ultra. '
-        '<span class="drive-saved-next">It can be removed now.</span></p>' in body
+@pytest.mark.parametrize("path", ["/api/diagnostics/drives", "/api/diagnostics/export"])
+def test_saving_where_it_is_not_wired(live_server, path: str) -> None:
+    _, base, _ = live_server
+    status, body, _ = _get(base, path)
+    assert (status, json.loads(body)["error"]) == (
+        503,
+        "Saving to a USB storage device is not available on this station.",
     )
+    status, body = _post(base, "/api/diagnostics/export", {"media_id": "sda1"})
+    assert (status, json.loads(body)["error"]) == (
+        503,
+        "Saving to a USB storage device is not available on this station.",
+    )
+
+
+def test_an_idle_export_has_nothing_to_say(live_server) -> None:
+    server, base, _ = live_server
+    _wire_drives(server)
+    _, body, _ = _get(base, "/api/diagnostics/export")
+    assert json.loads(body) == {
+        "phase": "idle",
+        "origin": "",
+        "generation": 0,
+        "ok": None,
+        "headline": "",
+        "next_step": "",
+    }
+
+
+def test_a_save_starts_on_the_worker_and_its_status_reads_like_the_operator_screen(live_server, monkeypatch) -> None:  # noqa: ANN001
+    server, base, _ = live_server
+    written = _wire_drives(server, monkeypatch)
+    status, body = _post(base, "/api/diagnostics/export", {"media_id": "sda1"})
+    done = {
+        "phase": "done",
+        "origin": "web",
+        "generation": 1,
+        "ok": True,
+        "headline": "Saved ofdiag-TestSystem-20260928T101500Z.txt to SanDisk Ultra.",
+        "next_step": "It can be removed now.",
+    }
+    assert (status, json.loads(body)) == (202, done)
+    assert json.loads(_get(base, "/api/diagnostics/export")[1]) == done
     assert written == [("sda1", "ofdiag-TestSystem-20260928T101500Z.txt", b"bundle")]
 
 
+def test_a_save_asked_for_by_number_is_found_though_another_export_started(live_server, monkeypatch) -> None:  # noqa: ANN001
+    server, base, _ = live_server
+    _wire_drives(server, monkeypatch)
+    first = json.loads(_post(base, "/api/diagnostics/export", {"media_id": "sda1"})[1])
+    server.diagnostics_export._slot.acquire()
+    server.diagnostics_export._begin("Other stick", "hud")
+    try:
+        mine = json.loads(_get(base, f"/api/diagnostics/export?generation={first['generation']}")[1])
+        current = json.loads(_get(base, "/api/diagnostics/export")[1])
+    finally:
+        server.diagnostics_export._finish(True, "Saved.")
+    assert (mine["generation"], mine["phase"], mine["ok"]) == (1, "done", True)
+    assert (current["generation"], current["phase"]) == (2, "collecting")
+
+
+def test_a_running_save_says_what_it_is_doing(live_server) -> None:
+    import threading
+
+    release = threading.Event()
+
+    def build() -> tuple[str, str]:
+        release.wait(5)
+        return "b.txt", "bundle"
+
+    server, base, _ = live_server
+    _wire_drives(server, build=build)
+    try:
+        status, body = _post(base, "/api/diagnostics/export", {"media_id": "sda1"})
+        running = json.loads(_get(base, "/api/diagnostics/export")[1])
+    finally:
+        release.set()
+        for worker in [t for t in threading.enumerate() if t.name == "DiagnosticsExport"]:
+            worker.join(5)
+    assert (status, json.loads(body)["phase"]) == (202, "collecting")
+    assert (running["headline"], running["next_step"], running["ok"]) == (
+        "Collecting diagnostics",
+        "The export continues in the background.",
+        None,
+    )
+
+
 @pytest.mark.parametrize(
-    ("media_id", "status", "error"),
+    ("error", "next_step"),
     [
-        ("sdz9", 400, "That USB storage device is no longer attached."),
-        ("/dev/sda1", 400, "That USB storage device is no longer attached."),
-        ("sdc1", 400, "WD Passport (MAC) can't be written: APFS can't be written."),
+        (("The USB storage device is full.", ""), "Pick a USB storage device to try again."),
+        (("b.txt was written, but it could not be unmounted.", "Wait before removing it."), "Wait before removing it."),
+    ],
+    ids=["retry", "its-own-next-step"],
+)
+def test_a_failed_save_reads_like_the_operator_screen(live_server, monkeypatch, error, next_step: str) -> None:  # noqa: ANN001
+    from openfollow.runtime.removable_media import MediaError
+
+    def _fail() -> None:
+        raise MediaError(error[0], action=error[1])
+
+    server, base, _ = live_server
+    _wire_drives(server, monkeypatch, write=_fail)
+    status, body = _post(base, "/api/diagnostics/export", {"media_id": "sda1"})
+    result = json.loads(body)
+    assert (status, result["ok"], result["headline"], result["next_step"]) == (202, False, error[0], next_step)
+
+
+@pytest.mark.parametrize(
+    ("media_id", "error"),
+    [
+        ("sdz9", "That USB storage device is no longer attached."),
+        ("/dev/sda1", "That USB storage device is no longer attached."),
+        ("sdc1", "WD Passport (MAC) can't be written: APFS can't be written."),
     ],
     ids=["unknown-id", "a-path", "not-writable"],
 )
-def test_save_to_drive_accepts_only_a_listed_writable_drive(
-    live_server, media_id: str, status: int, error: str
-) -> None:
+def test_a_save_accepts_only_a_listed_writable_device(live_server, monkeypatch, media_id: str, error: str) -> None:  # noqa: ANN001
     server, base, _ = live_server
-    written = _wire_drives(server)
-    got, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": media_id})
-    assert (got, json.loads(body)["error"], written) == (status, error, [])
-
-
-def test_save_to_drive_reports_a_failed_write(live_server) -> None:
-    from openfollow.runtime.removable_media import MediaError
-
-    def _full() -> None:
-        raise MediaError("The USB storage device is full.")
-
-    server, base, _ = live_server
-    _wire_drives(server, write=_full)
-    status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": "sda1"})
-    assert (status, json.loads(body)) == (
-        422,
-        {"error": "The USB storage device is full.", "action": "Pick a USB storage device to try again."},
-    )
-
-
-def test_save_to_drive_gives_a_failures_own_next_step(live_server) -> None:
-    from openfollow.runtime.removable_media import MediaError
-
-    def _still_mounted() -> None:
-        raise MediaError("b.txt was written, but it could not be unmounted.", action="Wait before removing it.")
-
-    server, base, _ = live_server
-    _wire_drives(server, write=_still_mounted)
-    status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": "sda1"})
-    assert (status, json.loads(body)) == (
-        422,
-        {"error": "b.txt was written, but it could not be unmounted.", "action": "Wait before removing it."},
-    )
+    written = _wire_drives(server, monkeypatch)
+    got, body = _post(base, "/api/diagnostics/export", {"media_id": media_id})
+    assert (got, json.loads(body)["error"], written) == (400, error, [])
 
 
 @pytest.mark.parametrize(
@@ -988,23 +1071,23 @@ def test_save_to_drive_gives_a_failures_own_next_step(live_server) -> None:
     ],
     ids=["none-attached", "none-writable", "none-picked"],
 )
-def test_save_with_nothing_picked_says_why(live_server, listed, error: str, action: str) -> None:  # noqa: ANN001
+def test_a_save_with_nothing_picked_says_why(live_server, monkeypatch, listed, error: str, action: str) -> None:  # noqa: ANN001
     server, base, _ = live_server
-    written = _wire_drives(server)
+    written = _wire_drives(server, monkeypatch)
     drives = _drives()
     server.media_list_provider = lambda: (
         [d for d in drives if not d.writable] if listed == "unwritable" else drives if listed == "all" else []
     )
-    status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": ""})
+    status, body = _post(base, "/api/diagnostics/export", {"media_id": ""})
     assert (status, json.loads(body), written) == (400, {"error": error, "action": action}, [])
 
 
-def test_save_to_drive_while_another_export_runs(live_server) -> None:
+def test_a_save_while_another_export_runs(live_server) -> None:
     server, base, _ = live_server
     _wire_drives(server)
     server.diagnostics_export._slot.acquire()
     try:
-        status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": "sda1"})
+        status, body = _post(base, "/api/diagnostics/export", {"media_id": "sda1"})
     finally:
         server.diagnostics_export._slot.release()
     assert (status, json.loads(body)) == (
@@ -1013,23 +1096,40 @@ def test_save_to_drive_while_another_export_runs(live_server) -> None:
     )
 
 
-def test_save_to_drive_where_it_is_not_wired(live_server) -> None:
-    _, base, _ = live_server
-    status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": "sda1"})
-    assert (status, json.loads(body)["error"]) == (
-        503,
-        "Saving to a USB storage device is not available on this station.",
-    )
-
-
-def test_the_page_offers_save_to_drive_in_its_own_save_box(live_server) -> None:
+def test_the_page_offers_save_to_a_usb_storage_device_as_a_dialog(live_server) -> None:
     _, base, _ = live_server
     _, body, _ = _get(base, "/")
-    box = body[body.index('<div class="save-flash drive-save">') :]
-    box = box[: box.index('<div id="diagnostics-drive-result">')]
-    # Re-listed as the pointer or keyboard reaches the box, never on focus: a click focuses the select as its
-    # native list opens, and a swap then would replace the options under it.
-    assert 'hx-get="/api/diagnostics/drives"' in box
-    assert "hx-trigger=\"load, mouseenter from:closest .drive-save, keyup[key=='Tab']\"" in box
-    assert 'hx-post="/api/diagnostics/save-to-drive"' in box and 'hx-include="#diagnostics-drive"' in box
-    assert '<div class="actions">' in box
+    tools = body[body.index("Bundle &amp; tools") :]
+    tools = tools[: tools.index("</div>")]
+    assert '<button type="button" class="secondary" onclick="openfollowSaveToDrive()">' in tools
+    assert "Save to USB storage device" in tools
+
+
+def _save_dialog_js() -> str:
+    base = (Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "base.tpl").read_text()
+    start = base.index("let _driveExportLeft = 0;")
+    return base[start : base.index("function _driveExportResult(status)", start) + 800]
+
+
+def test_the_save_dialog_bounds_every_request_and_reports_refusals_like_any_failed_save() -> None:
+    js = _save_dialog_js()
+    # One bounded fetch for every request: a station that stops answering never strands the dialog.
+    assert "new AbortController()" in js and "ctrl.abort(), 8000" in js
+    assert js.count("fetch(") == 1
+    # A refusal reads as every other failed save does, on the dialog's card or, before it opens, the section.
+    assert "saveError.show(card, saveError.fromText(got.res.status, got.text), 'Not saved.')" in js
+    assert "saveError.show(box, saveError.fromText(got.res.status, got.text), 'Not saved.')" in js
+
+
+def test_the_save_dialog_follows_its_own_export_with_a_polite_progress_line() -> None:
+    js = _save_dialog_js()
+    assert 'id="drive-export-line" role="status" aria-live="polite" tabindex="-1"' in js
+    assert "'/api/diagnostics/export?generation=' + status.generation" in js
+    # Closing while it runs remembers the export, so the button reopens it.
+    assert "if (polling) _driveExportLeft = status.generation;" in js
+
+
+def test_the_save_dialog_picks_from_radio_rows_that_say_why_one_is_unavailable() -> None:
+    js = _save_dialog_js()
+    assert 'class="tier-list" role="radiogroup" aria-label="USB storage device"' in js
+    assert "input.disabled = !m.writable;" in js and "why.textContent = m.reason;" in js

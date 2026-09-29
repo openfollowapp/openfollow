@@ -385,33 +385,6 @@ class TestStatusCorner:
         assert app._media_export_badge_at is not None
 
 
-@pytest.mark.parametrize(
-    ("status", "lines"),
-    [
-        (
-            ExportStatus(COLLECTING, HUD, "SanDisk Ultra"),
-            ("Collecting diagnostics", "The export continues in the background.", None),
-        ),
-        (
-            ExportStatus(WRITING, HUD, "SanDisk Ultra"),
-            ("Writing to SanDisk Ultra", "The export continues in the background.", None),
-        ),
-        (_done(True), ("Saved b.txt to SanDisk Ultra.", "It can be removed now.", True)),
-        (
-            _done(False, message="The USB storage device is full."),
-            ("The USB storage device is full.", "Pick a USB storage device to try again.", False),
-        ),
-        (
-            ExportStatus(DONE, HUD, "SanDisk Ultra", False, "b.txt was written, but not unmounted.", 1, "Wait."),
-            ("b.txt was written, but not unmounted.", "Wait.", False),
-        ),
-    ],
-    ids=["collecting", "writing", "saved", "failed", "failed-with-its-own-next-step"],
-)
-def test_the_export_screen_says_what_is_happening_and_the_next_step(status: ExportStatus, lines: tuple) -> None:
-    assert mm.export_screen_lines(status) == lines
-
-
 class TestMediaWatch:
     def test_lists_until_stopped_and_keeps_the_last_listing(self) -> None:
         calls: list[int] = []

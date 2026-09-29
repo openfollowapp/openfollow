@@ -1173,19 +1173,6 @@
  border: 2px solid var(--success-mark-muted); border-radius: 999px;
  background: var(--success-mark); background-clip: content-box; font-size: 0;
  }
- /* Diagnostics: save the bundle to a drive. */
- .drive-save { margin-top: 0.8rem; }
- .drive-save .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
- .drive-save select { min-width: 16rem; max-width: 100%; }
- .drive-save-busy { display: none; align-items: center; gap: 0.5rem; color: var(--muted); font-size: 0.86rem; }
- .drive-save-busy.htmx-request { display: inline-flex; }
- .drive-save-busy .modal-spinner { width: 1rem; height: 1rem; }
- .drive-saved { margin: 0.5rem 0 0; color: var(--success-text); font-weight: 600; }
- .drive-saved-next { color: var(--muted); font-weight: 400; }
- .drive-saved::before {
- content: ""; display: inline-block; width: 1.1em; height: 1.1em; margin-right: 0.35em; vertical-align: -0.2em;
- background: var(--success-sign-green) no-repeat center / contain;
- }
  /* Controller Slots table (Input tab). */
  .slot-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
  .slot-table th, .slot-table td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--border-soft); }
@@ -3595,6 +3582,187 @@
  }, 2000);
  }, function() {
  saveError.show(box, saveError.UNREACHABLE, 'Not restarted.');
+ });
+ }
+ // Save to USB storage device (a Diagnostics tools button): the Operator Screen's steps in
+ // the shared modal. Pick a device, follow the export, then read what happened and the next
+ // step. The export runs on the station's worker, so closing the dialog leaves it running and
+ // the button reopens its progress, or its result if it ended meanwhile.
+ let _driveExportLeft = 0;
+ async function _driveExportFetch(url, opts) {
+ // Bounded, so a station that stops answering never strands the dialog.
+ const ctrl = new AbortController();
+ const timer = setTimeout(() => ctrl.abort(), 8000);
+ try {
+ const res = await fetch(url, Object.assign({signal: ctrl.signal}, opts || {}));
+ return {res: res, text: await res.text()};
+ } finally {
+ clearTimeout(timer);
+ }
+ }
+ async function openfollowSaveToDrive() {
+ const saveError = window.OpenFollow.saveError;
+ const box = saveError.origin();
+ const mine = _driveExportLeft ? '?generation=' + _driveExportLeft : '';
+ let got;
+ try {
+ got = await _driveExportFetch('/api/diagnostics/export' + mine);
+ } catch (err) {
+ saveError.show(box, saveError.UNREACHABLE, 'Not saved.');
+ return;
+ }
+ if (!got.res.ok) {
+ saveError.show(box, saveError.fromText(got.res.status, got.text), 'Not saved.');
+ return;
+ }
+ const status = JSON.parse(got.text);
+ if (status.phase === 'collecting' || status.phase === 'writing') {
+ _driveExportProgress(status);
+ } else if (status.phase === 'done' && status.generation === _driveExportLeft) {
+ _driveExportResult(status);
+ } else {
+ _driveExportPick();
+ }
+ }
+ function _driveExportPick() {
+ const saveError = window.OpenFollow.saveError;
+ let picked = '';
+ let open = true;
+ let timer = null;
+ _driveExportLeft = 0;
+ openModal({
+ title: 'Save diagnostics',
+ bodyHTML: '<p>Choose a USB storage device, then Save.</p>'
+ + '<div id="drive-export-list" class="tier-list" role="radiogroup" aria-label="USB storage device">'
+ + '<p class="modal-empty">Looking for USB storage devices</p></div>',
+ footerButtons: [
+ {label: 'Cancel', onClick: () => closeModal()},
+ {label: 'Save', kind: 'primary', onClick: save},
+ ],
+ onClose: () => { open = false; clearTimeout(timer); },
+ });
+ const saveBtn = document.querySelector('#modal-footer button.primary');
+ saveBtn.disabled = true;
+ function render(media) {
+ const host = document.getElementById('drive-export-list');
+ const writable = media.filter((m) => m.writable);
+ if (!writable.some((m) => m.id === picked)) picked = writable.length ? writable[0].id : '';
+ saveBtn.disabled = !picked;
+ // Rebuilt only when the devices change, so a pick is never lost to a redraw.
+ const listed = JSON.stringify(media);
+ if (host.dataset.listed === listed) return;
+ host.dataset.listed = listed;
+ host.replaceChildren();
+ if (!media.length) {
+ host.innerHTML = '<p class="modal-empty">No USB storage device found. Plug one in.</p>';
+ return;
+ }
+ media.forEach((m) => {
+ const row = document.createElement('label');
+ row.className = 'tier-option';
+ const input = document.createElement('input');
+ input.type = 'radio';
+ input.name = 'drive-export-media';
+ input.value = m.id;
+ input.disabled = !m.writable;
+ input.checked = m.id === picked;
+ input.addEventListener('change', () => { picked = m.id; });
+ const text = document.createElement('span');
+ const name = document.createElement('strong');
+ name.textContent = m.label;
+ text.appendChild(name);
+ if (!m.writable) {
+ const why = document.createElement('small');
+ why.textContent = m.reason;
+ text.appendChild(why);
+ }
+ row.append(input, text);
+ host.appendChild(row);
+ });
+ }
+ async function list() {
+ let got = null;
+ try {
+ got = await _driveExportFetch('/api/diagnostics/drives');
+ } catch (err) {
+ got = null;
+ }
+ if (!open) return;
+ if (got && got.res.ok) render(JSON.parse(got.text).media);
+ // Listed again about once a second, like the Operator Screen's picker, so a device plugged in now appears.
+ timer = setTimeout(list, 1000);
+ }
+ async function save(btn) {
+ const card = document.querySelector('#modal-root .modal-card');
+ btn.disabled = true;
+ let got;
+ try {
+ got = await _driveExportFetch('/api/diagnostics/export', {
+ method: 'POST',
+ headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+ body: new URLSearchParams({media_id: picked}),
+ });
+ } catch (err) {
+ btn.disabled = !picked;
+ saveError.show(card, saveError.UNREACHABLE, 'Not saved.');
+ return;
+ }
+ if (!got.res.ok) {
+ btn.disabled = !picked;
+ saveError.show(card, saveError.fromText(got.res.status, got.text), 'Not saved.');
+ return;
+ }
+ const status = JSON.parse(got.text);
+ (status.phase === 'done' ? _driveExportResult : _driveExportProgress)(status);
+ }
+ list();
+ }
+ function _driveExportProgress(status) {
+ let polling = true;
+ openModal({
+ title: 'Save diagnostics',
+ bodyHTML: '<div class="modal-progress"><div class="modal-spinner"></div>'
+ + '<p id="drive-export-line" role="status" aria-live="polite" tabindex="-1"></p></div>'
+ + '<p id="drive-export-next"></p>',
+ footerButtons: [{label: 'Close', onClick: () => closeModal()}],
+ // Closed while it runs: the button comes back to this export.
+ onClose: () => { if (polling) _driveExportLeft = status.generation; polling = false; },
+ });
+ function show(s) {
+ document.getElementById('drive-export-line').textContent = s.headline;
+ document.getElementById('drive-export-next').textContent = s.next_step;
+ }
+ async function poll() {
+ let got = null;
+ try {
+ got = await _driveExportFetch('/api/diagnostics/export?generation=' + status.generation);
+ } catch (err) {
+ got = null;
+ }
+ if (!polling) return;
+ const s = got && got.res.ok ? JSON.parse(got.text) : null;
+ if (s && s.generation === status.generation && s.phase === 'done') {
+ polling = false;
+ _driveExportResult(s);
+ return;
+ }
+ if (s && s.generation === status.generation) show(s);
+ setTimeout(poll, 1000);
+ }
+ show(status);
+ setTimeout(poll, 1000);
+ }
+ function _driveExportResult(status) {
+ _driveExportLeft = 0;
+ const kind = status.ok ? 'success' : 'error';
+ openModal({
+ title: 'Save diagnostics',
+ bodyHTML: '<div class="notice ' + kind + '" role="' + (status.ok ? 'status' : 'alert') + '">'
+ + escapeHTML(status.headline) + '<div class="notice-sub">' + escapeHTML(status.next_step) + '</div></div>',
+ footerButtons: [
+ {label: 'Pick a USB storage device', onClick: () => _driveExportPick()},
+ {label: 'Done', kind: 'primary', onClick: () => closeModal()},
+ ],
  });
  }
  // Toggle the <body> gate class. When turning off, uncheck the detection

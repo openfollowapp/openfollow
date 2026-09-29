@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any
 
-from openfollow.runtime.diagnostics_export import COLLECTING, DONE, HUD, RETRY, WEB, WRITING, ExportStatus
+from openfollow.runtime.diagnostics_export import COLLECTING, DONE, HUD, WEB, WRITING, ExportStatus
 from openfollow.runtime.removable_media import Media, MediaWatch, list_media
 
 if TYPE_CHECKING:
@@ -232,14 +232,3 @@ def badge_row(status: ExportStatus) -> tuple[str, str]:
     if status.ok:
         return ("info", f"Diagnostics saved to {status.drive}")
     return ("error", f"Export failed: {status.message.rstrip('.')}")
-
-
-def export_screen_lines(status: ExportStatus) -> tuple[str, str, bool | None]:
-    """``(what is happening or happened, the next step, ok)`` for the export screen; ``ok`` is None while it runs."""
-    if status.phase == COLLECTING:
-        return "Collecting diagnostics", "The export continues in the background.", None
-    if status.phase == WRITING:
-        return f"Writing to {status.drive}", "The export continues in the background.", None
-    if status.ok:
-        return status.message, status.action, True
-    return status.message, status.action or RETRY, False

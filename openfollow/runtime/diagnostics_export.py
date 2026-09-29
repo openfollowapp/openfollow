@@ -2,10 +2,10 @@
 # Copyright (C) 2026 OpenFollow Project
 """Saving the diagnostics bundle to a removable drive, one export at a time.
 
-Collecting the bundle takes up to ~20 s, which the GTK main loop must never
-wait on: the HUD starts an export on a worker thread (``start``) and reads
-``status()`` each frame, while the web UI runs one in its own request thread
-(``run``). Both share one slot, so a second export while one runs is refused.
+Collecting the bundle takes up to ~20 s, which neither the GTK main loop nor a
+web request may wait on: the Operator Screen and the web UI both start an export
+on a worker thread (``start``) and read ``status()`` while it runs. They share
+one slot, so a second export while one runs is refused.
 """
 
 from __future__ import annotations
@@ -45,13 +45,6 @@ class ExportStatus:
     action: str = ""
 
 
-class ExportBusy(Exception):
-    """Another export holds the slot."""
-
-    def __init__(self) -> None:
-        super().__init__("Another diagnostics export is still running.")
-
-
 class DiagnosticsExport:
     """Builds the bundle and saves it to a drive; ``build`` returns ``(filename, text)``."""
 
@@ -76,13 +69,6 @@ class DiagnosticsExport:
         with self._lock:
             return self._last_done.get(origin)
 
-    def run(self, media_id: str, drive: str, origin: str) -> ExportStatus:
-        """Export in the caller's thread and return the result; raises :class:`ExportBusy`."""
-        if not self._slot.acquire(blocking=False):
-            raise ExportBusy()
-        self._begin(drive, origin)
-        return self._export(media_id)
-
     def start(self, media_id: str, drive: str, origin: str) -> bool:
         """Export on a worker thread; ``False`` when another export is running."""
         if not self._slot.acquire(blocking=False):
@@ -103,30 +89,44 @@ class DiagnosticsExport:
         with self._lock:
             self._status = replace(self._status, phase=phase)
 
-    def _finish(self, ok: bool, message: str, action: str = "") -> ExportStatus:
-        """This export's result, taken before the slot is freed for the next one."""
+    def _finish(self, ok: bool, message: str, action: str = "") -> None:
         with self._lock:
             done = self._status = replace(self._status, phase=DONE, ok=ok, message=message, action=action)
             self._last_done[done.origin] = done
         self._slot.release()
-        return done
 
-    def _export(self, media_id: str) -> ExportStatus:
+    def _export(self, media_id: str) -> None:
         """Holds the slot on entry and releases it in ``_finish``, whatever happens."""
         try:
             filename, text = self._build()
         except Exception:
             logger.exception("Collecting the diagnostics bundle failed.")
-            return self._finish(False, "The diagnostics could not be collected.")
+            self._finish(False, "The diagnostics could not be collected.")
+            return
         self._set_phase(WRITING)
         try:
             result = self._write(media_id, filename, text.encode("utf-8"))
         except MediaError as exc:
             logger.warning("Saving the diagnostics bundle to %s failed: %s", self.status().drive, exc)
-            return self._finish(False, str(exc), exc.action)
+            self._finish(False, str(exc), exc.action)
+            return
         except Exception:
             logger.exception("Saving the diagnostics bundle failed.")
-            return self._finish(False, "The file could not be saved.")
+            self._finish(False, "The file could not be saved.")
+            return
         media = result.media
         logger.info("Saved the diagnostics bundle as %s to %s (%s).", result.filename, media.name, media.device)
-        return self._finish(True, result.message, result.action)
+        self._finish(True, result.message, result.action)
+
+
+def status_lines(status: ExportStatus) -> tuple[str, str, bool | None]:
+    """``(what is happening or happened, the next step, ok)`` for both screens; ``ok`` is None while it runs."""
+    if status.phase == IDLE:
+        return "", "", None
+    if status.phase == COLLECTING:
+        return "Collecting diagnostics", "The export continues in the background.", None
+    if status.phase == WRITING:
+        return f"Writing to {status.drive}", "The export continues in the background.", None
+    if status.ok:
+        return status.message, status.action, True
+    return status.message, status.action or RETRY, False

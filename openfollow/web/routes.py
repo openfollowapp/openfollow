@@ -3891,7 +3891,8 @@ def _render_gallery_grid(server: ConfigWebServer, *, error: str = "") -> str:
                 '<div class="gallery-actions">'
                 f'<a class="gallery-dl" href="{_GALLERY_PREFIX}/download/{eid}" title="Download" download>&#8681;</a>'
                 f'<button class="gallery-del" type="button" title="Delete" hx-post="{_GALLERY_PREFIX}/delete/{eid}" '
-                'hx-target="#gallery-grid" hx-swap="outerHTML" hx-confirm="Delete this media?">&#215;</button>'
+                'hx-target="#gallery-grid" hx-swap="outerHTML" hx-confirm="Delete this media?" '
+                'data-confirm-title="Delete media?" data-confirm-label="Delete" data-confirm-danger>&#215;</button>'
                 "</div>"
             )
         tiles.append(

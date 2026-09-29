@@ -68,3 +68,30 @@ def test_a_template_export_failure_reports_on_the_dialog() -> None:
     assert "saveError.show(card, await saveError.fromResponse(res), 'Not exported.')" in body
     assert "saveError.show(card, saveError.UNREACHABLE, 'Not exported.')" in body
     assert "showToast" not in body
+
+
+_NATIVE_DIALOG = re.compile(r"(?<![\w.])(confirm|alert|prompt)\(")
+
+
+def test_no_template_or_input_plugin_opens_a_native_browser_dialog() -> None:
+    offenders = [
+        f"{path.name}: {match.group(0)}"
+        for path in _sources_with_scripts()
+        for match in _NATIVE_DIALOG.finditer(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []
+
+
+def test_every_hx_confirm_names_its_button_and_the_listener_asks_in_the_modal() -> None:
+    sources = _sources_with_scripts() + [_PACKAGE / "web" / "routes.py"]
+    sites = 0
+    for path in sources:
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(r"hx-confirm=", text):
+            sites += 1
+            tag = text[match.start() : text.index(">", match.start())]
+            assert "data-confirm-label=" in tag, f"{path.name}: hx-confirm without a named button"
+    assert sites >= 7, "the scan no longer finds the hx-confirm sites"
+    base = _template("base.tpl")
+    assert "'htmx:confirm'" in base
+    assert "evt.detail.issueRequest(true)" in base

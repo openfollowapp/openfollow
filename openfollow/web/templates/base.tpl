@@ -2664,6 +2664,20 @@
  });
  });
  }
+ // ``hx-confirm`` questions are asked in the modal, never the browser's own
+ // dialog. A site names its button with ``data-confirm-label``, its title with
+ // ``data-confirm-title``, and takes the danger button with ``data-confirm-danger``.
+ document.addEventListener('htmx:confirm', function (evt) {
+ if (!evt.detail.question) return;
+ evt.preventDefault();
+ const elt = evt.detail.elt;
+ modalConfirm({
+ title: elt.getAttribute('data-confirm-title') || 'Confirm',
+ message: evt.detail.question,
+ confirmLabel: elt.getAttribute('data-confirm-label') || 'Confirm',
+ danger: elt.hasAttribute('data-confirm-danger'),
+ }).then((ok) => { if (ok) evt.detail.issueRequest(true); });
+ });
  // ``escapeHTML`` keeps operator-typed names from being interpreted
  // as markup when interpolated into the modal body. Used by the
  // template chooser + every modalPrompt label / placeholder.
@@ -3564,10 +3578,15 @@
  // isn't in the DOM. Triggers ``/api/restart`` (which returns
  // immediately) then polls ``/api/info`` every 2 s until the
  // server comes back, at which point it reloads the page.
- function confirmRestartApp() {
+ async function confirmRestartApp() {
  const saveError = window.OpenFollow.saveError;
  const box = saveError.origin();
- if (!confirm('Restart the application?')) return;
+ const ok = await modalConfirm({
+ title: 'Restart application?',
+ message: 'Video and tracking stop until the station is back.',
+ confirmLabel: 'Restart',
+ });
+ if (!ok) return;
  fetch('/api/restart', {method: 'POST'}).then(async function(res) {
  if (!res.ok) {
  saveError.show(box, await saveError.fromResponse(res), 'Not restarted.');

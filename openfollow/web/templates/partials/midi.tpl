@@ -74,7 +74,8 @@
  hx-post="/section/midi/patches/{{patch.id}}/delete"
  hx-target="#midi-section"
  hx-swap="outerHTML"
- hx-confirm="Delete patch {{patch.id}}{{' (' + patch.alias + ')' if patch.alias else ''}}?">Delete</button>
+ hx-confirm="Delete patch {{patch.id}}{{' (' + patch.alias + ')' if patch.alias else ''}}?"
+ data-confirm-title="Delete patch?" data-confirm-label="Delete" data-confirm-danger>Delete</button>
  </td>
  </tr>
  % end

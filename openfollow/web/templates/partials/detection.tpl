@@ -256,7 +256,8 @@
                                 hx-vals='{"model": "{{m['name']}}"}'
                                 hx-target="#detection-section"
                                 hx-swap="outerHTML"
-                                hx-confirm="Delete {{m['name']}}? This removes the file from disk.">
+                                hx-confirm="Delete {{m['name']}}? This removes the file from disk."
+                                data-confirm-title="Delete model?" data-confirm-label="Delete" data-confirm-danger>
                             Delete
                         </button>
                     </div>

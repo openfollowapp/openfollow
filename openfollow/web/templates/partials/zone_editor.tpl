@@ -1069,10 +1069,16 @@
         }));
     }
 
-    function deleteSelected() {
+    async function deleteSelected() {
         if (state.selectedIndex < 0) return;
-        if (!confirm('Delete this zone?')) return;
         var idx = state.selectedIndex;
+        var ok = await modalConfirm({
+            title: 'Delete zone?',
+            message: 'Delete this zone?',
+            confirmLabel: 'Delete',
+            danger: true,
+        });
+        if (!ok || state.selectedIndex !== idx) return;
         zoneWrite(fetch('/api/zones/' + idx, {method: 'DELETE'}))
             .then(function(r) {
                 if (r) {

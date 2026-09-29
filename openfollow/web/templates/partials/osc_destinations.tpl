@@ -103,7 +103,8 @@
  <button type="button" class="danger"
  hx-post="/section/osc_destination/{{dest.id}}/delete"
  hx-target="#osc-destinations-section" hx-swap="outerHTML"
- hx-confirm="Delete this destination? Transmitters and zones referencing it will stop sending until repointed.">Delete</button>
+ hx-confirm="Delete this destination? Transmitters and zones referencing it will stop sending until repointed."
+ data-confirm-title="Delete destination?" data-confirm-label="Delete" data-confirm-danger>Delete</button>
  </div>
  </form>
  </details>

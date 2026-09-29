@@ -416,7 +416,8 @@
  hx-target='details.osc-binding-row[data-row-id="{{row.id}}"]'
  hx-select='details.osc-binding-row[data-row-id="{{row.id}}"]'
  hx-swap="outerHTML"
- hx-confirm="Discard unsaved changes to this row?">Discard</button>
+ hx-confirm="Discard unsaved changes to this row?"
+ data-confirm-title="Discard changes?" data-confirm-label="Discard" data-confirm-danger>Discard</button>
  <!-- Per-row "Save as template…" button. Reads row's
  name + live OSC message (hidden mirror) and POSTs
  to /api/templates/osc_output/save. File lands as
@@ -436,7 +437,8 @@
  hx-post="/section/osc_binding/{{row.id}}/delete"
  hx-target="#osc-bindings-section"
  hx-swap="outerHTML"
- hx-confirm="Delete this transmitter?">Delete</button>
+ hx-confirm="Delete this transmitter?"
+ data-confirm-title="Delete transmitter?" data-confirm-label="Delete" data-confirm-danger>Delete</button>
  </div>
  </form>
  </details>

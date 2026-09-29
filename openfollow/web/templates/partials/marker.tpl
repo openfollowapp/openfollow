@@ -421,8 +421,14 @@
                 body: JSON.stringify({name: name, color: color})
             }).then(writeResult(tr)).catch(writeUnreachable(tr));
         });
-        tr.querySelector('[data-action="delete"]').addEventListener('click', function() {
-            if (!confirm('Delete marker ' + id + '?')) return;
+        tr.querySelector('[data-action="delete"]').addEventListener('click', async function() {
+            const ok = await modalConfirm({
+                title: 'Delete marker?',
+                message: 'Delete marker ' + id + '?',
+                confirmLabel: 'Delete',
+                danger: true,
+            });
+            if (!ok) return;
             fetch('/api/markers/catalog/' + id, {method: 'DELETE'})
                 .then(writeResult(tr)).catch(writeUnreachable(tr));
         });

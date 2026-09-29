@@ -213,6 +213,26 @@ def _mac_system_disks(run: Runner) -> set[str]:
     return {str(root.get("ParentWholeDisk") or "")} | {re.sub(r"s\d+$", "", s) for s in stores if s}
 
 
+def _mac_info(run: Runner, ident: str) -> dict[str, Any]:
+    info: dict[str, Any] = plistlib.loads(_output(run, ["/usr/sbin/diskutil", "info", "-plist", ident]).encode())
+    return info
+
+
+def _mac_volumes(run: Runner, ident: str) -> list[tuple[str, dict[str, Any]]]:
+    """A partition's volume, or, for an APFS container's physical store, each volume on the (synthesized) container."""
+    info = _mac_info(run, ident)
+    container = info.get("APFSContainerReference")
+    if not container:
+        return [(ident, info)]
+    listing = plistlib.loads(_output(run, ["/usr/sbin/diskutil", "list", "-plist", str(container)]).encode())
+    volumes = [
+        v.get("DeviceIdentifier")
+        for d in listing.get("AllDisksAndPartitions") or []
+        for v in d.get("APFSVolumes") or []
+    ]
+    return [(str(v), _mac_info(run, str(v))) for v in volumes if v]
+
+
 def _mac_media(run: Runner) -> list[Media]:
     listing = plistlib.loads(_output(run, ["/usr/sbin/diskutil", "list", "-plist", "external", "physical"]).encode())
     system = _mac_system_disks(run)
@@ -220,11 +240,8 @@ def _mac_media(run: Runner) -> list[Media]:
     for disk in listing.get("AllDisksAndPartitions") or []:
         if disk.get("DeviceIdentifier") in system:
             continue
-        for part in disk.get("Partitions") or [disk]:
-            ident = part.get("DeviceIdentifier")
-            if not ident:
-                continue
-            info = plistlib.loads(_output(run, ["/usr/sbin/diskutil", "info", "-plist", ident]).encode())
+        partitions = [str(p["DeviceIdentifier"]) for p in disk.get("Partitions") or [disk] if p.get("DeviceIdentifier")]
+        for ident, info in (volume for part in partitions for volume in _mac_volumes(run, part)):
             if not info.get("FilesystemType") or info.get("VolumeName") == "EFI":
                 continue
             mountpoint = info.get("MountPoint") or None

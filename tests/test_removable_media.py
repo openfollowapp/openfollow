@@ -200,11 +200,15 @@ class TestLinuxListing:
         assert list_media(platform="win32", run=run) == []
 
 
-def _mac(volumes: dict[str, dict[str, Any]], layout: list[dict[str, Any]]):  # noqa: ANN202
+def _mac(
+    volumes: dict[str, dict[str, Any]],
+    layout: list[dict[str, Any]],
+    containers: dict[str, list[dict[str, Any]]] | None = None,
+):  # noqa: ANN202
     def run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
         if argv[1] == "list":
-            assert argv == ["/usr/sbin/diskutil", "list", "-plist", "external", "physical"]
-            return subprocess.CompletedProcess(argv, 0, plistlib.dumps({"AllDisksAndPartitions": layout}).decode(), "")
+            listed = layout if argv[3:] == ["external", "physical"] else (containers or {})[argv[3]]
+            return subprocess.CompletedProcess(argv, 0, plistlib.dumps({"AllDisksAndPartitions": listed}).decode(), "")
         return subprocess.CompletedProcess(argv, 0, plistlib.dumps(volumes[argv[3]]).decode(), "")
 
     return run
@@ -285,6 +289,37 @@ class TestMacListing:
         with caplog.at_level("WARNING", logger=rm.__name__):
             assert list_media(platform="darwin", run=run) == []
         assert "Listing removable drives failed" in caplog.text
+
+    def test_an_apfs_stick_offers_the_volumes_of_its_container(self, tmp_path: Path) -> None:
+        # The physical partition is only the container's store; its volumes sit on a synthesized disk.
+        stick = tmp_path / "MACSTICK"
+        stick.mkdir()
+        volumes = {
+            "/": {"ParentWholeDisk": "disk3", "APFSPhysicalStores": [{"APFSPhysicalStore": "disk0s2"}]},
+            "disk9s1": {"FilesystemType": "msdos", "VolumeName": "EFI"},
+            "disk9s2": {"Content": "Apple_APFS", "APFSContainerReference": "disk10"},
+            "disk10s1": {
+                "FilesystemType": "apfs",
+                "MountPoint": str(stick),
+                "VolumeName": "MACSTICK",
+                "WritableVolume": True,
+                "TotalSize": 64 * 10**9,
+            },
+        }
+        layout = [
+            {
+                "DeviceIdentifier": "disk9",
+                "Partitions": [{"DeviceIdentifier": "disk9s1"}, {"DeviceIdentifier": "disk9s2"}],
+            }
+        ]
+        containers = {"disk10": [{"DeviceIdentifier": "disk10", "APFSVolumes": [{"DeviceIdentifier": "disk10s1"}, {}]}]}
+        run = _mac(volumes, layout, containers)
+        media = list_media(platform="darwin", run=run)
+        assert [(m.id, m.device, m.label, m.writable) for m in media] == [
+            ("disk10s1", "/dev/disk10s1", "MACSTICK · APFS · 64 GB", True)
+        ]
+        result = write_file("disk10s1", "b.txt", b"x", platform="darwin", run=run)
+        assert (result.filename, (stick / "b.txt").read_bytes()) == ("b.txt", b"x")
 
     def test_a_listing_diskutil_cannot_parse(self) -> None:
         def run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:

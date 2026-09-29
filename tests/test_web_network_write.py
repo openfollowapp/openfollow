@@ -448,6 +448,8 @@ def test_the_session_row_names_the_address_it_is_answering(net_server) -> None:
     # asserting on the body alone passes with the old topology claim in place.
     notice = wlan.split('class="notice warning"', 1)[1].split("</div>", 1)[0]
     assert "answering your browser at 169.254.32.55" in notice
+    # The next step sits on its own line, under what the station observed.
+    assert 'class="notice-sub">Reconnect by name' in notice
     assert "connected over this interface" not in notice
     assert "169.254.32.55" in wlan.split('class="stat-chip info"', 1)[1].split(">", 1)[0]
     assert "This session" not in eth0
@@ -1252,6 +1254,57 @@ def test_a_pending_apply_still_shows_its_warnings(net_server) -> None:
     assert status == 200
     assert "take effect when eth0 has a link" in body
     assert "rebind refused" in body, "the pending banner dropped its warnings"
+
+
+# --------------------------------------------------------------------------- #
+# Result banners are status boxes
+# --------------------------------------------------------------------------- #
+
+_STATIC_APPLY = {"iface": "eth0", "method": "static", "address": "192.168.9.9", "subnet_mask": "255.255.255.0"}
+
+
+@pytest.mark.parametrize(
+    ("result", "kind", "role"),
+    [
+        (ApplyResult(ok=False, message="nmcli refused"), "error", "alert"),
+        (ApplyResult(ok=True, pending=True, message="Saved. eth0 has no link yet."), "info", "status"),
+        (ApplyResult(ok=True, message="Applied."), "ok", "status"),
+    ],
+    ids=["refused", "pending", "applied"],
+)
+def test_an_apply_result_is_a_status_box(net_server, result: ApplyResult, kind: str, role: str) -> None:
+    fake, base = net_server
+    fake.apply_result = result
+    _status, body = _post(base, "/section/network/apply", _STATIC_APPLY)
+    banner = body.split('class="network-banner ', 1)[1].split(">", 1)[0]
+    assert f"network-banner-{kind}" in banner
+    assert f'role="{role}"' in banner
+
+
+def test_a_row_without_a_method_carries_no_empty_pill(net_server) -> None:
+    """Without the per-interface provider only the active adapter's method is known."""
+    fake, base = net_server
+    fake.provide_rows = False
+    _status, body = _get(base, "/section/network/status")
+    eth0 = body.split('data-adv-key="net-iface-eth0"', 1)[1].split("</summary>", 1)[0]
+    wlan = body.split('data-adv-key="net-iface-wlan0"', 1)[1].split("</summary>", 1)[0]
+    assert '<span class="net-iface-method-badge">DHCP</span>' in eth0
+    assert "net-iface-method-badge" not in wlan
+
+
+def test_every_network_banner_kind_is_drawn_as_a_box() -> None:
+    """A kind without a rule in the shared box block renders as bare text."""
+    import re
+    from pathlib import Path
+
+    web = Path(__file__).resolve().parent.parent / "openfollow" / "web"
+    kinds = set(re.findall(r'banner=\{"kind": "(\w+)"', (web / "routes.py").read_text(encoding="utf-8")))
+    assert kinds == {"error", "ok", "info"}
+    css = (web / "templates" / "base.tpl").read_text(encoding="utf-8")
+    rules = re.findall(r"([^{}]+)\{([^{}]*)\}", css)
+    box = next(sel for sel, body in rules if "background: var(--info-fill)" in body and "border-radius: 6px" in body)
+    for kind in kinds:
+        assert f".network-banner.network-banner-{kind}" in box
 
 
 # --------------------------------------------------------------------------- #

@@ -46,7 +46,8 @@
 % end
      >
     % if _banner:
-    <div class="network-banner network-banner-{{_banner.get('kind', 'info')}}">{{_banner.get('text', '')}}</div>
+    % _bkind = _banner.get('kind', 'info')
+    <div class="network-banner network-banner-{{_bkind}}" role="{{'alert' if _bkind == 'error' else 'status'}}">{{_banner.get('text', '')}}</div>
     % end
 
     % if not _net.get("available"):
@@ -108,7 +109,9 @@
                     <span class="stat-chip">VLAN {{_vlan_id}}</span>
                     % end
                     <span class="net-iface-addr {{'' if _addr else 'muted'}}">{{(_addr + ('/' + str(_prefix) if _prefix else '')) if _addr else '(no address)'}}</span>
-                    <span class="net-iface-method-badge">{{row.get('method_label', '')}}</span>
+                    % if row.get('method_label'):
+                    <span class="net-iface-method-badge">{{row['method_label']}}</span>
+                    % end
                 </summary>
 
                 <form class="net-iface-form"
@@ -133,23 +136,16 @@
                     %# be a VLAN reached from the untagged LAN. Either way,
                     %# editing it drops the session.
                     % if _name and _name == _session:
-                    <div class="notice warning" role="status">
-                        <strong>This station is answering your browser at {{_session_addr}}.</strong>
-                        That address belongs to this interface, so changing its addressing
-                        will drop this web session. A static or manual address reloads the UI
-                        at the new one automatically; otherwise the station stays reachable by
-                        name and from the on-screen <em>Settings &rsaquo; Network</em> menu.
+                    <div class="notice warning" role="status">This station is answering your browser at {{_session_addr}}. Changing this interface's addressing drops this session.
+                        <div class="notice-sub">Reconnect by name, or read the address off Settings &rsaquo; Network on the station's screen.</div>
                     </div>
                     %# Reached over IPv6, or at an address that is none of this
                     %# host's, there is no row to put the notice on - so every
                     %# editor carries the caution instead. Saying nothing is the
                     %# one outcome that leaves the operator unwarned.
                     % elif _row_edit and not _session:
-                    <div class="notice warning" role="status">
-                        Which interface is answering your browser can't be determined here,
-                        so this may be the one carrying this web session. Applying would then
-                        drop it; the station stays reachable by name and from the on-screen
-                        <em>Settings &rsaquo; Network</em> menu.
+                    <div class="notice warning" role="status">Which interface is answering your browser can't be told here, so this may be the one carrying this web session.
+                        <div class="notice-sub">If applying drops it, reconnect by name, or read the address off Settings &rsaquo; Network on the station's screen.</div>
                     </div>
                     % end
 

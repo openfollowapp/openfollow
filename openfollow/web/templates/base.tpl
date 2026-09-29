@@ -879,7 +879,12 @@
  .net-iface-row[data-mode="edit"] { border-color: var(--accent); }
  .net-iface-name code { font-size: 0.9rem; }
  .net-iface-addr { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
- .net-iface-method-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); flex: none; }
+ /* How the address was come by: a neutral row pill, in the Controller Slots state's grey. */
+ .net-iface-method-badge {
+ flex: none; border-radius: 0.4rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem;
+ font-size: 0.7rem; font-weight: 500; white-space: nowrap;
+ color: rgba(247, 245, 233, 0.88); background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.18);
+ }
  .net-iface-form .group:last-of-type { border-bottom: 0; }
  /* Which addressing fields a method actually lets you set. View mode reads
     them all out; only Edit mode hides the ones that don't apply. The JS
@@ -1925,13 +1930,6 @@
  .network-state-card .group:last-child { padding-bottom: 0; margin-bottom: 0; }
  .network-state-card .muted { color: var(--muted); margin: 0; }
  /* Network result banner and disconnect warning. */
- .network-banner {
- margin-bottom: 0.8rem;
- padding: 0.5rem 0.7rem;
- border-left: 3px solid var(--accent);
- background: var(--accent-soft);
- font-size: 0.85rem;
- }
  /* The one banner the network card still carries: a station whose network
  cannot be written from the web has to say so, or its disabled fields read
  as a fault. */
@@ -2154,7 +2152,8 @@
  by the older class names; the level's sign sits in the left padding. Last in
  the block, so it wins over each class's layout-only rule above. */
  .notice, .update-notice, .restart-notice, .modal-error, .diag-error, .gallery-error,
- .wizard-action-required, .network-banner.network-banner-error, .network-banner.network-banner-ok {
+ .wizard-action-required, .network-banner.network-banner-error, .network-banner.network-banner-ok,
+ .network-banner.network-banner-info {
  position: relative;
  margin: 0 0 12px;
  padding: 10px 12px 10px 38px;
@@ -2168,7 +2167,7 @@
  }
  .notice::before, .update-notice::before, .restart-notice::before, .modal-error::before, .diag-error::before,
  .gallery-error::before, .wizard-action-required::before, .network-banner.network-banner-error::before,
- .network-banner.network-banner-ok::before {
+ .network-banner.network-banner-ok::before, .network-banner.network-banner-info::before {
  content: "";
  position: absolute;
  left: 12px;
@@ -2197,13 +2196,13 @@
  font-weight: 400; max-height: 8em; overflow: auto; white-space: pre-wrap; color: #cfd6df; }
  /* Pills set --pill-pad-y and their own inline padding. Trimming the line box to cap
  height and baseline centres the label whatever the fallback font's ascent. */
- .stat-chip, .diag-status-pill, .slot-state, .slot-note, .badge-experimental,
+ .stat-chip, .diag-status-pill, .slot-state, .slot-note, .badge-experimental, .net-iface-method-badge,
  .osc-binding-fault, .osc-binding-caution, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
  .osc-pill[data-invalid="true"][data-unresolved="true"] {
  padding-block: var(--pill-pad-y);
  }
  @supports (text-box: trim-both cap alphabetic) {
- .stat-chip, .diag-status-pill, .slot-state, .slot-note, .badge-experimental,
+ .stat-chip, .diag-status-pill, .slot-state, .slot-note, .badge-experimental, .net-iface-method-badge,
  .osc-binding-fault, .osc-binding-caution, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
  .osc-pill[data-invalid="true"][data-unresolved="true"] {
  text-box: trim-both cap alphabetic;

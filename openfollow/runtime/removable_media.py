@@ -33,6 +33,7 @@ from openfollow.privilege.media_writer import (
     EXIT_UNMOUNT_FAILED,
     MOUNT_TYPES,
     SENTENCE_EXITS,
+    STEP_TIMEOUTS_S,
     MediaWriteError,
     check_name,
     is_system_disk,
@@ -46,8 +47,8 @@ _LSBLK_COLUMNS = "NAME,PATH,PKNAME,TYPE,TRAN,FSTYPE,FSVER,LABEL,PARTTYPE,SIZE,MO
 # The EFI system partition (GPT GUID, MBR id) a Mac or PC puts ahead of the volume; a file there is hidden.
 _EFI_PARTTYPES = frozenset({"c12a7328-f81f-11d2-ba4b-00a0c93ec93b", "0xef"})
 _PROBE_TIMEOUT_S = 5.0
-# Mounting, writing and syncing a slow stick; the helper bounds each step itself.
-_WRITE_TIMEOUT_S = 120.0
+# The helper's own step bounds plus a 32 MB write and sync on a slow stick; waiting less kills it before it unmounts.
+_WRITE_TIMEOUT_S = STEP_TIMEOUTS_S + 110.0
 
 _FS_NAMES = {
     "exfat": "exFAT",

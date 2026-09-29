@@ -59,7 +59,11 @@ SYSTEM_MOUNTS = frozenset({"/", "/boot/firmware", "/mnt/nvme"})
 _MAX_SUFFIX = 99
 _WRITE_FAILED = "The file could not be written to the USB storage device."
 _NAME_LINE_MAX = 256
-_TIMEOUT_S = 60
+# Each step's own bound; a caller must wait longer than their sum plus the write, or it kills the helper mid-step.
+LSBLK_TIMEOUT_S = 10
+MOUNT_TIMEOUT_S = 30
+UMOUNT_TIMEOUT_S = 30
+STEP_TIMEOUTS_S = LSBLK_TIMEOUT_S + MOUNT_TIMEOUT_S + UMOUNT_TIMEOUT_S
 
 EXIT_USAGE = 2
 EXIT_BAD_NAME = 3
@@ -215,7 +219,7 @@ def _check_device(device: str, lsblk: str) -> str:
             [lsblk, "-J", "-o", "NAME,PATH,PKNAME,TYPE,TRAN,FSTYPE,MOUNTPOINTS"],
             capture_output=True,
             text=True,
-            timeout=_TIMEOUT_S,
+            timeout=LSBLK_TIMEOUT_S,
             check=True,
         ).stdout
         found = _find(nest_devices(json.loads(out)), device)
@@ -253,7 +257,7 @@ def _write_to_device(
         mounted = subprocess.run(  # noqa: S603  # nosec B603
             [mount, "-t", mount_type, "-o", "nosuid,nodev,noexec", device, str(mountpoint)],
             capture_output=True,
-            timeout=_TIMEOUT_S,
+            timeout=MOUNT_TIMEOUT_S,
             check=False,
         )
         if mounted.returncode != 0:
@@ -263,10 +267,10 @@ def _write_to_device(
         except Exception as exc:
             error = exc if isinstance(exc, MediaWriteError) else MediaWriteError(EXIT_WRITE_FAILED, _WRITE_FAILED)
             # Still mounted outranks why the write failed: pulling the device now can corrupt it.
-            if not _run_quietly([umount, str(mountpoint)]):
+            if not _unmount(umount, mountpoint):
                 raise MediaWriteError(EXIT_UNMOUNT_FAILED, f"{error} It could not be unmounted either.") from exc
             raise error from exc
-        if not _run_quietly([umount, str(mountpoint)]):
+        if not _unmount(umount, mountpoint):
             raise MediaWriteError(
                 EXIT_UNMOUNT_FAILED,
                 f"{written} was written, but the USB storage device could not be unmounted.",
@@ -279,9 +283,10 @@ def _write_to_device(
             pass
 
 
-def _run_quietly(argv: list[str]) -> bool:
+def _unmount(umount: str, mountpoint: Path) -> bool:
     try:
-        return subprocess.run(argv, capture_output=True, timeout=_TIMEOUT_S, check=False).returncode == 0  # noqa: S603  # nosec B603
+        done = subprocess.run([umount, str(mountpoint)], capture_output=True, timeout=UMOUNT_TIMEOUT_S, check=False)  # noqa: S603  # nosec B603
+        return done.returncode == 0
     except (subprocess.SubprocessError, OSError):
         return False
 

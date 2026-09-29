@@ -309,6 +309,8 @@ class TestWriting:
         (call,) = broker.calls
         assert call["argv"] == [MEDIA_WRITE_SCRIPT, "write", "/dev/sda1"]
         assert (call["stdin"], call["allow_prompt"]) == (b"ofdiag-rig.txt\n\x00data", False)
+        # Outlasts the helper's own step bounds with room to write: killed mid-step, it never unmounts.
+        assert call["timeout"] >= mw.STEP_TIMEOUTS_S + 60
         assert (result.filename, result.media.id, result.action) == (
             "ofdiag-rig-2.txt",
             "sda1",

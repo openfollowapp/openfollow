@@ -5,8 +5,9 @@
 The audit is kept off pull requests so a newly disclosed CVE cannot block
 unrelated work, which leaves an edit to the job itself untested until it reaches
 ``main``. A PR touching ``ci.yml`` or the ``Makefile`` (which holds the ``audit``
-target) therefore runs it, with only the pip-audit verdict advisory: the install
-and cache mechanics the edit could break still fail the job.
+target) therefore runs it, with only a completed audit's findings advisory: a
+broken install, cache or audit run, the things the edit could break, still fails
+the job.
 """
 
 from __future__ import annotations
@@ -25,6 +26,9 @@ pytestmark = pytest.mark.unit
 
 _WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
 _NON_PR_EVENTS = ("push", "schedule", "workflow_dispatch")
+# A ``run:`` block with no ``shell:`` runs under the first; ``shell: bash`` under the second.
+_SHELLS = [["bash", "-e"], ["bash", "--noprofile", "--norc", "-eo", "pipefail"]]
+_SHELL_IDS = ["default-shell", "shell-bash"]
 
 
 def _jobs() -> dict[str, Any]:
@@ -84,28 +88,74 @@ def test_export_audit_never_runs_on_a_pr(output: str) -> None:
 # --- what may fail on a PR run ----------------------------------------------
 
 
-def test_the_cve_verdict_is_advisory_on_a_pr() -> None:
-    step = _audit_step(_jobs()["audit"])
-    assert evaluate(step.get("continue-on-error", False), {"github.event_name": "pull_request"})
+_FINDINGS = "Found 2 known vulnerabilities in 1 package\nName Version ID Fix Versions\n"
+_CLEAN = "No known vulnerabilities found\n"
+_FATAL = "ERROR:pip_audit._cli:package resolution failed\nmake: *** [Makefile:97: audit] Error 1\n"
+_NO_TARGET = "make: *** No rule to make target 'audit'.  Stop.\n"
 
 
-@pytest.mark.parametrize("event", _NON_PR_EVENTS)
-def test_the_cve_verdict_gates_outside_prs(event: str) -> None:
-    step = _audit_step(_jobs()["audit"])
-    assert not evaluate(step.get("continue-on-error", False), {"github.event_name": event})
+@pytest.mark.parametrize("shell", _SHELLS, ids=_SHELL_IDS)
+@pytest.mark.parametrize(
+    ("event", "make_status", "make_output", "passes"),
+    [
+        ("pull_request", 0, _CLEAN, True),
+        ("pull_request", 2, _FINDINGS, True),
+        ("pull_request", 2, _FATAL, False),
+        ("pull_request", 2, _NO_TARGET, False),
+        ("pull_request", 127, "make: not found\n", False),
+        ("push", 0, _CLEAN, True),
+        ("push", 2, _FINDINGS, False),
+        ("schedule", 2, _FINDINGS, False),
+        ("workflow_dispatch", 2, _FINDINGS, False),
+        ("push", 2, _FATAL, False),
+    ],
+    ids=[
+        "pr-clean",
+        "pr-findings-advisory",
+        "pr-audit-error",
+        "pr-missing-target",
+        "pr-no-make",
+        "push-clean",
+        "push-findings-gate",
+        "schedule-findings-gate",
+        "dispatch-findings-gate",
+        "push-audit-error",
+    ],
+)
+def test_only_a_completed_audit_with_findings_is_advisory_and_only_on_a_pr(
+    tmp_path: Path, shell: list[str], event: str, make_status: int, make_output: str, passes: bool
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_make = bin_dir / "make"
+    (tmp_path / "make_output").write_text(make_output, encoding="utf-8")
+    fake_make.write_text(f"#!/bin/sh\ncat '{tmp_path / 'make_output'}' >&2\nexit {make_status}\n", encoding="utf-8")
+    fake_make.chmod(0o755)
+    script = tmp_path / "step.sh"
+    script.write_text(str(_audit_step(_jobs()["audit"])["run"]), encoding="utf-8")
+    result = subprocess.run(
+        [*shell, str(script)],
+        cwd=tmp_path,
+        env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "GITHUB_EVENT_NAME": event},
+        capture_output=True,
+        text=True,
+    )
+    assert (result.returncode == 0) is passes, result.stdout
+    # The report is shown whatever the verdict, so an advisory finding is still read.
+    assert make_output.splitlines()[0] in result.stdout
 
 
-def test_the_install_mechanics_fail_the_pr_run() -> None:
+@pytest.mark.parametrize("event", ["pull_request", *_NON_PR_EVENTS])
+def test_no_audit_job_step_may_fail_without_failing_the_job(event: str) -> None:
     job = _jobs()["audit"]
-    context = {"github.event_name": "pull_request"}
+    context = {"github.event_name": event}
     assert not evaluate(job.get("continue-on-error", False), context)
-    audit_step = _audit_step(job)
     tolerant = [
         step.get("name", step.get("uses"))
         for step in job["steps"]
-        if step is not audit_step and evaluate(step.get("continue-on-error", False), context)
+        if evaluate(step.get("continue-on-error", False), context)
     ]
-    assert not tolerant, f"{tolerant} may fail without failing the PR run - that is what the run exists to test"
+    assert not tolerant, f"{tolerant} may fail without failing the job - a broken audit would read green"
 
 
 # --- change detection -------------------------------------------------------
@@ -178,11 +228,7 @@ def _merge_commit(tmp_path: Path, pr_paths: list[str], base_paths: list[str]) ->
 
 
 @pytest.mark.usefixtures("_git_env")
-@pytest.mark.parametrize(
-    "shell",
-    [["bash", "-e"], ["bash", "--noprofile", "--norc", "-eo", "pipefail"]],
-    ids=["default-shell", "shell-bash"],
-)
+@pytest.mark.parametrize("shell", _SHELLS, ids=_SHELL_IDS)
 @pytest.mark.parametrize(
     ("pr_paths", "base_paths", "expected"),
     [
@@ -240,6 +286,7 @@ def test_evaluator_semantics(expr: object, expected: bool) -> None:
 
 def test_evaluator_applies_the_implicit_success_only_without_a_status_function() -> None:
     assert not evaluate("true", {}, needs_succeeded=False)
+    assert not evaluate(True, {}, needs_succeeded=False)
     assert evaluate("!cancelled() && true", {}, needs_succeeded=False)
     assert not evaluate("success()", {}, needs_succeeded=False)
 

@@ -126,7 +126,7 @@ def evaluate(expr: object, context: Mapping[str, str], *, needs_succeeded: bool 
     runner's implicit ``success()`` and is False. The run is never cancelled.
     """
     if isinstance(expr, bool):
-        return expr
+        return expr and needs_succeeded
     text = str(expr)
     wrapped = _WRAPPED.match(text)
     if wrapped:

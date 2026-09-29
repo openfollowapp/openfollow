@@ -172,8 +172,8 @@ jobs:
   # Supply-chain audit (pip-audit), decoupled from per-PR gate.
   # Queries live PyPI advisory DB; newly-disclosed CVE must not block PRs.
   # Runs on weekly schedule + main pushes. On a PR only when ``changes`` finds
-  # an edit to it, so the edit self-tests; there only the install mechanics can
-  # fail the job, the CVE verdict is advisory. Dependabot handles version bumps.
+  # an edit to it, so the edit self-tests; there a broken install or audit run
+  # fails the job, the CVE verdict is advisory. Dependabot handles version bumps.
   audit:
     needs: changes
     # ``!cancelled()`` because ``changes`` is skipped outside PRs, which would
@@ -252,9 +252,22 @@ jobs:
       - name: Upgrade pip in the audited venv
         run: poetry run python -m pip install --upgrade pip
 
+      # On a PR only a completed audit that found vulnerabilities is let through.
+      # pip-audit exits 1 for findings and for its own errors alike, and make
+      # turns both into 2, so its summary line is what tells them apart.
       - name: pip-audit (supply-chain)
-        continue-on-error: ${{ github.event_name == 'pull_request' }}
-        run: make audit
+        run: |
+          set +e
+          report="$(make audit 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$report"
+          if [ "$status" -ne 0 ] && [ "$GITHUB_EVENT_NAME" = pull_request ] \
+              && grep -qE '^Found [0-9]+ known vulnerabilit' <<< "$report"; then
+            echo "::warning::pip-audit reported vulnerabilities (advisory on pull requests)"
+            exit 0
+          fi
+          exit "$status"
 
   # The export toolchain (ultralytics + torch) is workstation-only: the .deb
   # build refuses to bundle it and no show device ever loads it, so a CVE there

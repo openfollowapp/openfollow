@@ -28,7 +28,11 @@ The detection table shows each physical button (A, B, X, Y, LB, RB, Back, Start,
 
 ## Button Mapping
 
-Assign functions to physical buttons. Every selector offers the same set of detected buttons; set a field to `–` to leave that action unbound. **Reset to Defaults** restores the default assignment for all buttons at once, without affecting detection results or stick settings.
+Assign functions to physical buttons. Every selector offers the same set of detected buttons; set a field to `–` to leave that action unbound. **Reset to Defaults** restores the default assignment for all buttons at once, without affecting detection results.
+
+Each button drives one action. Choosing a button another action already uses moves it: the field you changed says in blue where it came from, and the field it left empties and turns red, since that action does nothing until it gets a button again. Once the button moves on, the red field only names the button it lost. The notes clear on **Save**.
+
+Move X/Y and the marker fader stick never share a stick. A fader stick on the stick Move X/Y uses is an error that holds **Save**; moving Move X/Y onto the fader's stick empties the fader field, in red.
 
 ### Normal Mode
 
@@ -44,10 +48,11 @@ Controls active during show operation.
 - **Speed −** / **Speed +** – step tracking speed down or up through the configured range. Defaults: `LB` / `RB`.
 - **Move Z−** / **Move Z+** – lower or raise the marker's height. Defaults: `LT` / `RT`.
 - **Next Marker** / **Prev Marker** – cycle which marker this controller drives. Defaults: `D-Pad Right` / `D-Pad Left`. These are suppressed automatically when more than one controller is connected – gamepads and 3D mice share one numbering – since each controller is pinned to its own marker by the USB socket it is plugged into (see Controller Slots).
+- **Clear Messages** – clears every operator-message card. Default: unbound.
 
 ### Menu Navigation
 
-Button assignments shared by the on-screen Settings menu and source / interface selection.
+Button assignments shared by the on-screen Settings menu and source / interface selection. They are only read while a menu is open, so they may share a button with a Normal Mode action. D-Pad Up and Down always move the menu highlight, so Confirm and Cancel don't offer them.
 
 - **Confirm** – accepts the highlighted option. Default: `A`.
 - **Cancel** – dismisses the menu without applying changes. Default: `B`.

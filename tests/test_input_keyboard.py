@@ -76,6 +76,18 @@ def test_discrete_polled_keys_caches_and_invalidates_on_controller_swap(
     assert "p" in refreshed
 
 
+def test_clear_messages_key_is_queued_on_press(monkeypatch) -> None:
+    poller = _FakePoller()
+    monkeypatch.setattr(keyboard_module, "create_keyboard_poller", lambda: poller)
+    app = _DummyApp()
+    app._config.controller.key_clear_messages = "c"
+    handler = KeyboardHandler(app)
+
+    poller.pressed = {"c"}
+    handler.poll_discrete_keys()
+    assert handler.consume_key_presses() == ["c"]
+
+
 def test_discrete_key_polling_detects_edges(monkeypatch) -> None:
     poller = _FakePoller()
     monkeypatch.setattr(keyboard_module, "create_keyboard_poller", lambda: poller)

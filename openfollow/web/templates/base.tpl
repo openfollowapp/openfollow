@@ -28,6 +28,7 @@
  <script src="/assets/js/units.js?v={{_asset_v}}"></script>
  <script src="/assets/js/detect-input.js?v={{_asset_v}}"></script>
  <script src="/assets/js/save-feedback.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/binding-steal.js?v={{_asset_v}}"></script>
  <style>
  :root {
  color-scheme: dark;
@@ -890,6 +891,15 @@
  .field-note-msg {
  color: var(--info-text);
  }
+ .field-caution-msg {
+ color: var(--caution-text);
+ }
+ /* An OSC trigger on an input a gamepad or keyboard action also uses. */
+ input[data-binding-overlap],
+ select[data-binding-overlap] {
+ border-color: var(--caution-line);
+ box-shadow: 0 0 0 1px var(--caution-line);
+ }
  /* Virtual Faders: eight vertical fader strips (horizontal layout);
  clicking a strip selects it for editing in the detail panel below. */
  .midi-fader-strips {
@@ -1038,6 +1048,10 @@
  input[aria-invalid="true"],
  select[aria-invalid="true"],
  textarea[aria-invalid="true"],
+ /* A binding another field took: its action does nothing until rebound, yet
+ Save stays open, so it is marked without ``aria-invalid``. */
+ input[data-binding-lost],
+ select[data-binding-lost],
  /* Enabled checkbox: ``data-osc-unresolved="true"`` allows Save while a
  placeholder is unresolved, but the binding can't fire, so it reads as an error. */
  input[data-osc-unresolved="true"],
@@ -1471,6 +1485,13 @@
  font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
  }
  .osc-binding-fault-more { color: var(--muted); font-size: 0.7rem; flex: none; white-space: nowrap; }
+ /* The trigger's input also drives a gamepad or keyboard action. */
+ .osc-binding-caution {
+ font-size: 0.7rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem; border-radius: 0.4rem;
+ background: var(--caution-chip); color: var(--text);
+ border: 1px solid var(--caution-line);
+ font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+ }
  .osc-binding-target { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
  /* Secondary markers nested under a fanned-out transmitter row: read-only
  chips sharing the parent's destination / message / trigger. */
@@ -2105,13 +2126,13 @@
  /* Pills set --pill-pad-y and their own inline padding. Trimming the line box to cap
  height and baseline centres the label whatever the fallback font's ascent. */
  .stat-chip, .diag-status-pill, .slot-state, .slot-note, .badge-experimental,
- .osc-binding-fault, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
+ .osc-binding-fault, .osc-binding-caution, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
  .osc-pill[data-invalid="true"][data-unresolved="true"] {
  padding-block: var(--pill-pad-y);
  }
  @supports (text-box: trim-both cap alphabetic) {
  .stat-chip, .diag-status-pill, .slot-state, .slot-note, .badge-experimental,
- .osc-binding-fault, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
+ .osc-binding-fault, .osc-binding-caution, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
  .osc-pill[data-invalid="true"][data-unresolved="true"] {
  text-box: trim-both cap alphabetic;
  padding-block: calc((1lh - 1cap) / 2 + var(--pill-pad-y));
@@ -3532,13 +3553,16 @@
  btn_move_z_down: 'LT', btn_move_z_up: 'RT',
  btn_toggle_zones: 'B',
  btn_next_marker: 'DPAD_RIGHT', btn_prev_marker: 'DPAD_LEFT',
- move_xy_stick: 'left',
+ btn_clear_messages: '',
+ move_xy_stick: 'left', marker_fader_stick: '',
  btn_menu_confirm: 'A', btn_menu_cancel: 'B',
  };
  container.querySelectorAll('select').forEach(sel => {
  const def = defaults[sel.name];
  if (def !== undefined) sel.value = def;
  });
+ window.OpenFollow.clearBindingNotes(container);
+ refreshFormGate(container.closest('form'));
  }
  function resetKeyboardMappingDefaults(container) {
  const defaults = {
@@ -3547,13 +3571,15 @@
  key_reset: 'x', key_toggle_help: 'h',
  key_toggle_zones: 'z',
  key_speed_down: 'r', key_speed_up: 't',
- key_settings: 'm',
+ key_settings: 'm', key_clear_messages: '',
  key_next_marker: 'Tab', key_prev_marker: '',
  };
  container.querySelectorAll('select, input[type="text"]').forEach(el => {
  const def = defaults[el.name];
  if (def !== undefined) el.value = def;
  });
+ window.OpenFollow.clearBindingNotes(container);
+ refreshFormGate(container.closest('form'));
  }
  // Restart button (lives in the Diagnostics partial). Defined here
  // alongside the ``#top-restart-notice`` banner so the partial

@@ -13,7 +13,7 @@ import shutil
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -26,6 +26,7 @@ except ImportError:
 
 import tomli_w
 
+from openfollow.binding_conflicts import BindingMove, settle_duplicates
 from openfollow.units import UnitSystem
 
 if TYPE_CHECKING:
@@ -127,6 +128,17 @@ def _field_default(instance: Any, name: str) -> Any:
     declarations instead of a parallel table that could drift.
     """
     return instance.__dataclass_fields__[name].default
+
+
+def _log_settled_binding(move: BindingMove[Any]) -> None:
+    logger.warning(
+        "%r is bound to both %s and %s; keeping %s, unbinding %s",
+        move.value,
+        move.kept_by,
+        move.field,
+        move.kept_by,
+        move.field,
+    )
 
 
 def _coerce_multicast_ipv4(value: Any, default: str = "") -> str:
@@ -1736,6 +1748,52 @@ _KEYBOARD_ACTION_FIELDS = (
     "key_clear_messages",  # clear operator-message cards
 )
 
+# Binding groups in form order: the fields of one group may not share an input,
+# and when a file or import holds a duplicate the upper field keeps it. Menu
+# buttons are only read while a menu is open, so they form their own group.
+GAMEPAD_ACTION_BUTTON_FORM_LABELS = (
+    ("btn_reset", "Reset Marker"),
+    ("btn_toggle_help", "Toggle Help"),
+    ("btn_toggle_zones", "Toggle Zone Overlay"),
+    ("btn_settings", "Settings Menu"),
+    ("btn_speed_down", "Speed -"),
+    ("btn_speed_up", "Speed +"),
+    ("btn_move_z_down", "Move Z-"),
+    ("btn_move_z_up", "Move Z+"),
+    ("btn_next_marker", "Next Marker"),
+    ("btn_prev_marker", "Prev Marker"),
+    ("btn_clear_messages", "Clear Messages"),
+)
+GAMEPAD_MENU_BUTTON_FORM_LABELS = (
+    ("btn_menu_confirm", "Confirm"),
+    ("btn_menu_cancel", "Cancel"),
+)
+# Menu navigation moves the highlight with these itself, so a confirm or cancel
+# bound to one could never fire.
+MENU_RESERVED_BUTTONS = frozenset({"DPAD_UP", "DPAD_DOWN"})
+KEYBOARD_ACTION_FORM_LABELS = (
+    ("key_move_z_up", "Z+"),
+    ("key_move_z_down", "Z-"),
+    ("key_reset", "Reset Marker"),
+    ("key_toggle_help", "Toggle Help"),
+    ("key_toggle_zones", "Toggle Zone Overlay"),
+    ("key_speed_down", "Speed -"),
+    ("key_speed_up", "Speed +"),
+    ("key_settings", "Settings Menu"),
+    ("key_clear_messages", "Clear Messages"),
+    ("key_next_marker", "Next Marker"),
+    ("key_prev_marker", "Prev Marker"),
+)
+CONTROLLER_BINDING_GROUPS = tuple(
+    tuple(name for name, _ in labels)
+    for labels in (GAMEPAD_ACTION_BUTTON_FORM_LABELS, GAMEPAD_MENU_BUTTON_FORM_LABELS, KEYBOARD_ACTION_FORM_LABELS)
+)
+CONTROLLER_BINDING_FIELDS = (
+    *(name for group in CONTROLLER_BINDING_GROUPS for name in group),
+    "move_xy_stick",
+    "marker_fader_stick",
+)
+
 
 @dataclass
 class ControllerConfig:
@@ -1903,6 +1961,16 @@ class ControllerConfig:
                     default,
                 )
                 setattr(self, fname, default)
+        for fname in ("btn_menu_confirm", "btn_menu_cancel"):
+            if getattr(self, fname) in MENU_RESERVED_BUTTONS:
+                default = ControllerConfig.__dataclass_fields__[fname].default
+                logger.warning(
+                    "Button %r for %s moves the menu highlight, falling back to %r",
+                    getattr(self, fname),
+                    fname,
+                    default,
+                )
+                setattr(self, fname, default)
         if self.key_move_layout not in VALID_MOVE_LAYOUTS:
             logger.warning(
                 "Invalid key_move_layout %r, falling back to 'wasd'",
@@ -1945,6 +2013,26 @@ class ControllerConfig:
                 continue
             coerced_indices[str(raw_name)] = idx
         self.button_raw_indices = coerced_indices
+        for move in self.settle_bindings():
+            _log_settled_binding(move)
+
+    def settle_bindings(self, prefer: Iterable[str] = ()) -> list[BindingMove[str]]:
+        """Unbind every action sharing its input with an upper one in its group.
+
+        ``prefer`` ranks ahead of form order, so a write keeps what it changed.
+        Move X/Y has no unbound value: it always keeps its stick.
+        """
+        prefer = tuple(prefer)
+        moves: list[BindingMove[str]] = []
+        for group in CONTROLLER_BINDING_GROUPS:
+            found = settle_duplicates({name: getattr(self, name) for name in group}, group, unbound="", prefer=prefer)
+            for move in found:
+                setattr(self, move.field, "")
+            moves.extend(found)
+        if self.marker_fader_stick and self.marker_fader_stick == f"{self.move_xy_stick}_y":
+            moves.append(BindingMove("marker_fader_stick", "move_xy_stick", self.marker_fader_stick))
+            self.marker_fader_stick = ""
+        return moves
 
 
 # 3D Mouse (6DOF) input. The six source axes are the device deflections; each
@@ -2069,6 +2157,16 @@ class Mouse3DConfig:
         # than rebinding to a default index the operator didn't choose.
         for btn in MOUSE3D_BUTTON_FIELDS:
             setattr(self, btn, _coerce_int(getattr(self, btn), -1, lo=-1))
+        for move in self.settle_bindings():
+            _log_settled_binding(move)
+
+    def settle_bindings(self, prefer: Iterable[str] = ()) -> list[BindingMove[int]]:
+        """Unbind every action sharing its button with an upper one; ``prefer`` ranks first."""
+        values = {name: getattr(self, name) for name in MOUSE3D_BUTTON_FIELDS}
+        moves = settle_duplicates(values, MOUSE3D_BUTTON_FIELDS, unbound=-1, prefer=prefer)
+        for move in moves:
+            setattr(self, move.field, -1)
+        return moves
 
 
 # The systemd unit restarted after a successful update. Also the recovery

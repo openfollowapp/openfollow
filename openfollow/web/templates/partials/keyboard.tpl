@@ -1,3 +1,5 @@
+% from openfollow.configuration import KEYBOARD_ACTION_FORM_LABELS
+% kb_labels = dict(KEYBOARD_ACTION_FORM_LABELS)
 <form id="keyboard-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="keyboard" data-help="keyboard"
       hx-post="/section/keyboard" hx-target="#keyboard-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
@@ -33,7 +35,7 @@
                             <span class="field-note">Arrow keys are reserved for on-display menu navigation.</span>
                         </div>
                         <div class="field">
-                            <label>Z+</label>
+                            <label for="keyboard-key-move-z-up">{{kb_labels['key_move_z_up']}}</label>
                             <input id="keyboard-key-move-z-up" type="text" name="key_move_z_up"
                                    value="{{config.controller.key_move_z_up}}"
                        hx-get="/api/validate/keyboard/key_move_z_up" hx-trigger="blur changed delay:200ms"
@@ -42,7 +44,7 @@
                 <span id="keyboard-key-move-z-up-error" class="field-error"></span>
                         </div>
                         <div class="field">
-                            <label>Z-</label>
+                            <label for="keyboard-key-move-z-down">{{kb_labels['key_move_z_down']}}</label>
                             <input id="keyboard-key-move-z-down" type="text" name="key_move_z_down"
                                    value="{{config.controller.key_move_z_down}}"
                        hx-get="/api/validate/keyboard/key_move_z_down" hx-trigger="blur changed delay:200ms"
@@ -56,7 +58,7 @@
                     <h3 class="group-title">Actions</h3>
                     <div class="row">
                         <div class="field">
-                            <label>Reset Marker</label>
+                            <label for="keyboard-key-reset">{{kb_labels['key_reset']}}</label>
                             <input id="keyboard-key-reset" type="text" name="key_reset"
                                    value="{{config.controller.key_reset}}"
                        hx-get="/api/validate/keyboard/key_reset" hx-trigger="blur changed delay:200ms"
@@ -65,7 +67,7 @@
                 <span id="keyboard-key-reset-error" class="field-error"></span>
                         </div>
                         <div class="field">
-                            <label>Toggle Help</label>
+                            <label for="keyboard-key-toggle-help">{{kb_labels['key_toggle_help']}}</label>
                             <input id="keyboard-key-toggle-help" type="text" name="key_toggle_help"
                                    value="{{config.controller.key_toggle_help}}"
                        hx-get="/api/validate/keyboard/key_toggle_help" hx-trigger="blur changed delay:200ms"
@@ -74,11 +76,9 @@
                 <span id="keyboard-key-toggle-help-error" class="field-error"></span>
                         </div>
                         <div class="field">
-                            <label>Toggle Zone Overlay</label>
+                            <label for="keyboard-key-toggle-zones">{{kb_labels['key_toggle_zones']}}</label>
                             <input id="keyboard-key-toggle-zones" type="text" name="key_toggle_zones"
                                    value="{{config.controller.key_toggle_zones}}"
-                                   pattern="(?!^[wasdefWASDEF]$).*"
-                                   title="Cannot be W, A, S, D, E, or F (reserved for movement)"
                        hx-get="/api/validate/keyboard/key_toggle_zones" hx-trigger="blur changed delay:200ms"
                        hx-target="#keyboard-key-toggle-zones-error" hx-swap="innerHTML" hx-include="closest form"
                        aria-describedby="keyboard-key-toggle-zones-error" aria-invalid="false">
@@ -86,7 +86,7 @@
                         </div>
                         <div class="field">
 
-                            <label>Speed -</label>
+                            <label for="keyboard-key-speed-down">{{kb_labels['key_speed_down']}}</label>
                             <input id="keyboard-key-speed-down" type="text" name="key_speed_down"
                                    value="{{config.controller.key_speed_down}}"
                        hx-get="/api/validate/keyboard/key_speed_down" hx-trigger="blur changed delay:200ms"
@@ -95,7 +95,7 @@
                 <span id="keyboard-key-speed-down-error" class="field-error"></span>
                         </div>
                         <div class="field">
-                            <label>Speed +</label>
+                            <label for="keyboard-key-speed-up">{{kb_labels['key_speed_up']}}</label>
                             <input id="keyboard-key-speed-up" type="text" name="key_speed_up"
                                    value="{{config.controller.key_speed_up}}"
                        hx-get="/api/validate/keyboard/key_speed_up" hx-trigger="blur changed delay:200ms"
@@ -106,7 +106,7 @@
                     </div>
                     <div class="row">
                         <div class="field">
-                            <label>Settings Menu</label>
+                            <label for="keyboard-key-settings">{{kb_labels['key_settings']}}</label>
                             <input id="keyboard-key-settings" type="text" name="key_settings"
                                    value="{{config.controller.key_settings}}"
                        hx-get="/api/validate/keyboard/key_settings" hx-trigger="blur changed delay:200ms"
@@ -115,7 +115,7 @@
                 <span id="keyboard-key-settings-error" class="field-error"></span>
                         </div>
                         <div class="field">
-                            <label>Clear Messages</label>
+                            <label for="keyboard-key-clear-messages">{{kb_labels['key_clear_messages']}}</label>
                             <input id="keyboard-key-clear-messages" type="text" name="key_clear_messages"
                                    value="{{config.controller.key_clear_messages}}"
                        hx-get="/api/validate/keyboard/key_clear_messages" hx-trigger="blur changed delay:200ms"
@@ -124,7 +124,7 @@
                 <span id="keyboard-key-clear-messages-error" class="field-error"></span>
                         </div>
                         <div class="field">
-                            <label>Next Marker</label>
+                            <label for="keyboard-key-next-marker">{{kb_labels['key_next_marker']}}</label>
                             <input id="keyboard-key-next-marker" type="text" name="key_next_marker"
                                    value="{{config.controller.key_next_marker}}"
                        hx-get="/api/validate/keyboard/key_next_marker" hx-trigger="blur changed delay:200ms"
@@ -133,7 +133,7 @@
                 <span id="keyboard-key-next-marker-error" class="field-error"></span>
                         </div>
                         <div class="field">
-                            <label>Prev Marker</label>
+                            <label for="keyboard-key-prev-marker">{{kb_labels['key_prev_marker']}}</label>
                             <input id="keyboard-key-prev-marker" type="text" name="key_prev_marker"
                                    value="{{config.controller.key_prev_marker}}"
                        hx-get="/api/validate/keyboard/key_prev_marker" hx-trigger="blur changed delay:200ms"

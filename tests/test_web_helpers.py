@@ -211,6 +211,54 @@ def test_apply_section_data_mouse3d_roundtrips() -> None:
     assert config.mouse3d.btn_toggle_zones == 4
 
 
+@pytest.mark.parametrize("section", ["controller", "gamepad"])
+def test_apply_section_data_gives_a_shared_button_to_the_field_that_changed(section: str) -> None:
+    config = AppConfig()  # btn_reset is X
+    apply_section_data(config, section, {"btn_toggle_help": "X"})
+    assert config.controller.btn_toggle_help == "X"
+    assert config.controller.btn_reset == ""
+
+
+def test_apply_section_data_full_form_keeps_the_edited_field_when_it_races_the_steal() -> None:
+    config = AppConfig()
+    form = {name: getattr(config.controller, name) for name in ("btn_reset", "btn_toggle_help", "btn_settings")}
+    form["btn_toggle_help"] = "X"  # saved before the form cleared btn_reset
+    apply_section_data(config, "gamepad", form)
+    assert (config.controller.btn_reset, config.controller.btn_toggle_help) == ("", "X")
+
+
+def test_apply_section_data_two_changed_fields_on_one_button_keep_the_upper() -> None:
+    config = AppConfig()
+    apply_section_data(config, "gamepad", {"btn_toggle_help": "START", "btn_reset": "START"})
+    assert (config.controller.btn_reset, config.controller.btn_toggle_help) == ("START", "")
+
+
+def test_apply_section_data_key_goes_to_the_field_that_changed() -> None:
+    config = AppConfig()  # key_move_z_down is e, above key_toggle_zones on the form
+    apply_section_data(config, "keyboard", {"key_toggle_zones": "e"})
+    assert (config.controller.key_move_z_down, config.controller.key_toggle_zones) == ("", "e")
+
+
+def test_apply_section_data_mouse3d_button_goes_to_the_field_that_changed() -> None:
+    config = AppConfig()  # btn_next_marker is 0
+    apply_section_data(config, "mouse3d", {"btn_speed_up": "0"})
+    assert (config.mouse3d.btn_next_marker, config.mouse3d.btn_speed_up) == (-1, 0)
+
+
+@pytest.mark.parametrize(
+    ("data", "move", "fader"),
+    [
+        ({"marker_fader_stick": "left_y"}, "left", ""),
+        ({"move_xy_stick": "right"}, "right", ""),
+    ],
+)
+def test_apply_section_data_move_stick_always_keeps_its_stick(data: dict[str, str], move: str, fader: str) -> None:
+    config = AppConfig()
+    config.controller.marker_fader_stick = "right_y"  # on the stick Move X/Y is not using
+    apply_section_data(config, "gamepad", data)
+    assert (config.controller.move_xy_stick, config.controller.marker_fader_stick) == (move, fader)
+
+
 def test_as_button_index_none_is_unbound() -> None:
     from openfollow.web.routes import _as_button_index
 

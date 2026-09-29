@@ -5790,6 +5790,126 @@ def test_validate_endpoint_inference_size_snap_note(live_server) -> None:
     assert 'class="field-note-msg"' in body
 
 
+def _get_checked(base: str, path: str, query: dict[str, str]) -> tuple[str, dict | None]:
+    """Body plus the ``bindingChecked`` event of an ``HX-Trigger`` header, if any."""
+    with urllib.request.urlopen(f"{base}{path}?{urllib.parse.urlencode(query)}", timeout=5) as r:
+        header = r.headers.get("HX-Trigger")
+        return r.read().decode(), (json.loads(header)["bindingChecked"] if header else None)
+
+
+def test_validate_binding_takes_a_shared_button_and_names_both_fields(live_server) -> None:
+    _, base = live_server
+    body, event = _get_checked(
+        base, "/api/validate/gamepad/btn_reset", {"btn_reset": "Y", "btn_toggle_help": "Y", "btn_settings": "BACK"}
+    )
+    assert 'class="field-note-msg"' in body
+    assert "Y taken from Toggle Help" in body
+    assert event["field"] == "btn_reset"
+    [moved] = event["moved"]
+    assert (moved["field"], moved["unbound"]) == ("btn_toggle_help", "")
+    assert 'class="field-warn-msg"' in moved["html"]
+    assert "Y moved to Reset Marker" in moved["html"]
+    assert 'data-moved-to="btn_reset"' in moved["html"]
+    assert 'data-lost-text="Y was taken"' in moved["html"]
+
+
+@pytest.mark.parametrize(
+    ("path", "query"),
+    [
+        ("/api/validate/gamepad/btn_reset", {"btn_reset": "START", "btn_toggle_help": "Y"}),
+        ("/api/validate/gamepad/btn_menu_cancel", {"btn_menu_cancel": "B", "btn_toggle_zones": "B"}),
+    ],
+)
+def test_validate_binding_without_a_clash_takes_nothing(live_server, path: str, query: dict[str, str]) -> None:
+    _, base = live_server
+    body, event = _get_checked(base, path, query)
+    assert body == ""
+    assert event["moved"] == []
+
+
+def test_validate_binding_key_takes_the_key(live_server) -> None:
+    _, base = live_server
+    body, event = _get_checked(base, "/api/validate/keyboard/key_reset", {"key_reset": "h", "key_toggle_help": "h"})
+    assert "H taken from Toggle Help" in body
+    assert event["moved"][0]["field"] == "key_toggle_help"
+
+
+def test_validate_binding_invalid_key_is_an_error_and_takes_nothing(live_server) -> None:
+    _, base = live_server
+    body, event = _get_checked(base, "/api/validate/keyboard/key_reset", {"key_reset": "w", "key_toggle_help": "w"})
+    assert 'class="field-error-msg"' in body
+    assert event is None
+
+
+def test_validate_binding_mouse3d_button_takes_the_index(live_server) -> None:
+    _, base = live_server
+    body, event = _get_checked(
+        base, "/api/validate/mouse3d/btn_reset", {"btn_reset": "0", "btn_next_marker": "0", "btn_prev_marker": "1"}
+    )
+    assert "Button 0 taken from Next marker" in body
+    assert [m["field"] for m in event["moved"]] == ["btn_next_marker"]
+
+
+def test_validate_fader_stick_on_the_move_stick_is_an_error(live_server) -> None:
+    _, base = live_server
+    body, event = _get_checked(
+        base, "/api/validate/gamepad/marker_fader_stick", {"marker_fader_stick": "left_y", "move_xy_stick": "left"}
+    )
+    assert 'class="field-error-msg"' in body
+    assert "Left Stick moves the marker (Move X/Y)." in body
+    assert event is None
+
+
+def test_validate_move_stick_takes_the_fader_stick(live_server) -> None:
+    _, base = live_server
+    body, event = _get_checked(
+        base, "/api/validate/gamepad/move_xy_stick", {"move_xy_stick": "right", "marker_fader_stick": "right_y"}
+    )
+    assert "Right Stick Y taken from Marker fader stick" in body
+    assert event["moved"][0]["field"] == "marker_fader_stick"
+    assert "Right Stick Y moved to Move X/Y" in event["moved"][0]["html"]
+
+
+def test_validate_move_stick_leaving_the_fader_stick_rechecks_it(live_server) -> None:
+    _, base = live_server
+    body, event = _get_checked(
+        base, "/api/validate/gamepad/move_xy_stick", {"move_xy_stick": "right", "marker_fader_stick": "left_y"}
+    )
+    assert body == ""
+    assert event == {"field": "move_xy_stick", "moved": [], "recheck": ["marker_fader_stick"]}
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "caution"),
+    [
+        ("trigger.button", "B", "Also Toggle Zone Overlay on the gamepad"),
+        ("trigger.button", "A", ""),
+        ("trigger.key", "x", "Also Reset Marker on the keyboard"),
+        ("trigger.key", "p", ""),
+    ],
+)
+def test_validate_osc_trigger_on_an_action_input_is_a_caution(
+    live_server, field: str, value: str, caution: str
+) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/api/validate/osc_binding/{field}?{urllib.parse.urlencode({field: value})}")
+    assert status == 200
+    if caution:
+        assert 'class="field-caution-msg"' in body
+        assert caution in body
+    else:
+        assert body == ""
+
+
+def test_validate_osc_trigger_ignores_a_switched_off_gamepad(live_server, tmp_path) -> None:
+    config = AppConfig()
+    config.controller.enabled = False
+    save_config(config, str(tmp_path / "config.toml"))
+    _, base = live_server
+    _status, body = _get(base, "/api/validate/osc_binding/trigger.button?trigger.button=B")
+    assert body == ""
+
+
 def test_validate_endpoint_unknown_section_returns_404(live_server) -> None:
     _, base = live_server
     status, _body = _get(base, "/api/validate/nope/fov?fov=60")

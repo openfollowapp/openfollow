@@ -27,6 +27,8 @@
 % #   "nested": [<chip>...], "markers_unusable": <bool>}}. Built server-side
 % # from each row's resolved ``markers`` tokens (catalog names).
 % _marker_display_by_row = defined('marker_display_by_row') and marker_display_by_row or {}
+% # Per-row caution when the trigger shares an input with a gamepad or keyboard action.
+% _overlap_by_row = defined('overlap_by_row') and overlap_by_row or {}
 % # Shared OSC destinations the rows reference. Build an id→profile map so the
 % # collapsed summary + read-only endpoint display resolve without a per-row scan.
 % _destinations = config.osc_destinations.destinations
@@ -44,6 +46,8 @@
  <span class="section-note">Message templates with a trigger, each sending to a destination</span>
  </div>
 
+ % # A gamepad or keyboard save can start or end an overlap; refresh the pills.
+ <div hidden hx-get="/section/osc_bindings/overlaps" hx-trigger="controllerBindingsSaved from:body" hx-swap="none"></div>
  <div class="osc-bindings-list">
  % if not transmitters:
  <p class="empty-state">No transmitters configured. Use <em>+ New transmitter</em> below to create one.</p>
@@ -93,6 +97,7 @@
  % end
  <span class="visually-hidden">{{'. '.join(_faults)}}.</span>
  % end
+ % include('partials/osc_binding_overlap.tpl', row_id=row.id, overlap=_overlap_by_row.get(row.id, ''), oob=False)
  <span class="osc-binding-kind-badge">{{pretty_label(trigger_kind)}}</span>
  % if _marker_header:
  <span class="osc-binding-marker-badge">{{_marker_header}}</span>
@@ -241,7 +246,7 @@
  </div>
  </div>
  <div id="trigger-fields-{{row.id}}" class="row">
- % include('partials/osc_binding_trigger_form.tpl', row=row, kind=trigger_kind, valid_rates=valid_rates, valid_edges=valid_edges, valid_modifiers=valid_modifiers, valid_keys=valid_keys, valid_buttons=valid_buttons, valid_midi_types=valid_midi_types, virtual_fader_names=virtual_fader_names, midi_patches=midi_patches)
+ % include('partials/osc_binding_trigger_form.tpl', row=row, kind=trigger_kind, valid_rates=valid_rates, valid_edges=valid_edges, valid_modifiers=valid_modifiers, valid_keys=valid_keys, valid_buttons=valid_buttons, valid_midi_types=valid_midi_types, virtual_fader_names=virtual_fader_names, midi_patches=midi_patches, binding_overlap=binding_overlap if defined('binding_overlap') else (lambda kind, value: ''))
  </div>
  </div>
 

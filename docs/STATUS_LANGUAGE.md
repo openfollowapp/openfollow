@@ -115,7 +115,9 @@ shares a line with the controller's kind: "Connected" and "Reserved" in the
 neutral chip colours, "Missing" in the error chip colours. The notes under a
 controller's name are caution row pills where they affect control ("Buttons not
 recognised", "Button map is for another model"); "Can't identify" is a fact,
-not a fault, and is plain `--muted` text.
+not a fault, and is plain `--muted` text. An OSC binding whose trigger shares
+its input with a gamepad or keyboard action carries a caution row pill naming
+that action in its summary.
 
 ### OSC placeholder pills
 
@@ -171,7 +173,8 @@ and a -2.6px margin so names stay aligned with the grey dot.
 |---|---|
 | Invalid / valid preview (Setup Wizard) | 1px `--error-line` / `--success-line` |
 | Failed / successful save | 2px ring for 0.55 s in `--error-line` / `--success-line` |
-| Invalid field, or a control marked unresolved | `--error-line` border plus a 1px `--error-line` shadow |
+| Invalid field, a control marked unresolved, or a binding another field took | `--error-line` border plus a 1px `--error-line` shadow |
+| An OSC trigger on an input a gamepad or keyboard action also uses | `--caution-line` border plus a 1px `--caution-line` shadow |
 
 ### Inline text
 
@@ -179,6 +182,12 @@ Error, caution, info and success text take their `--<level>-text`, keeping the
 weight and size of the element. Inline error text has no icon. Inline
 confirmations lead with the success sign in `--success-text` (a filled green
 circle with the check cut out).
+
+A binding edit that takes an input from another field notes it in both: info
+text on the field that took it, error text (`.field-warn-msg`, which leaves Save
+open) on the field that lost it, whose action does nothing until it is bound
+again. A caution under an OSC trigger (`.field-caution-msg`) names the action
+that fires on the same press.
 
 A failed save is a red line under the form's actions, what the station
 observed plus one next step, next to the red ring. It is not a box and never a

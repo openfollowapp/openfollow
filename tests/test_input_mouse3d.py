@@ -255,8 +255,16 @@ def test_button_edge_fires_bound_action(cfg_kwargs, index, attr) -> None:  # noq
     assert getattr(h.update(0.016), attr) is True
 
 
+def test_button_bound_to_two_actions_fires_only_the_upper_one() -> None:
+    # Every action tests its own field, so one press used to fire both.
+    h = _handler(Mouse3DConfig(btn_reset=0, btn_next_marker=0), snapshot=_state(buttons=[1, 0]))
+    result = h.update(0.016)
+    assert result.reset is True
+    assert result.next_marker is False
+
+
 def test_speed_buttons_step_up_and_down() -> None:
-    h = _handler(Mouse3DConfig(btn_speed_up=0, btn_speed_down=1))
+    h = _handler(Mouse3DConfig(btn_next_marker=-1, btn_prev_marker=-1, btn_speed_up=0, btn_speed_down=1))
     h._snapshot = _state(buttons=[1, 0])
     assert h.update(0.016).speed_steps == 1
     # Re-press the down button (release up first so it doesn't re-fire).

@@ -3,6 +3,8 @@
 % # when kind dropdown changes.
 % trigger = row.trigger
 % kind_field = getattr(trigger, 'kind', 'stream')
+% # The caution for an input a gamepad or keyboard action also uses.
+% _overlap = binding_overlap if defined('binding_overlap') else (lambda kind, value: '')
 <div class="trigger-fields" data-trigger-kind="{{kind}}">
 % if kind == "stream":
     % current_rate = getattr(trigger, 'rate_hz', 30) if kind_field == 'stream' else 30
@@ -64,9 +66,13 @@
     % current_key = getattr(trigger, 'key', '') if kind_field == 'hotkey' else ''
     % current_mods = set(getattr(trigger, 'modifiers', ()) if kind_field == 'hotkey' else ())
     % current_edge = getattr(trigger, 'edge', 'press') if kind_field == 'hotkey' else 'press'
+    % key_overlap = _overlap('hotkey', current_key)
     <div class="field">
-        <label>Key</label>
-        <select name="trigger.key">
+        <label for="osc-{{row.id}}-trigger-key">Key</label>
+        <select id="osc-{{row.id}}-trigger-key" name="trigger.key"
+                hx-get="/api/validate/osc_binding/trigger.key" hx-trigger="change"
+                hx-target="#osc-{{row.id}}-trigger-key-error" hx-swap="innerHTML" hx-include="closest form"
+                aria-describedby="osc-{{row.id}}-trigger-key-error" aria-invalid="false" {{'data-binding-overlap' if key_overlap else ''}}>
             <option value="" {{'selected' if not current_key else ''}}>(none)</option>
             % for k in valid_keys:
                 % if k:
@@ -74,6 +80,11 @@
                 % end
             % end
         </select>
+        <span id="osc-{{row.id}}-trigger-key-error" class="field-error">
+            % if key_overlap:
+            <span class="field-caution-msg" role="status">{{key_overlap}}</span>
+            % end
+        </span>
     </div>
     <div class="field">
         <label>Modifiers</label>
@@ -94,9 +105,13 @@
 % elif kind == "controller_button":
     % current_btn = getattr(trigger, 'button', '') if kind_field == 'controller_button' else ''
     % current_edge = getattr(trigger, 'edge', 'press') if kind_field == 'controller_button' else 'press'
+    % button_overlap = _overlap('controller_button', current_btn)
     <div class="field">
-        <label>Button</label>
-        <select name="trigger.button">
+        <label for="osc-{{row.id}}-trigger-button">Button</label>
+        <select id="osc-{{row.id}}-trigger-button" name="trigger.button"
+                hx-get="/api/validate/osc_binding/trigger.button" hx-trigger="change"
+                hx-target="#osc-{{row.id}}-trigger-button-error" hx-swap="innerHTML" hx-include="closest form"
+                aria-describedby="osc-{{row.id}}-trigger-button-error" aria-invalid="false" {{'data-binding-overlap' if button_overlap else ''}}>
             <option value="" {{'selected' if not current_btn else ''}}>(none)</option>
             % for b in valid_buttons:
                 % if b:
@@ -104,6 +119,11 @@
                 % end
             % end
         </select>
+        <span id="osc-{{row.id}}-trigger-button-error" class="field-error">
+            % if button_overlap:
+            <span class="field-caution-msg" role="status">{{button_overlap}}</span>
+            % end
+        </span>
     </div>
     <div class="field">
         <label>Edge</label>

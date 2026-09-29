@@ -15,6 +15,7 @@ from typing import Any
 from openfollow.configuration import (
     _DEFAULT_PSN_MCAST_IP,
     _DEFAULT_PSN_SYSTEM_NAME,
+    MENU_RESERVED_BUTTONS,
     MOUSE3D_AXES,
     MOUSE3D_AXIS_TARGETS,
     MOUSE3D_BUTTON_FIELDS,
@@ -344,6 +345,16 @@ def _button_rule() -> FieldRule:
     )
 
 
+def _menu_button_rule() -> FieldRule:
+    """Menu confirm / cancel: any button but the two that move the menu highlight."""
+    return FieldRule(
+        parser=_as_str,
+        choices=tuple(sorted(VALID_BUTTON_NAMES - MENU_RESERVED_BUTTONS)),
+        max_len=16,
+        human_error="D-Pad Up and Down move the menu highlight; pick another button.",
+    )
+
+
 def _key_rule() -> FieldRule:
     return FieldRule(
         parser=_as_str,
@@ -473,8 +484,8 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "btn_next_marker": _button_rule(),
         "btn_prev_marker": _button_rule(),
         "btn_settings": _button_rule(),
-        "btn_menu_confirm": _button_rule(),
-        "btn_menu_cancel": _button_rule(),
+        "btn_menu_confirm": _menu_button_rule(),
+        "btn_menu_cancel": _menu_button_rule(),
         "btn_clear_messages": _button_rule(),
         "move_xy_stick": FieldRule(
             _as_str, choices=VALID_STICKS, human_error=f"Stick must be one of: {', '.join(VALID_STICKS)}."

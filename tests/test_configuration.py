@@ -1099,6 +1099,130 @@ def test_loading_default_config_does_not_emit_deprecation_warnings(
     assert not any("deprecated" in r.message for r in caplog.records)
 
 
+# --- One input, one action ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("upper", "lower"),
+    [
+        ("btn_reset", "btn_toggle_help"),
+        ("btn_toggle_zones", "btn_settings"),
+        ("btn_settings", "btn_next_marker"),
+        ("btn_speed_up", "btn_move_z_up"),
+        ("btn_prev_marker", "btn_clear_messages"),
+        ("btn_menu_confirm", "btn_menu_cancel"),
+    ],
+)
+def test_gamepad_button_on_two_actions_stays_on_the_upper_one(upper: str, lower: str) -> None:
+    config = ControllerConfig(**{upper: "START", lower: "START"})
+    assert getattr(config, upper) == "START"
+    assert getattr(config, lower) == ""
+
+
+def test_gamepad_trigger_shared_by_z_and_an_action_stays_on_the_upper_one() -> None:
+    config = ControllerConfig(btn_move_z_up="X")
+    assert config.btn_reset == "X"
+    assert config.btn_move_z_up == ""
+
+
+@pytest.mark.parametrize(
+    "shared",
+    [
+        {"btn_toggle_zones": "B", "btn_menu_cancel": "B"},
+        {"btn_reset": "A", "btn_menu_confirm": "A"},
+        {"btn_settings": "BACK", "btn_source_select": "BACK"},
+    ],
+)
+def test_gamepad_button_shared_across_groups_is_kept(shared: dict[str, str]) -> None:
+    config = ControllerConfig(**shared)
+    for name, value in shared.items():
+        assert getattr(config, name) == value
+
+
+@pytest.mark.parametrize("name", ["btn_menu_confirm", "btn_menu_cancel"])
+@pytest.mark.parametrize("button", ["DPAD_UP", "DPAD_DOWN"])
+def test_menu_button_on_the_menu_highlight_falls_back_to_default(name: str, button: str) -> None:
+    default = ControllerConfig.__dataclass_fields__[name].default
+    assert getattr(ControllerConfig(**{name: button}), name) == default
+
+
+def test_menu_fallback_that_collides_keeps_the_upper_field() -> None:
+    config = ControllerConfig(btn_menu_confirm="DPAD_UP", btn_menu_cancel="A")
+    assert config.btn_menu_confirm == "A"
+    assert config.btn_menu_cancel == ""
+
+
+@pytest.mark.parametrize(
+    ("upper", "lower", "key"),
+    [
+        ("key_reset", "key_toggle_help", "h"),
+        ("key_move_z_down", "key_toggle_zones", "e"),
+        ("key_settings", "key_next_marker", "Tab"),
+        ("key_reset", "key_settings", "g"),
+        ("key_next_marker", "key_prev_marker", "n"),
+    ],
+)
+def test_key_on_two_actions_stays_on_the_upper_one(upper: str, lower: str, key: str) -> None:
+    config = ControllerConfig(**{upper: key, lower: key})
+    assert getattr(config, upper) == key
+    assert getattr(config, lower) == ""
+
+
+@pytest.mark.parametrize(
+    ("move", "fader", "kept_fader"),
+    [
+        ("left", "left_y", ""),
+        ("right", "right_y", ""),
+        ("right", "left_y", "left_y"),
+        ("left", "right_y", "right_y"),
+    ],
+)
+def test_fader_stick_on_the_move_stick_is_unbound(move: str, fader: str, kept_fader: str) -> None:
+    config = ControllerConfig(move_xy_stick=move, marker_fader_stick=fader)
+    assert config.move_xy_stick == move
+    assert config.marker_fader_stick == kept_fader
+
+
+def test_duplicate_binding_names_both_fields_in_the_log(caplog) -> None:
+    with caplog.at_level("WARNING", logger="openfollow.configuration"):
+        ControllerConfig(btn_reset="Y")
+    assert any("btn_reset" in r.message and "btn_toggle_help" in r.message for r in caplog.records)
+
+
+def test_duplicate_binding_in_config_toml_is_settled_on_load(temp_config_path) -> None:
+    temp_config_path.write_text('[controller]\nbtn_reset = "Y"\nbtn_toggle_help = "Y"\n')
+    controller = load_config(str(temp_config_path)).controller
+    assert (controller.btn_reset, controller.btn_toggle_help) == ("Y", "")
+
+
+def test_default_controller_config_has_no_duplicate_to_settle(caplog) -> None:
+    with caplog.at_level("WARNING", logger="openfollow.configuration"):
+        config = ControllerConfig()
+    for name, spec in ControllerConfig.__dataclass_fields__.items():
+        if name.startswith(("btn_", "key_")) or name.endswith("_stick"):
+            assert getattr(config, name) == spec.default, name
+    assert not caplog.records
+
+
+@pytest.mark.parametrize(
+    ("upper", "lower"),
+    [
+        ("btn_reset", "btn_next_marker"),
+        ("btn_prev_marker", "btn_speed_up"),
+        ("btn_speed_down", "btn_toggle_zones"),
+    ],
+)
+def test_mouse3d_button_on_two_actions_stays_on_the_upper_one(upper: str, lower: str) -> None:
+    config = Mouse3DConfig(**{upper: 5, lower: 5})
+    assert getattr(config, upper) == 5
+    assert getattr(config, lower) == -1
+
+
+def test_mouse3d_default_buttons_keep_their_bindings() -> None:
+    config = Mouse3DConfig()
+    assert (config.btn_next_marker, config.btn_prev_marker) == (0, 1)
+
+
 def test_apply_runtime_does_not_reload_marker_move_speeds() -> None:
     """Per-marker speeds are device-local + runtime-authoritative: a hot-reload
     must NOT overwrite the live in-memory dict from disk, whatever the reloaded
@@ -3119,9 +3243,9 @@ def test_controller_accepts_right_stick() -> None:
 # Marker-fader integrator config fields (formerly the VF1 fields).
 
 
-@pytest.mark.parametrize("stick", ["", "left_y", "right_y"])
-def test_controller_accepts_valid_marker_fader_sticks(stick: str) -> None:
-    cfg = ControllerConfig(marker_fader_stick=stick)
+@pytest.mark.parametrize(("move", "stick"), [("left", ""), ("right", "left_y"), ("left", "right_y")])
+def test_controller_accepts_valid_marker_fader_sticks(move: str, stick: str) -> None:
+    cfg = ControllerConfig(move_xy_stick=move, marker_fader_stick=stick)
     assert cfg.marker_fader_stick == stick
 
 

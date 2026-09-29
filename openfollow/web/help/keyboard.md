@@ -29,12 +29,13 @@ Arrow keys are reserved for navigating the on-screen menu and cannot be used for
 
 - **Reset Marker** – snap the active marker to its configured default position. Default: `x`.
 - **Toggle Help** – show or hide the help overlay on the Operator Screen. Default: `h`.
-- **Toggle Zone Overlay** – show or hide the zone overlay on the Operator Screen. Default: `z`. Cannot be set to any key already used by the WASD or IJKL movement cluster.
+- **Toggle Zone Overlay** – show or hide the zone overlay on the Operator Screen. Default: `z`.
 - **Speed -** / **Speed +** – step movement speed down or up through the configured range. Defaults: `r` / `t`.
 - **Settings Menu** – open the Settings menu on the Operator Screen. Default: `m`.
+- **Clear Messages** – clear every operator-message card. Default: *(unset)*.
 - **Next Marker** / **Prev Marker** – cycle which marker your inputs drive, when more than one controlled marker is configured. Defaults: `Tab` / *(unset)*.
 
-> Each key binding must be unique. Assigning the same key to two actions shows a validation error – correct it before saving. Movement layout keys (the four directional keys in the chosen cluster) cannot be reused as action keys.
+> Each key drives one action. Typing a key another action already uses moves it when the field loses focus: the field you changed says in blue where it came from, and the field it left empties and turns red, since that action does nothing until it gets a key again. Once the key moves on, the red field only names the key it lost. The notes clear on **Save**. The WASD and IJKL keys are kept for movement whichever layout is chosen, so no action can use them.
 
 ## Saving
 

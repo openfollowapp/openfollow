@@ -454,6 +454,7 @@ class KeyboardHandler:
         "key_speed_up",
         "key_next_marker",
         "key_prev_marker",
+        "key_clear_messages",
     )
 
     # Map physical modifier keys to the canonical names used by

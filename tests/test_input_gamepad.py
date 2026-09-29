@@ -910,6 +910,21 @@ class TestUpdate:
         assert result.prev_marker_pressed is True
         assert result.settings_open_pressed is True
 
+    def test_button_bound_to_two_actions_fires_the_one_upper_on_the_form(self, stubbed_pygame) -> None:
+        # Settings is checked last per frame, so before the config settled
+        # duplicates, Next Marker consumed the press and the menu never opened.
+        config = ControllerConfig(btn_settings="START", btn_next_marker="START")
+        handler, _ = make_handler(stubbed_pygame, config=config)
+        joy = FakeJoystick(num_buttons=16)
+        joy.press(CONTROLLER_BUTTON_START)
+        handler.joysticks[0] = joy
+        handler.capabilities[0] = ControllerCapabilities(backend="joystick")
+        handler._bumper_state[0] = (False, False)
+        handler._shoulder_axis_baselines[0] = {}
+        result = handler.update(0.016)
+        assert result.settings_open_pressed is True
+        assert result.next_marker_pressed is False
+
     def test_clear_messages_button_edge_fires_when_bound(self, stubbed_pygame) -> None:
         # btn_clear_messages bound → edge sets the flag.
         handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(btn_clear_messages="START"))
@@ -937,7 +952,8 @@ class TestUpdate:
     def test_clear_messages_trigger_binding_fires(self, stubbed_pygame) -> None:
         # Bound to a trigger (LT) → deflection past the deadzone fires the edge.
         # The negative LT id used to be blocked by a >= 0 dispatch guard.
-        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(btn_clear_messages="LT"))
+        config = ControllerConfig(btn_clear_messages="LT", btn_move_z_down="")
+        handler, _ = make_handler(stubbed_pygame, config=config)
         joy = FakeJoystick(num_buttons=16, num_axes=8)
         joy.set_axis(4, 0.9)  # LT raw axis, past TRIGGER_DEADZONE
         handler.joysticks[0] = joy
@@ -946,6 +962,18 @@ class TestUpdate:
         handler._shoulder_axis_baselines[0] = {4: 0.0, 6: 0.0}  # seed so the delta reads as a press
         result = handler.update(0.016)
         assert result.clear_messages_pressed is True
+
+    def test_toggle_zones_trigger_binding_fires(self, stubbed_pygame) -> None:
+        config = ControllerConfig(btn_toggle_zones="LT", btn_move_z_down="")
+        handler, _ = make_handler(stubbed_pygame, config=config)
+        joy = FakeJoystick(num_buttons=16, num_axes=8)
+        joy.set_axis(4, 0.9)  # LT raw axis, past TRIGGER_DEADZONE
+        handler.joysticks[0] = joy
+        handler.capabilities[0] = ControllerCapabilities(backend="joystick")
+        handler._bumper_state[0] = (False, False)
+        handler._shoulder_axis_baselines[0] = {4: 0.0, 6: 0.0}  # seed so the delta reads as a press
+        result = handler.update(0.016)
+        assert result.toggle_zones_pressed is True
 
     def test_pygame_error_during_read_triggers_cleanup(self, stubbed_pygame) -> None:
         handler, _ = make_handler(stubbed_pygame)
@@ -1122,6 +1150,17 @@ class TestSettingsMenuInput:
         handler.read_settings_menu_input()
         # First post-menu edge check should NOT see a rising edge
         assert handler._detect_button_edge(0, CONTROLLER_BUTTON_X) is False
+
+    def test_clear_messages_held_through_the_menu_does_not_fire_on_close(self, stubbed_pygame) -> None:
+        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(btn_clear_messages="START"))
+        joy = FakeJoystick(num_buttons=16)
+        joy.press(CONTROLLER_BUTTON_START)  # pressed inside the menu, which ignores it
+        handler.joysticks[0] = joy
+        handler.capabilities[0] = ControllerCapabilities(backend="joystick")
+        handler._bumper_state[0] = (False, False)
+        handler._shoulder_axis_baselines[0] = {}
+        handler.read_settings_menu_input()
+        assert handler.update(0.016).clear_messages_pressed is False
 
 
 # --------------------------------------------------------------------------- #
@@ -3053,7 +3092,7 @@ class TestMarkerFaderIntegrator:
         # Handler constructed without a bus (legacy path). Even with
         # ``marker_fader_stick`` set, integrator must not crash on the missing
         # reference.
-        cfg = ControllerConfig(marker_fader_stick="left_y")
+        cfg = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y")
         app = FakeApp(controller_cfg=cfg)
         handler = GamepadHandler(app)  # no virtual_faders kwarg
         joy = FakeJoystick(num_buttons=12, num_axes=6)
@@ -3069,6 +3108,7 @@ class TestMarkerFaderIntegrator:
         # construction): the integrator can't know which marker to drive,
         # so it must no-op rather than guess.
         cfg = ControllerConfig(
+            move_xy_stick="right",
             marker_fader_stick="left_y",
             marker_fader_max_speed_s=1.0,
         )
@@ -3089,6 +3129,7 @@ class TestMarkerFaderIntegrator:
         # this controller). The deflection is read but there's no marker
         # fader to drive, so nothing is enqueued.
         cfg = ControllerConfig(
+            move_xy_stick="right",
             marker_fader_stick="left_y",
             marker_fader_max_speed_s=1.0,
         )
@@ -3113,6 +3154,7 @@ class TestMarkerFaderIntegrator:
         stubbed_pygame,
     ) -> None:
         cfg = ControllerConfig(
+            move_xy_stick="right",
             marker_fader_stick="left_y",
             marker_fader_max_speed_s=1.0,
         )
@@ -3163,7 +3205,7 @@ class TestMarkerFaderIntegrator:
     def test_centered_stick_emits_no_fader_call(self, stubbed_pygame) -> None:
         # Inside deadzone → ``_apply_deadzone`` returns 0 → no fader
         # call (saves a no-op subscriber fan-out on the hot path).
-        cfg = ControllerConfig(marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
+        cfg = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
         bus = _FakeFaderBus()
         app = FakeApp(controller_cfg=cfg)
         handler = GamepadHandler(
@@ -3183,8 +3225,8 @@ class TestMarkerFaderIntegrator:
     def test_max_speed_scales_delta(self, stubbed_pygame) -> None:
         # ``marker_fader_max_speed_s = 0.5`` halves the time for full travel,
         # so the per-tick delta doubles compared to the 1.0 s baseline.
-        cfg_slow = ControllerConfig(marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
-        cfg_fast = ControllerConfig(marker_fader_stick="left_y", marker_fader_max_speed_s=0.5)
+        cfg_slow = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
+        cfg_fast = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=0.5)
         slow_bus, fast_bus = _FakeFaderBus(), _FakeFaderBus()
         slow_handler = GamepadHandler(
             FakeApp(controller_cfg=cfg_slow),
@@ -3214,7 +3256,7 @@ class TestMarkerFaderIntegrator:
     ) -> None:
         # SDL2 controller path uses CONTROLLER_AXIS_LEFTY (= 1) at
         # 16-bit ints. Pushing up = -32768; bus delta should be > 0.
-        cfg = ControllerConfig(marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
+        cfg = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
         bus = _FakeFaderBus()
         app = FakeApp(controller_cfg=cfg)
         handler = GamepadHandler(
@@ -3261,7 +3303,7 @@ class TestMarkerFaderIntegrator:
         self,
         stubbed_pygame,
     ) -> None:
-        cfg = ControllerConfig(marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
+        cfg = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
         bus = _FakeFaderBus()
         app = FakeApp(controller_cfg=cfg)
         handler = GamepadHandler(
@@ -3315,6 +3357,7 @@ class TestMarkerFaderIntegrator:
         )
         # Operator picks a stick.
         app._config.controller = ControllerConfig(
+            move_xy_stick="right",
             marker_fader_stick="left_y",
             marker_fader_max_speed_s=2.0,
         )
@@ -3353,7 +3396,7 @@ class TestMarkerFaderIntegrator:
         stubbed_pygame,
         caplog,
     ) -> None:
-        cfg = ControllerConfig(marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
+        cfg = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
         bus = _FakeFaderBus()
         app = FakeApp(controller_cfg=cfg)
         handler = GamepadHandler(
@@ -3722,7 +3765,7 @@ class TestStickPrimingAfterDetection:
 
     def test_phantom_does_not_drive_marker_fader(self, stubbed_pygame) -> None:
         bus = _FakeFaderBus()
-        cfg = ControllerConfig(marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
+        cfg = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
         app = FakeApp(controller_cfg=cfg)
         joy = FakeJoystick(num_buttons=12, num_axes=6)
         joy.set_axis(1, -0.8)  # phantom Y deflection

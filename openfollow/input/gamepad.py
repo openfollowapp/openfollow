@@ -898,7 +898,7 @@ class GamepadHandler:
             logger.warning("Error reading axes from gamepad instance %s: %s", controller_idx, e)
             return (0.0, 0.0, 0.0)
 
-    def _update_stick_priming(self, controller_idx: int, dx: float, dy: float) -> bool:
+    def _update_stick_priming(self, controller_idx: int, dx: float, dy: float, fader: float = 0.0) -> bool:
         """Return whether this pad's stick deflection is trustworthy yet.
 
         A pad opened after a restart can report a stale axis value before the OS
@@ -907,11 +907,12 @@ class GamepadHandler:
         axis is live and centered, so deflection before that is discarded. A
         trigger-style ``current - baseline`` delta is unsuitable here because a
         spring-centered stick would then mis-zero a held position. Pads injected
-        directly (no ``_detect_controllers``) default to primed.
+        directly (no ``_detect_controllers``) default to primed. ``fader`` is the
+        marker-fader stick, which is never the movement stick.
         """
         if controller_idx not in self._stick_unprimed:
             return True
-        if dx == 0.0 and dy == 0.0:
+        if dx == 0.0 and dy == 0.0 and fader == 0.0:
             self._stick_unprimed.discard(controller_idx)
             return True
         return False
@@ -1469,7 +1470,8 @@ class GamepadHandler:
 
                 # Discard a stale stick reading from a pad that hasn't centered
                 # since (re)detection, so a restart can't fling the marker.
-                stick_primed = self._update_stick_priming(controller_idx, dx, dy)
+                fader_deflection = self._read_marker_fader_deflection(controller_idx, joystick)
+                stick_primed = self._update_stick_priming(controller_idx, dx, dy, fader_deflection)
                 if not stick_primed:
                     dx = dy = 0.0
                 # Counted as use only once it can reach the marker.
@@ -1511,14 +1513,10 @@ class GamepadHandler:
                     and self._marker_fader_stick
                     and self._marker_resolver is not None
                 ):
-                    deflection = self._read_marker_fader_deflection(
-                        controller_idx,
-                        joystick,
-                    )
-                    if deflection != 0.0:
+                    if fader_deflection != 0.0:
                         marker_id = self._marker_resolver(controller_idx)
                         if marker_id is not None:
-                            delta = deflection * dt / self._marker_fader_max_speed_s
+                            delta = fader_deflection * dt / self._marker_fader_max_speed_s
                             self._virtual_faders.set_marker_fader_from_velocity_delta(
                                 marker_id,
                                 delta,
@@ -1535,10 +1533,7 @@ class GamepadHandler:
                     self._btn_toggle_help_id,
                 ):
                     result.toggle_help_pressed = True
-                if self._btn_toggle_zones_id >= 0 and self._detect_button_edge(
-                    controller_idx,
-                    self._btn_toggle_zones_id,
-                ):
+                if self._detect_button_edge(controller_idx, self._btn_toggle_zones_id):
                     result.toggle_zones_pressed = True
                 # Station-wide clear: any pad's edge fires it. No >= 0 guard –
                 # _get_button reads LT/RT as triggers and unbound as released.
@@ -1747,6 +1742,7 @@ class GamepadHandler:
             self._btn_reset_id,
             self._btn_toggle_help_id,
             self._btn_toggle_zones_id,
+            self._btn_clear_messages_id,
             self._btn_next_marker_id,
             self._btn_prev_marker_id,
             self._btn_settings_id,

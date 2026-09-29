@@ -1,3 +1,5 @@
+% from openfollow.configuration import GAMEPAD_ACTION_BUTTON_FORM_LABELS, GAMEPAD_MENU_BUTTON_FORM_LABELS, MENU_RESERVED_BUTTONS
+% from openfollow.web.bindings import STICK_FIELD_LABELS
 % from openfollow.web.labels import pretty_label
 <form id="gamepad-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="gamepad" data-help="gamepad"
       hx-post="/section/gamepad" hx-target="#gamepad-section" hx-swap="outerHTML" hx-trigger="submit">
@@ -119,70 +121,52 @@
                         Reset to Defaults
                     </button>
                 </div>
+                <%
+                    action_labels = dict(GAMEPAD_ACTION_BUTTON_FORM_LABELS)
+                    menu_labels = dict(GAMEPAD_MENU_BUTTON_FORM_LABELS)
+                    action_buttons = [b for b in button_names if b]
+                    menu_buttons = [b for b in action_buttons if b not in MENU_RESERVED_BUTTONS]
+                    c = config.controller
+                %>
                 <div class="group">
                     <h3 class="group-title">Normal Mode</h3>
                     <div class="row">
-                        <div class="field">
-                            <label>Reset Marker</label>
-                            <select name="btn_reset">
-                                <option value="" {{'selected' if not config.controller.btn_reset else ''}}>–</option>
-                                % for btn in button_names:
-                                <option value="{{btn}}" {{'selected' if config.controller.btn_reset == btn else ''}}>{{pretty_label(btn)}}</option>
-                                % end
-                            </select>
-                        </div>
-                        <div class="field">
-                            <label>Toggle Help</label>
-                            <select name="btn_toggle_help">
-                                <option value="" {{'selected' if not config.controller.btn_toggle_help else ''}}>–</option>
-                                % for btn in button_names:
-                                <option value="{{btn}}" {{'selected' if config.controller.btn_toggle_help == btn else ''}}>{{pretty_label(btn)}}</option>
-                                % end
-                            </select>
-                        </div>
-                        <div class="field">
-                            <label>Toggle Zone Overlay</label>
-                            <select name="btn_toggle_zones">
-                                <option value="" {{'selected' if not config.controller.btn_toggle_zones else ''}}>–</option>
-                                % for btn in button_names:
-                                <option value="{{btn}}" {{'selected' if config.controller.btn_toggle_zones == btn else ''}}>{{pretty_label(btn)}}</option>
-                                % end
-                            </select>
-                        </div>
-                        <div class="field">
-                            <label>Settings Menu</label>
-                            <select name="btn_settings">
-                                <option value="" {{'selected' if not config.controller.btn_settings else ''}}>–</option>
-                                % for btn in button_names:
-                                <option value="{{btn}}" {{'selected' if config.controller.btn_settings == btn else ''}}>{{pretty_label(btn)}}</option>
-                                % end
-                            </select>
-                        </div>
+                        % for name in ('btn_reset', 'btn_toggle_help', 'btn_toggle_zones', 'btn_settings'):
+                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons)
+                        % end
                     </div>
                     <div class="row">
                         <div class="field">
-                            <label>Move X/Y</label>
-                            <select name="move_xy_stick">
-                                <option value="left" {{'selected' if config.controller.move_xy_stick == 'left' else ''}}>Left Stick</option>
-                                <option value="right" {{'selected' if config.controller.move_xy_stick == 'right' else ''}}>Right Stick</option>
+                            <label for="gamepad-move-xy-stick">{{STICK_FIELD_LABELS['move_xy_stick']}}</label>
+                            <select id="gamepad-move-xy-stick" name="move_xy_stick"
+                                    hx-get="/api/validate/gamepad/move_xy_stick" hx-trigger="change"
+                                    hx-target="#gamepad-move-xy-stick-error" hx-swap="innerHTML" hx-include="closest form"
+                                    aria-describedby="gamepad-move-xy-stick-error" aria-invalid="false">
+                                <option value="left" {{'selected' if c.move_xy_stick == 'left' else ''}}>Left Stick</option>
+                                <option value="right" {{'selected' if c.move_xy_stick == 'right' else ''}}>Right Stick</option>
                             </select>
+                            <span id="gamepad-move-xy-stick-error" class="field-error"></span>
                         </div>
                         <!-- Marker-fader stick selector. Picks which stick Y
                              axis (if any) drives the fader of the marker this
                              controller currently controls. Existing deadzone +
                              curve apply to the deflection (no new fields). -->
                         <div class="field">
-                            <label>Marker fader stick</label>
-                            <select name="marker_fader_stick">
-                                <option value="" {{'selected' if not config.controller.marker_fader_stick else ''}}>– (unused)</option>
-                                <option value="left_y" {{'selected' if config.controller.marker_fader_stick == 'left_y' else ''}}>Left Stick Y</option>
-                                <option value="right_y" {{'selected' if config.controller.marker_fader_stick == 'right_y' else ''}}>Right Stick Y</option>
+                            <label for="gamepad-marker-fader-stick">{{STICK_FIELD_LABELS['marker_fader_stick']}}</label>
+                            <select id="gamepad-marker-fader-stick" name="marker_fader_stick"
+                                    hx-get="/api/validate/gamepad/marker_fader_stick" hx-trigger="change"
+                                    hx-target="#gamepad-marker-fader-stick-error" hx-swap="innerHTML" hx-include="closest form"
+                                    aria-describedby="gamepad-marker-fader-stick-error" aria-invalid="false">
+                                <option value="" {{'selected' if not c.marker_fader_stick else ''}}>– (unused)</option>
+                                <option value="left_y" {{'selected' if c.marker_fader_stick == 'left_y' else ''}}>Left Stick Y</option>
+                                <option value="right_y" {{'selected' if c.marker_fader_stick == 'right_y' else ''}}>Right Stick Y</option>
                             </select>
+                            <span id="gamepad-marker-fader-stick-error" class="field-error"></span>
                         </div>
                         <div class="field">
                             <label>Marker fader speed (s)</label>
                             <input id="gamepad-marker-fader-speed" type="number" name="marker_fader_max_speed_s"
-                                   value="{{config.controller.marker_fader_max_speed_s}}" min="0.05" max="60" step="0.05"
+                                   value="{{c.marker_fader_max_speed_s}}" min="0.05" max="60" step="0.05"
                                    hx-get="/api/validate/gamepad/marker_fader_max_speed_s" hx-trigger="blur changed delay:200ms"
                                    hx-target="#gamepad-marker-fader-speed-error" hx-swap="innerHTML" hx-include="closest form"
                                    aria-describedby="gamepad-marker-fader-speed-error" aria-invalid="false">
@@ -190,97 +174,22 @@
                         </div>
                     </div>
                     <div class="row">
-                        <div class="field">
-                            <label>Speed -</label>
-                            <select name="btn_speed_down">
-                                <option value="" {{'selected' if not config.controller.btn_speed_down else ''}}>–</option>
-                                % for btn in button_names:
-                                <option value="{{btn}}" {{'selected' if config.controller.btn_speed_down == btn else ''}}>{{pretty_label(btn)}}</option>
-                                % end
-                            </select>
-                        </div>
-                        <div class="field">
-                            <label>Speed +</label>
-                            <select name="btn_speed_up">
-                                <option value="" {{'selected' if not config.controller.btn_speed_up else ''}}>–</option>
-                                % for btn in button_names:
-                                <option value="{{btn}}" {{'selected' if config.controller.btn_speed_up == btn else ''}}>{{pretty_label(btn)}}</option>
-                                % end
-                            </select>
-                        </div>
-                        <div class="field">
-                            <label>Move Z-</label>
-                            <select name="btn_move_z_down">
-                                <option value="" {{'selected' if not config.controller.btn_move_z_down else ''}}>–</option>
-                                % for btn in button_names:
-                                <option value="{{btn}}" {{'selected' if config.controller.btn_move_z_down == btn else ''}}>{{pretty_label(btn)}}</option>
-                                % end
-                            </select>
-                        </div>
-                        <div class="field">
-                            <label>Move Z+</label>
-                            <select name="btn_move_z_up">
-                                <option value="" {{'selected' if not config.controller.btn_move_z_up else ''}}>–</option>
-                                % for btn in button_names:
-                                <option value="{{btn}}" {{'selected' if config.controller.btn_move_z_up == btn else ''}}>{{pretty_label(btn)}}</option>
-                                % end
-                            </select>
-                        </div>
+                        % for name in ('btn_speed_down', 'btn_speed_up', 'btn_move_z_down', 'btn_move_z_up'):
+                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons)
+                        % end
                     </div>
                     <div class="row">
-                        <div class="field">
-                            <label>Next Marker</label>
-                            <select name="btn_next_marker">
-                                <option value="" {{'selected' if not config.controller.btn_next_marker else ''}}>–</option>
-                                % for btn in button_names:
-                                <option value="{{btn}}" {{'selected' if config.controller.btn_next_marker == btn else ''}}>{{pretty_label(btn)}}</option>
-                                % end
-                            </select>
-                        </div>
-                        <div class="field">
-                            <label>Prev Marker</label>
-                            <select name="btn_prev_marker">
-                                <option value="" {{'selected' if not config.controller.btn_prev_marker else ''}}>–</option>
-                                % for btn in button_names:
-                                <option value="{{btn}}" {{'selected' if config.controller.btn_prev_marker == btn else ''}}>{{pretty_label(btn)}}</option>
-                                % end
-                            </select>
-                        </div>
-                        <div class="field">
-                            <label>Clear Messages</label>
-                            <select name="btn_clear_messages">
-                                <option value="" {{'selected' if not config.controller.btn_clear_messages else ''}}>–</option>
-                                % for btn in button_names:
-                                <option value="{{btn}}" {{'selected' if config.controller.btn_clear_messages == btn else ''}}>{{pretty_label(btn)}}</option>
-                                % end
-                            </select>
-                        </div>
+                        % for name in ('btn_next_marker', 'btn_prev_marker', 'btn_clear_messages'):
+                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons)
+                        % end
                     </div>
                 </div>
                 <div class="group">
                     <h3 class="group-title">Menu Navigation</h3>
-                    <p class="field-note" style="margin:0 0 0.5rem;">
-                        Shared by the Settings menu, source / interface selection, and calibration apply/cancel.
-                    </p>
                     <div class="row">
-                        <div class="field">
-                            <label>Confirm</label>
-                            <select name="btn_menu_confirm">
-                                <option value="" {{'selected' if not config.controller.btn_menu_confirm else ''}}>–</option>
-                                % for btn in button_names:
-                                <option value="{{btn}}" {{'selected' if config.controller.btn_menu_confirm == btn else ''}}>{{pretty_label(btn)}}</option>
-                                % end
-                            </select>
-                        </div>
-                        <div class="field">
-                            <label>Cancel</label>
-                            <select name="btn_menu_cancel">
-                                <option value="" {{'selected' if not config.controller.btn_menu_cancel else ''}}>–</option>
-                                % for btn in button_names:
-                                <option value="{{btn}}" {{'selected' if config.controller.btn_menu_cancel == btn else ''}}>{{pretty_label(btn)}}</option>
-                                % end
-                            </select>
-                        </div>
+                        % for name in ('btn_menu_confirm', 'btn_menu_cancel'):
+                        % include('partials/button_binding_select.tpl', name=name, label=menu_labels[name], value=getattr(c, name), buttons=menu_buttons)
+                        % end
                     </div>
                 </div>
             </div>

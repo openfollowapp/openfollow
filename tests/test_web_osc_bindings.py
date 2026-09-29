@@ -2497,7 +2497,7 @@ def test_validate_trigger_key_no_conflict_returns_empty(
     """No conflict-provider attached → blur validation passes silently."""
     server, base, _ = _live_server_with_providers(tmp_path, monkeypatch)
     try:
-        status, body = _get(base, "/api/validate/osc_binding/trigger.key?trigger.key=q")
+        status, body = _get(base, "/api/validate/osc_binding/trigger.key?trigger.key=p")
         assert status == 200
         assert body == ""
     finally:
@@ -2582,7 +2582,7 @@ def test_validate_trigger_key_no_provider_returns_empty(live_server) -> None:
     """The default fixture has no conflicts provider; an otherwise-valid
     key value still validates clean (registry returns ``[]``)."""
     _, base, _ = live_server
-    status, body = _get(base, "/api/validate/osc_binding/trigger.key?trigger.key=q")
+    status, body = _get(base, "/api/validate/osc_binding/trigger.key?trigger.key=p")
     assert status == 200
     assert body == ""
 
@@ -3946,3 +3946,73 @@ def test_nested_marker_rows_line_up_with_the_binding_above() -> None:
     assert nested_indent == pytest.approx(_rem(handle["width"]) + summary_gap)
     assert _rem(nested_row["gap"]) == pytest.approx(summary_gap)
     assert nested_row["padding"].split()[1] == _base_rule(".osc-binding-row")["padding"].split()[1]
+
+
+# ---------------------------------------------------------------------------
+# OSC trigger on an input a gamepad or keyboard action also uses
+# ---------------------------------------------------------------------------
+
+
+def _seed_overlap_rows(cfg_path: str) -> None:
+    cfg = load_config(cfg_path)
+    cfg.osc_transmitters.transmitters = [
+        _row(id="r-zones", name="Zones on", trigger=ControllerButtonTrigger(button="B")),
+        _row(id="r-free", name="Free key", trigger=HotkeyTrigger(key="p")),
+    ]
+    save_config(cfg, cfg_path)
+
+
+def _pill(body: str, row_id: str) -> str:
+    match = re.search(r'<span id="osc-overlap-' + row_id + r'"[^>]*>([^<]*)</span>', body)
+    assert match, f"no overlap slot for {row_id}"
+    return match.group(0)
+
+
+def test_collapsed_row_names_the_action_its_trigger_shares(live_server) -> None:
+    _, base, cfg_path = live_server
+    _seed_overlap_rows(cfg_path)
+    status, body = _get(base, "/section/osc_bindings")
+    assert status == 200
+    zones = _pill(body, "r-zones")
+    assert "Also Toggle Zone Overlay on the gamepad" in zones
+    assert "hidden" not in zones
+    assert "hidden" in _pill(body, "r-free")
+
+
+def test_trigger_form_opens_with_the_caution(live_server) -> None:
+    _, base, cfg_path = live_server
+    _seed_overlap_rows(cfg_path)
+    status, body = _get(base, "/section/osc_binding/r-zones/trigger_form?trigger.type=controller_button")
+    assert status == 200
+    assert 'class="field-caution-msg"' in body
+    assert "data-binding-overlap" in body
+
+
+def test_gamepad_save_announces_itself_and_the_pills_follow(live_server) -> None:
+    _, base, cfg_path = live_server
+    _seed_overlap_rows(cfg_path)
+    req = urllib.request.Request(
+        f"{base}/section/gamepad",
+        data=urllib.parse.urlencode({"enabled": "on", "btn_toggle_zones": "Y", "btn_toggle_help": ""}).encode(),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as r:
+        assert r.headers.get("HX-Trigger") == "controllerBindingsSaved"
+    status, body = _get(base, "/section/osc_bindings/overlaps")
+    assert status == 200
+    zones = _pill(body, "r-zones")
+    assert "hx-swap-oob" in zones
+    assert "hidden" in zones
+
+
+def test_keyboard_save_announces_itself(live_server) -> None:
+    _, base, _ = live_server
+    req = urllib.request.Request(
+        f"{base}/section/keyboard",
+        data=urllib.parse.urlencode({"keyboard_enabled": "on", "key_reset": "x"}).encode(),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as r:
+        assert r.headers.get("HX-Trigger") == "controllerBindingsSaved"

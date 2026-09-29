@@ -296,6 +296,13 @@ def test_validate_button_choice_empty_allowed() -> None:
     assert validate("controller", "btn_reset", "") is None
 
 
+@pytest.mark.parametrize("field", ["btn_menu_confirm", "btn_menu_cancel"])
+@pytest.mark.parametrize("button", ["DPAD_UP", "DPAD_DOWN"])
+def test_validate_menu_button_refuses_the_highlight_buttons(field: str, button: str) -> None:
+    assert validate("gamepad", field, button) is not None
+    assert validate("gamepad", "btn_reset", button) is None
+
+
 def test_validate_inference_size_within_range() -> None:
     assert validate("detection", "inference_size", "320") is None
 

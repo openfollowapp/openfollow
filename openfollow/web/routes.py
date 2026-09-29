@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import collections
 import copy
+import functools
 import hashlib
 import hmac
 import html as html_mod
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
     from openfollow.web.server import ConfigWebServer
 
 from openfollow.configuration import (
+    CONTROLLER_BINDING_FIELDS,
     DEFAULT_UPDATE_SERVICE_NAME,
     MARKER_TOKEN_ALL,
     MOUSE3D_AXES,
@@ -101,6 +103,7 @@ from openfollow.templates.writer import (
 from openfollow.units import UnitSystem, parse_length, parse_speed
 from openfollow.web import diagnostics, peer_auth
 from openfollow.web._md import render_help_markdown
+from openfollow.web.bindings import check_binding, osc_row_overlap, osc_trigger_overlap
 from openfollow.web.labels import video_error_token
 from openfollow.web.live_alerts import statistics_alerts
 from openfollow.web.login_throttle import LoginThrottle
@@ -310,6 +313,7 @@ _SECTION_CONFIG_ATTRS = {
     "rttrpm_output": "rttrpm_output",
     "trigger_zones": "trigger_zones",
 }
+_BINDING_FIELDS_BY_ATTR = {"controller": CONTROLLER_BINDING_FIELDS, "mouse3d": MOUSE3D_BUTTON_FIELDS}
 
 
 # Cap on an uploaded .deb (the bundled-venv package is ~100s of MB).
@@ -1163,7 +1167,14 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
     # a corresponding entry in ``_SECTION_FIELD_PARSERS``.
     if parser_map is None:  # pragma: no cover
         return False
-    _apply_parsed_updates(getattr(cfg, section_attr), data, parser_map)
+    target = getattr(cfg, section_attr)
+    before = {name: getattr(target, name) for name in _BINDING_FIELDS_BY_ATTR.get(section_attr, ())}
+    _apply_parsed_updates(target, data, parser_map)
+    if before:
+        # A binding this write changed takes its input from one it left alone.
+        changed = [name for name, value in before.items() if getattr(target, name) != value]
+        for move in target.settle_bindings(prefer=changed):
+            logger.info("%r moved from %s to %s", move.value, move.field, move.kept_by)
     # Re-run the dataclass ``__post_init__`` after a web-form save so the
     # same coercion/clamping rules that protect hand-edited config.toml also
     # protect crafted POSTs. See "Validation contract" in CLAUDE.md.
@@ -5407,6 +5418,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "gamepad",
             bool_fields=("enabled", "invert_y", "swap_triggers"),
         )
+        response.set_header("HX-Trigger", "controllerBindingsSaved")
         return template(
             "partials/gamepad",
             config=cfg,
@@ -5421,6 +5433,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "keyboard",
             bool_fields=("keyboard_enabled",),
         )
+        response.set_header("HX-Trigger", "controllerBindingsSaved")
         return template("partials/keyboard", config=cfg, saved=True)
 
     @app.post("/section/mouse")
@@ -6120,6 +6133,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 row_id: {e.token: e.reason for e in entries} for row_id, entries in entries_by_row.items()
             },
             "marker_display_by_row": marker_display,
+            "overlap_by_row": {
+                row.id: osc_row_overlap(cfg.controller, row.trigger) for row in cfg.osc_transmitters.transmitters
+            },
+            "binding_overlap": functools.partial(osc_trigger_overlap, cfg.controller),
             "fault_summary_by_row": {
                 row.id: _row_fault_summary(
                     _row_fault_labels(
@@ -6575,6 +6592,20 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     save_config(cfg, server.config_path)
         return _render_osc_destinations_section(cfg, saved=saved)
 
+    @app.get("/section/osc_bindings/overlaps")
+    def get_osc_binding_overlaps() -> Any:
+        """Every row's overlap pill as an out-of-band swap, after a gamepad or keyboard save."""
+        cfg = _request_scoped_config()
+        return "".join(
+            template(
+                "partials/osc_binding_overlap",
+                row_id=row.id,
+                overlap=osc_row_overlap(cfg.controller, row.trigger),
+                oob=True,
+            )
+            for row in cfg.osc_transmitters.transmitters
+        )
+
     @app.get("/section/osc_binding/<row_id>/trigger_form")
     def get_osc_binding_trigger_form(row_id: str) -> Any:
         """Return the trigger-specific input fields for the chosen
@@ -6615,6 +6646,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "partials/osc_binding_trigger_form",
             row=row,
             kind=kind,
+            binding_overlap=functools.partial(osc_trigger_overlap, cfg.controller),
             valid_rates=VALID_OSC_TRANSMITTER_RATES,
             valid_edges=VALID_TRIGGER_EDGES,
             valid_modifiers=VALID_TRIGGER_MODIFIERS,
@@ -7461,11 +7493,26 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 f'<span class="field-error-msg" role="alert" aria-live="assertive">'
                 f"{html_mod.escape(err, quote=True)}</span>"
             )
-        # Cross-subsystem conflict check for OSC binding triggers: an input
-        # claimed by the controller / keyboard config can't be re-assigned to
-        # an OSC binding (and vice versa). Same-owner OSC rows on the same
-        # input do NOT conflict (multiple bindings can listen and fire
-        # independently); ``conflicts_for(..., owner=X)`` excludes ``X``.
+        # A binding the edit clashes with: its input moves here (the page's
+        # binding-steal.js applies the ``bindingChecked`` event), or, for the
+        # marker-fader stick on the Move X/Y stick, an error.
+        binding = check_binding(section, field_name, request.query)
+        if binding is not None:
+            if binding.error:
+                return (
+                    f'<span class="field-error-msg" role="alert" aria-live="assertive">'
+                    f"{html_mod.escape(binding.error, quote=True)}</span>"
+                )
+            response.set_header("HX-Trigger", json.dumps(binding.event(field_name)))
+            if binding.note:
+                return (
+                    f'<span class="field-note-msg" role="status" aria-live="polite">'
+                    f"{html_mod.escape(binding.note, quote=True)}</span>"
+                )
+            return ""
+        # An OSC trigger on a claimed input: a movement key is an error, an
+        # input a gamepad or keyboard action also uses is a caution. OSC rows
+        # never conflict with each other: ``conflicts_for`` excludes the owner.
         # Strip ``raw`` before the guard and lookup: ``validate()`` treats
         # whitespace-only input as empty, and the registry holds no padded
         # ids, so ``trigger.key=   `` would otherwise produce a bogus check.
@@ -7491,6 +7538,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 return (
                     f'<span class="field-error-msg" role="alert" aria-live="assertive">'
                     f"{html_mod.escape(msg, quote=True)}</span>"
+                )
+            caution = osc_trigger_overlap(
+                _request_scoped_config().controller,
+                "hotkey" if kind == "key" else "controller_button",
+                stripped,
+            )
+            if caution:
+                return (
+                    f'<span class="field-caution-msg" role="status" aria-live="polite">'
+                    f"{html_mod.escape(caution, quote=True)}</span>"
                 )
         # Cross-field unresolved-placeholder check for OSC bindings, at blur
         # time on the message field – surfaces the same condition the partial

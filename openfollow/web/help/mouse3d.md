@@ -67,6 +67,8 @@ The defaults are in the table above (push drives x / y / z with the up/down moti
 
 Every action binds to a device button by its **index** (a whole number). Leave a binding **blank** to unbind it. Button counts vary by model – a compact unit has two, larger ones have many.
 
+Each button drives one action. Typing or detecting an index another action already uses moves it: the field you changed says in blue where it came from, and the field it left empties and turns red, since that action does nothing until it gets a button again. Once the button moves on, the red field only names the button it lost. The notes clear on **Save**.
+
 **Detect** – click a binding's **Detect** button, then press the button on the device; the field fills in automatically. It works whether or not the feature is enabled, as long as the device is connected.
 
 Bindable actions: **Reset marker** (return the marker to its default position), **Next / Previous marker** (cycle the selected marker, when this is the only controller – see above), **Speed up / Speed down** (step the move-speed), **Toggle help**, and **Toggle zones**. The Settings menu has no 3D-mouse binding: it needs a keyboard (or gamepad) to open and navigate.

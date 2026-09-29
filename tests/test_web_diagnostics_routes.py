@@ -936,10 +936,9 @@ def test_save_to_drive_writes_the_bundle_and_confirms(live_server) -> None:
     [
         ("sdz9", 400, "That USB storage device is no longer attached."),
         ("/dev/sda1", 400, "That USB storage device is no longer attached."),
-        ("", 400, "That USB storage device is no longer attached."),
         ("sdc1", 400, "WD Passport (MAC) can't be written: APFS can't be written."),
     ],
-    ids=["unknown-id", "a-path", "nothing-picked", "not-writable"],
+    ids=["unknown-id", "a-path", "not-writable"],
 )
 def test_save_to_drive_accepts_only_a_listed_writable_drive(
     live_server, media_id: str, status: int, error: str
@@ -980,6 +979,26 @@ def test_save_to_drive_gives_a_failures_own_next_step(live_server) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("listed", "error", "action"),
+    [
+        ([], "No USB storage device is attached.", "Plug one in, then save again."),
+        ("unwritable", "None of the attached USB storage devices can be written.", "The list says why for each one."),
+        ("all", "No USB storage device is picked.", "Pick one, then save again."),
+    ],
+    ids=["none-attached", "none-writable", "none-picked"],
+)
+def test_save_with_nothing_picked_says_why(live_server, listed, error: str, action: str) -> None:  # noqa: ANN001
+    server, base, _ = live_server
+    written = _wire_drives(server)
+    drives = _drives()
+    server.media_list_provider = lambda: (
+        [d for d in drives if not d.writable] if listed == "unwritable" else drives if listed == "all" else []
+    )
+    status, body = _post(base, "/api/diagnostics/save-to-drive", {"media_id": ""})
+    assert (status, json.loads(body), written) == (400, {"error": error, "action": action}, [])
+
+
 def test_save_to_drive_while_another_export_runs(live_server) -> None:
     server, base, _ = live_server
     _wire_drives(server)
@@ -1008,6 +1027,9 @@ def test_the_page_offers_save_to_drive_in_its_own_save_box(live_server) -> None:
     _, body, _ = _get(base, "/")
     box = body[body.index('<div class="save-flash drive-save">') :]
     box = box[: box.index('<div id="diagnostics-drive-result">')]
-    assert 'hx-get="/api/diagnostics/drives"' in box and 'hx-trigger="load, focus"' in box
+    # Re-listed as the pointer or keyboard reaches the box, never on focus: a click focuses the select as its
+    # native list opens, and a swap then would replace the options under it.
+    assert 'hx-get="/api/diagnostics/drives"' in box
+    assert "hx-trigger=\"load, mouseenter from:closest .drive-save, keyup[key=='Tab']\"" in box
     assert 'hx-post="/api/diagnostics/save-to-drive"' in box and 'hx-include="#diagnostics-drive"' in box
     assert '<div class="actions">' in box

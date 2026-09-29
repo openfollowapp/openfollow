@@ -75,7 +75,7 @@
                 <label for="diagnostics-drive">USB storage device</label>
                 <select id="diagnostics-drive" name="media_id"
                         hx-get="/api/diagnostics/drives"
-                        hx-trigger="load, focus"
+                        hx-trigger="load, mouseenter from:closest .drive-save, keyup[key=='Tab']"
                         hx-include="this"
                         hx-target="this"
                         hx-swap="innerHTML">

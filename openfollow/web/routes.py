@@ -4995,7 +4995,17 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if export is None or provider is None:
             return _save_failed(503, "Saving to a USB storage device is not available on this station.")
         media_id = request.forms.getunicode("media_id") or ""
-        media = next((m for m in provider() if m.id == media_id), None)
+        listed = provider()
+        if not media_id:
+            # The select submits nothing when no option can be picked.
+            if not listed:
+                return _save_failed(400, "No USB storage device is attached.", "Plug one in, then save again.")
+            if not any(m.writable for m in listed):
+                return _save_failed(
+                    400, "None of the attached USB storage devices can be written.", "The list says why for each one."
+                )
+            return _save_failed(400, "No USB storage device is picked.", "Pick one, then save again.")
+        media = next((m for m in listed if m.id == media_id), None)
         if media is None:
             return _save_failed(
                 400, "That USB storage device is no longer attached.", "Pick a USB storage device, then save again."

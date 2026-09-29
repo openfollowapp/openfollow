@@ -18,7 +18,7 @@
         <span class="section-note">Which network each function uses</span>
     </div>
 
-    <table class="ia-table ia-assign">
+    <table class="data-table ia-assign">
         <thead>
             <tr><th>Function</th><th>Interface</th><th>Address</th></tr>
         </thead>

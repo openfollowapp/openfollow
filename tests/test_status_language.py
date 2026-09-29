@@ -25,7 +25,7 @@ _STATUS_CLASS = re.compile(
     r"osc-binding-row|osc-binding-enabled-dot|osc-binding-nested-row|osc-pill|peer-item|peer-status|toast|"
     r"save-error|save-failed|field-error-msg|field-warn-msg|field-note-msg|conflict-flag|not-controlled|"
     r"add-feedback|saved-flash|wizard-status|wizard-preview-container|awaiting-password|wizard-field-error|"
-    r"update-flag|danger|btn-danger|modal-list-item-delete|gallery-del|dme-row)(?![\w-])"
+    r"update-flag|danger|btn-danger|modal-list-item-delete|gallery-del|dme-row|ia-dot)(?![\w-])"
 )
 _COLOUR = re.compile(r"#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)")
 # Greys, whites and the off-white text: neutral, so a literal is fine.
@@ -120,6 +120,17 @@ def _status_rules() -> list[tuple[str, str, str]]:
             if _STATUS_CLASS.search(selector):
                 rules.append((name, " ".join(selector.split()), body))
     return rules
+
+
+@pytest.mark.parametrize("path", sorted(_TEMPLATES.rglob("*.tpl")), ids=lambda p: p.name)
+def test_every_style_block_closes_each_brace_it_opens(path: Path) -> None:
+    """A stray ``}`` turns the next selector invalid, and the browser drops that whole rule unseen."""
+    for css in re.findall(r"<style[^>]*>(.*?)</style>", path.read_text(encoding="utf-8"), re.S):
+        depth = 0
+        for ch in re.sub(r"/\*.*?\*/", "", css, flags=re.S):
+            depth += {"{": 1, "}": -1}.get(ch, 0)
+            assert depth >= 0, f"{path.name}: a '}}' closes nothing"
+        assert depth == 0, f"{path.name}: a '{{' is never closed"
 
 
 def test_the_status_rule_scan_finds_the_components() -> None:

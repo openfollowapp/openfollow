@@ -826,30 +826,8 @@
  /* Full-width within its container (e.g. the login Unlock button). */
  .btn-block { width: 100%; }
  /* Network form: compact label:value grid matching the read-only status table. */
- /* Interface Assignment: function -> interface rows. Built from the existing
- tokens so it inherits the surrounding look with no new palette. */
- .ia-table {
- width: 100%;
- border-collapse: collapse;
- font-size: 0.86rem;
- }
- .ia-table th, .ia-table td {
- text-align: left;
- padding: 0.42rem 0.6rem;
- border-bottom: 1px solid var(--border-soft);
- vertical-align: middle;
- }
- .ia-table thead th {
- font-size: 0.72rem;
- text-transform: uppercase;
- letter-spacing: 0.06em;
- color: var(--muted);
- font-weight: 700;
- border-bottom: 1px solid var(--border);
- }
- .ia-table tbody tr:last-child th,
- .ia-table tbody tr:last-child td { border-bottom: 0; }
- .ia-table tbody th[scope="row"] { font-weight: 600; white-space: nowrap; }
+ /* Interface Assignment: function -> interface rows, in the shared .data-table. */
+ .ia-assign tbody th[scope="row"] { font-weight: 600; white-space: nowrap; }
  .ia-assign td:nth-child(2) { width: 46%; min-width: 220px; }
  .ia-assign select { width: 100%; max-width: 22rem; margin: 0; }
  .ia-addr { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
@@ -871,34 +849,11 @@
  per-interface editor that expands under its own row. */
  .ia-nics td:first-child, .ia-nics th:first-child { width: 1.4rem; padding-right: 0; }
  .ia-actions { text-align: right; white-space: nowrap; }
- .ia-dot {
- display: inline-block;
- width: 8px; height: 8px;
- border-radius: 50%;
- background: var(--ok);
- box-shadow: 0 0 0 3px rgba(125, 229, 159, 0.14);
- }
- .ia-dot.down { background: rgba(247, 245, 233, 0.3); box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.05); }
- .ia-badge {
- display: inline-block;
- margin-left: 0.3rem;
- padding: 0.06rem 0.45rem;
- border-radius: 999px;
- font-size: 0.66rem;
- font-weight: 800;
- letter-spacing: 0.05em;
- text-transform: uppercase;
- white-space: nowrap;
- }
- .ia-badge.session {
- color: var(--ok);
- background: rgba(125, 229, 159, 0.12);
- border: 1px solid rgba(125, 229, 159, 0.35);
- }
- .ia-badge.vlan {
- color: var(--muted);
- background: rgba(255, 255, 255, 0.06);
- border: 1px solid rgba(255, 255, 255, 0.16);
+ /* Up with an address: the success state dot. No address: the plain grey dot. */
+ .ia-dot { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--muted); vertical-align: middle; }
+ .ia-dot.up {
+ box-sizing: content-box; width: 10px; height: 10px; margin: -2.6px;
+ border: 2px solid var(--success-mark-muted); background: var(--success-mark); background-clip: content-box;
  }
  .ia-vlan-add {
  margin-top: 0.8rem;
@@ -928,10 +883,10 @@
  }
  .ia-link:hover { text-decoration: underline; }
  @media (max-width: 720px) {
- .ia-table thead { display: none; }
- .ia-table, .ia-table tbody, .ia-table tr, .ia-table th, .ia-table td { display: block; width: 100%; }
- .ia-table tbody tr { border-bottom: 1px solid var(--border-soft); padding: 0.45rem 0; }
- .ia-table th, .ia-table td { border-bottom: 0; padding: 0.2rem 0; }
+ .ia-assign thead { display: none; }
+ .ia-assign, .ia-assign tbody, .ia-assign tr, .ia-assign th, .ia-assign td { display: block; width: 100%; }
+ .ia-assign tbody tr { border-bottom: 1px solid var(--border-soft); padding: 0.45rem 0; }
+ .ia-assign th, .ia-assign td { border-bottom: 0; padding: 0.2rem 0; }
  .ia-assign td:nth-child(2) { width: 100%; }
  }
  .network-grid {

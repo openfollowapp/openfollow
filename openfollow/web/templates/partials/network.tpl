@@ -80,7 +80,7 @@
         % if not _rows:
         <p class="muted">No network interfaces detected.</p>
         % else:
-        <table class="ia-table ia-nics">
+        <table class="data-table ia-nics">
             <thead>
                 <tr><th></th><th>Interface</th><th>Address</th><th>Method</th><th></th></tr>
             </thead>
@@ -97,10 +97,10 @@
                         % if _name and _name == _session:
                         %# Guards the operator against editing the adapter
                         %# their own session is arriving on.
-                        <span class="ia-badge session" title="Your browser reached this station over this interface">This session</span>
+                        <span class="stat-chip info" title="Your browser reached this station over this interface">This session</span>
                         % end
                         % if row.get("vlan_id") is not None:
-                        <span class="ia-badge vlan">VLAN {{row.get("vlan_id")}}</span>
+                        <span class="stat-chip">VLAN {{row.get("vlan_id")}}</span>
                         % end
                     </td>
                     <td class="{{'' if _addr else 'muted'}}">{{(_addr + ('/' + str(_prefix) if _prefix else '')) if _addr else '(no address)'}}</td>
@@ -122,7 +122,7 @@
                     <div class="ia-editor-head">
                         <h4 class="group-title">Configure <code>{{_name}}</code>
                             % if row.get("vlan_id") is not None:
-                            <span class="ia-badge vlan">VLAN {{row.get("vlan_id")}}</span>
+                            <span class="stat-chip">VLAN {{row.get("vlan_id")}}</span>
                             % end
                         </h4>
                     </div>
@@ -211,7 +211,8 @@
                         <button type="button" class="danger"
                                 hx-post="/section/network/vlan/delete" hx-target="#network-interface"
                                 hx-swap="innerHTML" hx-include="closest form"
-                                hx-confirm="Delete {{_name}}? Any function pinned to it stops sending until it is reassigned.">Delete VLAN</button>
+                                hx-confirm="Any function pinned to {{_name}} stops sending until it is reassigned."
+                                data-confirm-title="Delete {{_name}}?" data-confirm-label="Delete" data-confirm-danger>Delete VLAN</button>
                         % end
                         %# Back to View mode on the same row. Targeting /edit
                         %# would re-render the editor, leaving no way out of

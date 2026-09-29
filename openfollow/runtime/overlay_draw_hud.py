@@ -1216,8 +1216,11 @@ def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: 
     # surfaces an error_message, the bottom-left info panel turns red
     # so operators glancing at the HUD spot the failure even when
     # they don't have the Settings menu open. Matches the trigger
-    # condition for the Settings menu's red-bordered error box.
-    in_error = bool(state.settings_menu_banner or state.error_message or state.video_failure_text)
+    # condition for the Settings menu's red-bordered error box. A plane
+    # stopped because its interface went dark is a failure the panel lists.
+    in_error = bool(
+        state.settings_menu_banner or state.error_message or state.video_failure_text or state.network_alerts
+    )
     if in_error:
         draw_rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, PANEL_RADIUS)
         cr.set_source_rgba(*COLOR_WARNING_FILL)

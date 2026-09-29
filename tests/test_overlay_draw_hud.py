@@ -1043,6 +1043,8 @@ class TestBottomLeftInfoPanel:
         assert "OTP output: eth0.20 is down" in texts
         # Labelled once, so a multi-plane outage doesn't repeat the word.
         assert texts.count("Network:") == 1
+        # A stopped plane is a failure, so the panel takes the error chrome.
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
 
     def test_no_network_row_when_every_plane_is_up(self) -> None:
         state = _base_state(ip_text="192.168.1.2")
@@ -1050,6 +1052,7 @@ class TestBottomLeftInfoPanel:
         cr = FakeCairo()
         draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
         assert "Network:" not in cr.show_text_strings()
+        assert ("rgba", *COLOR_WARNING_FILL) not in cr.calls
 
     def test_empty_ip_falls_back_to_unavailable(self) -> None:
         state = _base_state(ip_text="")

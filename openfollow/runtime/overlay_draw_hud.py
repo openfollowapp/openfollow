@@ -1809,25 +1809,9 @@ def draw_pi_network_screen(
     content_w = panel_w - 32.0
     cursor_y = panel_y + 74.0
 
-    if net.banner and net.banner_level in STATUS_LEVEL_COLORS:
-        cursor_y += _draw_network_status_row(renderer, cr, content_x, cursor_y, content_w, net.banner_level, net.banner)
-        cursor_y += 10.0
-    elif net.banner:
-        # A confirmation: the neutral bar, led by the success sign.
-        bar_h = 36.0
-        cr.set_source_rgba(0.13, 0.13, 0.17, 0.95)
-        draw_rounded_rect(cr, content_x, cursor_y, content_w, bar_h, ROW_RADIUS)
-        cr.fill()
-        text_x = content_x + 12.0
-        if net.banner_level == "success":
-            draw_success_sign(cr, text_x + _NOTICE_SIGN / 2.0, cursor_y + bar_h / 2.0, _NOTICE_SIGN)
-            text_x += _NOTICE_SIGN + 8.0
-        renderer._set_ui_font(cr, 12, bold=True)
-        cr.set_source_rgba(*COLOR_TEXT)
-        text = renderer._truncate_text_to_width(cr, net.banner, content_x + content_w - 12.0 - text_x)
-        cr.move_to(text_x, cursor_y + bar_h / 2.0 + 5.0)
-        cr.show_text(text)
-        cursor_y += bar_h + 10.0
+    if net.banner:
+        level = net.banner_level if net.banner_level in STATUS_LEVEL_COLORS else "info"
+        cursor_y += _draw_network_status_row(renderer, cr, content_x, cursor_y, content_w, level, net.banner) + 10.0
 
     # Container panel for the row list.
     list_y = cursor_y

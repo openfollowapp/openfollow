@@ -65,6 +65,9 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_INFO_BORDER,
     COLOR_INFO_FILL,
     COLOR_OK,
+    COLOR_SUCCESS_BG,
+    COLOR_SUCCESS_BORDER,
+    COLOR_SUCCESS_FILL,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
     COLOR_WARNING_BORDER,
@@ -2380,7 +2383,12 @@ class TestDrawPiNetworkScreen:
 
     @pytest.mark.parametrize(
         ("level", "fill"),
-        [("error", COLOR_WARNING_FILL), ("caution", COLOR_CAUTION_FILL), ("info", COLOR_INFO_FILL)],
+        [
+            ("error", COLOR_WARNING_FILL),
+            ("caution", COLOR_CAUTION_FILL),
+            ("info", COLOR_INFO_FILL),
+            ("success", COLOR_SUCCESS_FILL),
+        ],
     )
     def test_a_result_banner_takes_its_levels_colours(self, level, fill) -> None:  # noqa: ANN001
         state = _base_state(pi_network=_network_state(banner="Apply failed: refused", banner_level=level))
@@ -2389,12 +2397,21 @@ class TestDrawPiNetworkScreen:
         assert ("rgba", *fill) in cr.calls
         assert any("Apply failed" in t for t in cr.show_text_strings())
 
-    def test_a_confirmation_leads_with_the_success_sign(self) -> None:
+    def test_a_confirmation_is_a_green_row_led_by_the_off_white_check(self) -> None:
+        """As the web success box: the success fill and border, the sign off-white like every row's."""
         state = _base_state(pi_network=_network_state(banner="Apply ok.", banner_level="success"))
         cr = FakeCairo()
         draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
-        assert ("rgb", *COLOR_OK) in cr.calls
-        assert not {c[1:] for c in cr.calls if c[0] == "rgba"} & {COLOR_WARNING_FILL, COLOR_INFO_FILL}
+        assert ("rgba", *COLOR_SUCCESS_FILL) in cr.calls
+        assert ("rgb", *COLOR_SUCCESS_BORDER) in cr.calls
+        assert ("rgb", *COLOR_SUCCESS_BG) in cr.calls  # the check, cut out of the off-white disc
+        assert ("rgb", *COLOR_OK) not in cr.calls
+
+    def test_a_result_without_a_level_reads_as_info(self) -> None:
+        state = _base_state(pi_network=_network_state(banner="Querying network status…"))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert ("rgba", *COLOR_INFO_FILL) in cr.calls
 
     def test_renders_banner_when_set(self) -> None:
         rows = [

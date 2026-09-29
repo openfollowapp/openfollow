@@ -46,6 +46,9 @@ COLOR_INFO_BORDER = (0.149, 0.392, 0.69)  # #2664b0 (RGB)
 COLOR_CAUTION_BG = (0.608, 0.447, 0.0)  # #9b7200 (RGB)
 COLOR_CAUTION_FILL = (*COLOR_CAUTION_BG, 0.8)  # #9b7200 at 80% (RGBA)
 COLOR_CAUTION_BORDER = (1.0, 0.737, 0.0)  # #ffbc00 (RGB)
+COLOR_SUCCESS_BG = (0.145, 0.369, 0.227)  # #255e3a (RGB)
+COLOR_SUCCESS_FILL = (*COLOR_SUCCESS_BG, 0.8)  # #255e3a at 80% (RGBA)
+COLOR_SUCCESS_BORDER = (0.239, 0.604, 0.376)  # #3d9a60 (RGB)
 
 # Typography
 FONT_UI_FAMILY = "Inter"
@@ -118,11 +121,16 @@ def draw_info_sign(cr: Any, cx: float, cy: float, size: float = 13.0, cut: tuple
 
 
 def draw_success_sign(
-    cr: Any, cx: float, cy: float, size: float = 13.0, cut: tuple[float, ...] = COLOR_BG_BASE
+    cr: Any,
+    cx: float,
+    cy: float,
+    size: float = 13.0,
+    cut: tuple[float, ...] = COLOR_BG_BASE,
+    disc: tuple[float, ...] = COLOR_OK,
 ) -> None:
-    """Green disc with its check cut out in ``cut``, centred on (cx, cy)."""
+    """Disc (green unless ``disc`` says otherwise) with its check cut out in ``cut``, centred on (cx, cy)."""
     cr.save()
-    cr.set_source_rgb(*COLOR_OK)
+    cr.set_source_rgb(*disc)
     cr.arc(cx, cy, size * 0.45, 0, 2 * math.pi)
     cr.fill()
     cr.set_source_rgb(*cut)
@@ -141,15 +149,19 @@ STATUS_LEVEL_COLORS: dict[str, tuple[tuple[float, ...], tuple[float, ...], tuple
     "error": (COLOR_WARNING_FILL, COLOR_WARNING_BORDER, COLOR_DANGER_BG),
     "caution": (COLOR_CAUTION_FILL, COLOR_CAUTION_BORDER, COLOR_CAUTION_BG),
     "info": (COLOR_INFO_FILL, COLOR_INFO_BORDER, COLOR_INFO_BG),
+    "success": (COLOR_SUCCESS_FILL, COLOR_SUCCESS_BORDER, COLOR_SUCCESS_BG),
 }
 
 
 def draw_level_sign(cr: Any, level: str, cx: float, cy: float, size: float = 13.0) -> None:
-    """The warning sign for an error, the "i" for caution and info."""
+    """Off-white: the warning sign for an error, the check for a success, the "i" otherwise."""
+    cut = STATUS_LEVEL_COLORS[level][2]
     if level == "error":
         draw_warning_sign(cr, cx, cy, size)
+    elif level == "success":
+        draw_success_sign(cr, cx, cy, size, cut=cut, disc=COLOR_TEXT)
     else:
-        draw_info_sign(cr, cx, cy, size, cut=STATUS_LEVEL_COLORS[level][2])
+        draw_info_sign(cr, cx, cy, size, cut=cut)
 
 
 def draw_card_background(cr: Any, x: float, y: float, w: float, h: float, radius: float = PANEL_RADIUS) -> None:

@@ -59,9 +59,10 @@ surface colours vanish at dot size on the dark page.
 The HUD carries the error level as `COLOR_WARNING_FILL` and
 `COLOR_WARNING_BORDER` in
 [`overlay_draw_style.py`](../openfollow/runtime/overlay_draw_style.py), the same
-`#6b1414` at 80% and `#B02626`. Caution and info are `COLOR_CAUTION_*` and
-`COLOR_INFO_*`, each the web chip of its level: fill `--<level>-chip`, border
-`--<level>-line`. `STATUS_LEVEL_COLORS` maps a level name to the three.
+`#6b1414` at 80% and `#B02626`. Caution, info and success are `COLOR_CAUTION_*`,
+`COLOR_INFO_*` and `COLOR_SUCCESS_*`, each the web chip of its level: fill
+`--<level>-chip`, border `--<level>-line`. `STATUS_LEVEL_COLORS` maps a level
+name to the three.
 
 ### Why the row tint is opaque
 
@@ -270,8 +271,8 @@ attributes, so it spells the token's value.
   interface pill that names a state takes its level's chip colours (a link-local
   fallback is an error, an interface the web UI does not answer on is info); how
   the address was come by, and no address at all, are the neutral grey. An
-  action's result line takes its level, and a confirmation is the neutral bar
-  led by the success sign.
+  action's result line takes its level; a confirmation is a success row, led by
+  the off-white check, as the web's success box.
 - An offline marker shows an off-white disc with a cut-out cross.
 - The online dot and confirmations use the success mark (`COLOR_OK`,
   `#5cc98c`); a confirmation such as "Detection Complete!" leads with the

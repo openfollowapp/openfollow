@@ -220,7 +220,7 @@ def test_every_destructive_control_darkens_to_the_fault_row_tint(control: str) -
     assert _hover_backgrounds().get(control) == "var(--error-row)"
 
 
-@pytest.mark.parametrize("level", ["error", "caution", "info"])
+@pytest.mark.parametrize("level", ["error", "caution", "info", "success"])
 def test_each_hud_level_is_the_web_chip_of_that_level(level: str) -> None:
     """One language on both surfaces: a HUD status row is the web chip's fill and line."""
     from openfollow.runtime.overlay_draw_style import STATUS_LEVEL_COLORS

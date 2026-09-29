@@ -13,8 +13,18 @@ from typing import cast
 
 import mistune
 
+
+class _Renderer(mistune.HTMLRenderer):
+    def link(self, text: str, url: str, title: str | None = None) -> str:
+        html = super().link(text, url, title)
+        # Followed in place, an external link would take the station's own page away.
+        if url.startswith(("https://", "http://")):
+            return html.replace("<a ", '<a target="_blank" rel="noopener noreferrer" ', 1)
+        return html
+
+
 # Stateless renderer; reused across requests.
-_render = mistune.create_markdown(escape=True, plugins=["table"])
+_render = mistune.create_markdown(renderer=_Renderer(escape=True), plugins=["table"])
 
 
 def render_help_markdown(text: str) -> str:

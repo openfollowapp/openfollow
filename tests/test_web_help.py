@@ -57,6 +57,25 @@ class TestRenderHelpMarkdown:
     def test_handles_empty_input(self) -> None:
         assert render_help_markdown("").strip() == ""
 
+    @pytest.mark.parametrize(
+        "md",
+        [
+            "[the docs](https://openfollow.app/docs)",
+            "<https://openfollow.app/docs>",
+            "[a page](http://example.invalid/page)",
+        ],
+    )
+    def test_an_external_link_opens_in_a_new_tab(self, md: str) -> None:
+        # Followed in place it would take the station's own page away.
+        [anchor] = re.findall(r"<a [^>]*>", render_help_markdown(md))
+        assert 'target="_blank"' in anchor
+        assert 'rel="noopener noreferrer"' in anchor
+
+    @pytest.mark.parametrize("md", ["[Diagnostics](#diagnostics-section)", "[General](/section/general)"])
+    def test_a_link_within_the_station_stays_in_the_page(self, md: str) -> None:
+        [anchor] = re.findall(r"<a [^>]*>", render_help_markdown(md))
+        assert "target=" not in anchor
+
 
 # ---------------------------------------------------------------------------
 # Section markup + packaging (unit)

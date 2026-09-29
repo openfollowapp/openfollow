@@ -33,6 +33,16 @@ def test_notes_for_the_installed_release_render(tmp_path: Path) -> None:
     assert "v0.4.4" not in notes.html
 
 
+def test_a_link_in_the_notes_opens_in_a_new_tab(tmp_path: Path) -> None:
+    notes = load_whats_new(
+        "0.4.4", _notes(tmp_path, "v0.4.4\n\nSee [openfollow.app/docs](https://openfollow.app/docs).\n")
+    )
+    assert (
+        '<a target="_blank" rel="noopener noreferrer" href="https://openfollow.app/docs">openfollow.app/docs</a>'
+        in notes.html
+    )
+
+
 @pytest.mark.parametrize("first_line", ["v0.4.4", "0.4.4", "  v0.4.4  ", "v0.4.4rc2"])
 def test_version_line_forms(tmp_path: Path, first_line: str) -> None:
     assert load_whats_new("0.4.4", _notes(tmp_path, f"{first_line}\n\nBody.\n")).matches

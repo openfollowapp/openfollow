@@ -1183,10 +1183,48 @@ def test_fader_stick_on_the_move_stick_is_unbound(move: str, fader: str, kept_fa
     assert config.marker_fader_stick == kept_fader
 
 
-def test_duplicate_binding_names_both_fields_in_the_log(caplog) -> None:
+@pytest.fixture
+def fresh_binding_log(monkeypatch):
+    import openfollow.configuration as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_LOGGED_BINDINGS", set())
+
+
+def test_duplicate_binding_names_both_fields_in_the_log(caplog, fresh_binding_log) -> None:
     with caplog.at_level("WARNING", logger="openfollow.configuration"):
         ControllerConfig(btn_reset="Y")
     assert any("btn_reset" in r.message and "btn_toggle_help" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("build", "section"),
+    [
+        (lambda: ControllerConfig(btn_reset="Y"), "controller"),
+        (lambda: ControllerConfig(key_reset="h"), "controller"),
+        (lambda: ControllerConfig(btn_menu_confirm="DPAD_UP"), "controller"),
+        (lambda: Mouse3DConfig(btn_reset=0), "mouse3d"),
+    ],
+    ids=["gamepad", "keyboard", "menu-highlight", "mouse3d"],
+)
+def test_binding_repair_is_logged_once_under_its_section(caplog, fresh_binding_log, build, section) -> None:
+    # A config.toml is parsed on every web request; the repair must not be re-logged each time.
+    with caplog.at_level("WARNING", logger="openfollow.configuration"):
+        for _ in range(3):
+            build()
+    assert [r.message[: len(section) + 2] for r in caplog.records] == [f"[{section}]"]
+
+
+def test_duplicate_binding_in_config_toml_is_logged_once_across_loads(
+    temp_config_path, caplog, fresh_binding_log
+) -> None:
+    temp_config_path.write_text("[mouse3d]\nbtn_reset = 0\nbtn_next_marker = 0\n")
+    with caplog.at_level("WARNING", logger="openfollow.configuration"):
+        for _ in range(3):
+            assert load_config(str(temp_config_path)).mouse3d.btn_next_marker == -1
+    settled = [r.message for r in caplog.records if "btn_next_marker" in r.message]
+    assert settled == [
+        "[mouse3d] btn_reset and btn_next_marker are both bound to 0; keeping btn_reset, unbinding btn_next_marker"
+    ]
 
 
 def test_duplicate_binding_in_config_toml_is_settled_on_load(temp_config_path) -> None:

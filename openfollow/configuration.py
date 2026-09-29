@@ -130,12 +130,26 @@ def _field_default(instance: Any, name: str) -> Any:
     return instance.__dataclass_fields__[name].default
 
 
-def _log_settled_binding(move: BindingMove[Any]) -> None:
-    logger.warning(
-        "%r is bound to both %s and %s; keeping %s, unbinding %s",
+# Which binding repairs have been logged, so a config parsed on every request says each once per process.
+_LOGGED_BINDINGS: set[tuple[str, str, Any]] = set()
+
+
+def _warn_binding_once(section: str, field: str, value: Any, message: str, *args: Any) -> None:
+    if (section, field, value) in _LOGGED_BINDINGS:
+        return
+    _LOGGED_BINDINGS.add((section, field, value))
+    logger.warning("[%s] %s", section, message % args)
+
+
+def _log_settled_binding(section: str, move: BindingMove[Any]) -> None:
+    _warn_binding_once(
+        section,
+        move.field,
         move.value,
+        "%s and %s are both bound to %r; keeping %s, unbinding %s",
         move.kept_by,
         move.field,
+        move.value,
         move.kept_by,
         move.field,
     )
@@ -1964,7 +1978,10 @@ class ControllerConfig:
         for fname in ("btn_menu_confirm", "btn_menu_cancel"):
             if getattr(self, fname) in MENU_RESERVED_BUTTONS:
                 default = ControllerConfig.__dataclass_fields__[fname].default
-                logger.warning(
+                _warn_binding_once(
+                    "controller",
+                    fname,
+                    getattr(self, fname),
                     "Button %r for %s moves the menu highlight, falling back to %r",
                     getattr(self, fname),
                     fname,
@@ -2014,7 +2031,7 @@ class ControllerConfig:
             coerced_indices[str(raw_name)] = idx
         self.button_raw_indices = coerced_indices
         for move in self.settle_bindings():
-            _log_settled_binding(move)
+            _log_settled_binding("controller", move)
 
     def settle_bindings(self, prefer: Iterable[str] = ()) -> list[BindingMove[str]]:
         """Unbind every action sharing its input with an upper one in its group.
@@ -2158,7 +2175,7 @@ class Mouse3DConfig:
         for btn in MOUSE3D_BUTTON_FIELDS:
             setattr(self, btn, _coerce_int(getattr(self, btn), -1, lo=-1))
         for move in self.settle_bindings():
-            _log_settled_binding(move)
+            _log_settled_binding("mouse3d", move)
 
     def settle_bindings(self, prefer: Iterable[str] = ()) -> list[BindingMove[int]]:
         """Unbind every action sharing its button with an upper one; ``prefer`` ranks first."""

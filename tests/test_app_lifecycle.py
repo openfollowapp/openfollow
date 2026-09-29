@@ -254,12 +254,15 @@ class TestRun:
         assert app._pi_network_pending_result is None
 
     def test_check_diagnostics_export_posts_a_finished_hud_export(self, patched_ctor) -> None:  # noqa: ANN001
-        from openfollow.runtime.diagnostics_export import DONE, HUD, ExportStatus
+        from openfollow.runtime.diagnostics_export import HUD, DiagnosticsExport
+        from openfollow.runtime.removable_media import Media, WriteResult
 
+        stick = Media("sda1", "/dev/sda1", "SanDisk Ultra", "SanDisk Ultra · FAT32 · 32 GB", None, True)
+        saved = WriteResult("b.txt", stick, "Saved b.txt.", "It can be removed now.")
+        export = DiagnosticsExport(lambda: ("b.txt", "bundle"), lambda *_a: saved)
+        export.run("sda1", "SanDisk Ultra", HUD)
         app = OpenFollowApp(config_path=patched_ctor.cfg_path)
-        app._runtime_services.diagnostics_export = SimpleNamespace(
-            status=lambda: ExportStatus(DONE, HUD, "SanDisk Ultra", True, "Saved b.txt to SanDisk Ultra.", 1)
-        )
+        app._runtime_services.diagnostics_export = export
         app._check_diagnostics_export()
         assert app._runtime_services._status_flags["diagnostics_export"] == (
             "info",

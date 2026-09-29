@@ -119,6 +119,50 @@ def test_a_failure_with_its_own_next_step_keeps_it() -> None:
     )
 
 
+class _StartOnRelease:
+    """The slot, starting a HUD export the moment a finishing one frees it."""
+
+    def __init__(self, export: DiagnosticsExport) -> None:
+        self._lock, self._export, self.fired = threading.Lock(), export, False
+
+    def acquire(self, blocking: bool = True) -> bool:
+        return self._lock.acquire(blocking)
+
+    def release(self) -> None:
+        self._lock.release()
+        if not self.fired:
+            self.fired = True
+            self._export.start("sdb1", "Other stick", de.HUD)
+
+
+def test_run_returns_its_own_result_though_another_export_starts_as_it_ends() -> None:
+    hold = threading.Event()
+
+    def build() -> tuple[str, str]:
+        if slot.fired:
+            hold.wait(2)
+        return "b.txt", "x"
+
+    export = DiagnosticsExport(build, lambda *a: _saved("b.txt"))
+    slot = _StartOnRelease(export)
+    export._slot = slot  # type: ignore[assignment]
+    status = export.run("sda1", "SanDisk Ultra", de.WEB)
+    try:
+        assert (status.origin, status.phase, status.ok) == (de.WEB, de.DONE, True)
+        assert export.status().origin == de.HUD
+    finally:
+        hold.set()
+
+
+def test_the_last_result_of_each_origin_is_kept() -> None:
+    export = DiagnosticsExport(lambda: ("b.txt", "x"), lambda *a: _saved("b.txt"))
+    assert export.last_done(de.HUD) is None
+    export.run("sda1", "SanDisk Ultra", de.HUD)
+    export.run("sda1", "SanDisk Ultra", de.WEB)
+    hud, web = export.last_done(de.HUD), export.last_done(de.WEB)
+    assert (hud.origin, hud.generation, web.origin, web.generation) == (de.HUD, 1, de.WEB, 2)  # type: ignore[union-attr]
+
+
 class TestOneAtATime:
     def test_a_second_export_is_refused_while_one_runs(self) -> None:
         release = threading.Event()

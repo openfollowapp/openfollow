@@ -211,8 +211,9 @@ def check_diagnostics_export(app: OpenFollowApp, now: float | None = None) -> No
         return
     now = time.monotonic() if now is None else now
     flags = _status_flags(app)
-    status = export.status()
-    if status.phase == DONE and status.generation != app._media_export_seen:
+    # Per origin, not the slot's status: an export started within this tick would hide the one before it.
+    unseen = [s for s in (export.last_done(HUD), export.last_done(WEB)) if s and s.generation > app._media_export_seen]
+    for status in sorted(unseen, key=lambda s: s.generation):
         app._media_export_seen = status.generation
         if status.origin == HUD and not app._media_export_active:
             flags[BADGE_KEY] = badge_row(status)

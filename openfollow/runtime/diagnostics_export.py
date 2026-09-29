@@ -65,18 +65,23 @@ class DiagnosticsExport:
         self._slot = threading.Lock()
         self._lock = threading.Lock()
         self._status = ExportStatus()
+        self._last_done: dict[str, ExportStatus] = {}
 
     def status(self) -> ExportStatus:
         with self._lock:
             return self._status
+
+    def last_done(self, origin: str) -> ExportStatus | None:
+        """The latest finished export from ``origin``, which a newer export may already have replaced in ``status``."""
+        with self._lock:
+            return self._last_done.get(origin)
 
     def run(self, media_id: str, drive: str, origin: str) -> ExportStatus:
         """Export in the caller's thread and return the result; raises :class:`ExportBusy`."""
         if not self._slot.acquire(blocking=False):
             raise ExportBusy()
         self._begin(drive, origin)
-        self._export(media_id)
-        return self.status()
+        return self._export(media_id)
 
     def start(self, media_id: str, drive: str, origin: str) -> bool:
         """Export on a worker thread; ``False`` when another export is running."""
@@ -98,29 +103,30 @@ class DiagnosticsExport:
         with self._lock:
             self._status = replace(self._status, phase=phase)
 
-    def _finish(self, ok: bool, message: str, action: str = "") -> None:
+    def _finish(self, ok: bool, message: str, action: str = "") -> ExportStatus:
+        """This export's result, taken before the slot is freed for the next one."""
         with self._lock:
-            self._status = replace(self._status, phase=DONE, ok=ok, message=message, action=action)
+            done = self._status = replace(self._status, phase=DONE, ok=ok, message=message, action=action)
+            self._last_done[done.origin] = done
         self._slot.release()
+        return done
 
-    def _export(self, media_id: str) -> None:
+    def _export(self, media_id: str) -> ExportStatus:
         """Holds the slot on entry and releases it in ``_finish``, whatever happens."""
         try:
             filename, text = self._build()
         except Exception:
             logger.exception("Collecting the diagnostics bundle failed.")
-            self._finish(False, "The diagnostics could not be collected.")
-            return
+            return self._finish(False, "The diagnostics could not be collected.")
         self._set_phase(WRITING)
         try:
             result = self._write(media_id, filename, text.encode("utf-8"))
         except MediaError as exc:
             logger.warning("Saving the diagnostics bundle to %s failed: %s", self.status().drive, exc)
-            self._finish(False, str(exc), exc.action)
+            return self._finish(False, str(exc), exc.action)
         except Exception:
             logger.exception("Saving the diagnostics bundle failed.")
-            self._finish(False, "The file could not be saved.")
-        else:
-            media = result.media
-            logger.info("Saved the diagnostics bundle as %s to %s (%s).", result.filename, media.name, media.device)
-            self._finish(True, result.message, result.action)
+            return self._finish(False, "The file could not be saved.")
+        media = result.media
+        logger.info("Saved the diagnostics bundle as %s to %s (%s).", result.filename, media.name, media.device)
+        return self._finish(True, result.message, result.action)

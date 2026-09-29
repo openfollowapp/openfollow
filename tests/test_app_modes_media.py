@@ -44,9 +44,16 @@ class _Export:
         self._status = status or ExportStatus()
         self.busy = busy
         self.started: list[tuple[str, str, str]] = []
+        self.done: dict[str, ExportStatus] = {}
 
     def status(self) -> ExportStatus:
         return self._status
+
+    def last_done(self, origin: str) -> ExportStatus | None:
+        if origin in self.done:
+            return self.done[origin]
+        status = self._status
+        return status if status.phase == DONE and status.origin == origin else None
 
     def start(self, media_id: str, drive: str, origin: str) -> bool:
         self.started.append((media_id, drive, origin))
@@ -332,6 +339,23 @@ class TestStatusCorner:
         export._status = _done(web_ok, origin=WEB, generation=2)
         mm.check_diagnostics_export(app, now=2.0)
         assert app._runtime_services._status_flags[mm.BADGE_KEY][0] == kind
+
+    def test_a_hud_result_is_posted_though_a_web_export_already_took_the_slot(self) -> None:
+        export = _Export(ExportStatus(COLLECTING, WEB, "Other stick", generation=2))
+        export.done[HUD] = _done(False, generation=1, message="The USB storage device is full.")
+        app = _app(export=export)
+        mm.check_diagnostics_export(app, now=1.0)
+        row = app._runtime_services._status_flags[mm.BADGE_KEY]
+        assert row == ("error", "Export failed: The USB storage device is full")
+
+    def test_results_are_read_in_the_order_the_exports_ran(self) -> None:
+        # Both finished between two housekeeping ticks: the later web success clears the earlier HUD failure.
+        export = _Export(_done(True, origin=WEB, generation=2))
+        export.done[HUD] = _done(False, generation=1)
+        app = _app(export=export)
+        mm.check_diagnostics_export(app, now=1.0)
+        assert app._runtime_services._status_flags[mm.BADGE_KEY] is None
+        assert app._media_export_seen == 2
 
     def test_a_result_shown_on_screen_is_not_posted(self) -> None:
         app = _app(export=_Export(_done(True)))

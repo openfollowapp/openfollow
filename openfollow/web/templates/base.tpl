@@ -3585,6 +3585,7 @@
  title: 'Restart application?',
  message: 'Video and tracking stop until the station is back.',
  confirmLabel: 'Restart',
+ danger: true,
  });
  if (!ok) return;
  fetch('/api/restart', {method: 'POST'}).then(async function(res) {

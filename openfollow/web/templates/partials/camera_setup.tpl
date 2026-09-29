@@ -75,7 +75,7 @@
         <button type="button" class="secondary small"
                 hx-post="{{_url}}/restart" hx-target="{{_target}}" hx-swap="innerHTML"
                 hx-confirm="Restart the station now? Video and tracking stop until it is back."
-                data-confirm-title="Restart station?" data-confirm-label="Restart">Restart now</button>
+                data-confirm-title="Restart station?" data-confirm-label="Restart" data-confirm-danger>Restart now</button>
     </div>
 %     elif _mode == 'view' and not _detected:
     <div class="notice error" role="alert">No camera found on this station.<div class="notice-sub">{{'Name the camera and the connector it is plugged into.' if _available else _s.get('reason', '')}}</div></div>

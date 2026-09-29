@@ -95,3 +95,23 @@ def test_every_hx_confirm_names_its_button_and_the_listener_asks_in_the_modal() 
     base = _template("base.tpl")
     assert "'htmx:confirm'" in base
     assert "evt.detail.issueRequest(true)" in base
+
+
+# The actions docs/STATUS_LANGUAGE.md lists under "Destructive actions".
+_DESTRUCTIVE_LABELS = ("Delete", "Discard", "Forget", "Restore Defaults", "Restart")
+
+
+def test_a_confirm_that_stops_or_loses_something_takes_the_danger_button() -> None:
+    offenders = []
+    for path in _sources_with_scripts() + [_PACKAGE / "web" / "routes.py"]:
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(r"hx-confirm=", text):
+            tag = text[match.start() : text.index(">", match.start())]
+            label = re.search(r'data-confirm-label="([^"]*)"', tag)
+            if label and label.group(1) in _DESTRUCTIVE_LABELS and "data-confirm-danger" not in tag:
+                offenders.append(f"{path.name}: {label.group(1)}")
+        for match in re.finditer(r"modalConfirm\(\{(.*?)\}\)", text, re.S):
+            label = re.search(r"confirmLabel:\s*['\"]([^'\"]+)", match.group(1))
+            if label and label.group(1) in _DESTRUCTIVE_LABELS and "danger: true" not in match.group(1):
+                offenders.append(f"{path.name}: {label.group(1)}")
+    assert offenders == []

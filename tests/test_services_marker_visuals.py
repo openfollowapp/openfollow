@@ -750,9 +750,10 @@ class TestPopulatePiNetworkOverlay:
         # Dirty the slot first so reset() is observable.
         state.pi_network.screen_active = True
         state.pi_network.banner = "stale"
+        state.pi_network.banner_level = "error"
         _populate_pi_network_overlay(self._bare_app(), state)
         assert state.pi_network.screen_active is False
-        assert state.pi_network.banner == ""
+        assert (state.pi_network.banner, state.pi_network.banner_level) == ("", "")
 
     def test_screen_active_copies_rows_and_metadata(self, monkeypatch) -> None:
         from openfollow.runtime import app_modes_network as anm
@@ -764,6 +765,7 @@ class TestPopulatePiNetworkOverlay:
             _pi_network_index=3,
             _pi_network_active_iface="eth0",
             _pi_network_banner="Apply ok.",
+            _pi_network_banner_level="success",
         )
         state = OverlayState()
         _populate_pi_network_overlay(app, state)
@@ -771,7 +773,7 @@ class TestPopulatePiNetworkOverlay:
         assert state.pi_network.rows == sentinel_rows
         assert state.pi_network.selected_index == 3
         assert state.pi_network.active_iface == "eth0"
-        assert state.pi_network.banner == "Apply ok."
+        assert (state.pi_network.banner, state.pi_network.banner_level) == ("Apply ok.", "success")
 
     def test_field_edit_active_humanises_label(self) -> None:
         """``dns_1`` → "Dns 1"; ``ip_address`` → "Ip Address"."""

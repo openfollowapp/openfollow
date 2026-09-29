@@ -47,6 +47,8 @@ class PiNetworkOverlayState:
     # Interface whose own screen is open; "" is the interface list.
     open_iface: str = ""
     banner: str = ""
+    # "error", "caution", "info" or "success".
+    banner_level: str = ""
 
     field_edit_active: bool = False
     field_label: str = ""
@@ -62,6 +64,7 @@ class PiNetworkOverlayState:
         self.active_iface = ""
         self.open_iface = ""
         self.banner = ""
+        self.banner_level = ""
         self.field_edit_active = False
         self.field_label = ""
         self.field_value = ""

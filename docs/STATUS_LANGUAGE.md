@@ -14,7 +14,7 @@ with the reasoning, before adding the variant.
 | Level | Means | Examples |
 |---|---|---|
 | **Error** | It does not work, and will not until someone acts | Video unreachable, a refused save, a missing controller, an OSC binding that can never fire, a marker two stations control, detection or 3D Mouse support unavailable |
-| **Caution** | It works, with a limitation worth knowing | A feature marked experimental, a marker no station controls |
+| **Caution** | It works, with a limitation worth knowing | A feature marked experimental, a marker no station controls, a web UI pin that missed and serves on every interface |
 | **Info** | Nothing is wrong; progress or a fact | Starting, idle, restarting, an update is available, a value Save will correct |
 | **Success** | Something just worked, or is healthy | Saved, connected, running, marker added |
 
@@ -59,7 +59,9 @@ surface colours vanish at dot size on the dark page.
 The HUD carries the error level as `COLOR_WARNING_FILL` and
 `COLOR_WARNING_BORDER` in
 [`overlay_draw_style.py`](../openfollow/runtime/overlay_draw_style.py), the same
-`#6b1414` at 80% and `#B02626`.
+`#6b1414` at 80% and `#B02626`. Caution and info are `COLOR_CAUTION_*` and
+`COLOR_INFO_*`, each the web chip of its level: fill `--<level>-chip`, border
+`--<level>-line`. `STATUS_LEVEL_COLORS` maps a level name to the three.
 
 ### Why the row tint is opaque
 
@@ -261,7 +263,15 @@ attributes, so it spells the token's value.
 - Status rows and the ERROR box lead with the off-white warning sign
   (`draw_warning_sign`).
 - An info status row takes the info chip colours (`COLOR_INFO_FILL`,
-  `COLOR_INFO_BORDER`), led by the off-white "i" sign (`draw_info_sign`).
+  `COLOR_INFO_BORDER`), led by the off-white "i" sign (`draw_info_sign`). A
+  caution row takes the caution chip colours the same way, led by the same sign.
+- The on-screen Network screen: a notice is a row in its level's fill and border,
+  led by its sign (`draw_level_sign`), its text wrapped rather than cut. An
+  interface pill that names a state takes its level's chip colours (a link-local
+  fallback is an error, an interface the web UI does not answer on is info); how
+  the address was come by, and no address at all, are the neutral grey. An
+  action's result line takes its level, and a confirmation is the neutral bar
+  led by the success sign.
 - An offline marker shows an off-white disc with a cut-out cross.
 - The online dot and confirmations use the success mark (`COLOR_OK`,
   `#5cc98c`); a confirmation such as "Detection Complete!" leads with the

@@ -2319,3 +2319,139 @@ class TestAStaleBindIsNamedRatherThanLeftLookingDead:
         notices = [str(r["label"]) for r in _rows_by_kind(app, "notice")]
         assert any("served only at 192.168.1.5" in n for n in notices)
         assert not any("no interface has" in n for n in notices)
+
+
+def _notice_levels(app) -> dict[str, str]:
+    return {str(r["label"]): str(r.get("level", "")) for r in _rows_by_kind(app, "notice")}
+
+
+def _pill_levels(app) -> dict[str, str]:
+    return {
+        str(r.get("label")): str(r.get("pill_level", ""))
+        for r in anm.build_pi_network_rows(app)
+        if str(r.get("key", "")).startswith(anm._IFACE_ROW_PREFIX)
+    }
+
+
+class TestEachReachabilityStateHasItsLevel:
+    """The level is the consequence: error where the station cannot be reached
+    until someone acts, caution where it works with a limitation, info for a
+    fact. An adapter with no address is neutral - nobody may have plugged it in."""
+
+    def test_a_fallback_is_an_error_and_no_address_is_neutral(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "169.254.7.7", "wlan0": ""})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        assert _pill_levels(app) == {"eth0": "error", "wlan0": ""}
+
+    def test_how_an_address_was_come_by_is_neutral(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        assert (_list_pills(app)["eth0"], _pill_levels(app)["eth0"]) == ("DHCP", "")
+
+    def test_a_pill_for_an_interface_the_web_ui_is_not_on_is_info(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5", "wlan0": "172.16.4.20"})
+        app = _make_app()
+        app._config.web_bind_iface = "wlan0"
+        app._web_server = _FakeWebServer(bind_host="172.16.4.20")
+        anm.enter_pi_network(app)
+        assert _pill_levels(app)["eth0"] == "info"
+
+    def test_a_restricted_web_ui_is_a_fact(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._config.web_bind_iface = "eth0"
+        app._web_server = _FakeWebServer(bind_host="192.168.1.5")
+        anm.enter_pi_network(app)
+        assert list(_notice_levels(app).values()) == ["info"]
+
+    def test_a_bind_no_interface_has_is_an_error(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.77"})
+        app = _make_app()
+        app._config.web_bind_iface = "eth0"
+        app._web_server = _FakeWebServer(bind_host="192.168.1.5")
+        anm.enter_pi_network(app)
+        assert list(_notice_levels(app).values()) == ["error"]
+
+    def test_a_pin_that_missed_is_a_caution(self, monkeypatch) -> None:
+        """It still answers everywhere; what is missing is the isolation the pin asked for."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._config.web_bind_iface = "eth_gone"
+        app._web_server = _FakeWebServer(bind_host="0.0.0.0", banner="Web UI is pinned to 'eth_gone'.")
+        anm.enter_pi_network(app)
+        assert _notice_levels(app) == {"Web UI is pinned to 'eth_gone'.": "caution"}
+
+    def test_a_link_local_fallback_is_an_error_on_its_own_screen(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "169.254.8.31"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _open_iface(app, "eth0")
+        assert list(_notice_levels(app).values()) == ["error"]
+
+    def test_a_read_only_host_is_a_fact(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app(_FakeAdapter(writable=False))
+        anm.enter_pi_network(app)
+        _open_iface(app, "eth0")
+        assert list(_notice_levels(app).values()) == ["info"]
+
+
+class TestTheResultLineCarriesItsLevel:
+    def _apply(self, result) -> SimpleNamespace:  # noqa: ANN001
+        from openfollow.network.adapter import Ipv4Config, Ipv4Method
+
+        adapter = _FakeAdapter()
+        adapter.apply_result = result
+        app = _make_app(adapter)
+        anm.enter_pi_network(app)
+        app._pi_network_pending_config = Ipv4Config(method=Ipv4Method.STATIC, address="10.0.0.5", prefix=24)
+        anm._apply_pi_network(app)
+        assert app._pi_network_banner_level == "info"  # in progress
+        app._pi_network_worker.join(timeout=2.0)
+        anm.drain_pi_network_worker(app)
+        return app
+
+    def test_an_apply_that_worked_is_a_success(self) -> None:
+        from openfollow.network.adapter import ApplyResult
+
+        assert self._apply(ApplyResult(ok=True, message="ok"))._pi_network_banner_level == "success"
+
+    def test_an_apply_that_worked_with_warnings_is_a_caution(self) -> None:
+        from openfollow.network.adapter import ApplyResult
+
+        app = self._apply(ApplyResult(ok=True, message="ok", partial_failures=("warn-1",)))
+        assert app._pi_network_banner_level == "caution"
+
+    def test_an_apply_that_failed_is_an_error(self) -> None:
+        from openfollow.network.adapter import ApplyResult
+
+        assert self._apply(ApplyResult(ok=False, message="refused"))._pi_network_banner_level == "error"
+
+    def test_an_invalid_entry_is_an_error(self) -> None:
+        app = _make_app()
+        anm.enter_pi_network(app)
+        app._pi_network_pending_config = None
+        anm._apply_pi_network(app)
+        assert (app._pi_network_banner, app._pi_network_banner_level) == ("No network adapter available.", "error")
+
+    def test_a_slow_read_is_reported_as_info(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        app = _make_app()
+        monkeypatch.setattr(anm, "_ENTRY_READ_BUDGET_S", 0.05)
+        block = threading.Event()
+        monkeypatch.setattr(anm, "_read_pi_network", lambda _app: block.wait(1.0) and None)
+        anm._refresh_pi_network_bounded(app)
+        block.set()
+        assert app._pi_network_banner_level == "info"
+
+    @pytest.mark.parametrize(("saved", "level"), [(True, "info"), (False, "error")])
+    def test_the_unpin_escape(self, monkeypatch, saved: bool, level: str) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: saved)
+        app = _make_app()
+        app._config.web_bind_iface = "eth0"
+        app._web_server = _FakeWebServer(bind_host="192.168.1.5")
+        anm.enter_pi_network(app)
+        _confirm_key(app, "web_unpin")
+        assert app._pi_network_banner_level == level

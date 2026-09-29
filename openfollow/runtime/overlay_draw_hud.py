@@ -28,7 +28,9 @@ from openfollow.runtime.overlay_draw_style import (
     MODAL_RADIUS,
     PANEL_RADIUS,
     ROW_RADIUS,
+    STATUS_LEVEL_COLORS,
     draw_card_background,
+    draw_level_sign,
     draw_rounded_rect,
     draw_success_sign,
     draw_warning_sign,
@@ -1734,6 +1736,40 @@ def _confirm_cancel_hint(state: OverlayState, confirm_verb: str, cancel_verb: st
     return ", ".join(parts)
 
 
+_NOTICE_FONT = 11.5
+_NOTICE_LINE_H = 16.0
+_NOTICE_PAD = 7.0
+_NOTICE_SIGN = 14.0
+_NOTICE_MAX_LINES = 3
+
+
+def _draw_network_status_row(renderer: Any, cr: Any, x: float, y: float, w: float, level: str, text: str) -> float:
+    """A row in its level's fill and border, led by its sign; returns the height drawn."""
+    fill, border, _cut = STATUS_LEVEL_COLORS[level]
+    text_x = x + _NOTICE_PAD + _NOTICE_SIGN + 8.0
+    text_w = x + w - _NOTICE_PAD - text_x
+    lines = _wrap_error_message(renderer, cr, text, text_w, _NOTICE_FONT, bold=False)
+    if len(lines) > _NOTICE_MAX_LINES:
+        rest = " ".join(lines[_NOTICE_MAX_LINES - 1 :])
+        lines = [*lines[: _NOTICE_MAX_LINES - 1], renderer._truncate_text_to_width(cr, rest, text_w)]
+    row_h = len(lines) * _NOTICE_LINE_H + 2 * _NOTICE_PAD
+    draw_rounded_rect(cr, x, y, w, row_h, ROW_RADIUS)
+    cr.set_source_rgba(*fill)
+    cr.fill()
+    draw_rounded_rect(cr, x, y, w, row_h, ROW_RADIUS)
+    cr.set_source_rgb(*border)
+    cr.set_line_width(1.2)
+    cr.stroke()
+    sign_cx = x + _NOTICE_PAD + _NOTICE_SIGN / 2.0
+    draw_level_sign(cr, level, sign_cx, y + _NOTICE_PAD + _NOTICE_LINE_H / 2.0, _NOTICE_SIGN)
+    renderer._set_ui_font(cr, _NOTICE_FONT)
+    cr.set_source_rgb(*COLOR_TEXT)
+    for i, line in enumerate(lines):
+        cr.move_to(text_x, y + _NOTICE_PAD + _NOTICE_LINE_H * i + 12.0)
+        cr.show_text(line)
+    return row_h
+
+
 def draw_pi_network_screen(
     renderer: Any,
     cr: Any,
@@ -1770,15 +1806,23 @@ def draw_pi_network_screen(
     content_w = panel_w - 32.0
     cursor_y = panel_y + 74.0
 
-    if net.banner:
+    if net.banner and net.banner_level in STATUS_LEVEL_COLORS:
+        cursor_y += _draw_network_status_row(renderer, cr, content_x, cursor_y, content_w, net.banner_level, net.banner)
+        cursor_y += 10.0
+    elif net.banner:
+        # A confirmation: the neutral bar, led by the success sign.
         bar_h = 36.0
         cr.set_source_rgba(0.13, 0.13, 0.17, 0.95)
         draw_rounded_rect(cr, content_x, cursor_y, content_w, bar_h, ROW_RADIUS)
         cr.fill()
+        text_x = content_x + 12.0
+        if net.banner_level == "success":
+            draw_success_sign(cr, text_x + _NOTICE_SIGN / 2.0, cursor_y + bar_h / 2.0, _NOTICE_SIGN)
+            text_x += _NOTICE_SIGN + 8.0
         renderer._set_ui_font(cr, 12, bold=True)
         cr.set_source_rgba(*COLOR_TEXT)
-        text = renderer._truncate_text_to_width(cr, net.banner, content_w - 24.0)
-        cr.move_to(content_x + 12.0, cursor_y + bar_h / 2.0 + 5.0)
+        text = renderer._truncate_text_to_width(cr, net.banner, content_x + content_w - 12.0 - text_x)
+        cr.move_to(text_x, cursor_y + bar_h / 2.0 + 5.0)
         cr.show_text(text)
         cursor_y += bar_h + 10.0
 
@@ -1809,10 +1853,9 @@ def draw_pi_network_screen(
         value = str(row.get("value", ""))
 
         if kind == "header":
-            # Bold section heading; no chrome. Muted, not accent: amber on this
-            # screen means a row needs attention, and a heading in the warning
-            # colour both raises a false alarm and stops the real ones reading
-            # as different from the furniture around them.
+            # Bold section heading; no chrome, and muted: a heading in a status
+            # colour raises a false alarm on a screen reached when something is
+            # already wrong.
             renderer._set_ui_font(cr, 12, bold=True)
             cr.set_source_rgba(*COLOR_TEXT_MUTED)
             cr.move_to(inner_x, row_y + header_h * 0.75)
@@ -1821,14 +1864,8 @@ def draw_pi_network_screen(
             continue
 
         if kind == "notice":
-            # Amber, not muted: these are the two states that break
-            # reachability while still looking like a working station.
-            renderer._set_ui_font(cr, 11.5)
-            cr.set_source_rgba(*COLOR_ACCENT, 1.0)
-            text = renderer._truncate_text_to_width(cr, f"! {label}", inner_w - 14.0)
-            cr.move_to(inner_x, row_y + data_row_h * 0.65)
-            cr.show_text(text)
-            row_y += data_row_h
+            level = str(row.get("level") or "info")
+            row_y += _draw_network_status_row(renderer, cr, inner_x, row_y, inner_w, level, label) + 6.0
             continue
 
         if kind == "action":
@@ -1891,15 +1928,21 @@ def draw_pi_network_screen(
         if bool(row.get("opens")):
             draw_submenu_chevron(renderer, cr, inner_x + inner_w - 10.0, row_y + data_row_h * 0.65)
         if pill:
-            warn = bool(row.get("pill_warn"))
+            # A state takes its level's chip colours; how the address was come by is neutral.
+            level_colors = STATUS_LEVEL_COLORS.get(str(row.get("pill_level") or ""))
             pill_x = inner_x + inner_w - pill_w - 8.0 - chevron_w
             pill_y = row_y + 1.0
             pill_h = data_row_h - 6.0
-            cr.set_source_rgba(*(COLOR_ACCENT_SOFT if warn else (1.0, 1.0, 1.0, 0.07)))
+            cr.set_source_rgba(*(level_colors[0] if level_colors else (1.0, 1.0, 1.0, 0.07)))
             draw_rounded_rect(cr, pill_x, pill_y, pill_w, pill_h, pill_h / 2.0)
             cr.fill()
+            if level_colors:
+                cr.set_source_rgb(*level_colors[1])
+                draw_rounded_rect(cr, pill_x, pill_y, pill_w, pill_h, pill_h / 2.0)
+                cr.set_line_width(1.0)
+                cr.stroke()
             renderer._set_ui_font(cr, 10)
-            cr.set_source_rgba(*((*COLOR_ACCENT, 1.0) if warn else COLOR_TEXT_MUTED))
+            cr.set_source_rgba(*((*COLOR_TEXT, 1.0) if level_colors else COLOR_TEXT_MUTED))
             ext = cr.text_extents(pill)
             cr.move_to(pill_x + (pill_w - ext.width) / 2.0, pill_y + pill_h * 0.72)
             cr.show_text(pill)

@@ -369,6 +369,7 @@ class OpenFollowApp:
         # Cursor into the field editor's digit grid, for d-pad entry.
         self._pi_network_field_digit_index: int = 0
         self._pi_network_banner: str = ""
+        self._pi_network_banner_level: str = ""
         self._pi_network_busy: bool = False
         self._pi_network_worker: threading.Thread | None = None
         # Generation counter to drop results from orphaned worker threads

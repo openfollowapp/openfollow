@@ -59,6 +59,11 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_ACCENT,
     COLOR_ACCENT_SOFT,
     COLOR_BG_BASE,
+    COLOR_CAUTION_BORDER,
+    COLOR_CAUTION_FILL,
+    COLOR_DANGER_BG,
+    COLOR_INFO_BORDER,
+    COLOR_INFO_FILL,
     COLOR_OK,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
@@ -2243,27 +2248,34 @@ class TestDrawPiNetworkScreen:
         value = next(t for t in cr.texts if t.text == "192.168.1.5")
         assert pill.x > value.x
 
-    def test_a_warning_pill_is_drawn_in_the_warning_colour(self) -> None:
-        """ "fallback" and "no address" are the states that break reachability
-        while the row still looks like a working interface - they read as
-        warnings or they are not worth showing."""
+    @pytest.mark.parametrize(
+        ("pill", "level", "fill", "border"),
+        [
+            ("fallback", "error", COLOR_WARNING_FILL, COLOR_WARNING_BORDER),
+            ("web UI not here", "info", COLOR_INFO_FILL, COLOR_INFO_BORDER),
+        ],
+    )
+    def test_a_state_pill_takes_its_levels_chip_colours(self, pill, level, fill, border) -> None:  # noqa: ANN001
         rows = [
-            {
-                "kind": "choice",
-                "key": "iface:eth0",
-                "label": "eth0",
-                "value": "",
-                "pill": "no address",
-                "pill_warn": True,
-            },
+            {"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "", "pill": pill, "pill_level": level},
             {"kind": "choice", "key": "iface:wlan0", "label": "wlan0", "value": "10.0.0.2", "pill": "DHCP"},
         ]
         state = _base_state(pi_network=_network_state(rows=rows))
         cr = FakeCairo()
         draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
-        warn = next(t for t in cr.texts if t.text == "no address")
-        plain = next(t for t in cr.texts if t.text == "DHCP")
-        assert warn.rgba != plain.rgba
+        assert ("rgba", *fill) in cr.calls
+        assert ("rgb", *border) in cr.calls
+        # Off-white on the level's fill; the neutral pill keeps its muted text.
+        assert next(t for t in cr.texts if t.text == pill).rgba == (*COLOR_TEXT, 1.0)
+        assert next(t for t in cr.texts if t.text == "DHCP").rgba == COLOR_TEXT_MUTED
+
+    def test_a_neutral_pill_draws_no_status_colour(self) -> None:
+        rows = [{"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "", "pill": "no address"}]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        fills = {c[1:] for c in cr.calls if c[0] == "rgba"}
+        assert not fills & {COLOR_WARNING_FILL, COLOR_INFO_FILL, COLOR_CAUTION_FILL}
 
     def test_a_row_without_a_pill_draws_none(self) -> None:
         rows = [{"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "192.168.1.5"}]
@@ -2313,19 +2325,73 @@ class TestDrawPiNetworkScreen:
         # Action row text rendered.
         assert any("Apply Changes" in t for t in texts)
 
-    def test_notice_rows_render_with_a_warning_marker(self) -> None:
-        """The two reachability warnings are the reason the screen exists;
-        rendering them like an ordinary muted value would bury them."""
-        rows = [
-            {"kind": "header", "label": "Open on a computer on the same network"},
-            {"kind": "choice", "key": "iface:eth0", "label": "http://192.168.1.5", "value": "eth0"},
-            {"kind": "notice", "label": "eth0  DHCP unavailable, using fallback 169.254.8.31", "value": ""},
-        ]
-        state = _base_state(pi_network=_network_state(rows=rows, selected_index=1))
+    @pytest.mark.parametrize(
+        ("level", "fill", "border"),
+        [
+            ("error", COLOR_WARNING_FILL, COLOR_WARNING_BORDER),
+            ("caution", COLOR_CAUTION_FILL, COLOR_CAUTION_BORDER),
+            ("info", COLOR_INFO_FILL, COLOR_INFO_BORDER),
+        ],
+    )
+    def test_a_notice_is_a_status_row_of_its_level(self, level, fill, border) -> None:  # noqa: ANN001
+        """Off-white text on the level's fill, as the web boxes: never a tinted text."""
+        rows = [{"kind": "notice", "level": level, "label": "Web UI is served only at 10.0.0.2", "value": ""}]
+        state = _base_state(pi_network=_network_state(rows=rows))
         cr = FakeCairo()
         draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
-        texts = cr.show_text_strings()
-        assert any(t.startswith("! ") and "DHCP unavailable" in t for t in texts)
+        assert ("rgba", *fill) in cr.calls
+        assert ("rgb", *border) in cr.calls
+        assert next(t for t in cr.texts if "served only" in t.text).rgba == (*COLOR_TEXT, 1.0)
+
+    def test_an_error_notice_leads_with_the_warning_sign(self) -> None:
+        rows = [{"kind": "notice", "level": "error", "label": "eth0 has no lease", "value": ""}]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        # The "!" is cut into the triangle in the warning red.
+        assert ("rgb", *COLOR_DANGER_BG) in cr.calls
+        assert not any(t.text.startswith("! ") for t in cr.texts)
+
+    def test_a_long_notice_wraps_rather_than_losing_its_end(self) -> None:
+        """The fallback sentence says who will not reach the station; truncated
+        to one line, that is the half an operator never sees."""
+        label = (
+            "No DHCP server answered, so eth0 gave itself 169.254.8.31. "
+            "Other machines on this network will not reach the station here."
+        )
+        rows = [{"kind": "notice", "level": "error", "label": label, "value": ""}]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 800, 900)
+        drawn = [t.text for t in cr.texts if t.rgba == (*COLOR_TEXT, 1.0) and t.text.strip()]
+        assert len(drawn) > 1
+        assert "reach the station here." in drawn[-1]
+
+    def test_a_notice_stops_at_three_lines(self) -> None:
+        """A backend message can run on; past three lines it is cut, not left to push the list off the panel."""
+        rows = [{"kind": "notice", "level": "error", "label": "word " * 400, "value": ""}]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 800, 900)
+        assert len([t for t in cr.texts if t.rgba == (*COLOR_TEXT, 1.0) and "word" in t.text]) == 3
+
+    @pytest.mark.parametrize(
+        ("level", "fill"),
+        [("error", COLOR_WARNING_FILL), ("caution", COLOR_CAUTION_FILL), ("info", COLOR_INFO_FILL)],
+    )
+    def test_a_result_banner_takes_its_levels_colours(self, level, fill) -> None:  # noqa: ANN001
+        state = _base_state(pi_network=_network_state(banner="Apply failed: refused", banner_level=level))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert ("rgba", *fill) in cr.calls
+        assert any("Apply failed" in t for t in cr.show_text_strings())
+
+    def test_a_confirmation_leads_with_the_success_sign(self) -> None:
+        state = _base_state(pi_network=_network_state(banner="Apply ok.", banner_level="success"))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert ("rgb", *COLOR_OK) in cr.calls
+        assert not {c[1:] for c in cr.calls if c[0] == "rgba"} & {COLOR_WARNING_FILL, COLOR_INFO_FILL}
 
     def test_renders_banner_when_set(self) -> None:
         rows = [

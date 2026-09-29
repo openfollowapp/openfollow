@@ -49,6 +49,12 @@ def _network_adapter(app: OpenFollowApp) -> NetworkAdapter | None:
     return getattr(services, "network_adapter", None)
 
 
+def _set_banner(app: OpenFollowApp, text: str, level: str = "error") -> None:
+    """The screen's result line; ``level`` is "error", "caution", "info" or "success"."""
+    app._pi_network_banner = text
+    app._pi_network_banner_level = level
+
+
 def enter_pi_network(app: OpenFollowApp) -> None:
     app._pi_network_active = True
     app._pi_network_banner = ""
@@ -174,7 +180,7 @@ def _refresh_pi_network_bounded(app: OpenFollowApp) -> None:
     if holder:
         _apply_pi_network_snapshot(app, holder[0])
     else:
-        app._pi_network_banner = "Querying network status…"
+        _set_banner(app, "Querying network status…", "info")
 
 
 # An address changes on a human timescale; the rows are rebuilt on the frame
@@ -301,15 +307,16 @@ def _iface_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[
     for name, address in ifaces:
         # The pill states the one thing worth knowing at a glance, worst first:
         # anything that breaks reachability outranks how the address was come
-        # by, because that is what the operator is on this screen to find.
+        # by, because that is what the operator is on this screen to find. No
+        # address is neutral: an adapter nobody plugged in is not a fault.
         if not address:
-            pill, warn = "no address", True
+            pill, level = "no address", ""
         elif is_link_local(address):
-            pill, warn = "fallback", True
+            pill, level = "fallback", "error"
         elif not everywhere and address != bind_host:
-            pill, warn = "web UI not here", True
+            pill, level = "web UI not here", "info"
         else:
-            pill, warn = methods.get(name, ""), False
+            pill, level = methods.get(name, ""), ""
         rows.append(
             {
                 "kind": "choice",
@@ -317,7 +324,7 @@ def _iface_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[
                 "label": name,
                 "value": address,
                 "pill": pill,
-                "pill_warn": warn,
+                "pill_level": level,
                 # Confirming this row opens that interface's own screen.
                 "opens": True,
             }
@@ -341,7 +348,9 @@ def _reachability_notices(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> 
     if not _serves_every_interface(app):
         bind_host = _served_bind_host(app)
         if bind_host in {address for _name, address in ifaces if address}:
-            notices.append({"kind": "notice", "label": f"Web UI is served only at {bind_host}", "value": ""})
+            notices.append(
+                {"kind": "notice", "level": "info", "label": f"Web UI is served only at {bind_host}", "value": ""}
+            )
         else:
             # The bind is fixed for the life of the process, so an address that
             # moved under it (a DHCP lease change on the pinned interface)
@@ -351,6 +360,7 @@ def _reachability_notices(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> 
             notices.append(
                 {
                     "kind": "notice",
+                    "level": "error",
                     "label": f"Web UI is served at {bind_host}, which no interface has any more - restart to move it",
                     "value": "",
                 }
@@ -358,7 +368,8 @@ def _reachability_notices(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> 
     else:
         banner = _web_bind_banner(app)
         if banner:
-            notices.append({"kind": "notice", "label": banner, "value": ""})
+            # The UI still answers everywhere; the isolation the pin asked for is what is missing.
+            notices.append({"kind": "notice", "level": "caution", "label": banner, "value": ""})
     return notices
 
 
@@ -495,6 +506,7 @@ def _iface_detail_rows(
         rows.append(
             {
                 "kind": "notice",
+                "level": "error",
                 "label": f"No DHCP server answered, so {name} gave itself {address}. "
                 "Other machines on this network will not reach the station here.",
                 "value": "",
@@ -503,7 +515,14 @@ def _iface_detail_rows(
 
     rows.append({"kind": "header", "label": "Change this interface"})
     if not writable:
-        rows.append({"kind": "notice", "label": "This station's addressing cannot be changed from here.", "value": ""})
+        rows.append(
+            {
+                "kind": "notice",
+                "level": "info",
+                "label": "This station's addressing cannot be changed from here.",
+                "value": "",
+            }
+        )
     elif static_edit:
         rows.append({"kind": "text", "key": "address", "label": "IP Address", "value": _addr_of(pending, "address")})
         rows.append({"kind": "text", "key": "prefix", "label": "Subnet", "value": _prefix_text(pending)})
@@ -667,9 +686,9 @@ def _unpin_web_ui(app: OpenFollowApp) -> None:
     cfg.web_bind_iface = ""
     if not _persist_config(app):
         cfg.web_bind, cfg.web_bind_iface = previous
-        app._pi_network_banner = "Could not save - web UI is still pinned."
+        _set_banner(app, "Could not save - web UI is still pinned.")
         return
-    app._pi_network_banner = "Web UI will serve on all interfaces after the restart."
+    _set_banner(app, "Web UI will serve on all interfaces after the restart.", "info")
     app._web_commands.request_restart()
     # The row just removed itself, and took its heading with it; without this
     # the same index is now a different row, and a second tap would run it.
@@ -682,10 +701,10 @@ def _set_pi_network_dhcp(app: OpenFollowApp) -> None:
     adapter = _network_adapter(app)
     iface = str(getattr(app, "_pi_network_active_iface", "") or "")
     if adapter is None or not iface:
-        app._pi_network_banner = "No network adapter available."
+        _set_banner(app, "No network adapter available.")
         return
     if not adapter.is_writable():
-        app._pi_network_banner = "Read-only host - cannot apply."
+        _set_banner(app, "Read-only host - cannot apply.")
         return
     config = Ipv4Config(method=Ipv4Method.DHCP)
     app._pi_network_pending_config = config
@@ -822,19 +841,19 @@ def confirm_pi_network_field_edit(app: OpenFollowApp) -> None:
     if field == "address":
         canon = parse_ipv4(value) if value else None
         if value and canon is None:
-            app._pi_network_banner = "Invalid IPv4 address."
+            _set_banner(app, "Invalid IPv4 address.")
             return
         new_address = canon
     elif field == "prefix":
         prefix = parse_prefix(value) if value else None
         if value and prefix is None:
-            app._pi_network_banner = "Subnet prefix must be 0-32 or a mask like 255.255.255.0."
+            _set_banner(app, "Subnet prefix must be 0-32 or a mask like 255.255.255.0.")
             return
         new_prefix = prefix
     elif field == "router":
         canon = parse_ipv4(value) if value else None
         if value and canon is None:
-            app._pi_network_banner = "Invalid router IPv4 address."
+            _set_banner(app, "Invalid router IPv4 address.")
             return
         new_router = canon
 
@@ -960,14 +979,14 @@ def _apply_pi_network(app: OpenFollowApp) -> None:
     pending: Ipv4Config | None = getattr(app, "_pi_network_pending_config", None)
     iface = getattr(app, "_pi_network_active_iface", "")
     if adapter is None or pending is None or not iface:
-        app._pi_network_banner = "No network adapter available."
+        _set_banner(app, "No network adapter available.")
         return
     errors = validate_apply(pending.method, pending.address, pending.prefix, pending.router, list(pending.dns))
     if errors:
-        app._pi_network_banner = errors[0]
+        _set_banner(app, errors[0])
         return
     if not adapter.is_writable():
-        app._pi_network_banner = "Read-only host – cannot apply."
+        _set_banner(app, "Read-only host – cannot apply.")
         return
     _start_worker(app, lambda: adapter.apply_ipv4(iface, pending), "Apply")
 
@@ -976,10 +995,10 @@ def _renew_pi_network(app: OpenFollowApp) -> None:
     adapter = _network_adapter(app)
     iface = getattr(app, "_pi_network_active_iface", "")
     if adapter is None or not iface:
-        app._pi_network_banner = "No network adapter available."
+        _set_banner(app, "No network adapter available.")
         return
     if not adapter.is_writable():
-        app._pi_network_banner = "Read-only host – cannot renew."
+        _set_banner(app, "Read-only host – cannot renew.")
         return
     _start_worker(app, lambda: adapter.renew_lease(iface), "Renew")
 
@@ -999,14 +1018,16 @@ def _start_worker(
     # overlapping nmcli/dhcpcd sequences.
     prev = getattr(app, "_pi_network_worker", None)
     if prev is not None and prev.is_alive():
-        app._pi_network_banner = "Previous network action still finishing; please wait."
+        _set_banner(app, "Previous network action still finishing; please wait.", "info")
         return
     app._pi_network_busy = True
     # Broker may prompt for device password on non-Ansible install (web UI only).
-    app._pi_network_banner = (
+    _set_banner(
+        app,
         f"{action_label} in progress… "
         "If a password modal appears in the web UI, enter the device "
-        "password there to complete this action."
+        "password there to complete this action.",
+        "info",
     )
     # Per-launch generation token to orphan stale workers on screen exit.
     generation = getattr(app, "_pi_network_worker_generation", 0) + 1
@@ -1049,9 +1070,10 @@ def _finish_worker(
         msg = f"{action_label} ok."
         if result.partial_failures:
             msg += " Warnings: " + "; ".join(result.partial_failures)
-        app._pi_network_banner = msg
+        # Done, but with caveats worth reading: it worked, with a limitation.
+        _set_banner(app, msg, "caution" if result.partial_failures else "success")
     else:
-        app._pi_network_banner = f"{action_label} failed: {result.message}"
+        _set_banner(app, f"{action_label} failed: {result.message}")
     _apply_pi_network_snapshot(app, snap)
 
 

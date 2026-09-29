@@ -43,6 +43,9 @@ COLOR_WARNING_BORDER = (0.69, 0.149, 0.149)  # #b02626 (RGB)
 COLOR_INFO_BG = (0.09, 0.239, 0.42)  # #173d6b (RGB)
 COLOR_INFO_FILL = (*COLOR_INFO_BG, 0.8)  # #173d6b at 80% (RGBA)
 COLOR_INFO_BORDER = (0.149, 0.392, 0.69)  # #2664b0 (RGB)
+COLOR_CAUTION_BG = (0.608, 0.447, 0.0)  # #9b7200 (RGB)
+COLOR_CAUTION_FILL = (*COLOR_CAUTION_BG, 0.8)  # #9b7200 at 80% (RGBA)
+COLOR_CAUTION_BORDER = (1.0, 0.737, 0.0)  # #ffbc00 (RGB)
 
 # Typography
 FONT_UI_FAMILY = "Inter"
@@ -131,6 +134,22 @@ def draw_success_sign(
     cr.line_to(cx + size * 0.2125, cy - size * 0.1375)
     cr.stroke()
     cr.restore()
+
+
+# Fill, border and the sign's cut-out colour of a status level, as the web chips.
+STATUS_LEVEL_COLORS: dict[str, tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]] = {
+    "error": (COLOR_WARNING_FILL, COLOR_WARNING_BORDER, COLOR_DANGER_BG),
+    "caution": (COLOR_CAUTION_FILL, COLOR_CAUTION_BORDER, COLOR_CAUTION_BG),
+    "info": (COLOR_INFO_FILL, COLOR_INFO_BORDER, COLOR_INFO_BG),
+}
+
+
+def draw_level_sign(cr: Any, level: str, cx: float, cy: float, size: float = 13.0) -> None:
+    """The warning sign for an error, the "i" for caution and info."""
+    if level == "error":
+        draw_warning_sign(cr, cx, cy, size)
+    else:
+        draw_info_sign(cr, cx, cy, size, cut=STATUS_LEVEL_COLORS[level][2])
 
 
 def draw_card_background(cr: Any, x: float, y: float, w: float, h: float, radius: float = PANEL_RADIUS) -> None:

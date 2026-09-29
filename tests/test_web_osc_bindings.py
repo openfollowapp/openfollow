@@ -15,6 +15,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from html import unescape
 from pathlib import Path
 from typing import get_args
 
@@ -3974,7 +3975,7 @@ def test_collapsed_row_names_the_action_its_trigger_shares(live_server) -> None:
     status, body = _get(base, "/section/osc_bindings")
     assert status == 200
     zones = _pill(body, "r-zones")
-    assert "Also Toggle Zone Overlay on the gamepad" in zones
+    assert "Also 'Toggle Zone Overlay' on gamepad input" in unescape(zones)
     assert "hidden" not in zones
     assert "hidden" in _pill(body, "r-free")
 

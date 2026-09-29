@@ -142,7 +142,7 @@ def osc_trigger_overlap(controller: ControllerConfig, kind: str, value: str) -> 
         return ""
     for name, label in labels:
         if getattr(controller, name) == value:
-            return f"Also {label} on the {device}"
+            return f"Also '{label}' on {device} input"
     return ""
 
 

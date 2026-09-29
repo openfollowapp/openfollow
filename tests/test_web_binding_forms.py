@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+from html import unescape
 from html.parser import HTMLParser
 
 import pytest
@@ -159,12 +160,12 @@ def _trigger_form(trigger: object, overlap: str) -> tuple[str, dict]:
     [(ControllerButtonTrigger(button="B"), "trigger.button"), (HotkeyTrigger(key="x"), "trigger.key")],
 )
 def test_osc_trigger_on_an_action_input_opens_with_the_caution(trigger: object, field: str) -> None:
-    html, attrs = _trigger_form(trigger, "Also Toggle Zone Overlay on the gamepad")
+    html, attrs = _trigger_form(trigger, "Also 'Toggle Zone Overlay' on gamepad input")
     assert "data-binding-overlap" in attrs
     assert attrs["hx-get"] == f"/api/validate/osc_binding/{field}"
     assert attrs["hx-trigger"] == "change"
     assert 'class="field-caution-msg"' in html
-    assert "Also Toggle Zone Overlay on the gamepad" in html
+    assert "Also 'Toggle Zone Overlay' on gamepad input" in unescape(html)
 
 
 def test_osc_trigger_without_an_overlap_opens_plain() -> None:

@@ -5882,9 +5882,9 @@ def test_validate_move_stick_leaving_the_fader_stick_rechecks_it(live_server) ->
 @pytest.mark.parametrize(
     ("field", "value", "caution"),
     [
-        ("trigger.button", "B", "Also Toggle Zone Overlay on the gamepad"),
+        ("trigger.button", "B", "Also 'Toggle Zone Overlay' on gamepad input"),
         ("trigger.button", "A", ""),
-        ("trigger.key", "x", "Also Reset Marker on the keyboard"),
+        ("trigger.key", "x", "Also 'Reset Marker' on keyboard input"),
         ("trigger.key", "p", ""),
     ],
 )
@@ -5896,7 +5896,7 @@ def test_validate_osc_trigger_on_an_action_input_is_a_caution(
     assert status == 200
     if caution:
         assert 'class="field-caution-msg"' in body
-        assert caution in body
+        assert caution in html.unescape(body)
     else:
         assert body == ""
 

@@ -67,10 +67,10 @@ def test_a_fader_on_the_other_stick_is_no_error() -> None:
 @pytest.mark.parametrize(
     ("kind", "value", "expected"),
     [
-        ("controller_button", "RT", "Also Move Z+ on the gamepad"),
+        ("controller_button", "RT", "Also 'Move Z+' on gamepad input"),
         ("controller_button", "A", ""),
         ("controller_button", "", ""),
-        ("hotkey", "Tab", "Also Next Marker on the keyboard"),
+        ("hotkey", "Tab", "Also 'Next Marker' on keyboard input"),
         ("hotkey", "", ""),
         ("midi_message", "B", ""),
     ],

@@ -2067,8 +2067,8 @@ class AppRuntimeServices:
             midi_discovered_devices_provider=(self._midi_discovered_devices_provider),
             midi_fader_values_provider=self._midi_fader_values_provider,
             marker_fader_values_provider=self._marker_fader_values_provider,
-            # Diagnostics log-tail fallback so the bundle / log-tail
-            # endpoint has a source on non-systemd hosts.
+            # Log fallback so the diagnostics bundle has a source on
+            # non-systemd hosts.
             log_ring=self._app._log_ring,
             # Read-only host-network snapshot for the Overview block.
             # Lazy-deferred so the adapter is queried only on Overview open.

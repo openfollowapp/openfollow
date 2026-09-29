@@ -178,7 +178,7 @@ class ConfigWebServer:
         # read-only "Marker Faders" live viz (one entry per controlled
         # marker: id, name, 0..1 value).
         marker_fader_values_provider: (Callable[[], list[dict[str, Any]]] | None) = None,
-        # Diagnostics log-tail fallback for non-systemd hosts; optional for tests.
+        # Diagnostics-bundle log fallback for non-systemd hosts; optional for tests.
         log_ring: RingBufferLogHandler | None = None,
         # Read-only host-network snapshot for Overview; optional for tests.
         network_state_provider: Callable[[], dict[str, Any] | None] | None = None,

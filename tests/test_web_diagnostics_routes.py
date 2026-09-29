@@ -36,23 +36,6 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(autouse=True)
-def _clear_probe_log_source_cache():
-    """The TTL-cached ``journalctl`` reachability probe in
-    ``diagnostics.probe_log_source`` survives across tests by
-    design (a 60 s TTL is the right behaviour for the 5 s HTMX
-    poll). Wipe between tests so a previous test's
-    monkeypatched ``shutil.which`` / ``_run`` answers don't leak
-    via the cache. (Without this, on a CI runner where
-    ``journalctl`` is on PATH, an earlier "reachable=True" cache
-    entry can short-circuit a later ``journalctl missing`` test.)"""
-    from openfollow.web import diagnostics
-
-    diagnostics._probe_log_source_cache.clear()
-    yield
-    diagnostics._probe_log_source_cache.clear()
-
-
-@pytest.fixture(autouse=True)
 def _stub_host_subprocesses(monkeypatch):
     """Stub the module's single subprocess boundary so no diagnostics
     route shells out to the host.
@@ -163,25 +146,6 @@ def _get(
         return e.code, e.read().decode(), {}
 
 
-def _get_with_htmx(
-    base: str,
-    path: str,
-) -> tuple[int, str, dict[str, str]]:
-    """GET with the ``HX-Request: true`` header that real htmx
-    sends. Used to drive the log-tail endpoint's HTML-escape
-    branch."""
-    req = urllib.request.Request(
-        f"{base}{path}",
-        headers={"HX-Request": "true"},
-        method="GET",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return r.status, r.read().decode(), dict(r.headers)
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode(), {}
-
-
 def _post(base: str, path: str, data: dict | None = None) -> tuple[int, str]:
     body = urllib.parse.urlencode(data or {}).encode()
     req = urllib.request.Request(
@@ -207,89 +171,17 @@ def test_section_diagnostics_renders_card_grid(live_server) -> None:
     status, body, _ = _get(base, "/section/diagnostics")
     assert status == 200
     # Each card title appears in the polled fragment.
-    for title in ("Web server", "Beacon sender", "Beacon receiver", "Logs"):
+    for title in ("Web server", "Beacon sender", "Beacon receiver"):
         assert title in body
+    # Where the logs come from is the bundle's business, not the page's.
+    assert "Logs" not in body
+    assert 'class="notice warning"' not in body
     # Flicker fix: the 5s poll returns ONLY the live cards – not the static
-    # section shell (head + bundle / probe / log-tail tools). Rebuilding those
+    # section shell (head + bundle / probe tools). Rebuilding those
     # every tick is what caused the visible flash. The tools are asserted on
     # the full-page render in ``test_index_page_includes_diagnostics_section``.
     assert "Bundle" not in body
     assert "/api/diagnostics/bundle" not in body
-
-
-def test_section_diagnostics_warns_when_journalctl_missing(
-    live_server,
-    tmp_path,
-    monkeypatch,
-) -> None:
-    """Default config has ``update_service_name = "openfollow"`` so the
-    section *would* prefer journalctl. On a host without journalctl in
-    PATH (typical dev / macOS) ``probe_log_source`` reports the
-    fallback label and the warning banner renders."""
-    _, base, _ = live_server
-    from openfollow.web import diagnostics
-
-    # Force the missing-binary fallback regardless of host. ``probe_log_source``
-    # consults ``shutil.which`` rather than spawning journalctl every poll.
-    monkeypatch.setattr(diagnostics.shutil, "which", lambda _name: None)
-    _, body, _ = _get(base, "/section/diagnostics")
-    assert '<div class="notice warning" role="alert">journalctl is unavailable' in body
-
-
-def test_section_diagnostics_warns_when_service_name_blank(
-    live_server,
-    tmp_path,
-) -> None:
-    """When the operator hasn't set ``update_service_name``, the
-    section short-circuits journalctl and uses the ring; the
-    warning explains why."""
-    _, base, cfg_path = live_server
-    cfg = load_config(cfg_path)
-    cfg.update_service_name = ""
-    save_config(cfg, cfg_path)
-    _, body, _ = _get(base, "/section/diagnostics")
-    assert "No journald service name configured" in body
-
-
-def test_section_diagnostics_warns_when_no_log_source_at_all(
-    live_server,
-    tmp_path,
-    monkeypatch,
-) -> None:
-    server, base, _ = live_server
-    from openfollow.web import diagnostics
-
-    monkeypatch.setattr(diagnostics.shutil, "which", lambda _name: None)
-    # The fixture constructs ``ConfigWebServer`` with a default
-    # ring; null it out for this test only.
-    monkeypatch.setattr(server, "_log_ring", None)
-    _, body, _ = _get(base, "/section/diagnostics")
-    assert "No log source is available" in body
-
-
-def test_section_diagnostics_no_warning_when_journalctl_works(
-    live_server,
-    tmp_path,
-    monkeypatch,
-) -> None:
-    _, base, cfg_path = live_server
-    cfg = load_config(cfg_path)
-    cfg.update_service_name = "openfollow"
-    save_config(cfg, cfg_path)
-    from openfollow.web import diagnostics
-
-    # Wipe the TTL cache so the previous test's "unreachable"
-    # answer doesn't leak through.
-    diagnostics._probe_log_source_cache.clear()
-    monkeypatch.setattr(
-        diagnostics.shutil,
-        "which",
-        lambda name: "/usr/bin/journalctl" if name == "journalctl" else None,
-    )
-    monkeypatch.setattr(diagnostics, "_run", lambda *a, **kw: (0, "ok"))
-    _, body, _ = _get(base, "/section/diagnostics")
-    assert "journalctl is unavailable" not in body
-    assert "No journald service name configured" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +297,29 @@ def test_api_diagnostics_bundle_returns_text_attachment(
     # On-disk copy was written.
     written = list((tmp_path / "bundles").iterdir())
     assert len(written) == 1
+
+
+def test_api_diagnostics_bundle_redacts_the_log_tail(live_server, monkeypatch, tmp_path) -> None:
+    """The bundle is how the log leaves the station, so signatures and stream
+    credentials logged by the running app are stripped on the way out."""
+    _, base, _ = live_server
+    import logging
+
+    from openfollow.web import diagnostics
+
+    monkeypatch.setattr(diagnostics, "default_disk_root", lambda: tmp_path / "bundles")
+    log = logging.getLogger("openfollow.test.redact")
+    log.info("outgoing X-Auth-Signature: deadbeefcafebabe handled")
+    log.error("GStreamer error: Unauthorized rtsp://operator:hunter2@192.0.2.10:554/video/stream1")
+    log.error("srt://198.51.100.5:5000?passphrase=topsecret&latency=125 failed")
+    status, body, _ = _get(base, "/api/diagnostics/bundle")
+    assert status == 200
+    assert "Log source: in-memory ring buffer (journalctl unavailable)" in body
+    for secret in ("deadbeefcafebabe", "hunter2", "topsecret"):
+        assert secret not in body
+    assert "X-Auth-Signature: ***" in body
+    assert "192.0.2.10:554/video/stream1" in body
+    assert "latency=125" in body
 
 
 def test_api_diagnostics_bundle_sizes_configured_storage_path(
@@ -575,110 +490,6 @@ def test_api_diagnostics_bundle_downloads_when_the_budget_is_exhausted(
 
 
 # ---------------------------------------------------------------------------
-# /api/diagnostics/log-tail
-# ---------------------------------------------------------------------------
-
-
-def test_api_diagnostics_log_tail_returns_ring_contents(live_server) -> None:
-    _, base, _ = live_server
-    # journalctl is stubbed unavailable, so the route reads the ring; the
-    # journalctl-success path is covered in ``tests/test_web_diagnostics``.
-    # Write a log line and confirm the ring picks it up + the route
-    # serves it. ``server.log_ring`` is the same handle ``setup_logging``
-    # returned and the route reads from.
-    import logging
-
-    logging.getLogger("openfollow.test.tail").info("synthetic log entry abc")
-    status, body, _ = _get(base, "/api/diagnostics/log-tail?n=200")
-    assert status == 200
-    assert "synthetic log entry abc" in body
-    assert body.startswith("[source: in-memory ring buffer")
-
-
-def test_api_diagnostics_log_tail_caps_n_at_2000(live_server) -> None:
-    """Operator-tunable ``n`` honours the registry cap; an over-large
-    request is clamped, not rejected – the bundle is more useful with
-    a clamp than with a 400."""
-    _, base, _ = live_server
-    status, body, _ = _get(base, "/api/diagnostics/log-tail?n=99999")
-    assert status == 200
-    assert body  # any text – clamp didn't 500
-
-
-def test_api_diagnostics_log_tail_handles_invalid_n(live_server) -> None:
-    """Garbage ``n`` falls back to the 100-line default rather than
-    500-ing."""
-    _, base, _ = live_server
-    status, _, _ = _get(base, "/api/diagnostics/log-tail?n=abc")
-    assert status == 200
-
-
-def test_api_diagnostics_log_tail_redacts_signatures(live_server) -> None:
-    _, base, _ = live_server
-    import logging
-
-    logging.getLogger("openfollow.test.redact").info(
-        "outgoing X-Auth-Signature: deadbeefcafebabe handled",
-    )
-    status, body, _ = _get(base, "/api/diagnostics/log-tail?n=200")
-    assert status == 200
-    assert "deadbeefcafebabe" not in body
-    assert "X-Auth-Signature: ***" in body
-
-
-def test_api_diagnostics_log_tail_redacts_stream_credentials(live_server) -> None:
-    """The route is the other way the log leaves the station, so it redacts
-    exactly what the bundle does - a camera password reaching an operator's
-    screen here would reach a screenshot next."""
-    _, base, _ = live_server
-    import logging
-
-    logging.getLogger("openfollow.test.redact").error(
-        "GStreamer error: Unauthorized (Could not open resource for reading "
-        "rtsp://operator:hunter2@192.168.0.182:554/video/stream1)",
-    )
-    logging.getLogger("openfollow.test.redact").error(
-        "srt://10.0.0.5:5000?passphrase=topsecret&latency=125 failed",
-    )
-    status, body, _ = _get(base, "/api/diagnostics/log-tail?n=200")
-    assert status == 200
-    assert "hunter2" not in body
-    assert "topsecret" not in body
-    assert "192.168.0.182:554/video/stream1" in body
-    assert "latency=125" in body
-
-
-def test_api_diagnostics_log_tail_escapes_html_for_htmx_consumer(live_server) -> None:
-    """The diagnostics partial swaps the log-tail response into a
-    ``<pre>`` via ``hx-swap="innerHTML"``. Content must be HTML-escaped
-    to prevent XSS from user-influenced log lines."""
-    _, base, _ = live_server
-    import logging
-
-    logging.getLogger("openfollow.test.xss").info(
-        "<img src=x onerror=alert(1)>",
-    )
-    status, body, headers = _get_with_htmx(base, "/api/diagnostics/log-tail?n=200")
-    assert status == 200
-    assert headers.get("Content-Type", "").startswith("text/html")
-    # Raw payload escaped; entity form present.
-    assert "<img src=x" not in body
-    assert "&lt;img src=x" in body
-
-
-def test_api_diagnostics_log_tail_returns_raw_text_for_curl(live_server) -> None:
-    _, base, _ = live_server
-    import logging
-
-    logging.getLogger("openfollow.test.curl").info("plain <ok> message")
-    status, body, headers = _get(base, "/api/diagnostics/log-tail?n=200")
-    assert status == 200
-    assert headers.get("Content-Type", "").startswith("text/plain")
-    assert "<ok>" in body
-    assert "&lt;ok&gt;" not in body
-
-
-# ---------------------------------------------------------------------------
 # Hermetic contract – no diagnostics route shells out under test
 # ---------------------------------------------------------------------------
 
@@ -708,10 +519,9 @@ def test_diagnostics_routes_spawn_no_subprocess(
             raise AssertionError(f"diagnostics route spawned a subprocess: {args!r}")
 
     monkeypatch.setattr(diagnostics, "subprocess", _Boom)
-    for path in ("/api/diagnostics/bundle", "/api/diagnostics/log-tail?n=200"):
-        status, body, _ = _get(base, path)
-        assert status == 200, f"{path} returned {status}"
-        assert "spawned a subprocess" not in body
+    status, body, _ = _get(base, "/api/diagnostics/bundle")
+    assert status == 200
+    assert "spawned a subprocess" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -866,10 +676,13 @@ def test_index_page_includes_diagnostics_section(live_server) -> None:
     assert 'id="diagnostics-live"' in body
     assert 'hx-get="/section/diagnostics"' in body
     assert 'id="diagnostics-section-wrap"' not in body
-    # The static bundle/probe/log-tail tools live in the shell, rendered once.
+    # The static bundle/probe tools live in the shell, rendered once.
     assert "/api/diagnostics/bundle" in body
     assert "/api/diagnostics/test-peers" in body
-    assert "/api/diagnostics/log-tail" in body
+    # Logs leave the station through the bundle only.
+    assert "/api/diagnostics/log-tail" not in body
+    assert 'id="diagnostics-log-tail"' not in body
+    assert ">Logs</h3>" not in body
     # Both the diagnostics and overview polls are gated to skip while their
     # section is collapsed (same closest()-based trigger filter on each).
     assert body.count("closest('.section').classList.contains('is-collapsed')") >= 2
@@ -892,7 +705,6 @@ def test_diagnostics_routes_require_pin_when_set(
         for path in (
             "/section/diagnostics",
             "/api/diagnostics/bundle",
-            "/api/diagnostics/log-tail",
             "/api/diagnostics/drives",
             "/api/diagnostics/export",
         ):

@@ -464,101 +464,6 @@ def test_redact_log_line_leaves_a_credential_free_line_alone() -> None:
     assert diag.redact_log_line(line) == line
 
 
-@pytest.fixture(autouse=True)
-def _clear_probe_log_source_cache():
-    """Clear probe cache between tests to prevent monkeypatch leakage."""
-    diag._probe_log_source_cache.clear()
-    yield
-    diag._probe_log_source_cache.clear()
-
-
-def test_probe_log_source_returns_journalctl_when_reachable(monkeypatch) -> None:
-    """``probe_log_source`` is the variant ``_build_diagnostics_cards``
-    uses on every 5 s poll – the journalctl probe is TTL-cached
-    so we don't spawn a subprocess on every poll.    on."""
-    monkeypatch.setattr(
-        diag.shutil,
-        "which",
-        lambda name: "/usr/bin/journalctl" if name == "journalctl" else None,
-    )
-    monkeypatch.setattr(diag, "_run", lambda *a, **kw: (0, "ok"))
-    assert diag.probe_log_source("openfollow") == "journalctl"
-
-
-def test_probe_log_source_no_service_name_short_circuits() -> None:
-    """An empty / ``None`` service name skips the journalctl probe
-    entirely – same short-circuit ``collect_log_tail`` does. Pass
-    a non-None ring so the "no log source at all" branch doesn't
-    fire."""
-    ring = RingBufferLogHandler(capacity=4)
-    assert "no journald service name" in diag.probe_log_source(None, ring=ring)
-    assert "no journald service name" in diag.probe_log_source("", ring=ring)
-
-
-def test_probe_log_source_falls_back_when_journalctl_missing(monkeypatch) -> None:
-    """Service name set but journalctl absent → fallback label.
-    Ring is present (typical dev / macOS config)."""
-    ring = RingBufferLogHandler(capacity=4)
-    monkeypatch.setattr(diag.shutil, "which", lambda _name: None)
-    assert "journalctl unavailable" in diag.probe_log_source("openfollow", ring=ring)
-
-
-def test_probe_log_source_falls_back_when_journalctl_unusable(monkeypatch) -> None:
-    ring = RingBufferLogHandler(capacity=4)
-    monkeypatch.setattr(
-        diag.shutil,
-        "which",
-        lambda name: "/usr/bin/journalctl" if name == "journalctl" else None,
-    )
-    monkeypatch.setattr(
-        diag,
-        "_run",
-        lambda *a, **kw: (1, "Failed to add match: Operation not permitted"),
-    )
-    assert "journalctl unavailable" in diag.probe_log_source("openfollow", ring=ring)
-
-
-def test_probe_log_source_caches_journalctl_probe(monkeypatch) -> None:
-    """Journalctl probe is TTL-cached to avoid spawning subprocess on every HTMX poll."""
-    monkeypatch.setattr(
-        diag.shutil,
-        "which",
-        lambda name: "/usr/bin/journalctl" if name == "journalctl" else None,
-    )
-    calls: list[None] = []
-
-    def counting_run(*a, **kw):  # noqa: ARG001
-        calls.append(None)
-        return (0, "ok")
-
-    monkeypatch.setattr(diag, "_run", counting_run)
-    diag.probe_log_source("openfollow")
-    diag.probe_log_source("openfollow")
-    diag.probe_log_source("openfollow")
-    assert len(calls) == 1
-
-
-def test_probe_log_source_no_log_at_all_when_ring_missing(monkeypatch) -> None:
-    """Surface missing log sources instead of promising unavailable fallback."""
-    monkeypatch.setattr(diag.shutil, "which", lambda _name: None)
-    # No service name, no ring.
-    assert "no log source available" in diag.probe_log_source(None, ring=None)
-    # Service name set, journalctl missing, no ring.
-    assert "no log source available" in diag.probe_log_source("openfollow", ring=None)
-    # Service name set, journalctl on PATH and reachable, no ring →
-    # still "journalctl" because the primary path is fine. Clear
-    # the TTL cache so the previous "unreachable" result doesn't
-    # short-circuit this re-probe.
-    diag._probe_log_source_cache.clear()
-    monkeypatch.setattr(
-        diag.shutil,
-        "which",
-        lambda name: "/usr/bin/journalctl" if name == "journalctl" else None,
-    )
-    monkeypatch.setattr(diag, "_run", lambda *a, **kw: (0, "ok"))
-    assert diag.probe_log_source("openfollow", ring=None) == "journalctl"
-
-
 def test_collect_log_tail_uses_journalctl_when_available(monkeypatch) -> None:
     def fake_run(cmd, *, timeout_s=5.0):  # noqa: ARG001
         assert cmd[:2] == ["journalctl", "-u"]
@@ -588,6 +493,39 @@ def test_collect_log_tail_handles_no_ring() -> None:
     src, lines = diag.collect_log_tail(None, update_service_name=None)
     assert lines == ["[unavailable: ring buffer not initialised]"]
     assert "no log source available" in src
+
+
+@pytest.mark.parametrize(
+    ("service", "journalctl_ok", "ring", "expected"),
+    [
+        ("openfollow", True, True, "journalctl"),
+        ("openfollow", False, True, "in-memory ring buffer (journalctl unavailable)"),
+        (None, False, True, "in-memory ring buffer (no journald service name configured)"),
+        ("openfollow", False, False, "no log source available (ring not initialised)"),
+    ],
+    ids=["journalctl", "ring-journalctl-unavailable", "ring-no-service-name", "no-ring"],
+)
+def test_collect_bundle_names_its_log_source(
+    monkeypatch,
+    service: str | None,
+    journalctl_ok: bool,
+    ring: bool,
+    expected: str,
+) -> None:
+    """The bundle's log section opens with where its lines came from, so a
+    reader knows whether they span the journal or only this session."""
+
+    def fake_run(cmd, **_kw):
+        if journalctl_ok and cmd[:1] == ["journalctl"]:
+            return 0, "journal line"
+        return -1, f"[unavailable: {cmd[0]} not found]"
+
+    monkeypatch.setattr(diag, "_run", fake_run)
+    bundle = diag.collect_bundle(
+        log_ring=_seed_ring("ring line") if ring else None,
+        update_service_name=service,
+    )
+    assert f"  Log source: {expected}" in bundle.d_failures
 
 
 def test_collect_recent_failures_renders_unavailable_when_providers_raise() -> None:

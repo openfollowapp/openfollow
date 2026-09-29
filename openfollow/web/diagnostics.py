@@ -1356,59 +1356,6 @@ def collect_recent_failures(
     return rows
 
 
-# TTL cache for ``probe_log_source``'s journalctl reachability
-# probe. Keyed by service name so a config edit that changes the
-# unit invalidates the previous answer on the next poll.
-_PROBE_LOG_SOURCE_TTL_S = 60.0
-_probe_log_source_cache: dict[str, tuple[float, bool]] = {}
-# The diagnostics card polls every 5 s on a threaded WSGI server, so guard
-# the cache. Held across the probe (not just the dict ops) so concurrent
-# cold-cache pollers collapse onto one ``journalctl`` spawn instead of each
-# racing the TTL the cache exists to enforce – a poller waits at most one
-# probe duration, then reads the freshly cached answer.
-_probe_log_source_lock = threading.Lock()
-
-
-def _journalctl_reachable(service_name: str) -> bool:
-    """Check if journalctl is available and can reach the service.
-
-    Result is cached to avoid re-spawning the probe on every poll.
-    """
-    now = time.monotonic()
-    with _probe_log_source_lock:
-        cached = _probe_log_source_cache.get(service_name)
-        if cached is not None and now - cached[0] < _PROBE_LOG_SOURCE_TTL_S:
-            return cached[1]
-        if shutil.which("journalctl") is None:
-            ok = False
-        else:
-            rc, out = _run(["journalctl", "-u", service_name, "-n", "0"])
-            ok = rc == 0 and not out.startswith("[unavailable:")
-        _probe_log_source_cache[service_name] = (now, ok)
-        return ok
-
-
-def probe_log_source(
-    update_service_name: str | None,
-    *,
-    ring: RingBufferLogHandler | None = None,
-) -> str:
-    """Return the log source label without spawning journalctl.
-
-    Cached probing for the diagnostics UI poll. Consults the ring
-    on the fallback path so the UI doesn't promise a source that doesn't exist.
-    """
-    if not update_service_name:
-        if ring is None:
-            return "no log source available (ring not initialised)"
-        return "in-memory ring buffer (no journald service name configured)"
-    if not _journalctl_reachable(update_service_name):
-        if ring is None:
-            return "no log source available (ring not initialised)"
-        return "in-memory ring buffer (journalctl unavailable)"
-    return "journalctl"
-
-
 def collect_log_tail(
     ring: RingBufferLogHandler | None,
     *,
@@ -1429,9 +1376,6 @@ def collect_log_tail(
     else:
         fallback_label = "in-memory ring buffer (no journald service name configured)"
     if ring is None:
-        # Match ``probe_log_source``'s wording so the cards and the
-        # bundle / log-tail download don't disagree on what the
-        # operator's log source actually is.
         return (
             "no log source available (ring not initialised)",
             ["[unavailable: ring buffer not initialised]"],

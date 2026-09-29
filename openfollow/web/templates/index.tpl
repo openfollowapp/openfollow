@@ -43,10 +43,8 @@
     </div>
     % # The section shell renders once; only its live cards poll every 5s
     % # (see partials/diagnostics.tpl ``#diagnostics-live``), so the head /
-    % # fold state / bundle + log-tail tools stay put without flickering.
-    % include('partials/diagnostics.tpl',
-    %     cards=diagnostics_cards,
-    %     log_unavailable_warning=diagnostics_log_warning)
+    % # fold state / bundle + probe tools stay put without flickering.
+    % include('partials/diagnostics.tpl', cards=diagnostics_cards)
 </div>
 
 <!-- General -->

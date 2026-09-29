@@ -1,11 +1,6 @@
 % # Live diagnostics cards fragment – see partials/diagnostics.tpl for why only
 % # this region polls. Threaded context:
 % # - ``cards``: dict of card values (see partials/diagnostics.tpl header)
-% # - ``log_unavailable_warning``: str (empty when journalctl works)
-% if log_unavailable_warning:
-<div class="notice warning" role="alert">{{log_unavailable_warning}}</div>
-% end
-
 <div id="diagnostics-cards" class="stats-columns">
     <div class="stat-panel">
         <div class="stat-panel-head">
@@ -69,13 +64,5 @@
                 <dd class="metric-value">{{cards['receiver_packet_count']}}</dd>
             </div>
         </dl>
-    </div>
-
-    <div class="stat-panel">
-        <div class="stat-panel-head">
-            <h3 class="stat-panel-title">Logs</h3>
-            <span class="stat-chip {{cards['log_chip']}}">{{cards['log_source_label']}}</span>
-        </div>
-        <p class="stat-help">{{cards['log_source_note']}}</p>
     </div>
 </div>

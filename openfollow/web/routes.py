@@ -3135,60 +3135,13 @@ def _config_to_toml(cfg: AppConfig) -> str:
 def _build_diagnostics_cards(
     server: ConfigWebServer,
     cfg: AppConfig,
-) -> tuple[dict[str, Any], str]:
-    """Build the inline summary cards + the journalctl warning
-    banner. Separate from the bundle collector because the cards
-    are HTMX-polled every 5 s and don't need the heavyweight
-    sections (USB enumeration, full TOML render)."""
+) -> dict[str, Any]:
+    """Build the inline summary cards. Separate from the bundle collector
+    because the cards are HTMX-polled every 5 s and don't need the
+    heavyweight sections (USB enumeration, full TOML render)."""
     sender = server.beacon_sender
     receiver = server.beacon_receiver
     peers = server.get_peers()
-    # The card panel polls every 5 s. ``probe_log_source`` runs a real
-    # ``journalctl -u <service> -n 0`` reachability probe (agreeing with
-    # ``collect_log_tail`` on hosts where the binary is on PATH but returns
-    # non-zero) and TTL-caches for 60 s, so the poll path averages 1
-    # subprocess per minute. The bundle/log-tail endpoint still reads live.
-    log_source_label = diagnostics.probe_log_source(
-        cfg.update_service_name or None,
-        ring=server.log_ring,
-    )
-    if log_source_label == "journalctl":
-        log_chip = "ok"
-        log_unavailable_warning = ""
-        log_source_note = "Reading from systemd journal."
-    elif "no log source available" in log_source_label:
-        # Server constructed without a ``log_ring``: log-tail / bundle
-        # download would surface ``[unavailable: ring buffer not
-        # initialised]`` from ``collect_log_tail``. Surface that now on the
-        # cards so the operator isn't promised a fallback that doesn't exist.
-        log_chip = "off"
-        log_unavailable_warning = (
-            "No log source is available on this station. "
-            "journalctl is unreachable and the in-memory ring "
-            "wasn't initialised – diagnostics bundles will not "
-            "include a log tail. Wire ``setup_logging``'s "
-            "``RingBufferLogHandler`` into ``ConfigWebServer``."
-        )
-        log_source_note = "No log source."
-    elif "no journald" in log_source_label:
-        log_chip = "warn"
-        log_unavailable_warning = (
-            "No journald service name configured – "
-            "the bundle will use the in-memory log buffer "
-            "(only covers ~the last hour, lost on restart). "
-            "Set ``update_service_name`` to enable journalctl."
-        )
-        log_source_note = "Using in-memory ring buffer."
-    else:
-        log_chip = "warn"
-        log_unavailable_warning = (
-            "journalctl is unavailable on this host. The bundle "
-            "uses an in-memory log buffer, which only covers "
-            "~the last hour and is lost on restart. For full "
-            "historical logs, run the service as root or add "
-            "the operator to the systemd-journal group."
-        )
-        log_source_note = "Falling back to in-memory ring buffer."
 
     cards: dict[str, Any] = {
         "web_port_configured": cfg.web_port,
@@ -3205,11 +3158,8 @@ def _build_diagnostics_cards(
         "receiver_last_recv": _monotonic_age(receiver.last_recv_ts),
         "receiver_packet_count": receiver.packets_received,
         "peer_count": len(peers),
-        "log_source_label": log_source_label.split(" (")[0],
-        "log_source_note": log_source_note,
-        "log_chip": log_chip,
     }
-    return cards, log_unavailable_warning
+    return cards
 
 
 def _alive_chip(is_alive: bool, errors: int) -> str:
@@ -4564,7 +4514,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         extras = _get_detection_extras_status()
         # Diagnostics card data for the initial render (same shape the 5 s
         # poll returns), so the section reads filled-in values immediately.
-        diag_cards, diag_warning = _build_diagnostics_cards(server, config)
+        diag_cards = _build_diagnostics_cards(server, config)
         osc_user_templates, osc_system_templates = _osc_dropdown_templates()
         return template(
             "index",
@@ -4618,7 +4568,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # source dropdown (names from the live marker catalog, not config).
             marker_fader_names=_marker_fader_names_for_form(server),
             diagnostics_cards=diag_cards,
-            diagnostics_log_warning=diag_warning,
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(config),
             psn_source_advisory=server.get_psn_source_advisory(),
@@ -4974,10 +4923,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         )
 
     # ----------------------------------------------------------------------
-    # Diagnostics routes. Four endpoints, all PIN-gated through
+    # Diagnostics routes. Three endpoints, all PIN-gated through
     # ``_check_auth``. ``/section/diagnostics`` is the inline summary cards;
-    # the three ``/api/diagnostics/...`` endpoints serve the on-demand
-    # bundle / log tail / peer probe. Provider wiring lives in
+    # the two ``/api/diagnostics/...`` endpoints serve the on-demand
+    # bundle / peer probe. Provider wiring lives in
     # ``_build_diagnostics_providers`` so the closure captures the
     # request-scoped config without coupling the server class to the
     # diagnostics import surface.
@@ -4986,14 +4935,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.get("/section/diagnostics")
     def get_diagnostics() -> Any:
         cfg = _request_scoped_config()
-        cards, warning = _build_diagnostics_cards(server, cfg)
-        # Poll returns only the live cards – the section shell + bundle/log
-        # tools are rendered once at page load (partials/diagnostics) and never
+        cards = _build_diagnostics_cards(server, cfg)
+        # Poll returns only the live cards – the section shell + tools are
+        # rendered once at page load (partials/diagnostics) and never
         # re-swapped, so they can't flicker. See partials/diagnostics_cards.tpl.
         return template(
             "partials/diagnostics_cards",
             cards=cards,
-            log_unavailable_warning=warning,
         )
 
     @app.get("/api/diagnostics/bundle")
@@ -5061,36 +5009,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             )
         response.status = 202
         return _export_status(export.status())
-
-    @app.get("/api/diagnostics/log-tail")
-    def api_diagnostics_log_tail() -> Any:
-        """Return the last N log lines as plain text. ``n`` is parsed as an
-        int and clamped to ``[1, 2000]`` (the upper cap matches the ring's
-        default size)."""
-        cfg = _request_scoped_config()
-        raw_n = _as_str(request.query.get("n", "100"), "100")
-        try:
-            n = max(1, min(2000, int(raw_n)))
-        except (TypeError, ValueError):
-            n = 100
-        src, lines = diagnostics.collect_log_tail(
-            server.log_ring,
-            update_service_name=cfg.update_service_name or None,
-            last_n=n,
-        )
-        # Strip signatures and stream credentials from log content before
-        # serving – the same always-on redaction the bundle uses.
-        redacted = [diagnostics.redact_log_line(ln) for ln in lines]
-        body = f"[source: {src}]\n" + "\n".join(redacted)
-        # XSS guard for the HTMX path: the partial swaps this into a
-        # ``<pre>`` via ``hx-swap="innerHTML"``, so ``<…>`` in log content
-        # would parse as HTML. Escape for HTMX; preserve raw text for direct
-        # curl / wget so CLI consumers see the actual characters.
-        if request.headers.get("HX-Request") == "true":
-            response.content_type = "text/html; charset=utf-8"
-            return html_mod.escape(body)
-        response.content_type = "text/plain; charset=utf-8"
-        return body
 
     @app.post("/api/diagnostics/test-peers")
     def api_diagnostics_test_peers() -> Any:

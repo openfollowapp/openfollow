@@ -8,8 +8,8 @@ on:
     branches:
       - main
   pull_request:
-  # The audit jobs below are PR-skipped, so an edit to them lands on ``main``
-  # untested. This makes a manual run of the branch possible beforehand.
+  # ``audit-export`` is PR-skipped, so an edit to it lands on ``main`` untested.
+  # This makes a manual run of the branch possible beforehand.
   workflow_dispatch:
   schedule:
     # Weekly supply-chain audit (Mondays 06:00 UTC) – drives the `audit` job so
@@ -144,11 +144,41 @@ jobs:
         if: github.event_name == 'push'
         run: make test-smoke-e2e
 
+  # Whether a PR edits what the audit job runs: this workflow or the Makefile's
+  # ``audit`` target. The merge commit's first parent is the base branch head,
+  # so a two-commit fetch is enough to diff exactly the PR's changes.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      audit: ${{ steps.diff.outputs.audit }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Detect audit-relevant edits
+        id: diff
+        run: |
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          if grep -qxE '\.github/workflows/ci\.yml|Makefile' <<< "$changed"; then
+            echo "audit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "audit=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # Supply-chain audit (pip-audit), decoupled from per-PR gate.
   # Queries live PyPI advisory DB; newly-disclosed CVE must not block PRs.
-  # Runs on weekly schedule + main pushes only. Dependabot handles version bumps.
+  # Runs on weekly schedule + main pushes. On a PR only when ``changes`` finds
+  # an edit to it, so the edit self-tests; there only the install mechanics can
+  # fail the job, the CVE verdict is advisory. Dependabot handles version bumps.
   audit:
-    if: github.event_name != 'pull_request'
+    needs: changes
+    # ``!cancelled()`` because ``changes`` is skipped outside PRs, which would
+    # otherwise skip this job too.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.audit == 'true') }}
     runs-on: ubuntu-latest
 
     steps:
@@ -223,6 +253,7 @@ jobs:
         run: poetry run python -m pip install --upgrade pip
 
       - name: pip-audit (supply-chain)
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: make audit
 
   # The export toolchain (ultralytics + torch) is workstation-only: the .deb

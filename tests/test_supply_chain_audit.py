@@ -30,6 +30,8 @@ import pytest
 import tomllib
 import yaml
 
+from tests._gha_expr import evaluate
+
 pytestmark = pytest.mark.unit
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +41,8 @@ _DEB_BUILD = _REPO_ROOT / "packaging" / "build-deb.sh"
 
 _AUDIT_COMMAND = re.compile(r"\b(?:make\s+audit|pip-audit)\b")
 _SHELL_SEPARATORS = frozenset({"&&", "||", ";", "|"})
+# Whether an audit gates is judged where its verdict counts: main and the weekly run.
+_GATING_EVENTS = ("push", "schedule")
 
 
 def _strip_comments(run: str) -> str:
@@ -107,6 +111,21 @@ def _install_flags(run: str) -> set[str]:
     return flags
 
 
+def _gates(job: dict[str, Any], audit_steps: list[dict[str, Any]]) -> bool:
+    """Whether a failed audit fails the job on every gating event.
+
+    A ``continue-on-error`` on the audit step itself is as non-gating as one on
+    the job: the job goes green with the CVE verdict discarded.
+    """
+    for event in _GATING_EVENTS:
+        context = {"github.event_name": event}
+        if evaluate(job.get("continue-on-error", False), context):
+            return False
+        if any(evaluate(step.get("continue-on-error", False), context) for step in audit_steps):
+            return False
+    return True
+
+
 @dataclass(frozen=True)
 class _AuditJob:
     name: str
@@ -123,7 +142,8 @@ def _audit_jobs() -> list[_AuditJob]:
     for name, job in doc["jobs"].items():
         steps = job.get("steps") or []
         runs = [_strip_comments(str(step.get("run", ""))) for step in steps]
-        if not any(_AUDIT_COMMAND.search(run) for run in runs):
+        audit_steps = [step for step, run in zip(steps, runs, strict=True) if _AUDIT_COMMAND.search(run)]
+        if not audit_steps:
             continue
         extras: set[str] = set()
         flags: set[str] = set()
@@ -138,7 +158,7 @@ def _audit_jobs() -> list[_AuditJob]:
         jobs.append(
             _AuditJob(
                 name=str(name),
-                gating=not bool(job.get("continue-on-error", False)),
+                gating=_gates(job, audit_steps),
                 extras=frozenset(extras),
                 caches_venv=caches_venv,
                 install_flags=frozenset(flags),

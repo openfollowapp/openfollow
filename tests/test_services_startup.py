@@ -1437,10 +1437,10 @@ def test_osc_input_plane_reports_the_live_membership_not_the_pin(monkeypatch) ->
     assert plane.current() is None
 
 
-def test_osc_input_plane_resubscribes_and_unsubscribes_in_place(monkeypatch) -> None:
-    """Recovery is why this plane exists. It moves the membership on the live
-    socket rather than restarting the listener - a restart would drop every
-    subscription hanging off it, once a second, for a pair of socket options."""
+def test_osc_input_plane_resubscribes_and_unsubscribes(monkeypatch) -> None:
+    """Recovery is why this plane exists: suspend holds no membership, and
+    apply takes it on the returned interface. The service moves it by rebinding
+    the listener, which the subscriptions survive."""
     services = _build_services_with_psutil_backend(monkeypatch)
     _fake_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
     services._app._config.osc.listen_iface = "eth1"

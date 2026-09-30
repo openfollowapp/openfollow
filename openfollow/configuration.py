@@ -668,9 +668,9 @@ class OscConfig:
     # IPv4 multicast group the listener joins; empty = off. Validated to
     # 224.0.0.0–239.255.255.255, else coerced to "".
     multicast_group: str = "239.20.20.20"
-    # Pin the listener to one interface by name, like ``psn_source_iface``;
-    # empty follows the station interface, and a station left on auto-detect
-    # listens on every interface.
+    # Interface, by name, that takes the multicast membership; empty follows the
+    # station interface, else the routing table picks one. The socket always binds
+    # every interface, so unicast and broadcast arrive regardless.
     listen_iface: str = ""
 
     def __post_init__(self) -> None:

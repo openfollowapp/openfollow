@@ -2677,6 +2677,8 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     # ``testpattern_selected_media`` is a device-local gallery item id; media
     # files never travel, so a foreign id would just dangle on another host.
     d.pop("testpattern_selected_media", None)
+    # A NIC name on this box: on a peer it would repin OTP to whatever shares it.
+    d["otp_output"].pop("source_iface", None)
     return d
 
 
@@ -2789,15 +2791,16 @@ def _apply_import_data(
     *skip_restart_sections* survives in the API for backwards compatibility
     but no longer gates anything: every section is live-reloadable.
 
-    The ``_DEVICE_IDENTITY_FIELDS`` are snapshotted before the section applies
-    and written back after – a config from another box must not rewrite this
-    station's interface, login or host paths.
+    Each section is applied without its ``_DEVICE_LOCAL_FIELDS_BY_SECTION``,
+    and the ``_DEVICE_IDENTITY_FIELDS`` are snapshotted before the section
+    applies and written back after – a config from another box must not
+    rewrite this station's interface, login or host paths.
     """
     cfg = copy.deepcopy(current_cfg)
     device_identity = capture_device_identity(cfg)
 
     # General section (top-level scalar fields)
-    apply_section_data(cfg, "general", data)
+    apply_section_data(cfg, "general", strip_device_local_fields("general", data))
 
     # Sections that are always live-reloadable.
     for section in (
@@ -2810,8 +2813,8 @@ def _apply_import_data(
         "detection",
     ):
         if section in data and isinstance(data[section], dict):
-            apply_section_data(cfg, section, data[section])
-    apply_section_data(cfg, "video_source", data)
+            apply_section_data(cfg, section, strip_device_local_fields(section, data[section]))
+    apply_section_data(cfg, "video_source", strip_device_local_fields("video_source", data))
 
     # OSC transmitters + destinations: rebuild the lists wholesale so the
     # references (a transmitter/zone ``destination_id``) and their targets

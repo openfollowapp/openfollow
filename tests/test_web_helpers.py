@@ -47,8 +47,11 @@ def test_config_dict_redacted_drops_device_local_fields() -> None:
     cfg = AppConfig(web_pin="1234", web_port=8080)
     cfg.detection.storage_path = "/mnt/nvme/openfollow/yolo"
     cfg.testpattern_selected_media = "0123456789abcdef"
+    cfg.otp_output.source_iface = "eth1"
     d = _config_dict_redacted(cfg)
     assert "web_pin" not in d  # login credential never exported
+    # a NIC name on this box; on a peer it would repin OTP to its own "eth1".
+    assert "source_iface" not in d["otp_output"]
     # storage_path is an absolute path on the exporting host – stripped so it
     # can't land on (and break) another machine.
     assert "storage_path" not in d["detection"]
@@ -1048,6 +1051,38 @@ def test_apply_import_data_preserves_detection_storage_path() -> None:
 
     assert new.detection.storage_path == "/mnt/nvme/openfollow/yolo"  # device path kept
     assert new.detection.confidence == 0.5  # other detection fields still import
+
+
+@pytest.mark.parametrize("local_pin", ["", "eth_local"])
+def test_apply_import_data_preserves_otp_source_iface(local_pin: str) -> None:
+    """A blank pin follows the station interface; a foreign one would move this
+    station's OTP output onto whatever adapter here shares the other box's name."""
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.otp_output.source_iface = local_pin
+
+    imported = {"otp_output": {"source_iface": "eth_foreign", "port": 5569}}
+    new = _apply_import_data(current, imported)
+
+    assert new.otp_output.source_iface == local_pin
+    assert new.otp_output.port == 5569  # other OTP fields still import
+
+
+def test_full_config_round_trip_leaves_the_receivers_otp_pin_alone() -> None:
+    """What broadcast-all sends a peer: one station's redacted dict, imported by
+    another."""
+    from openfollow.web.routes import _apply_import_data
+
+    sender = AppConfig()
+    sender.otp_output.source_iface = "eth1"
+    sender.otp_output.enabled = True
+    receiver = AppConfig()
+
+    new = _apply_import_data(receiver, _config_dict_redacted(sender))
+
+    assert new.otp_output.source_iface == ""
+    assert new.otp_output.enabled is True
 
 
 def test_apply_import_data_preserves_testpattern_selected_media() -> None:

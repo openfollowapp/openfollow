@@ -1042,8 +1042,14 @@ def _start_worker(
             result = ApplyResult(ok=False, message=str(exc))
         # Re-read the post-action state here (off the main thread), then hand
         # result + snapshot to the main-thread drain. The worker never writes
-        # render-read state itself.
-        snap = _read_pi_network(app)
+        # render-read state itself. A failed re-read still hands the result
+        # back, or nothing clears ``busy`` and the screen refuses every retry.
+        snap: _NetworkSnapshot | None
+        try:
+            snap = _read_pi_network(app)
+        except Exception:  # noqa: BLE001
+            logger.exception("Network %s: re-reading the interfaces failed", action_label)
+            snap = None
         with app._pi_network_worker_lock:
             app._pi_network_pending_result = (result, action_label, generation, snap)
 
@@ -1057,7 +1063,7 @@ def _finish_worker(
     result: ApplyResult,
     action_label: str,
     generation: int,
-    snap: _NetworkSnapshot,
+    snap: _NetworkSnapshot | None,
 ) -> None:
     # Drop late results from orphaned workers: ``exit_pi_network`` and a new
     # ``_start_worker`` both bump the generation. Runs on the main thread (the
@@ -1066,15 +1072,20 @@ def _finish_worker(
     if getattr(app, "_pi_network_worker_generation", 0) != generation:
         return
     app._pi_network_busy = False
+    warnings = list(result.partial_failures)
+    if snap is None:
+        warnings.append("could not re-read the interfaces")
     if result.ok:
         msg = f"{action_label} ok."
-        if result.partial_failures:
-            msg += " Warnings: " + "; ".join(result.partial_failures)
+        if warnings:
+            msg += " Warnings: " + "; ".join(warnings)
         # Done, but with caveats worth reading: it worked, with a limitation.
-        _set_banner(app, msg, "caution" if result.partial_failures else "success")
+        _set_banner(app, msg, "caution" if warnings else "success")
     else:
         _set_banner(app, f"{action_label} failed: {result.message}")
-    _apply_pi_network_snapshot(app, snap)
+    # No snapshot keeps the last-known state on screen.
+    if snap is not None:
+        _apply_pi_network_snapshot(app, snap)
 
 
 def drain_pi_network_worker(app: OpenFollowApp) -> None:

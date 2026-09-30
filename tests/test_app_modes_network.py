@@ -1032,6 +1032,40 @@ class TestApplyEdgeCases:
         anm.drain_pi_network_worker(app)
         assert "Apply failed" in app._pi_network_banner
 
+    def test_a_failed_reread_after_apply_still_finishes_the_action(self) -> None:
+        """The apply ran; only the refresh after it failed. The screen must say
+        so and take the next action, not sit on "in progress" until it is left."""
+        from openfollow.network.adapter import Ipv4Config, Ipv4Method
+
+        adapter = _FakeAdapter()
+        app = _make_app(adapter)
+        anm.enter_pi_network(app)
+        shown = list(app._pi_network_interfaces)
+
+        def boom():
+            raise RuntimeError("backend went away")
+
+        adapter.list_interfaces = boom
+        app._pi_network_pending_config = Ipv4Config(
+            method=Ipv4Method.STATIC,
+            address="10.0.0.5",
+            prefix=24,
+            router="10.0.0.1",
+        )
+        anm._apply_pi_network(app)
+        app._pi_network_worker.join(timeout=2.0)
+        anm.drain_pi_network_worker(app)
+
+        assert app._pi_network_busy is False
+        assert app._pi_network_banner.startswith("Apply ok.")
+        assert "could not re-read" in app._pi_network_banner
+        assert app._pi_network_banner_level == "caution"
+        assert app._pi_network_interfaces == shown  # last-known state kept
+
+        first = app._pi_network_worker
+        anm._renew_pi_network(app)
+        assert app._pi_network_worker is not first
+
     def test_apply_partial_failure_warning(self) -> None:
         from openfollow.network.adapter import ApplyResult, Ipv4Config, Ipv4Method
 

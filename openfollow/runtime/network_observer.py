@@ -35,7 +35,7 @@ polling and are not claimed to be handled.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from openfollow.net_utils import ResolveStatus
@@ -84,6 +84,12 @@ class Plane:
     # False when the operator has this output switched off. A disabled plane is
     # never touched and never alerts – it is not broken, it is off.
     enabled: Callable[[], bool] = _always_enabled
+    # Identity across polls when labels repeat or change; defaults to the label.
+    key: str = ""
+
+    @property
+    def state_key(self) -> str:
+        return self.key or self.label
 
 
 @dataclass
@@ -103,12 +109,21 @@ class _PlaneState:
 
 @dataclass
 class NetworkPlaneObserver:
-    """Polls each plane's configured interface and repoints or stops it."""
+    """Polls each plane's configured interface and repoints or stops it.
 
-    planes: list[Plane]
+    *planes* may be a provider, evaluated once per poll, for a set that changes
+    at runtime; the state of a plane that leaves the set is dropped with it.
+    """
+
+    planes: Sequence[Plane] | Callable[[], Sequence[Plane]]
     clock: Callable[[], float]
     _states: dict[str, _PlaneState] = field(default_factory=dict)
     _next_poll: float = 0.0
+    _polled: tuple[Plane, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not callable(self.planes):
+            self._polled = tuple(self.planes)
 
     def poll(self, *, force: bool = False) -> bool:
         """Re-resolve every plane and apply any change. Never raises.
@@ -120,7 +135,7 @@ class NetworkPlaneObserver:
         if not force and now < self._next_poll:
             return False
         self._next_poll = now + POLL_INTERVAL_S
-        for plane in self.planes:
+        for plane in self._refresh_planes():
             try:
                 self._poll_one(plane, now)
             except Exception as exc:  # noqa: BLE001
@@ -131,11 +146,25 @@ class NetworkPlaneObserver:
                 self._record_failure(plane, now, exc)
         return True
 
-    def _state(self, label: str) -> _PlaneState:
-        return self._states.setdefault(label, _PlaneState())
+    def _refresh_planes(self) -> tuple[Plane, ...]:
+        if not callable(self.planes):
+            return self._polled
+        try:
+            polled = tuple(self.planes())
+        except Exception:  # noqa: BLE001
+            logger.exception("Network observer: listing the planes failed; keeping the last set")
+            return self._polled
+        keys = {plane.state_key for plane in polled}
+        if any(key not in keys for key in self._states):
+            self._states = {key: state for key, state in self._states.items() if key in keys}
+        self._polled = polled
+        return polled
+
+    def _state(self, key: str) -> _PlaneState:
+        return self._states.setdefault(key, _PlaneState())
 
     def _record_failure(self, plane: Plane, now: float, exc: Exception) -> None:
-        state = self._state(plane.label)
+        state = self._state(plane.state_key)
         state.failure = str(exc) or exc.__class__.__name__
         state.retry_at = now + state.backoff
         state.backoff = min(state.backoff * 2, _RETRY_BACKOFF_MAX_S)
@@ -151,9 +180,9 @@ class NetworkPlaneObserver:
         if not plane.enabled():
             # Reset rather than carry a stale down-count or alert into the next
             # time the operator switches this output on.
-            self._states[plane.label] = _PlaneState()
+            self._states[plane.state_key] = _PlaneState()
             return
-        state = self._state(plane.label)
+        state = self._state(plane.state_key)
         if now < state.retry_at:
             return
 
@@ -220,8 +249,8 @@ class NetworkPlaneObserver:
         the render path for as long as it lasted.
         """
         out: list[str] = []
-        for plane in self.planes:
-            state = self._states.get(plane.label)
+        for plane in self._polled:
+            state = self._states.get(plane.state_key)
             if state is None:
                 continue
             if state.suspended:

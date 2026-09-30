@@ -11,6 +11,8 @@ even when the address is unchanged.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from openfollow.runtime.network_observer import (
@@ -407,3 +409,100 @@ class TestAlertsStayOffTheRenderPath:
         rec.go_down()
         _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
         assert any("eth0.10" in line for line in obs.alerts())
+
+
+class TestAChangingSetOfPlanes:
+    """OSC destinations come and go at runtime, so the observer can take its
+    planes from a provider. A plane is tracked by its key, not its label."""
+
+    @staticmethod
+    def _provided(*planes: Plane) -> tuple[NetworkPlaneObserver, _Clock, list[Plane], list[int]]:
+        current = list(planes)
+        calls: list[int] = []
+
+        def _provide() -> list[Plane]:
+            calls.append(1)
+            return list(current)
+
+        clk = _Clock()
+        return NetworkPlaneObserver(planes=_provide, clock=clk), clk, current, calls
+
+    def test_the_provider_is_asked_once_per_poll_and_never_by_alerts(self) -> None:
+        obs, clk, _current, calls = self._provided(_Recorder().plane())
+        _poll_n(obs, clk, 3)
+        for _ in range(50):
+            obs.alerts()
+        assert len(calls) == 3
+
+    def test_a_plane_added_later_is_followed(self) -> None:
+        rec = _Recorder()
+        obs, clk, current, _calls = self._provided()
+        obs.poll()
+        current.append(rec.plane())
+        clk.advance()
+        obs.poll()
+        assert rec.applied == ["192.168.1.5"]
+
+    def test_a_plane_that_leaves_takes_its_alert_and_state_with_it(self) -> None:
+        rec = _Recorder()
+        rec.bound = "192.168.1.5"
+        obs, clk, current, _calls = self._provided(rec.plane("OSC output"))
+        rec.go_down()
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        assert obs.alerts() == ["OSC output: eth0 is down"]
+
+        current.clear()
+        obs.poll()
+        assert obs.alerts() == []
+
+        # Back in the set, it starts over rather than resuming a stale count.
+        current.append(rec.plane("OSC output"))
+        clk.advance()
+        obs.poll()
+        assert obs.alerts() == []
+
+    def test_planes_sharing_a_label_are_told_apart_by_key(self) -> None:
+        eth1, eth2 = _Recorder(iface="eth1"), _Recorder(address="198.51.100.10", iface="eth2")
+        eth1.bound = eth1.address
+        obs, clk, _current, _calls = self._provided(
+            dataclasses.replace(eth1.plane("OSC output"), key="osc_out:eth1"),
+            dataclasses.replace(eth2.plane("OSC output"), key="osc_out:eth2"),
+        )
+        eth1.go_down()
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        assert obs.alerts() == ["OSC output: eth1 is down"]
+        assert eth2.applied == ["198.51.100.10"]
+
+    def test_a_relabelled_plane_keeps_its_down_count(self) -> None:
+        rec = _Recorder()
+        rec.bound = "192.168.1.5"
+        obs, clk, current, _calls = self._provided(dataclasses.replace(rec.plane("OSC to FOH"), key="dest-1"))
+        rec.go_down()
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND - 1)
+        current[0] = dataclasses.replace(rec.plane("OSC to FOH console"), key="dest-1")
+        _poll_n(obs, clk, 1)
+        assert rec.suspends == 1
+
+    def test_a_provider_that_raises_keeps_the_last_set(self) -> None:
+        rec = _Recorder()
+        rec.bound = "192.168.1.5"
+        state = {"fail": False}
+
+        def _provide() -> list[Plane]:
+            if state["fail"]:
+                raise RuntimeError("config mid-reload")
+            return [rec.plane()]
+
+        clk = _Clock()
+        obs = NetworkPlaneObserver(planes=_provide, clock=clk)
+        rec.go_down()
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        state["fail"] = True
+        assert obs.poll(force=True) is True
+        assert obs.alerts() == ["PSN: eth0 is down"]
+
+        # Still followed from the last set, so it resumes when the interface does.
+        rec.come_back("192.168.1.6")
+        obs.poll(force=True)
+        assert rec.applied[-1] == "192.168.1.6"
+        assert obs.alerts() == []

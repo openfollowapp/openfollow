@@ -60,6 +60,27 @@ def test_configured_osc_reads_nothing_from_an_unusable_file(tmp_path: Path, cont
 
 
 # --------------------------------------------------------------------------- #
+# interface_addresses
+# --------------------------------------------------------------------------- #
+
+
+def test_interface_addresses_names_a_vlan_child_as_config_does(monkeypatch) -> None:
+    """``ip -brief`` appends the parent (``eth0.13@eth0``); left on, a pinned
+    VLAN never matches its own name and reads as an interface with no address."""
+    listing = (
+        "lo               UNKNOWN        127.0.0.1/8 \n"
+        "eth0             UP             192.0.2.10/24 \n"
+        "eth0.13@eth0     UP             198.51.100.10/24 \n"
+    )
+
+    def fake_run(*_args, **_kwargs):
+        return probe.subprocess.CompletedProcess([], 0, stdout=listing, stderr="")
+
+    monkeypatch.setattr(probe.subprocess, "run", fake_run)
+    assert probe.interface_addresses() == {"eth0": "192.0.2.10", "eth0.13": "198.51.100.10"}
+
+
+# --------------------------------------------------------------------------- #
 # membership_failures / delivery_expected
 # --------------------------------------------------------------------------- #
 

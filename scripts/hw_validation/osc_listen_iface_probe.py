@@ -70,8 +70,10 @@ def interface_addresses() -> dict[str, str]:
     found: dict[str, str] = {}
     for line in out.splitlines():
         parts = line.split()
-        if len(parts) >= 3 and parts[0] != "lo":
-            found[parts[0]] = parts[2].split("/")[0]
+        # A VLAN child is listed as ``eth0.13@eth0``; config and the kernel say ``eth0.13``.
+        name = parts[0].split("@", 1)[0] if parts else ""
+        if len(parts) >= 3 and name != "lo":
+            found[name] = parts[2].split("/")[0]
     return found
 
 

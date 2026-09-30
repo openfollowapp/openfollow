@@ -95,6 +95,24 @@ poetry run python scripts/hw_validation/osc_socket_options_probe.py
   membership that cannot be released strands the group on the adapter the pin
   moved off, which a probe run on a freshly-started station cannot see.
 
+- **Sender egress pin** – `egress_pin_probe.py` checks that RTTrPM and OSC
+  output pinned to an interface leave on it or not at all, against the
+  deployed `pin_socket_egress`. Run it as root (it captures with AF_PACKET),
+  pinned to one interface, with `--other-dest` an address the routing table
+  sends out of another interface and that answers ARP there:
+
+  ```sh
+  sudo /opt/openfollow/venv/bin/python \
+      scripts/hw_validation/egress_pin_probe.py --iface eth0.13 --other-dest 192.0.2.50
+  ```
+
+  It applies the pin as the service user, then sends unicast, limited
+  broadcast, multicast and a TCP connect pinned, each after the same traffic
+  unpinned as a control, and fails any leak onto another interface. A control
+  that never reaches another interface fails too: the capture could not have
+  seen a leak. It also reports what a pinned socket does with 127.0.0.1, which
+  is why loopback destinations are never pinned.
+
 ## Eos console / ETCnomad axis convention
 
 `eos_console_probe.py` verifies the bundled **ETC Eos** templates against a real

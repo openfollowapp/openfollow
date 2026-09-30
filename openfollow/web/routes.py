@@ -2943,9 +2943,6 @@ def _apply_import_data(
     """
     cfg = copy.deepcopy(current_cfg)
     device_identity = capture_device_identity(cfg)
-    # ``osc.listen_iface`` names this box's NIC. Import-only: a reset may clear
-    # it, since blank follows the station interface.
-    original_osc_listen_iface = cfg.osc.listen_iface
 
     # General section (top-level scalar fields)
     apply_section_data(cfg, "general", strip_device_local_fields("general", data))
@@ -3026,7 +3023,6 @@ def _apply_import_data(
         cfg.window_height = _as_int(data["window_height"], cfg.window_height)
 
     restore_device_identity(cfg, device_identity)
-    cfg.osc.listen_iface = original_osc_listen_iface
     return cfg
 
 

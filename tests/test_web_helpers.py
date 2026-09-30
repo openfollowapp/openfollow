@@ -131,11 +131,18 @@ def test_interface_assignment_get_matches_what_post_accepts() -> None:
 
     cfg = AppConfig(psn_source_iface="eth0")
     cfg.otp_output.source_iface = "eth1"
+    cfg.osc_destinations.destinations[0].source_iface = "eth2"
     data = get_section_data(cfg, "interface_assignment")
     assert data is not None
-    assert set(data) == set(_INTERFACE_ASSIGNMENT_TARGETS)
+    assert set(data) == set(_INTERFACE_ASSIGNMENT_TARGETS) | {"osc_destinations.default.source_iface"}
     assert data["psn_source_iface"] == "eth0"
     assert data["otp_output.source_iface"] == "eth1"
+    assert data["osc_destinations.default.source_iface"] == "eth2"
+
+    # Everything GET returns, POST writes back to the same place.
+    fresh = AppConfig()
+    assert apply_section_data(fresh, "interface_assignment", data) is True
+    assert get_section_data(fresh, "interface_assignment") == data
 
 
 def test_general_section_rejects_invalid_web_pin_and_port() -> None:

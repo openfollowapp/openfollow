@@ -11,6 +11,7 @@ Sends tracked marker positions over Real Time Tracking Protocol – Motion (RTTr
 - **UDP Port** – destination UDP port, 1–65535. Default: `36700`.
 - **Send Rate (FPS)** – position packets sent per second, 1–240. Default: `60`. Match it to your receiver's expected update rate; higher rates give smoother motion but increase network load.
 - **Context** – a user-defined 32-bit integer (0–4294967295) included in every packet. Use it to distinguish this station's stream when multiple sources feed the same receiver. Leave at `0` if your receiver doesn't use it.
+- **Source Interface** – read-only here; it reports which interface RTTrPM leaves from. Set it under **General → Network Interface Assignment**, where every protocol's interface is chosen in one place. A pinned interface that's down stops RTTrPM rather than moving it to another one; it resumes when the interface returns.
 
 ## Saving
 

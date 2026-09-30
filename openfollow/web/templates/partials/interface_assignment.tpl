@@ -48,7 +48,7 @@
         </thead>
         <tbody>
             % for row in rows:
-            <tr class="{{'ia-readonly' if not row['editable'] else ''}}">
+            <tr class="{{'ia-readonly' if not row['editable'] else ''}} {{'experimental-feature' if row.get('experimental') else ''}}">
                 <th scope="row">{{row['label']}}</th>
                 % if row['editable']:
                 <td>

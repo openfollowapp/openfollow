@@ -1040,10 +1040,12 @@ def get_section_data(cfg: AppConfig, section: str) -> dict[str, Any] | None:
     if section == "interface_assignment":
         # Mirrors what the panel POSTs, so GET and POST agree on the section's
         # shape instead of GET 404ing while POST silently writes.
-        return {
+        payload = {
             form_key: getattr(cfg if attr is None else getattr(cfg, attr), field_name)
             for form_key, (attr, field_name) in _INTERFACE_ASSIGNMENT_TARGETS.items()
         }
+        payload.update({_dest_pin_key(dest.id): dest.source_iface for dest in cfg.osc_destinations.destinations})
+        return payload
     section_attr = _SECTION_CONFIG_ATTRS.get(section)
     if section_attr is None:
         return None
@@ -1061,9 +1063,19 @@ def get_section_data(cfg: AppConfig, section: str) -> dict[str, Any] | None:
 _INTERFACE_ASSIGNMENT_TARGETS: dict[str, tuple[str | None, str]] = {
     "psn_source_iface": (None, "psn_source_iface"),
     "otp_output.source_iface": ("otp_output", "source_iface"),
+    "rttrpm_output.source_iface": ("rttrpm_output", "source_iface"),
     "osc.listen_iface": ("osc", "listen_iface"),
     "web_bind_iface": (None, "web_bind_iface"),
 }
+
+# One more row per OSC destination, keyed ``osc_destinations.<id>.source_iface``.
+_DEST_PIN_PREFIX = "osc_destinations."
+_DEST_PIN_SUFFIX = ".source_iface"
+
+
+def _dest_pin_key(dest_id: str) -> str:
+    return f"{_DEST_PIN_PREFIX}{dest_id}{_DEST_PIN_SUFFIX}"
+
 
 _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "psn": frozenset({"psn_source_iface"}),
@@ -1088,12 +1100,15 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     # form save path applies this field, so the section broadcast/receive must
     # strip it (matching the full export/import redaction).
     "video_source": frozenset({"testpattern_selected_media"}),
-    # Every row of the Network Interface Assignment panel names a NIC on THIS box, so
-    # the whole section is device-local. The section is also refused outright
-    # by ``_BROADCAST_EXCLUDED_SECTIONS``; this entry is the peer-receive half,
-    # covering a direct POST from an out-of-date sender.
-    "interface_assignment": frozenset(_INTERFACE_ASSIGNMENT_TARGETS),
+    "rttrpm_output": frozenset({"source_iface"}),
 }
+
+# Sections that are device-local as a whole. Every row of the Network Interface
+# Assignment panel names a NIC on THIS box, and its per-destination keys are not
+# known in advance, so nothing of it is applied from another station. The
+# section is also refused outright by ``_BROADCAST_EXCLUDED_SECTIONS``; this is
+# the peer-receive half, covering a direct POST from an out-of-date sender.
+_DEVICE_LOCAL_SECTIONS = frozenset({"interface_assignment"})
 
 
 def strip_device_local_fields(
@@ -1106,6 +1121,8 @@ def strip_device_local_fields(
     (or none of them are present in ``data``) the result is a shallow
     copy of ``data`` so callers can always assume a fresh dict.
     """
+    if section in _DEVICE_LOCAL_SECTIONS:
+        return {}
     drop = _DEVICE_LOCAL_FIELDS_BY_SECTION.get(section, frozenset())
     return {k: v for k, v in data.items() if k not in drop}
 
@@ -1138,6 +1155,17 @@ def _apply_interface_assignment(cfg: AppConfig, data: Mapping[str, Any]) -> None
         # fields, but it is also the only thing that validates a top-level pin
         # – run it only when a top-level row actually changed.
         (cfg if attr is None else getattr(cfg, attr)).__post_init__()
+
+    destinations = {dest.id: dest for dest in cfg.osc_destinations.destinations}
+    for form_key, value in data.items():
+        if not (form_key.startswith(_DEST_PIN_PREFIX) and form_key.endswith(_DEST_PIN_SUFFIX)):
+            continue
+        # A destination deleted in another tab has no row to update.
+        dest = destinations.get(form_key[len(_DEST_PIN_PREFIX) : -len(_DEST_PIN_SUFFIX)])
+        if dest is None:
+            continue
+        dest.source_iface = _as_str(value, dest.source_iface)
+        dest.__post_init__()
 
 
 def request_local_addr(environ: Mapping[str, Any]) -> str:
@@ -1280,6 +1308,7 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
     owns, so giving them their own dropdown would imply an independence they
     don't have.
     """
+    from openfollow.net_egress import is_loopback_host
     from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
 
     def _plane_address(pin: str, station_iface: str) -> str:
@@ -1294,6 +1323,15 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
 
     def _addr(pin: str) -> str:
         return _plane_address(pin, station)
+
+    def _egress_address(pin: str, host: str) -> str:
+        # A sender with nothing configured is routed per destination, so no one
+        # address describes it.
+        if is_loopback_host(host):
+            return "Loopback"
+        if not plane_source_iface(pin, station):
+            return "Per routing table"
+        return _addr(pin)
 
     return [
         {
@@ -1322,6 +1360,15 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
             "blank": "station",
         },
         {
+            "key": "rttrpm_output.source_iface",
+            "label": "RTTrPM output",
+            "value": cfg.rttrpm_output.source_iface,
+            "address": _egress_address(cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host),
+            "editable": True,
+            "blank": "station",
+            "experimental": True,
+        },
+        {
             # The pin moves the multicast membership only. The socket binds
             # every interface either way: bound to one address it would receive
             # no multicast and no broadcast at all, since the kernel matches a
@@ -1334,6 +1381,17 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
             "editable": True,
             "blank": "station",
         },
+        *(
+            {
+                "key": _dest_pin_key(dest.id),
+                "label": f"OSC to {dest.name or f'{dest.host}:{dest.port}'}",
+                "value": dest.source_iface,
+                "address": _egress_address(dest.source_iface, dest.host),
+                "editable": True,
+                "blank": "station",
+            }
+            for dest in cfg.osc_destinations.destinations
+        ),
         {
             "key": "",
             "label": "Discovery / marker sync",

@@ -40,6 +40,16 @@ If the pinned interface has no address, the station holds no subscription at all
 
 This row does **not** change which addresses OSC is accepted at. Ordinary OSC sent straight to the station, and OSC sent to the subnet broadcast address, arrive on every interface whatever this row is set to - that is how the listener has to be bound for multicast to work at all. To restrict who may send, use **Allowed sender IPs** under OSC Input.
 
+## RTTrPM and OSC outputs
+
+**RTTrPM output**, and one **OSC to** row per OSC destination, choose the interface those messages leave from. Left blank they follow Station default, like OTP. With Station default on `Auto-detect` too, nothing is pinned: the system picks the adapter for each destination from its address, and the Address column reads `Per routing table`.
+
+A pinned row sends only on that interface. A destination the interface cannot reach gets nothing rather than being sent over another adapter. Multicast and broadcast destinations go out on the pinned interface, and TCP destinations connect and reconnect over it.
+
+A destination on this station itself (`127.0.0.1` or `localhost`) never leaves the box, so it is never pinned and its Address column reads `Loopback`.
+
+If the pinned interface has no address, those messages stop. An OSC Output row's Diagnostics and a zone's test send say `interface eth1 is down`, and the on-screen display lists `OSC output` or `RTTrPM output` under **Network**. They resume when the interface comes back. A zone crossing that happened while its interface was down is not sent late.
+
 ## Web UI
 
 This page. Left blank it answers on every interface, which is what you want on almost every station – it is how you reach the box, not something the show depends on.

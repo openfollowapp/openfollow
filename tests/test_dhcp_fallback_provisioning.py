@@ -12,6 +12,7 @@ and the ``.deb``.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -116,6 +117,58 @@ def test_ansible_reloads_networkmanager_after_writing_it() -> None:
     text = _read("ansible playbook")
     assert "reload networkmanager" in text
     assert "nmcli general reload" in text
+
+
+_POSTINST = _REPO_ROOT / "packaging" / "debian" / "postinst"
+# Every external command postinst runs, stubbed so the test touches no real user,
+# unit or directory. ``systemctl`` exits 0, so the script sees a running system.
+_POSTINST_COMMANDS = ("getent", "adduser", "udevadm", "install", "chown", "loginctl", "systemctl")
+
+
+def _run_postinst(tmp_path: Path, *, nmcli_exit: int | None) -> tuple[list[str], str]:
+    """Run ``postinst configure`` with only the stubs on PATH; ``None`` leaves nmcli out."""
+    if not _POSTINST.is_file():
+        pytest.skip("no packaging/debian/postinst in this tree")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls"
+    stubs = dict.fromkeys(_POSTINST_COMMANDS, 0)
+    if nmcli_exit is not None:
+        stubs["nmcli"] = nmcli_exit
+    for name, code in stubs.items():
+        stub = bin_dir / name
+        stub.write_text(f'#!/bin/sh\necho "{name} $*" >> "{calls}"\nexit {code}\n', encoding="utf-8")
+        stub.chmod(0o755)
+    result = subprocess.run(
+        ["/bin/sh", str(_POSTINST), "configure"],
+        env={"PATH": str(bin_dir)},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    return calls.read_text(encoding="utf-8").splitlines(), result.stderr
+
+
+def test_deb_reloads_networkmanager_on_a_running_system(tmp_path: Path) -> None:
+    """The .deb twin of the Ansible notify: an install or upgrade on a running
+    station must arm the fallback without waiting for the next reboot."""
+    calls, _ = _run_postinst(tmp_path, nmcli_exit=0)
+    assert "nmcli general reload conf" in calls
+
+
+def test_deb_install_survives_networkmanager_not_running(tmp_path: Path) -> None:
+    calls, _ = _run_postinst(tmp_path, nmcli_exit=1)
+    assert "systemctl restart openfollow.service" in calls
+
+
+def test_deb_install_survives_a_host_without_networkmanager(tmp_path: Path) -> None:
+    """A dhcpcd host has no nmcli; the install must neither fail nor print a
+    'not found' into the operator's apt output."""
+    calls, stderr = _run_postinst(tmp_path, nmcli_exit=None)
+    assert "systemctl restart openfollow.service" in calls
+    assert "nmcli" not in stderr
 
 
 def test_deb_declares_the_dropin_as_a_conffile() -> None:

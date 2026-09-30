@@ -287,6 +287,11 @@ either. `link-local=4` is *fallback* (not `3`, *enabled*): the 169.254 address
 appears only once DHCP has given up and goes away again when a lease arrives,
 so a healthy LAN never carries a second address.
 
+NetworkManager reads `conf.d` only at startup or on reload, so the `.deb`'s
+`postinst` runs `nmcli general reload conf` on a running system (the playbook
+has a handler for the same): an install or upgrade arms the fallback without
+waiting for the next reboot.
+
 `dhcp-timeout` must not be finite. On expiry NetworkManager fails the
 activation with `ip-config-unavailable` and removes the fallback address along
 with it, so the station goes dark on that interface for the gap before the next

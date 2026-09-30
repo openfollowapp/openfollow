@@ -1421,6 +1421,7 @@ _DEVICE_IDENTITY_SAMPLES = [
     ("web_pin", "4821"),
     ("web_port", 8080),
     ("web_bind", "0.0.0.0"),
+    ("web_bind_iface", "eth1"),
     ("station_id", "f0e1d2c3b4a59687f0e1d2c3b4a59687"),
     ("markers_catalog_path", "/mnt/nvme/openfollow/markers.toml"),
     ("testpattern_selected_media", "0123456789abcdef"),

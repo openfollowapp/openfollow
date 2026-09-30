@@ -2833,6 +2833,7 @@ _DEVICE_IDENTITY_FIELDS: tuple[str, ...] = (
     "web_pin",
     "web_port",
     "web_bind",
+    "web_bind_iface",
     "station_id",
     "markers_catalog_path",
     "testpattern_selected_media",

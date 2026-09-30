@@ -35,6 +35,7 @@ from openfollow.configuration import (
     RttrpmOutputConfig,
     apply_runtime_config_changes,
 )
+from openfollow.net_egress import Egress
 from openfollow.net_utils import resolve_plane_source_ip as _REAL_RESOLVE_PLANE_SOURCE_IP
 from openfollow.psn.server import _UNCHANGED as _UNCHANGED_SENTINEL
 from openfollow.runtime.services_marker_visuals import _resolve_marker_color
@@ -195,19 +196,24 @@ class _FakeRttrpmServer:
         self._port = kwargs.get("port", 24601)
         self._fps = float(kwargs.get("fps", 30))
         self._context = kwargs.get("context", 0)
+        self._egress = kwargs.get("egress")
+        # A refused pin leaves no socket; tests set this to model one.
+        self.pin_refused = False
+        self._socket: object | None = None
 
     def register_marker(self, marker: _FakeMarker) -> None:
         self.registered.append(marker)
 
     def start(self) -> None:
         self.started = True
+        self._socket = None if self._egress is not None and self.pin_refused else object()
 
     def stop(self) -> None:
         self.stopped = True
 
     def restart(self, **kwargs: Any) -> None:
         self.restart_calls.append(kwargs)
-        for name in ("host", "port", "fps", "context"):
+        for name in ("host", "port", "fps", "context", "egress"):
             if name in kwargs:
                 setattr(self, f"_{name}", kwargs[name])
 
@@ -2263,6 +2269,98 @@ class TestApplyRttrpmOutputChange:
         assert any("RTTrPM server rollback" in r.message for r in caplog.records)
         assert services._app._rttrpm_server is None
 
+    @staticmethod
+    def _ifaces(monkeypatch: pytest.MonkeyPatch, table: dict[str, str]) -> None:
+        import openfollow.net_egress as net_egress_module
+
+        monkeypatch.setattr(net_egress_module, "get_iface_ipv4", lambda iface: table.get(iface, ""))
+
+    def test_on_to_on_restarts_on_the_pinned_interface(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._ifaces(monkeypatch, {"eth1": "198.51.100.10"})
+        services._app._rttrpm_server = _FakeRttrpmServer()
+        services.apply_rttrpm_output_change(self._enabled_cfg(source_iface="eth1"))
+        assert services._app._rttrpm_server.restart_calls[0]["egress"] == Egress("eth1", "198.51.100.10")
+
+    def test_a_blank_pin_follows_the_station_and_an_unset_station_is_left_to_the_os(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._ifaces(monkeypatch, {"eth0": "192.0.2.10"})
+        server = _FakeRttrpmServer()
+        services._app._rttrpm_server = server
+        services._app._config.psn_source_iface = "eth0"
+        services.apply_rttrpm_output_change(self._enabled_cfg())
+        services._app._config.psn_source_iface = ""
+        services.apply_rttrpm_output_change(self._enabled_cfg())
+        assert [call["egress"] for call in server.restart_calls] == [Egress("eth0", "192.0.2.10"), None]
+
+    def test_a_failed_restart_rolls_back_to_the_prior_interface(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._ifaces(monkeypatch, {"eth0": "192.0.2.10", "eth1": "198.51.100.10"})
+        prior = Egress("eth0", "192.0.2.10")
+        server = _FakeRttrpmServer(egress=prior)
+        original_restart = server.restart
+        attempts: list[dict[str, Any]] = []
+
+        def _refuse_the_first(**kwargs: Any) -> None:
+            attempts.append(kwargs)
+            if len(attempts) == 1:
+                raise OSError("pin refused")
+            original_restart(**kwargs)
+
+        server.restart = _refuse_the_first  # type: ignore[method-assign]
+        services._app._rttrpm_server = server
+        with pytest.raises(OSError, match="pin refused"):
+            services.apply_rttrpm_output_change(self._enabled_cfg(source_iface="eth1"))
+        assert attempts[1]["egress"] == prior
+        assert server._egress == prior
+
+    def test_a_pin_without_an_address_stops_rather_than_moving(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._ifaces(monkeypatch, {"eth0": "192.0.2.10"})
+        server = _FakeRttrpmServer(egress=Egress("eth0", "192.0.2.10"))
+        services._app._rttrpm_server = server
+        services.apply_rttrpm_output_change(self._enabled_cfg(source_iface="eth9"))
+        assert server.stopped is True
+        assert server.restart_calls == []
+        # Kept, so the observer can restart it when eth9 gets an address.
+        assert services._app._rttrpm_server is server
+
+    def test_off_to_on_with_a_refused_pin_raises_and_drops_the_server(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``start()`` leaves a refused pin to the send loop; the live apply must
+        still see it fail, or the dispatcher never reverts the config."""
+        self._ifaces(monkeypatch, {"eth1": "198.51.100.10"})
+
+        class _Refusing(_FakeRttrpmServer):
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(**kwargs)
+                self.pin_refused = True
+
+        monkeypatch.setattr(services_module, "RttrpmServer", _Refusing)
+        services._app._rttrpm_server = None
+        services._app._server = _FakePsnServer()
+        services._app._controlled_ids = []
+        cfg = self._enabled_cfg(source_iface="eth1")
+        services._app._config = replace(services._app._config, rttrpm_output=cfg)
+        with pytest.raises(OSError, match="pinned to eth1"):
+            services.apply_rttrpm_output_change(cfg)
+        assert services._app._rttrpm_server is None
+
+    def test_init_does_not_start_on_a_pinned_interface_without_an_address(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._ifaces(monkeypatch, {})
+        monkeypatch.setattr(services_module, "RttrpmServer", _FakeRttrpmServer)
+        services._app._rttrpm_server = None
+        services._app._config = replace(services._app._config, rttrpm_output=self._enabled_cfg(source_iface="eth9"))
+        services.init_rttrpm()
+        assert services._app._rttrpm_server is None
+
 
 # Eos OSC output (init_eos / apply_eos_output_change) was removed; the unified
 # OscService + the configurable transmitter system supersede it. Tests for the
@@ -4134,6 +4232,45 @@ class TestApplyStationIfaceChange:
         calls = self._services_with_otp(services, "")
         services.apply_station_iface_change()
         assert calls == []
+
+    def _record_rttrpm(self, services: AppRuntimeServices, source_iface: str, *, enabled: bool = True):
+        from dataclasses import replace
+
+        services._app._config = replace(
+            services._app._config,
+            rttrpm_output=RttrpmOutputConfig(enabled=enabled, source_iface=source_iface),
+        )
+        calls: list[RttrpmOutputConfig] = []
+        services.apply_rttrpm_output_change = calls.append  # type: ignore[method-assign]
+        return calls
+
+    def test_a_blank_pin_rttrpm_follows_even_when_it_is_not_running(self, services: AppRuntimeServices) -> None:
+        """A station interface that was down at boot left no server to restart."""
+        services._app._rttrpm_server = None
+        calls = self._record_rttrpm(services, "")
+        services.apply_station_iface_change()
+        assert len(calls) == 1
+
+    @pytest.mark.parametrize(("pin", "enabled"), [("eth1", True), ("", False)], ids=["own-pin", "disabled"])
+    def test_rttrpm_with_its_own_pin_or_switched_off_is_left_alone(
+        self, services: AppRuntimeServices, pin: str, enabled: bool
+    ) -> None:
+        calls = self._record_rttrpm(services, pin, enabled=enabled)
+        services.apply_station_iface_change()
+        assert calls == []
+
+    def test_one_follower_failing_does_not_hold_the_others_back(self, services: AppRuntimeServices) -> None:
+        services._app._otp_server = _FakeOtpServer()
+        self._services_with_otp(services, "")
+
+        def _otp_fails(_cfg: OtpOutputConfig) -> None:
+            raise OSError("otp would not move")
+
+        services.apply_otp_output_change = _otp_fails  # type: ignore[method-assign]
+        rttrpm_calls = self._record_rttrpm(services, "")
+        with pytest.raises(OSError, match="otp would not move"):
+            services.apply_station_iface_change()
+        assert len(rttrpm_calls) == 1
 
 
 class TestOtpLiveRestartOnADownInterface:

@@ -1320,6 +1320,61 @@ def test_planes_resolve_their_own_and_the_station_interface(monkeypatch) -> None
     assert resolved["OTP output"] == ("192.168.1.5", "station", "eth0")
 
 
+def _rttrpm_plane(services):
+    return next(p for p in services._build_network_planes() if p.label == "RTTrPM output")
+
+
+def test_rttrpm_is_a_plane_only_while_an_interface_is_configured(monkeypatch) -> None:
+    """Unpinned, the OS routes RTTrPM. Following it anyway would compare the
+    auto-detected address with an unbound socket and restart it every poll."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+    cfg = services._app._config
+    cfg.rttrpm_output.enabled = True
+    plane = _rttrpm_plane(services)
+    assert plane.enabled() is False
+
+    cfg.psn_source_iface = "eth0"
+    assert plane.enabled() is True
+    assert plane.resolve() == ("192.168.1.5", "station", "eth0")
+
+    cfg.psn_source_iface = ""
+    cfg.rttrpm_output.source_iface = "eth1"
+    assert plane.enabled() is True
+    assert plane.resolve() == ("10.0.0.9", "iface", "eth1")
+
+    cfg.rttrpm_output.enabled = False
+    assert plane.enabled() is False
+
+
+def test_the_rttrpm_plane_drives_the_running_server(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._rttrpm_server = None
+    plane = _rttrpm_plane(services)
+    assert plane.current() is None
+    plane.suspend()
+
+    class _Server:
+        stops = 0
+
+        def bound_source_ip(self) -> str:
+            return "10.0.0.9"
+
+        def stop(self) -> None:
+            self.stops += 1
+
+    server = _Server()
+    services._app._rttrpm_server = server
+    assert plane.current() == "10.0.0.9"
+    plane.suspend()
+    assert server.stops == 1
+
+    applied: list[object] = []
+    monkeypatch.setattr(services, "apply_rttrpm_output_change", applied.append)
+    plane.apply("10.0.0.10")
+    assert applied == [services._app._config.rttrpm_output]
+
+
 def test_a_down_plane_reports_down_not_another_interface(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
     _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})

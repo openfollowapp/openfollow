@@ -1064,6 +1064,8 @@ class RttrpmOutputConfig:
     port: int = 36700
     fps: int = 60
     context: int = 0
+    # Interface to send from, by name; blank follows ``psn_source_iface``.
+    source_iface: str = ""
 
     def __post_init__(self) -> None:
         # fps drives ``1.0 / fps`` in the send loop – clamp to >= 1 to avoid
@@ -1080,6 +1082,9 @@ class RttrpmOutputConfig:
         if not isinstance(self.host, str):
             self.host = "127.0.0.1"
         self.host = self.host.strip()
+        if not isinstance(self.source_iface, str):
+            self.source_iface = ""
+        self.source_iface = self.source_iface.strip()
 
 
 # ---------------------------------------------------------------------------

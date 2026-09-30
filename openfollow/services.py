@@ -29,6 +29,7 @@ from openfollow.configuration import (
 )
 from openfollow.input import InputManager
 from openfollow.input.mouse3d import idle_mouse3d_status
+from openfollow.net_egress import Egress, resolve_egress
 from openfollow.net_utils import ResolveStatus
 from openfollow.otp import OtpServer
 from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
@@ -1115,6 +1116,23 @@ class AppRuntimeServices:
             if self._app._otp_server is not None:
                 self._app._otp_server.stop()
 
+        def _apply_rttrpm(_address: str) -> None:
+            self.apply_rttrpm_output_change(self._app._config.rttrpm_output)
+
+        def _current_rttrpm() -> str | None:
+            server = self._app._rttrpm_server
+            return server.bound_source_ip() if server is not None else None
+
+        def _suspend_rttrpm() -> None:
+            if self._app._rttrpm_server is not None:
+                self._app._rttrpm_server.stop()
+
+        def _rttrpm_pinned() -> bool:
+            # Unpinned, the OS routes it: no interface to follow, and the
+            # auto-detected address would never match its unbound socket.
+            cfg = self._app._config.rttrpm_output
+            return cfg.enabled and bool(plane_source_iface(cfg.source_iface, self._app._config.psn_source_iface))
+
         def _apply_osc_input(address: str) -> None:
             # Rebinds the listener so the group follows the interface. The
             # membership cannot be dropped once the address it was taken on is
@@ -1167,6 +1185,14 @@ class AppRuntimeServices:
                 # A switched-off output is not broken; alerting on it would put
                 # a second fault on the HUD for a protocol nobody enabled.
                 enabled=lambda: self._app._config.otp_output.enabled,
+            ),
+            Plane(
+                label="RTTrPM output",
+                resolve=_resolver(lambda: self._app._config.rttrpm_output.source_iface, is_station=False),
+                current=_current_rttrpm,
+                apply=_apply_rttrpm,
+                suspend=_suspend_rttrpm,
+                enabled=_rttrpm_pinned,
             ),
             Plane(
                 label="OSC input",
@@ -1489,15 +1515,30 @@ class AppRuntimeServices:
                     self._app._otp_server.register_marker(marker)
         self._app._otp_server.start()
 
+    def _rttrpm_egress(self, cfg: RttrpmOutputConfig) -> Egress | None:
+        """RTTrPM's egress: None leaves the route to the OS, ``.down`` means its interface has no address."""
+        egress = resolve_egress(cfg.source_iface, self._app._config.psn_source_iface)
+        if egress is not None and egress.down:
+            logger.error(
+                "Configured rttrpm_output.source_iface '%s' has no address; RTTrPM output stays down until it "
+                "returns (it will not be sent on another interface).",
+                egress.iface,
+            )
+        return egress
+
     def init_rttrpm(self) -> None:
         cfg = self._app._config.rttrpm_output
         if not cfg.enabled:
+            return
+        egress = self._rttrpm_egress(cfg)
+        if egress is not None and egress.down:
             return
         self._app._rttrpm_server = RttrpmServer(
             host=cfg.host,
             port=cfg.port,
             fps=float(cfg.fps),
             context=cfg.context,
+            egress=egress,
         )
         server = self._app._server
         # Same lifecycle guarantee as ``init_otp``; ``init_psn`` runs first.
@@ -1891,12 +1932,19 @@ class AppRuntimeServices:
             old_port = server._port
             old_fps = float(server._fps)
             old_context = server._context
+            old_egress = server._egress
+            new_egress = self._rttrpm_egress(new_cfg)
+            if new_egress is not None and new_egress.down:
+                # Stop rather than restart: unpinned it would leave on another NIC.
+                server.stop()
+                return
             try:
                 server.restart(
                     host=new_cfg.host,
                     port=new_cfg.port,
                     fps=float(new_cfg.fps),
                     context=new_cfg.context,
+                    egress=new_egress,
                 )
             except Exception:
                 # Mirror the OTP rationale: only null the reference
@@ -1909,6 +1957,7 @@ class AppRuntimeServices:
                         port=old_port,
                         fps=old_fps,
                         context=old_context,
+                        egress=old_egress,
                     )
                 except Exception:
                     logger.exception(
@@ -1921,6 +1970,13 @@ class AppRuntimeServices:
             self._app._rttrpm_server = None
         elif server is None and new_cfg.enabled:
             self.init_rttrpm()
+            # ``start()`` leaves a refused pin to the send loop's retry; a live
+            # apply needs the failure to revert on, as ``restart()`` gives it.
+            new_server = self._app._rttrpm_server
+            if new_server is not None and new_server._egress is not None and new_server._socket is None:
+                new_server.stop()
+                self._app._rttrpm_server = None
+                raise OSError(f"RTTrPM could not open a socket pinned to {new_server._egress.iface}")
         # else: off → off, no-op
 
     def apply_osc_transmitters_change(
@@ -1969,10 +2025,30 @@ class AppRuntimeServices:
         PSN itself is not included: the dispatcher pairs this with
         ``apply_psn_source_ip_change``, which owns the receiver/server rebind.
         """
+        # Each follower is tried even when an earlier one raises: one output
+        # failing to move must not leave the others on the old interface.
+        errors: list[Exception] = []
+        for follow in (self._follow_station_otp, self._follow_station_rttrpm, self._follow_station_osc_input):
+            try:
+                follow()
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+        if errors:
+            raise errors[0]
+
+    def _follow_station_otp(self) -> None:
         otp_cfg = self._app._config.otp_output
         if self._app._otp_server is not None and otp_cfg.enabled and not otp_cfg.source_iface:
             self.apply_otp_output_change(otp_cfg)
 
+    def _follow_station_rttrpm(self) -> None:
+        # Unlike OTP it may not be running: a station interface that was down
+        # at boot left nothing to restart.
+        cfg = self._app._config.rttrpm_output
+        if cfg.enabled and not cfg.source_iface:
+            self.apply_rttrpm_output_change(cfg)
+
+    def _follow_station_osc_input(self) -> None:
         # The OSC membership inherits the station pin the same way, and the
         # observer cannot cover it: clearing the Station default row leaves the
         # plane unpinned, so it stops being followed while the socket still

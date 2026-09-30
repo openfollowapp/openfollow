@@ -303,6 +303,7 @@ class _RecordingOsc:
         port: int,
         protocol: str = "udp",
         framing: str = "slip",
+        egress: object = None,
     ) -> None:
         self.addresses.append(address)
 

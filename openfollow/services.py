@@ -31,6 +31,7 @@ from openfollow.input import InputManager
 from openfollow.input.mouse3d import idle_mouse3d_status
 from openfollow.net_egress import Egress, resolve_egress
 from openfollow.net_utils import ResolveStatus
+from openfollow.osc.egress import OscEgressTable
 from openfollow.otp import OtpServer
 from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
@@ -681,6 +682,8 @@ class AppRuntimeServices:
         from openfollow.zones.engine import ZoneEngine
 
         self._osc_service: OscService = OscService()
+        # Where each OSC destination's pinned interface sends from.
+        self._osc_egress = OscEgressTable()
         # Store for OSC-driven operator messages; written by the OSC adapter,
         # read by the overlay builder. Created eagerly – it owns no I/O.
         self._operator_message_store = OperatorMessageStore()
@@ -1202,6 +1205,7 @@ class AppRuntimeServices:
                 suspend=_suspend_osc_input,
                 enabled=_osc_input_pinned,
             ),
+            *self._osc_output_planes(),
         ]
 
     def observe_network_planes(self) -> None:
@@ -1214,7 +1218,8 @@ class AppRuntimeServices:
         """
         observer = self._network_observer
         if observer is None:
-            observer = NetworkPlaneObserver(planes=self._build_network_planes(), clock=time.monotonic)
+            # A provider: OSC destinations and their pins change at runtime.
+            observer = NetworkPlaneObserver(planes=self._build_network_planes, clock=time.monotonic)
             self._network_observer = observer
         # Inside the same throttle: resolving the station address enumerates
         # every adapter, and housekeeping runs at 100 ms.
@@ -1608,8 +1613,10 @@ class AppRuntimeServices:
         """
         from openfollow.osc.transmitter import OscTransmitterManager
 
+        self._restage_osc_egress(self._app._config.osc_destinations)
         manager = OscTransmitterManager(
             osc_service=self._osc_service,
+            egress_provider=self._osc_egress.for_destination,
             marker_provider=self._marker_provider,
             grid_provider=self._grid_provider,
             # Fader placeholders resolve through the bus. The MIDI / fader
@@ -2003,6 +2010,7 @@ class AppRuntimeServices:
         """
         if destinations is None:
             destinations = self._app._config.osc_destinations
+        self._restage_osc_egress(destinations)
         manager = self._osc_transmitter_manager
         if manager is None:
             self.init_osc_transmitters()
@@ -2028,7 +2036,12 @@ class AppRuntimeServices:
         # Each follower is tried even when an earlier one raises: one output
         # failing to move must not leave the others on the old interface.
         errors: list[Exception] = []
-        for follow in (self._follow_station_otp, self._follow_station_rttrpm, self._follow_station_osc_input):
+        for follow in (
+            self._follow_station_otp,
+            self._follow_station_rttrpm,
+            self._follow_station_osc_input,
+            self._follow_station_osc_output,
+        ):
             try:
                 follow()
             except Exception as exc:  # noqa: BLE001
@@ -2047,6 +2060,61 @@ class AppRuntimeServices:
         cfg = self._app._config.rttrpm_output
         if cfg.enabled and not cfg.source_iface:
             self.apply_rttrpm_output_change(cfg)
+
+    def _follow_station_osc_output(self) -> None:
+        self._restage_osc_egress(self._app._config.osc_destinations)
+
+    def _restage_osc_egress(self, destinations: OscDestinationsConfig) -> None:
+        """Resolve the interfaces OSC destinations send from; close clients pinned elsewhere."""
+        self._osc_egress.restage(self._app._config.psn_source_iface, destinations.destinations)
+        self._osc_service.retain_egress(self._osc_egress.live())
+
+    def _mark_osc_egress(self, iface: str, address: str) -> None:
+        # Evicting rebuilds even at the same address after an outage, which
+        # dropped whatever the old sockets were bound to.
+        self._osc_egress.mark(iface, address)
+        self._osc_service.evict_egress(iface)
+
+    def _osc_output_planes(self) -> list[Plane]:
+        """One plane per interface an enabled transmitter row or zone sends from.
+
+        Per interface, not per destination: two destinations on one NIC can't
+        disagree about its address, and the HUD lists each outage once.
+        """
+        from openfollow.net_egress import is_loopback_host
+        from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
+
+        cfg = self._app._config
+        ids = {row.destination_id for row in cfg.osc_transmitters.transmitters if row.enabled}
+        if cfg.trigger_zones.enabled:
+            ids |= {zone.destination_id for zone in cfg.trigger_zones.zones if zone.enabled}
+        by_id = cfg.osc_destinations.by_id()
+        in_use = [by_id[dest_id] for dest_id in ids if dest_id in by_id]
+        ifaces = sorted(
+            {
+                plane_source_iface(dest.source_iface, cfg.psn_source_iface)
+                for dest in in_use
+                if not is_loopback_host(dest.host)
+            }
+            - {""}
+        )
+        table = self._osc_egress
+
+        def _plane(iface: str) -> Plane:
+            def _resolve() -> tuple[str, ResolveStatus, str]:
+                address, status = resolve_plane_source_ip(iface, "")
+                return address, status, iface
+
+            return Plane(
+                label="OSC output",
+                key=f"osc_out:{iface}",
+                resolve=_resolve,
+                current=lambda: table.address_for(iface),
+                apply=lambda address: self._mark_osc_egress(iface, address),
+                suspend=lambda: self._mark_osc_egress(iface, ""),
+            )
+
+        return [_plane(iface) for iface in ifaces]
 
     def _follow_station_osc_input(self) -> None:
         # The OSC membership inherits the station pin the same way, and the
@@ -3176,10 +3244,12 @@ class AppRuntimeServices:
         from openfollow.zones import ZoneEngine
 
         cfg = self._app._config.trigger_zones
+        self._restage_osc_egress(self._app._config.osc_destinations)
         self._zone_engine = ZoneEngine(
             cfg,
             self._osc_service,
             self._app._config.osc_destinations,
+            egress_provider=self._osc_egress.for_destination,
         )
 
     def update_zone_triggers(self) -> None:
@@ -3349,6 +3419,9 @@ class AppRuntimeServices:
         dest = self._app._config.osc_destinations.get(zone.destination_id)
         if dest is None:
             return {"skipped": True, "reason": "no destination selected"}
+        egress = self._osc_egress.for_destination(dest)
+        if egress is not None and egress.down:
+            return {"skipped": True, "reason": f"interface {egress.iface} is down"}
         typed_args = coerce_osc_args(str_args)
         self._osc_service.send(
             address,
@@ -3357,6 +3430,7 @@ class AppRuntimeServices:
             port=dest.port,
             protocol=dest.protocol,
             framing=dest.framing,
+            egress=egress,
         )
         return {
             "success": True,

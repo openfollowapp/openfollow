@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from openfollow.configuration import VALID_OSC_FRAMINGS as _VALID_OSC_FRAMINGS_TUPLE
+from openfollow.net_egress import Egress, pin_socket_egress
 from openfollow.net_utils import join_multicast_group_on_iface
 from openfollow.osc.transport import TcpOscSender
 
@@ -42,6 +43,14 @@ _VALID_FRAMINGS: frozenset[str] = frozenset(_VALID_OSC_FRAMINGS_TUPLE)
 # UDP rows pin to this framing in the cache key so the key shape stays a
 # uniform 4-tuple across transports (framing is a TCP-only concern).
 _UDP_FRAMING_PIN = "length_prefix"
+
+# How long a pinned target whose client could not be created waits before the
+# next attempt. The address a pin needs can lag the interface by an observer
+# debounce, so the failure is expected to clear on its own.
+_PINNED_CREATE_RETRY_S = 1.0
+
+# One cached client per target and the interface it is pinned to.
+_CacheKey = tuple[str, int, str, str, Egress | None]
 
 
 def _cache_framing(protocol: str, framing: str) -> str:
@@ -136,6 +145,7 @@ def _make_client(
     port: int,
     protocol: str,
     framing: str,
+    egress: Egress | None = None,
 ) -> Any:
     """Construct the cached client for ``protocol``.
 
@@ -149,17 +159,35 @@ def _make_client(
     DNS lookup.
     """
     if protocol == "tcp":
-        return TcpOscSender(host, port, framing)
+        return TcpOscSender(host, port, framing, egress=egress)
     # pragma: no branch – protocol is validated against ``_VALID_PROTOCOLS``
     # before reaching here, so the only remaining value is ``"udp"``.
     dest = _udp_dest_class(host)
     resolved = _resolve_host(host)
     client = SimpleUDPClient(resolved, port, allow_broadcast=dest == "broadcast")
+    if egress is not None:
+        try:
+            pin_socket_egress(client._sock, egress, multicast=dest == "multicast")
+        except OSError:
+            client._sock.close()
+            raise
     if dest == "multicast":
         sock = client._sock
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, _MULTICAST_TTL)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
     return client
+
+
+def _close_clients_in_background(clients: list[Any]) -> None:
+    """Close *clients* off the calling thread: a TCP close joins its reader for up to 1 s."""
+    if not clients:
+        return
+
+    def _close_all() -> None:
+        for client in clients:
+            _close_client(client)
+
+    threading.Thread(target=_close_all, daemon=True, name="OscEvict").start()
 
 
 def _close_client(client: Any) -> None:
@@ -287,9 +315,13 @@ class OscService:
     before the listener starts and stay subscribed across restarts.
     """
 
-    def __init__(self) -> None:
-        self._cache: dict[tuple[str, int, str, str], _ClientEntry] = {}
+    def __init__(self, *, close_async: Callable[[list[Any]], None] = _close_clients_in_background) -> None:
+        self._cache: dict[_CacheKey, _ClientEntry] = {}
         self._cache_lock = threading.Lock()
+        # Pinned targets whose client could not be created, and when to try
+        # again: a refused pin would otherwise be retried and logged per send.
+        self._create_retry_at: dict[_CacheKey, float] = {}
+        self._close_async = close_async
 
         self._dispatcher: Any = _GuardedDispatcher() if _PYTHONOSC_AVAILABLE else None
         self._subscriptions: dict[str, OscHandler] = {}
@@ -324,15 +356,19 @@ class OscService:
         port: int,
         protocol: str = "udp",
         framing: str = "slip",
+        egress: Egress | None = None,
     ) -> None:
         """Send a single OSC message.
 
         Empty ``address`` is silently dropped. ``host``/``port`` must be
         valid (non-empty / >0); callers resolve any default fallback first.
         ``framing`` selects the TCP wire framing (ignored for UDP); invalid
-        values fall back to ``"slip"`` with a warning.
+        values fall back to ``"slip"`` with a warning. ``egress`` pins the
+        send to an interface; a down one sends nothing rather than roam.
         """
         if not address:
+            return
+        if egress is not None and egress.down:
             return
         if not host or port <= 0:
             return
@@ -357,7 +393,7 @@ class OscService:
                 self._missing_dep_warned = True
             return
 
-        entry = self._get_or_create_client(host, port, protocol, framing)
+        entry = self._get_or_create_client(host, port, protocol, framing, egress)
         if entry is None:
             return
         # Broad catch upholds the documented "never raises" contract: pythonosc
@@ -390,14 +426,31 @@ class OscService:
         port: int,
         protocol: str = "udp",
         framing: str = "slip",
+        egress: Egress | None = None,
     ) -> None:
         """Close and drop the cached client for a target, if any."""
-        key = (host, int(port), protocol, _cache_framing(protocol, framing))
+        key = (host, int(port), protocol, _cache_framing(protocol, framing), egress)
         with self._cache_lock:
             entry = self._cache.pop(key, None)
         if entry is None:
             return
         _close_client(entry.client)
+
+    def evict_egress(self, iface: str) -> None:
+        """Drop every client pinned to *iface*, at any address, so the next send rebuilds it."""
+        self._drop_pinned(lambda egress: egress.iface == iface)
+
+    def retain_egress(self, live: frozenset[Egress]) -> None:
+        """Drop pinned clients whose interface and address are no longer in *live*."""
+        self._drop_pinned(lambda egress: egress not in live)
+
+    def _drop_pinned(self, drop: Callable[[Egress], bool]) -> None:
+        with self._cache_lock:
+            keys = [key for key in self._cache if key[4] is not None and drop(key[4])]
+            clients = [self._cache.pop(key).client for key in keys]
+            for key in [key for key in self._create_retry_at if key[4] is not None and drop(key[4])]:
+                del self._create_retry_at[key]
+        self._close_async(clients)
 
     def shutdown_clients(self) -> None:
         """Drain the entire client cache. Called at app shutdown."""
@@ -413,10 +466,11 @@ class OscService:
         port: int,
         protocol: str = "udp",
         framing: str = "slip",
+        egress: Egress | None = None,
     ) -> ClientStats:
         """Return a snapshot of per-target stats; empty stats for an
         unknown target."""
-        key = (host, int(port), protocol, _cache_framing(protocol, framing))
+        key = (host, int(port), protocol, _cache_framing(protocol, framing), egress)
         with self._cache_lock:
             entry = self._cache.get(key)
             if entry is None:
@@ -433,17 +487,21 @@ class OscService:
         port: int,
         protocol: str,
         framing: str,
+        egress: Egress | None = None,
     ) -> _ClientEntry | None:
         cache_framing = _cache_framing(protocol, framing)
-        key = (host, int(port), protocol, cache_framing)
+        key: _CacheKey = (host, int(port), protocol, cache_framing, egress)
         with self._cache_lock:
             entry = self._cache.get(key)
             if entry is not None:
                 return entry
+            if time.monotonic() < self._create_retry_at.get(key, 0.0):
+                return None
         try:
-            client = _make_client(host, port, protocol, cache_framing)
+            client = _make_client(host, port, protocol, cache_framing, egress)
         except (OSError, ValueError) as exc:
-            # OSError: socket/DNS failure. ValueError: malformed host string.
+            # OSError: socket/DNS failure or a refused pin. ValueError:
+            # malformed host string.
             logger.error(
                 "Failed to create OSC client for %s://%s:%d – %s",
                 protocol,
@@ -451,6 +509,9 @@ class OscService:
                 port,
                 exc,
             )
+            if egress is not None:
+                with self._cache_lock:
+                    self._create_retry_at[key] = time.monotonic() + _PINNED_CREATE_RETRY_S
             return None
         new_entry = _ClientEntry(client=client)
         with self._cache_lock:

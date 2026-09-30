@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from openfollow.net_egress import Egress
 from openfollow.zones.engine import ZoneEngine
 
 pytestmark = pytest.mark.unit
@@ -90,6 +91,7 @@ class _RecordingOsc:
         self.sends_full: list[tuple[str, list, str, int]] = []
         # Endpoint detail incl. transport, for protocol/framing assertions.
         self.sends_transport: list[tuple[str, str, int, str, str]] = []
+        self.egress_seen: list[object] = []
 
     def send(
         self,
@@ -100,7 +102,9 @@ class _RecordingOsc:
         port: int,
         protocol: str = "udp",
         framing: str = "slip",
+        egress: object = None,
     ) -> None:
+        self.egress_seen.append(egress)
         self.sends.append((address, host, port))
         self.sends_full.append((address, list(args), host, port))
         self.sends_transport.append((address, host, port, protocol, framing))
@@ -1076,3 +1080,63 @@ class TestTriggeredByResetsOccupancyOnReload:
         diag = engine.get_zone_diagnostics(0)
         assert diag is not None
         assert diag["count"] == 0
+
+
+class TestEgressPin:
+    """A zone whose destination's interface has no address follows its
+    occupants but sends nothing, and never fires late once it returns."""
+
+    @staticmethod
+    def _pinned(state: dict[str, str]) -> tuple[ZoneEngine, _RecordingOsc]:
+        osc = _RecordingOsc()
+        engine = ZoneEngine(
+            _ZonesCfg(zones=[_zone()]),  # type: ignore[arg-type]
+            osc,  # type: ignore[arg-type]
+            _DestsCfg(),  # type: ignore[arg-type]
+            egress_provider=lambda dest: Egress("eth1", state["address"]),
+        )
+        return engine, osc
+
+    def test_a_down_interface_tracks_membership_but_sends_nothing(self) -> None:
+        engine, osc = self._pinned({"address": ""})
+        engine.update([_marker(0, 2.0, 2.0)], [])
+        assert osc.sends == []
+        assert list(engine.get_zone_states()) == [(0, True, 1)]
+
+    def test_an_entry_missed_while_down_never_fires_late(self) -> None:
+        state = {"address": ""}
+        engine, osc = self._pinned(state)
+        engine.update([_marker(0, 2.0, 2.0)], [])
+        state["address"] = "198.51.100.10"
+        engine.update([_marker(0, 2.0, 2.0)], [])
+        assert osc.sends == []
+        engine.update([_marker(0, 10.0, 10.0)], [])
+        assert osc.sends == [("/final", "127.0.0.1", 53000)]
+
+    def test_every_transition_goes_out_on_the_zones_own_destination(self) -> None:
+        """First entry, additional entry, partial exit and final exit each send
+        with the destination's egress and transport."""
+        asked: list[str] = []
+        egress = Egress("eth1", "198.51.100.10")
+
+        def _provide(dest: _DestCfg) -> Egress:
+            asked.append(dest.id)
+            return egress
+
+        osc = _RecordingOsc()
+        dests = _DestsCfg(destinations=[_DestCfg(id="d", protocol="tcp", framing="length_prefix"), _DestCfg(id="x")])
+        engine = ZoneEngine(
+            _ZonesCfg(zones=[_zone()]),  # type: ignore[arg-type]
+            osc,  # type: ignore[arg-type]
+            dests,  # type: ignore[arg-type]
+            egress_provider=_provide,
+        )
+        engine.update([_marker(0, 2.0, 2.0)], [])
+        engine.update([_marker(0, 2.0, 2.0), _marker(1, 3.0, 3.0)], [])
+        engine.update([_marker(0, 2.0, 2.0)], [])
+        engine.update([], [])
+
+        assert [send[0] for send in osc.sends] == ["/first", "/additional", "/partial", "/final"]
+        assert osc.egress_seen == [egress] * 4
+        assert {(send[3], send[4]) for send in osc.sends_transport} == {("tcp", "length_prefix")}
+        assert set(asked) == {"d"}

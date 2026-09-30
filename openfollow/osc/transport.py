@@ -40,6 +40,7 @@ import time
 from typing import Any
 
 from openfollow.configuration import VALID_OSC_FRAMINGS as _FRAMINGS
+from openfollow.net_egress import Egress, pin_socket_egress
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,8 @@ class TcpOscSender:
         host: str,
         port: int,
         framing: str = "length_prefix",
+        *,
+        egress: Egress | None = None,
     ) -> None:
         # Constructor default is ``"length_prefix"``; the runtime path
         # always passes ``framing`` explicitly, so the config-layer
@@ -143,6 +146,8 @@ class TcpOscSender:
         self._host = host
         self._port = port
         self._framing = framing
+        # Every connection, reconnects included, leaves on this interface.
+        self._egress = egress
         self._sock: socket.socket | None = None
         self._reader_thread: threading.Thread | None = None
         self._reader_stop: threading.Event = threading.Event()
@@ -210,12 +215,24 @@ class TcpOscSender:
             if thread is not None:
                 thread.join(timeout=_SHUTDOWN_JOIN_S)
 
+    def _connect(self) -> socket.socket:
+        if self._egress is None:
+            return socket.create_connection((self._host, self._port), timeout=_CONNECT_TIMEOUT_S)
+        target = socket.getaddrinfo(self._host, self._port, socket.AF_INET, socket.SOCK_STREAM)[0][4]
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            # Before connect(): that is where the route is chosen.
+            pin_socket_egress(sock, self._egress)
+            sock.settimeout(_CONNECT_TIMEOUT_S)
+            sock.connect(target)
+        except OSError:
+            sock.close()
+            raise
+        return sock
+
     def _open(self) -> None:
         try:
-            sock = socket.create_connection(
-                (self._host, self._port),
-                timeout=_CONNECT_TIMEOUT_S,
-            )
+            sock = self._connect()
         except OSError:
             self._mark_failed()
             raise

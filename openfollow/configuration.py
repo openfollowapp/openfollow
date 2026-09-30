@@ -1560,6 +1560,8 @@ class OscDestinationConfig:
     # TCP framing selector. Inert for UDP but round-trippable so the UI swap
     # doesn't hide it on protocol toggle.
     framing: str = "slip"
+    # Interface to send from, by name; blank follows ``psn_source_iface``.
+    source_iface: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, str) or not self.id.strip():
@@ -1583,6 +1585,9 @@ class OscDestinationConfig:
             VALID_OSC_FRAMINGS,
             "slip",
         )
+        if not isinstance(self.source_iface, str):
+            self.source_iface = ""
+        self.source_iface = self.source_iface.strip()
 
 
 def _default_osc_destinations() -> list[OscDestinationConfig]:

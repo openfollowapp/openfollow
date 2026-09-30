@@ -2401,6 +2401,23 @@ def test_rttrpm_output_config_source_iface_rejects_non_strings(raw: object) -> N
     assert RttrpmOutputConfig(source_iface=raw).source_iface == ""  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(("raw", "expected"), [(" eth1 ", "eth1"), (None, ""), (5, ""), (True, ""), (["eth1"], "")])
+def test_osc_destination_source_iface_is_normalised(raw: object, expected: str) -> None:
+    from openfollow.configuration import OscDestinationConfig
+
+    assert OscDestinationConfig(source_iface=raw).source_iface == expected  # type: ignore[arg-type]
+
+
+def test_osc_destination_source_iface_loads_from_toml(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[[osc_destinations.destinations]]\nid = "foh"\nhost = "198.51.100.20"\nsource_iface = "eth1 "\n',
+        encoding="utf-8",
+    )
+    (dest,) = load_config(str(path)).osc_destinations.destinations
+    assert dest.source_iface == "eth1"
+
+
 def test_rttrpm_output_source_iface_loads_from_toml(tmp_path) -> None:
     path = tmp_path / "config.toml"
     path.write_text('[rttrpm_output]\nenabled = true\nsource_iface = " eth1 "\n', encoding="utf-8")

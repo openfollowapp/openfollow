@@ -138,6 +138,8 @@ class _FakeOscService:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, list, str, int]] = []
+        self.retained: list[object] = []
+        self.evicted: list[str] = []
 
     def send(
         self,
@@ -148,8 +150,15 @@ class _FakeOscService:
         port: int,
         protocol: str = "udp",
         framing: str = "slip",
+        egress: object = None,
     ) -> None:
         self.calls.append((address, list(args), host, port))
+
+    def retain_egress(self, live: object) -> None:
+        self.retained.append(live)
+
+    def evict_egress(self, iface: str) -> None:
+        self.evicted.append(iface)
 
 
 # --------------------------------------------------------------------------- #
@@ -208,7 +217,7 @@ def services(monkeypatch: pytest.MonkeyPatch) -> AppRuntimeServices:
     # services itself; tests swap it for a fake after construction.
     import openfollow.zones as zones_pkg
 
-    monkeypatch.setattr(zones_pkg, "ZoneEngine", lambda cfg, osc, dests=None: _FakeZoneEngine())
+    monkeypatch.setattr(zones_pkg, "ZoneEngine", lambda cfg, osc, dests=None, egress_provider=None: _FakeZoneEngine())
 
     svc = AppRuntimeServices(_make_app())
     svc._osc_service = _FakeOscService()  # type: ignore[assignment]

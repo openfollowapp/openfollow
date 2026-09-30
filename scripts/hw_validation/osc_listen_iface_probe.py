@@ -22,6 +22,12 @@ it proves **delivery**, not just what ``/proc/net/igmp`` claims. Each write
 uses a coordinate the marker is not already at: a target it happens to hold
 reads as delivered no matter what the socket did.
 
+Where the group *should* be is read from ``config.toml`` - ``osc.listen_iface``,
+else the station's ``psn_source_iface`` - never from the kernel: judged against
+``/proc/net/igmp`` alone, a join on the wrong adapter matches itself and passes.
+With neither set the routing table picks, and only a single membership can be
+asserted.
+
     sudo /opt/openfollow/venv/bin/python osc_listen_iface_probe.py \\
         --marker 301 --pin 0303
 
@@ -42,6 +48,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11; the device runs 3.13
+    import tomli as tomllib  # type: ignore[no-redef]
 
 CONFIG_PATH = "/var/lib/openfollow/config.toml"
 SETTLE_S = 3.0
@@ -148,15 +159,36 @@ def delivered(station: Station, marker: int, port: int, target: tuple[float, flo
     return False
 
 
-def configured_group() -> str:
+def configured_osc(path: str = CONFIG_PATH) -> tuple[str, str]:
+    """``(group, pinned interface)`` from the station config; a blank pin follows the station's."""
     try:
-        with open(CONFIG_PATH) as handle:
-            for line in handle:
-                if line.strip().startswith("multicast_group"):
-                    return line.split("=", 1)[1].strip().strip('"')
-    except OSError:
-        pass
-    return ""
+        with open(path, "rb") as handle:
+            cfg = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
+        return "", ""
+    osc = cfg.get("osc", {})
+    group = str(osc.get("multicast_group", "")).strip()
+    pin = str(osc.get("listen_iface", "")).strip() or str(cfg.get("psn_source_iface", "")).strip()
+    return group, pin
+
+
+def membership_failures(pin: str, addresses: dict[str, str], holders: list[str]) -> list[str]:
+    """Where the kernel holds the group, judged against the configured pin."""
+    if not pin:
+        if len(holders) == 1:
+            return []
+        return [f"unpinned, the group should be held on one interface, not on {', '.join(holders) or 'nothing'}"]
+    # A pinned interface with no address holds nothing: fail closed, never another adapter.
+    want = [pin] if pin in addresses else []
+    if sorted(holders) == want:
+        return []
+    where = pin if want else f"nothing ({pin} has no address)"
+    return [f"group held on {', '.join(holders) or 'nothing'}, but the pin puts it on {where}"]
+
+
+def delivery_expected(name: str, pin: str, holders: list[str]) -> bool:
+    """Whether multicast sent via *name* should arrive: the pin decides, the kernel only when unpinned."""
+    return name == pin if pin else name in holders
 
 
 def main() -> int:
@@ -168,7 +200,8 @@ def main() -> int:
     parser.add_argument("--web", default="http://127.0.0.1", help="station web UI base URL")
     args = parser.parse_args()
 
-    group = args.group or configured_group()
+    configured_group, pin = configured_osc()
+    group = args.group or configured_group
     if not group:
         print("FAIL: no multicast group configured - the pin governs nothing")
         return 1
@@ -180,21 +213,22 @@ def main() -> int:
 
     addresses = interface_addresses()
     holders = membership_interfaces(group)
+    print(f"pin: {pin or 'none (the routing table picks)'}")
     print(f"group {group} held on: {', '.join(holders) or 'nothing'}")
     print(f"interfaces: {', '.join(f'{n}={a}' for n, a in addresses.items())}\n")
 
-    failures: list[str] = []
+    failures = membership_failures(pin, addresses, holders)
     step = 0.0
     for name, address in addresses.items():
         step += 1.0
-        expected = name in holders
+        expected = delivery_expected(name, pin, holders)
         got = delivered(station, args.marker, args.port, (step, 1.0), dest=group, via=address)
         verdict = "ok" if got == expected else "FAIL"
         print(f"  multicast via {name:<18} delivered={str(got):<5} expected={str(expected):<5} {verdict}")
         if got != expected:
             failures.append(
-                f"multicast via {name} was {'delivered' if got else 'dropped'} but the membership is "
-                f"{'not ' if not expected else ''}on it"
+                f"multicast via {name} was {'delivered' if got else 'dropped'} but the pin puts the membership "
+                f"{'elsewhere' if not expected else 'on it'}"
             )
 
     for name, address in addresses.items():

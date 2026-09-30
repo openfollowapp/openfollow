@@ -11,8 +11,10 @@ is to retry the *bind* rather than the pick.
 
 The two retry helpers differ because the two failures look different:
 ``bind_free_udp_port`` watches for the ``EADDRINUSE`` a lost bind raises, while
-``live_on_free_port`` watches for the port never opening, since ``ConfigWebServer``
-answers a taken port by quietly serving a fallback port instead of raising.
+``live_on_free_port`` watches for this process never listening on the port,
+since ``ConfigWebServer`` answers a taken port by quietly serving a fallback port
+instead of raising. Whoever took it may be listening there, so a connect that
+succeeds proves nothing about whose server answered.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ import socket
 import time
 from collections.abc import Callable, Iterator
 from typing import Protocol, TypeVar
+
+import psutil
 
 BIND_ATTEMPTS = 5
 STARTUP_TIMEOUT_S = 5.0
@@ -87,6 +91,18 @@ def wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = STARTUP_T
     return False
 
 
+def wait_for_own_listener(port: int, timeout: float = STARTUP_TIMEOUT_S) -> bool:
+    """Poll until this process holds a listening TCP socket on ``port``, or ``timeout`` elapses."""
+    process = psutil.Process()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for conn in process.net_connections(kind="tcp"):
+            if conn.status == psutil.CONN_LISTEN and conn.laddr and conn.laddr.port == port:
+                return True
+        time.sleep(0.05)
+    return False
+
+
 def start_on_free_port(
     factory: Callable[[int], _ServerT],
     *,
@@ -103,7 +119,7 @@ def start_on_free_port(
         port = free_tcp_port(host)
         server = factory(port)
         server.start()
-        if wait_for_port(port, host, timeout):
+        if wait_for_own_listener(port, timeout):
             return server, f"http://{host}:{port}"
         server.stop()
     raise AssertionError(f"no free TCP port after {attempts} attempts")

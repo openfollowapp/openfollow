@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import errno
 import socket
+import subprocess
+import sys
+from collections.abc import Iterator
 
 import pytest
 
@@ -217,6 +220,66 @@ def test_start_on_free_port_retries_when_the_port_never_opens(fake_servers: list
         assert len(fake_servers) == 2
         assert fake_servers[0].stopped is True
         assert server is fake_servers[1]
+    finally:
+        server.stop()
+
+
+_SQUATTER = (
+    "import socket, sys\n"
+    "s = socket.socket()\n"
+    "s.bind(('127.0.0.1', 0))\n"
+    "s.listen(16)\n"
+    "print(s.getsockname()[1], flush=True)\n"
+    "sys.stdin.read()\n"
+)
+
+
+@pytest.fixture()
+def squatter_port() -> Iterator[int]:
+    """A port another process is listening on, as another xdist worker's server would be."""
+    squatter = subprocess.Popen(
+        [sys.executable, "-c", _SQUATTER], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert squatter.stdout is not None
+        yield int(squatter.stdout.readline())
+    finally:
+        squatter.communicate(timeout=5)
+
+
+def test_wait_for_own_listener_sees_this_process_listening() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        assert _ports.wait_for_own_listener(sock.getsockname()[1], timeout=0.5) is True
+
+
+def test_wait_for_own_listener_ignores_another_process(squatter_port: int) -> None:
+    """A connect to the port succeeds, which is why it cannot tell; neither our
+    client end of it nor our own listener on another port counts."""
+    with (
+        socket.create_connection(("127.0.0.1", squatter_port), timeout=1.0),
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as other,
+    ):
+        other.bind(("127.0.0.1", 0))
+        other.listen(1)
+        assert _ports.wait_for_own_listener(squatter_port, timeout=0.2) is False
+
+
+def test_start_on_free_port_retries_when_another_process_holds_the_port(
+    fake_servers: list[_FakeServer], squatter_port: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The race that reaches the gate: another xdist worker's server takes the
+    picked port, so it answers a connect, while ours quietly serves a fallback
+    port. The test would then talk to the other worker's server."""
+    picks = iter([squatter_port])
+    monkeypatch.setattr(_ports, "free_tcp_port", lambda host="": next(picks, None) or free_tcp_port(host))
+    server, base = start_on_free_port(lambda port: _FakeServer(port, listen_from=1), timeout=0.5)
+    try:
+        assert fake_servers[0].port == squatter_port
+        assert fake_servers[0].stopped is True
+        assert server is fake_servers[1]
+        assert base == f"http://127.0.0.1:{server.port}"
     finally:
         server.stop()
 

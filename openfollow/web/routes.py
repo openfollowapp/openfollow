@@ -2881,6 +2881,9 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     # has no such adapter it reads as a pin that is down, which drops the OSC
     # multicast membership there until somebody finds the setting.
     d["osc"].pop("listen_iface", None)
+    d["rttrpm_output"].pop("source_iface", None)
+    for dest in d["osc_destinations"]["destinations"]:
+        dest.pop("source_iface", None)
     return d
 
 
@@ -3035,7 +3038,12 @@ def _apply_import_data(
     if "osc_destinations" in data and isinstance(data["osc_destinations"], dict):
         dests = data["osc_destinations"].get("destinations")
         if isinstance(dests, list):
+            # A pin names this station's NIC: keep ours by destination id and
+            # never take the file's. A destination new to this station starts blank.
+            pins = {dest.id: dest.source_iface for dest in cfg.osc_destinations.destinations}
             cfg.osc_destinations = OscDestinationsConfig(destinations=dests)
+            for dest in cfg.osc_destinations.destinations:
+                dest.source_iface = pins.get(dest.id, "")
 
     # Trigger zones: import global settings + zones list atomically
     if "trigger_zones" in data and isinstance(data["trigger_zones"], dict):

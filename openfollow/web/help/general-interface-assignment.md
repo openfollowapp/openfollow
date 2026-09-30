@@ -50,6 +50,8 @@ A destination on this station itself (`127.0.0.1` or `localhost`) never leaves t
 
 If the pinned interface has no address, those messages stop. An OSC Output row's Diagnostics and a zone's test send say `interface eth1 is down`, and the on-screen display lists `OSC output` or `RTTrPM output` under **Network**. They resume when the interface comes back. A zone crossing that happened while its interface was down is not sent late.
 
+These pins belong to this station. A config export leaves them out, and an import keeps the pins this station already has for destinations it already has; a destination new to it follows the station interface.
+
 ## Web UI
 
 This page. Left blank it answers on every interface, which is what you want on almost every station – it is how you reach the box, not something the show depends on.

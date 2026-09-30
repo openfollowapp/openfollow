@@ -2645,6 +2645,21 @@ class TestTheSettingsButtonClosesEverything:
         process_input(app, 0.016)
         assert app._settings_menu_active is True
 
+    def test_the_key_that_opened_a_screen_closes_it_on_the_next_press(self) -> None:
+        """Released and pressed again inside the screen, the opening key must
+        read as a fresh press - the menu never returns to the HUD in between."""
+        app = self._app(key_down=True)
+        app._settings_menu_active = True
+        app._settings_key_pressed = True
+        app._process_settings_menu_input = lambda: None
+        keys = app._input_manager.keyboard_handler.keys
+        process_input(app, 0.016)
+        keys.clear()
+        process_input(app, 0.016)
+        keys.add("m")
+        process_input(app, 0.016)
+        assert app._settings_menu_active is False
+
     def test_closing_orphans_an_in_flight_network_worker(self) -> None:
         """``exit_pi_network`` bumps the worker generation; closing by clearing
         flags instead would let a late apply write to a screen that is gone."""

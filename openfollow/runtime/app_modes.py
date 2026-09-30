@@ -110,6 +110,8 @@ def _settings_button_closes(app: OpenFollowApp, keys: set[str]) -> bool:
             return False
         app._settings_key_pressed = True
         return True
+    # A release inside a screen, where the normal-mode reset never runs.
+    app._settings_key_pressed = False
     manager = app._input_manager
     handler = getattr(manager, "gamepad_handler", None) if manager is not None else None
     return bool(handler is not None and handler.read_settings_toggle())

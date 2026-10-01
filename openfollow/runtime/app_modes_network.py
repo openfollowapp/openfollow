@@ -1085,7 +1085,13 @@ def _finish_worker(
     warnings = list(result.partial_failures)
     if snap is None:
         warnings.append("could not re-read the interfaces")
-    if result.ok:
+    if result.pending:
+        # Saved, but the interface has no link to come up on yet.
+        msg = result.message
+        if warnings:
+            msg += " Warnings: " + "; ".join(warnings)
+        _set_banner(app, msg, "info")
+    elif result.ok:
         msg = f"{action_label} ok."
         if warnings:
             msg += " Warnings: " + "; ".join(warnings)

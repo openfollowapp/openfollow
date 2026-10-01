@@ -376,7 +376,7 @@ class OpenFollowApp:
         self._pi_network_worker_generation: int = 0
         # Hand-off slot for a finished network worker, drained on the main tick.
         self._pi_network_worker_lock = threading.Lock()
-        self._pi_network_pending_result: tuple[Any, str, int, Any] | None = None
+        self._pi_network_pending_result: tuple[Any, str, str, int, Any] | None = None
 
         self._show_hud_help: bool = True
 

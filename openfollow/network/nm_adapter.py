@@ -44,8 +44,8 @@ _NMCLI_NOT_FOUND = 10
 _SYS_CLASS_NET = Path("/sys/class/net")
 
 # Shown when the privilege broker is absent, which on a real device means the
-# sudoers rules were never installed. Kept short: the on-screen banner is one
-# truncated line.
+# sudoers rules were never installed. Kept short: the on-screen result line wraps
+# to three lines and cuts the rest.
 _NO_BROKER_MESSAGE = "Cannot change network settings - the privileged helper is not configured."
 
 
@@ -286,8 +286,8 @@ class NetworkManagerAdapter(NetworkAdapter):
     def _no_profile_message(self, iface: str) -> str:
         """Say what the operator should check, not what the adapter didn't find.
 
-        Kept to one short sentence: the on-screen Settings banner is a single
-        truncated line, so a second sentence is the half that gets cut.
+        Kept to one short sentence: the on-screen result line wraps to three
+        lines and cuts the rest, which would be the actionable half.
         """
         state = self._device_state(iface)
         if state is None:

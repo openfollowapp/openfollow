@@ -7,7 +7,7 @@ from __future__ import annotations
 import ipaddress
 import re
 
-from openfollow.network.adapter import LOOPBACK_NAMES, Ipv4Method
+from openfollow.network.adapter import LOOPBACK_NAMES, Ipv4Config, Ipv4Method
 
 _DNS_SEP_RE = re.compile(r"[\s,;]+")
 _MAX_DNS = 3
@@ -83,6 +83,23 @@ def prefix_to_mask(prefix: int | None) -> str | None:
         return "0.0.0.0"
     mask_int = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
     return str(ipaddress.IPv4Address(mask_int))
+
+
+def describe_applied(iface: str, config: Ipv4Config) -> str:
+    """What an apply set, in one sentence for the web card and the on-screen Network screen."""
+    if config.method == Ipv4Method.STATIC:
+        where = config.address or ""
+        if config.prefix is not None:
+            where += f"/{config.prefix}"
+        router = f", router {config.router}" if config.router else ""
+        return f"{iface} is now static at {where}{router}."
+    if config.method == Ipv4Method.DHCP_WITH_MANUAL_ADDRESS:
+        return f"{iface} now uses DHCP with the address {config.address}."
+    return f"{iface} now uses DHCP."
+
+
+def describe_renewed(iface: str) -> str:
+    return f"{iface} renewed its DHCP lease."
 
 
 def router_in_subnet(address: str, prefix: int, router: str) -> bool:

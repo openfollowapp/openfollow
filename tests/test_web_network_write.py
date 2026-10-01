@@ -665,7 +665,7 @@ def test_apply_dhcp_returns_view_not_redirect(net_server) -> None:
     )
     assert status == 200
     assert "hx-redirect" not in headers  # DHCP has no known address
-    assert "Network settings applied." in body
+    assert "eth0 now uses DHCP." in body
     assert 'data-mode="edit"' not in body  # back to every row read-only
 
 
@@ -754,8 +754,7 @@ def test_apply_dhcp_partial_failures_surfaced(net_server) -> None:
         },
     )
     assert "hx-redirect" not in headers
-    assert "Network settings applied." in body
-    assert "DNS not set" in body
+    assert "eth0 now uses DHCP. Warnings: DNS not set" in body
 
 
 def test_apply_static_partial_failures_surfaced_not_redirected(net_server) -> None:
@@ -774,8 +773,8 @@ def test_apply_static_partial_failures_surfaced_not_redirected(net_server) -> No
         },
     )
     assert "hx-redirect" not in headers  # warning surfaced, not redirected
-    assert "DNS not set" in body
-    assert "192.168.1.50" in body  # reconnect hint points at new IP
+    assert "eth0 is now static at 192.168.1.50/24. Warnings: DNS not set" in body
+    assert "Reconnect at 192.168.1.50" in body
 
 
 # --------------------------------------------------------------------------- #
@@ -788,7 +787,7 @@ def test_renew_calls_adapter_returns_view(net_server) -> None:
     status, body = _post(base, "/section/network/renew", {"iface": "eth0"})
     assert status == 200
     assert fake.renewed == ["eth0"]
-    assert "DHCP lease renewed." in body
+    assert "eth0 renewed its DHCP lease." in body
     assert 'data-mode="edit"' not in body  # back to every row read-only
 
 
@@ -803,8 +802,7 @@ def test_renew_partial_failures_surfaced(net_server) -> None:
     fake, base = net_server
     fake.renew_result = ApplyResult(ok=True, partial_failures=("dns warn",))
     _, body = _post(base, "/section/network/renew", {"iface": "eth0"})
-    assert "DHCP lease renewed." in body
-    assert "dns warn" in body
+    assert "eth0 renewed its DHCP lease. Warnings: dns warn" in body
 
 
 # --------------------------------------------------------------------------- #

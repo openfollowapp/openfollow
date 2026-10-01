@@ -358,7 +358,8 @@ class TestApplyAndRenew:
         anm.drain_pi_network_worker(app)
         assert adapter.apply_calls
         assert app._pi_network_busy is False
-        assert app._pi_network_banner.startswith("Apply ok")
+        assert app._pi_network_banner == "eth0 is now static at 192.168.1.50/24, router 192.168.1.1."
+        assert app._pi_network_banner_level == "success"
 
     def test_start_worker_refuses_while_previous_worker_alive(self) -> None:
         # #552: an orphaned, still-running worker (exit/re-enter cleared busy)
@@ -367,7 +368,7 @@ class TestApplyAndRenew:
         anm.enter_pi_network(app)
         app._pi_network_worker = SimpleNamespace(is_alive=lambda: True)
         ran: list[str] = []
-        anm._start_worker(app, lambda: ran.append("ran") or ApplyResult(ok=True, message=""), "Apply")
+        anm._start_worker(app, lambda: ran.append("ran") or ApplyResult(ok=True, message=""), "Apply", done="")
         assert ran == []  # fn never ran – no second worker launched
         assert app._pi_network_busy is False
         assert app._pi_network_banner  # operator gets feedback, not a silent no-op
@@ -378,7 +379,7 @@ class TestApplyAndRenew:
         anm.enter_pi_network(app)
         app._pi_network_worker = SimpleNamespace(is_alive=lambda: False)
         ran: list[str] = []
-        anm._start_worker(app, lambda: ran.append("ran") or ApplyResult(ok=True, message=""), "Apply")
+        anm._start_worker(app, lambda: ran.append("ran") or ApplyResult(ok=True, message=""), "Apply", done="")
         worker = app._pi_network_worker
         assert worker is not None
         worker.join(timeout=2.0)
@@ -408,6 +409,28 @@ class TestApplyAndRenew:
         worker.join(timeout=2.0)
         anm.drain_pi_network_worker(app)
         assert adapter.renew_calls == ["eth0"]
+        assert app._pi_network_banner == "eth0 renewed its DHCP lease."
+
+    def test_set_dhcp_says_which_interface_now_uses_it(self) -> None:
+        adapter = _FakeAdapter()
+        app = _make_app(adapter)
+        anm.enter_pi_network(app)
+        _open_iface(app, "eth0")
+        anm._set_pi_network_dhcp(app)
+        app._pi_network_worker.join(timeout=2.0)
+        anm.drain_pi_network_worker(app)
+        assert app._pi_network_banner == "eth0 now uses DHCP."
+
+    def test_a_failed_apply_still_says_it_failed(self) -> None:
+        adapter = _FakeAdapter()
+        adapter.apply_result = ApplyResult(ok=False, message="nmcli refused")
+        app = _make_app(adapter)
+        anm.enter_pi_network(app)
+        _open_iface(app, "eth0")
+        anm._set_pi_network_dhcp(app)
+        app._pi_network_worker.join(timeout=2.0)
+        anm.drain_pi_network_worker(app)
+        assert app._pi_network_banner == "Apply failed: nmcli refused"
 
     def test_readonly_adapter_blocks_apply_and_renew(self) -> None:
         adapter = _FakeAdapter(writable=False)
@@ -1057,7 +1080,7 @@ class TestApplyEdgeCases:
         anm.drain_pi_network_worker(app)
 
         assert app._pi_network_busy is False
-        assert app._pi_network_banner.startswith("Apply ok.")
+        assert app._pi_network_banner.startswith("eth0 is now static at 10.0.0.5/24, router 10.0.0.1.")
         assert "could not re-read" in app._pi_network_banner
         assert app._pi_network_banner_level == "caution"
         assert app._pi_network_interfaces == shown  # last-known state kept

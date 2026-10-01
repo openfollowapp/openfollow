@@ -1117,7 +1117,7 @@ def test_the_polled_fragment_carries_no_operator_state(net_server) -> None:
     assert "net-iface-row" in swapped
     assert "ia-vlan-add" not in swapped
     assert "+ Add VLAN" not in swapped
-    assert "ia-legend" not in swapped
+    assert "ia-list-actions" not in swapped
 
 
 def test_a_refused_create_keeps_its_reason_and_its_entry_through_the_poll(net_server) -> None:
@@ -1350,6 +1350,17 @@ def test_add_vlan_is_offered_whenever_the_host_is_writable(net_server) -> None:
     fake.writable = False
     _status, read_only = _get(base, "/section/network/status")
     assert "+ Add VLAN" not in read_only
+
+
+def test_the_card_explains_nothing_inline(net_server) -> None:
+    """What the dot means is the help drawer's to say; the card keeps only its buttons."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/status")
+    assert "up with an address" not in body
+    assert "ia-legend" not in body
+    actions = body.split('class="ia-list-actions"', 1)[1].split("</div>", 1)[0]
+    assert "+ Add VLAN" in actions
+    assert ">Scan</button>" in actions
 
 
 def test_add_vlan_control_absent_on_a_backend_without_vlans(net_server) -> None:

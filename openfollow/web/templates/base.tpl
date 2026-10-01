@@ -857,16 +857,7 @@
  padding-top: 0.8rem;
  border-top: 1px solid rgba(255, 255, 255, 0.08);
  }
- .ia-legend {
- display: flex;
- align-items: center;
- gap: 1rem;
- margin-top: 0.6rem;
- font-size: 0.75rem;
- color: var(--muted);
- }
- .ia-legend .ia-dot { margin-right: 0.3rem; }
- .ia-legend-actions { margin-left: auto; display: inline-flex; gap: 0.4rem; }
+ .ia-list-actions { display: flex; justify-content: flex-end; gap: 0.4rem; margin-top: 0.6rem; }
  /* Interface rows: one collapsible row per NIC, carrying its own editor.
     Same shape as an OSC transmitter row - the summary reads as a status
     line, the body is the form. */

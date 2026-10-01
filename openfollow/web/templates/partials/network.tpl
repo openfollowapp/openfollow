@@ -249,20 +249,16 @@
             % end
         </div>
 
-        <div class="ia-legend">
-            <span><span class="ia-dot up"></span> up with an address</span>
-            <span><span class="ia-dot down"></span> no address</span>
-            <span class="ia-legend-actions">
-                % if _vlan_add:
-                <button type="button" class="secondary small" {{'hidden' if _vopen else ''}}
-                        onclick="this.closest('.group').querySelector('.ia-vlan-add').hidden = false; this.hidden = true;">+ Add VLAN</button>
-                % end
-                %# Keeps the edited row in the path, so re-reading the
-                %# adapter list doesn't discard what the operator has typed.
-                <button type="button" class="secondary small"
-                        hx-get="{{('/section/network/edit/' + _editing) if (_editable and _editing) else '/section/network/status'}}?scan=1"
-                        hx-target="#network-interface" hx-swap="innerHTML">Scan</button>
-            </span>
+        <div class="ia-list-actions">
+            % if _vlan_add:
+            <button type="button" class="secondary small" {{'hidden' if _vopen else ''}}
+                    onclick="this.closest('.group').querySelector('.ia-vlan-add').hidden = false; this.hidden = true;">+ Add VLAN</button>
+            % end
+            %# Keeps the edited row in the path, so re-reading the
+            %# adapter list doesn't discard what the operator has typed.
+            <button type="button" class="secondary small"
+                    hx-get="{{('/section/network/edit/' + _editing) if (_editable and _editing) else '/section/network/status'}}?scan=1"
+                    hx-target="#network-interface" hx-swap="innerHTML">Scan</button>
         </div>
 
         % if _vlan_add:
@@ -288,7 +284,7 @@
             <div class="actions">
                 <button type="submit" class="save-btn">Create</button>
                 <button type="button" class="ghost-btn"
-                        onclick="var b=this.closest('.group'); b.querySelector('.ia-vlan-add').hidden = true; b.querySelector('.ia-legend-actions button').hidden = false;">Cancel</button>
+                        onclick="var b=this.closest('.group'); b.querySelector('.ia-vlan-add').hidden = true; b.querySelector('.ia-list-actions button').hidden = false;">Cancel</button>
             </div>
         </form>
         % end

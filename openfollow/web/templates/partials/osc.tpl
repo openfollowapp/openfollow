@@ -34,6 +34,18 @@
         </div>
         <div class="row">
             <div class="field" style="flex: 1 1 100%;">
+                <label>Multicast Interface</label>
+                %# Read-only pointer – the pin is edited centrally in
+                %# General > Network Interface Assignment, alongside every other plane.
+                <div class="ia-pointer">
+                    <span class="ia-pointer-value">{{config.osc.listen_iface or 'Follows station interface'}}</span>
+                    <a class="ia-link" href="#interface-assignment"
+                       onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Network Interface Assignment</a>
+                </div>
+            </div>
+        </div>
+        <div class="row">
+            <div class="field" style="flex: 1 1 100%;">
                 <label>Allowed sender IPs</label>
                 <input id="osc-allowed-sender-ips" type="text" name="allowed_sender_ips"
                        value="{{', '.join(str(ip) for ip in config.osc.allowed_sender_ips)}}"

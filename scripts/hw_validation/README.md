@@ -72,6 +72,28 @@ poetry run python scripts/hw_validation/osc_socket_options_probe.py
 - **OSC** – a plain `SimpleUDPClient` to `255.255.255.255` raises `EACCES`; the
   probe confirms the deployed `_make_client` sets `SO_BROADCAST` (and reports the
   multicast TTL/loop) so broadcast/multicast rows actually transmit.
+- **OSC input interface** – `osc_listen_iface_probe.py` writes a marker over OSC
+  and reads the position back through the web API, so it proves *delivery* on a
+  station with several adapters, not just what `/proc/net/igmp` claims. It needs
+  a marker id and the web PIN:
+
+  ```sh
+  sudo /opt/openfollow/venv/bin/python \
+      scripts/hw_validation/osc_listen_iface_probe.py --marker 301 --pin 0303
+  ```
+
+  Both halves have to hold at once, and either alone passes while the feature is
+  broken: the group arrives **only** via the pinned interface, and unicast still
+  arrives via **every** one. A listener bound to a single address satisfies the
+  first and fails the second in silence – the join keeps reporting success while
+  no multicast is ever delivered. Where the group belongs is read from
+  `config.toml` (`osc.listen_iface`, else `psn_source_iface`), never from
+  `/proc/net/igmp`: judged against the kernel alone, a join on the wrong adapter
+  matches itself and passes.
+
+  Worth running **after an interface flap**, not only from a clean boot. A
+  membership that cannot be released strands the group on the adapter the pin
+  moved off, which a probe run on a freshly-started station cannot see.
 
 ## Eos console / ETCnomad axis convention
 

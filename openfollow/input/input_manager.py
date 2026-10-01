@@ -42,6 +42,22 @@ logger = logging.getLogger(__name__)
 _IDENTIFY_FLASH_S = 3.0
 
 
+def resolve_osc_multicast_iface(listen_iface: str, station_iface: str) -> str | None:
+    """Interface the OSC listener should take its multicast membership on.
+
+    ``""`` leaves the choice to the routing table, an address pins it, and
+    None means an interface is pinned but currently has no address - so no
+    membership is taken rather than one on an interface the operator excluded.
+
+    The listener itself is unaffected either way: it binds every interface, so
+    unicast and broadcast keep arriving while the group is unavailable.
+    """
+    from openfollow.net_utils import resolve_multicast_iface
+
+    address, status = resolve_multicast_iface(listen_iface, station_iface)
+    return None if status == "down" else address
+
+
 def _oriented(vx: float, vy: float, invert: bool) -> tuple[float, float]:
     """Flip X/Y for an upstage camera, whose view is 180° from the stage axes.
 
@@ -133,6 +149,10 @@ class InputManager:
                 port=osc_cfg.port,
                 allowed_sender_ips=list(osc_cfg.allowed_sender_ips),
                 multicast_group=osc_cfg.multicast_group,
+                multicast_iface=resolve_osc_multicast_iface(
+                    osc_cfg.listen_iface,
+                    app._config.psn_source_iface,
+                ),
             )
             if osc_cfg.enabled
             else None
@@ -605,6 +625,7 @@ class InputManager:
         allowed_sender_ips: list[str] | None = None,
         *,
         multicast_group: str = "",
+        listen_iface: str = "",
     ) -> None:
         """Stop the current OSC handler (if any) and start a new one if enabled.
 
@@ -627,6 +648,10 @@ class InputManager:
                 port=port,
                 allowed_sender_ips=list(allowed_sender_ips or []),
                 multicast_group=multicast_group,
+                multicast_iface=resolve_osc_multicast_iface(
+                    listen_iface,
+                    self.app._config.psn_source_iface,
+                ),
             )
             try:
                 self.osc_handler.start()

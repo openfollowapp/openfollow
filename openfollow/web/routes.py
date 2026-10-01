@@ -5744,13 +5744,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # comparing where it would bind against where it did.
         return resolved[0] != server.bind_host
 
-    def _render_interface_assignment(cfg: AppConfig, *, saved: bool = False, restarting: bool = False) -> Any:
+    def _render_interface_assignment(
+        cfg: AppConfig, *, saved: bool = False, restarting: bool = False, restart_refused: bool = False
+    ) -> Any:
         resolved = resolve_web_bind_for(cfg)
         return template(
             "partials/interface_assignment",
             config=cfg,
             saved=saved,
             restarting=restarting,
+            restart_refused=restart_refused,
             assignment_rows=build_interface_assignment_rows(cfg, resolved),
             web_bind_notice=build_web_bind_notice(cfg, resolved, server.display_port),
             web_bind_advisory=server.get_web_bind_advisory(),
@@ -5773,14 +5776,20 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         Each protocol row's field lives on the sub-config that owns it, so the
         existing per-section hot-reload orchestrators pick those changes up.
         The web UI row is the exception: its listening socket can't be moved
-        under the request that is being served on it, so that one pin needs a
-        restart, offered as a separate ``?restart=1`` submit.
+        under the request that is being served on it, so once saved that pin
+        offers Restart OpenFollow.
         """
         cfg = _save_section_from_form("interface_assignment")
-        if request.query.get("restart") == "1":
-            server.request_restart()
-            return _render_interface_assignment(cfg, saved=True, restarting=True)
         return _render_interface_assignment(cfg, saved=True)
+
+    @app.post("/section/interface_assignment/restart")
+    def restart_for_interface_assignment() -> Any:
+        """Restart only; saving is the panel's Save. Refused while an update runs."""
+        cfg = _request_scoped_config()
+        if server.get_update_status().get("state", "") in {"queued", "running", "restarting"}:
+            return _render_interface_assignment(cfg, restart_refused=True)
+        server.request_restart()
+        return _render_interface_assignment(cfg, restarting=True)
 
     @app.post("/section/video_source")
     def update_video_source() -> Any:

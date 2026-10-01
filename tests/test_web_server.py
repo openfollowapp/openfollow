@@ -1195,12 +1195,16 @@ def test_interface_assignment_web_ui_pin_offers_a_restart(live_server, monkeypat
     save_config(cfg, server.config_path)
 
     _status, body = _get(base, "/section/interface_assignment")
-    assert "/section/interface_assignment?restart=1" in body
+    # Its own red action, not a second kind of Save.
+    tag_start = body.rindex("<button", 0, body.index('hx-post="/section/interface_assignment/restart"'))
+    button = body[tag_start : body.index("</button>", tag_start)]
+    assert 'type="button" class="danger"' in button
+    assert button.endswith(">Restart OpenFollow")
     # Restarting pauses every output, so it asks first, with the danger button.
-    button = body.split('hx-post="/section/interface_assignment?restart=1"', 1)[1].split(">", 1)[0]
     assert 'data-confirm-label="Restart"' in button
     assert "data-confirm-danger" in button
     assert body.count("hx-confirm=") == 1
+    assert "Save &amp; Restart" not in body
 
 
 def test_interface_assignment_offers_a_restart_for_a_pin_to_a_down_interface(
@@ -1223,7 +1227,7 @@ def test_interface_assignment_offers_a_restart_for_a_pin_to_a_down_interface(
     save_config(cfg, server.config_path)
 
     _status, body = _get(base, "/section/interface_assignment")
-    assert "/section/interface_assignment?restart=1" in body
+    assert "/section/interface_assignment/restart" in body
 
 
 def test_interface_assignment_offers_no_restart_once_the_pin_is_in_force(
@@ -1245,7 +1249,7 @@ def test_interface_assignment_offers_no_restart_once_the_pin_is_in_force(
     save_config(cfg, server.config_path)
 
     _status, body = _get(base, "/section/interface_assignment")
-    assert "/section/interface_assignment?restart=1" not in body
+    assert "/section/interface_assignment/restart" not in body
 
 
 def test_interface_assignment_restart_notice_names_the_moved_address(live_server, monkeypatch) -> None:
@@ -1253,15 +1257,15 @@ def test_interface_assignment_restart_notice_names_the_moved_address(live_server
     different address – so it has to say where to look when the reload
     cannot reach this one."""
     _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
-    _server, base = live_server
-    status, body = _post_form(
-        base,
-        "/section/interface_assignment?restart=1",
-        {"psn_source_iface": "", "otp_output.source_iface": "", "web_bind_iface": "eth1"},
-    )
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.web_bind_iface = "eth1"
+    save_config(cfg, server.config_path)
+    status, body = _post_form(base, "/section/interface_assignment/restart", {})
     assert status == 200
     assert "restart-notice" in body
     assert "Network screen" in body
+    assert "After a restart the web UI answers only on http://10.0.0.9" in body
 
 
 def test_interface_assignment_offers_no_restart_when_the_bind_already_matches(live_server) -> None:
@@ -1274,7 +1278,7 @@ def test_interface_assignment_offers_no_restart_when_the_bind_already_matches(li
     save_config(cfg, server.config_path)
 
     _status, body = _get(base, "/section/interface_assignment")
-    assert "/section/interface_assignment?restart=1" not in body
+    assert "/section/interface_assignment/restart" not in body
 
 
 def test_interface_assignment_saves_the_web_ui_pin(live_server, monkeypatch) -> None:
@@ -1965,14 +1969,26 @@ def test_api_update_zone_ignores_non_list_vertices(live_server) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_post_interface_assignment_with_restart_flag_queues_restart(live_server, monkeypatch) -> None:
-    """The web UI pin only takes effect on restart, so the panel's own
-    Save & Restart has to queue one - saving alone would leave the operator
-    looking at a pin that isn't in force."""
+def test_restart_openfollow_restarts_and_saves_nothing(live_server, monkeypatch) -> None:
+    """Save and Restart are two actions: the restart takes whatever was
+    saved, and never the form it was pressed under."""
     _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
     server, base = live_server
     assert server.check_restart_requested() is False
 
+    status, _body = _post_form(
+        base,
+        "/section/interface_assignment/restart",
+        {"psn_source_iface": "", "otp_output.source_iface": "", "web_bind_iface": "eth1"},
+    )
+    assert status == 200
+    assert load_config(server.config_path).web_bind_iface == ""
+    assert server.check_restart_requested() is True
+
+
+def test_save_never_restarts(live_server, monkeypatch) -> None:
+    _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    server, base = live_server
     status, _body = _post_form(
         base,
         "/section/interface_assignment?restart=1",
@@ -1980,7 +1996,18 @@ def test_post_interface_assignment_with_restart_flag_queues_restart(live_server,
     )
     assert status == 200
     assert load_config(server.config_path).web_bind_iface == "eth1"
-    assert server.check_restart_requested() is True
+    assert server.check_restart_requested() is False
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "restarting"])
+def test_restart_openfollow_waits_for_a_running_update(live_server, monkeypatch, state: str) -> None:
+    server, base = live_server
+    monkeypatch.setattr(server, "get_update_status", lambda: {"state": state})
+    status, body = _post_form(base, "/section/interface_assignment/restart", {})
+    assert status == 200
+    assert server.check_restart_requested() is False
+    assert "An update is running, so OpenFollow was not restarted." in body
+    assert "restart-notice" not in body
 
 
 def test_post_interface_assignment_without_restart_flag_queues_nothing(live_server, monkeypatch) -> None:

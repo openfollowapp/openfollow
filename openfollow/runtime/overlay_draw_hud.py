@@ -1160,10 +1160,6 @@ def build_info_panel_rows(state: OverlayState, *, source_max_len: int = 38) -> l
         ("Video Source:", format_source_text(state.video_source_type, state.source_label, max_len=source_max_len))
     )
     rows.append(("Station:", state.station_name or "OpenFollow"))
-    # Labelled once; the rest are bare so a multi-plane outage doesn't repeat
-    # the word down the panel.
-    for i, alert in enumerate(state.network_alerts):
-        rows.append(("Network:" if i == 0 else "", alert))
     return rows
 
 
@@ -1210,7 +1206,8 @@ def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: 
     # so operators glancing at the HUD spot the failure even when
     # they don't have the Settings menu open. Matches the trigger
     # condition for the Settings menu's red-bordered error box. A plane
-    # stopped because its interface went dark is a failure the panel lists.
+    # stopped because its interface went dark turns it red too; the sentence
+    # is a top-right status row.
     in_error = bool(
         state.settings_menu_banner or state.error_message or state.video_failure_text or state.network_alerts
     )

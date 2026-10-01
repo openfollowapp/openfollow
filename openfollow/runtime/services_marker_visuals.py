@@ -882,6 +882,11 @@ def build_marker_visual_state(
             if message:
                 state.status_flags.append((key, message, severity))
 
+    # Ahead of missing controllers: a stopped output loses stage data, and the
+    # rows past the badge's visible few collapse into "+N more".
+    for i, alert in enumerate(state.network_alerts):
+        state.status_flags.append((f"network_down_{i}", alert, "error"))
+
     # One row per missing controller, so it is seen even for a marker with no card.
     for info in controller_info:
         if info.get("state") != "missing":

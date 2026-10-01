@@ -20,7 +20,7 @@ That is deliberate. During a show, output that has stopped is something you can 
 
 The function resumes on its own as soon as the interface has an address again – no restart, no re-save. The station checks about once a second, so a cable going back in recovers within a moment. Nothing about your configuration changes while the interface is away.
 
-While a function is stopped, the on-screen display lists it under **Network**, next to the IP address. That matters when the interface that went away is the one carrying this web page: the screen on the device is the only place left to look.
+While a function is stopped, the on-screen display shows it as a red row in the top-right corner, and the panel with the IP address turns red. That matters when the interface that went away is the one carrying this web page: the screen on the device is the only place left to look.
 
 The **address** is allowed to change. If the interface is on DHCP and comes back with a different address than before, that is normal and the function follows it. Only the interface itself is fixed.
 
@@ -48,7 +48,7 @@ A pinned row sends only on that interface. A destination the interface cannot re
 
 A destination on this station itself (`127.0.0.1` or `localhost`) never leaves the box, so it is never pinned and its Address column reads `Loopback`.
 
-If the pinned interface has no address, those messages stop. An OSC Output row's Diagnostics and a zone's test send say `interface eth1 is down`, and the on-screen display lists `OSC output` or `RTTrPM output` under **Network**. They resume when the interface comes back. A zone crossing that happened while its interface was down is not sent late.
+If the pinned interface has no address, those messages stop. An OSC Output row's Diagnostics and a zone's test send say `interface eth1 is down`, and the on-screen display shows `OSC output` or `RTTrPM output` as a red row in the top-right corner. They resume when the interface comes back. A zone crossing that happened while its interface was down is not sent late.
 
 These pins belong to this station. A config export leaves them out, and an import keeps the pins this station already has for destinations it already has; a destination new to it follows the station interface.
 

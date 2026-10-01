@@ -392,6 +392,17 @@ class TestNetworkAlerts:
         app = _build_app()
         assert _build(app, pool).network_alerts == []
 
+    def test_each_outage_is_an_error_row_top_right(self, pool: OverlayStatePool) -> None:
+        app = _build_app()
+        state = _build(app, pool, network_alerts=["PSN: eth0.10 is down", "OSC output: eth1 is down"])
+        assert state.status_flags == [
+            ("network_down_0", "PSN: eth0.10 is down", "error"),
+            ("network_down_1", "OSC output: eth1 is down", "error"),
+        ]
+
+    def test_no_outage_adds_no_row(self, pool: OverlayStatePool) -> None:
+        assert _build(_build_app(), pool).status_flags == []
+
     def test_the_state_owns_its_copy(self, pool: OverlayStatePool) -> None:
         """The observer rebuilds its list each poll; the overlay must not hold
         a reference that mutates under the renderer mid-frame."""
@@ -1868,6 +1879,21 @@ class TestMissingControllerSurfaces:
         )
         state = _build(app, pool)
         assert ("controller_missing_0", "C1 missing · marker 5 · GameSir-G7 SE", "error") in state.status_flags
+
+    def test_a_network_outage_row_comes_before_missing_controllers(self, pool: OverlayStatePool) -> None:
+        """Rows past the badge's visible few collapse into "+N more"; lost stage
+        data must not be the one hidden there."""
+        app = _build_app(
+            controlled=[5],
+            server_markers={5: _FakeMarker(5)},
+            input_manager=_FakeInputManager(controller_info=[self._slot(state="missing", connected=False)]),
+        )
+        state = _build(app, pool, network_alerts=["PSN: eth0.10 is down", "OTP output: eth0.20 is down"])
+        assert [key for key, _message, _level in state.status_flags] == [
+            "network_down_0",
+            "network_down_1",
+            "controller_missing_0",
+        ]
 
     def test_a_missing_row_leaves_out_what_it_does_not_know(self, pool: OverlayStatePool) -> None:
         missing = self._slot(controller_index=2, state="missing", connected=False, marker_id=None, name="")

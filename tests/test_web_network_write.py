@@ -1418,6 +1418,38 @@ def test_creating_and_removing_a_vlan_show_the_busy_box(net_server) -> None:
     assert 'data-busy-text="Removing VLAN interface eth0.10…"' in remove
 
 
+def _subnet_value(body: str, iface: str) -> str:
+    tag = body.split(f'id="net-subnet-{iface}"', 1)[1].split(">", 1)[0]
+    return tag.split('value="', 1)[1].split('"', 1)[0]
+
+
+def test_an_empty_subnet_opens_as_the_usual_mask_when_editing(net_server) -> None:
+    """A greyed-out example read as a filled-in value, and Apply then refused
+    the empty field. Read-only, an adapter with no mask still shows none."""
+    fake, base = net_server
+    fake.address = ""
+    fake.subnet_mask = ""
+    _status, edit = _get(base, "/section/network/edit/eth0")
+    assert _subnet_value(edit, "eth0") == "255.255.255.0"
+    _status, view = _get(base, "/section/network/status")
+    assert _subnet_value(view, "eth0") == ""
+
+
+def test_an_adapters_own_mask_is_kept_when_editing(net_server) -> None:
+    fake, base = net_server
+    fake.subnet_mask = "255.255.0.0"
+    _status, edit = _get(base, "/section/network/edit/eth0")
+    assert _subnet_value(edit, "eth0") == "255.255.0.0"
+
+
+def test_no_field_on_the_card_shows_an_example_value(net_server) -> None:
+    fake, base = net_server
+    fake.address = ""
+    fake.subnet_mask = ""
+    _status, body = _get(base, "/section/network/edit/eth0")
+    assert "placeholder=" not in body
+
+
 def test_vlan_rows_carry_their_tag(net_server) -> None:
     fake, base = net_server
     fake.interfaces = ["eth0", "eth0.10"]

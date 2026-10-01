@@ -173,13 +173,14 @@
                         <div class="network-grid">
                             <label for="net-address-{{_name}}">IP address</label>
                             <input id="net-address-{{_name}}" type="text" name="address"
-                                   value="{{_entered.get('address', row.get('address', ''))}}" placeholder="192.168.1.50" {{_dis}}>
+                                   value="{{_entered.get('address', row.get('address', ''))}}" {{_dis}}>
                             <label class="net-static-only" for="net-subnet-{{_name}}">Subnet mask</label>
+                            %# An empty mask opens as the usual /24 when editing; read-only it stays empty.
                             <input class="net-static-only" id="net-subnet-{{_name}}" type="text" name="subnet_mask"
-                                   value="{{_entered.get('subnet_mask', row.get('subnet_mask', ''))}}" placeholder="255.255.255.0" {{_dis}}>
+                                   value="{{_entered.get('subnet_mask', row.get('subnet_mask') or ('255.255.255.0' if _row_edit else ''))}}" {{_dis}}>
                             <label class="net-static-only" for="net-router-{{_name}}">Router (optional)</label>
                             <input class="net-static-only" id="net-router-{{_name}}" type="text" name="router"
-                                   value="{{_entered.get('router', row.get('router', ''))}}" placeholder="192.168.1.1" {{_dis}}>
+                                   value="{{_entered.get('router', row.get('router', ''))}}" {{_dis}}>
                         </div>
                     </div>
 
@@ -190,8 +191,7 @@
                             % for i in range(3):
                             <label for="net-dns{{i + 1}}-{{_name}}">Server {{i + 1}}</label>
                             <input id="net-dns{{i + 1}}-{{_name}}" type="text" name="dns{{i + 1}}"
-                                   value="{{_dns[i] if i < len(_dns) else ''}}"
-                                   placeholder="1.1.1.1" {{_dis}}>
+                                   value="{{_dns[i] if i < len(_dns) else ''}}" {{_dis}}>
                             % end
                         </div>
                     </div>
@@ -285,7 +285,7 @@
 
                 <label for="net-vlan-id">VLAN ID</label>
                 <input type="number" id="net-vlan-id" name="vlan_id" min="1" max="4094" step="1"
-                       placeholder="10" value="{{_vform.get('vlan_id', '')}}">
+                       value="{{_vform.get('vlan_id', '')}}">
             </div>
             <div class="actions">
                 <button type="submit" class="save-btn">Create</button>

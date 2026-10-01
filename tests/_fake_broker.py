@@ -21,7 +21,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
-from openfollow.privilege.broker import PrivilegeError, _format_failure
+from openfollow.privilege.broker import PrivilegeError, _exit_failure
 from openfollow.privilege.capabilities import (
     Capability,
     CapabilityState,
@@ -79,10 +79,10 @@ class FakeBroker:
             raise self.exceptions[idx]  # type: ignore[misc]
         if idx < len(self.responses):
             proc = self.responses[idx]
-            # Mirror real broker: non-zero rc → PrivilegeError, via the real
-            # _format_failure for the exact "<description>: <detail>" shape.
+            # Mirror real broker: non-zero rc → PrivilegeError, built by the
+            # real _exit_failure so message, returncode and detail match.
             if proc.returncode != 0:
-                raise PrivilegeError(_format_failure(capability, proc))
+                raise _exit_failure(capability, proc)
             return proc
         return subprocess.CompletedProcess(
             ["sudo", *argv],

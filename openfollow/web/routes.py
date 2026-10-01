@@ -5786,9 +5786,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def restart_for_interface_assignment() -> Any:
         """Restart only; saving is the panel's Save. Refused while an update runs."""
         cfg = _request_scoped_config()
-        if server.get_update_status().get("state", "") in {"queued", "running", "restarting"}:
+        if not server.request_restart_unless_updating():
             return _render_interface_assignment(cfg, restart_refused=True)
-        server.request_restart()
         return _render_interface_assignment(cfg, restarting=True)
 
     @app.post("/section/video_source")
@@ -5820,14 +5819,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             save_config(cfg, server.config_path)
 
         if request.query.get("restart") == "1":
-            update_state = server.get_update_status().get("state", "")
-            if update_state in {"queued", "running", "restarting"}:
+            if not server.request_restart_unless_updating():
                 return _render_general(
                     cfg,
                     saved=True,
                     update_feedback="Update is currently running. Restart is blocked until it finishes.",
                 )
-            server.request_restart()
             return _render_general(cfg, saved=True, restarting=True)
 
         return _render_general(cfg, saved=True)

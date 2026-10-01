@@ -2002,7 +2002,7 @@ def test_save_never_restarts(live_server, monkeypatch) -> None:
 @pytest.mark.parametrize("state", ["queued", "running", "restarting"])
 def test_restart_openfollow_waits_for_a_running_update(live_server, monkeypatch, state: str) -> None:
     server, base = live_server
-    monkeypatch.setattr(server, "get_update_status", lambda: {"state": state})
+    server.set_update_status(state=state)
     status, body = _post_form(base, "/section/interface_assignment/restart", {})
     assert status == 200
     assert server.check_restart_requested() is False

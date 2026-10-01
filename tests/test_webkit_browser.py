@@ -788,7 +788,6 @@ class TestVideoDisconnectBanner:
             _video_was_connected=was_connected,
             _settings_menu_active=any_modal,
             _settings_menu_banner=banner,
-            _iface_selection_active=False,
             _source_type_selection_active=False,
             _url_editor_active=False,
             _field_choice_active=False,
@@ -868,14 +867,6 @@ class TestVideoDisconnectBanner:
         from openfollow.runtime import app_modes
 
         app = self._make_app(connected=False, any_modal=True)
-        app_modes.check_video_disconnect_banner(app)
-        assert app._opened == []
-
-    def test_no_op_when_iface_selection_open(self) -> None:
-        from openfollow.runtime import app_modes
-
-        app = self._make_app(connected=False)
-        app._iface_selection_active = True
         app_modes.check_video_disconnect_banner(app)
         assert app._opened == []
 
@@ -1104,7 +1095,6 @@ class TestProcessInputAndKeyDispatchShortCircuit:
             _button_detection=None,
             _settings_menu_active=False,
             _video_receiver=None,
-            _iface_selection_active=False,
             _source_type_selection_active=False,
             _url_editor_active=False,
             _field_choice_active=False,
@@ -1132,7 +1122,6 @@ class TestProcessInputAndKeyDispatchShortCircuit:
             _button_detection=None,
             _settings_menu_active=False,
             _video_receiver=None,
-            _iface_selection_active=False,
             _source_type_selection_active=False,
             _url_editor_active=False,
             _field_choice_active=False,

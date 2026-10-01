@@ -635,6 +635,12 @@ class AppRuntimeServices:
         from openfollow.input.conflicts import default_registry
 
         self._conflict_registry = default_registry(RESERVED_MOVEMENT_KEYS)
+        # How the web UI's interface pin resolved, recorded by
+        # ``_resolve_web_bind`` and read back by the panel's advisory.
+        self._web_bind_status = ""
+        self._web_bind_banner = ""
+        self._web_bind_resolved_ip = ""
+        self._web_bind_pin_at_start: tuple[str, str] = ("", "")
         self._overlay_renderer: CairoOverlayRenderer | None = None  # set in init_video
         self._system_stats: SystemStatsCollector | None = None  # set in init_video
         self._person_detector: PersonDetector | None = None  # set in init_video if enabled
@@ -1250,13 +1256,56 @@ class AppRuntimeServices:
     def _resolve_web_bind(self) -> str:
         """Resolve the web UI listen address.
 
-        ``web_bind`` set → that explicit address. Empty → ``0.0.0.0`` (all
+        ``web_bind`` set → that explicit address. Else ``web_bind_iface``
+        resolved to that interface's current IPv4. Neither → ``0.0.0.0`` (all
         interfaces) so the UI stays reachable across an interface IP change
         without a restart. When ``web_pin`` is set, access is gated by session
         auth plus the CSRF / DNS-rebind guards; with it empty those are
-        disabled. Set ``web_bind`` to pin the UI to a single address.
+        disabled.
+
+        A pin naming an interface with no address falls back to the wildcard
+        bind and records an advisory. This is the one plane that fails **open**:
+        a silent output plane is diagnosable from any other station, whereas an
+        unreachable config UI leaves nobody able to correct the pin that caused
+        it. The on-screen Network screen is the second escape.
+
+        The advisory records what the bind actually did, and the bind only
+        changes on restart – so a pin whose interface returns later keeps
+        reporting the fallback, because the server is still on the wildcard.
         """
-        return self._app._config.web_bind or "0.0.0.0"
+        from openfollow.net_utils import resolve_web_bind
+
+        cfg = self._app._config
+        host, status = resolve_web_bind(cfg.web_bind, cfg.web_bind_iface)
+        # The pin as it stood when the socket was opened. The panel compares
+        # the saved config against this to tell whether a restart is still
+        # owed - comparing resolved addresses instead would miss a pin whose
+        # interface is down, because that resolves to the same wildcard the
+        # server is already on.
+        self._web_bind_pin_at_start = (cfg.web_bind, cfg.web_bind_iface)
+        self._web_bind_status = "" if status == "none" else status
+        self._web_bind_resolved_ip = host if status == "iface" else ""
+        self._web_bind_banner = (
+            f"Web UI is pinned to '{cfg.web_bind_iface}', which has no address. "
+            "Serving on all interfaces instead so the UI stays reachable."
+            if status == "down"
+            else ""
+        )
+        return host
+
+    def _web_bind_advisory(self) -> dict[str, str]:
+        """Web provider: how the web UI's interface pin was resolved at bind
+        time. ``status`` is ``"iface"`` (pin honoured), ``"down"`` (pin
+        unresolvable, wildcard bind substituted) or blank (no pin)."""
+        return {
+            "status": self._web_bind_status,
+            "banner": self._web_bind_banner,
+            "resolved_ip": self._web_bind_resolved_ip,
+            # What the running server was started with, so a caller can tell a
+            # pending restart from an applied one.
+            "bind_at_start": self._web_bind_pin_at_start[0],
+            "iface_at_start": self._web_bind_pin_at_start[1],
+        }
 
     def init_psn(self) -> None:
         source_ip = self.station_source_ip_or_none()
@@ -2390,6 +2439,7 @@ class AppRuntimeServices:
             psn_source_advisory_provider=self._psn_source_advisory,
             media_list_provider=lambda: list_media(broker),
             media_scan_provider=lambda: scan_media(broker),
+            web_bind_advisory_provider=self._web_bind_advisory,
         )
         self.diagnostics_export = DiagnosticsExport(
             build=lambda: build_diagnostics_bundle(server),
@@ -2626,11 +2676,15 @@ class AppRuntimeServices:
         return base
 
     def _network_interfaces_provider(self) -> list[dict[str, Any]]:
-        """Every non-loopback interface with its address, method and up-state.
+        """Every non-loopback interface with its full IPv4 detail and up-state.
 
         The single-interface form only ever showed one adapter at a time, so
         there was nowhere to see a multi-NIC (or tagged-VLAN) station's layout.
         This backs the interface list that replaced its picker.
+
+        Each row carries router / DNS / lease as well as the address, so the
+        card can render every interface's editor without a second read: the
+        ``get_state`` below already returns them.
 
         One ``get_state`` per interface means one backend call each – on the
         NetworkManager adapter that is an ``nmcli`` subprocess – so the caller
@@ -2653,6 +2707,9 @@ class AppRuntimeServices:
                 "prefix": None,
                 "subnet_mask": "",
                 "method": "dhcp",
+                "router": "",
+                "dns": [],
+                "lease_display": None,
             }
             # A per-interface read can fail (interface disappearing mid-scan,
             # backend hiccup) without invalidating the rest of the list, so
@@ -2663,11 +2720,16 @@ class AppRuntimeServices:
                 logger.exception("Network state read failed for %s", iface.name)
                 state = None
             if state is not None:
+                lease = state.lease
+                seconds = lease.lease_seconds_remaining if lease and lease.lease_seconds_remaining is not None else None
                 row.update(
                     address=state.ipv4.address or "",
                     prefix=state.ipv4.prefix,
                     subnet_mask=prefix_to_mask(state.ipv4.prefix) or "",
                     method=state.ipv4.method.value,
+                    router=state.ipv4.router or "",
+                    dns=list(state.ipv4.dns),
+                    lease_display=_format_lease_remaining(seconds),
                 )
             rows.append(row)
         return rows

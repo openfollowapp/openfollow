@@ -43,6 +43,12 @@ COLOR_WARNING_BORDER = (0.69, 0.149, 0.149)  # #b02626 (RGB)
 COLOR_INFO_BG = (0.09, 0.239, 0.42)  # #173d6b (RGB)
 COLOR_INFO_FILL = (*COLOR_INFO_BG, 0.8)  # #173d6b at 80% (RGBA)
 COLOR_INFO_BORDER = (0.149, 0.392, 0.69)  # #2664b0 (RGB)
+COLOR_CAUTION_BG = (0.608, 0.447, 0.0)  # #9b7200 (RGB)
+COLOR_CAUTION_FILL = (*COLOR_CAUTION_BG, 0.8)  # #9b7200 at 80% (RGBA)
+COLOR_CAUTION_BORDER = (1.0, 0.737, 0.0)  # #ffbc00 (RGB)
+COLOR_SUCCESS_BG = (0.145, 0.369, 0.227)  # #255e3a (RGB)
+COLOR_SUCCESS_FILL = (*COLOR_SUCCESS_BG, 0.8)  # #255e3a at 80% (RGBA)
+COLOR_SUCCESS_BORDER = (0.239, 0.604, 0.376)  # #3d9a60 (RGB)
 
 # Typography
 FONT_UI_FAMILY = "Inter"
@@ -115,11 +121,16 @@ def draw_info_sign(cr: Any, cx: float, cy: float, size: float = 13.0, cut: tuple
 
 
 def draw_success_sign(
-    cr: Any, cx: float, cy: float, size: float = 13.0, cut: tuple[float, ...] = COLOR_BG_BASE
+    cr: Any,
+    cx: float,
+    cy: float,
+    size: float = 13.0,
+    cut: tuple[float, ...] = COLOR_BG_BASE,
+    disc: tuple[float, ...] = COLOR_OK,
 ) -> None:
-    """Green disc with its check cut out in ``cut``, centred on (cx, cy)."""
+    """Disc (green unless ``disc`` says otherwise) with its check cut out in ``cut``, centred on (cx, cy)."""
     cr.save()
-    cr.set_source_rgb(*COLOR_OK)
+    cr.set_source_rgb(*disc)
     cr.arc(cx, cy, size * 0.45, 0, 2 * math.pi)
     cr.fill()
     cr.set_source_rgb(*cut)
@@ -129,6 +140,54 @@ def draw_success_sign(
     cr.move_to(cx - size * 0.2125, cy + size * 0.01875)
     cr.line_to(cx - size * 0.0625, cy + size * 0.1625)
     cr.line_to(cx + size * 0.2125, cy - size * 0.1375)
+    cr.stroke()
+    cr.restore()
+
+
+# Fill, border and the sign's cut-out colour of a status level, as the web chips.
+STATUS_LEVEL_COLORS: dict[str, tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]] = {
+    "error": (COLOR_WARNING_FILL, COLOR_WARNING_BORDER, COLOR_DANGER_BG),
+    "caution": (COLOR_CAUTION_FILL, COLOR_CAUTION_BORDER, COLOR_CAUTION_BG),
+    "info": (COLOR_INFO_FILL, COLOR_INFO_BORDER, COLOR_INFO_BG),
+    "success": (COLOR_SUCCESS_FILL, COLOR_SUCCESS_BORDER, COLOR_SUCCESS_BG),
+}
+
+
+def draw_level_sign(cr: Any, level: str, cx: float, cy: float, size: float = 13.0) -> None:
+    """Off-white: the warning sign for an error, the check for a success, the "i" otherwise."""
+    cut = STATUS_LEVEL_COLORS[level][2]
+    if level == "error":
+        draw_warning_sign(cr, cx, cy, size)
+    elif level == "success":
+        draw_success_sign(cr, cx, cy, size, cut=cut, disc=COLOR_TEXT)
+    else:
+        draw_info_sign(cr, cx, cy, size, cut=cut)
+
+
+# The level signs' size, so a chevron reads as an icon beside them.
+CHEVRON_SIZE = 13.0
+
+# Corner points of each direction's angle, as fractions of its size around the centre.
+_CHEVRON_POINTS = {
+    "right": ((-0.22, -0.42), (0.22, 0.0), (-0.22, 0.42)),
+    "down": ((-0.42, -0.22), (0.0, 0.22), (0.42, -0.22)),
+    "up": ((-0.42, 0.22), (0.0, -0.22), (0.42, 0.22)),
+}
+
+
+def draw_chevron(
+    cr: Any, cx: float, cy: float, direction: str = "right", size: float = CHEVRON_SIZE, alpha: float = 1.0
+) -> None:
+    """An open off-white angle pointing *direction*, centred on (cx, cy), with round ends."""
+    points = [(cx + dx * size, cy + dy * size) for dx, dy in _CHEVRON_POINTS[direction]]
+    cr.save()
+    cr.set_source_rgba(*COLOR_TEXT, alpha)
+    cr.set_line_width(size * 0.18)
+    cr.set_line_cap(cairo.LINE_CAP_ROUND)
+    cr.set_line_join(cairo.LINE_JOIN_ROUND)
+    cr.move_to(*points[0])
+    for point in points[1:]:
+        cr.line_to(*point)
     cr.stroke()
     cr.restore()
 

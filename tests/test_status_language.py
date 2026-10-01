@@ -20,7 +20,7 @@ _LEVELS = ("error", "caution", "info", "success")
 # Every class that shows a state; a rule for any of them must take its colours from the tokens.
 _STATUS_CLASS = re.compile(
     r"\.(notice|update-notice|restart-notice|modal-error|diag-error|gallery-error|wizard-action-required|"
-    r"network-banner(?:-error|-ok)?|stat-chip|diag-status-pill|diag-event-status|badge-experimental|"
+    r"network-banner(?:-error|-ok|-info)?|net-iface-method-badge|stat-chip|diag-status-pill|diag-event-status|badge-experimental|"
     r"modal-list-item-badge|slot-row|slot-missing|slot-state|slot-note|slot-activity|osc-binding-fault|"
     r"osc-binding-row|osc-binding-enabled-dot|osc-binding-nested-row|osc-pill|peer-item|peer-status|toast|"
     r"save-error|save-failed|field-error-msg|field-warn-msg|field-note-msg|conflict-flag|not-controlled|"
@@ -218,3 +218,15 @@ def _hover_backgrounds() -> dict[str, str]:
 )
 def test_every_destructive_control_darkens_to_the_fault_row_tint(control: str) -> None:
     assert _hover_backgrounds().get(control) == "var(--error-row)"
+
+
+@pytest.mark.parametrize("level", ["error", "caution", "info", "success"])
+def test_each_hud_level_is_the_web_chip_of_that_level(level: str) -> None:
+    """One language on both surfaces: a HUD status row is the web chip's fill and line."""
+    from openfollow.runtime.overlay_draw_style import STATUS_LEVEL_COLORS
+
+    fill, border, _cut = STATUS_LEVEL_COLORS[level]
+    chip = _doc_rgba(_doc_table()[f"--{level}-chip"])
+    line = _doc_rgba(_doc_table()[f"--{level}-line"])
+    assert (*(round(c * 255) for c in fill[:3]), fill[3]) == chip
+    assert tuple(round(c * 255) for c in border) == line[:3]

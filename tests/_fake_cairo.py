@@ -79,13 +79,19 @@ class FakeCairo:
     # Style
     # ------------------------------------------------------------------
     def set_source_rgba(self, *args: float) -> None:
-        if len(args) == 3:
-            self._cur_rgba = (*args, 1.0)
-        else:
-            self._cur_rgba = tuple(args)
+        # Real Cairo takes 3 or 4 numbers and raises otherwise. Accepting any
+        # shape here let a colour built with the wrong operator precedence -
+        # ``*(RGB, 1.0)``, which passes a tuple and a float - through every
+        # test at 100% coverage and onto the device, where the draw pass
+        # caught it and put "Overlay Error" on the operator's screen.
+        if len(args) not in (3, 4) or any(not isinstance(a, (int, float)) for a in args):
+            raise TypeError(f"Context.set_source_rgba() takes 3 or 4 numbers, got {args!r}")
+        self._cur_rgba = (*args, 1.0) if len(args) == 3 else tuple(args)
         self.calls.append(("rgba", *args))
 
     def set_source_rgb(self, *args: float) -> None:
+        if len(args) != 3 or any(not isinstance(a, (int, float)) for a in args):
+            raise TypeError(f"Context.set_source_rgb() takes 3 numbers, got {args!r}")
         self._cur_rgba = (*args, 1.0)
         self.calls.append(("rgb", *args))
 

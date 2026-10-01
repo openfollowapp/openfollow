@@ -31,7 +31,7 @@
             <div class="field">
                 <label>Network Interface</label>
                 %# Read-only pointer: the pin is edited in one place for every
-                %# protocol (General > Interface Assignment), so this section
+                %# protocol (General > Network Interface Assignment), so this section
                 %# reports where PSN is bound rather than offering a second
                 %# control for the same field.
                 %# Startup advisory: pinned iface wasn't live at boot, so
@@ -43,7 +43,7 @@
                 <div class="ia-pointer">
                     <span class="ia-pointer-value">{{config.psn_source_iface or 'Auto-detect'}}</span>
                     <a class="ia-link" href="#interface-assignment"
-                       onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Interface Assignment</a>
+                       onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Network Interface Assignment</a>
                 </div>
             </div>
         </div>

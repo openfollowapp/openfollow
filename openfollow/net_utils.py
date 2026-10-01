@@ -61,7 +61,7 @@ def _address_preference(ip: str) -> tuple[int, tuple[int, ...]]:
     """
     try:
         octets = tuple(int(part) for part in ip.split("."))
-    except ValueError:  # pragma: no cover - psutil only yields dotted quads
+    except ValueError:
         octets = ()
     return (1 if ip.startswith("169.254.") else 0, octets)
 
@@ -179,6 +179,32 @@ def resolve_plane_source_ip(
     if primary and not primary.startswith("127."):
         return primary, "primary"
     return "", "none"
+
+
+WEB_BIND_ALL = "0.0.0.0"
+
+
+def resolve_web_bind(web_bind: str, web_bind_iface: str) -> tuple[str, ResolveStatus]:
+    """Resolve the web UI's listen address, failing **open**.
+
+    An explicit ``web_bind`` address outranks the interface pin and is
+    returned verbatim (status ``"iface"``); a pin resolves to that
+    interface's current IPv4; neither gives the wildcard bind.
+
+    This is the one plane that does not fail closed. Every other plane going
+    silent is diagnosable from another station, whereas an unreachable config
+    UI leaves nobody able to correct the pin that caused it – so a pin naming
+    an interface with no address yields ``(WEB_BIND_ALL, "down")`` and the
+    caller serves everywhere while surfacing the substitution.
+    """
+    if web_bind:
+        return web_bind, "iface"
+    if not web_bind_iface:
+        return WEB_BIND_ALL, "none"
+    resolved = get_iface_ipv4(web_bind_iface)
+    if resolved:
+        return resolved, "iface"
+    return WEB_BIND_ALL, "down"
 
 
 def resolve_iface_ip(configured: str) -> str:

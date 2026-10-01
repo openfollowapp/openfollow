@@ -28,7 +28,7 @@
 
 <!-- Overview -->
 <div class="tab-content" id="tab-overview">
-    % include('partials/overview.tpl', local=local, peers=peers)
+    % include('partials/overview.tpl', local=local, peers=peers, station_down=station_down)
     <div class="section" id="statistics-section" data-fold-key="statistics" data-help="statistics">
         <div class="section-head">
             <h2>Live Statistics</h2>

@@ -164,6 +164,34 @@ def draw_level_sign(cr: Any, level: str, cx: float, cy: float, size: float = 13.
         draw_info_sign(cr, cx, cy, size, cut=cut)
 
 
+# The level signs' size, so a chevron reads as an icon beside them.
+CHEVRON_SIZE = 13.0
+
+# Corner points of each direction's angle, as fractions of its size around the centre.
+_CHEVRON_POINTS = {
+    "right": ((-0.22, -0.42), (0.22, 0.0), (-0.22, 0.42)),
+    "down": ((-0.42, -0.22), (0.0, 0.22), (0.42, -0.22)),
+    "up": ((-0.42, 0.22), (0.0, -0.22), (0.42, 0.22)),
+}
+
+
+def draw_chevron(
+    cr: Any, cx: float, cy: float, direction: str = "right", size: float = CHEVRON_SIZE, alpha: float = 1.0
+) -> None:
+    """An open off-white angle pointing *direction*, centred on (cx, cy), with round ends."""
+    points = [(cx + dx * size, cy + dy * size) for dx, dy in _CHEVRON_POINTS[direction]]
+    cr.save()
+    cr.set_source_rgba(*COLOR_TEXT, alpha)
+    cr.set_line_width(size * 0.18)
+    cr.set_line_cap(cairo.LINE_CAP_ROUND)
+    cr.set_line_join(cairo.LINE_JOIN_ROUND)
+    cr.move_to(*points[0])
+    for point in points[1:]:
+        cr.line_to(*point)
+    cr.stroke()
+    cr.restore()
+
+
 def draw_card_background(cr: Any, x: float, y: float, w: float, h: float, radius: float = PANEL_RADIUS) -> None:
     """Translucent card fill + soft 1px border – the shared overlay-card chrome.
 

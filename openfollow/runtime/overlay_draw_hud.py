@@ -16,6 +16,7 @@ from typing import Any, cast
 import cairo
 
 from openfollow.runtime.overlay_draw_style import (
+    CHEVRON_SIZE,
     COLOR_ACCENT,
     COLOR_ACCENT_SOFT,
     COLOR_BG_BASE,
@@ -30,6 +31,7 @@ from openfollow.runtime.overlay_draw_style import (
     ROW_RADIUS,
     STATUS_LEVEL_COLORS,
     draw_card_background,
+    draw_chevron,
     draw_level_sign,
     draw_rounded_rect,
     draw_success_sign,
@@ -222,16 +224,12 @@ def screen_height(h: int) -> float:
 
 
 # Room a chevron needs, so a label is truncated before it runs underneath.
-CHEVRON_GUTTER = 14.0
-_CHEVRON = "\u203a"
+CHEVRON_GUTTER = CHEVRON_SIZE + 8.0
 
 
-def draw_submenu_chevron(renderer: Any, cr: Any, x: float, baseline_y: float) -> None:
-    """Mark a row that opens another screen. Right-aligned at ``x``."""
-    renderer._set_ui_font(cr, 12)
-    cr.set_source_rgba(*COLOR_TEXT_MUTED)
-    cr.move_to(x, baseline_y)
-    cr.show_text(_CHEVRON)
+def draw_submenu_chevron(cr: Any, x: float, cy: float) -> None:
+    """Mark a row that opens another screen. Right-aligned at ``x``, centred on ``cy``."""
+    draw_chevron(cr, x - CHEVRON_SIZE * 0.31, cy)
 
 
 def draw_selectable_list(
@@ -316,18 +314,13 @@ def draw_selectable_list(
         cr.move_to(text_x, row_y + row_h / 2.0 + 4.0)
         cr.show_text(text)
         if leads_somewhere:
-            draw_submenu_chevron(renderer, cr, row_x + row_w - 16.0, row_y + row_h / 2.0 + 4.0)
+            draw_submenu_chevron(cr, row_x + row_w - 10.0, row_y + row_h / 2.0)
 
+    # Turned and centred, so a scroll hint is never read as a row's chevron.
     if scroll_offset > 0:
-        renderer._set_ui_font(cr, 11)
-        cr.set_source_rgba(*COLOR_TEXT_MUTED)
-        cr.move_to(x + w - 18.0, y + 16.0)
-        cr.show_text("^")
+        draw_chevron(cr, x + w / 2.0, y + 3.5, "up", size=10.0, alpha=0.6)
     if scroll_offset + max_visible < len(items):
-        renderer._set_ui_font(cr, 11)
-        cr.set_source_rgba(*COLOR_TEXT_MUTED)
-        cr.move_to(x + w - 18.0, y + h - 10.0)
-        cr.show_text("v")
+        draw_chevron(cr, x + w / 2.0, y + h - 3.5, "down", size=10.0, alpha=0.6)
 
 
 def draw_selection_menu(
@@ -1919,7 +1912,7 @@ def draw_pi_network_screen(
         cr.move_to(value_x, row_y + data_row_h * 0.65)
         cr.show_text(renderer._truncate_text_to_width(cr, value, inner_w - (value_x - inner_x) - 14.0 - pill_w))
         if bool(row.get("opens")):
-            draw_submenu_chevron(renderer, cr, inner_x + inner_w - 10.0, row_y + data_row_h * 0.65)
+            draw_submenu_chevron(cr, inner_x + inner_w - 6.0, row_y + data_row_h / 2.0 - 2.0)
         if pill:
             # A state takes its level's chip colours; how the address was come by is neutral.
             level_colors = STATUS_LEVEL_COLORS.get(str(row.get("pill_level") or ""))

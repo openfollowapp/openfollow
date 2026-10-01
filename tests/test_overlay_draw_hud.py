@@ -56,6 +56,7 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_virtual_faders,
 )
 from openfollow.runtime.overlay_draw_style import (
+    CHEVRON_SIZE,
     COLOR_ACCENT,
     COLOR_ACCENT_SOFT,
     COLOR_BG_BASE,
@@ -379,10 +380,10 @@ class TestSelectableList:
         assert a_text.bold is False
         assert b_text.bold is True
 
-    def test_long_list_shows_scroll_down_indicator(self) -> None:
+    def test_long_list_shows_scroll_down_indicator(self, chevrons: list) -> None:
         cr = FakeCairo()
         items = [f"item-{i}" for i in range(20)]
-        # Short vertical height means only a few items fit → scroll-down "v".
+        # Short vertical height means only a few items fit → a down chevron.
         draw_selectable_list(
             FakeRenderer(),
             cr,
@@ -394,11 +395,10 @@ class TestSelectableList:
             h=80.0,
             empty_message="x",
         )
-        assert "v" in cr.show_text_strings()
-        # At scroll_offset == 0 the "up" indicator is suppressed.
-        assert "^" not in cr.show_text_strings()
+        # Centred under the list; at scroll_offset == 0 there is no "up" hint.
+        assert chevrons == [(200.0, 80.0 - 3.5, "down")]
 
-    def test_selecting_far_down_scrolls_and_shows_up_indicator(self) -> None:
+    def test_selecting_far_down_scrolls_and_shows_up_indicator(self, chevrons: list) -> None:
         cr = FakeCairo()
         items = [f"item-{i}" for i in range(20)]
         draw_selectable_list(
@@ -412,7 +412,7 @@ class TestSelectableList:
             h=80.0,
             empty_message="x",
         )
-        assert "^" in cr.show_text_strings()
+        assert (200.0, 3.5, "up") in chevrons
 
     def test_out_of_range_selected_idx_hits_break_guard(self) -> None:
         """Defensive ``break`` when ``scroll_offset`` pushes past ``len(items)``.
@@ -2194,8 +2194,51 @@ def _network_state(**overrides: object):
     return s
 
 
+@pytest.fixture
+def chevrons(monkeypatch: pytest.MonkeyPatch) -> list[tuple[float, float, str]]:
+    """Every chevron drawn, as ``(cx, cy, direction)``."""
+    import openfollow.runtime.overlay_draw_hud as hud
+
+    drawn: list[tuple[float, float, str]] = []
+    real = hud.draw_chevron
+
+    def _record(cr: Any, cx: float, cy: float, direction: str = "right", **kwargs: Any) -> None:
+        drawn.append((cx, cy, direction))
+        real(cr, cx, cy, direction, **kwargs)
+
+    monkeypatch.setattr(hud, "draw_chevron", _record)
+    return drawn
+
+
+class TestTheChevron:
+    def test_it_is_drawn_as_heavily_as_the_signs_beside_it(self) -> None:
+        """A text glyph drew it thin and small on the station's screen. It is
+        now a stroked angle the size of the level signs, at their weight."""
+        import inspect
+
+        from openfollow.runtime.overlay_draw_style import CHEVRON_SIZE, draw_chevron, draw_level_sign
+
+        cr = FakeCairo()
+        draw_chevron(cr, 100.0, 50.0)
+        ys = [y for _x, y in cr.move_tos + cr.line_tos]
+        assert inspect.signature(draw_level_sign).parameters["size"].default == CHEVRON_SIZE
+        assert max(ys) - min(ys) >= 0.8 * CHEVRON_SIZE
+        assert ("line_width", CHEVRON_SIZE * 0.18) in cr.calls
+        assert CHEVRON_SIZE * 0.18 >= 2.0
+
+    @pytest.mark.parametrize("direction", ["down", "up"])
+    def test_turned_it_is_wider_than_tall(self, direction: str) -> None:
+        from openfollow.runtime.overlay_draw_style import draw_chevron
+
+        cr = FakeCairo()
+        draw_chevron(cr, 100.0, 50.0, direction)
+        xs = [x for x, _y in cr.move_tos + cr.line_tos]
+        ys = [y for _x, y in cr.move_tos + cr.line_tos]
+        assert max(xs) - min(xs) > max(ys) - min(ys)
+
+
 class TestTheSettingsMenuMarksWhatOpensAScreen:
-    def test_an_entry_that_opens_a_screen_gets_a_chevron(self) -> None:
+    def test_an_entry_that_opens_a_screen_gets_a_chevron(self, chevrons: list) -> None:
         state = _base_state()
         state.settings_menu_active = True
         state.settings_items = ["Network", "Restart"]
@@ -2205,11 +2248,28 @@ class TestTheSettingsMenuMarksWhatOpensAScreen:
         cr = FakeCairo()
         draw_settings_menu(FakeRenderer(state=state), cr, state, 1600, 900)
         # One chevron for Network, none for Restart, which acts where it stands.
-        assert len([t for t in cr.texts if t.text == "\u203a"]) == 1
+        assert [direction for _x, _y, direction in chevrons] == ["right"]
+
+    def test_a_list_too_long_for_its_panel_hints_below_its_middle(self, chevrons: list) -> None:
+        """A ``v`` at the right edge of the last row read as that row's
+        chevron knocked over; a scroll hint sits centred under the list."""
+        state = _base_state()
+        state.settings_menu_active = True
+        state.settings_items = [f"Entry {i}" for i in range(40)]
+        state.settings_items_enabled = [True] * 40
+        state.settings_items_disabled_reasons = [""] * 40
+        state.settings_items_submenu = [True] + [False] * 39
+        cr = FakeCairo()
+        draw_settings_menu(FakeRenderer(state=state), cr, state, 1600, 900)
+        row = next(c for c in chevrons if c[2] == "right")
+        (hint,) = [c for c in chevrons if c[2] == "down"]
+        assert hint[0] < row[0] - 100.0
+        assert hint[1] > row[1]
+        assert not [t for t in cr.texts if t.text in ("v", "^")]
 
 
 class TestDrawPiNetworkScreen:
-    def test_a_row_that_opens_a_screen_is_marked(self) -> None:
+    def test_a_row_that_opens_a_screen_is_marked(self, chevrons: list) -> None:
         """A d-pad menu otherwise hides which rows take you somewhere until
         you have already pressed one."""
         rows = [
@@ -2219,9 +2279,9 @@ class TestDrawPiNetworkScreen:
         state = _base_state(pi_network=_network_state(rows=rows))
         cr = FakeCairo()
         draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
-        assert len([t for t in cr.texts if t.text == "\u203a"]) == 1
+        assert len(chevrons) == 1
 
-    def test_the_chevron_and_the_pill_do_not_share_a_place(self) -> None:
+    def test_the_chevron_and_the_pill_do_not_share_a_place(self, chevrons: list) -> None:
         """Both want the right edge; the chevron takes it and the pill moves
         inboard, or they draw on top of each other."""
         rows = [
@@ -2237,9 +2297,25 @@ class TestDrawPiNetworkScreen:
         state = _base_state(pi_network=_network_state(rows=rows))
         cr = FakeCairo()
         draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
-        chevron = next(t for t in cr.texts if t.text == "\u203a")
-        pill = next(t for t in cr.texts if t.text == "DHCP")
-        assert pill.x < chevron.x
+        (chevron,) = chevrons
+        bare = FakeCairo()
+        bare_state = _base_state(pi_network=_network_state(rows=[{k: v for k, v in rows[0].items() if k != "pill"}]))
+        draw_pi_network_screen(FakeRenderer(state=bare_state), bare, bare_state, 1600, 900)
+        pill_arcs = [arc for arc in cr.arcs if arc not in bare.arcs]
+        pill_right = max(cx + radius for cx, _cy, radius in pill_arcs)
+        # The chevron's left arm reaches about a third of its size from its centre.
+        assert pill_right < chevron[0] - 0.3 * CHEVRON_SIZE
+
+    def test_the_chevron_sits_in_its_row(self, chevrons: list) -> None:
+        """Centred on the row it marks, so it reads as that row's and not the next."""
+        rows = [{"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "10.0.0.2", "opens": True}]
+        state = _base_state(pi_network=_network_state(rows=rows, selected_index=-1))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        (chevron,) = chevrons
+        label = next(t for t in cr.texts if t.text == "eth0")
+        # The label's baseline sits below the row's middle by under its font size.
+        assert 0.0 < label.y - chevron[1] < label.font_size
 
     def test_a_pill_is_drawn_and_keeps_clear_of_the_value(self) -> None:
         """The pill sits at the right edge, so the value has to stop short of

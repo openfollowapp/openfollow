@@ -2455,6 +2455,27 @@ class TestEachReachabilityStateHasItsLevel:
         assert list(_notice_levels(app).values()) == ["info"]
 
 
+class TestAResultLineBelongsToItsInterface:
+    def test_leaving_an_interface_takes_its_result_line_with_it(self, monkeypatch) -> None:
+        """The line reports an action on that interface; left on the list it
+        reads as a fault of the list."""
+        from openfollow.network.adapter import Ipv4Config, Ipv4Method
+
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _open_iface(app, "eth0")
+        app._pi_network_pending_config = Ipv4Config(
+            method=Ipv4Method.STATIC, address="192.168.1.50", prefix=24, router="10.0.0.1"
+        )
+        anm._apply_pi_network(app)
+        assert "Router" in app._pi_network_banner
+
+        anm._leave_pi_network_level(app)
+        assert app._pi_network_open_iface == ""
+        assert app._pi_network_banner == ""
+
+
 class TestTheResultLineCarriesItsLevel:
     def _apply(self, result) -> SimpleNamespace:  # noqa: ANN001
         from openfollow.network.adapter import Ipv4Config, Ipv4Method

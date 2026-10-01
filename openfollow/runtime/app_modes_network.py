@@ -650,6 +650,8 @@ def _close_pi_network_iface(app: OpenFollowApp) -> None:
     name = str(getattr(app, "_pi_network_open_iface", "") or "")
     app._pi_network_open_iface = ""
     app._pi_network_static_edit = False
+    # The line reports an action on that interface; on the list it reads as the list's.
+    app._pi_network_banner = ""
     _focus_row(app, f"{_IFACE_ROW_PREFIX}{name}" if name else "back")
 
 

@@ -289,7 +289,7 @@ attributes, so it spells the token's value.
 - **HUD:** named per nesting level in `overlay_draw_style.py`:
   - `MODAL_RADIUS` (14) for the frame around full-screen menus such as Settings.
   - `PANEL_RADIUS` (6) for panels, cards, message cards and badge rows.
-  - `ROW_RADIUS` (4) for rows inside a panel.
+  - `ROW_RADIUS` (4) for rows inside a panel, and for a pill inside a row.
   - Progress bars keep their own 2.5 and 3.
 
 An inner corner is never rounder than its container.

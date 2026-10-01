@@ -1920,11 +1920,12 @@ def draw_pi_network_screen(
             pill_y = row_y + 1.0
             pill_h = data_row_h - 6.0
             cr.set_source_rgba(*(level_colors[0] if level_colors else (1.0, 1.0, 1.0, 0.07)))
-            draw_rounded_rect(cr, pill_x, pill_y, pill_w, pill_h, pill_h / 2.0)
+            # A pill sits in a row, and an inner corner is never rounder than its container.
+            draw_rounded_rect(cr, pill_x, pill_y, pill_w, pill_h, ROW_RADIUS)
             cr.fill()
             if level_colors:
                 cr.set_source_rgb(*level_colors[1])
-                draw_rounded_rect(cr, pill_x, pill_y, pill_w, pill_h, pill_h / 2.0)
+                draw_rounded_rect(cr, pill_x, pill_y, pill_w, pill_h, ROW_RADIUS)
                 cr.set_line_width(1.0)
                 cr.stroke()
             renderer._set_ui_font(cr, 10)

@@ -2317,6 +2317,24 @@ class TestDrawPiNetworkScreen:
         # The label's baseline sits below the row's middle by under its font size.
         assert 0.0 < label.y - chevron[1] < label.font_size
 
+    def test_a_pill_is_no_rounder_than_the_row_it_sits_in(self) -> None:
+        """An inner corner is never rounder than its container, which is what
+        gives the HUD's pills the web's square-ish corners."""
+        from collections import Counter
+
+        from openfollow.runtime.overlay_draw_style import ROW_RADIUS
+
+        def arcs(row: dict) -> Counter:
+            state = _base_state(pi_network=_network_state(rows=[row]))
+            cr = FakeCairo()
+            draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+            return Counter(cr.arcs)
+
+        row = {"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "10.0.0.2"}
+        pill_arcs = arcs({**row, "pill": "fallback", "pill_level": "error"}) - arcs(row)
+        assert pill_arcs
+        assert {radius for _x, _y, radius in pill_arcs} == {ROW_RADIUS}
+
     def test_a_pill_is_drawn_and_keeps_clear_of_the_value(self) -> None:
         """The pill sits at the right edge, so the value has to stop short of
         it - a value drawn to the full width would run underneath."""

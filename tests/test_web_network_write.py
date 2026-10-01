@@ -1418,6 +1418,27 @@ def test_creating_and_removing_a_vlan_show_the_busy_box(net_server) -> None:
     assert 'data-busy-text="Removing VLAN interface eth0.10…"' in remove
 
 
+def test_applying_and_renewing_show_the_busy_box(net_server) -> None:
+    """An apply waits on NetworkManager for seconds, longer still with no DHCP
+    server answering; the page looked as if nothing was happening."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/edit/eth0")
+    apply = body.split('hx-post="/section/network/apply"', 1)[1].split(">", 1)[0]
+    assert 'hx-disabled-elt="find button[type=submit]"' in apply
+    assert 'data-busy-text="Applying the settings to {iface}…"' in apply
+    renew = body.split('hx-post="/section/network/renew"', 1)[1].split(">", 1)[0]
+    assert 'hx-disabled-elt="this"' in renew
+    assert 'data-busy-text="Renewing the DHCP lease on {iface}…"' in renew
+
+
+def test_only_the_element_sending_a_request_names_the_busy_text(net_server) -> None:
+    """Cancel and Scan send from inside a busy form; they must not raise its box."""
+    _fake, base = net_server
+    _status, page = _get(base, "/")
+    assert "elt.hasAttribute('data-busy-text')" in page
+    assert "closest('[data-busy-text]')" not in page
+
+
 def _subnet_value(body: str, iface: str) -> str:
     tag = body.split(f'id="net-subnet-{iface}"', 1)[1].split(">", 1)[0]
     return tag.split('value="', 1)[1].split('"', 1)[0]

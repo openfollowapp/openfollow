@@ -125,6 +125,7 @@
                 % if _row_edit:
                       hx-post="/section/network/apply" hx-target="#network-interface"
                       hx-swap="innerHTML" hx-trigger="submit"
+                      hx-disabled-elt="find button[type=submit]" data-busy-text="Applying the settings to {iface}…"
                     %# The blind reload is for an apply that severs this very
                     %# connection, so it is armed only on the row answering it.
                     %# On any other row the apply changes nothing about how the
@@ -209,7 +210,8 @@
                                 % if _row_edit:
                                 <button type="button" class="secondary small"
                                         hx-post="/section/network/renew" hx-target="#network-interface"
-                                        hx-swap="innerHTML" hx-include="closest form">Renew DHCP lease</button>
+                                        hx-swap="innerHTML" hx-include="closest form" hx-disabled-elt="this"
+                                        data-busy-text="Renewing the DHCP lease on {iface}…">Renew DHCP lease</button>
                                 % end
                             </span>
                         </div>

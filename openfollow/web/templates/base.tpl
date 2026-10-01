@@ -2338,11 +2338,11 @@
  });
  // A request from an element with data-busy-text shows that text in the
  // network card's busy box until it answers; {field} reads the form's field.
+ // Only the sending element counts, so Cancel inside a busy form stays quiet.
  function netBusyText(elt) {
- const src = elt && elt.closest && elt.closest('[data-busy-text]');
- if (!src) return null;
- const form = src.closest('form');
- return src.dataset.busyText.replace(/\{(\w+)\}/g, (_, name) => {
+ if (!elt || !elt.hasAttribute || !elt.hasAttribute('data-busy-text')) return null;
+ const form = elt.closest('form');
+ return elt.dataset.busyText.replace(/\{(\w+)\}/g, (_, name) => {
  const field = form && form.elements[name];
  return field ? field.value : '';
  });

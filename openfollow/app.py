@@ -366,6 +366,8 @@ class OpenFollowApp:
         self._pi_network_field_edit_active: bool = False
         self._pi_network_field_name: str = ""
         self._pi_network_field_value: str = ""
+        # The value is the editor's own starting digits, not the operator's.
+        self._pi_network_field_seeded: bool = False
         # Cursor into the field editor's digit grid, for d-pad entry.
         self._pi_network_field_digit_index: int = 0
         self._pi_network_banner: str = ""

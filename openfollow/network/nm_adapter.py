@@ -709,8 +709,8 @@ class NetworkManagerAdapter(NetworkAdapter):
             reason=f"Delete VLAN profile {profile}",
         )
         if not ok:
-            return ApplyResult(ok=False, message=detail or f"Could not delete {name}.")
-        return ApplyResult(ok=True, message=f"Deleted {name}.")
+            return ApplyResult(ok=False, message=detail or f"Could not remove VLAN interface {name}.")
+        return ApplyResult(ok=True, message=f"Removed VLAN interface {name}.")
 
     def _vlan_profile_name(self, iface: str) -> str | None:
         """Return the VLAN profile bound to ``iface``, or None when ``iface``

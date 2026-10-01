@@ -1490,7 +1490,7 @@ def test_delete_refuses_a_non_vlan_interface(net_server) -> None:
     fake, base = net_server
     status, body = _post(base, "/section/network/vlan/delete", {"iface": "eth0"})
     assert status == 200
-    assert "is not a VLAN" in body
+    assert "is not a VLAN and cannot be removed." in body
     assert fake.vlans_deleted == []
 
 
@@ -1528,9 +1528,21 @@ def test_delete_control_only_renders_for_a_vlan_row(net_server) -> None:
     fake.interfaces = ["eth0", "eth0.10"]
     fake.vlans = [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}]
     _status, physical = _get(base, "/section/network/edit/eth0")
-    assert "Delete VLAN" not in physical
+    assert "Remove VLAN" not in physical
     _status, vlan = _get(base, "/section/network/edit/eth0.10")
-    assert "Delete VLAN" in vlan
+    assert "Remove VLAN" in vlan
+
+
+def test_removing_a_vlan_names_the_kind_of_thing_and_confirms_in_red(net_server) -> None:
+    """The VLAN lives on the switch; what goes is the station's interface for it."""
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10"]
+    fake.vlans = [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}]
+    _status, body = _get(base, "/section/network/edit/eth0.10")
+    tag = body.split('hx-post="/section/network/vlan/delete"', 1)[1].split(">", 1)[0]
+    assert 'data-confirm-title="Remove VLAN interface eth0.10?"' in tag
+    assert 'data-confirm-label="Remove"' in tag
+    assert "data-confirm-danger" in tag
 
 
 def test_delete_refuses_the_interface_serving_this_request(net_server, monkeypatch) -> None:

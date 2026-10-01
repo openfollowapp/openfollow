@@ -53,7 +53,7 @@ A VLAN sub-interface behaves like any other adapter once it exists: it appears i
 
 The parent keeps its own untagged address; adding VLANs does not take it away. Each new sub-interface starts with no address – open its row and use **Edit** to give it one. A tagged lighting VLAN frequently has no DHCP server, in which case the fallback above applies to it too.
 
-**Delete VLAN** appears inside a VLAN row's own settings, so it can only ever remove the adapter named at the top of that form. It is refused for the adapter whose address is answering your browser – reconnect at another of the station's addresses first. Anything pinned to a deleted VLAN stops sending until it is reassigned.
+**Remove VLAN** appears inside a VLAN row's own settings, so it can only ever remove the sub-interface named at the top of that form. The VLAN itself lives on the switch; this removes the station's interface for it. It is refused for the sub-interface whose address is answering your browser – reconnect at another of the station's addresses first. Anything pinned to a removed VLAN interface stops sending until it is reassigned.
 
 VLAN creation needs NetworkManager. On a station using another network backend the controls are not shown.
 
@@ -65,5 +65,5 @@ An open row reads out its settings with its fields locked, so nothing changes by
 - **Apply** – validates and commits the row. Invalid input is rejected and nothing is written.
 - **Renew DHCP lease** – requests a fresh lease; sits on the lease line, DHCP methods only.
 - **+ Add VLAN** – creates a tagged sub-interface (NetworkManager only).
-- **Delete VLAN** – removes the sub-interface whose settings are open.
+- **Remove VLAN** – removes the sub-interface whose settings are open.
 - **Cancel** – discards unsaved edits and locks the fields again. The row stays open.

@@ -222,7 +222,7 @@
                                 hx-post="/section/network/vlan/delete" hx-target="#network-interface"
                                 hx-swap="innerHTML" hx-include="closest form"
                                 hx-confirm="Any function pinned to {{_name}} stops sending until it is reassigned."
-                                data-confirm-title="Delete {{_name}}?" data-confirm-label="Delete" data-confirm-danger>Delete VLAN</button>
+                                data-confirm-title="Remove VLAN interface {{_name}}?" data-confirm-label="Remove" data-confirm-danger>Remove VLAN</button>
                         % end
                         %# Drops the card back to all-rows-read-only. The row
                         %# itself stays expanded - that is the browser's state,

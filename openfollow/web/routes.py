@@ -5485,7 +5485,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             )
         if name not in [str(v.get("name", "")) for v in vlans.get("vlans", [])]:
             return _network_vlan_response(
-                banner={"kind": "error", "text": f"{name or 'That interface'} is not a VLAN and cannot be deleted."},
+                banner={"kind": "error", "text": f"{name or 'That interface'} is not a VLAN and cannot be removed."},
             )
         # Deleting the interface the browser arrived on cuts the operator's own
         # session mid-request, and the page they would need to undo it is the
@@ -5495,7 +5495,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 iface=name,
                 banner={
                     "kind": "error",
-                    "text": f"This session is connected over {name}. Reconnect on another interface to delete it.",
+                    "text": f"This session is connected over {name}. Reconnect on another interface to remove it.",
                 },
             )
         with _config_write_lock:

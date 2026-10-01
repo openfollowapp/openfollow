@@ -1464,6 +1464,7 @@ class TestVlans:
         self._prime(responses, "vlan10:uuid-v10:vlan:eth0.10\n")
         result = a.delete_vlan("eth0.10")
         assert result.ok is True
+        assert result.message == "Removed VLAN interface eth0.10."
         assert ["nmcli", "connection", "delete", "id", "vlan10"] in captured
 
     def test_delete_targets_the_matching_profile_not_the_first(self, adapter) -> None:
@@ -1502,6 +1503,12 @@ class TestVlans:
         result = a.delete_vlan("eth0.10")
         assert result.ok is False
         assert "profile is in use" in result.message
+
+    def test_a_failure_with_no_reason_still_names_what_was_not_removed(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._prime(responses, "vlan10:uuid-v10:vlan:eth0.10\n")
+        a._broker.exceptions.append(make_failure(""))
+        assert a.delete_vlan("eth0.10").message == "Could not remove VLAN interface eth0.10."
 
     def test_profile_list_survives_an_nmcli_failure(self, adapter) -> None:
         a, _captured, _responses = adapter

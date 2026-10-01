@@ -98,7 +98,7 @@ def test_every_hx_confirm_names_its_button_and_the_listener_asks_in_the_modal() 
 
 
 # The actions docs/STATUS_LANGUAGE.md lists under "Destructive actions".
-_DESTRUCTIVE_LABELS = ("Delete", "Discard", "Forget", "Restore Defaults", "Restart")
+_DESTRUCTIVE_LABELS = ("Delete", "Discard", "Forget", "Remove", "Restore Defaults", "Restart")
 
 
 def test_a_confirm_that_stops_or_loses_something_takes_the_danger_button() -> None:

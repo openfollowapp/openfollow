@@ -131,11 +131,18 @@ def test_interface_assignment_get_matches_what_post_accepts() -> None:
 
     cfg = AppConfig(psn_source_iface="eth0")
     cfg.otp_output.source_iface = "eth1"
+    cfg.osc_destinations.destinations[0].source_iface = "eth2"
     data = get_section_data(cfg, "interface_assignment")
     assert data is not None
-    assert set(data) == set(_INTERFACE_ASSIGNMENT_TARGETS)
+    assert set(data) == set(_INTERFACE_ASSIGNMENT_TARGETS) | {"osc_destinations.default.source_iface"}
     assert data["psn_source_iface"] == "eth0"
     assert data["otp_output.source_iface"] == "eth1"
+    assert data["osc_destinations.default.source_iface"] == "eth2"
+
+    # Everything GET returns, POST writes back to the same place.
+    fresh = AppConfig()
+    assert apply_section_data(fresh, "interface_assignment", data) is True
+    assert get_section_data(fresh, "interface_assignment") == data
 
 
 def test_general_section_rejects_invalid_web_pin_and_port() -> None:
@@ -1098,6 +1105,69 @@ def test_apply_import_data_preserves_otp_source_iface(local_pin: str) -> None:
 
     assert new.otp_output.source_iface == local_pin
     assert new.otp_output.port == 5569  # other OTP fields still import
+
+
+def test_export_leaves_out_the_sender_pins() -> None:
+    cfg = AppConfig()
+    cfg.rttrpm_output.source_iface = "eth1"
+    cfg.osc_destinations.destinations[0].source_iface = "eth2"
+    d = _config_dict_redacted(cfg)
+    assert "source_iface" not in d["rttrpm_output"]
+    assert all("source_iface" not in dest for dest in d["osc_destinations"]["destinations"])
+    # The rest of each destination still travels.
+    assert d["osc_destinations"]["destinations"][0]["host"] == "127.0.0.1"
+
+
+def test_import_keeps_this_stations_destination_pins_by_id() -> None:
+    """Destinations are rebuilt wholesale from the file, so each pin is carried
+    over by id: a foreign pin never lands, and a new destination starts blank."""
+    from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.osc_destinations = OscDestinationsConfig(
+        destinations=[
+            OscDestinationConfig(id="foh", host="198.51.100.20", source_iface="eth1"),
+            OscDestinationConfig(id="gone", host="198.51.100.30", source_iface="eth2"),
+        ]
+    )
+    imported = {
+        "osc_destinations": {
+            "destinations": [
+                {"id": "foh", "host": "198.51.100.21", "source_iface": "eth_foreign"},
+                {"id": "new", "host": "198.51.100.40", "source_iface": "eth_foreign"},
+            ]
+        }
+    }
+    new = _apply_import_data(current, imported)
+    assert [(d.id, d.host, d.source_iface) for d in new.osc_destinations.destinations] == [
+        ("foh", "198.51.100.21", "eth1"),
+        ("new", "198.51.100.40", ""),
+    ]
+
+
+def test_import_keeps_this_stations_rttrpm_pin() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.rttrpm_output.source_iface = "eth1"
+    new = _apply_import_data(current, {"rttrpm_output": {"source_iface": "eth_foreign", "port": 36701}})
+    assert new.rttrpm_output.source_iface == "eth1"
+    assert new.rttrpm_output.port == 36701
+
+
+def test_restore_defaults_clears_the_sender_pins() -> None:
+    """Blank follows the station, whose own pin a reset keeps, so nothing drops
+    off the network."""
+    from openfollow.web.routes import reset_config_to_defaults
+
+    current = AppConfig(psn_source_iface="eth0")
+    current.rttrpm_output.source_iface = "eth1"
+    current.osc_destinations.destinations[0].source_iface = "eth2"
+    fresh = reset_config_to_defaults(current)
+    assert fresh.psn_source_iface == "eth0"
+    assert fresh.rttrpm_output.source_iface == ""
+    assert fresh.osc_destinations.destinations[0].source_iface == ""
 
 
 def test_full_config_round_trip_leaves_the_receivers_otp_pin_alone() -> None:

@@ -76,6 +76,7 @@ if TYPE_CHECKING:
     )
     from openfollow.input.faders import VirtualFaderBus
     from openfollow.input.midi import MidiEvent, MidiSubsystem
+    from openfollow.net_egress import Egress
     from openfollow.osc.service import OscService
     from openfollow.psn.marker import Marker
 
@@ -235,6 +236,9 @@ ControllerMarkerProvider = Callable[[int], int | None]
 # controlled set takes effect on the next send without a manager restart.
 ControlledMarkersProvider = Callable[[], Sequence[int]]
 
+# Where a destination must leave from: None lets the OS route it.
+EgressProvider = Callable[[OscDestinationConfig], "Egress | None"]
+
 
 @dataclass(frozen=True)
 class _TickPlan:
@@ -364,6 +368,7 @@ class OscTransmitterManager:
         marker_fader_provider: MarkerFaderProvider | None = None,
         controller_marker_provider: ControllerMarkerProvider | None = None,
         controlled_markers_provider: ControlledMarkersProvider | None = None,
+        egress_provider: EgressProvider | None = None,
     ) -> None:
         self._service = osc_service
         self._marker_provider = marker_provider
@@ -382,6 +387,8 @@ class OscTransmitterManager:
         # when unwired, numeric tokens pass through unfiltered and ``all``
         # yields nothing (it can't enumerate the controlled set).
         self._controlled_markers_provider = controlled_markers_provider
+        # The interface a destination is pinned to; unwired, the OS routes.
+        self._egress_provider = egress_provider
         self._lock = threading.Lock()
         self._rows: dict[str, OscTransmitter] = {}
         # Shared OSC destination profiles, staged under ``_lock``. A row's
@@ -1470,6 +1477,11 @@ class OscTransmitterManager:
         if result.skipped:
             plan.ring_buffer.record_skipped(error=result.error)
             return
+        # Ahead of the on-change gate, so "unchanged" can't hide the fault.
+        egress = self._egress_provider(dest) if self._egress_provider is not None else None
+        if egress is not None and egress.down:
+            plan.ring_buffer.record_skipped(error=f"interface {egress.iface} is down", address=result.address)
+            return
         # On-change gate: skip the send when the row's default marker
         # hasn't moved by ``min_change_m`` along any axis since the last
         # successful send. Per-axis (not 3-D Euclidean) comparison –
@@ -1506,14 +1518,20 @@ class OscTransmitterManager:
                         ),
                     )
                     return
-        self._service.send(
+        sent = self._service.send(
             result.address,
             list(result.args),
             host=dest.host,
             port=dest.port,
             protocol=dest.protocol,
             framing=dest.framing,
+            egress=egress,
         )
+        if not sent:
+            # Not primed either, so an on-change row retries on the next tick.
+            reason = f"could not send on interface {egress.iface}" if egress is not None else "send failed"
+            plan.ring_buffer.record_skipped(error=reason, address=result.address)
+            return
         # Update the last-sent cache only after the send went out, so a
         # skipped send can't prime it. Locked so a concurrent
         # ``restart()`` can't drop the entry between check and write. The

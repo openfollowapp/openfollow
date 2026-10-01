@@ -1315,6 +1315,57 @@ def test_interface_assignment_surfaces_the_runtime_fallback(tmp_path, monkeypatc
     assert "Web UI is pinned to &#039;eth7&#039;, which has no address." in body
 
 
+def test_interface_assignment_renders_and_saves_the_sender_rows(live_server, monkeypatch) -> None:
+    """RTTrPM and each OSC destination get a picker on the panel, and a save
+    writes the destination pin to disk."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {"eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")]},
+    )
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.rttrpm_output.source_iface = "eth1"
+    save_config(cfg, server.config_path)
+
+    status, body = _get(base, "/section/interface_assignment")
+    assert status == 200
+    assert 'name="rttrpm_output.source_iface"' in body
+    assert 'name="osc_destinations.default.source_iface"' in body
+    assert "OSC to Default" in body
+    assert "experimental-feature" in body
+
+    status, _ = _post_form(
+        base,
+        "/section/interface_assignment",
+        {"osc_destinations.default.source_iface": "eth1", "rttrpm_output.source_iface": "eth1"},
+    )
+    assert status == 200
+    saved = load_config(server.config_path)
+    assert saved.osc_destinations.destinations[0].source_iface == "eth1"
+    assert saved.rttrpm_output.source_iface == "eth1"
+
+
+def test_sender_sections_point_to_the_assignment_panel(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.osc_destinations.destinations[0].source_iface = "eth7"
+    save_config(cfg, server.config_path)
+
+    for path, value in (("/section/rttrpm_output", "Follows station interface"), ("/section/osc_destinations", "eth7")):
+        status, body = _get(base, path)
+        assert status == 200
+        assert "Source Interface" in body
+        assert value in body
+        assert "goToSection('general', 'interface-assignment')" in body
+        assert 'name="source_iface"' not in body
+
+
 def test_interface_assignment_scan_rerenders_the_panel(live_server) -> None:
     """Scan re-renders instead of refreshing the pickers in place: an in-place
     refresh re-marked the SAVED value as selected and silently discarded an

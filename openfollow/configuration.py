@@ -1064,6 +1064,8 @@ class RttrpmOutputConfig:
     port: int = 36700
     fps: int = 60
     context: int = 0
+    # Interface to send from, by name; blank follows ``psn_source_iface``.
+    source_iface: str = ""
 
     def __post_init__(self) -> None:
         # fps drives ``1.0 / fps`` in the send loop – clamp to >= 1 to avoid
@@ -1080,6 +1082,9 @@ class RttrpmOutputConfig:
         if not isinstance(self.host, str):
             self.host = "127.0.0.1"
         self.host = self.host.strip()
+        if not isinstance(self.source_iface, str):
+            self.source_iface = ""
+        self.source_iface = self.source_iface.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -1555,6 +1560,8 @@ class OscDestinationConfig:
     # TCP framing selector. Inert for UDP but round-trippable so the UI swap
     # doesn't hide it on protocol toggle.
     framing: str = "slip"
+    # Interface to send from, by name; blank follows ``psn_source_iface``.
+    source_iface: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, str) or not self.id.strip():
@@ -1578,6 +1585,9 @@ class OscDestinationConfig:
             VALID_OSC_FRAMINGS,
             "slip",
         )
+        if not isinstance(self.source_iface, str):
+            self.source_iface = ""
+        self.source_iface = self.source_iface.strip()
 
 
 def _default_osc_destinations() -> list[OscDestinationConfig]:

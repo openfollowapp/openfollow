@@ -20,11 +20,14 @@ import logging
 import socket
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 import openfollow.osc.service as service_module
+from openfollow.net_egress import Egress
+from openfollow.net_utils import InterfaceUnavailable
 from openfollow.osc.service import (
     _PYTHONOSC_AVAILABLE,
     ClientStats,
@@ -334,9 +337,9 @@ def test_get_or_create_client_loses_construction_race(
                 winner_holder["winner"] = winner
                 from openfollow.osc.service import _ClientEntry
 
-                # Cache key is ``(host, port, protocol, framing)``;
+                # Cache key is ``(host, port, protocol, framing, egress)``;
                 # UDP entries pin to ``"length_prefix"``.
-                svc._cache[(host, port, "udp", "length_prefix")] = _ClientEntry(client=winner)
+                svc._cache[(host, port, "udp", "length_prefix", None)] = _ClientEntry(client=winner)
 
     monkeypatch.setattr(service_module, "SimpleUDPClient", _RaceClient)
     monkeypatch.setattr(service_module, "_resolve_host", lambda host: host)
@@ -380,7 +383,8 @@ class _FakeTcpSender:
 
     instances: list[_FakeTcpSender] = []
 
-    def __init__(self, host: str, port: int, framing: str) -> None:
+    def __init__(self, host: str, port: int, framing: str, *, egress: object = None) -> None:
+        self.egress = egress
         self.host = host
         self.port = port
         self.framing = framing
@@ -1570,3 +1574,219 @@ def test_restart_listener_resets_state_when_thread_start_fails(monkeypatch: pyte
     assert svc._listener is None
     assert svc._listener_thread is None
     svc.stop_listener()  # clean no-op – nothing half-installed
+
+
+# ---------------------------------------------------------------------------
+# Egress pinning
+# ---------------------------------------------------------------------------
+
+_EGRESS = Egress("eth1", "198.51.100.10")
+_OTHER_EGRESS = Egress("eth2", "203.0.113.10")
+
+
+@pytest.fixture
+def pins(monkeypatch: pytest.MonkeyPatch) -> list[tuple[object, Egress, bool]]:
+    calls: list[tuple[object, Egress, bool]] = []
+
+    def _pin(sock: object, egress: Egress, *, multicast: bool = False) -> None:
+        calls.append((sock, egress, multicast))
+
+    monkeypatch.setattr(service_module, "pin_socket_egress", _pin)
+    return calls
+
+
+def _evicting_service(monkeypatch: pytest.MonkeyPatch, closed: list[Any]) -> OscService:
+    monkeypatch.setattr(service_module, "SimpleUDPClient", _FakeClient)
+    monkeypatch.setattr(service_module, "_resolve_host", lambda host: host)
+    return OscService(close_async=closed.extend)
+
+
+def test_a_pinned_udp_client_is_pinned_before_its_first_send(patched_service: OscService, pins: list) -> None:
+    patched_service.send("/x", host="198.51.100.20", port=9000, egress=_EGRESS)
+    client = _FakeClient.instances[0]
+    assert pins == [(client._sock, _EGRESS, False)]
+    assert client.calls == [("/x", [])]
+
+
+def test_a_multicast_destination_is_pinned_as_multicast(patched_service: OscService, pins: list) -> None:
+    patched_service.send("/x", host="239.1.2.3", port=9000, egress=_EGRESS)
+    assert pins[0][2] is True
+
+
+def test_an_unpinned_client_is_left_to_the_os(patched_service: OscService, pins: list) -> None:
+    patched_service.send("/x", host="198.51.100.20", port=9000)
+    assert pins == []
+
+
+def test_the_cache_keeps_one_client_per_interface(patched_service: OscService, pins: list) -> None:
+    for egress in (_EGRESS, _OTHER_EGRESS, _EGRESS, None):
+        patched_service.send("/x", host="198.51.100.20", port=9000, egress=egress)
+    assert len(_FakeClient.instances) == 3
+
+
+def test_a_down_egress_creates_no_client_and_sends_nothing(patched_service: OscService, pins: list) -> None:
+    """Creating one would have nothing to pin to, so it would send unpinned."""
+    patched_service.send("/x", host="198.51.100.20", port=9000, egress=Egress("eth1", ""))
+    assert _FakeClient.instances == []
+    assert pins == []
+
+
+def test_a_refused_pin_closes_its_socket_and_waits_before_retrying(
+    patched_service: OscService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = [100.0]
+    # Only this module's clock: time.monotonic itself is shared process-wide.
+    monkeypatch.setattr(service_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    attempts: list[Any] = []
+
+    def _refuse(sock: Any, egress: Egress, *, multicast: bool = False) -> None:
+        attempts.append(sock)
+        raise InterfaceUnavailable("cannot send via eth1")
+
+    monkeypatch.setattr(service_module, "pin_socket_egress", _refuse)
+    for _ in range(5):
+        patched_service.send("/x", host="198.51.100.20", port=9000, egress=_EGRESS)
+    assert len(attempts) == 1
+    assert attempts[0].closed is True
+
+    now[0] += 1.5
+    patched_service.send("/x", host="198.51.100.20", port=9000, egress=_EGRESS)
+    assert len(attempts) == 2
+
+
+def test_send_reports_a_message_that_reached_the_socket(patched_service: OscService, pins: list) -> None:
+    assert patched_service.send("/x", host="198.51.100.20", port=9000) is True
+    assert patched_service.send("/x", host="198.51.100.20", port=9000, egress=_EGRESS) is True
+
+
+def _refuse_pins(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _refuse(sock: Any, egress: Egress, *, multicast: bool = False) -> None:
+        raise InterfaceUnavailable("cannot send via eth1")
+
+    monkeypatch.setattr(service_module, "pin_socket_egress", _refuse)
+
+
+@pytest.mark.parametrize(
+    ("address", "overrides", "setup"),
+    [
+        ("", {}, None),
+        ("/x", {"egress": Egress("eth1", "")}, None),
+        ("/x", {"host": ""}, None),
+        ("/x", {"port": 0}, None),
+        ("/x", {"protocol": "sctp"}, None),
+        ("/x", {"egress": _EGRESS}, "refuse-pin"),
+        ("/x", {}, "send-raises"),
+        ("/x", {}, "no-python-osc"),
+    ],
+    ids=[
+        "no-address",
+        "down-interface",
+        "no-host",
+        "no-port",
+        "unknown-protocol",
+        "refused-pin",
+        "send-raises",
+        "no-dep",
+    ],
+)
+def test_send_reports_a_message_that_never_left(
+    patched_service: OscService, monkeypatch: pytest.MonkeyPatch, address: str, overrides: dict, setup: str | None
+) -> None:
+    """A caller that records the send must not record one that went nowhere."""
+    monkeypatch.setattr(service_module, "time", SimpleNamespace(monotonic=lambda: 100.0))
+    kwargs: dict[str, Any] = {"host": "198.51.100.20", "port": 9000, **overrides}
+    if setup == "refuse-pin":
+        _refuse_pins(monkeypatch)
+    elif setup == "send-raises":
+        patched_service.send("/warm", **kwargs)
+        _FakeClient.instances[0].send_exc = OSError("Network is unreachable")
+    elif setup == "no-python-osc":
+        monkeypatch.setattr(service_module, "_PYTHONOSC_AVAILABLE", False)
+    assert patched_service.send(address, **kwargs) is False
+    # A second attempt inside a refused pin's retry delay is not a send either.
+    assert patched_service.send(address, **kwargs) is False
+
+
+def test_eviction_retries_a_refused_pin_at_once(patched_service: OscService, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Eviction follows an address change, so the pin that was refused may now
+    hold; waiting out the retry delay would drop sends for no reason."""
+    monkeypatch.setattr(service_module, "time", SimpleNamespace(monotonic=lambda: 100.0))
+    attempts: list[Any] = []
+    refuse = [True]
+
+    def _pin(sock: Any, egress: Egress, *, multicast: bool = False) -> None:
+        attempts.append(sock)
+        if refuse[0]:
+            raise InterfaceUnavailable("cannot send via eth1")
+
+    monkeypatch.setattr(service_module, "pin_socket_egress", _pin)
+    patched_service.send("/x", host="198.51.100.20", port=9000, egress=_EGRESS)
+    refuse[0] = False
+    patched_service.evict_egress("eth1")
+    patched_service.send("/x", host="198.51.100.20", port=9000, egress=_EGRESS)
+    assert len(attempts) == 2
+    assert _FakeClient.instances[-1].calls == [("/x", [])]
+
+
+def test_evict_egress_drops_every_client_on_that_interface_only(monkeypatch: pytest.MonkeyPatch, pins: list) -> None:
+    closed: list[Any] = []
+    svc = _evicting_service(monkeypatch, closed)
+    for egress in (_EGRESS, Egress("eth1", "198.51.100.11"), _OTHER_EGRESS, None):
+        svc.send("/x", host="198.51.100.20", port=9000, egress=egress)
+    eth1_clients = _FakeClient.instances[:2]
+
+    svc.evict_egress("eth1")
+    assert closed == eth1_clients
+
+    svc.send("/x", host="198.51.100.20", port=9000, egress=_OTHER_EGRESS)
+    svc.send("/x", host="198.51.100.20", port=9000)
+    assert len(_FakeClient.instances) == 4
+    svc.send("/x", host="198.51.100.20", port=9000, egress=_EGRESS)
+    assert len(_FakeClient.instances) == 5
+
+
+def test_retain_egress_keeps_live_and_unpinned_clients(monkeypatch: pytest.MonkeyPatch, pins: list) -> None:
+    closed: list[Any] = []
+    svc = _evicting_service(monkeypatch, closed)
+    for egress in (_EGRESS, _OTHER_EGRESS, None):
+        svc.send("/x", host="198.51.100.20", port=9000, egress=egress)
+    pinned_eth1, pinned_eth2, _unpinned = _FakeClient.instances
+
+    svc.retain_egress(frozenset({_OTHER_EGRESS}))
+    assert closed == [pinned_eth1]
+    assert pinned_eth2 not in closed
+
+
+def test_eviction_never_waits_on_a_slow_close(monkeypatch: pytest.MonkeyPatch, pins: list) -> None:
+    """A TCP sender's close joins its reader for up to a second; eviction runs
+    on the main loop, which must not stall on it."""
+    release, done = threading.Event(), threading.Event()
+
+    class _SlowSocket(_FakeSocket):
+        def close(self) -> None:
+            release.wait(2.0)
+            done.set()
+
+    class _SlowClient(_FakeClient):
+        def __init__(self, host: str, port: int, allow_broadcast: bool = False) -> None:
+            super().__init__(host, port, allow_broadcast)
+            self._sock = _SlowSocket()
+
+    monkeypatch.setattr(service_module, "SimpleUDPClient", _SlowClient)
+    monkeypatch.setattr(service_module, "_resolve_host", lambda host: host)
+    svc = OscService()
+    svc.send("/x", host="198.51.100.20", port=9000, egress=_EGRESS)
+
+    started = time.monotonic()
+    svc.evict_egress("eth1")
+    assert time.monotonic() - started < 0.5
+    release.set()
+    assert done.wait(2.0)
+
+
+def test_stats_and_evict_address_a_pinned_client_by_its_egress(patched_service: OscService, pins: list) -> None:
+    patched_service.send("/x", host="198.51.100.20", port=9000, egress=_EGRESS)
+    assert patched_service.stats_for("198.51.100.20", 9000, egress=_EGRESS).total_sent == 1
+    assert patched_service.stats_for("198.51.100.20", 9000).total_sent == 0
+    patched_service.evict("198.51.100.20", 9000, egress=_EGRESS)
+    assert _FakeClient.instances[0]._sock.closed is True

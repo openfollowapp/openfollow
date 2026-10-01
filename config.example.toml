@@ -218,6 +218,9 @@ host = "127.0.0.1"
 port = 36700
 fps = 60
 context = 0
+# Interface to send from, by name. Empty follows psn_source_iface; with that
+# empty too, the system routes by destination. Loopback hosts are never pinned.
+source_iface = ""
 
 [detection]
 enabled = false
@@ -251,6 +254,7 @@ host = "127.0.0.1"
 port = 8000
 protocol = "udp"   # "udp" | "tcp"
 framing = "slip"   # TCP only: "slip" | "length_prefix"
+source_iface = ""  # interface to send from; empty follows psn_source_iface
 
 [trigger_zones]
 enabled = true

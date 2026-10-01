@@ -29,6 +29,7 @@ from openfollow.configuration import (
     OscTransmittersConfig,
     StreamTrigger,
 )
+from openfollow.net_egress import Egress
 from openfollow.osc.transmitter import (
     BindingRingBuffer,
     OscTransmitter,
@@ -50,6 +51,9 @@ class _FakeOscService:
     def __init__(self) -> None:
         # Recorded tuple includes framing for round-trip assertions.
         self.calls: list[tuple[str, list[Any], str, int, str, str]] = []
+        self.egress_seen: list[object] = []
+        # What ``send`` reports; False models a message that never left.
+        self.delivers = True
 
     def send(
         self,
@@ -60,10 +64,13 @@ class _FakeOscService:
         port: int,
         protocol: str = "udp",
         framing: str = "slip",
-    ) -> None:
+        egress: object = None,
+    ) -> bool:
+        self.egress_seen.append(egress)
         self.calls.append(
             (address, list(args), host, port, protocol, framing),
         )
+        return self.delivers
 
 
 class _FakeMarker:
@@ -152,6 +159,7 @@ def _manager(
     controller_markers: dict[int, int] | None = None,
     controlled_markers: list[int] | None = None,
     destinations: OscDestinationsConfig | None = None,
+    egress_provider: Any = None,
 ) -> tuple[OscTransmitterManager, _FakeOscService]:
     # grid tuple = (width, depth, max_height, z_offset). max_height=0.0
     # makes ``[z.frac]`` / ``[z.frac.inv]`` raise RenderError; fractional-Z
@@ -178,6 +186,7 @@ def _manager(
         marker_fader_provider=marker_fader_provider,
         controller_marker_provider=controller_marker_provider,
         controlled_markers_provider=controlled_markers_provider,
+        egress_provider=egress_provider,
     )
     # Seed destinations once; subsequent ``restart(cfg)`` calls (with no
     # destinations arg) keep the staged set, mirroring a transmitter-only edit.
@@ -3949,3 +3958,91 @@ class TestMultiMarkerFanOut:
         assert svc.calls == []
         entries = manager.ring_buffer_for("row-1") or []
         assert entries and entries[-1].status == "skipped"
+
+
+class TestEgressPin:
+    """A destination pinned to an interface with no address sends nothing,
+    and the row says why."""
+
+    @staticmethod
+    def _pinned(address: str) -> tuple[OscTransmitterManager, _FakeOscService, list[Any]]:
+        asked: list[Any] = []
+
+        def _provide(dest: OscDestinationConfig) -> Egress:
+            asked.append(dest)
+            return Egress("eth1", address)
+
+        marker = _FakeMarker((1.0, 2.0, 3.0))
+        manager, svc = _manager(markers={0: marker}, egress_provider=_provide)
+        manager.restart(OscTransmittersConfig(transmitters=[_row()]))
+        return manager, svc, asked
+
+    def test_a_down_interface_skips_with_its_reason(self) -> None:
+        manager, svc, _asked = self._pinned("")
+        manager._tick_once()
+        assert svc.calls == []
+        entry = manager.ring_buffer_for("row-1")[-1]
+        assert entry.status == "skipped"
+        assert entry.error == "interface eth1 is down"
+        assert entry.address == "/cue/0"
+
+    def test_a_test_packet_reports_the_down_interface(self) -> None:
+        manager, svc, _asked = self._pinned("")
+        result = manager.test_send("row-1")
+        assert result is not None
+        assert result["sent"] is False
+        assert result["error"] == "interface eth1 is down"
+        assert svc.calls == []
+
+    def test_an_up_interface_passes_its_egress_to_the_send(self) -> None:
+        manager, svc, asked = self._pinned("198.51.100.10")
+        manager._tick_once()
+        assert svc.egress_seen == [Egress("eth1", "198.51.100.10")]
+        assert asked[0].id == _DEFAULT_DEST_ID
+
+    @pytest.mark.parametrize(
+        ("egress", "reason"),
+        [(Egress("eth1", "198.51.100.10"), "could not send on interface eth1"), (None, "send failed")],
+        ids=["pinned", "unpinned"],
+    )
+    def test_a_send_that_never_left_is_not_recorded_and_is_retried(self, egress: Any, reason: str) -> None:
+        """Recorded as sent, it primed the on-change gate, and a marker holding
+        still read "unchanged" instead of retrying."""
+        from openfollow.configuration import StreamTrigger
+
+        marker = _FakeMarker((1.0, 2.0, 3.0))
+        manager, svc = _manager(markers={0: marker}, egress_provider=lambda dest: egress)
+        on_change = _row(trigger=StreamTrigger(rate_hz=60, mode="on_change", min_change_m=0.05))
+        manager.restart(OscTransmittersConfig(transmitters=[on_change]))
+        svc.delivers = False
+        manager._tick_once()
+        entry = manager.ring_buffer_for("row-1")[-1]
+        assert (entry.status, entry.error, entry.address) == ("skipped", reason, "/cue/0")
+
+        svc.delivers = True
+        manager._tick_once()
+        assert len(svc.calls) == 2
+        assert manager.ring_buffer_for("row-1")[-1].status == "sent"
+
+    def test_a_test_packet_that_never_left_says_so(self) -> None:
+        manager, svc, _asked = self._pinned("198.51.100.10")
+        svc.delivers = False
+        result = manager.test_send("row-1")
+        assert result is not None
+        assert result["sent"] is False
+        assert result["error"] == "could not send on interface eth1"
+
+    def test_the_down_reason_is_not_hidden_as_unchanged(self) -> None:
+        """An on-change row whose marker holds still would otherwise read
+        "unchanged" for the whole outage."""
+        state = {"address": "198.51.100.10"}
+        marker = _FakeMarker((1.0, 2.0, 3.0))
+        manager, _svc = _manager(markers={0: marker}, egress_provider=lambda dest: Egress("eth1", state["address"]))
+        from openfollow.configuration import StreamTrigger
+
+        on_change = _row(trigger=StreamTrigger(rate_hz=60, mode="on_change", min_change_m=0.05))
+        manager.restart(OscTransmittersConfig(transmitters=[on_change]))
+        manager._tick_once()
+        state["address"] = ""
+        manager._tick_once()
+        assert manager.ring_buffer_for("row-1")[-1].error == "interface eth1 is down"

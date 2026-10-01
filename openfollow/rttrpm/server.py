@@ -56,6 +56,7 @@ import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, NamedTuple
 
+from openfollow.net_egress import Egress, is_multicast_host, pin_socket_egress
 from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.marker import is_marker_stale
 
@@ -72,6 +73,8 @@ _TRANSIENT_SEND_ERRNOS: frozenset[int] = frozenset(
         errno.ENETDOWN,
         errno.EHOSTDOWN,
         errno.EHOSTUNREACH,
+        # A pinned USB adapter re-created under the same name.
+        errno.ENODEV,
     }
 )
 _SOCKET_REBUILD_MIN_INTERVAL_SECONDS = 1.0
@@ -241,11 +244,14 @@ class RttrpmServer:
         port: int = DEFAULT_PORT,
         fps: float = 60.0,
         context: int = 0,
+        egress: Egress | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._fps = fps
         self._context = context
+        # None leaves the route to the OS; otherwise the only interface used.
+        self._egress = egress
 
         # Shared marker references (keyed by marker_id)
         self._markers: dict[int, Marker] = {}
@@ -293,7 +299,12 @@ class RttrpmServer:
         stop_event = threading.Event()
         self._stop_event = stop_event
         self._cap_warned = False
-        self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self._socket = self._open_socket()
+        except OSError as exc:
+            # The send loop retries it; it never sends unpinned meanwhile.
+            logger.warning("RTTrPM: %s", exc)
+            self._socket = None
         self._send_thread = threading.Thread(
             target=self._send_loop, args=(stop_event,), daemon=True, name="RTTrPM-Send"
         )
@@ -313,14 +324,44 @@ class RttrpmServer:
         if sock is not None:
             sock.close()
 
-    def restart(self, *, host: str, port: int, fps: float, context: int) -> None:
-        """Stop, reconfigure, and restart; marker registrations survive."""
+    def restart(self, *, host: str, port: int, fps: float, context: int, egress: Egress | None) -> None:
+        """Stop, reconfigure, and restart; marker registrations survive.
+
+        Raises ``OSError`` when a pinned socket cannot be opened. ``start()``
+        leaves that to the send loop's retry, which suits boot but gives a live
+        apply nothing to roll back on.
+        """
         self.stop()
         self._host = host
         self._port = port
         self._fps = fps
         self._context = context
+        self._egress = egress
         self.start()
+        if egress is not None and self._socket is None:
+            self.stop()
+            raise OSError(f"RTTrPM could not open a socket pinned to {egress.iface} ({egress.address or 'no address'})")
+
+    def bound_source_ip(self) -> str | None:
+        """Address this server sends from: "" when unpinned, None when stopped or its pin failed."""
+        if self._stop_event.is_set() or self._send_thread is None:
+            return None
+        if self._egress is None:
+            return ""
+        if self._socket is None:
+            return None
+        return self._egress.address
+
+    def _open_socket(self) -> socket.socket:
+        """A UDP socket, pinned to the configured interface when there is one."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if self._egress is not None:
+            try:
+                pin_socket_egress(sock, self._egress, multicast=is_multicast_host(self._host))
+            except OSError:
+                sock.close()
+                raise
+        return sock
 
     def __enter__(self) -> RttrpmServer:
         self.start()
@@ -479,7 +520,7 @@ class RttrpmServer:
                 return
             old_sock = self._socket
             try:
-                self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self._socket = self._open_socket()
             except OSError as exc:
                 logger.warning("RTTrPM: socket rebuild failed: %s", exc)
                 self._socket = None

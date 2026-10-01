@@ -933,6 +933,19 @@ class TestStripDeviceLocalFields:
         assert scrubbed["enabled"] is True
         assert scrubbed["system_number"] == 3
 
+    def test_rttrpm_output_section_drops_source_iface(self) -> None:
+        scrubbed = strip_device_local_fields("rttrpm_output", {"enabled": True, "source_iface": "eth0"})
+        assert scrubbed == {"enabled": True}
+
+    def test_the_interface_assignment_section_is_dropped_whole(self) -> None:
+        """Its per-destination keys are not known in advance, so a field list
+        cannot name them; nothing in the section is this box's to receive."""
+        scrubbed = strip_device_local_fields(
+            "interface_assignment",
+            {"psn_source_iface": "eth0", "osc_destinations.default.source_iface": "eth1"},
+        )
+        assert scrubbed == {}
+
     def test_osc_section_drops_listen_iface(self) -> None:
         """The listener pin names a NIC on THIS box. Copied to a peer it would
         either dangle or resolve to a different network there and take that
@@ -1180,9 +1193,67 @@ class TestInterfaceAssignmentRows:
         """Guards the panel against growing a control the save path can't
         write – the row list and the target map have to stay in step."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        rows = build_interface_assignment_rows(AppConfig())
+        cfg = AppConfig()
+        rows = build_interface_assignment_rows(cfg)
         editable = {r["key"] for r in rows if r["editable"]}
-        assert editable == set(routes_module._INTERFACE_ASSIGNMENT_TARGETS)
+        destinations = {f"osc_destinations.{dest.id}.source_iface" for dest in cfg.osc_destinations.destinations}
+        assert editable == set(routes_module._INTERFACE_ASSIGNMENT_TARGETS) | destinations
+
+    @staticmethod
+    def _row(cfg: AppConfig, label: str) -> dict:
+        return next(r for r in build_interface_assignment_rows(cfg) if r["label"] == label)
+
+    def test_the_rttrpm_row_follows_the_station_and_its_own_pin(self, monkeypatch) -> None:
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+        cfg = AppConfig(psn_source_iface="eth0")
+        cfg.rttrpm_output.host = "198.51.100.20"
+        row = self._row(cfg, "RTTrPM output")
+        assert (row["key"], row["blank"], row["address"]) == ("rttrpm_output.source_iface", "station", "192.168.1.5")
+        # Hidden with its section while experimental features are.
+        assert row["experimental"] is True
+
+        cfg.rttrpm_output.source_iface = "eth1"
+        assert self._row(cfg, "RTTrPM output")["address"] == "10.0.0.9"
+        cfg.rttrpm_output.source_iface = "eth9"
+        assert self._row(cfg, "RTTrPM output")["address"] == "eth9 is down"
+
+    def test_a_sender_with_nothing_configured_reads_per_routing_table(self, monkeypatch) -> None:
+        """No pin anywhere means the OS routes each destination; naming the
+        auto-detected address would claim a binding that does not exist."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        cfg = AppConfig()
+        cfg.rttrpm_output.host = "198.51.100.20"
+        cfg.osc_destinations.destinations[0].host = "198.51.100.21"
+        assert self._row(cfg, "RTTrPM output")["address"] == "Per routing table"
+        assert self._row(cfg, "OSC to Default")["address"] == "Per routing table"
+
+    def test_a_loopback_destination_reads_loopback(self, monkeypatch) -> None:
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        cfg = AppConfig(psn_source_iface="eth0")
+        assert cfg.rttrpm_output.host == "127.0.0.1"
+        assert self._row(cfg, "RTTrPM output")["address"] == "Loopback"
+        assert self._row(cfg, "OSC to Default")["address"] == "Loopback"
+
+    def test_each_osc_destination_gets_a_row(self, monkeypatch) -> None:
+        from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
+
+        self._ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+        cfg = AppConfig()
+        cfg.osc_destinations = OscDestinationsConfig(
+            destinations=[
+                OscDestinationConfig(id="foh", name="FOH console", host="198.51.100.20", source_iface="eth1"),
+                OscDestinationConfig(id="media", name="", host="198.51.100.30", port=7000),
+            ]
+        )
+        rows = {r["key"]: r for r in build_interface_assignment_rows(cfg)}
+        foh = rows["osc_destinations.foh.source_iface"]
+        assert (foh["label"], foh["value"], foh["address"], foh["blank"]) == (
+            "OSC to FOH console",
+            "eth1",
+            "10.0.0.9",
+            "station",
+        )
+        assert rows["osc_destinations.media.source_iface"]["label"] == "OSC to 198.51.100.30:7000"
 
 
 class TestApplyInterfaceAssignment:
@@ -1393,3 +1464,59 @@ class TestRequestLocalIface:
 
         monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", dict)
         assert routes_module.request_local_iface({self.KEY: "203.0.113.7"}) == ""
+
+
+class TestApplyInterfaceAssignmentSenders:
+    """The sender rows save onto RTTrPM and each OSC destination."""
+
+    @staticmethod
+    def _cfg() -> AppConfig:
+        from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
+
+        cfg = AppConfig()
+        cfg.osc_destinations = OscDestinationsConfig(
+            destinations=[
+                OscDestinationConfig(id="foh", host="198.51.100.20"),
+                OscDestinationConfig(id="media.v2", host="198.51.100.30", source_iface="eth2"),
+            ]
+        )
+        return cfg
+
+    def test_writes_rttrpm_and_destination_pins(self) -> None:
+        """A key for a destination deleted in another tab must not stop the rest saving."""
+        cfg = self._cfg()
+        apply_section_data(
+            cfg,
+            "interface_assignment",
+            {
+                "rttrpm_output.source_iface": " eth1 ",
+                "osc_destinations.gone.source_iface": "eth9",
+                "osc_destinations.foh.source_iface": " eth3 ",
+                "osc_destinations.media.v2.source_iface": "",
+            },
+        )
+        assert cfg.rttrpm_output.source_iface == "eth1"
+        assert [d.source_iface for d in cfg.osc_destinations.destinations] == ["eth3", ""]
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "osc_destinations.gone.source_iface",
+            "osc_destinations.foh.host",
+            "osc_destinations..source_iface",
+            "osc_destinations.source_iface",
+        ],
+        ids=["deleted-destination", "other-field", "empty-id", "no-id"],
+    )
+    def test_keys_that_name_no_destination_pin_change_nothing(self, key: str) -> None:
+        cfg = self._cfg()
+        apply_section_data(cfg, "interface_assignment", {key: "eth9"})
+        assert [(d.host, d.source_iface) for d in cfg.osc_destinations.destinations] == [
+            ("198.51.100.20", ""),
+            ("198.51.100.30", "eth2"),
+        ]
+
+    def test_a_non_string_value_keeps_the_pin(self) -> None:
+        cfg = self._cfg()
+        apply_section_data(cfg, "interface_assignment", {"osc_destinations.media.v2.source_iface": None})
+        assert cfg.osc_destinations.destinations[1].source_iface == "eth2"

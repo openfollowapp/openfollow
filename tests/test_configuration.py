@@ -2389,6 +2389,49 @@ def test_rttrpm_output_config_strips_host_whitespace(
     assert cfg.host == expected
 
 
+@pytest.mark.parametrize(("raw", "expected"), [("  eth1  ", "eth1"), ("\teth0.10 ", "eth0.10"), ("   ", "")])
+def test_rttrpm_output_config_source_iface_strips_whitespace(raw: str, expected: str) -> None:
+    """A " " pin would otherwise read as a configured interface that is down."""
+    assert RttrpmOutputConfig(source_iface=raw).source_iface == expected
+
+
+@pytest.mark.parametrize("raw", [None, 5, True, ["eth1"]])
+def test_rttrpm_output_config_source_iface_rejects_non_strings(raw: object) -> None:
+    """Falls back to following the station rather than crashing the resolver."""
+    assert RttrpmOutputConfig(source_iface=raw).source_iface == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(" eth1 ", "eth1"), (None, ""), (5, ""), (True, ""), (["eth1"], "")])
+def test_osc_destination_source_iface_is_normalised(raw: object, expected: str) -> None:
+    from openfollow.configuration import OscDestinationConfig
+
+    assert OscDestinationConfig(source_iface=raw).source_iface == expected  # type: ignore[arg-type]
+
+
+def test_osc_destination_source_iface_loads_from_toml(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[[osc_destinations.destinations]]\nid = "foh"\nhost = "198.51.100.20"\nsource_iface = "eth1 "\n',
+        encoding="utf-8",
+    )
+    (dest,) = load_config(str(path)).osc_destinations.destinations
+    assert dest.source_iface == "eth1"
+
+
+def test_rttrpm_output_source_iface_loads_from_toml(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[rttrpm_output]\nenabled = true\nsource_iface = " eth1 "\n', encoding="utf-8")
+    assert load_config(str(path)).rttrpm_output.source_iface == "eth1"
+
+
+def test_apply_runtime_routes_an_rttrpm_pin_change_to_the_live_apply() -> None:
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig()
+    new_config.rttrpm_output.source_iface = "eth1"
+    apply_runtime_config_changes(app, new_config)
+    assert [cfg.source_iface for cfg in app._runtime_services.rttrpm_changes] == ["eth1"]
+
+
 def test_rttrpm_output_config_rejects_non_string_host_and_falls_back() -> None:
     """Non-string ``host`` (hand-edited TOML or crafted POST) falls
     back to the default rather than raising inside ``.strip()``."""

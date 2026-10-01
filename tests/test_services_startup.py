@@ -14,6 +14,7 @@ import pytest
 import openfollow.privilege.broker as broker_module
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig
+from openfollow.net_egress import Egress
 
 pytestmark = pytest.mark.integration
 
@@ -1320,6 +1321,203 @@ def test_planes_resolve_their_own_and_the_station_interface(monkeypatch) -> None
     assert resolved["OTP output"] == ("192.168.1.5", "station", "eth0")
 
 
+def _rttrpm_plane(services):
+    return next(p for p in services._build_network_planes() if p.label == "RTTrPM output")
+
+
+def test_rttrpm_is_a_plane_only_while_an_interface_is_configured(monkeypatch) -> None:
+    """Unpinned, the OS routes RTTrPM. Following it anyway would compare the
+    auto-detected address with an unbound socket and restart it every poll."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+    cfg = services._app._config
+    cfg.rttrpm_output.enabled = True
+    cfg.rttrpm_output.host = "203.0.113.50"
+    plane = _rttrpm_plane(services)
+    assert plane.enabled() is False
+
+    cfg.psn_source_iface = "eth0"
+    assert plane.enabled() is True
+    assert plane.resolve() == ("192.168.1.5", "station", "eth0")
+
+    cfg.psn_source_iface = ""
+    cfg.rttrpm_output.source_iface = "eth1"
+    assert plane.enabled() is True
+    assert plane.resolve() == ("10.0.0.9", "iface", "eth1")
+
+    cfg.rttrpm_output.enabled = False
+    assert plane.enabled() is False
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+def test_rttrpm_to_this_box_is_not_a_plane(monkeypatch, host) -> None:
+    """Its socket is never pinned, so there is no interface to follow, and
+    comparing the station address with an unbound socket restarts it every poll."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+    cfg = services._app._config
+    cfg.rttrpm_output.enabled = True
+    cfg.rttrpm_output.host = host
+    cfg.psn_source_iface = "eth0"
+    cfg.rttrpm_output.source_iface = "eth1"
+    assert _rttrpm_plane(services).enabled() is False
+
+
+def test_the_rttrpm_plane_drives_the_running_server(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._rttrpm_server = None
+    plane = _rttrpm_plane(services)
+    assert plane.current() is None
+    plane.suspend()
+
+    class _Server:
+        stops = 0
+
+        def bound_source_ip(self) -> str:
+            return "10.0.0.9"
+
+        def stop(self) -> None:
+            self.stops += 1
+
+    server = _Server()
+    services._app._rttrpm_server = server
+    assert plane.current() == "10.0.0.9"
+    plane.suspend()
+    assert server.stops == 1
+
+    applied: list[object] = []
+    monkeypatch.setattr(services, "apply_rttrpm_output_change", applied.append)
+    plane.apply("10.0.0.10")
+    assert applied == [services._app._config.rttrpm_output]
+
+
+def _osc_routing(services, *dests, rows=(), zones=(), zones_enabled=False) -> None:
+    from openfollow.configuration import (
+        OscDestinationsConfig,
+        OscTransmitterConfig,
+        OscTransmittersConfig,
+        TriggerZoneConfig,
+    )
+
+    cfg = services._app._config
+    cfg.osc_destinations = OscDestinationsConfig(destinations=list(dests))
+    cfg.osc_transmitters = OscTransmittersConfig(
+        transmitters=[
+            OscTransmitterConfig(id=f"row-{i}", enabled=on, destination_id=d) for i, (d, on) in enumerate(rows)
+        ]
+    )
+    cfg.trigger_zones.enabled = zones_enabled
+    cfg.trigger_zones.zones = [TriggerZoneConfig(destination_id=d, enabled=True) for d in zones]
+
+
+def _dest(dest_id: str, source_iface: str = "", host: str = "198.51.100.20"):
+    from openfollow.configuration import OscDestinationConfig
+
+    return OscDestinationConfig(id=dest_id, host=host, source_iface=source_iface)
+
+
+def _osc_output_planes(services):
+    return [p for p in services._build_network_planes() if p.label == "OSC output"]
+
+
+def test_osc_output_has_one_plane_per_interface_in_use(monkeypatch) -> None:
+    """Per interface, so two destinations on one NIC cannot disagree about its
+    address and the HUD lists the outage once."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _osc_routing(
+        services,
+        _dest("a", "eth1"),
+        _dest("b", "eth1"),
+        _dest("unused", "eth2"),
+        _dest("local", "eth3", host="127.0.0.1"),
+        rows=[("a", True), ("b", True), ("local", True)],
+    )
+    assert [p.key for p in _osc_output_planes(services)] == ["osc_out:eth1"]
+
+
+def test_only_enabled_rows_and_armed_zones_put_an_interface_in_use(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _osc_routing(services, _dest("a", "eth1"), _dest("z", "eth2"), rows=[("a", False)], zones=["z"])
+    assert _osc_output_planes(services) == []
+
+    services._app._config.trigger_zones.enabled = True
+    assert [p.key for p in _osc_output_planes(services)] == ["osc_out:eth2"]
+
+
+def test_a_blank_destination_pin_follows_the_station_plane(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _osc_routing(services, _dest("a"), rows=[("a", True)])
+    assert _osc_output_planes(services) == []
+
+    services._app._config.psn_source_iface = "eth0"
+    assert [p.key for p in _osc_output_planes(services)] == ["osc_out:eth0"]
+
+
+def test_the_osc_output_plane_drives_the_egress_table(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    service = _RecordingOscService()
+    services._osc_service = service
+    dest = _dest("a", "eth1")
+    _osc_routing(services, dest, rows=[("a", True)])
+    services._restage_osc_egress(services._app._config.osc_destinations)
+    (plane,) = _osc_output_planes(services)
+
+    assert plane.resolve() == ("10.0.0.9", "iface", "eth1")
+    assert plane.current() == "10.0.0.9"
+
+    plane.suspend()
+    assert plane.current() is None
+    assert services._osc_egress.for_destination(dest).down is True
+
+    plane.apply("10.0.0.10")
+    assert services._osc_egress.for_destination(dest) == Egress("eth1", "10.0.0.10")
+    assert service.evicted == ["eth1", "eth1"]
+
+
+def test_a_station_change_restages_osc_destinations(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    dest = _dest("a")
+    _osc_routing(services, dest, rows=[("a", True)])
+    services._restage_osc_egress(services._app._config.osc_destinations)
+    assert services._osc_egress.for_destination(dest) is None
+
+    services._app._otp_server = None
+    services._app._rttrpm_server = None
+    services._app._config.psn_source_iface = "eth0"
+    services.apply_station_iface_change()
+    assert services._osc_egress.for_destination(dest) == Egress("eth0", "192.168.1.5")
+
+
+def test_a_routing_change_restages_the_egress_table(monkeypatch) -> None:
+    from openfollow.configuration import OscDestinationsConfig
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    services._osc_transmitter_manager = SimpleNamespace(restart=lambda cfg, dests: None)
+    moved = _dest("a", "eth1")
+    services.apply_osc_transmitters_change(
+        services._app._config.osc_transmitters, OscDestinationsConfig(destinations=[moved])
+    )
+    assert services._osc_egress.for_destination(moved) == Egress("eth1", "10.0.0.9")
+
+
+def test_a_zone_test_send_to_a_down_interface_says_so(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {})
+    service = _RecordingOscService()
+    service.sent = []
+    service.send = lambda *a, **kw: service.sent.append(a)  # type: ignore[method-assign]
+    services._osc_service = service
+    _osc_routing(services, _dest("a", "eth1"), zones=["a"])
+    services._app._config.trigger_zones.zones[0].osc_address_first_entry = "/go"
+    services._restage_osc_egress(services._app._config.osc_destinations)
+
+    assert services._zone_test_send(0, "first") == {"skipped": True, "reason": "interface eth1 is down"}
+    assert service.sent == []
+
+
 def test_a_down_plane_reports_down_not_another_interface(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
     _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
@@ -1347,6 +1545,14 @@ class _RecordingOscService:
         # failed join from a healthy one.
         self.join_ok = True
         self.calls: list[str | None] = []
+        self.retained: list[object] = []
+        self.evicted: list[str] = []
+
+    def retain_egress(self, live: object) -> None:
+        self.retained.append(live)
+
+    def evict_egress(self, iface: str) -> None:
+        self.evicted.append(iface)
 
     def listener_status(self) -> dict[str, object]:
         joined = self.port is not None and bool(self.group) and self.iface is not None and self.join_ok

@@ -751,6 +751,10 @@ class ConfigWebServer:
         """Signal that app restart was requested."""
         self._command_queue.request_restart()
 
+    def request_restart_unless_updating(self) -> bool:
+        """Request a restart unless an update is queued or running; False when refused."""
+        return self._command_queue.request_restart_unless_updating()
+
     def request_button_detection(self) -> None:
         """Signal that button detection wizard was requested."""
         self._command_queue.request_button_detection()

@@ -857,16 +857,7 @@
  padding-top: 0.8rem;
  border-top: 1px solid rgba(255, 255, 255, 0.08);
  }
- .ia-legend {
- display: flex;
- align-items: center;
- gap: 1rem;
- margin-top: 0.6rem;
- font-size: 0.75rem;
- color: var(--muted);
- }
- .ia-legend .ia-dot { margin-right: 0.3rem; }
- .ia-legend-actions { margin-left: auto; display: inline-flex; gap: 0.4rem; }
+ .ia-list-actions { display: flex; justify-content: flex-end; gap: 0.4rem; margin-top: 0.6rem; }
  /* Interface rows: one collapsible row per NIC, carrying its own editor.
     Same shape as an OSC transmitter row - the summary reads as a status
     line, the body is the form. */
@@ -2178,6 +2169,9 @@
  height: 16px;
  background: var(--info-sign) no-repeat center / contain;
  }
+ /* Progress: an info box led by the spinner in the sign's place. */
+ .network-banner.network-banner-busy::before { content: none; }
+ .network-banner-busy .modal-spinner { position: absolute; left: 12px; top: 11px; width: 16px; height: 16px; box-sizing: border-box; }
  .notice.error, .update-notice.error, .modal-error, .diag-error, .gallery-error, .network-banner.network-banner-error {
  border-color: var(--error-border);
  background: var(--error-fill);
@@ -2341,6 +2335,28 @@
  if (!sel) return;
  const row = sel.closest('.net-iface-row');
  if (row) netSyncMethodFields(row);
+ });
+ // A request from an element with data-busy-text shows that text in the
+ // network card's busy box until it answers; {field} reads the form's field.
+ // Only the sending element counts, so Cancel inside a busy form stays quiet.
+ function netBusyText(elt) {
+ if (!elt || !elt.hasAttribute || !elt.hasAttribute('data-busy-text')) return null;
+ const form = elt.closest('form');
+ return elt.dataset.busyText.replace(/\{(\w+)\}/g, (_, name) => {
+ const field = form && form.elements[name];
+ return field ? field.value : '';
+ });
+ }
+ document.addEventListener('htmx:beforeRequest', (evt) => {
+ const text = netBusyText(evt.detail.elt);
+ const box = document.getElementById('net-busy');
+ if (text === null || !box) return;
+ box.querySelector('.net-busy-text').textContent = text;
+ box.hidden = false;
+ });
+ document.addEventListener('htmx:afterRequest', (evt) => {
+ const box = document.getElementById('net-busy');
+ if (box && netBusyText(evt.detail.elt) !== null) box.hidden = true;
  });
 
  const sectionFoldStoragePrefix = 'psnfs:section:';

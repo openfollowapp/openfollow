@@ -81,6 +81,11 @@ radius 6px. The icon sits at the left: an off-white warning triangle for
 error, an off-white circle with an "i" for caution and info, an off-white
 circle with a check for success.
 
+Progress is an info box led by the spinner (`.modal-spinner`, the one the
+update dialog turns and the HUD's `draw_spinner` copies) in the sign's place:
+`.network-banner-busy`, shown while a slow request runs and hidden when it
+answers.
+
 A box says what the station observed on its main line (off-white, 600) and
 one next step on its second line (`--muted`, 400). The two never blur into one
 sentence.

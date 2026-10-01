@@ -5073,6 +5073,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def _network_method_value(raw: str) -> str:
         return raw if raw in _NETWORK_METHODS else "dhcp"
 
+    def _vlan_devices(rows: list[dict[str, Any]]) -> set[str]:
+        """Interfaces whose device is a VLAN. A removed VLAN's profile goes
+        before its device does, so the profile list alone briefly calls it an
+        ordinary interface."""
+        return {str(row.get("name", "")) for row in rows if row.get("kind") == "vlan"}
+
     def _build_network_form_context(
         *,
         iface: str | None = None,
@@ -5152,10 +5158,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ]
         # A VLAN cannot parent another VLAN (no QinQ) and loopback carries no
         # tags, so neither is offered as a parent.
+        vlan_names = set(vlan_ids) | _vlan_devices(rows)
         net["vlan_parents"] = [
             name
             for name in (str(row.get("name", "")) for row in rows)
-            if name and name not in vlan_ids and name not in LOOPBACK_NAMES
+            if name and name not in vlan_names and name not in LOOPBACK_NAMES
         ]
         net["session_iface"] = request_local_iface(request.environ)
         net["session_address"] = request_local_addr(request.environ)
@@ -5461,8 +5468,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 banner={"kind": "error", "text": VLAN_ID_RANGE_MESSAGE},
                 vlan_form=entered,
             )
-        names = [str(row.get("name", "")) for row in server.get_network_interfaces()]
-        vlan_names = [str(v.get("name", "")) for v in vlans.get("vlans", [])]
+        rows = server.get_network_interfaces()
+        names = [str(row.get("name", "")) for row in rows]
+        vlan_names = [str(v.get("name", "")) for v in vlans.get("vlans", [])] + sorted(_vlan_devices(rows))
         errors = validate_vlan_create(parent, vlan_id, interfaces=names, vlan_names=vlan_names)
         if errors:
             return _network_vlan_response(banner={"kind": "error", "text": errors[0]}, vlan_form=entered)
@@ -5485,7 +5493,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             )
         if name not in [str(v.get("name", "")) for v in vlans.get("vlans", [])]:
             return _network_vlan_response(
-                banner={"kind": "error", "text": f"{name or 'That interface'} is not a VLAN and cannot be deleted."},
+                banner={"kind": "error", "text": f"{name or 'That interface'} is not a VLAN and cannot be removed."},
             )
         # Deleting the interface the browser arrived on cuts the operator's own
         # session mid-request, and the page they would need to undo it is the
@@ -5495,7 +5503,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 iface=name,
                 banner={
                     "kind": "error",
-                    "text": f"This session is connected over {name}. Reconnect on another interface to delete it.",
+                    "text": f"This session is connected over {name}. Reconnect on another interface to remove it.",
                 },
             )
         with _config_write_lock:
@@ -5736,13 +5744,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # comparing where it would bind against where it did.
         return resolved[0] != server.bind_host
 
-    def _render_interface_assignment(cfg: AppConfig, *, saved: bool = False, restarting: bool = False) -> Any:
+    def _render_interface_assignment(
+        cfg: AppConfig, *, saved: bool = False, restarting: bool = False, restart_refused: bool = False
+    ) -> Any:
         resolved = resolve_web_bind_for(cfg)
         return template(
             "partials/interface_assignment",
             config=cfg,
             saved=saved,
             restarting=restarting,
+            restart_refused=restart_refused,
             assignment_rows=build_interface_assignment_rows(cfg, resolved),
             web_bind_notice=build_web_bind_notice(cfg, resolved, server.display_port),
             web_bind_advisory=server.get_web_bind_advisory(),
@@ -5765,14 +5776,19 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         Each protocol row's field lives on the sub-config that owns it, so the
         existing per-section hot-reload orchestrators pick those changes up.
         The web UI row is the exception: its listening socket can't be moved
-        under the request that is being served on it, so that one pin needs a
-        restart, offered as a separate ``?restart=1`` submit.
+        under the request that is being served on it, so once saved that pin
+        offers Restart OpenFollow.
         """
         cfg = _save_section_from_form("interface_assignment")
-        if request.query.get("restart") == "1":
-            server.request_restart()
-            return _render_interface_assignment(cfg, saved=True, restarting=True)
         return _render_interface_assignment(cfg, saved=True)
+
+    @app.post("/section/interface_assignment/restart")
+    def restart_for_interface_assignment() -> Any:
+        """Restart only; saving is the panel's Save. Refused while an update runs."""
+        cfg = _request_scoped_config()
+        if not server.request_restart_unless_updating():
+            return _render_interface_assignment(cfg, restart_refused=True)
+        return _render_interface_assignment(cfg, restarting=True)
 
     @app.post("/section/video_source")
     def update_video_source() -> Any:
@@ -5803,14 +5819,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             save_config(cfg, server.config_path)
 
         if request.query.get("restart") == "1":
-            update_state = server.get_update_status().get("state", "")
-            if update_state in {"queued", "running", "restarting"}:
+            if not server.request_restart_unless_updating():
                 return _render_general(
                     cfg,
                     saved=True,
                     update_feedback="Update is currently running. Restart is blocked until it finishes.",
                 )
-            server.request_restart()
             return _render_general(cfg, saved=True, restarting=True)
 
         return _render_general(cfg, saved=True)

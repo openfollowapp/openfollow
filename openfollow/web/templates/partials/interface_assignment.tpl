@@ -29,6 +29,10 @@
         If this page does not come back, the web UI has moved - the station's
         Network screen lists the address that reaches it.</div>
     % end
+    % if defined('restart_refused') and restart_refused:
+    <div class="notice error" role="alert">An update is running, so OpenFollow was not restarted.
+        <div class="notice-sub">Restart it once the update has finished.</div></div>
+    % end
 
     %# The web UI is the surface this panel is edited from, so a pin that
     %# misses is a lockout rather than a silent plane. Both notices name the
@@ -82,10 +86,10 @@
         %# Pinning the web UI moves the listening socket, which the running
         %# server cannot do under itself while serving this request.
         % if defined('web_bind_restart') and web_bind_restart:
-        <button type="submit" class="save-btn"
-                hx-post="/section/interface_assignment?restart=1"
+        <button type="button" class="danger"
+                hx-post="/section/interface_assignment/restart"
                 hx-confirm="Outputs pause until OpenFollow is back. The web UI may then answer at a different address."
-                data-confirm-title="Restart OpenFollow?" data-confirm-label="Restart" data-confirm-danger>Save &amp; Restart</button>
+                data-confirm-title="Restart OpenFollow?" data-confirm-label="Restart" data-confirm-danger>Restart OpenFollow</button>
         % end
         <button type="button" id="refresh-iface-assignment" class="secondary"
                 hx-get="/section/interface_assignment"

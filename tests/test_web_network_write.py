@@ -79,6 +79,8 @@ class FakeNetwork:
         self.provide_rows = True
         self.supports_vlans = True
         self.vlans: list[dict] = []
+        # The backend's device type per interface, as NetworkManager reports it.
+        self.kinds: dict[str, str] = {}
         self.vlans_created: list[tuple[str, int]] = []
         self.vlans_deleted: list[str] = []
         self.vlan_create_result = ApplyResult(ok=True, message="Created.")
@@ -148,7 +150,7 @@ class FakeNetwork:
                 "lease_display": None,
             }
 
-        return [_row(i, name) for i, name in enumerate(self.interfaces)]
+        return [{**_row(i, name), "kind": self.kinds.get(name)} for i, name in enumerate(self.interfaces)]
 
     def apply_handler(self, iface: str, config: object) -> ApplyResult:
         self.applied.append((iface, config))
@@ -1117,7 +1119,7 @@ def test_the_polled_fragment_carries_no_operator_state(net_server) -> None:
     assert "net-iface-row" in swapped
     assert "ia-vlan-add" not in swapped
     assert "+ Add VLAN" not in swapped
-    assert "ia-legend" not in swapped
+    assert "ia-list-actions" not in swapped
 
 
 def test_a_refused_create_keeps_its_reason_and_its_entry_through_the_poll(net_server) -> None:
@@ -1352,12 +1354,121 @@ def test_add_vlan_is_offered_whenever_the_host_is_writable(net_server) -> None:
     assert "+ Add VLAN" not in read_only
 
 
+def test_the_card_explains_nothing_inline(net_server) -> None:
+    """What the dot means is the help drawer's to say; the card keeps only its buttons."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/status")
+    assert "up with an address" not in body
+    assert "ia-legend" not in body
+    actions = body.split('class="ia-list-actions"', 1)[1].split("</div>", 1)[0]
+    assert "+ Add VLAN" in actions
+    assert ">Scan</button>" in actions
+
+
 def test_add_vlan_control_absent_on_a_backend_without_vlans(net_server) -> None:
     fake, base = net_server
     fake.supports_vlans = False
     _status, body = _get(base, "/section/network/edit")
     assert "+ Add VLAN" not in body
     assert "/section/network/vlan/create" not in body
+
+
+def _parent_options(body: str) -> list[str]:
+    select = body.split('name="vlan_parent"', 1)[1].split("</select>", 1)[0]
+    return [part.split('"', 1)[0] for part in select.split('<option value="')[1:]]
+
+
+def test_a_vlan_device_whose_profile_is_gone_is_not_a_parent(net_server) -> None:
+    """Removing a VLAN deletes its profile before the kernel drops the device,
+    so for a moment the profile list calls it an ordinary interface."""
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10"]
+    fake.kinds = {"eth0": "ethernet", "eth0.10": "vlan"}
+    _status, body = _get(base, "/section/network/status")
+    assert _parent_options(body) == ["eth0"]
+
+
+def test_a_vlan_device_whose_profile_is_gone_is_refused_as_a_parent(net_server) -> None:
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10"]
+    fake.kinds = {"eth0": "ethernet", "eth0.10": "vlan"}
+    _status, body = _post(base, "/section/network/vlan/create", {"vlan_parent": "eth0.10", "vlan_id": "20"})
+    assert "eth0.10 is already a VLAN" in body
+    assert fake.vlans_created == []
+
+
+def test_creating_and_removing_a_vlan_show_the_busy_box(net_server) -> None:
+    """Both run nmcli and take seconds; the button would otherwise sit there
+    looking unpressed and invite a second press."""
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10"]
+    fake.vlans = [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}]
+    _status, body = _get(base, "/section/network/edit/eth0.10")
+    box = body.split('id="net-busy"', 1)[1].split("</div>", 1)[0]
+    assert 'class="network-banner network-banner-info network-banner-busy"' in body
+    assert 'role="status" hidden' in box
+    assert 'class="modal-spinner"' in box
+    # Outside the polled list, so a poll during the request leaves it be.
+    assert body.index('id="net-busy"') < body.index('id="net-iface-list"')
+    create = body.split('hx-post="/section/network/vlan/create"', 1)[1].split(">", 1)[0]
+    assert 'hx-disabled-elt="find button[type=submit]"' in create
+    assert 'data-busy-text="Creating VLAN {vlan_id} on {vlan_parent}…"' in create
+    remove = body.split('hx-post="/section/network/vlan/delete"', 1)[1].split(">", 1)[0]
+    assert 'hx-disabled-elt="this"' in remove
+    assert 'data-busy-text="Removing VLAN interface eth0.10…"' in remove
+
+
+def test_applying_and_renewing_show_the_busy_box(net_server) -> None:
+    """An apply waits on NetworkManager for seconds, longer still with no DHCP
+    server answering; the page looked as if nothing was happening."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/edit/eth0")
+    apply = body.split('hx-post="/section/network/apply"', 1)[1].split(">", 1)[0]
+    assert 'hx-disabled-elt="find button[type=submit]"' in apply
+    assert 'data-busy-text="Applying the settings to {iface}…"' in apply
+    renew = body.split('hx-post="/section/network/renew"', 1)[1].split(">", 1)[0]
+    assert 'hx-disabled-elt="this"' in renew
+    assert 'data-busy-text="Renewing the DHCP lease on {iface}…"' in renew
+
+
+def test_only_the_element_sending_a_request_names_the_busy_text(net_server) -> None:
+    """Cancel and Scan send from inside a busy form; they must not raise its box."""
+    _fake, base = net_server
+    _status, page = _get(base, "/")
+    assert "elt.hasAttribute('data-busy-text')" in page
+    assert "closest('[data-busy-text]')" not in page
+
+
+def _subnet_value(body: str, iface: str) -> str:
+    tag = body.split(f'id="net-subnet-{iface}"', 1)[1].split(">", 1)[0]
+    return tag.split('value="', 1)[1].split('"', 1)[0]
+
+
+def test_an_empty_subnet_opens_as_the_usual_mask_when_editing(net_server) -> None:
+    """A greyed-out example read as a filled-in value, and Apply then refused
+    the empty field. Read-only, an adapter with no mask still shows none."""
+    fake, base = net_server
+    fake.address = ""
+    fake.subnet_mask = ""
+    _status, edit = _get(base, "/section/network/edit/eth0")
+    assert _subnet_value(edit, "eth0") == "255.255.255.0"
+    _status, view = _get(base, "/section/network/status")
+    assert _subnet_value(view, "eth0") == ""
+
+
+def test_an_adapters_own_mask_is_kept_when_editing(net_server) -> None:
+    fake, base = net_server
+    fake.subnet_mask = "255.255.0.0"
+    _status, edit = _get(base, "/section/network/edit/eth0")
+    assert _subnet_value(edit, "eth0") == "255.255.0.0"
+
+
+def test_no_field_on_the_card_shows_an_example_value(net_server) -> None:
+    fake, base = net_server
+    fake.address = ""
+    fake.subnet_mask = ""
+    _status, body = _get(base, "/section/network/edit/eth0")
+    assert "placeholder=" not in body
 
 
 def test_vlan_rows_carry_their_tag(net_server) -> None:
@@ -1479,7 +1590,7 @@ def test_delete_refuses_a_non_vlan_interface(net_server) -> None:
     fake, base = net_server
     status, body = _post(base, "/section/network/vlan/delete", {"iface": "eth0"})
     assert status == 200
-    assert "is not a VLAN" in body
+    assert "is not a VLAN and cannot be removed." in body
     assert fake.vlans_deleted == []
 
 
@@ -1517,9 +1628,21 @@ def test_delete_control_only_renders_for_a_vlan_row(net_server) -> None:
     fake.interfaces = ["eth0", "eth0.10"]
     fake.vlans = [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}]
     _status, physical = _get(base, "/section/network/edit/eth0")
-    assert "Delete VLAN" not in physical
+    assert "Remove VLAN" not in physical
     _status, vlan = _get(base, "/section/network/edit/eth0.10")
-    assert "Delete VLAN" in vlan
+    assert "Remove VLAN" in vlan
+
+
+def test_removing_a_vlan_names_the_kind_of_thing_and_confirms_in_red(net_server) -> None:
+    """The VLAN lives on the switch; what goes is the station's interface for it."""
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10"]
+    fake.vlans = [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}]
+    _status, body = _get(base, "/section/network/edit/eth0.10")
+    tag = body.split('hx-post="/section/network/vlan/delete"', 1)[1].split(">", 1)[0]
+    assert 'data-confirm-title="Remove VLAN interface eth0.10?"' in tag
+    assert 'data-confirm-label="Remove"' in tag
+    assert "data-confirm-danger" in tag
 
 
 def test_delete_refuses_the_interface_serving_this_request(net_server, monkeypatch) -> None:

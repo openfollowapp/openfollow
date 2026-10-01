@@ -52,6 +52,10 @@
     % _bkind = _banner.get('kind', 'info')
     <div class="network-banner network-banner-{{_bkind}}" role="{{'alert' if _bkind == 'error' else 'status'}}">{{_banner.get('text', '')}}</div>
     % end
+    %# Outside the polled list, so a poll during a slow request leaves it alone.
+    <div id="net-busy" class="network-banner network-banner-info network-banner-busy" role="status" hidden>
+        <span class="modal-spinner" aria-hidden="true"></span><span class="net-busy-text"></span>
+    </div>
 
     % if not _net.get("available"):
     %# Wrapped in the swap target like the rows are. The poll selects
@@ -121,6 +125,7 @@
                 % if _row_edit:
                       hx-post="/section/network/apply" hx-target="#network-interface"
                       hx-swap="innerHTML" hx-trigger="submit"
+                      hx-disabled-elt="find button[type=submit]" data-busy-text="Applying the settings to {iface}…"
                     %# The blind reload is for an apply that severs this very
                     %# connection, so it is armed only on the row answering it.
                     %# On any other row the apply changes nothing about how the
@@ -169,13 +174,14 @@
                         <div class="network-grid">
                             <label for="net-address-{{_name}}">IP address</label>
                             <input id="net-address-{{_name}}" type="text" name="address"
-                                   value="{{_entered.get('address', row.get('address', ''))}}" placeholder="192.168.1.50" {{_dis}}>
+                                   value="{{_entered.get('address', row.get('address', ''))}}" {{_dis}}>
                             <label class="net-static-only" for="net-subnet-{{_name}}">Subnet mask</label>
+                            %# An empty mask opens as the usual /24 when editing; read-only it stays empty.
                             <input class="net-static-only" id="net-subnet-{{_name}}" type="text" name="subnet_mask"
-                                   value="{{_entered.get('subnet_mask', row.get('subnet_mask', ''))}}" placeholder="255.255.255.0" {{_dis}}>
+                                   value="{{_entered.get('subnet_mask', row.get('subnet_mask') or ('255.255.255.0' if _row_edit else ''))}}" {{_dis}}>
                             <label class="net-static-only" for="net-router-{{_name}}">Router (optional)</label>
                             <input class="net-static-only" id="net-router-{{_name}}" type="text" name="router"
-                                   value="{{_entered.get('router', row.get('router', ''))}}" placeholder="192.168.1.1" {{_dis}}>
+                                   value="{{_entered.get('router', row.get('router', ''))}}" {{_dis}}>
                         </div>
                     </div>
 
@@ -186,8 +192,7 @@
                             % for i in range(3):
                             <label for="net-dns{{i + 1}}-{{_name}}">Server {{i + 1}}</label>
                             <input id="net-dns{{i + 1}}-{{_name}}" type="text" name="dns{{i + 1}}"
-                                   value="{{_dns[i] if i < len(_dns) else ''}}"
-                                   placeholder="1.1.1.1" {{_dis}}>
+                                   value="{{_dns[i] if i < len(_dns) else ''}}" {{_dis}}>
                             % end
                         </div>
                     </div>
@@ -205,7 +210,8 @@
                                 % if _row_edit:
                                 <button type="button" class="secondary small"
                                         hx-post="/section/network/renew" hx-target="#network-interface"
-                                        hx-swap="innerHTML" hx-include="closest form">Renew DHCP lease</button>
+                                        hx-swap="innerHTML" hx-include="closest form" hx-disabled-elt="this"
+                                        data-busy-text="Renewing the DHCP lease on {iface}…">Renew DHCP lease</button>
                                 % end
                             </span>
                         </div>
@@ -220,9 +226,10 @@
                         % if _vlan_id is not None:
                         <button type="button" class="danger"
                                 hx-post="/section/network/vlan/delete" hx-target="#network-interface"
-                                hx-swap="innerHTML" hx-include="closest form"
+                                hx-swap="innerHTML" hx-include="closest form" hx-disabled-elt="this"
+                                data-busy-text="Removing VLAN interface {{_name}}…"
                                 hx-confirm="Any function pinned to {{_name}} stops sending until it is reassigned."
-                                data-confirm-title="Delete {{_name}}?" data-confirm-label="Delete" data-confirm-danger>Delete VLAN</button>
+                                data-confirm-title="Remove VLAN interface {{_name}}?" data-confirm-label="Remove" data-confirm-danger>Remove VLAN</button>
                         % end
                         %# Drops the card back to all-rows-read-only. The row
                         %# itself stays expanded - that is the browser's state,
@@ -249,20 +256,16 @@
             % end
         </div>
 
-        <div class="ia-legend">
-            <span><span class="ia-dot up"></span> up with an address</span>
-            <span><span class="ia-dot down"></span> no address</span>
-            <span class="ia-legend-actions">
-                % if _vlan_add:
-                <button type="button" class="secondary small" {{'hidden' if _vopen else ''}}
-                        onclick="this.closest('.group').querySelector('.ia-vlan-add').hidden = false; this.hidden = true;">+ Add VLAN</button>
-                % end
-                %# Keeps the edited row in the path, so re-reading the
-                %# adapter list doesn't discard what the operator has typed.
-                <button type="button" class="secondary small"
-                        hx-get="{{('/section/network/edit/' + _editing) if (_editable and _editing) else '/section/network/status'}}?scan=1"
-                        hx-target="#network-interface" hx-swap="innerHTML">Scan</button>
-            </span>
+        <div class="ia-list-actions">
+            % if _vlan_add:
+            <button type="button" class="secondary small" {{'hidden' if _vopen else ''}}
+                    onclick="this.closest('.group').querySelector('.ia-vlan-add').hidden = false; this.hidden = true;">+ Add VLAN</button>
+            % end
+            %# Keeps the edited row in the path, so re-reading the
+            %# adapter list doesn't discard what the operator has typed.
+            <button type="button" class="secondary small"
+                    hx-get="{{('/section/network/edit/' + _editing) if (_editable and _editing) else '/section/network/status'}}?scan=1"
+                    hx-target="#network-interface" hx-swap="innerHTML">Scan</button>
         </div>
 
         % if _vlan_add:
@@ -271,7 +274,8 @@
         %# through to a native GET that silently creates nothing.
         <form class="ia-vlan-add" {{'' if _vopen else 'hidden'}}
               hx-post="/section/network/vlan/create" hx-target="#network-interface"
-              hx-swap="innerHTML" hx-trigger="submit">
+              hx-swap="innerHTML" hx-trigger="submit"
+              hx-disabled-elt="find button[type=submit]" data-busy-text="Creating VLAN {vlan_id} on {vlan_parent}…">
             <h4 class="group-title">Add VLAN</h4>
             <div class="network-grid">
                 <label for="net-vlan-parent">Parent interface</label>
@@ -283,12 +287,12 @@
 
                 <label for="net-vlan-id">VLAN ID</label>
                 <input type="number" id="net-vlan-id" name="vlan_id" min="1" max="4094" step="1"
-                       placeholder="10" value="{{_vform.get('vlan_id', '')}}">
+                       value="{{_vform.get('vlan_id', '')}}">
             </div>
             <div class="actions">
                 <button type="submit" class="save-btn">Create</button>
                 <button type="button" class="ghost-btn"
-                        onclick="var b=this.closest('.group'); b.querySelector('.ia-vlan-add').hidden = true; b.querySelector('.ia-legend-actions button').hidden = false;">Cancel</button>
+                        onclick="var b=this.closest('.group'); b.querySelector('.ia-vlan-add').hidden = true; b.querySelector('.ia-list-actions button').hidden = false;">Cancel</button>
             </div>
         </form>
         % end

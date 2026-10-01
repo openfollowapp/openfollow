@@ -161,6 +161,8 @@ def clear_detached_update_state() -> None:
 # The installer publishes ``running`` before apt starts this version and
 # ``restarting`` after; finding either at startup means that install started us.
 _UPDATE_INSTALLING_STATES = frozenset({"running", "restarting"})
+# An update between queueing and the end of its install; no restart may cut in.
+_UPDATE_BUSY_STATES = frozenset({"queued", "running", "restarting"})
 # Version whose What's new was last dismissed. ``restarting`` can be written
 # after this process already cleared the file, so the next start would read the
 # same install again without it.
@@ -298,6 +300,18 @@ class WebCommandQueue:
     def request_restart(self) -> None:
         self._restart_requested.set()
 
+    def request_restart_unless_updating(self) -> bool:
+        """Request a restart unless an update is queued or running.
+
+        Decided under the update lock, so a restart and an update queued at
+        the same moment cannot both go ahead.
+        """
+        with self._update_lock:
+            if self._update_status.get("state", "idle") in _UPDATE_BUSY_STATES:
+                return False
+            self._restart_requested.set()
+            return True
+
     def consume_restart_requested(self) -> bool:
         if self._restart_requested.is_set():
             self._restart_requested.clear()
@@ -390,7 +404,7 @@ class WebCommandQueue:
     def _queue_update_request(self, kind: str, **fields: str) -> bool:
         """Shared guard and enqueue logic for all update kinds."""
         with self._update_lock:
-            if self._update_status.get("state", "idle") in {"queued", "running", "restarting"}:
+            if self._update_status.get("state", "idle") in _UPDATE_BUSY_STATES:
                 return False
             # Clear the detached installer's status file only once we've
             # committed to queueing – a rejected duplicate must not wipe a
@@ -2903,6 +2917,7 @@ class AppRuntimeServices:
                 continue
             row: dict[str, Any] = {
                 "name": iface.name,
+                "kind": iface.kind,
                 "is_up": iface.is_up,
                 "address": "",
                 "prefix": None,

@@ -283,6 +283,14 @@ class NetworkManagerAdapter(NetworkAdapter):
         except OSError:
             return True
 
+    def _awaiting_dhcp(self, iface: str) -> bool:
+        """NetworkManager is running the profile and still asking for a lease.
+
+        With no DHCP server on the network the activation never completes, so
+        ``con up`` outlasts the broker's timeout although the profile is applied.
+        """
+        return (self._device_state(iface) or "").startswith("connecting")
+
     def _no_profile_message(self, iface: str) -> str:
         """Say what the operator should check, not what the adapter didn't find.
 
@@ -573,6 +581,13 @@ class NetworkManagerAdapter(NetworkAdapter):
             reason=f"Bring NetworkManager profile {name} up",
         )
         if not up.ok:
+            if config.method == Ipv4Method.DHCP and self._awaiting_dhcp(iface):
+                return ApplyResult(
+                    ok=True,
+                    pending=True,
+                    message=f"Saved; no DHCP server has answered on {iface} yet.",
+                    partial_failures=tuple(partial),
+                )
             return ApplyResult(
                 ok=False,
                 message=f"Saved, but {iface} could not be brought up ({up.detail})."
@@ -599,6 +614,8 @@ class NetworkManagerAdapter(NetworkAdapter):
             reason=f"Renew DHCP lease via NetworkManager profile {name}",
         )
         if not up.ok:
+            if self._awaiting_dhcp(iface):
+                return ApplyResult(ok=False, message=f"No DHCP server has answered on {iface} yet.")
             return ApplyResult(
                 ok=False,
                 message=f"Could not renew {iface} ({up.detail})." if up.detail else f"Could not renew {iface}.",

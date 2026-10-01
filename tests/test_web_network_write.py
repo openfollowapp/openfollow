@@ -10,6 +10,7 @@ contract surfaced through the server's provider/handler callbacks.
 
 from __future__ import annotations
 
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1092,6 +1093,21 @@ def test_the_poll_swaps_the_interface_list_and_nothing_else(net_server) -> None:
     assert 'hx-select="#net-iface-list" hx-target="#net-iface-list" hx-swap="outerHTML"' in body
     # Plain path: the poll names no interface, so it can't reopen a closed row.
     assert 'hx-get="/section/network/status" hx-trigger="every 5s"' in body
+
+
+def test_the_polls_selection_is_not_handed_down_to_the_cards_controls(net_server) -> None:
+    """htmx passes ``hx-select`` down to every element below it. Inherited by
+    Scan, Configure or Create, it cut their responses to the interface list,
+    which then replaced the whole card: buttons, the Add VLAN form and the poll
+    itself were gone until a page reload."""
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/status")
+    container = re.search(r'<div id="network-config-section"[^>]*>', body, re.S)
+    assert container is not None
+    assert 'hx-select="#net-iface-list"' in container.group(0)
+    disinherited = re.search(r'hx-disinherit="([^"]*)"', container.group(0))
+    assert disinherited is not None
+    assert "hx-select" in disinherited.group(1).split()
 
 
 def test_the_polled_fragment_carries_no_operator_state(net_server) -> None:

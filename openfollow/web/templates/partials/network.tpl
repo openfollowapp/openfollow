@@ -43,6 +43,9 @@
 % if _polls:
      hx-get="/section/network/status" hx-trigger="every 5s"
      hx-select="#net-iface-list" hx-target="#net-iface-list" hx-swap="outerHTML"
+     %# Kept to the poll: inherited, ``hx-select`` cut every control's response
+     %# down to the list, which then replaced the whole card.
+     hx-disinherit="hx-select hx-target hx-swap"
 % end
      >
     % if _banner:

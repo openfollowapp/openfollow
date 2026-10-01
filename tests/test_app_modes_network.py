@@ -1066,6 +1066,28 @@ class TestApplyEdgeCases:
         anm._renew_pi_network(app)
         assert app._pi_network_worker is not first
 
+    @pytest.mark.parametrize("warnings", [(), ("nmcli con down: timed out",)])
+    def test_a_pending_apply_says_when_it_takes_effect(self, warnings) -> None:
+        """Saved for an adapter with no link: not "Apply ok.", which reads as live."""
+        from openfollow.network.adapter import ApplyResult
+
+        adapter = _FakeAdapter()
+        adapter.apply_result = ApplyResult(
+            ok=True,
+            pending=True,
+            message="Saved; the settings take effect when eth1 has a link.",
+            partial_failures=warnings,
+        )
+        app = _make_app(adapter)
+        anm.enter_pi_network(app)
+        anm._apply_pi_network(app)
+        app._pi_network_worker.join(timeout=2.0)
+        anm.drain_pi_network_worker(app)
+
+        assert app._pi_network_banner.startswith("Saved; the settings take effect when eth1 has a link.")
+        assert app._pi_network_banner_level == "info"
+        assert ("timed out" in app._pi_network_banner) is bool(warnings)
+
     def test_apply_partial_failure_warning(self) -> None:
         from openfollow.network.adapter import ApplyResult, Ipv4Config, Ipv4Method
 

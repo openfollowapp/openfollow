@@ -49,6 +49,8 @@ class PiNetworkOverlayState:
     banner: str = ""
     # "error", "caution", "info" or "success".
     banner_level: str = ""
+    # An apply or renew is running; the banner leads with the spinner.
+    busy: bool = False
 
     field_edit_active: bool = False
     field_label: str = ""
@@ -65,6 +67,7 @@ class PiNetworkOverlayState:
         self.open_iface = ""
         self.banner = ""
         self.banner_level = ""
+        self.busy = False
         self.field_edit_active = False
         self.field_label = ""
         self.field_value = ""

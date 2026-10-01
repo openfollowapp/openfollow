@@ -2513,6 +2513,22 @@ class TestDrawPiNetworkScreen:
         assert ("rgb", *COLOR_SUCCESS_BG) in cr.calls  # the check, cut out of the off-white disc
         assert ("rgb", *COLOR_OK) not in cr.calls
 
+    @pytest.mark.parametrize("busy", [True, False])
+    def test_an_action_in_progress_is_led_by_the_spinner(self, monkeypatch: pytest.MonkeyPatch, busy: bool) -> None:
+        """As the web's busy box: the spinner in the sign's place until the
+        answer comes, and the sign again once it has."""
+        import openfollow.runtime.overlay_draw_hud as hud
+
+        drawn: list[str] = []
+        monkeypatch.setattr(hud, "draw_spinner", lambda *args, **kwargs: drawn.append("spinner"))
+        monkeypatch.setattr(hud, "draw_level_sign", lambda cr, level, *args, **kwargs: drawn.append(level))
+        net = _network_state(banner="Apply in progress…", banner_level="info")
+        net.busy = busy
+        state = _base_state(pi_network=net)
+        draw_pi_network_screen(FakeRenderer(state=state), FakeCairo(), state, 1600, 900)
+        assert drawn[0] == ("spinner" if busy else "info")
+        assert ("info" in drawn) is not busy
+
     def test_a_result_without_a_level_reads_as_info(self) -> None:
         state = _base_state(pi_network=_network_state(banner="Querying network status…"))
         cr = FakeCairo()

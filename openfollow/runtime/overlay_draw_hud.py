@@ -1737,8 +1737,11 @@ _NOTICE_MAX_LINES = 3
 _NOTICE_GAP = 8.0
 
 
-def _draw_network_status_row(renderer: Any, cr: Any, x: float, y: float, w: float, level: str, text: str) -> float:
-    """A row in its level's fill and border, led by its sign; returns the height drawn."""
+def _draw_network_status_row(
+    renderer: Any, cr: Any, x: float, y: float, w: float, level: str, text: str, *, busy: bool = False
+) -> float:
+    """A row in its level's fill and border, led by its sign (the spinner while
+    *busy*); returns the height drawn."""
     fill, border, _cut = STATUS_LEVEL_COLORS[level]
     text_x = x + _NOTICE_PAD + _NOTICE_SIGN + 8.0
     text_w = x + w - _NOTICE_PAD - text_x
@@ -1755,7 +1758,11 @@ def _draw_network_status_row(renderer: Any, cr: Any, x: float, y: float, w: floa
     cr.set_line_width(1.2)
     cr.stroke()
     sign_cx = x + _NOTICE_PAD + _NOTICE_SIGN / 2.0
-    draw_level_sign(cr, level, sign_cx, y + _NOTICE_PAD + _NOTICE_LINE_H / 2.0, _NOTICE_SIGN)
+    sign_cy = y + _NOTICE_PAD + _NOTICE_LINE_H / 2.0
+    if busy:
+        draw_spinner(cr, sign_cx, sign_cy, _NOTICE_SIGN / 2.0 - 1.0, time.monotonic())
+    else:
+        draw_level_sign(cr, level, sign_cx, sign_cy, _NOTICE_SIGN)
     renderer._set_ui_font(cr, _NOTICE_FONT)
     cr.set_source_rgb(*COLOR_TEXT)
     for i, line in enumerate(lines):
@@ -1802,7 +1809,10 @@ def draw_pi_network_screen(
 
     if net.banner:
         level = net.banner_level if net.banner_level in STATUS_LEVEL_COLORS else "info"
-        cursor_y += _draw_network_status_row(renderer, cr, content_x, cursor_y, content_w, level, net.banner) + 10.0
+        cursor_y += (
+            _draw_network_status_row(renderer, cr, content_x, cursor_y, content_w, level, net.banner, busy=net.busy)
+            + 10.0
+        )
 
     # Container panel for the row list.
     list_y = cursor_y

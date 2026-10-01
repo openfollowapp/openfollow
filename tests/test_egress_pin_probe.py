@@ -53,11 +53,57 @@ def test_brief_listing_names_a_vlan_child_as_config_does() -> None:
 
 
 @pytest.mark.parametrize(
-    ("a", "b", "same"),
-    [("eth0.13", "eth0", True), ("eth0", "eth0.13", True), ("eth0", "eth1", False), ("eth0.13", "eth1.13", False)],
+    ("capture_iface", "vlan", "pinned", "own"),
+    [
+        ("eth0", 13, "eth0.13", True),
+        ("eth0", None, "eth0.13", False),
+        ("eth0", 47, "eth0.13", False),
+        ("eth0.13", None, "eth0", False),
+        ("eth1", None, "eth0", False),
+        ("eth1", 13, "eth0.13", False),
+    ],
+    ids=[
+        "tagged-on-parent",
+        "untagged-on-parent",
+        "other-vlan",
+        "on-pinned-parents-vlan",
+        "other-nic",
+        "other-nic-tag",
+    ],
 )
-def test_a_vlan_and_its_parent_count_as_one_link(a: str, b: str, same: bool) -> None:
-    assert probe.same_link(a, b) is same
+def test_only_the_pinned_vlans_tagged_frames_on_its_parent_are_its_own(
+    capture_iface: str, vlan: int | None, pinned: str, own: bool
+) -> None:
+    assert probe.own_traffic(capture_iface, vlan, pinned) is own
+
+
+def test_a_pinned_vlans_parent_is_watched() -> None:
+    assert probe.watched_interfaces("eth0.13", {"eth0": "a", "eth0.13": "b", "eth1": "c"}) == ["eth0", "eth1"]
+    assert probe.watched_interfaces("eth0.13", {"eth0.13": "b"}) == ["eth0"]
+    assert probe.watched_interfaces("eth0", {"eth0": "a", "eth0.13": "b"}) == ["eth0.13"]
+
+
+def test_a_tag_is_read_in_band_or_from_the_stripped_metadata() -> None:
+    assert probe.frame_vlan(_frame(vlan=True), []) == 13
+    aux = struct.pack(probe._AUXDATA_FMT, probe._TP_STATUS_VLAN_VALID, 0, 0, 0, 0, 0x2000 | 47, 0x8100)
+    assert probe.frame_vlan(_frame(), [(probe._SOL_PACKET, probe._PACKET_AUXDATA, aux)]) == 47
+    no_tag = struct.pack(probe._AUXDATA_FMT, 0, 0, 0, 0, 0, 47, 0)
+    assert probe.frame_vlan(_frame(), [(probe._SOL_PACKET, probe._PACKET_AUXDATA, no_tag)]) is None
+
+
+def test_leaks_skip_the_pinned_interfaces_own_frames() -> None:
+    frames = {"eth0": [(b"..token..", 13), (b"..token..", None)], "eth1": [(b"other", None)]}
+    assert probe.leaks(frames, "eth0.13", lambda frame: b"token" in frame) == ["eth0"]
+    assert probe.leaks({"eth0": [(b"..token..", 13)]}, "eth0.13", lambda frame: b"token" in frame) == []
+
+
+@pytest.mark.parametrize(
+    ("leaked", "control_seen", "status"),
+    [(["eth0"], ["eth0"], "FAIL"), ([], [], "????"), ([], ["eth0"], "ok"), (["eth0"], [], "FAIL")],
+    ids=["leak", "blind-control", "pass", "leak-beats-blind"],
+)
+def test_a_blind_control_is_inconclusive_not_a_pass(leaked: list[str], control_seen: list[str], status: str) -> None:
+    assert probe.verdict("unicast", leaked, control_seen, "sent")[0] == status
 
 
 @pytest.mark.parametrize("vlan", [False, True], ids=["untagged", "tagged"])

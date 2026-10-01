@@ -78,6 +78,17 @@ def adapter(monkeypatch):
     return a, captured, responses
 
 
+_ACTIVE_PROFILES = ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"]
+_SAVED_PROFILES = ["nmcli", "-t", "-f", "NAME,UUID,AUTOCONNECT,AUTOCONNECT-PRIORITY,TIMESTAMP", "connection", "show"]
+
+
+def _bound_to(*uuids: str) -> list[str]:
+    argv = ["nmcli", "-t", "-f", "connection.uuid,connection.interface-name", "connection", "show"]
+    for uuid in uuids:
+        argv += ["uuid", uuid]
+    return argv
+
+
 def _set(responses, argv, stdout="", returncode=0):
     responses[tuple(argv)] = subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
 
@@ -179,7 +190,7 @@ class TestApplyIpv4:
     def test_unknown_connection_returns_failure(self, adapter) -> None:
         a, _captured, responses = adapter
         _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"], stdout="")
-        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
+        _set(responses, _SAVED_PROFILES, stdout="")
         # Device absent from nmcli entirely: says to check the adapter, which
         # is the only one of the three causes that fits an unknown device.
         _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="")
@@ -195,7 +206,7 @@ class TestActionableMessages:
     def _no_profile(self, responses) -> None:
         for argv in (
             ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"],
+            _SAVED_PROFILES,
             ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"],
         ):
             _set(responses, argv, stdout="")
@@ -358,7 +369,7 @@ class TestRenewLease:
     def test_renew_no_connection_returns_failure(self, adapter) -> None:
         a, _captured, responses = adapter
         _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"], stdout="")
-        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
+        _set(responses, _SAVED_PROFILES, stdout="")
         _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth0:disconnected\n")
         result = a.renew_lease("eth0")
         assert result.ok is False
@@ -579,7 +590,7 @@ class TestReadMethod:
     def test_no_connection_returns_dhcp(self, adapter) -> None:
         a, _captured, responses = adapter
         _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"], stdout="")
-        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
+        _set(responses, _SAVED_PROFILES, stdout="")
         from openfollow.network.adapter import Ipv4Method
 
         assert a._read_method("eth0") == Ipv4Method.DHCP
@@ -829,20 +840,108 @@ class TestListInterfacesEdge:
         assert a.list_interfaces() == []
 
 
-class TestConnectionForFallback:
-    def test_fallback_to_all_connections_when_active_misses(self, adapter) -> None:
+class TestSavedProfileForAnUnpluggedAdapter:
+    """A profile that isn't active lists no DEVICE, so an adapter with its cable
+    out has to be matched to its profile by the interface the profile names."""
+
+    def _saved(self, responses, rows: str, records: str, *uuids: str) -> None:
+        _set(responses, _ACTIVE_PROFILES, stdout="Wired connection 1:eth0\n")
+        _set(responses, _SAVED_PROFILES, stdout=rows)
+        _set(responses, _bound_to(*uuids), stdout=records)
+
+    def test_apply_edits_the_profile_saved_for_the_adapter(self, adapter) -> None:
+        a, captured, responses = adapter
+        self._saved(
+            responses,
+            "Wired connection 1:u-1:yes:-999:1790000000\nWired connection 2:u-2:yes:-999:1790000500\n",
+            "connection.uuid:u-1\nconnection.interface-name:eth0\n\n"
+            "connection.uuid:u-2\nconnection.interface-name:eth1\n",
+            "u-1",
+            "u-2",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth1:unavailable\n")
+        a.apply_ipv4("eth1", Ipv4Config(method=Ipv4Method.STATIC, address="192.0.2.50", prefix=24))
+        modify = next(c for c in captured if c[:3] == ["nmcli", "connection", "modify"])
+        assert modify[3:5] == ["id", "Wired connection 2"]
+
+    def test_the_card_reads_the_saved_profiles_method(self, adapter) -> None:
         a, _captured, responses = adapter
-        _set(
+        self._saved(
             responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="",
+            "Stage:u-1:yes:0:1790000000\n",
+            "connection.uuid:u-1\nconnection.interface-name:eth1\n",
+            "u-1",
         )
         _set(
             responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"],
-            stdout="Wired-Saved:eth0\n",
+            ["nmcli", "-t", "-f", "ipv4.method,ipv4.addresses", "connection", "show", "Stage"],
+            stdout="ipv4.method:manual\nipv4.addresses:192.0.2.50/24\n",
         )
-        assert a._connection_for("eth0") == "Wired-Saved"
+        assert a._read_method("eth1") == Ipv4Method.STATIC
+
+    @pytest.mark.parametrize(
+        ("rows", "chosen"),
+        [
+            # Autoconnect off loses to on, however recent.
+            ("Old:u-1:yes:0:100\nNewer:u-2:no:0:900\n", "Old"),
+            # Priority beats recency; the auto-created profile sits at -999.
+            ("Wired connection 2:u-1:yes:-999:900\nStage:u-2:yes:0:100\n", "Stage"),
+            # Equal otherwise: the one last used.
+            ("Old:u-1:yes:0:100\nNewer:u-2:yes:0:900\n", "Newer"),
+            # Never used: nmcli prints 0, and an unreadable field counts as 0.
+            ("Never:u-1:yes:0:\nUsed:u-2:yes:0:5\n", "Used"),
+        ],
+    )
+    def test_several_profiles_for_one_adapter_rank_as_autoconnect_does(self, adapter, rows, chosen) -> None:
+        a, _captured, responses = adapter
+        self._saved(
+            responses,
+            rows,
+            "connection.uuid:u-1\nconnection.interface-name:eth1\n\n"
+            "connection.uuid:u-2\nconnection.interface-name:eth1\n",
+            "u-1",
+            "u-2",
+        )
+        assert a._connection_for("eth1") == chosen
+
+    def test_a_profile_naming_no_interface_is_not_claimed(self, adapter) -> None:
+        """It can come up on any adapter, so editing it edits more than this one."""
+        a, _captured, responses = adapter
+        self._saved(
+            responses,
+            "Any wired:u-1:yes:0:100\n",
+            "connection.uuid:u-1\nconnection.interface-name:\n",
+            "u-1",
+        )
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout="eth1:unavailable\n")
+        assert a._connection_for("eth1") is None
+        assert "No saved profile" in a.apply_ipv4("eth1", Ipv4Config(method=Ipv4Method.DHCP)).message
+
+    def test_a_colon_in_a_profile_name_survives(self, adapter) -> None:
+        a, _captured, responses = adapter
+        self._saved(
+            responses,
+            "garbage\nStage\\: left:u-1:yes:0:100\n",
+            "connection.uuid:u-1\nconnection.interface-name:eth1\n",
+            "u-1",
+        )
+        assert a._connection_for("eth1") == "Stage: left"
+
+    @pytest.mark.parametrize("failing", ["list", "show"])
+    def test_an_unreadable_profile_list_finds_nothing(self, adapter, monkeypatch, failing) -> None:
+        """A profile deleted between the two reads makes nmcli fail the second."""
+        a, _captured, responses = adapter
+        self._saved(responses, "Stage:u-1:yes:0:100\n", "connection.uuid:u-1\nconnection.interface-name:eth1\n", "u-1")
+        original = a._run
+        target = _SAVED_PROFILES if failing == "list" else _bound_to("u-1")
+
+        def _run(argv, *, check=True):
+            if list(argv) == target:
+                raise RuntimeError("Error: u-1 - no such connection profile.")
+            return original(argv, check=check)
+
+        monkeypatch.setattr(a, "_run", _run)
+        assert a._connection_for("eth1") is None
 
     def test_fallback_subprocess_failure_returns_none(self, adapter) -> None:
         a, _captured, _responses = adapter
@@ -1111,47 +1210,8 @@ class TestConnectionForActiveLoopFallthrough:
         )
         _set(
             responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"],
+            _SAVED_PROFILES,
             stdout="",
-        )
-        assert a._connection_for("eth0") is None
-
-    def test_fallback_subprocess_failure_after_empty_active(self, adapter) -> None:
-        """First call returns empty, fallback call raises – overall None.
-        Covers the second try/except (lines 81-82)."""
-        a, _captured, responses = adapter
-        # Track call number so the first nmcli (active) succeeds and the
-        # fallback nmcli (all) raises.
-        calls = {"n": 0}
-
-        def fake_run(argv, *, check=True):
-            if argv[:6] == ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"]:
-                calls["n"] += 1
-                if calls["n"] == 1:
-                    import subprocess as sp
-
-                    return sp.CompletedProcess(argv, 0, "", "")
-                raise RuntimeError("missing")
-            import subprocess as sp
-
-            return sp.CompletedProcess(argv, 0, "", "")
-
-        a._run = fake_run
-        assert a._connection_for("eth0") is None
-
-    def test_fallback_loop_runs_without_match(self, adapter) -> None:
-        """Active empty, fallback returns rows but none for the iface –
-        loop completes, function returns None (covers 85->83 branch)."""
-        a, _captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="",
-        )
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"],
-            stdout="Profile-A:other0\nProfile-B:other1\n",
         )
         assert a._connection_for("eth0") is None
 
@@ -1172,20 +1232,6 @@ class TestConnectionLookupSurvivesAColonInTheName:
         _set(
             responses,
             ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="Wired connection\\: office:eth0\n",
-        )
-        assert a._connection_for("eth0") == "Wired connection: office"
-
-    def test_fallback_pass_finds_a_colon_named_profile(self, adapter) -> None:
-        a, _captured, responses = adapter
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            stdout="",
-        )
-        _set(
-            responses,
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"],
             stdout="Wired connection\\: office:eth0\n",
         )
         assert a._connection_for("eth0") == "Wired connection: office"
@@ -1211,7 +1257,7 @@ class TestConnectionLookupSurvivesAColonInTheName:
             ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
             stdout="truncated\n",
         )
-        _set(responses, ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"], stdout="")
+        _set(responses, _SAVED_PROFILES, stdout="")
         assert a._connection_for("eth0") is None
 
 

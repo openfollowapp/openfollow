@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 _NMCLI_TIMEOUT = 8
 
+_PROFILE_LIST_FIELDS = "NAME,UUID,AUTOCONNECT,AUTOCONNECT-PRIORITY,TIMESTAMP"
+
 # Shown when the privilege broker is absent, which on a real device means the
 # sudoers rules were never installed. Kept short: the on-screen banner is one
 # truncated line.
@@ -81,6 +83,23 @@ def _name_and_device(line: str) -> tuple[str, str]:
     if len(fields) < 2:
         return ("", "")
     return (fields[0], fields[1])
+
+
+def _as_int(value: str) -> int:
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+
+def _show_records(text: str) -> list[tuple[str, str]]:
+    """``(field, value)`` per line of a terse ``connection show``, in order."""
+    out: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if sep:
+            out.append((key.strip(), _unescape_terse(value.strip())))
+    return out
 
 
 def _unescape_terse(value: str) -> str:
@@ -182,16 +201,43 @@ class NetworkManagerAdapter(NetworkAdapter):
             name, dev = _name_and_device(line)
             if dev == iface:
                 return name
-        # Fallback to any profile bound to this device
+        return self._saved_connection_for(iface)
+
+    def _saved_connection_for(self, iface: str) -> str | None:
+        """The saved profile NetworkManager would bring up on *iface*.
+
+        An inactive profile lists no DEVICE, so it is found by the interface it
+        names. Ranked as autoconnect ranks them: enabled, priority, last used. A
+        profile naming no interface is never claimed: it can come up on any adapter.
+        """
         try:
-            res = self._run(["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"])
+            res = self._run(["nmcli", "-t", "-f", _PROFILE_LIST_FIELDS, "connection", "show"])
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
             return None
+        profiles: dict[str, tuple[tuple[bool, int, int], str]] = {}
         for line in res.stdout.splitlines():
-            name, dev = _name_and_device(line)
-            if dev == iface:
-                return name
-        return None
+            fields = _split_terse(line)
+            if len(fields) < 5:
+                continue
+            name, uuid, autoconnect, priority, timestamp = fields[:5]
+            profiles[uuid] = ((autoconnect == "yes", _as_int(priority), _as_int(timestamp)), name)
+        if not profiles:
+            return None
+        argv = ["nmcli", "-t", "-f", "connection.uuid,connection.interface-name", "connection", "show"]
+        for uuid in profiles:
+            argv += ["uuid", uuid]
+        try:
+            res = self._run(argv)
+        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
+            return None
+        bound: list[tuple[tuple[bool, int, int], str]] = []
+        uuid = ""
+        for key, value in _show_records(res.stdout):
+            if key == "connection.uuid":
+                uuid = value
+            elif key == "connection.interface-name" and value == iface and uuid in profiles:
+                bound.append(profiles[uuid])
+        return max(bound)[1] if bound else None
 
     def _device_state(self, iface: str) -> str | None:
         """nmcli's STATE word for *iface*, ``""`` if absent, ``None`` if unreadable.

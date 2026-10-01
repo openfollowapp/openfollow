@@ -1332,6 +1332,7 @@ def test_rttrpm_is_a_plane_only_while_an_interface_is_configured(monkeypatch) ->
     _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
     cfg = services._app._config
     cfg.rttrpm_output.enabled = True
+    cfg.rttrpm_output.host = "203.0.113.50"
     plane = _rttrpm_plane(services)
     assert plane.enabled() is False
 
@@ -1346,6 +1347,20 @@ def test_rttrpm_is_a_plane_only_while_an_interface_is_configured(monkeypatch) ->
 
     cfg.rttrpm_output.enabled = False
     assert plane.enabled() is False
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+def test_rttrpm_to_this_box_is_not_a_plane(monkeypatch, host) -> None:
+    """Its socket is never pinned, so there is no interface to follow, and
+    comparing the station address with an unbound socket restarts it every poll."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+    cfg = services._app._config
+    cfg.rttrpm_output.enabled = True
+    cfg.rttrpm_output.host = host
+    cfg.psn_source_iface = "eth0"
+    cfg.rttrpm_output.source_iface = "eth1"
+    assert _rttrpm_plane(services).enabled() is False
 
 
 def test_the_rttrpm_plane_drives_the_running_server(monkeypatch) -> None:

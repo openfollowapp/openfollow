@@ -2156,7 +2156,7 @@ class TestApplyRttrpmOutputChange:
     def _enabled_cfg(self, **overrides: Any) -> RttrpmOutputConfig:
         defaults: dict[str, Any] = {
             "enabled": True,
-            "host": "127.0.0.1",
+            "host": "203.0.113.50",
             "port": 24601,
             "fps": 30,
             "context": 0,
@@ -2294,6 +2294,34 @@ class TestApplyRttrpmOutputChange:
         services._app._config.psn_source_iface = ""
         services.apply_rttrpm_output_change(self._enabled_cfg())
         assert [call["egress"] for call in server.restart_calls] == [Egress("eth0", "192.0.2.10"), None]
+
+    @pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.53", "localhost"])
+    def test_a_loopback_target_is_never_pinned(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, host: str
+    ) -> None:
+        """A socket pinned to a NIC cannot reach this box's loopback, and the
+        default target is 127.0.0.1."""
+        self._ifaces(monkeypatch, {"eth0": "192.0.2.10", "eth1": "198.51.100.10"})
+        services._app._config.psn_source_iface = "eth0"
+        server = _FakeRttrpmServer()
+        services._app._rttrpm_server = server
+        services.apply_rttrpm_output_change(self._enabled_cfg(host=host))
+        services.apply_rttrpm_output_change(self._enabled_cfg(host=host, source_iface="eth1"))
+        services.apply_rttrpm_output_change(self._enabled_cfg(host=host, source_iface="eth9"))
+        assert [call["egress"] for call in server.restart_calls] == [None, None, None]
+        assert server.stopped is False
+
+    def test_init_sends_to_a_loopback_target_unpinned(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._ifaces(monkeypatch, {"eth0": "192.0.2.10"})
+        services._app._config.psn_source_iface = "eth0"
+        services._app._config = replace(services._app._config, rttrpm_output=self._enabled_cfg(host="127.0.0.1"))
+        services._app._server = _FakePsnServer()
+        monkeypatch.setattr(services_module, "RttrpmServer", _FakeRttrpmServer)
+        services.init_rttrpm()
+        assert services._app._rttrpm_server.started is True
+        assert services._app._rttrpm_server._egress is None
 
     def test_a_failed_restart_rolls_back_to_the_prior_interface(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

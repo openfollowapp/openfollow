@@ -29,7 +29,7 @@ from openfollow.configuration import (
 )
 from openfollow.input import InputManager
 from openfollow.input.mouse3d import idle_mouse3d_status
-from openfollow.net_egress import Egress, resolve_egress
+from openfollow.net_egress import Egress, is_loopback_host, resolve_egress
 from openfollow.net_utils import ResolveStatus
 from openfollow.osc.egress import OscEgressTable
 from openfollow.otp import OtpServer
@@ -1134,7 +1134,9 @@ class AppRuntimeServices:
             # Unpinned, the OS routes it: no interface to follow, and the
             # auto-detected address would never match its unbound socket.
             cfg = self._app._config.rttrpm_output
-            return cfg.enabled and bool(plane_source_iface(cfg.source_iface, self._app._config.psn_source_iface))
+            if not cfg.enabled or is_loopback_host(cfg.host):
+                return False
+            return bool(plane_source_iface(cfg.source_iface, self._app._config.psn_source_iface))
 
         def _apply_osc_input(address: str) -> None:
             # Rebinds the listener so the group follows the interface. The
@@ -1522,6 +1524,9 @@ class AppRuntimeServices:
 
     def _rttrpm_egress(self, cfg: RttrpmOutputConfig) -> Egress | None:
         """RTTrPM's egress: None leaves the route to the OS, ``.down`` means its interface has no address."""
+        if is_loopback_host(cfg.host):
+            # A socket pinned to a NIC cannot reach this box's own loopback.
+            return None
         egress = resolve_egress(cfg.source_iface, self._app._config.psn_source_iface)
         if egress is not None and egress.down:
             logger.error(
@@ -2081,7 +2086,6 @@ class AppRuntimeServices:
         Per interface, not per destination: two destinations on one NIC can't
         disagree about its address, and the HUD lists each outage once.
         """
-        from openfollow.net_egress import is_loopback_host
         from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
 
         cfg = self._app._config

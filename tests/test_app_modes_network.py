@@ -2424,6 +2424,29 @@ class TestEachReachabilityStateHasItsLevel:
         _open_iface(app, "eth0")
         assert list(_notice_levels(app).values()) == ["error"]
 
+    @pytest.mark.parametrize(
+        ("method", "pill", "says"),
+        [("DHCP", "fallback", "No DHCP server answered"), ("STATIC", "link-local", "is set to")],
+        ids=["dhcp-gave-itself-one", "set-by-hand"],
+    )
+    def test_only_dhcp_is_blamed_for_a_link_local_address(self, monkeypatch, method: str, pill: str, says: str) -> None:
+        """A 169.254 address an operator typed in is theirs. Calling it a
+        fallback, and blaming a missing DHCP server, sends them looking for a
+        fault that is not there. It is still an error: other machines will not
+        reach the station at it."""
+        from openfollow.network.adapter import Ipv4Method
+
+        _patch_ifaces(monkeypatch, {"eth0": "169.254.7.7"})
+        adapter = _FakeAdapter()
+        adapter.method = getattr(Ipv4Method, method)
+        app = _make_app(adapter)
+        anm.enter_pi_network(app)
+        assert (_list_pills(app)["eth0"], _pill_levels(app)["eth0"]) == (pill, "error")
+        _open_iface(app, "eth0")
+        (notice,) = _notice_levels(app)
+        assert says in notice
+        assert "169.254.7.7" in notice
+
     def test_a_read_only_host_is_a_fact(self, monkeypatch) -> None:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         app = _make_app(_FakeAdapter(writable=False))

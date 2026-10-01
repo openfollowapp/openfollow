@@ -269,7 +269,8 @@ attributes, so it spells the token's value.
 - The on-screen Network screen: a notice is a row in its level's fill and border,
   led by its sign (`draw_level_sign`), its text wrapped rather than cut. An
   interface pill that names a state takes its level's chip colours (a link-local
-  fallback is an error, an interface the web UI does not answer on is info); how
+  address is an error, worded `fallback` when DHCP gave it and `link-local` when it
+  was set by hand, an interface the web UI does not answer on is info); how
   the address was come by, and no address at all, are the neutral grey. An
   action's result line takes its level; a confirmation is a success row, led by
   the off-white check, as the web's success box.

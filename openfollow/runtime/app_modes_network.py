@@ -99,6 +99,7 @@ _METHOD_LABELS: dict[Ipv4Method, str] = {
     Ipv4Method.DHCP_WITH_MANUAL_ADDRESS: "DHCP",
     Ipv4Method.STATIC: "Static",
 }
+_STATIC_LABEL = _METHOD_LABELS[Ipv4Method.STATIC]
 
 
 @dataclass
@@ -312,7 +313,8 @@ def _iface_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[
         if not address:
             pill, level = "no address", ""
         elif is_link_local(address):
-            pill, level = "fallback", "error"
+            # Only DHCP gives itself one; an address set by hand is not a fallback.
+            pill, level = ("link-local" if methods.get(name) == _STATIC_LABEL else "fallback"), "error"
         elif not everywhere and address != bind_host:
             pill, level = "web UI not here", "info"
         else:
@@ -503,12 +505,18 @@ def _iface_detail_rows(
         rows.append({"kind": "display", "key": "url", "label": _web_url_for(app, address), "value": "now"})
 
     if is_link_local(address):
+        set_by_hand = (getattr(app, "_pi_network_methods", {}) or {}).get(name) == _STATIC_LABEL
         rows.append(
             {
                 "kind": "notice",
                 "level": "error",
-                "label": f"No DHCP server answered, so {name} gave itself {address}. "
-                "Other machines on this network will not reach the station here.",
+                "label": (
+                    f"{name} is set to the link-local address {address}. "
+                    "Only machines with a link-local address of their own will reach the station here."
+                    if set_by_hand
+                    else f"No DHCP server answered, so {name} gave itself {address}. "
+                    "Other machines on this network will not reach the station here."
+                ),
                 "value": "",
             }
         )

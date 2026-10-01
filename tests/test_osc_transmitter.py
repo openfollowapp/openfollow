@@ -52,6 +52,8 @@ class _FakeOscService:
         # Recorded tuple includes framing for round-trip assertions.
         self.calls: list[tuple[str, list[Any], str, int, str, str]] = []
         self.egress_seen: list[object] = []
+        # What ``send`` reports; False models a message that never left.
+        self.delivers = True
 
     def send(
         self,
@@ -63,11 +65,12 @@ class _FakeOscService:
         protocol: str = "udp",
         framing: str = "slip",
         egress: object = None,
-    ) -> None:
+    ) -> bool:
         self.egress_seen.append(egress)
         self.calls.append(
             (address, list(args), host, port, protocol, framing),
         )
+        return self.delivers
 
 
 class _FakeMarker:
@@ -3996,6 +3999,38 @@ class TestEgressPin:
         manager._tick_once()
         assert svc.egress_seen == [Egress("eth1", "198.51.100.10")]
         assert asked[0].id == _DEFAULT_DEST_ID
+
+    @pytest.mark.parametrize(
+        ("egress", "reason"),
+        [(Egress("eth1", "198.51.100.10"), "could not send on interface eth1"), (None, "send failed")],
+        ids=["pinned", "unpinned"],
+    )
+    def test_a_send_that_never_left_is_not_recorded_and_is_retried(self, egress: Any, reason: str) -> None:
+        """Recorded as sent, it primed the on-change gate, and a marker holding
+        still read "unchanged" instead of retrying."""
+        from openfollow.configuration import StreamTrigger
+
+        marker = _FakeMarker((1.0, 2.0, 3.0))
+        manager, svc = _manager(markers={0: marker}, egress_provider=lambda dest: egress)
+        on_change = _row(trigger=StreamTrigger(rate_hz=60, mode="on_change", min_change_m=0.05))
+        manager.restart(OscTransmittersConfig(transmitters=[on_change]))
+        svc.delivers = False
+        manager._tick_once()
+        entry = manager.ring_buffer_for("row-1")[-1]
+        assert (entry.status, entry.error, entry.address) == ("skipped", reason, "/cue/0")
+
+        svc.delivers = True
+        manager._tick_once()
+        assert len(svc.calls) == 2
+        assert manager.ring_buffer_for("row-1")[-1].status == "sent"
+
+    def test_a_test_packet_that_never_left_says_so(self) -> None:
+        manager, svc, _asked = self._pinned("198.51.100.10")
+        svc.delivers = False
+        result = manager.test_send("row-1")
+        assert result is not None
+        assert result["sent"] is False
+        assert result["error"] == "could not send on interface eth1"
 
     def test_the_down_reason_is_not_hidden_as_unchanged(self) -> None:
         """An on-change row whose marker holds still would otherwise read

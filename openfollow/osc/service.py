@@ -357,27 +357,28 @@ class OscService:
         protocol: str = "udp",
         framing: str = "slip",
         egress: Egress | None = None,
-    ) -> None:
-        """Send a single OSC message.
+    ) -> bool:
+        """Send a single OSC message; True once it reached the socket.
 
         Empty ``address`` is silently dropped. ``host``/``port`` must be
         valid (non-empty / >0); callers resolve any default fallback first.
         ``framing`` selects the TCP wire framing (ignored for UDP); invalid
         values fall back to ``"slip"`` with a warning. ``egress`` pins the
         send to an interface; a down one sends nothing rather than roam.
+        Never raises: anything that stops the message returns False.
         """
         if not address:
-            return
+            return False
         if egress is not None and egress.down:
-            return
+            return False
         if not host or port <= 0:
-            return
+            return False
         if protocol not in _VALID_PROTOCOLS:
             logger.warning(
                 "OSC send: unknown protocol %r (expected 'udp' or 'tcp')",
                 protocol,
             )
-            return
+            return False
         # Framing matters only for TCP; restrict the validate-and-warn to
         # ``protocol == "tcp"`` so a UDP row with a stray framing value stays
         # silent (``_get_or_create_client`` normalises the cache key anyway).
@@ -391,11 +392,11 @@ class OscService:
             if not self._missing_dep_warned:
                 logger.warning("python-osc not installed – OSC output disabled. Run: pip install python-osc")
                 self._missing_dep_warned = True
-            return
+            return False
 
         entry = self._get_or_create_client(host, port, protocol, framing, egress)
         if entry is None:
-            return
+            return False
         # Broad catch upholds the documented "never raises" contract: pythonosc
         # raises BuildError (not OSError/ValueError) on un-encodable args.
         try:
@@ -416,9 +417,10 @@ class OscService:
                     errors,
                     exc,
                 )
-            return
+            return False
         with self._cache_lock:
             entry.stats.total_sent += 1
+        return True
 
     def evict(
         self,

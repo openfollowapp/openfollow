@@ -1654,6 +1654,59 @@ def test_a_refused_pin_closes_its_socket_and_waits_before_retrying(
     assert len(attempts) == 2
 
 
+def test_send_reports_a_message_that_reached_the_socket(patched_service: OscService, pins: list) -> None:
+    assert patched_service.send("/x", host="198.51.100.20", port=9000) is True
+    assert patched_service.send("/x", host="198.51.100.20", port=9000, egress=_EGRESS) is True
+
+
+def _refuse_pins(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _refuse(sock: Any, egress: Egress, *, multicast: bool = False) -> None:
+        raise InterfaceUnavailable("cannot send via eth1")
+
+    monkeypatch.setattr(service_module, "pin_socket_egress", _refuse)
+
+
+@pytest.mark.parametrize(
+    ("address", "overrides", "setup"),
+    [
+        ("", {}, None),
+        ("/x", {"egress": Egress("eth1", "")}, None),
+        ("/x", {"host": ""}, None),
+        ("/x", {"port": 0}, None),
+        ("/x", {"protocol": "sctp"}, None),
+        ("/x", {"egress": _EGRESS}, "refuse-pin"),
+        ("/x", {}, "send-raises"),
+        ("/x", {}, "no-python-osc"),
+    ],
+    ids=[
+        "no-address",
+        "down-interface",
+        "no-host",
+        "no-port",
+        "unknown-protocol",
+        "refused-pin",
+        "send-raises",
+        "no-dep",
+    ],
+)
+def test_send_reports_a_message_that_never_left(
+    patched_service: OscService, monkeypatch: pytest.MonkeyPatch, address: str, overrides: dict, setup: str | None
+) -> None:
+    """A caller that records the send must not record one that went nowhere."""
+    monkeypatch.setattr(service_module, "time", SimpleNamespace(monotonic=lambda: 100.0))
+    kwargs: dict[str, Any] = {"host": "198.51.100.20", "port": 9000, **overrides}
+    if setup == "refuse-pin":
+        _refuse_pins(monkeypatch)
+    elif setup == "send-raises":
+        patched_service.send("/warm", **kwargs)
+        _FakeClient.instances[0].send_exc = OSError("Network is unreachable")
+    elif setup == "no-python-osc":
+        monkeypatch.setattr(service_module, "_PYTHONOSC_AVAILABLE", False)
+    assert patched_service.send(address, **kwargs) is False
+    # A second attempt inside a refused pin's retry delay is not a send either.
+    assert patched_service.send(address, **kwargs) is False
+
+
 def test_eviction_retries_a_refused_pin_at_once(patched_service: OscService, monkeypatch: pytest.MonkeyPatch) -> None:
     """Eviction follows an address change, so the pin that was refused may now
     hold; waiting out the retry delay would drop sends for no reason."""

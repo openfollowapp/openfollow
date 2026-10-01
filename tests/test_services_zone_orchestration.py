@@ -19,12 +19,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
 
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig, TriggerZonesConfig
+from openfollow.net_egress import Egress
 from openfollow.services import AppRuntimeServices
 
 pytestmark = pytest.mark.unit
@@ -140,6 +142,7 @@ class _FakeOscService:
         self.calls: list[tuple[str, list, str, int]] = []
         self.retained: list[object] = []
         self.evicted: list[str] = []
+        self.delivers = True
 
     def send(
         self,
@@ -151,8 +154,9 @@ class _FakeOscService:
         protocol: str = "udp",
         framing: str = "slip",
         egress: object = None,
-    ) -> None:
+    ) -> bool:
         self.calls.append((address, list(args), host, port))
+        return self.delivers
 
     def retain_egress(self, live: object) -> None:
         self.retained.append(live)
@@ -562,6 +566,27 @@ class TestZoneTestSend:
         fake_osc = services._osc_service
         assert isinstance(fake_osc, _FakeOscService)
         assert fake_osc.calls == [("/zone/enter", [1.5], "10.1.2.3", 9000)]
+
+    @pytest.mark.parametrize(
+        ("egress", "error"),
+        [(Egress("eth1", "198.51.100.10"), "could not send on interface eth1"), (None, "send failed")],
+        ids=["pinned", "unpinned"],
+    )
+    def test_a_test_send_that_never_left_is_not_a_success(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, egress: Any, error: str
+    ) -> None:
+        from openfollow.configuration import OscDestinationConfig
+
+        _seed_zone(services)
+        services._app._config.osc_destinations.destinations.append(
+            OscDestinationConfig(id="d1", host="10.1.2.3", port=9000),
+        )
+        zone_cfg = services._app._config.trigger_zones.zones[0]
+        zone_cfg.osc_address_first_entry = "/zone/enter"
+        zone_cfg.destination_id = "d1"
+        monkeypatch.setattr(services._osc_egress, "for_destination", lambda dest: egress)
+        services._osc_service.delivers = False
+        assert services._zone_test_send(0, "first") == {"error": error}
 
     def test_test_send_skipped_when_no_destination_selected(self, services: AppRuntimeServices) -> None:
         _seed_zone(services)

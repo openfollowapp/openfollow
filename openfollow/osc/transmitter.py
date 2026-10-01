@@ -1518,7 +1518,7 @@ class OscTransmitterManager:
                         ),
                     )
                     return
-        self._service.send(
+        sent = self._service.send(
             result.address,
             list(result.args),
             host=dest.host,
@@ -1527,6 +1527,11 @@ class OscTransmitterManager:
             framing=dest.framing,
             egress=egress,
         )
+        if not sent:
+            # Not primed either, so an on-change row retries on the next tick.
+            reason = f"could not send on interface {egress.iface}" if egress is not None else "send failed"
+            plan.ring_buffer.record_skipped(error=reason, address=result.address)
+            return
         # Update the last-sent cache only after the send went out, so a
         # skipped send can't prime it. Locked so a concurrent
         # ``restart()`` can't drop the entry between check and write. The

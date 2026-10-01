@@ -52,6 +52,10 @@
     % _bkind = _banner.get('kind', 'info')
     <div class="network-banner network-banner-{{_bkind}}" role="{{'alert' if _bkind == 'error' else 'status'}}">{{_banner.get('text', '')}}</div>
     % end
+    %# Outside the polled list, so a poll during a slow request leaves it alone.
+    <div id="net-busy" class="network-banner network-banner-info network-banner-busy" role="status" hidden>
+        <span class="modal-spinner" aria-hidden="true"></span><span class="net-busy-text"></span>
+    </div>
 
     % if not _net.get("available"):
     %# Wrapped in the swap target like the rows are. The poll selects
@@ -220,7 +224,8 @@
                         % if _vlan_id is not None:
                         <button type="button" class="danger"
                                 hx-post="/section/network/vlan/delete" hx-target="#network-interface"
-                                hx-swap="innerHTML" hx-include="closest form"
+                                hx-swap="innerHTML" hx-include="closest form" hx-disabled-elt="this"
+                                data-busy-text="Removing VLAN interface {{_name}}…"
                                 hx-confirm="Any function pinned to {{_name}} stops sending until it is reassigned."
                                 data-confirm-title="Remove VLAN interface {{_name}}?" data-confirm-label="Remove" data-confirm-danger>Remove VLAN</button>
                         % end
@@ -267,7 +272,8 @@
         %# through to a native GET that silently creates nothing.
         <form class="ia-vlan-add" {{'' if _vopen else 'hidden'}}
               hx-post="/section/network/vlan/create" hx-target="#network-interface"
-              hx-swap="innerHTML" hx-trigger="submit">
+              hx-swap="innerHTML" hx-trigger="submit"
+              hx-disabled-elt="find button[type=submit]" data-busy-text="Creating VLAN {vlan_id} on {vlan_parent}…">
             <h4 class="group-title">Add VLAN</h4>
             <div class="network-grid">
                 <label for="net-vlan-parent">Parent interface</label>

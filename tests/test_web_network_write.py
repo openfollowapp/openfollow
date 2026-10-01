@@ -1397,6 +1397,27 @@ def test_a_vlan_device_whose_profile_is_gone_is_refused_as_a_parent(net_server) 
     assert fake.vlans_created == []
 
 
+def test_creating_and_removing_a_vlan_show_the_busy_box(net_server) -> None:
+    """Both run nmcli and take seconds; the button would otherwise sit there
+    looking unpressed and invite a second press."""
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10"]
+    fake.vlans = [{"name": "eth0.10", "parent": "eth0", "vlan_id": 10}]
+    _status, body = _get(base, "/section/network/edit/eth0.10")
+    box = body.split('id="net-busy"', 1)[1].split("</div>", 1)[0]
+    assert 'class="network-banner network-banner-info network-banner-busy"' in body
+    assert 'role="status" hidden' in box
+    assert 'class="modal-spinner"' in box
+    # Outside the polled list, so a poll during the request leaves it be.
+    assert body.index('id="net-busy"') < body.index('id="net-iface-list"')
+    create = body.split('hx-post="/section/network/vlan/create"', 1)[1].split(">", 1)[0]
+    assert 'hx-disabled-elt="find button[type=submit]"' in create
+    assert 'data-busy-text="Creating VLAN {vlan_id} on {vlan_parent}…"' in create
+    remove = body.split('hx-post="/section/network/vlan/delete"', 1)[1].split(">", 1)[0]
+    assert 'hx-disabled-elt="this"' in remove
+    assert 'data-busy-text="Removing VLAN interface eth0.10…"' in remove
+
+
 def test_vlan_rows_carry_their_tag(net_server) -> None:
     fake, base = net_server
     fake.interfaces = ["eth0", "eth0.10"]

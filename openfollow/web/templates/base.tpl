@@ -2169,6 +2169,9 @@
  height: 16px;
  background: var(--info-sign) no-repeat center / contain;
  }
+ /* Progress: an info box led by the spinner in the sign's place. */
+ .network-banner.network-banner-busy::before { content: none; }
+ .network-banner-busy .modal-spinner { position: absolute; left: 12px; top: 11px; width: 16px; height: 16px; box-sizing: border-box; }
  .notice.error, .update-notice.error, .modal-error, .diag-error, .gallery-error, .network-banner.network-banner-error {
  border-color: var(--error-border);
  background: var(--error-fill);
@@ -2332,6 +2335,28 @@
  if (!sel) return;
  const row = sel.closest('.net-iface-row');
  if (row) netSyncMethodFields(row);
+ });
+ // A request from an element with data-busy-text shows that text in the
+ // network card's busy box until it answers; {field} reads the form's field.
+ function netBusyText(elt) {
+ const src = elt && elt.closest && elt.closest('[data-busy-text]');
+ if (!src) return null;
+ const form = src.closest('form');
+ return src.dataset.busyText.replace(/\{(\w+)\}/g, (_, name) => {
+ const field = form && form.elements[name];
+ return field ? field.value : '';
+ });
+ }
+ document.addEventListener('htmx:beforeRequest', (evt) => {
+ const text = netBusyText(evt.detail.elt);
+ const box = document.getElementById('net-busy');
+ if (text === null || !box) return;
+ box.querySelector('.net-busy-text').textContent = text;
+ box.hidden = false;
+ });
+ document.addEventListener('htmx:afterRequest', (evt) => {
+ const box = document.getElementById('net-busy');
+ if (box && netBusyText(evt.detail.elt) !== null) box.hidden = true;
  });
 
  const sectionFoldStoragePrefix = 'psnfs:section:';

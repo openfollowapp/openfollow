@@ -1230,6 +1230,28 @@ def test_network_interfaces_provider_skips_loopback(monkeypatch) -> None:
     assert [r["name"] for r in services._network_interfaces_provider()] == ["eth0"]
 
 
+def test_network_interfaces_provider_carries_the_device_type(monkeypatch) -> None:
+    """The web card tells a VLAN device from a parent by it, whether or not a
+    VLAN profile still names it."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _FakeAdapter:
+        backend_name = "fake"
+
+        def list_interfaces(self):
+            return [_ifrow("eth0"), _ifrow("eth0.10", kind="vlan")]
+
+        def is_writable(self):
+            return True
+
+        def get_state(self, iface):
+            return _ifrow_state(iface, address="192.168.1.5", prefix=24, method_value="dhcp")
+
+    services._network_adapter = _FakeAdapter()
+    rows = services._network_interfaces_provider()
+    assert {r["name"]: r["kind"] for r in rows} == {"eth0": "ethernet", "eth0.10": "vlan"}
+
+
 def test_network_interfaces_provider_reports_an_addressless_interface(monkeypatch) -> None:
     """An interface with no state still has to appear – "wlan0 has no address"
     is exactly what the operator needs to see."""
@@ -1251,6 +1273,7 @@ def test_network_interfaces_provider_reports_an_addressless_interface(monkeypatc
     (row,) = services._network_interfaces_provider()
     assert row == {
         "name": "wlan0",
+        "kind": "ethernet",
         "is_up": False,
         "address": "",
         "prefix": None,

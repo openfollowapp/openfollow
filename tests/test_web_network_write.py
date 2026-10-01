@@ -79,6 +79,8 @@ class FakeNetwork:
         self.provide_rows = True
         self.supports_vlans = True
         self.vlans: list[dict] = []
+        # The backend's device type per interface, as NetworkManager reports it.
+        self.kinds: dict[str, str] = {}
         self.vlans_created: list[tuple[str, int]] = []
         self.vlans_deleted: list[str] = []
         self.vlan_create_result = ApplyResult(ok=True, message="Created.")
@@ -148,7 +150,7 @@ class FakeNetwork:
                 "lease_display": None,
             }
 
-        return [_row(i, name) for i, name in enumerate(self.interfaces)]
+        return [{**_row(i, name), "kind": self.kinds.get(name)} for i, name in enumerate(self.interfaces)]
 
     def apply_handler(self, iface: str, config: object) -> ApplyResult:
         self.applied.append((iface, config))
@@ -1369,6 +1371,30 @@ def test_add_vlan_control_absent_on_a_backend_without_vlans(net_server) -> None:
     _status, body = _get(base, "/section/network/edit")
     assert "+ Add VLAN" not in body
     assert "/section/network/vlan/create" not in body
+
+
+def _parent_options(body: str) -> list[str]:
+    select = body.split('name="vlan_parent"', 1)[1].split("</select>", 1)[0]
+    return [part.split('"', 1)[0] for part in select.split('<option value="')[1:]]
+
+
+def test_a_vlan_device_whose_profile_is_gone_is_not_a_parent(net_server) -> None:
+    """Removing a VLAN deletes its profile before the kernel drops the device,
+    so for a moment the profile list calls it an ordinary interface."""
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10"]
+    fake.kinds = {"eth0": "ethernet", "eth0.10": "vlan"}
+    _status, body = _get(base, "/section/network/status")
+    assert _parent_options(body) == ["eth0"]
+
+
+def test_a_vlan_device_whose_profile_is_gone_is_refused_as_a_parent(net_server) -> None:
+    fake, base = net_server
+    fake.interfaces = ["eth0", "eth0.10"]
+    fake.kinds = {"eth0": "ethernet", "eth0.10": "vlan"}
+    _status, body = _post(base, "/section/network/vlan/create", {"vlan_parent": "eth0.10", "vlan_id": "20"})
+    assert "eth0.10 is already a VLAN" in body
+    assert fake.vlans_created == []
 
 
 def test_vlan_rows_carry_their_tag(net_server) -> None:

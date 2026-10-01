@@ -5073,6 +5073,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def _network_method_value(raw: str) -> str:
         return raw if raw in _NETWORK_METHODS else "dhcp"
 
+    def _vlan_devices(rows: list[dict[str, Any]]) -> set[str]:
+        """Interfaces whose device is a VLAN. A removed VLAN's profile goes
+        before its device does, so the profile list alone briefly calls it an
+        ordinary interface."""
+        return {str(row.get("name", "")) for row in rows if row.get("kind") == "vlan"}
+
     def _build_network_form_context(
         *,
         iface: str | None = None,
@@ -5152,10 +5158,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ]
         # A VLAN cannot parent another VLAN (no QinQ) and loopback carries no
         # tags, so neither is offered as a parent.
+        vlan_names = set(vlan_ids) | _vlan_devices(rows)
         net["vlan_parents"] = [
             name
             for name in (str(row.get("name", "")) for row in rows)
-            if name and name not in vlan_ids and name not in LOOPBACK_NAMES
+            if name and name not in vlan_names and name not in LOOPBACK_NAMES
         ]
         net["session_iface"] = request_local_iface(request.environ)
         net["session_address"] = request_local_addr(request.environ)
@@ -5461,8 +5468,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 banner={"kind": "error", "text": VLAN_ID_RANGE_MESSAGE},
                 vlan_form=entered,
             )
-        names = [str(row.get("name", "")) for row in server.get_network_interfaces()]
-        vlan_names = [str(v.get("name", "")) for v in vlans.get("vlans", [])]
+        rows = server.get_network_interfaces()
+        names = [str(row.get("name", "")) for row in rows]
+        vlan_names = [str(v.get("name", "")) for v in vlans.get("vlans", [])] + sorted(_vlan_devices(rows))
         errors = validate_vlan_create(parent, vlan_id, interfaces=names, vlan_names=vlan_names)
         if errors:
             return _network_vlan_response(banner={"kind": "error", "text": errors[0]}, vlan_form=entered)

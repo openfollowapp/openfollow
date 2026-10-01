@@ -2903,6 +2903,7 @@ class AppRuntimeServices:
                 continue
             row: dict[str, Any] = {
                 "name": iface.name,
+                "kind": iface.kind,
                 "is_up": iface.is_up,
                 "address": "",
                 "prefix": None,

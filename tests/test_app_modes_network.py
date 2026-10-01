@@ -358,7 +358,8 @@ class TestApplyAndRenew:
         anm.drain_pi_network_worker(app)
         assert adapter.apply_calls
         assert app._pi_network_busy is False
-        assert app._pi_network_banner.startswith("Apply ok")
+        assert app._pi_network_banner == "eth0 is now static at 192.168.1.50/24, router 192.168.1.1."
+        assert app._pi_network_banner_level == "success"
 
     def test_start_worker_refuses_while_previous_worker_alive(self) -> None:
         # #552: an orphaned, still-running worker (exit/re-enter cleared busy)
@@ -367,7 +368,7 @@ class TestApplyAndRenew:
         anm.enter_pi_network(app)
         app._pi_network_worker = SimpleNamespace(is_alive=lambda: True)
         ran: list[str] = []
-        anm._start_worker(app, lambda: ran.append("ran") or ApplyResult(ok=True, message=""), "Apply")
+        anm._start_worker(app, lambda: ran.append("ran") or ApplyResult(ok=True, message=""), "Apply", done="")
         assert ran == []  # fn never ran – no second worker launched
         assert app._pi_network_busy is False
         assert app._pi_network_banner  # operator gets feedback, not a silent no-op
@@ -378,7 +379,7 @@ class TestApplyAndRenew:
         anm.enter_pi_network(app)
         app._pi_network_worker = SimpleNamespace(is_alive=lambda: False)
         ran: list[str] = []
-        anm._start_worker(app, lambda: ran.append("ran") or ApplyResult(ok=True, message=""), "Apply")
+        anm._start_worker(app, lambda: ran.append("ran") or ApplyResult(ok=True, message=""), "Apply", done="")
         worker = app._pi_network_worker
         assert worker is not None
         worker.join(timeout=2.0)
@@ -408,6 +409,28 @@ class TestApplyAndRenew:
         worker.join(timeout=2.0)
         anm.drain_pi_network_worker(app)
         assert adapter.renew_calls == ["eth0"]
+        assert app._pi_network_banner == "eth0 renewed its DHCP lease."
+
+    def test_set_dhcp_says_which_interface_now_uses_it(self) -> None:
+        adapter = _FakeAdapter()
+        app = _make_app(adapter)
+        anm.enter_pi_network(app)
+        _open_iface(app, "eth0")
+        anm._set_pi_network_dhcp(app)
+        app._pi_network_worker.join(timeout=2.0)
+        anm.drain_pi_network_worker(app)
+        assert app._pi_network_banner == "eth0 now uses DHCP."
+
+    def test_a_failed_apply_still_says_it_failed(self) -> None:
+        adapter = _FakeAdapter()
+        adapter.apply_result = ApplyResult(ok=False, message="nmcli refused")
+        app = _make_app(adapter)
+        anm.enter_pi_network(app)
+        _open_iface(app, "eth0")
+        anm._set_pi_network_dhcp(app)
+        app._pi_network_worker.join(timeout=2.0)
+        anm.drain_pi_network_worker(app)
+        assert app._pi_network_banner == "Apply failed: nmcli refused"
 
     def test_readonly_adapter_blocks_apply_and_renew(self) -> None:
         adapter = _FakeAdapter(writable=False)
@@ -830,8 +853,7 @@ class TestFieldEditAllFields:
         assert app._pi_network_field_value == "99"
 
     def test_prefix_field_seed_when_pending_has_no_prefix(self) -> None:
-        """``pending.prefix is None`` opens the editor with an empty
-        value – covers the ``else`` arm of the prefix-seed branch."""
+        """An empty Subnet opens as the usual /24, with its digits ready to edit."""
         from openfollow.network.adapter import Ipv4Config, Ipv4Method
 
         app = _make_app()
@@ -841,7 +863,9 @@ class TestFieldEditAllFields:
             prefix=None,
         )
         anm.enter_pi_network_field_edit(app, "prefix")
-        assert app._pi_network_field_value == ""
+        assert app._pi_network_field_value == "255.255.255.000"
+        anm.confirm_pi_network_field_edit(app)
+        assert app._pi_network_pending_config.prefix == 24
 
     def test_prefix_display_falls_back_to_em_dash_when_mask_unrenderable(self) -> None:
         """``_prefix_value`` in the row builder shows ``–`` when the
@@ -1057,7 +1081,7 @@ class TestApplyEdgeCases:
         anm.drain_pi_network_worker(app)
 
         assert app._pi_network_busy is False
-        assert app._pi_network_banner.startswith("Apply ok.")
+        assert app._pi_network_banner.startswith("eth0 is now static at 10.0.0.5/24, router 10.0.0.1.")
         assert "could not re-read" in app._pi_network_banner
         assert app._pi_network_banner_level == "caution"
         assert app._pi_network_interfaces == shown  # last-known state kept
@@ -2555,3 +2579,89 @@ class TestTheResultLineCarriesItsLevel:
         anm.enter_pi_network(app)
         _confirm_key(app, "web_unpin")
         assert app._pi_network_banner_level == level
+
+
+class TestEmptyFieldsOpenWithDigits:
+    """An empty Router used to open blank, with nothing to edit until a d-pad
+    press; it opens as 0.0.0.0, which means no router."""
+
+    @staticmethod
+    def _static(router: str | None = None) -> SimpleNamespace:
+        app = _make_app()
+        anm.enter_pi_network(app)
+        app._pi_network_pending_config = Ipv4Config(
+            method=Ipv4Method.STATIC, address="192.0.2.50", prefix=24, router=router
+        )
+        return app
+
+    def test_an_empty_router_opens_as_zeros_ready_for_the_d_pad(self) -> None:
+        app = self._static()
+        anm.enter_pi_network_field_edit(app, "router")
+        assert app._pi_network_field_value == "000.000.000.000"
+        assert ipv4_digit_grid.is_grid_form(app._pi_network_field_value)
+
+    def test_a_router_left_at_zeros_means_no_router_and_applies(self) -> None:
+        adapter = _FakeAdapter()
+        app = _make_app(adapter)
+        anm.enter_pi_network(app)
+        _open_iface(app, "eth0")
+        app._pi_network_pending_config = Ipv4Config(method=Ipv4Method.STATIC, address="192.0.2.50", prefix=24)
+        anm.enter_pi_network_field_edit(app, "router")
+        anm.confirm_pi_network_field_edit(app)
+        assert app._pi_network_pending_config.router is None
+        anm._apply_pi_network(app)
+        app._pi_network_worker.join(timeout=2.0)
+        anm.drain_pi_network_worker(app)
+        assert adapter.apply_calls[-1][1].router is None
+        assert app._pi_network_banner == "eth0 is now static at 192.0.2.50/24."
+
+    def test_a_typed_zero_router_also_means_no_router(self) -> None:
+        app = self._static(router="192.0.2.1")
+        anm.enter_pi_network_field_edit(app, "router")
+        app._pi_network_field_value = "0.0.0.0"
+        anm.confirm_pi_network_field_edit(app)
+        assert app._pi_network_pending_config.router is None
+
+    def test_an_existing_router_opens_as_itself(self) -> None:
+        app = self._static(router="192.0.2.1")
+        anm.enter_pi_network_field_edit(app, "router")
+        assert app._pi_network_field_value == "192.0.2.1"
+        anm.handle_pi_network_field_edit_key(app, "0")
+        assert app._pi_network_field_value == "192.0.2.10"
+
+    @pytest.mark.parametrize("field", ["router", "prefix"])
+    def test_the_first_key_typed_replaces_the_opening_digits(self, field: str) -> None:
+        app = self._static()
+        app._pi_network_pending_config = Ipv4Config(method=Ipv4Method.STATIC, address="192.0.2.50")
+        anm.enter_pi_network_field_edit(app, field)
+        anm.handle_pi_network_field_edit_key(app, "1")
+        anm.handle_pi_network_field_edit_key(app, "0")
+        assert app._pi_network_field_value == "10"
+
+    def test_backspace_clears_the_opening_digits_at_once(self) -> None:
+        app = self._static()
+        anm.enter_pi_network_field_edit(app, "router")
+        anm.handle_pi_network_field_edit_key(app, "Backspace")
+        assert app._pi_network_field_value == ""
+
+    def test_once_the_d_pad_edits_them_the_digits_are_the_operators(self) -> None:
+        app = self._static()
+        anm.enter_pi_network_field_edit(app, "router")
+        anm._bump_field_digit(app, 1)
+        assert app._pi_network_field_value == "100.000.000.000"
+        anm.handle_pi_network_field_edit_key(app, "Backspace")
+        assert app._pi_network_field_value == "100.000.000.00"
+
+    def test_moving_the_cursor_also_adopts_the_digits(self) -> None:
+        app = self._static()
+        anm.enter_pi_network_field_edit(app, "router")
+        anm._move_field_digit_cursor(app, 1)
+        anm.handle_pi_network_field_edit_key(app, "1")
+        assert app._pi_network_field_value == "000.000.000.0001"
+
+    def test_an_empty_address_still_opens_empty(self) -> None:
+        """0.0.0.0 would pass as an address without anyone noticing."""
+        app = self._static()
+        app._pi_network_pending_config = Ipv4Config(method=Ipv4Method.STATIC)
+        anm.enter_pi_network_field_edit(app, "address")
+        assert app._pi_network_field_value == ""

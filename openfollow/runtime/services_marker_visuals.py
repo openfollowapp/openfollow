@@ -325,6 +325,7 @@ def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
         target.open_iface = str(getattr(app, "_pi_network_open_iface", ""))
         target.banner = str(getattr(app, "_pi_network_banner", ""))
         target.banner_level = str(getattr(app, "_pi_network_banner_level", "") or "")
+        target.busy = bool(getattr(app, "_pi_network_busy", False))
     target.field_edit_active = bool(getattr(app, "_pi_network_field_edit_active", False))
     if target.field_edit_active:
         from openfollow.runtime import ipv4_digit_grid
@@ -881,6 +882,11 @@ def build_marker_visual_state(
                 severity, message = "error", raw
             if message:
                 state.status_flags.append((key, message, severity))
+
+    # Ahead of missing controllers: a stopped output loses stage data, and the
+    # rows past the badge's visible few collapse into "+N more".
+    for i, alert in enumerate(state.network_alerts):
+        state.status_flags.append((f"network_down_{i}", alert, "error"))
 
     # One row per missing controller, so it is seen even for a marker with no card.
     for info in controller_info:

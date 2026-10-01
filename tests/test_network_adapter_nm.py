@@ -341,6 +341,57 @@ class TestActionableMessages:
         assert result.ok is True
         assert result.partial_failures == ("nmcli con down: Bring NetworkManager connection down: Error: timed out.",)
 
+    # The broker gives up on con up after its timeout; NetworkManager keeps going.
+    _TIMED_OUT = "Bring NetworkManager connection up: timed out after 8s."
+
+    def test_dhcp_with_no_server_answering_is_saved_not_failed(self, adapter) -> None:
+        """With no DHCP server the activation never completes, so con up always
+        outlasts the broker - the profile is applied and its fallback in use."""
+        a, _captured, responses = adapter
+        _set(responses, _ACTIVE_PROFILES, stdout="Wired:eth0\n")
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "DEVICE,STATE", "device"],
+            stdout="eth0:connecting (getting IP configuration)\n",
+        )
+        a._broker.exceptions = [None, None, make_failure(self._TIMED_OUT)]
+        result = a.apply_ipv4("eth0", Ipv4Config(method=Ipv4Method.DHCP))
+        assert (result.ok, result.pending) == (True, True)
+        assert result.message == "Saved; no DHCP server has answered on eth0 yet."
+
+    @pytest.mark.parametrize(
+        ("config", "state"),
+        [
+            (
+                Ipv4Config(method=Ipv4Method.STATIC, address="192.0.2.50", prefix=24),
+                "connecting (getting IP configuration)",
+            ),
+            (Ipv4Config(method=Ipv4Method.DHCP), "disconnected"),
+        ],
+        ids=["static", "not-activating"],
+    )
+    def test_any_other_failed_activation_is_still_a_failure(self, adapter, config, state) -> None:
+        a, _captured, responses = adapter
+        _set(responses, _ACTIVE_PROFILES, stdout="Wired:eth0\n")
+        _set(responses, ["nmcli", "-t", "-f", "DEVICE,STATE", "device"], stdout=f"eth0:{state}\n")
+        a._broker.exceptions = [None, None, make_failure(self._TIMED_OUT)]
+        result = a.apply_ipv4("eth0", config)
+        assert (result.ok, result.pending) == (False, False)
+        assert self._TIMED_OUT in result.message
+
+    def test_renew_with_no_server_answering_says_so(self, adapter) -> None:
+        a, _captured, responses = adapter
+        _set(responses, _ACTIVE_PROFILES, stdout="Wired:eth0\n")
+        _set(
+            responses,
+            ["nmcli", "-t", "-f", "DEVICE,STATE", "device"],
+            stdout="eth0:connecting (getting IP configuration)\n",
+        )
+        a._broker.exceptions = [None, make_failure(self._TIMED_OUT)]
+        result = a.renew_lease("eth0")
+        assert result.ok is False
+        assert result.message == "No DHCP server has answered on eth0 yet."
+
     def test_renew_without_a_link_explains_why_and_leaves_the_profile_alone(self, adapter) -> None:
         a, _captured, responses = adapter
         _set(responses, _ACTIVE_PROFILES, stdout="Wired:eth0\n")

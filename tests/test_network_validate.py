@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Tests for the IPv4 validation helpers: parsing, masks, DNS list, router-subnet, validate_apply, VLAN create."""
+"""Tests for the IPv4 helpers: parsing, masks, DNS list, router-subnet, validate_apply, VLAN create, wording."""
 
 from __future__ import annotations
 
 import pytest
 
-from openfollow.network.adapter import Ipv4Method
+from openfollow.network.adapter import Ipv4Config, Ipv4Method
 from openfollow.network.validate import (
+    describe_applied,
+    describe_renewed,
     is_link_local,
     parse_dns_list,
     parse_ipv4,
@@ -370,3 +372,28 @@ class TestParseVlanId:
 
     def test_rejects_bool_which_is_an_int_subclass(self) -> None:
         assert parse_vlan_id(True) is None
+
+
+@pytest.mark.parametrize(
+    ("config", "sentence"),
+    [
+        (Ipv4Config(method=Ipv4Method.DHCP), "eth1 now uses DHCP."),
+        (
+            Ipv4Config(method=Ipv4Method.STATIC, address="192.0.2.50", prefix=24, router="192.0.2.1"),
+            "eth1 is now static at 192.0.2.50/24, router 192.0.2.1.",
+        ),
+        (Ipv4Config(method=Ipv4Method.STATIC, address="192.0.2.50", prefix=24), "eth1 is now static at 192.0.2.50/24."),
+        (Ipv4Config(method=Ipv4Method.STATIC, address="192.0.2.50"), "eth1 is now static at 192.0.2.50."),
+        (
+            Ipv4Config(method=Ipv4Method.DHCP_WITH_MANUAL_ADDRESS, address="192.0.2.50"),
+            "eth1 now uses DHCP with the address 192.0.2.50.",
+        ),
+    ],
+    ids=["dhcp", "static-with-router", "static-without-router", "static-without-prefix", "dhcp-manual"],
+)
+def test_an_apply_is_described_by_its_interface_and_what_it_set(config: Ipv4Config, sentence: str) -> None:
+    assert describe_applied("eth1", config) == sentence
+
+
+def test_a_renew_names_its_interface() -> None:
+    assert describe_renewed("eth1") == "eth1 renewed its DHCP lease."

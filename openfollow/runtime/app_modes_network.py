@@ -28,6 +28,8 @@ from openfollow.network.adapter import (
     is_loopback,
 )
 from openfollow.network.validate import (
+    describe_applied,
+    describe_renewed,
     is_link_local,
     parse_ipv4,
     parse_prefix,
@@ -718,7 +720,7 @@ def _set_pi_network_dhcp(app: OpenFollowApp) -> None:
         return
     config = Ipv4Config(method=Ipv4Method.DHCP)
     app._pi_network_pending_config = config
-    _start_worker(app, lambda: adapter.apply_ipv4(iface, config), "Apply")
+    _start_worker(app, lambda: adapter.apply_ipv4(iface, config), "Apply", done=describe_applied(iface, config))
 
 
 def _begin_static_edit(app: OpenFollowApp) -> None:
@@ -802,9 +804,15 @@ _NUMPAD_FIELD_CHARS["KP_Decimal"] = "."
 _NUMPAD_FIELD_CHARS["KP_Separator"] = "."
 
 
+# An empty Router or Subnet opens with digits to edit; the first key typed replaces them.
+_ROUTER_SEED = ipv4_digit_grid.from_grid("")
+_SUBNET_SEED = ipv4_digit_grid.from_grid(ipv4_digit_grid.to_grid("255.255.255.0"))
+
+
 def enter_pi_network_field_edit(app: OpenFollowApp, field: str) -> None:
     app._pi_network_field_edit_active = True
     app._pi_network_field_name = field
+    app._pi_network_field_seeded = False
     # Cursor starts on the first digit; it only matters once the d-pad is used.
     app._pi_network_field_digit_index = 0
     pending: Ipv4Config | None = getattr(app, "_pi_network_pending_config", None)
@@ -822,9 +830,11 @@ def enter_pi_network_field_edit(app: OpenFollowApp, field: str) -> None:
             mask = prefix_to_mask(pending.prefix)
             app._pi_network_field_value = mask or str(pending.prefix)
         else:
-            app._pi_network_field_value = ""
+            app._pi_network_field_value = _SUBNET_SEED
+            app._pi_network_field_seeded = True
     elif field == "router":
-        app._pi_network_field_value = pending.router or ""
+        app._pi_network_field_value = pending.router or _ROUTER_SEED
+        app._pi_network_field_seeded = not pending.router
     else:
         app._pi_network_field_value = ""
 
@@ -833,6 +843,7 @@ def exit_pi_network_field_edit(app: OpenFollowApp) -> None:
     app._pi_network_field_edit_active = False
     app._pi_network_field_name = ""
     app._pi_network_field_value = ""
+    app._pi_network_field_seeded = False
     app._pi_network_field_digit_index = 0
 
 
@@ -865,7 +876,8 @@ def confirm_pi_network_field_edit(app: OpenFollowApp) -> None:
         if value and canon is None:
             _set_banner(app, "Invalid router IPv4 address.")
             return
-        new_router = canon
+        # The field opens as 0.0.0.0; left there, it means no router.
+        new_router = None if canon == "0.0.0.0" else canon
 
     app._pi_network_pending_config = Ipv4Config(
         method=pending.method,
@@ -889,14 +901,17 @@ def handle_pi_network_field_edit_key(app: OpenFollowApp, key: str) -> None:
     if key == "Enter":
         confirm_pi_network_field_edit(app)
         return
+    seeded = getattr(app, "_pi_network_field_seeded", False)
     if key == "Backspace":
-        app._pi_network_field_value = app._pi_network_field_value[:-1]
+        app._pi_network_field_value = "" if seeded else app._pi_network_field_value[:-1]
+        app._pi_network_field_seeded = False
         return
     # Accept numeric-keypad digits/decimal, which arrive as "Numpad5" /
     # "KP_Decimal" rather than the bare characters the top number row sends.
     key = _NUMPAD_FIELD_CHARS.get(key, key)
     if len(key) == 1 and key in _ALLOWED_FIELD_CHARS:
-        app._pi_network_field_value += key
+        app._pi_network_field_value = key if seeded else app._pi_network_field_value + key
+        app._pi_network_field_seeded = False
 
 
 def _expand_prefix_for_grid(app: OpenFollowApp) -> None:
@@ -937,6 +952,7 @@ def _move_field_digit_cursor(app: OpenFollowApp, delta: int) -> None:
     digits, index = _field_digit_state(app)
     app._pi_network_field_value = ipv4_digit_grid.from_grid(digits)
     app._pi_network_field_digit_index = ipv4_digit_grid.move_cursor(index, delta)
+    app._pi_network_field_seeded = False
 
 
 def _bump_field_digit(app: OpenFollowApp, delta: int) -> None:
@@ -949,6 +965,7 @@ def _bump_field_digit(app: OpenFollowApp, delta: int) -> None:
     digits, index = _field_digit_state(app)
     app._pi_network_field_digit_index = index
     app._pi_network_field_value = ipv4_digit_grid.from_grid(ipv4_digit_grid.bump_digit(digits, index, delta))
+    app._pi_network_field_seeded = False
 
 
 def process_pi_network_field_edit_input(app: OpenFollowApp) -> None:
@@ -998,7 +1015,7 @@ def _apply_pi_network(app: OpenFollowApp) -> None:
     if not adapter.is_writable():
         _set_banner(app, "Read-only host – cannot apply.")
         return
-    _start_worker(app, lambda: adapter.apply_ipv4(iface, pending), "Apply")
+    _start_worker(app, lambda: adapter.apply_ipv4(iface, pending), "Apply", done=describe_applied(iface, pending))
 
 
 def _renew_pi_network(app: OpenFollowApp) -> None:
@@ -1010,14 +1027,17 @@ def _renew_pi_network(app: OpenFollowApp) -> None:
     if not adapter.is_writable():
         _set_banner(app, "Read-only host – cannot renew.")
         return
-    _start_worker(app, lambda: adapter.renew_lease(iface), "Renew")
+    _start_worker(app, lambda: adapter.renew_lease(iface), "Renew", done=describe_renewed(iface))
 
 
 def _start_worker(
     app: OpenFollowApp,
     fn: Callable[[], ApplyResult],
     action_label: str,
+    *,
+    done: str,
 ) -> None:
+    """Run *fn* off the main thread; *done* is the result line when it succeeds."""
     if getattr(app, "_pi_network_busy", False):
         return
     # exit_pi_network / enter_pi_network clear ``busy`` without joining an
@@ -1061,7 +1081,7 @@ def _start_worker(
             logger.exception("Network %s: re-reading the interfaces failed", action_label)
             snap = None
         with app._pi_network_worker_lock:
-            app._pi_network_pending_result = (result, action_label, generation, snap)
+            app._pi_network_pending_result = (result, action_label, done, generation, snap)
 
     thread = threading.Thread(target=_run, name=f"pi-network-{action_label.lower()}", daemon=True)
     app._pi_network_worker = thread
@@ -1072,6 +1092,7 @@ def _finish_worker(
     app: OpenFollowApp,
     result: ApplyResult,
     action_label: str,
+    done: str,
     generation: int,
     snap: _NetworkSnapshot | None,
 ) -> None:
@@ -1092,7 +1113,7 @@ def _finish_worker(
             msg += " Warnings: " + "; ".join(warnings)
         _set_banner(app, msg, "info")
     elif result.ok:
-        msg = f"{action_label} ok."
+        msg = done
         if warnings:
             msg += " Warnings: " + "; ".join(warnings)
         # Done, but with caveats worth reading: it worked, with a limitation.

@@ -82,6 +82,8 @@ from openfollow.network.adapter import (
 )
 from openfollow.network.validate import (
     VLAN_ID_RANGE_MESSAGE,
+    describe_applied,
+    describe_renewed,
     parse_prefix,
     parse_vlan_id,
     validate_apply,
@@ -5426,7 +5428,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     banner={"kind": "info", "text": pending_text},
                 ),
             )
-        text = "Network settings applied."
+        text = describe_applied(iface, config)
         if result.partial_failures:
             text += " Warnings: " + "; ".join(result.partial_failures)
             # A static / manual apply changed the address but we're keeping the
@@ -5514,7 +5516,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             )
         result = server.renew_network(iface)
         if result.ok:
-            text = "DHCP lease renewed."
+            text = describe_renewed(iface)
             if result.partial_failures:
                 text += " Warnings: " + "; ".join(result.partial_failures)
             banner = {"kind": "ok", "text": text}

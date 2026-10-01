@@ -1033,20 +1033,16 @@ class TestBottomLeftInfoPanel:
         assert spans[1][0] > spans[0][0]
         assert spans[1][1] < spans[0][1]
 
-    def test_down_plane_alerts_render_on_the_panel(self) -> None:
-        """When the interface carrying the web UI is the one that went away,
-        the HUD is the only surface the operator has left."""
+    def test_a_down_plane_turns_the_panel_red_but_its_text_goes_top_right(self) -> None:
+        """The sentence is a top-right status row, like every other fault; the
+        panel only takes the error chrome."""
         state = _base_state(ip_text="192.168.1.2")
         state.network_alerts = ["PSN: eth0.10 is down", "OTP output: eth0.20 is down"]
         cr = FakeCairo()
         draw_bottom_left_info_panel(FakeRenderer(state=state), cr, state, 1920, 1080)
         texts = cr.show_text_strings()
-        assert "Network:" in texts
-        assert "PSN: eth0.10 is down" in texts
-        assert "OTP output: eth0.20 is down" in texts
-        # Labelled once, so a multi-plane outage doesn't repeat the word.
-        assert texts.count("Network:") == 1
-        # A stopped plane is a failure, so the panel takes the error chrome.
+        assert "Network:" not in texts
+        assert not any("is down" in text for text in texts)
         assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
 
     def test_no_network_row_when_every_plane_is_up(self) -> None:
@@ -2516,6 +2512,22 @@ class TestDrawPiNetworkScreen:
         assert ("rgb", *COLOR_SUCCESS_BORDER) in cr.calls
         assert ("rgb", *COLOR_SUCCESS_BG) in cr.calls  # the check, cut out of the off-white disc
         assert ("rgb", *COLOR_OK) not in cr.calls
+
+    @pytest.mark.parametrize("busy", [True, False])
+    def test_an_action_in_progress_is_led_by_the_spinner(self, monkeypatch: pytest.MonkeyPatch, busy: bool) -> None:
+        """As the web's busy box: the spinner in the sign's place until the
+        answer comes, and the sign again once it has."""
+        import openfollow.runtime.overlay_draw_hud as hud
+
+        drawn: list[str] = []
+        monkeypatch.setattr(hud, "draw_spinner", lambda *args, **kwargs: drawn.append("spinner"))
+        monkeypatch.setattr(hud, "draw_level_sign", lambda cr, level, *args, **kwargs: drawn.append(level))
+        net = _network_state(banner="Apply in progress…", banner_level="info")
+        net.busy = busy
+        state = _base_state(pi_network=net)
+        draw_pi_network_screen(FakeRenderer(state=state), FakeCairo(), state, 1600, 900)
+        assert drawn[0] == ("spinner" if busy else "info")
+        assert ("info" in drawn) is not busy
 
     def test_a_result_without_a_level_reads_as_info(self) -> None:
         state = _base_state(pi_network=_network_state(banner="Querying network status…"))

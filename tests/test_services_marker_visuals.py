@@ -774,6 +774,16 @@ class TestPopulatePiNetworkOverlay:
         assert state.pi_network.selected_index == 3
         assert state.pi_network.active_iface == "eth0"
         assert (state.pi_network.banner, state.pi_network.banner_level) == ("Apply ok.", "success")
+        assert state.pi_network.busy is False
+
+    def test_a_running_action_marks_the_screen_busy(self, monkeypatch) -> None:
+        from openfollow.runtime import app_modes_network as anm
+
+        monkeypatch.setattr(anm, "build_pi_network_rows", lambda _app: [])
+        app = SimpleNamespace(_pi_network_active=True, _pi_network_busy=True, _pi_network_banner="Apply in progress…")
+        state = OverlayState()
+        _populate_pi_network_overlay(app, state)
+        assert state.pi_network.busy is True
 
     def test_field_edit_active_humanises_label(self) -> None:
         """``dns_1`` → "Dns 1"; ``ip_address`` → "Ip Address"."""

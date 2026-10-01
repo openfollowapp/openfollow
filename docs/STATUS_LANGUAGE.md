@@ -263,6 +263,9 @@ attributes, so it spells the token's value.
   The marker card keeps its marker-coloured border.
 - Status rows and the ERROR box lead with the off-white warning sign
   (`draw_warning_sign`).
+- A fault's sentence is a top-right status row, whatever raised it (a video
+  failure, a missing controller, an output stopped because its interface is
+  down). The bottom-left panel only turns red; it never carries the sentence.
 - An info status row takes the info chip colours (`COLOR_INFO_FILL`,
   `COLOR_INFO_BORDER`), led by the off-white "i" sign (`draw_info_sign`). A
   caution row takes the caution chip colours the same way, led by the same sign.

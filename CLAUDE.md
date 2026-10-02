@@ -73,21 +73,22 @@ tracker.
 
 Commit summaries, PR titles and issue titles all use
 [Conventional Commits](https://www.conventionalcommits.org):
-`<type>(<scope>): <imperative summary>`.
+`<type>(<scope>): <summary>`.
 
 - **Types:** `feat`, `fix`, `test`, `docs`, `refactor`, `perf`, `build`, `ci`,
   `chore`.
 - **Scope is required: exactly one from the list below**, the area a reader
   would look in first, even when the change touches others. No comma lists. A
   new scope is added to this list in the same change that first uses it.
-- **Summary:** starts with a lower-case verb, no trailing period, whole title
-  under ~72 chars. Rationale goes in the body. No issue/PR numbers (see Code
-  comments).
-- **An issue title is the commit summary its fix will land as**, so the PR and
-  the squash commit reuse it verbatim. Name what the change does, not the
-  symptom: `fix(hud): draw caution status rows in the caution colors`, not
-  "Status badge draws a caution row as an error". The symptom goes in the body.
-  An umbrella issue names the outcome it delivers.
+- **Summary:** starts lower-case, no trailing period, whole title under ~72
+  chars. Rationale goes in the body. No issue/PR numbers (see Code comments).
+- **A PR title is imperative** and names what the change does, not the symptom:
+  `fix(hud): draw caution status rows in the caution colors`. The squash commit
+  reuses it verbatim, and every commit summary is imperative too.
+- **An issue title may describe the problem**, because the fix is often unknown
+  when it is filed: `fix(hud): status badge draws a caution row as an error`.
+  When the change is already clear, write it as the PR title will be. An
+  umbrella issue names the outcome it delivers.
 - **Labels follow the type:** `fix` ⇒ `bug`, `feat` ⇒ `enhancement`, any other
   type carries neither. Platform and area labels (`Linux`, `Mac`, `Network`)
   are independent of the title.

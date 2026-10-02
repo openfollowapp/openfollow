@@ -6,8 +6,8 @@ labels: enhancement
 ---
 
 <!--
-Title: what the change will do, as an imperative summary, e.g.
-"feat(gamepad): name buttons as printed on the pad".
+Title: what is missing or wanted, e.g.
+"feat(gamepad): button names as printed on the pad".
 Scopes and the full rule: CLAUDE.md, "Commit messages, PR and issue titles".
 -->
 

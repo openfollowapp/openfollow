@@ -6,8 +6,8 @@ labels: bug
 ---
 
 <!--
-Title: what the fix will do, as an imperative summary, e.g.
-"fix(hud): draw caution status rows in the caution colors".
+Title: what goes wrong, e.g.
+"fix(hud): status badge draws a caution row as an error".
 Scopes and the full rule: CLAUDE.md, "Commit messages, PR and issue titles".
 -->
 

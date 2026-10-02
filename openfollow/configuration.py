@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import copy
 import ipaddress
 import logging
 import math
@@ -3068,8 +3069,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # Strip whitespace before compare/store/apply: the web apply path bypasses
     # ``AppConfig.__post_init__``, so a value like ``"236.10.10.10 "`` would
     # otherwise spuriously rebind each load and break the multicast bind.
-    # Before the station interface below is committed: a blank video pin follows it.
-    video_changed = _video_config_changed(app._config, new_config)
+    # A blank video pin follows the station interface; the video block below
+    # compares against the one that was in force here.
+    old_station_iface = app._config.psn_source_iface
 
     new_psn_mcast_ip = new_config.psn_mcast_ip.strip()
     new_psn_source_iface = new_config.psn_source_iface.strip()
@@ -3200,7 +3202,13 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # ``detection`` block below.
     from openfollow.video.inputs import get_input_class
 
-    if video_changed:
+    # Built from the station interface actually committed above: a rejected
+    # station change must not pin the video to the interface it named.
+    video_config = copy.copy(new_config)
+    video_config.psn_source_iface = app._config.psn_source_iface
+    video_before = copy.copy(app._config)
+    video_before.psn_source_iface = old_station_iface
+    if _video_config_changed(video_before, video_config):
         # Snapshot the new plugin's CURRENT (pre-commit) field values so the
         # failure path can restore them. The old plugin's fields aren't
         # snapshotted – the commit loop only writes new-plugin fields.
@@ -3230,7 +3238,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
 
         if not _apply(
             "video_source",
-            lambda: app._runtime_services.swap_video(new_config),
+            lambda: app._runtime_services.swap_video(video_config),
         ):
             app._config.video_source_type = old_video_source_type
             for name, value in old_field_values.items():

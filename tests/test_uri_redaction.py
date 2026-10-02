@@ -140,8 +140,9 @@ class TestSetUriQueryKey:
             ),
             ("srt://h:9000#tag", "srt://h:9000?bindtodevice=eth1#tag"),
             ("srt://h:9000#a?b", "srt://h:9000?bindtodevice=eth1#a?b"),
+            ("srt://h:9000#a?bindtodevice=x", "srt://h:9000?bindtodevice=eth1#a?bindtodevice=x"),
         ],
-        ids=["query-then-fragment", "fragment-only", "question-mark-in-fragment"],
+        ids=["query-then-fragment", "fragment-only", "question-mark-in-fragment", "key-in-fragment"],
     )
     def test_the_key_lands_in_the_query_not_the_fragment(self, uri: str, expected: str) -> None:
         assert set_uri_query_key(uri, "bindtodevice", "eth1") == expected
@@ -169,6 +170,18 @@ class TestStripUriQueryKey:
 
     def test_match_is_case_insensitive(self) -> None:
         assert strip_uri_query_key("srt://h:5000?PassPhrase=x", "passphrase") == "srt://h:5000"
+
+    @pytest.mark.parametrize(
+        ("uri", "expected"),
+        [
+            ("srt://h:5000#a?passphrase=x", "srt://h:5000#a?passphrase=x"),
+            ("srt://h:5000?passphrase=x#a?passphrase=y", "srt://h:5000#a?passphrase=y"),
+        ],
+        ids=["only-in-fragment", "query-and-fragment"],
+    )
+    def test_the_query_ends_at_the_fragment(self, uri: str, expected: str) -> None:
+        """A fragment is not the element's query, so its text is left as written."""
+        assert strip_uri_query_key(uri, "passphrase") == expected
 
 
 class TestRedactUrisInText:

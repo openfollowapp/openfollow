@@ -1272,6 +1272,14 @@ class TestInterfaceAssignmentRows:
         assert row["editable"] is True
         assert row["address"]
 
+    def test_an_rtp_url_that_does_not_parse_is_not_the_wildcard(self, monkeypatch) -> None:
+        """Nothing is received from it, so it keeps the station's pin rather than reading as healthy everywhere."""
+        row = self._video_row(
+            monkeypatch, video_source_type="rtp", rtp_url="rtp://0.0.0.0:70000", psn_source_iface="eth0"
+        )
+        assert row["address"] == "192.0.2.10"
+        assert row.get("blank") != "all"
+
     def test_the_pick_says_when_nothing_routes_there(self, monkeypatch) -> None:
         self._pick(monkeypatch, None)
         row = self._video_row(monkeypatch, video_source_type="srt", srt_host="srt://203.0.113.20:5000")
@@ -1301,13 +1309,14 @@ class TestInterfaceAssignmentRows:
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["RTTrPM output"]["address"] == "Per routing table"
 
-    def test_a_camera_on_this_station_takes_no_pin_from_the_station(self, monkeypatch) -> None:
+    def test_a_camera_on_this_station_reads_as_this_station(self, monkeypatch) -> None:
+        """Its traffic never leaves the box, so no pinned interface's address may stand in for it."""
         asked = self._pick(monkeypatch, "192.0.2.10")
         row = self._video_row(
             monkeypatch, video_source_type="srt", srt_host="srt://192.0.2.10:5000", psn_source_iface="eth1"
         )
-        assert row["address"] == "eth0 – 192.0.2.10"
-        assert asked == ["192.0.2.10"]
+        assert row["address"] == "This station"
+        assert asked == []
 
     def test_a_camera_on_this_box_reads_as_loopback(self, monkeypatch) -> None:
         row = self._video_row(

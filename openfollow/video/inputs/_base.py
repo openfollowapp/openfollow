@@ -18,9 +18,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from openfollow.net_egress import is_loopback_host
 from openfollow.net_utils import plane_source_iface
 from openfollow.video.failure import ConnectionPhase, SourceKind
-from openfollow.video.inputs._pin import PinRefusal, is_station_address
+from openfollow.video.inputs._pin import PinRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -343,10 +344,16 @@ class VideoInputBase(ABC):
     def uses_interface(cls, config: dict[str, Any], *, followed: bool) -> bool:
         """Whether a pin governs this connection; *followed* when it is the station's, not the input's own.
 
-        A literal address of this station needs no interface, so its input is
-        neither checked against a pin nor stopped with one.
+        Decided from config alone, so the running input does not change with
+        the interfaces' addresses. A source on this station is exempted where
+        the pin is checked and where the input is stopped.
         """
-        return not is_station_address(cls.route_target(config))
+        return not is_loopback_host(cls.route_target(config))
+
+    @classmethod
+    def receives_on_every_interface(cls, config: dict[str, Any]) -> bool:
+        """Whether this input listens on every interface (an RTP wildcard), not one."""
+        return False
 
     @classmethod
     def config_changed(cls, old_cfg: Any, new_cfg: Any) -> bool:

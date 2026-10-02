@@ -36,6 +36,9 @@ class TestParseRtpUrl:
     def test_multicast_at_lower_boundary(self) -> None:
         assert _parse_rtp_url("rtp://224.0.0.1:5004") == ("224.0.0.1", 5004, True)
 
+    def test_ipv6_multicast_detected(self) -> None:
+        assert _parse_rtp_url("rtp://[ff15::1]:5004") == ("ff15::1", 5004, True)
+
     def test_multicast_at_upper_boundary(self) -> None:
         assert _parse_rtp_url("rtp://239.255.255.255:5004") == (
             "239.255.255.255",
@@ -473,6 +476,11 @@ class TestGetSourceLabel:
         assert "unicast" in label
         assert "H264" in label
 
+    @pytest.mark.parametrize("url", ["rtp://0.0.0.0:70000", "rtp://[::1:5004"])
+    def test_an_unreadable_url_is_labelled_not_raised(self, url: str) -> None:
+        """Startup labels the source before building it; a raise there stops the station."""
+        assert RtpInput.get_source_label({"rtp_url": url}) == f"RTP {url}"
+
 
 class TestRtpInterfacePin:
     @pytest.fixture(autouse=True)
@@ -547,8 +555,9 @@ class TestRtpInterfacePin:
             "rtp://[::]:5004",
             "rtp://127.0.0.1:5004",
             "rtp://232.1.1.1:4000",
+            "rtp://[ff15::1]:5004",
         ],
-        ids=["pinned-address", "wildcard", "ipv6-wildcard", "loopback", "multicast"],
+        ids=["pinned-address", "wildcard", "ipv6-wildcard", "loopback", "multicast", "ipv6-multicast"],
     )
     def test_a_listen_address_the_pin_honours_is_accepted(self, url: str) -> None:
         assert RtpInput.preflight({"rtp_url": url, "video_input_iface": "eth1"}) is None
@@ -566,6 +575,20 @@ class TestRtpInterfacePin:
     @pytest.mark.usefixtures("_owned")
     def test_an_unpinned_listener_is_never_refused(self) -> None:
         assert RtpInput.preflight({"rtp_url": "rtp://192.0.2.10:5004", "video_input_iface": ""}) is None
+
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            ("rtp://0.0.0.0:5004", True),
+            ("rtp://[::]:5004", True),
+            ("rtp://192.0.2.10:5004", False),
+            ("rtp://232.1.1.1:4000", False),
+            ("rtp://0.0.0.0:70000", False),
+        ],
+        ids=["wildcard", "ipv6-wildcard", "listen-address", "multicast", "unreadable"],
+    )
+    def test_only_a_readable_wildcard_receives_on_every_interface(self, url: str, expected: bool) -> None:
+        assert RtpInput.receives_on_every_interface({"rtp_url": url}) is expected
 
     def test_the_pin_is_a_config_field_the_panel_owns(self) -> None:
         field = next(f for f in RtpInput.config_fields() if f.name == "video_input_iface")
@@ -593,20 +616,33 @@ class TestRtpRouteTarget:
 
 
 class TestRtpFollowsTheStation:
-    """A blank pin follows the station interface only where the station's
-    interface means something: the membership, or an address the URL names."""
+    """A blank pin follows the station interface only for a multicast membership:
+    the wildcard and a listen address say where to receive themselves."""
 
     @pytest.mark.parametrize(
         ("url", "own", "expected"),
         [
             ("rtp://239.1.1.1:5004", "", "eth0"),
-            ("rtp://192.0.2.10:5004", "", "eth0"),
+            ("rtp://[ff15::1]:5004", "", "eth0"),
+            ("rtp://192.0.2.10:5004", "", ""),
+            ("rtp://192.0.2.10:5004", "eth1", "eth1"),
             ("rtp://0.0.0.0:5004", "", ""),
             ("rtp://[::]:5004", "", ""),
             ("rtp://0.0.0.0:5004", "eth1", "eth1"),
             ("rtp://127.0.0.1:5004", "eth1", ""),
+            ("rtp://0.0.0.0:70000", "", "eth0"),
         ],
-        ids=["group", "named-address", "wildcard", "ipv6-wildcard", "own-pin-wildcard", "loopback"],
+        ids=[
+            "group",
+            "ipv6-group",
+            "listen-address",
+            "own-pin-listen-address",
+            "wildcard",
+            "ipv6-wildcard",
+            "own-pin-wildcard",
+            "loopback",
+            "unreadable-url-keeps-the-pin",
+        ],
     )
     def test_the_pin_the_listener_runs_with(self, url: str, own: str, expected: str) -> None:
         from openfollow.configuration import AppConfig

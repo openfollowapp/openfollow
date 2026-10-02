@@ -548,6 +548,7 @@ def fake_input_cls(monkeypatch):
             "create_pipeline_raises",
             "create_pipeline_result",
             "create_pipeline_call_count",
+            "preflight_calls",
         )
     }
     monkeypatch.setattr(
@@ -577,7 +578,9 @@ def fake_input_pair(monkeypatch):
                 "create_pipeline_raises",
                 "create_pipeline_result",
                 "create_pipeline_call_count",
+                "preflight_calls",
             )
+            if hasattr(cls, name)
         }
         for cls in (FakeInput, FakeInputAlt)
     }
@@ -5184,6 +5187,20 @@ class TestTheInterfacePinRefusesABuild:
         r.start()
 
         assert FakeInput.preflight_calls == 1
+        assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
+
+    def test_a_check_that_fails_for_another_reason_does_not_dial(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        """An unchecked pin is not a pin: the input waits and retries rather than dial on any interface."""
+        monkeypatch.setattr(FakeInput, "_refusal", OSError("Too many open files"))
+        FakeInput.create_pipeline_result = FakePipeline()
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+
+        r.play()
+
+        assert FakeInput.create_pipeline_call_count == 0
+        assert r.status_marker.error_message == "the interface pin could not be checked: Too many open files"
         assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
 
     def test_a_check_that_raises_leaves_the_build_to_report(

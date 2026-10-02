@@ -25,7 +25,6 @@ from openfollow.video.inputs._pin import (
     check_video_pin,
     config_pin,
     is_local_destination,
-    is_station_address,
 )
 
 pytestmark = pytest.mark.unit
@@ -472,24 +471,6 @@ def test_a_name_is_local_only_once_it_is_known_to_resolve_here(net: SimpleNamesp
 )
 def test_config_pin_reads_the_input_config(config: dict[str, Any], expected: str) -> None:
     assert config_pin(config) == expected
-
-
-@pytest.mark.parametrize(
-    ("host", "expected"),
-    [
-        ("", False),
-        ("localhost", True),
-        ("127.0.0.1", True),
-        ("::1", True),
-        ("198.51.100.10", True),
-        ("2001:db8::10", True),
-        ("203.0.113.9", False),
-        ("camera.example", False),
-    ],
-)
-def test_is_station_address(net: SimpleNamespace, host: str, expected: bool) -> None:
-    assert is_station_address(host) is expected
-    assert net.lookups == []
 
 
 @pytest.mark.parametrize(

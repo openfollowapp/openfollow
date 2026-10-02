@@ -1353,11 +1353,15 @@ def _video_input_row(cfg: AppConfig) -> dict[str, Any]:
             "editable": False,
             "note": f"Not supported – {name} chooses its own interface" if named else "Not a network input",
         }
-    from openfollow.video.inputs._pin import config_pin
+    from openfollow.net_egress import is_loopback_host
+    from openfollow.video.inputs._pin import config_pin, is_local_destination
 
     config = input_cls.runtime_config(cfg)
     target = input_cls.route_target(config)
-    if input_cls.source_kind is SourceKind.LISTENER and not target:
+    if not is_loopback_host(target) and is_local_destination(target):
+        # Never checked against the pin nor stopped with it: nothing leaves the box.
+        return {**row, "key": "video_input_iface", "address": "This station", "editable": True}
+    if input_cls.receives_on_every_interface(config):
         # A wildcard listener receives on every interface unless pinned itself.
         address = _egress_address(config_pin(config), "", "", unrouted="All interfaces")
         return {**row, "key": "video_input_iface", "address": address, "editable": True, "blank": "all"}

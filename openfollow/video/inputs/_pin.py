@@ -147,14 +147,6 @@ def _is_local(address: str, owners: Mapping[str, str]) -> bool:
     return is_loopback_host(address) or address.split("%")[0] in owners
 
 
-def is_station_address(host: str) -> bool:
-    """Whether *host* is loopback or a literal address of this station; never looks a name up."""
-    if is_loopback_host(host):
-        return True
-    literal = _literal(host)
-    return bool(literal) and _is_local(literal, _own_addresses())
-
-
 def is_local_destination(host: str) -> bool:
     """Whether *host* is this station, as far as is known without a lookup.
 

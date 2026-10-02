@@ -1144,16 +1144,25 @@ class AppRuntimeServices:
             if self._app._rttrpm_server is not None:
                 self._app._rttrpm_server.stop()
 
-        def _video_pin() -> str:
-            # What the running input is built from: the station's for a blank
-            # pin, nothing where no pin governs the connection.
+        def _video_runtime() -> tuple[str, str]:
+            # The pin the running input is built from (the station's for a
+            # blank pin, nothing where none governs it) and the host it reaches.
             from openfollow.video.inputs import get_input_class
             from openfollow.video.inputs._pin import config_pin
 
             input_cls = get_input_class(self._app._config.video_source_type)
             if input_cls is None or not input_cls.pins_interface:
-                return ""
-            return config_pin(input_cls.runtime_config(self._app._config))
+                return "", ""
+            config = input_cls.runtime_config(self._app._config)
+            return config_pin(config), input_cls.route_target(config)
+
+        def _video_pin() -> str:
+            return _video_runtime()[0]
+
+        def _video_is_local() -> bool:
+            from openfollow.video.inputs._pin import is_local_destination
+
+            return is_local_destination(_video_runtime()[1])
 
         def _video_pinned() -> bool:
             # Nothing pinned at all leaves the camera to the routing table: nothing to follow.
@@ -1163,12 +1172,17 @@ class AppRuntimeServices:
             receiver = self._app._video_receiver
             return receiver.pinned_to if receiver is not None else None
 
-        def _apply_video(_address: str) -> None:
+        def _apply_video(address: str) -> None:
+            receiver = self._app._video_receiver
+            # A source on this station kept running through the outage.
+            if receiver is not None and receiver.pinned_to == address and _video_is_local():
+                return
             self.swap_video(self._app._config)
 
         def _suspend_video() -> None:
             receiver = self._app._video_receiver
-            if receiver is not None:
+            # Traffic to this station never leaves the box, so no outage stops it.
+            if receiver is not None and not _video_is_local():
                 receiver.release_for_pin(f"{_video_pin()} has no address")
 
         def _rttrpm_pinned() -> bool:

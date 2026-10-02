@@ -47,11 +47,9 @@ def _parse_rtp_url(url: str) -> tuple[str, int, bool]:
     host = parsed.hostname or "0.0.0.0"
     port = parsed.port or 5004
 
-    # RFC 5771: 224.0.0.0/4  →  first octet 224–239
     try:
-        first_octet = int(host.split(".")[0])
-        is_multicast = 224 <= first_octet <= 239
-    except (ValueError, IndexError):
+        is_multicast = ipaddress.ip_address(host).is_multicast
+    except ValueError:
         is_multicast = False
 
     return host, port, is_multicast
@@ -105,13 +103,25 @@ class RtpInput(VideoInputBase):
         return "" if _is_wildcard(address) else address
 
     @classmethod
+    def receives_on_every_interface(cls, config: dict[str, Any]) -> bool:
+        try:
+            address, _port, _is_multicast = _parse_rtp_url(str(config.get("rtp_url", "") or ""))
+        except ValueError:
+            return False
+        return _is_wildcard(address)
+
+    @classmethod
     def uses_interface(cls, config: dict[str, Any], *, followed: bool) -> bool:
-        target = cls.route_target(config)
-        if not target:
-            # The wildcard receives on every interface; only a pin of its own narrows it.
-            return not followed
-        # A listen address is always this station's own, so only loopback needs no interface.
-        return not is_loopback_host(target)
+        try:
+            address, _port, is_multicast = _parse_rtp_url(str(config.get("rtp_url", "") or ""))
+        except ValueError:
+            # Nothing is received from a URL the build cannot read; the pin stays.
+            return True
+        if is_multicast:
+            return True
+        # The wildcard and a listen address both name where to receive; only a
+        # pin of the input's own narrows or checks them.
+        return not followed and not is_loopback_host(address)
 
     @classmethod
     def config_fields(cls) -> list[ConfigField]:
@@ -352,6 +362,9 @@ class RtpInput(VideoInputBase):
     def get_source_label(cls, config: dict[str, Any]) -> str:
         url = config.get("rtp_url", "rtp://0.0.0.0:5004")
         encoding = config.get("rtp_encoding", "H264").upper()
-        address, port, is_multicast = _parse_rtp_url(url)
+        try:
+            address, port, is_multicast = _parse_rtp_url(url)
+        except ValueError:
+            return f"RTP {url}"
         mode = "mcast" if is_multicast else "unicast"
         return f"RTP {address}:{port} {encoding} ({mode})"

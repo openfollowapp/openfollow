@@ -577,10 +577,13 @@ class GstNativeSinkReceiver:
             return
         try:
             refusal = self._input.__class__.preflight(self._input_config)
-        except Exception as e:
+        except ValueError as e:
             # The build reports a URL the check cannot read, in the element's own words.
-            logger.warning("%s interface check failed: %s", self._input.display_name, e)
+            logger.warning("%s interface check could not read the URL: %s", self._input.display_name, e)
             refusal = None
+        except Exception as e:  # noqa: BLE001 - an unchecked pin must not dial
+            logger.exception("%s interface check failed", self._input.display_name)
+            refusal = PinRefusal(VideoFailure.UNKNOWN, f"the interface pin could not be checked: {e}")
         if refusal is not None:
             # Nothing is built, so nothing leaves on another interface; the
             # caller schedules the retry.

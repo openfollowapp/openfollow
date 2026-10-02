@@ -2438,10 +2438,9 @@ def test_a_blank_video_pin_is_followed_through_the_station(monkeypatch) -> None:
     ("source", "field", "url"),
     [
         ("srt", "srt_host", "srt://127.0.0.1:5000"),
-        ("rtsp", "rtsp_url", "rtsp://192.168.1.5:8554/relay"),
         ("rtp", "rtp_url", "rtp://0.0.0.0:5004"),
     ],
-    ids=["srt-loopback", "rtsp-own-address", "rtp-wildcard"],
+    ids=["srt-loopback", "rtp-wildcard"],
 )
 def test_an_input_no_followed_pin_governs_is_not_a_plane(monkeypatch, source: str, field: str, url: str) -> None:
     """Its traffic never touches the station interface, so that interface going
@@ -2454,6 +2453,56 @@ def test_an_input_no_followed_pin_governs_is_not_a_plane(monkeypatch, source: st
     cfg.psn_source_iface = "eth0"
     plane = _video_plane(services, _RecordingVideoReceiver())
     assert plane.enabled() is False
+
+
+def _local_source_plane(monkeypatch, services, pin: str, receiver):  # noqa: ANN001
+    cfg = services._app._config
+    cfg.video_source_type = "rtsp"
+    cfg.rtsp_url = "rtsp://192.168.1.5:8554/relay"
+    cfg.psn_source_iface = "eth0"
+    cfg.video_input_iface = pin
+    swaps: list[object] = []
+    monkeypatch.setattr(services, "swap_video", swaps.append)
+    return _video_plane(services, receiver), swaps
+
+
+def test_a_source_at_the_pinned_interfaces_own_address_is_rebuilt_when_it_returns(monkeypatch) -> None:
+    """Whether the pin governs the input must not change with the addresses: a
+    plane that switched itself off once its source was stopped never rebuilt it."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    receiver = _RecordingVideoReceiver(pinned_to="192.168.1.5")
+    plane, swaps = _local_source_plane(monkeypatch, services, "", receiver)
+    assert plane.enabled() is True
+
+    _fake_ifaces(monkeypatch, {})
+    assert plane.enabled() is True
+    plane.suspend()
+    # Its address went with the interface, so there is nothing left to receive from.
+    assert receiver.released == ["eth0 has no address"]
+
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    assert plane.enabled() is True
+    plane.apply("192.168.1.5")
+    assert len(swaps) == 1
+
+
+def test_a_source_on_this_station_outlives_another_interface(monkeypatch) -> None:
+    """Its traffic never leaves the box: the pinned interface going away neither stops nor rebuilds it."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    receiver = _RecordingVideoReceiver(pinned_to="10.0.0.9")
+    plane, swaps = _local_source_plane(monkeypatch, services, "eth1", receiver)
+
+    plane.suspend()
+    assert receiver.released == []
+
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+    plane.apply("10.0.0.9")
+    assert swaps == []
+    # A different address is a different binding: rebuilt.
+    plane.apply("10.0.0.10")
+    assert len(swaps) == 1
 
 
 def test_video_input_plane_reports_what_the_input_was_built_for(monkeypatch) -> None:

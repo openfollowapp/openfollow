@@ -18,7 +18,7 @@ import os
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -682,6 +682,11 @@ class PersonDetector:
         return float(self._config.confidence)
 
     @property
+    def grace_s(self) -> float:
+        """Seconds a lost track coasts before the tracker drops it."""
+        return self._config.grace_period_ms / 1000.0
+
+    @property
     def tracked_detection(self) -> DetectionBox | None:
         """Return the detection for the currently pinned person, or *None*.
 
@@ -694,7 +699,8 @@ class PersonDetector:
         within the re-acquire gate (the old target has left the frame).
         """
         now = time.monotonic()
-        grace_s = self._config.grace_period_ms / 1000.0
+        grace_s = self.grace_s
+        interval_s = self._config.interval_ms / 1000.0
 
         # Snapshot shared state under lock to avoid races with detector thread
         with self._track_lock:
@@ -702,6 +708,7 @@ class PersonDetector:
             tracked = self._tracked
             results = self._results
             last_center = self._last_pinned_center
+            last_track_t = self._last_track_t
 
         # Sticky-by-track_id while the pinned person's track is still alive.
         if pinned_id is not None:
@@ -710,13 +717,17 @@ class PersonDetector:
                     if now - tp.last_seen <= grace_s:
                         with self._track_lock:
                             self._last_pinned_center = self._box_center(tp.box)
-                        return tp.box
+                        # Aged live, so a detector that stops stepping ages its
+                        # last box too; one interval is the normal gap between matches.
+                        age_s = max(tp.box.age_s, now - tp.last_seen - interval_s)
+                        return tp.box if age_s == tp.box.age_s else replace(tp.box, age_s=age_s)
                     # Grace period expired – release pin
                     break
             with self._track_lock:
                 self._pinned_id = None
 
-        if not results:
+        # Results older than the grace period are a stalled detector, not people.
+        if not results or (last_track_t is not None and now - last_track_t > grace_s):
             return None
 
         # Re-acquire: prefer the detection nearest the last-followed centre so a

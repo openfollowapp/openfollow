@@ -310,6 +310,7 @@ class _StubDetector:
     def __init__(self, detection) -> None:  # noqa: ANN001
         self.tracked_detection = detection
         self.confidence_threshold = 0.2
+        self.grace_s = 0.5
 
 
 @pytest.mark.parametrize("offsets", OFFSET_CASES)

@@ -185,9 +185,8 @@ def _write_status(marker: Any, state: DetectionPinState, status: float) -> None:
 def _release_status(app: Any, marker_id: int, state: DetectionPinState) -> None:
     """Hand a marker the pin stops driving back to full validity.
 
-    ``set_status`` stands until overwritten, so a marker that leaves the replace
-    pin (detection off, mode switch, another marker pinned, no longer controlled)
-    would otherwise keep advertising the last detection's validity forever.
+    Runs on every such path: detection off, no detector, mode switch, another
+    marker pinned, marker no longer controlled.
     """
     if state.status is None:
         return
@@ -316,6 +315,8 @@ def apply_detection_pin(
     pin_state.attached_marker_id = None
 
     if person_detector is None:
+        # No detector: the operator drives the marker, so it is fully valid.
+        _release_status(app, marker.marker_id, pin_state)
         return
 
     best = person_detector.tracked_detection
@@ -328,6 +329,8 @@ def apply_detection_pin(
 
     w, h = app._video_receiver.resolution
     if w <= 0 or h <= 0:
+        # No feed to place the person on: detection vouches for nothing.
+        _write_status(marker, pin_state, 0.0)
         return
 
     # The tracked person is the attached box; the overlay paints it in the
@@ -353,11 +356,13 @@ def apply_detection_pin(
     world = unproject_to_plane(params, screen_pt, float(w), float(h), plane_z)
 
     if not np.all(np.isfinite(world[0])):
+        _write_status(marker, pin_state, 0.0)
         return
 
     # unproject_to_plane returns PSN-absolute world coords (canonical marker.pos frame).
     smooth_x, smooth_y = _advance_smoothing(pin_state, float(world[0, 0]), float(world[0, 1]), cfg, dt)
     marker.set_pos(smooth_x, smooth_y, marker.pos[2])
+    # Threshold and grace come from the detector, which drains config on its own cadence.
     _write_status(
         marker,
         pin_state,
@@ -365,7 +370,7 @@ def apply_detection_pin(
             best.confidence,
             person_detector.confidence_threshold,
             age_s=best.age_s,
-            grace_s=det.grace_period_ms / 1000.0,
+            grace_s=person_detector.grace_s,
         ),
     )
 
@@ -394,6 +399,10 @@ def _apply_assist_all(
     target_ids = set(app._controlled_ids)
     _prune_manual_markers(app, keep=target_ids)
     _prune_pin_states(app, keep=target_ids)
+    # The operator's anchor drives every assist output, so a state carried over
+    # from replace mode hands its validity back before any early exit below.
+    for mid, state in app._detection_pin_states.items():
+        _release_status(app, mid, state)
     if not target_ids:
         return
 
@@ -445,9 +454,6 @@ def _apply_assist_all(
             continue
         anchor = get_or_create_manual_marker(app, mid)
         state = _get_pin_state(app, mid)
-        # The operator's anchor always drives an assist output, so it is fully
-        # valid; a state carried over from replace mode still holds that pin's view.
-        _release_status(app, mid, state)
         manual_x, manual_y, manual_z = anchor.pos
         plane_z = cfg.grid.z_offset if use_bottom else manual_z
         _assist_one(

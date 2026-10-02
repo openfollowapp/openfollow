@@ -60,9 +60,10 @@ class _StubDetection:
 
 
 class _StubDetector:
-    def __init__(self, detection, *, confidence_threshold: float = 0.2) -> None:  # noqa: ANN001
+    def __init__(self, detection, *, confidence_threshold: float = 0.2, grace_s: float = 0.5) -> None:  # noqa: ANN001
         self.tracked_detection = detection
         self.confidence_threshold = confidence_threshold
+        self.grace_s = grace_s
 
 
 class _StubCamera:
@@ -921,6 +922,7 @@ def test_replace_mode_does_not_read_detections(monkeypatch) -> None:
         def __init__(self, tracked: _StubDetection) -> None:
             self.tracked_detection = tracked
             self.confidence_threshold = 0.2
+            self.grace_s = 0.5
 
         @property
         def detections(self):  # noqa: ANN202
@@ -1285,7 +1287,18 @@ def test_replace_publishes_invalid_when_nobody_is_tracked(monkeypatch) -> None:
     assert app._detection_pin_states[0].status == 0.0
 
 
-def test_replace_holds_the_status_when_the_detector_is_missing() -> None:
+def test_replace_decays_against_the_detectors_grace_window_not_the_configs(monkeypatch) -> None:
+    """The worker drains config on its own cadence, so the decay follows the
+    grace window the tracker is actually coasting on."""
+    app = _make_app(detection_cfg=_status_cfg(grace_period_ms=500), resolution=(1000, 1000))
+    marker = app._server.get_marker(0)
+
+    _run(app, _StubDetector(_tracked(0.6, age_s=0.25), grace_s=1.0), monkeypatch, unproject=_linear_unproject)
+
+    assert marker.status == pytest.approx(0.75 * 0.75)
+
+
+def test_replace_leaves_an_external_status_alone_when_the_detector_is_missing() -> None:
     app = _make_app(detection_cfg=_status_cfg(), resolution=(1000, 1000))
     marker = app._server.get_marker(0)
     marker.set_status(0.4)
@@ -1296,17 +1309,30 @@ def test_replace_holds_the_status_when_the_detector_is_missing() -> None:
     assert app._detection_pin_states[0].status is None
 
 
-def test_replace_holds_the_status_when_the_resolution_is_unknown() -> None:
+def test_replace_restores_full_validity_when_the_detector_goes_missing(monkeypatch) -> None:
+    app = _make_app(detection_cfg=_status_cfg(), resolution=(1000, 1000))
+    marker = app._server.get_marker(0)
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+    assert marker.status == pytest.approx(0.75)
+
+    _run(app, None)
+
+    assert marker.status == 1.0
+    assert app._detection_pin_states[0].status is None
+
+
+def test_replace_writes_invalid_when_the_resolution_is_unknown() -> None:
     app = _make_app(detection_cfg=_status_cfg(), resolution=(0, 0))
     marker = app._server.get_marker(0)
     marker.set_status(0.4)
 
     _run(app, _StubDetector(_tracked(0.6)))
 
-    assert marker.status == pytest.approx(0.4)
+    assert marker.status == 0.0
+    assert app._detection_pin_states[0].status == 0.0
 
 
-def test_replace_holds_the_status_when_the_pin_point_does_not_unproject(monkeypatch) -> None:
+def test_replace_writes_invalid_when_the_pin_point_does_not_unproject(monkeypatch) -> None:
     app = _make_app(detection_cfg=_status_cfg(), resolution=(1000, 1000))
     marker = app._server.get_marker(0)
     marker.set_status(0.4)
@@ -1316,7 +1342,8 @@ def test_replace_holds_the_status_when_the_pin_point_does_not_unproject(monkeypa
 
     _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_nan)
 
-    assert marker.status == pytest.approx(0.4)
+    assert marker.status == 0.0
+    assert app._detection_pin_states[0].status == 0.0
 
 
 def test_turning_detection_off_restores_full_validity(monkeypatch) -> None:
@@ -1384,6 +1411,28 @@ def test_switching_to_assist_restores_full_validity(monkeypatch) -> None:
     assert m1.status == pytest.approx(0.75)
 
     app._config.detection = _assist_cfg()
+    _run(app, _AssistDetector([]), monkeypatch, unproject=_linear_unproject)
+
+    assert m1.status == 1.0
+    assert app._detection_pin_states[1].status is None
+
+
+def test_switching_to_assist_restores_full_validity_without_a_feed(monkeypatch) -> None:
+    """The assist loop exits before driving anything while the feed is down;
+    the release must not wait behind that exit."""
+    m1 = _StubMarker(1)
+    app = _make_app(
+        detection_cfg=_status_cfg(),
+        resolution=(1000, 1000),
+        server=_MultiMarkerServer({1: m1}),
+        selected_id=1,
+        controlled_ids=[1],
+    )
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+    assert m1.status == pytest.approx(0.75)
+
+    app._config.detection = _assist_cfg()
+    app._video_receiver.resolution = (0, 0)
     _run(app, _AssistDetector([]), monkeypatch, unproject=_linear_unproject)
 
     assert m1.status == 1.0

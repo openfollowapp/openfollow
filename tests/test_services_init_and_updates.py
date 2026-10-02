@@ -3689,7 +3689,22 @@ class TestSwapVideo:
             "rtsp_url": "rtsp://new/y",
             "rtsp_user": "",
             "rtsp_password": "",
+            "video_input_iface": "",
         }
+
+    def test_a_blank_video_pin_is_swapped_in_as_the_station_interface(
+        self,
+        services: AppRuntimeServices,
+    ) -> None:
+        from openfollow.configuration import AppConfig
+
+        receiver = _FakeReceiver(source_type="srt", input_config={"srt_host": "srt://old:5000"})
+        services._app._video_receiver = receiver  # type: ignore[assignment]
+
+        services.swap_video(AppConfig(video_source_type="srt", psn_source_iface="eth0"))
+
+        ((_type, called_config),) = receiver.swap_calls
+        assert called_config["video_input_iface"] == "eth0"
 
     def test_failure_attempts_rollback_to_prior_plugin_and_config(
         self,
@@ -3717,7 +3732,7 @@ class TestSwapVideo:
         # First call: forward swap with new cfg.
         assert receiver.swap_calls[0] == (
             "srt",
-            {"srt_host": "srt://10.0.0.5:5000", "srt_passphrase": ""},
+            {"srt_host": "srt://10.0.0.5:5000", "srt_passphrase": "", "video_input_iface": ""},
         )
         # Second call: rollback to prior plugin/config.
         assert receiver.swap_calls[1] == (

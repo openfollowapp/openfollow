@@ -242,6 +242,8 @@ class OpenFollowApp:
         self._canvas: GtkNativeSinkWindow | None = None
         self._camera: Camera | None = None
         self._video_receiver: GstNativeSinkReceiver | None = None
+        # A live video swap failed and is retried on the next config pass.
+        self._video_swap_owed = False
         self._video_logged: bool = False
         self._video_aspect: tuple[int, int] | None = None
         self._server: PsnServer | None = None

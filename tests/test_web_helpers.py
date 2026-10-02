@@ -1202,6 +1202,22 @@ def test_apply_import_data_preserves_osc_listen_iface() -> None:
     assert new.osc.port == 9001  # other OSC fields still import
 
 
+def test_the_video_input_pin_never_leaves_this_station() -> None:
+    """It names a NIC on this box: exported, broadcast or imported it would
+    move another station's camera onto whatever adapter shares the name."""
+    from openfollow.web.routes import _apply_import_data
+
+    cfg = AppConfig(video_source_type="srt", video_input_iface="eth1")
+    assert "video_input_iface" not in _config_dict_redacted(cfg)
+    scrubbed = strip_device_local_fields(
+        "video_source", {"srt_host": "srt://192.0.2.20:5000", "video_input_iface": "eth1"}
+    )
+    assert scrubbed == {"srt_host": "srt://192.0.2.20:5000"}
+
+    new = _apply_import_data(cfg, {"video_source_type": "srt", "video_input_iface": "eth9"})
+    assert new.video_input_iface == "eth1"
+
+
 def test_apply_import_data_preserves_testpattern_selected_media() -> None:
     from openfollow.web.routes import _apply_import_data
 

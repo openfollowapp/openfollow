@@ -1805,6 +1805,17 @@ def test_app_config_coerces_non_str_psn_source_iface() -> None:
     assert cfg.psn_source_iface == ""
 
 
+@pytest.mark.parametrize(("raw", "expected"), [(None, ""), (5, ""), (True, ""), ([], ""), ("  eth1  ", "eth1")])
+def test_app_config_normalises_video_input_iface(raw: object, expected: str) -> None:
+    assert AppConfig(video_input_iface=raw).video_input_iface == expected  # type: ignore[arg-type]
+
+
+def test_video_input_iface_survives_a_toml_round_trip(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    save_config(AppConfig(video_input_iface="eth0.13"), path)
+    assert load_config(path).video_input_iface == "eth0.13"
+
+
 def test_app_config_strips_web_pin_at_construction() -> None:
     """``web_pin`` is normalised on load so a hand-edited TOML matches the
     web-save path (which strips before persisting)."""
@@ -1859,6 +1870,137 @@ def test_apply_runtime_swaps_video_on_plugin_field_change() -> None:
     assert app._config.srt_host == "srt://192.168.0.10:1600"
     assert app._web_commands.restart_requested is False
     assert app._runtime_services.video_swaps == [new_config]
+
+
+@pytest.mark.parametrize("station", ["eth1", ""], ids=["moved", "auto-detect"])
+def test_a_station_change_rebuilds_a_video_input_that_follows_it(monkeypatch, station: str) -> None:
+    """The station row is committed before the video block runs; compared
+    afterwards, both sides would resolve the new station and nothing would move."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+    app = _DummyApp(AppConfig(video_source_type="srt", srt_host="srt://203.0.113.20:5000", psn_source_iface="eth0"))
+    new_config = AppConfig(video_source_type="srt", srt_host="srt://203.0.113.20:5000", psn_source_iface=station)
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._runtime_services.video_swaps == [new_config]
+
+
+class _RejectingStationServices(_DummyRuntimeServices):
+    def apply_psn_source_ip_change(self, new_source_ip: str, *, new_mcast_ip: object = None) -> None:
+        raise OSError("simulated rebind failure")
+
+
+def _two_interfaces(monkeypatch) -> None:  # noqa: ANN001
+    import socket as _socket
+    from types import SimpleNamespace
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+
+
+def test_a_rejected_station_change_leaves_the_video_input_where_it_is(monkeypatch) -> None:
+    """Rolled back, the station is still eth0: pinning the video to eth1 would
+    disagree with the config, and every retry would rebuild it again."""
+    _two_interfaces(monkeypatch)
+    fields = {"video_source_type": "srt", "srt_host": "srt://203.0.113.20:5000"}
+    app = _DummyApp(AppConfig(psn_source_iface="eth0", **fields))
+    app._runtime_services = _RejectingStationServices()
+    new_config = AppConfig(psn_source_iface="eth1", **fields)
+
+    apply_runtime_config_changes(app, new_config)
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.psn_source_iface == "eth0"
+    assert app._runtime_services.video_swaps == []
+
+
+def test_a_video_change_saved_with_a_rejected_station_change_keeps_the_station(monkeypatch) -> None:
+    _two_interfaces(monkeypatch)
+    app = _DummyApp(AppConfig(psn_source_iface="eth0", video_source_type="srt", srt_host="srt://203.0.113.20:5000"))
+    app._runtime_services = _RejectingStationServices()
+
+    apply_runtime_config_changes(
+        app, AppConfig(psn_source_iface="eth1", video_source_type="srt", srt_host="srt://203.0.113.21:5000")
+    )
+
+    [swapped] = app._runtime_services.video_swaps
+    assert swapped.srt_host == "srt://203.0.113.21:5000"
+    assert swapped.psn_source_iface == "eth0"
+
+
+def test_a_failed_video_swap_after_a_station_change_is_retried(monkeypatch) -> None:
+    """The station change is committed, so the configs alone no longer differ on
+    the next pass; the swap is retried until it succeeds, then no more."""
+    _two_interfaces(monkeypatch)
+
+    class _FailingOnce(_DummyRuntimeServices):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempts = 0
+
+        def swap_video(self, new_cfg: AppConfig) -> None:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("pipeline would not stop")
+            super().swap_video(new_cfg)
+
+    fields = {"video_source_type": "srt", "srt_host": "srt://203.0.113.20:5000"}
+    app = _DummyApp(AppConfig(psn_source_iface="eth0", **fields))
+    app._runtime_services = _FailingOnce()
+    new_config = AppConfig(psn_source_iface="eth1", **fields)
+
+    apply_runtime_config_changes(app, new_config)
+    assert app._config.psn_source_iface == "eth1"
+    assert app._runtime_services.video_swaps == []
+
+    apply_runtime_config_changes(app, new_config)
+    [swapped] = app._runtime_services.video_swaps
+    assert swapped.psn_source_iface == "eth1"
+
+    apply_runtime_config_changes(app, new_config)
+    assert app._runtime_services.attempts == 2
+
+
+def test_a_station_change_leaves_a_video_input_with_its_own_pin(monkeypatch) -> None:
+    import socket as _socket
+    from types import SimpleNamespace
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+    fields = {"video_source_type": "srt", "srt_host": "srt://203.0.113.20:5000", "video_input_iface": "eth1"}
+    app = _DummyApp(AppConfig(psn_source_iface="eth0", **fields))
+
+    apply_runtime_config_changes(app, AppConfig(psn_source_iface="eth1", **fields))
+
+    assert app._runtime_services.video_swaps == []
 
 
 def test_apply_runtime_swaps_video_on_source_type_change() -> None:

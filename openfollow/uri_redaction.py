@@ -147,14 +147,28 @@ def strip_uri_userinfo(uri: str) -> str:
 def strip_uri_query_key(uri: str, key: str) -> str:
     """Return ``uri`` without ``key`` (case-insensitive) in its query string.
 
-    Every surviving parameter is preserved byte for byte – see ``_split_query``.
+    The query ends at the fragment, as an element parses it; every surviving
+    parameter is preserved byte for byte – see ``_split_query``.
     """
-    head, query, hash_sep, fragment = _split_query(uri)
-    if not query:
+    body, hash_sep, fragment = uri.partition("#")
+    head, sep, query = body.partition("?")
+    if not sep:
         return uri
     kept = [p for p in query.split("&") if p.partition("=")[0].lower() != key.lower()]
     new_query = f"?{'&'.join(kept)}" if kept else ""
     return f"{head}{new_query}{hash_sep}{fragment}"
+
+
+def set_uri_query_key(uri: str, key: str, value: str) -> str:
+    """Return ``uri`` with ``key=value`` as its only ``key``, in the query, never the fragment.
+
+    *value* is inserted as given, so the caller encodes it.
+    """
+    body, hash_sep, fragment = strip_uri_query_key(uri, key).partition("#")
+    head, _, query = body.partition("?")
+    params = [p for p in query.split("&") if p]
+    params.append(f"{key}={value}")
+    return f"{head}?{'&'.join(params)}{hash_sep}{fragment}"
 
 
 def redact_uri(uri: str) -> str:

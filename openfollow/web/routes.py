@@ -1067,6 +1067,7 @@ _INTERFACE_ASSIGNMENT_TARGETS: dict[str, tuple[str | None, str]] = {
     "otp_output.source_iface": ("otp_output", "source_iface"),
     "rttrpm_output.source_iface": ("rttrpm_output", "source_iface"),
     "osc.listen_iface": ("osc", "listen_iface"),
+    "video_input_iface": (None, "video_input_iface"),
     "web_bind_iface": (None, "web_bind_iface"),
 }
 
@@ -1101,7 +1102,7 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     # silently revert its Media Gallery to the Stage default. The video-source
     # form save path applies this field, so the section broadcast/receive must
     # strip it (matching the full export/import redaction).
-    "video_source": frozenset({"testpattern_selected_media"}),
+    "video_source": frozenset({"testpattern_selected_media", "video_input_iface"}),
     "rttrpm_output": frozenset({"source_iface"}),
 }
 
@@ -1294,6 +1295,80 @@ def _osc_membership_address(
     return plane_address(pin)
 
 
+def _plane_address(pin: str, station_iface: str) -> str:
+    """Where a plane binds: the resolved address, or which interface is down."""
+    from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
+
+    resolved, status = resolve_plane_source_ip(pin, station_iface)
+    if status == "down":
+        return f"{plane_source_iface(pin, station_iface)} is down"
+    return resolved
+
+
+def _route_pick(host: str) -> str:
+    """The interface and address the Pi would use for *host* right now."""
+    import ipaddress
+
+    from openfollow.net_utils import get_iface_for_ip, route_source
+
+    try:
+        address = str(ipaddress.ip_address(host))
+    except ValueError:
+        # Looking a name up would hold the page; the element resolves it itself.
+        return "Picked when connecting"
+    source = route_source(address)
+    if source is None:
+        return "No route"
+    iface = get_iface_for_ip(source)
+    return f"{iface} – {source}" if iface else source
+
+
+def _egress_address(pin: str, host: str, station_iface: str, *, unrouted: str = "Per routing table") -> str:
+    """The address cell for a row that sends to *host*; *unrouted* when there is no host and no pin."""
+    from openfollow.net_egress import is_loopback_host
+    from openfollow.net_utils import plane_source_iface
+
+    if host and is_loopback_host(host):
+        return "Loopback"
+    if plane_source_iface(pin, station_iface):
+        return _plane_address(pin, station_iface)
+    # Nothing pinned anywhere: show where the Pi sends it now, not that it chooses.
+    return _route_pick(host) if host else unrouted
+
+
+def _video_input_row(cfg: AppConfig) -> dict[str, Any]:
+    """The active video input's row; read-only with a reason when it cannot be pinned."""
+    from openfollow.video.failure import SourceKind
+    from openfollow.video.inputs import get_input_class
+
+    input_cls = get_input_class(cfg.video_source_type)
+    name = input_cls.display_name if input_cls is not None else cfg.video_source_type
+    row: dict[str, Any] = {"label": f"Video input ({name})", "value": cfg.video_input_iface, "blank": "station"}
+    if input_cls is None or not input_cls.pins_interface:
+        named = input_cls is not None and input_cls.source_kind is SourceKind.NAMED
+        return {
+            **row,
+            "key": "",
+            "address": "",
+            "editable": False,
+            "note": f"Not supported – {name} chooses its own interface" if named else "Not a network input",
+        }
+    from openfollow.net_egress import is_loopback_host
+    from openfollow.video.inputs._pin import config_pin, is_local_destination
+
+    config = input_cls.runtime_config(cfg)
+    target = input_cls.route_target(config)
+    if not is_loopback_host(target) and is_local_destination(target):
+        # Never checked against the pin nor stopped with it: nothing leaves the box.
+        return {**row, "key": "video_input_iface", "address": "This station", "editable": True}
+    if input_cls.receives_on_every_interface(config):
+        # A wildcard listener receives on every interface unless pinned itself.
+        address = _egress_address(config_pin(config), "", "", unrouted="All interfaces")
+        return {**row, "key": "video_input_iface", "address": address, "editable": True, "blank": "all"}
+    address = _egress_address(config_pin(config), target, "")
+    return {**row, "key": "video_input_iface", "address": address, "editable": True}
+
+
 def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | None = None) -> list[dict[str, Any]]:
     """Rows for the Network Interface Assignment panel, in render order.
 
@@ -1310,30 +1385,12 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
     owns, so giving them their own dropdown would imply an independence they
     don't have.
     """
-    from openfollow.net_egress import is_loopback_host
-    from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
-
-    def _plane_address(pin: str, station_iface: str) -> str:
-        resolved, status = resolve_plane_source_ip(pin, station_iface)
-        if status == "down":
-            return f"{plane_source_iface(pin, station_iface)} is down"
-        return resolved
-
     resolved = web_bind if web_bind is not None else resolve_web_bind_for(cfg)
     station = cfg.psn_source_iface
     station_ip = _plane_address(station, "")
 
     def _addr(pin: str) -> str:
         return _plane_address(pin, station)
-
-    def _egress_address(pin: str, host: str) -> str:
-        # A sender with nothing configured is routed per destination, so no one
-        # address describes it.
-        if is_loopback_host(host):
-            return "Loopback"
-        if not plane_source_iface(pin, station):
-            return "Per routing table"
-        return _addr(pin)
 
     return [
         {
@@ -1365,7 +1422,7 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
             "key": "rttrpm_output.source_iface",
             "label": "RTTrPM output",
             "value": cfg.rttrpm_output.source_iface,
-            "address": _egress_address(cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host),
+            "address": _egress_address(cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host, station),
             "editable": True,
             "blank": "station",
             "experimental": True,
@@ -1388,12 +1445,13 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
                 "key": _dest_pin_key(dest.id),
                 "label": f"OSC to {dest.name or f'{dest.host}:{dest.port}'}",
                 "value": dest.source_iface,
-                "address": _egress_address(dest.source_iface, dest.host),
+                "address": _egress_address(dest.source_iface, dest.host, station),
                 "editable": True,
                 "blank": "station",
             }
             for dest in cfg.osc_destinations.destinations
         ),
+        _video_input_row(cfg),
         {
             "key": "",
             "label": "Discovery / marker sync",
@@ -2877,6 +2935,7 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     # ``testpattern_selected_media`` is a device-local gallery item id; media
     # files never travel, so a foreign id would just dangle on another host.
     d.pop("testpattern_selected_media", None)
+    d.pop("video_input_iface", None)
     # A NIC name on this box: on a peer it would repin OTP to whatever shares it.
     d["otp_output"].pop("source_iface", None)
     # ``osc.listen_iface`` names a NIC on this box. Carried to a station that

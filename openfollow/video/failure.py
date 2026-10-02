@@ -66,6 +66,9 @@ class VideoFailure(Enum):
     STALLED = "stalled"
     DEVICE_UNAVAILABLE = "device_unavailable"
     UNSUPPORTED_MODE = "unsupported_mode"
+    # The video input's interface pin refused the connection before it was made.
+    INTERFACE_DOWN = "interface_down"
+    WRONG_INTERFACE = "wrong_interface"
     UNKNOWN = "unknown"
 
 
@@ -121,6 +124,8 @@ _CHIPS: dict[VideoFailure, str] = {
     VideoFailure.STALLED: "Stalled",
     VideoFailure.DEVICE_UNAVAILABLE: "Device busy",
     VideoFailure.UNSUPPORTED_MODE: "Unsupported mode",
+    VideoFailure.INTERFACE_DOWN: "Interface down",
+    VideoFailure.WRONG_INTERFACE: "Wrong interface",
     VideoFailure.UNKNOWN: "Failed",
 }
 
@@ -145,6 +150,8 @@ _SENTENCES: dict[VideoFailure, str] = {
     VideoFailure.STALLED: "Video from {where} stopped arriving.",
     VideoFailure.DEVICE_UNAVAILABLE: "{where} is not available - another program may be holding it.",
     VideoFailure.UNSUPPORTED_MODE: "{where} does not offer the format, size or frame rate this station asked for.",
+    VideoFailure.INTERFACE_DOWN: "The interface pinned for video input has no address.",
+    VideoFailure.WRONG_INTERFACE: "{where} is not reached through the interface pinned for video input.",
     VideoFailure.UNKNOWN: "Video from {where} failed for a reason this station does not recognise.",
 }
 
@@ -154,6 +161,7 @@ _SENTENCES: dict[VideoFailure, str] = {
 _NO_DIAL_SENTENCES: dict[VideoFailure, str] = {
     VideoFailure.UNREACHABLE: "No video has arrived from {where}.",
     VideoFailure.NO_DATA: "Data is arriving from {where}, but no video could be decoded from it.",
+    VideoFailure.WRONG_INTERFACE: "{where} listens at an address the interface pinned for video input does not have.",
 }
 
 # One short next step per failure, kept separate from the sentence so the two
@@ -175,6 +183,8 @@ _ACTIONS: dict[VideoFailure, str] = {
     VideoFailure.STALLED: "Check the camera and the network link between it and this station.",
     VideoFailure.DEVICE_UNAVAILABLE: "Close any other program using this device.",
     VideoFailure.UNSUPPORTED_MODE: "Check the settings under Video Source, or download a diagnostics bundle.",
+    VideoFailure.INTERFACE_DOWN: "Check its cable, or change the Video input pin under Network Interface Assignment.",
+    VideoFailure.WRONG_INTERFACE: "Check the camera's address, or pin the interface that reaches it.",
     VideoFailure.UNKNOWN: "Check the settings under Video Source, or download a diagnostics bundle.",
 }
 
@@ -184,6 +194,7 @@ _KIND_ACTIONS: dict[SourceKind, dict[VideoFailure, str]] = {
     SourceKind.LISTENER: {
         VideoFailure.UNREACHABLE: "Check the sender is transmitting to this address and port.",
         VideoFailure.NO_DATA: "Check the sender is transmitting the encoding configured on this station.",
+        VideoFailure.WRONG_INTERFACE: "Set the RTP URL's address to 0.0.0.0, or pin the interface that has it.",
     },
     SourceKind.LOCAL: {
         VideoFailure.UNREACHABLE: "Check the device is connected, and not held by another program.",

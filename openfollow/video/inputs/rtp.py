@@ -4,18 +4,23 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
+from openfollow.net_egress import is_loopback_host
+from openfollow.net_utils import get_iface_ipv4
 from openfollow.video.failure import SourceKind
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
     ReconnectPolicy,
     VideoInputBase,
+    video_input_pin_field,
 )
+from openfollow.video.inputs._pin import PinRefusal, check_listen_address, check_video_pin, config_pin
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +47,19 @@ def _parse_rtp_url(url: str) -> tuple[str, int, bool]:
     host = parsed.hostname or "0.0.0.0"
     port = parsed.port or 5004
 
-    # RFC 5771: 224.0.0.0/4  →  first octet 224–239
     try:
-        first_octet = int(host.split(".")[0])
-        is_multicast = 224 <= first_octet <= 239
-    except (ValueError, IndexError):
+        is_multicast = ipaddress.ip_address(host).is_multicast
+    except ValueError:
         is_multicast = False
 
     return host, port, is_multicast
+
+
+def _is_wildcard(address: str) -> bool:
+    try:
+        return ipaddress.ip_address(address).is_unspecified
+    except ValueError:
+        return False
 
 
 class RtpInput(VideoInputBase):
@@ -59,6 +69,7 @@ class RtpInput(VideoInputBase):
     display_name = "RTP"
     source_element_name = "udpsrc"
     source_kind = SourceKind.LISTENER
+    pins_interface = True
 
     # -- Declarations ---------------------------------------------------------
 
@@ -70,10 +81,54 @@ class RtpInput(VideoInputBase):
     }
 
     @classmethod
+    def preflight(cls, config: dict[str, Any]) -> PinRefusal | None:
+        pin = config_pin(config)
+        refusal = check_video_pin(pin)
+        if refusal is not None or not pin:
+            return refusal
+        address, _port, is_multicast = _parse_rtp_url(str(config.get("rtp_url", "") or ""))
+        if is_multicast or _is_wildcard(address) or is_loopback_host(address):
+            return None
+        # A listen address named in the URL is bound as given, so it must be the pin's.
+        return check_listen_address(pin, address)
+
+    @classmethod
+    def route_target(cls, config: dict[str, Any]) -> str:
+        # A group is joined where its route points; a named local address is
+        # its own interface; the wildcard receives on every interface.
+        try:
+            address, _port, _is_multicast = _parse_rtp_url(str(config.get("rtp_url", "") or ""))
+        except ValueError:
+            return ""
+        return "" if _is_wildcard(address) else address
+
+    @classmethod
+    def receives_on_every_interface(cls, config: dict[str, Any]) -> bool:
+        try:
+            address, _port, _is_multicast = _parse_rtp_url(str(config.get("rtp_url", "") or ""))
+        except ValueError:
+            return False
+        return _is_wildcard(address)
+
+    @classmethod
+    def uses_interface(cls, config: dict[str, Any], *, followed: bool) -> bool:
+        try:
+            address, _port, is_multicast = _parse_rtp_url(str(config.get("rtp_url", "") or ""))
+        except ValueError:
+            # Nothing is received from a URL the build cannot read; the pin stays.
+            return True
+        if is_multicast:
+            return True
+        # The wildcard and a listen address both name where to receive; only a
+        # pin of the input's own narrows or checks them.
+        return not followed and not is_loopback_host(address)
+
+    @classmethod
     def config_fields(cls) -> list[ConfigField]:
         return [
             ConfigField("rtp_url", str, "rtp://0.0.0.0:5004", "RTP URL"),
             ConfigField("rtp_encoding", str, "H264", "RTP Encoding"),
+            video_input_pin_field(),
         ]
 
     @classmethod
@@ -150,11 +205,17 @@ class RtpInput(VideoInputBase):
             raise RuntimeError("udpsrc GStreamer element not found – install gst-plugins-good")
         udpsrc.set_property("port", port)
 
+        pin = config_pin(config)
         if is_multicast:
             udpsrc.set_property("multicast-group", address)
             udpsrc.set_property("auto-multicast", True)
+            if pin:
+                udpsrc.set_property("multicast-iface", pin)
             logger.info("RTP multicast: %s:%d", address, port)
         else:
+            if pin and _is_wildcard(address):
+                # Only what is sent to the pinned interface is received.
+                address = get_iface_ipv4(pin) or address
             udpsrc.set_property("address", address)
             logger.info("RTP unicast: %s:%d", address, port)
 
@@ -301,6 +362,9 @@ class RtpInput(VideoInputBase):
     def get_source_label(cls, config: dict[str, Any]) -> str:
         url = config.get("rtp_url", "rtp://0.0.0.0:5004")
         encoding = config.get("rtp_encoding", "H264").upper()
-        address, port, is_multicast = _parse_rtp_url(url)
+        try:
+            address, port, is_multicast = _parse_rtp_url(url)
+        except ValueError:
+            return f"RTP {url}"
         mode = "mcast" if is_multicast else "unicast"
         return f"RTP {address}:{port} {encoding} ({mode})"

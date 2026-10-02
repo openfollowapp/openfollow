@@ -593,3 +593,39 @@ class TestObserveProgress:
         pipeline = FakePipeline("rtsp-sink")
         pipeline.elements.append(_NoSignals("rtspsrc"))
         RtspInput().observe_progress(pipeline, lambda _phase: None)  # must not raise
+
+
+class TestRtspInterfacePin:
+    """rtspsrc can pin only its multicast membership; the rest is a route check."""
+
+    def test_a_pin_sets_the_multicast_membership(self) -> None:
+        src = TestRtspCredentials()._rtspsrc({"rtsp_url": "rtsp://192.0.2.20/stream", "video_input_iface": "eth1"})
+        assert src.properties["multicast-iface"] == "eth1"
+
+    @pytest.mark.parametrize("config", [{}, {"video_input_iface": ""}], ids=["absent", "blank"])
+    def test_no_membership_pin_without_a_pin(self, config: dict[str, object]) -> None:
+        src = TestRtspCredentials()._rtspsrc({"rtsp_url": "rtsp://192.0.2.20/stream", **config})
+        assert "multicast-iface" not in src.properties
+
+    def test_the_pin_is_a_config_field_the_panel_owns(self) -> None:
+        field = next(f for f in RtspInput.config_fields() if f.name == "video_input_iface")
+        assert field.device_editable is False
+        assert RtspInput.config_fields()[0].name == "rtsp_url"
+        assert RtspInput.pins_interface is True
+
+    def _asked(self, config: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
+        from openfollow.video.inputs import rtsp
+
+        asked: list[tuple] = []
+        monkeypatch.setattr(rtsp, "check_video_pin", lambda *a, **kw: asked.append((a, kw)))
+        RtspInput.preflight(config)
+        return asked
+
+    def test_the_preflight_checks_the_routing_tables_choice(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """rtspsrc's sockets are never bound to a device, on any platform."""
+        asked = self._asked({"rtsp_url": "rtsp://192.0.2.20:8554/stream", "video_input_iface": "eth1"}, monkeypatch)
+        assert asked == [(("eth1", "192.0.2.20", 8554), {"forced_device": False})]
+
+    def test_a_url_with_no_host_checks_only_the_pin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        asked = self._asked({"rtsp_url": "", "video_input_iface": "eth1"}, monkeypatch)
+        assert asked == [(("eth1",), {})]

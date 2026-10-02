@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import copy
 import ipaddress
 import logging
 import math
@@ -2296,6 +2297,9 @@ class AppConfig:
     # so it recovers on its own after the source/network returns (0 = off).
     stall_timeout: float = 3.0
     heal_interval: float = 5.0
+    # Interface the network video inputs (SRT, RTSP, RTP) use, by name. Blank
+    # follows ``psn_source_iface``, like the outputs.
+    video_input_iface: str = ""
 
     # Window
     window_width: int = 1280
@@ -2398,6 +2402,9 @@ class AppConfig:
         if not isinstance(self.web_bind_iface, str):
             self.web_bind_iface = ""
         self.web_bind_iface = self.web_bind_iface.strip()
+        if not isinstance(self.video_input_iface, str):
+            self.video_input_iface = ""
+        self.video_input_iface = self.video_input_iface.strip()
         # Strip ``psn_source_iface`` so whitespace doesn't look like a value
         # change each load and trigger a needless rebind cycle.
         if not isinstance(self.psn_source_iface, str):
@@ -2997,6 +3004,20 @@ def _marker_name_for_runtime(app: OpenFollowApp, marker_id: int) -> str:
     return f"Marker {marker_id}"
 
 
+def _video_config_changed(old_config: AppConfig, new_config: AppConfig) -> bool:
+    """Whether the video input must be rebuilt: plugin-driven via the active
+    source's ``config_changed(old, new)``, which covers ``video_source_type``,
+    per-plugin fields (rtsp_url, srt_host, …) and the station interface a blank
+    pin follows."""
+    from openfollow.video.inputs import get_input_class
+
+    if new_config.video_source_type != old_config.video_source_type:
+        return True
+    input_cls = get_input_class(new_config.video_source_type)
+    # None only for a hand-edited config.toml naming a removed plugin.
+    return input_cls is not None and input_cls.config_changed(old_config, new_config)
+
+
 def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> bool:
     """Apply hot-reload config changes to runtime objects.
 
@@ -3048,6 +3069,10 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # Strip whitespace before compare/store/apply: the web apply path bypasses
     # ``AppConfig.__post_init__``, so a value like ``"236.10.10.10 "`` would
     # otherwise spuriously rebind each load and break the multicast bind.
+    # A blank video pin follows the station interface; the video block below
+    # compares against the one that was in force here.
+    old_station_iface = app._config.psn_source_iface
+
     new_psn_mcast_ip = new_config.psn_mcast_ip.strip()
     new_psn_source_iface = new_config.psn_source_iface.strip()
     psn_iface_changed = new_psn_source_iface != app._config.psn_source_iface
@@ -3173,22 +3198,19 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             app._runtime_services.apply_station_iface_change,
         )
 
-    # Video pipeline live-swap. Change detection is plugin-driven via the
-    # active source's ``config_changed(old, new)`` – covers ``video_source_type``
-    # and per-plugin fields (rtsp_url, srt_host, …). Distinct from the
+    # Video pipeline live-swap, detected above. Distinct from the
     # ``detection`` block below.
     from openfollow.video.inputs import get_input_class
 
-    video_changed = new_config.video_source_type != app._config.video_source_type
-    if not video_changed:
-        input_cls = get_input_class(new_config.video_source_type)
-        # pragma: no branch – every video_source_type written via the
-        # web UI passes through the registry, so input_cls is always
-        # non-None at this point. The False arm guards against a
-        # hand-edited config.toml with a removed plugin.
-        if input_cls is not None:  # pragma: no branch
-            video_changed = input_cls.config_changed(app._config, new_config)
-    if video_changed:
+    # Built from the station interface actually committed above: a rejected
+    # station change must not pin the video to the interface it named.
+    video_config = copy.copy(new_config)
+    video_config.psn_source_iface = app._config.psn_source_iface
+    video_before = copy.copy(app._config)
+    video_before.psn_source_iface = old_station_iface
+    # A failed swap is owed until one succeeds: when only the station interface it
+    # follows changed, that change is committed and the configs alone no longer differ.
+    if _video_config_changed(video_before, video_config) or getattr(app, "_video_swap_owed", False):
         # Snapshot the new plugin's CURRENT (pre-commit) field values so the
         # failure path can restore them. The old plugin's fields aren't
         # snapshotted – the commit loop only writes new-plugin fields.
@@ -3216,10 +3238,12 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                     getattr(new_config, f.name, f.default),
                 )
 
-        if not _apply(
+        swapped = _apply(
             "video_source",
-            lambda: app._runtime_services.swap_video(new_config),
-        ):
+            lambda: app._runtime_services.swap_video(video_config),
+        )
+        app._video_swap_owed = not swapped
+        if not swapped:
             app._config.video_source_type = old_video_source_type
             for name, value in old_field_values.items():
                 setattr(app._config, name, value)

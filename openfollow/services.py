@@ -978,7 +978,7 @@ class AppRuntimeServices:
         from openfollow.video.inputs import get_input_class
 
         input_cls = get_input_class(cfg.video_source_type)
-        input_config = input_cls.get_config_field_values(cfg) if input_cls else {}
+        input_config = input_cls.runtime_config(cfg) if input_cls else {}
 
         receiver = GstNativeSinkReceiver(
             source_type=cfg.video_source_type,
@@ -1087,11 +1087,11 @@ class AppRuntimeServices:
         def _resolver(
             pin_getter: Callable[[], str],
             *,
-            is_station: bool,
+            follows_station: bool,
         ) -> Callable[[], tuple[str, ResolveStatus, str]]:
             def _resolve() -> tuple[str, ResolveStatus, str]:
                 pin = pin_getter()
-                station = "" if is_station else self._app._config.psn_source_iface
+                station = self._app._config.psn_source_iface if follows_station else ""
                 address, status = resolve_plane_source_ip(pin, station)
                 return address, status, plane_source_iface(pin, station)
 
@@ -1144,6 +1144,47 @@ class AppRuntimeServices:
             if self._app._rttrpm_server is not None:
                 self._app._rttrpm_server.stop()
 
+        def _video_runtime() -> tuple[str, str]:
+            # The pin the running input is built from (the station's for a
+            # blank pin, nothing where none governs it) and the host it reaches.
+            from openfollow.video.inputs import get_input_class
+            from openfollow.video.inputs._pin import config_pin
+
+            input_cls = get_input_class(self._app._config.video_source_type)
+            if input_cls is None or not input_cls.pins_interface:
+                return "", ""
+            config = input_cls.runtime_config(self._app._config)
+            return config_pin(config), input_cls.route_target(config)
+
+        def _video_pin() -> str:
+            return _video_runtime()[0]
+
+        def _video_is_local() -> bool:
+            from openfollow.video.inputs._pin import is_local_destination
+
+            return is_local_destination(_video_runtime()[1])
+
+        def _video_pinned() -> bool:
+            # Nothing pinned at all leaves the camera to the routing table: nothing to follow.
+            return bool(_video_pin() and self._app._video_receiver is not None)
+
+        def _current_video() -> str | None:
+            receiver = self._app._video_receiver
+            return receiver.pinned_to if receiver is not None else None
+
+        def _apply_video(address: str) -> None:
+            receiver = self._app._video_receiver
+            # A source on this station kept running through the outage.
+            if receiver is not None and receiver.pinned_to == address and _video_is_local():
+                return
+            self.swap_video(self._app._config)
+
+        def _suspend_video() -> None:
+            receiver = self._app._video_receiver
+            # Traffic to this station never leaves the box, so no outage stops it.
+            if receiver is not None and not _video_is_local():
+                receiver.release_for_pin(f"{_video_pin()} has no address")
+
         def _rttrpm_pinned() -> bool:
             # Unpinned, the OS routes it: no interface to follow, and the
             # auto-detected address would never match its unbound socket.
@@ -1190,14 +1231,14 @@ class AppRuntimeServices:
         return [
             Plane(
                 label="PSN",
-                resolve=_resolver(lambda: self._app._config.psn_source_iface, is_station=True),
+                resolve=_resolver(lambda: self._app._config.psn_source_iface, follows_station=False),
                 current=_current_psn,
                 apply=_apply_psn,
                 suspend=_suspend_psn,
             ),
             Plane(
                 label="OTP output",
-                resolve=_resolver(lambda: self._app._config.otp_output.source_iface, is_station=False),
+                resolve=_resolver(lambda: self._app._config.otp_output.source_iface, follows_station=True),
                 current=_current_otp,
                 apply=_apply_otp,
                 suspend=_suspend_otp,
@@ -1207,7 +1248,7 @@ class AppRuntimeServices:
             ),
             Plane(
                 label="RTTrPM output",
-                resolve=_resolver(lambda: self._app._config.rttrpm_output.source_iface, is_station=False),
+                resolve=_resolver(lambda: self._app._config.rttrpm_output.source_iface, follows_station=True),
                 current=_current_rttrpm,
                 apply=_apply_rttrpm,
                 suspend=_suspend_rttrpm,
@@ -1215,11 +1256,19 @@ class AppRuntimeServices:
             ),
             Plane(
                 label="OSC input",
-                resolve=_resolver(lambda: self._app._config.osc.listen_iface, is_station=False),
+                resolve=_resolver(lambda: self._app._config.osc.listen_iface, follows_station=True),
                 current=_current_osc_input,
                 apply=_apply_osc_input,
                 suspend=_suspend_osc_input,
                 enabled=_osc_input_pinned,
+            ),
+            Plane(
+                label="Video input",
+                resolve=_resolver(lambda: self._app._config.video_input_iface, follows_station=True),
+                current=_current_video,
+                apply=_apply_video,
+                suspend=_suspend_video,
+                enabled=_video_pinned,
             ),
             *self._osc_output_planes(),
         ]
@@ -2518,7 +2567,7 @@ class AppRuntimeServices:
             raise ValueError(
                 f"Unknown video input type: {new_cfg.video_source_type!r}",
             )
-        new_input_config = new_input_cls.get_config_field_values(new_cfg)
+        new_input_config = new_input_cls.runtime_config(new_cfg)
 
         old_source_type = receiver._source_type
         old_input_config = dict(receiver._input_config)

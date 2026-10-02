@@ -1189,11 +1189,186 @@ class TestInterfaceAssignmentRows:
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OSC input"]["address"] == rows["Station default"]["address"]
 
+    def _video_row(self, monkeypatch, **fields: object) -> dict:
+        self._ifaces(monkeypatch, {"eth0": "192.0.2.10", "eth1": "198.51.100.10"})
+        cfg = AppConfig(**fields)
+        return next(r for r in build_interface_assignment_rows(cfg) if r["label"].startswith("Video input"))
+
+    @pytest.mark.parametrize(
+        ("source", "name", "url"),
+        [("srt", "SRT", {}), ("rtsp", "RTSP", {}), ("rtp", "RTP", {"rtp_url": "rtp://239.1.1.1:5004"})],
+    )
+    def test_a_network_video_input_is_pinned_here(self, monkeypatch, source: str, name: str, url: dict) -> None:
+        row = self._video_row(monkeypatch, video_source_type=source, video_input_iface="eth1", **url)
+        assert row["label"] == f"Video input ({name})"
+        assert row["editable"] is True
+        assert row["key"] == "video_input_iface"
+        assert row["value"] == "eth1"
+        assert row["address"] == "198.51.100.10"
+        # Blank follows the station interface, like every output.
+        assert row["blank"] == "station"
+
+    def test_an_unpinned_video_input_follows_the_station(self, monkeypatch) -> None:
+        row = self._video_row(monkeypatch, video_source_type="srt", psn_source_iface="eth0")
+        assert row["value"] == ""
+        assert row["address"] == "192.0.2.10"
+
+    @staticmethod
+    def _pick(monkeypatch, source: str | None) -> list[str]:
+        """The Pi's routing choice, answering *source* for every destination."""
+        from openfollow import net_utils
+
+        asked: list[str] = []
+
+        def _route_source(address: str, port: int = 0) -> str | None:
+            asked.append(address)
+            return source
+
+        monkeypatch.setattr(net_utils, "route_source", _route_source)
+        return asked
+
+    @pytest.mark.parametrize(
+        ("fields", "target"),
+        [
+            ({"video_source_type": "srt", "srt_host": "srt://203.0.113.20:5000"}, "203.0.113.20"),
+            ({"video_source_type": "rtsp", "rtsp_url": "rtsp://203.0.113.21/stream"}, "203.0.113.21"),
+            ({"video_source_type": "rtp", "rtp_url": "rtp://239.1.1.1:5004"}, "239.1.1.1"),
+        ],
+        ids=["srt-camera", "rtsp-camera", "rtp-group"],
+    )
+    def test_with_nothing_pinned_the_video_row_shows_the_pis_pick(self, monkeypatch, fields: dict, target: str) -> None:
+        """Nothing pinned at all: the Pi picks, and the row says what it picked."""
+        asked = self._pick(monkeypatch, "198.51.100.10")
+        row = self._video_row(monkeypatch, **fields)
+        assert row["address"] == "eth1 – 198.51.100.10"
+        assert asked == [target]
+
+    @pytest.mark.parametrize("station", ["", "eth0"], ids=["nothing", "station"])
+    @pytest.mark.parametrize("url", ["rtp://0.0.0.0:5004", "rtp://[::]:5004"], ids=["ipv4", "ipv6"])
+    def test_an_rtp_wildcard_receives_on_every_interface_unless_pinned_itself(
+        self, monkeypatch, station: str, url: str
+    ) -> None:
+        """Only a pin of its own narrows the wildcard; the station's does not reach it."""
+        asked = self._pick(monkeypatch, "198.51.100.10")
+        row = self._video_row(monkeypatch, video_source_type="rtp", rtp_url=url, psn_source_iface=station)
+        assert row["address"] == "All interfaces"
+        assert row["blank"] == "all"
+        assert asked == []
+
+        pinned = self._video_row(monkeypatch, video_source_type="rtp", rtp_url=url, video_input_iface="eth1")
+        assert pinned["address"] == "198.51.100.10"
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"video_source_type": "rtp", "rtp_url": "rtp://0.0.0.0:70000"},
+            {"video_source_type": "rtsp", "rtsp_url": "rtsp://[2001:db8::5/s"},
+            {"video_source_type": "srt", "srt_host": "srt://[2001:db8::5:5000"},
+        ],
+        ids=["rtp-port", "rtsp-bracket", "srt-bracket"],
+    )
+    def test_a_url_that_does_not_parse_still_renders_the_panel(self, monkeypatch, fields: dict) -> None:
+        row = self._video_row(monkeypatch, psn_source_iface="eth0", **fields)
+        assert row["editable"] is True
+        assert row["address"]
+
+    def test_an_rtp_url_that_does_not_parse_is_not_the_wildcard(self, monkeypatch) -> None:
+        """Nothing is received from it, so it keeps the station's pin rather than reading as healthy everywhere."""
+        row = self._video_row(
+            monkeypatch, video_source_type="rtp", rtp_url="rtp://0.0.0.0:70000", psn_source_iface="eth0"
+        )
+        assert row["address"] == "192.0.2.10"
+        assert row.get("blank") != "all"
+
+    def test_the_pick_says_when_nothing_routes_there(self, monkeypatch) -> None:
+        self._pick(monkeypatch, None)
+        row = self._video_row(monkeypatch, video_source_type="srt", srt_host="srt://203.0.113.20:5000")
+        assert row["address"] == "No route"
+
+    def test_the_pick_names_an_address_no_interface_holds(self, monkeypatch) -> None:
+        self._pick(monkeypatch, "203.0.113.99")
+        row = self._video_row(monkeypatch, video_source_type="srt", srt_host="srt://203.0.113.20:5000")
+        assert row["address"] == "203.0.113.99"
+
+    def test_the_pick_does_not_look_a_name_up(self, monkeypatch) -> None:
+        """A lookup would hold the page; the element resolves the name itself."""
+        asked = self._pick(monkeypatch, "198.51.100.10")
+        row = self._video_row(monkeypatch, video_source_type="srt", srt_host="srt://camera.example:5000")
+        assert row["address"] == "Picked when connecting"
+        assert asked == []
+
+    def test_a_pinned_video_input_with_no_address_says_so(self, monkeypatch) -> None:
+        row = self._video_row(monkeypatch, video_source_type="rtsp", video_input_iface="eth9")
+        assert row["address"] == "eth9 is down"
+
+    def test_a_sender_with_no_destination_is_left_to_the_routing_table(self, monkeypatch) -> None:
+        """Not "All interfaces": an output sends from one interface, not all of them."""
+        self._ifaces(monkeypatch, {"eth0": "192.0.2.10"})
+        cfg = AppConfig()
+        cfg.rttrpm_output.host = ""
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        assert rows["RTTrPM output"]["address"] == "Per routing table"
+
+    def test_a_camera_on_this_station_reads_as_this_station(self, monkeypatch) -> None:
+        """Its traffic never leaves the box, so no pinned interface's address may stand in for it."""
+        asked = self._pick(monkeypatch, "192.0.2.10")
+        row = self._video_row(
+            monkeypatch, video_source_type="srt", srt_host="srt://192.0.2.10:5000", psn_source_iface="eth1"
+        )
+        assert row["address"] == "This station"
+        assert asked == []
+
+    def test_a_camera_on_this_box_reads_as_loopback(self, monkeypatch) -> None:
+        row = self._video_row(
+            monkeypatch, video_source_type="srt", srt_host="srt://127.0.0.1:5000", video_input_iface="eth1"
+        )
+        assert row["address"] == "Loopback"
+        assert row["editable"] is True
+
+    @pytest.mark.parametrize(
+        ("source", "label", "note"),
+        [
+            ("ndi", "Video input (NDI®)", "Not supported – NDI® chooses its own interface"),
+            ("testpattern", "Video input (Media Gallery)", "Not a network input"),
+        ],
+    )
+    def test_a_video_input_that_cannot_be_pinned_explains_why(
+        self, monkeypatch, source: str, label: str, note: str
+    ) -> None:
+        from openfollow.video.inputs import get_input_class
+
+        assert get_input_class(source) is not None
+        row = self._video_row(monkeypatch, video_source_type=source, video_input_iface="eth1")
+        assert row["label"] == label
+        assert row["editable"] is False
+        assert row["key"] == ""
+        assert row["note"] == note
+        assert row["address"] == ""
+        # The saved pin is kept for when a network input is chosen again.
+        assert row["value"] == "eth1"
+
+    def test_an_unknown_video_input_is_read_only(self, monkeypatch) -> None:
+        self._ifaces(monkeypatch, {"eth0": "192.0.2.10"})
+        cfg = AppConfig()
+        cfg.video_source_type = "gone"
+        row = next(r for r in build_interface_assignment_rows(cfg) if r["label"].startswith("Video input"))
+        assert row["label"] == "Video input (gone)"
+        assert row["editable"] is False
+        assert row["note"] == "Not a network input"
+
+    def test_saving_the_panel_sets_the_video_input_pin(self, monkeypatch) -> None:
+        cfg = AppConfig(video_source_type="srt")
+        apply_section_data(cfg, "interface_assignment", {"video_input_iface": "  eth1  "})
+        assert cfg.video_input_iface == "eth1"
+        apply_section_data(cfg, "interface_assignment", {"video_input_iface": ""})
+        assert cfg.video_input_iface == ""
+
     def test_every_editable_row_maps_to_a_known_target(self, monkeypatch) -> None:
         """Guards the panel against growing a control the save path can't
         write – the row list and the target map have to stay in step."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig()
+        # A network video input, so the Video input row is a control too.
+        cfg = AppConfig(video_source_type="srt")
         rows = build_interface_assignment_rows(cfg)
         editable = {r["key"] for r in rows if r["editable"]}
         destinations = {f"osc_destinations.{dest.id}.source_iface" for dest in cfg.osc_destinations.destinations}
@@ -1217,15 +1392,17 @@ class TestInterfaceAssignmentRows:
         cfg.rttrpm_output.source_iface = "eth9"
         assert self._row(cfg, "RTTrPM output")["address"] == "eth9 is down"
 
-    def test_a_sender_with_nothing_configured_reads_per_routing_table(self, monkeypatch) -> None:
-        """No pin anywhere means the OS routes each destination; naming the
-        auto-detected address would claim a binding that does not exist."""
-        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    def test_a_sender_with_nothing_configured_shows_the_pis_pick(self, monkeypatch) -> None:
+        """No pin anywhere means the Pi routes each destination; the row shows
+        where it routes this one now, not an auto-detected address it is not bound to."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+        asked = TestInterfaceAssignmentRows._pick(monkeypatch, "10.0.0.9")
         cfg = AppConfig()
         cfg.rttrpm_output.host = "198.51.100.20"
         cfg.osc_destinations.destinations[0].host = "198.51.100.21"
-        assert self._row(cfg, "RTTrPM output")["address"] == "Per routing table"
-        assert self._row(cfg, "OSC to Default")["address"] == "Per routing table"
+        assert self._row(cfg, "RTTrPM output")["address"] == "eth1 – 10.0.0.9"
+        assert self._row(cfg, "OSC to Default")["address"] == "eth1 – 10.0.0.9"
+        assert "198.51.100.20" in asked and "198.51.100.21" in asked
 
     def test_a_loopback_destination_reads_loopback(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})

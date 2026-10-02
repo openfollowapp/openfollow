@@ -20,6 +20,7 @@ from openfollow.net_utils import (
     resolve_plane_source_ip,
     resolve_source_ip,
     resolve_web_bind,
+    route_source,
 )
 
 pytestmark = pytest.mark.unit
@@ -317,6 +318,26 @@ class TestGetIfaceForIp:
 
     def test_returns_empty_for_blank(self) -> None:
         assert get_iface_for_ip("") == ""
+
+    @pytest.mark.parametrize(
+        ("ip", "expected"),
+        [("2001:db8:1::10", "eth1"), ("fe80::1", "eth1"), ("::1", "")],
+        ids=["global", "link-local-with-scope", "loopback"],
+    )
+    def test_finds_an_ipv6_address(self, monkeypatch, ip: str, expected: str) -> None:
+        """The route source towards an IPv6 camera is an IPv6 address; its adapter is named too."""
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: _fake_addrs(
+                {
+                    "eth0": [(socket.AF_INET, "192.168.178.59")],
+                    "eth1": [(socket.AF_INET6, "2001:db8:1::10"), (socket.AF_INET6, "fe80::1%eth1")],
+                    "lo": [(socket.AF_INET6, "::1")],
+                }
+            ),
+        )
+        assert get_iface_for_ip(ip) == expected
 
 
 class TestListIfaceIpv4:
@@ -1023,3 +1044,74 @@ class TestResolveWebBind:
         )
         host, _status = resolve_web_bind("", "eth1")
         assert host != "192.168.1.5"
+
+
+# --------------------------------------------------------------------------- #
+# route_source
+# --------------------------------------------------------------------------- #
+
+
+class _RouteProbe:
+    def __init__(self, family: int, local: str, error: int = 0) -> None:
+        self.family, self.local, self.error = family, local, error
+        self.options: list[tuple[int, int, int]] = []
+        self.connected: tuple | None = None
+        self.closed = False
+
+    def setsockopt(self, level: int, option: int, value: int) -> None:
+        self.options.append((level, option, value))
+
+    def connect(self, address: tuple) -> None:
+        if self.error:
+            raise OSError(self.error, "Network is unreachable")
+        self.connected = address
+
+    def getsockname(self) -> tuple:
+        return (self.local, 40000)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture()
+def probes(monkeypatch):
+    made: list[_RouteProbe] = []
+    state = SimpleNamespace(made=made, local="192.0.2.10", error=0)
+
+    def _socket(family: int, kind: int) -> _RouteProbe:
+        made.append(_RouteProbe(family, state.local, state.error))
+        return made[-1]
+
+    monkeypatch.setattr(net_utils_module.socket, "socket", _socket)
+    return state
+
+
+def test_route_source_is_the_address_the_routing_table_sends_from(probes) -> None:
+    assert route_source("198.51.100.20", 554) == "192.0.2.10"
+    (probe,) = probes.made
+    assert probe.connected == ("198.51.100.20", 554)
+    assert probe.closed
+
+
+def test_route_source_allows_a_broadcast_destination(probes) -> None:
+    """A broadcast destination is refused without the option, though nothing is sent."""
+    route_source("192.0.2.255")
+    assert (socket.SOL_SOCKET, socket.SO_BROADCAST, 1) in probes.made[0].options
+
+
+def test_route_source_needs_some_port(probes) -> None:
+    route_source("198.51.100.20")
+    assert probes.made[0].connected[1] != 0
+
+
+def test_route_source_is_none_where_nothing_routes(probes) -> None:
+    probes.error = 101
+    assert route_source("203.0.113.20") is None
+    assert probes.made[0].closed
+
+
+def test_route_source_asks_ipv6_in_its_own_family(probes) -> None:
+    probes.local = "2001:db8::10%eth0"
+    assert route_source("2001:db8::20") == "2001:db8::10"
+    assert probes.made[0].family == socket.AF_INET6
+    assert probes.made[0].options == []

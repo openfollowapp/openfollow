@@ -384,6 +384,13 @@ def test_is_local_destination(net: SimpleNamespace, host: str, expected: bool) -
     assert is_local_destination(host) is expected
 
 
+def test_a_name_with_one_remote_address_is_not_local(net: SimpleNamespace) -> None:
+    """The element may dial the remote one, which needs the device binding."""
+    net.answers["relay.example"] = ["192.0.2.10", "203.0.113.20"]
+    check_video_pin("eth1", "relay.example", 9000)
+    assert is_local_destination("relay.example") is False
+
+
 def test_a_name_is_local_only_once_it_is_known_to_resolve_here(net: SimpleNamespace) -> None:
     """Never looked up from here: an unknown name is treated as remote."""
     net.answers["relay.example"] = ["192.0.2.10"]

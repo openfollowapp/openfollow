@@ -134,13 +134,18 @@ def _is_local(address: str, owners: Mapping[str, str]) -> bool:
 
 
 def is_local_destination(host: str) -> bool:
-    """Whether *host* is this station, as far as is known without a lookup."""
+    """Whether *host* is this station, as far as is known without a lookup.
+
+    Every address must be local: the element may dial any of them, and one
+    remote address dialled without the device binding could leave elsewhere.
+    """
     if not host:
         return False
     if is_loopback_host(host):
         return True
     owners = _own_addresses()
-    return any(_is_local(address, owners) for address in _resolver.cached(host))
+    addresses = _resolver.cached(host)
+    return bool(addresses) and all(_is_local(address, owners) for address in addresses)
 
 
 def _route_key(field: str) -> int:

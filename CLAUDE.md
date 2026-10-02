@@ -408,9 +408,10 @@ mapping - a code that looks obvious from the enum may never be sent.
 
 **`INTERFACE_DOWN` and `WRONG_INTERFACE` never come from the bus.** Only the
 video input pin's preflight produces them, before anything is dialled, so
-`classify_failure` has no rule for either. The refused build shows the
-placeholder and retries on the input's own backoff; `error_message` carries
-the interfaces the sentence cannot name.
+`classify_failure` has no rule for either. A refused build builds nothing, not
+even the placeholder, and retries on the input's own backoff; the placeholder
+appears only once the reconnects run out, as for any failure. `error_message`
+carries the interfaces the sentence cannot name.
 
 **`REFUSED` has no observed producer.** `rtspsrc` reports a refused connection
 as `Failed to connect. (Generic error)`, the errno discarded inside GStreamer's

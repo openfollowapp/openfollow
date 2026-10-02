@@ -525,6 +525,27 @@ class TestSrtInterfacePin:
         assert uri.count("bindtodevice=") == 1
         assert uri.endswith("bindtodevice=eth1")
 
+    @pytest.mark.parametrize(
+        ("config", "linux"),
+        [
+            ({"video_input_iface": ""}, True),
+            ({"video_input_iface": "eth1"}, False),
+            ({"srt_host": "srt://127.0.0.1:5000?bindtodevice=wlan0&latency=20", "video_input_iface": "eth1"}, True),
+        ],
+        ids=["no-pin", "not-linux", "local-destination"],
+    )
+    def test_a_device_typed_into_the_url_never_reaches_libsrt(
+        self, config: dict[str, object], linux: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The panel owns the interface; a URL device would pin the socket behind its back."""
+        uri = self._uri(
+            {"srt_host": "srt://192.0.2.20:5000?bindtodevice=wlan0&latency=20", **config},
+            linux=linux,
+            monkeypatch=monkeypatch,
+        )
+        assert "bindtodevice" not in uri
+        assert "latency=20" in uri
+
     def test_a_crafted_pin_cannot_add_url_options(self, monkeypatch: pytest.MonkeyPatch) -> None:
         uri = self._uri(
             {"srt_host": "srt://192.0.2.20:5000", "video_input_iface": "eth1&passphrase=x"},

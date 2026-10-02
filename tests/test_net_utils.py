@@ -319,6 +319,26 @@ class TestGetIfaceForIp:
     def test_returns_empty_for_blank(self) -> None:
         assert get_iface_for_ip("") == ""
 
+    @pytest.mark.parametrize(
+        ("ip", "expected"),
+        [("2001:db8:1::10", "eth1"), ("fe80::1", "eth1"), ("::1", "")],
+        ids=["global", "link-local-with-scope", "loopback"],
+    )
+    def test_finds_an_ipv6_address(self, monkeypatch, ip: str, expected: str) -> None:
+        """The route source towards an IPv6 camera is an IPv6 address; its adapter is named too."""
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: _fake_addrs(
+                {
+                    "eth0": [(socket.AF_INET, "192.168.178.59")],
+                    "eth1": [(socket.AF_INET6, "2001:db8:1::10"), (socket.AF_INET6, "fe80::1%eth1")],
+                    "lo": [(socket.AF_INET6, "::1")],
+                }
+            ),
+        )
+        assert get_iface_for_ip(ip) == expected
+
 
 class TestListIfaceIpv4:
     def test_returns_iface_ip_pairs_sorted(self, monkeypatch) -> None:

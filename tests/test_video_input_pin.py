@@ -452,10 +452,12 @@ def test_a_name_with_one_remote_address_is_not_local(net: SimpleNamespace) -> No
     assert is_local_destination("relay.example") is False
 
 
-def test_a_known_local_name_is_not_refused_when_the_pin_is_down(net: SimpleNamespace) -> None:
-    """Its traffic never touches the pinned interface, so that interface's outage is not its fault."""
+def test_a_local_name_is_not_refused_when_the_pin_is_down(net: SimpleNamespace) -> None:
+    """Its traffic never touches the pinned interface, so that interface's outage
+    is not its fault, whether or not the name was looked up lately."""
     net.answers["relay.example"] = ["192.0.2.10"]
-    assert check_video_pin("eth1", "relay.example", 9000) is None
+    assert check_video_pin("eth9", "relay.example", 9000) is None
+    net.clock.now += 60.0
     assert check_video_pin("eth9", "relay.example", 9000) is None
 
 

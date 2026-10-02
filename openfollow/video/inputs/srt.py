@@ -124,6 +124,9 @@ class SrtInput(VideoInputBase):
             # Drop any passphrase carried in the URL so the explicit field is
             # the single answer to "which key is this stream encrypted with".
             srt_uri = strip_uri_query_key(srt_uri, "passphrase")
+        # The panel owns the interface: a device typed into the URL would pin the
+        # socket behind its back.
+        srt_uri = strip_uri_query_key(srt_uri, "bindtodevice")
         pin = config_pin(config)
         endpoint = self.source_endpoint(config)
         if pin and FORCES_DEVICE and binds_device(endpoint.host if endpoint else ""):

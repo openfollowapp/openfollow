@@ -1948,6 +1948,39 @@ def test_a_video_change_saved_with_a_rejected_station_change_keeps_the_station(m
     assert swapped.psn_source_iface == "eth0"
 
 
+def test_a_failed_video_swap_after_a_station_change_is_retried(monkeypatch) -> None:
+    """The station change is committed, so the configs alone no longer differ on
+    the next pass; the swap is retried until it succeeds, then no more."""
+    _two_interfaces(monkeypatch)
+
+    class _FailingOnce(_DummyRuntimeServices):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempts = 0
+
+        def swap_video(self, new_cfg: AppConfig) -> None:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("pipeline would not stop")
+            super().swap_video(new_cfg)
+
+    fields = {"video_source_type": "srt", "srt_host": "srt://203.0.113.20:5000"}
+    app = _DummyApp(AppConfig(psn_source_iface="eth0", **fields))
+    app._runtime_services = _FailingOnce()
+    new_config = AppConfig(psn_source_iface="eth1", **fields)
+
+    apply_runtime_config_changes(app, new_config)
+    assert app._config.psn_source_iface == "eth1"
+    assert app._runtime_services.video_swaps == []
+
+    apply_runtime_config_changes(app, new_config)
+    [swapped] = app._runtime_services.video_swaps
+    assert swapped.psn_source_iface == "eth1"
+
+    apply_runtime_config_changes(app, new_config)
+    assert app._runtime_services.attempts == 2
+
+
 def test_a_station_change_leaves_a_video_input_with_its_own_pin(monkeypatch) -> None:
     import socket as _socket
     from types import SimpleNamespace

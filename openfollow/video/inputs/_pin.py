@@ -214,18 +214,22 @@ def check_video_pin(
     device, so a route through it must exist; libsrt binds only IPv4, so a name
     with an IPv6 address takes the routing table's own choice for every address.
     """
-    if not pin or (host and is_local_destination(host)):
+    if not pin or (host and is_loopback_host(host)):
+        return None
+    owners = _own_addresses()
+    found = _resolver.lookup(host) if host else _Lookup(())
+    # Looked up before the interface is judged, so a name that resolves to this
+    # station is never refused for an outage, whatever the cache held.
+    if found.addresses and all(_is_local(address, owners) for address in found.addresses):
         return None
     egress = resolve_egress(pin)
     if egress is None or egress.down:
         return PinRefusal(VideoFailure.INTERFACE_DOWN, f"{pin} has no address")
     if not host:
         return None
-    found = _resolver.lookup(host)
     unresolved = _unresolved(found, host, pin)
     if unresolved is not None:
         return unresolved
-    owners = _own_addresses()
     remote = [address for address in found.addresses if not _is_local(address, owners)]
     forced = forced_device and all(":" not in address for address in found.addresses)
     for address in remote:

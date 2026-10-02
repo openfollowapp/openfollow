@@ -88,12 +88,12 @@ def get_iface_ipv4(iface_name: str) -> str:
 
 
 def get_iface_for_ip(ip: str) -> str:
-    """Return interface name holding IP, or empty string."""
-    if not ip or ip.startswith("127."):
+    """Return the interface holding IP (either family), or empty string."""
+    if not ip or ip.startswith("127.") or ip == "::1":
         return ""
     for iface, addrs in psutil.net_if_addrs().items():
         for addr in addrs:
-            if addr.family == socket.AF_INET and addr.address == ip:
+            if addr.family in (socket.AF_INET, socket.AF_INET6) and str(addr.address).split("%")[0] == ip:
                 return str(iface)
     return ""
 

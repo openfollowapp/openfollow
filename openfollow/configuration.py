@@ -3208,7 +3208,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     video_config.psn_source_iface = app._config.psn_source_iface
     video_before = copy.copy(app._config)
     video_before.psn_source_iface = old_station_iface
-    if _video_config_changed(video_before, video_config):
+    # A failed swap is owed until one succeeds: when only the station interface it
+    # follows changed, that change is committed and the configs alone no longer differ.
+    if _video_config_changed(video_before, video_config) or getattr(app, "_video_swap_owed", False):
         # Snapshot the new plugin's CURRENT (pre-commit) field values so the
         # failure path can restore them. The old plugin's fields aren't
         # snapshotted – the commit loop only writes new-plugin fields.
@@ -3236,10 +3238,12 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                     getattr(new_config, f.name, f.default),
                 )
 
-        if not _apply(
+        swapped = _apply(
             "video_source",
             lambda: app._runtime_services.swap_video(video_config),
-        ):
+        )
+        app._video_swap_owed = not swapped
+        if not swapped:
             app._config.video_source_type = old_video_source_type
             for name, value in old_field_values.items():
                 setattr(app._config, name, value)

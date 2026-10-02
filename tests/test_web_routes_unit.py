@@ -1189,11 +1189,82 @@ class TestInterfaceAssignmentRows:
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OSC input"]["address"] == rows["Station default"]["address"]
 
+    def _video_row(self, monkeypatch, **fields: object) -> dict:
+        self._ifaces(monkeypatch, {"eth0": "192.0.2.10", "eth1": "198.51.100.10"})
+        cfg = AppConfig(**fields)
+        return next(r for r in build_interface_assignment_rows(cfg) if r["label"].startswith("Video input"))
+
+    @pytest.mark.parametrize(("source", "name"), [("srt", "SRT"), ("rtsp", "RTSP"), ("rtp", "RTP")])
+    def test_a_network_video_input_is_pinned_here(self, monkeypatch, source: str, name: str) -> None:
+        row = self._video_row(monkeypatch, video_source_type=source, video_input_iface="eth1")
+        assert row["label"] == f"Video input ({name})"
+        assert row["editable"] is True
+        assert row["key"] == "video_input_iface"
+        assert row["value"] == "eth1"
+        assert row["address"] == "198.51.100.10"
+        # Blank never follows the station, so its option says who decides.
+        assert row["blank"] == "route"
+
+    def test_an_unpinned_video_input_is_left_to_the_routing_table(self, monkeypatch) -> None:
+        row = self._video_row(monkeypatch, video_source_type="srt", psn_source_iface="eth0")
+        assert row["value"] == ""
+        assert row["address"] == "Per routing table"
+
+    def test_a_pinned_video_input_with_no_address_says_so(self, monkeypatch) -> None:
+        row = self._video_row(monkeypatch, video_source_type="rtsp", video_input_iface="eth9")
+        assert row["address"] == "eth9 is down"
+
+    def test_a_camera_on_this_box_reads_as_loopback(self, monkeypatch) -> None:
+        row = self._video_row(
+            monkeypatch, video_source_type="srt", srt_host="srt://127.0.0.1:5000", video_input_iface="eth1"
+        )
+        assert row["address"] == "Loopback"
+        assert row["editable"] is True
+
+    @pytest.mark.parametrize(
+        ("source", "label", "note"),
+        [
+            ("ndi", "Video input (NDI®)", "Not supported – NDI® chooses its own interface"),
+            ("testpattern", "Video input (Media Gallery)", "Not a network input"),
+        ],
+    )
+    def test_a_video_input_that_cannot_be_pinned_explains_why(
+        self, monkeypatch, source: str, label: str, note: str
+    ) -> None:
+        from openfollow.video.inputs import get_input_class
+
+        assert get_input_class(source) is not None
+        row = self._video_row(monkeypatch, video_source_type=source, video_input_iface="eth1")
+        assert row["label"] == label
+        assert row["editable"] is False
+        assert row["key"] == ""
+        assert row["note"] == note
+        assert row["address"] == ""
+        # The saved pin is kept for when a network input is chosen again.
+        assert row["value"] == "eth1"
+
+    def test_an_unknown_video_input_is_read_only(self, monkeypatch) -> None:
+        self._ifaces(monkeypatch, {"eth0": "192.0.2.10"})
+        cfg = AppConfig()
+        cfg.video_source_type = "gone"
+        row = next(r for r in build_interface_assignment_rows(cfg) if r["label"].startswith("Video input"))
+        assert row["label"] == "Video input (gone)"
+        assert row["editable"] is False
+        assert row["note"] == "Not a network input"
+
+    def test_saving_the_panel_sets_the_video_input_pin(self, monkeypatch) -> None:
+        cfg = AppConfig(video_source_type="srt")
+        apply_section_data(cfg, "interface_assignment", {"video_input_iface": "  eth1  "})
+        assert cfg.video_input_iface == "eth1"
+        apply_section_data(cfg, "interface_assignment", {"video_input_iface": ""})
+        assert cfg.video_input_iface == ""
+
     def test_every_editable_row_maps_to_a_known_target(self, monkeypatch) -> None:
         """Guards the panel against growing a control the save path can't
         write – the row list and the target map have to stay in step."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig()
+        # A network video input, so the Video input row is a control too.
+        cfg = AppConfig(video_source_type="srt")
         rows = build_interface_assignment_rows(cfg)
         editable = {r["key"] for r in rows if r["editable"]}
         destinations = {f"osc_destinations.{dest.id}.source_iface" for dest in cfg.osc_destinations.destinations}

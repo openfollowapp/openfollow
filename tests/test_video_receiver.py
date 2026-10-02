@@ -58,6 +58,7 @@ from openfollow.video.inputs._base import (
     ReconnectPolicy,
     SourceEndpoint,
 )
+from openfollow.video.inputs._pin import PinRefusal
 
 pytestmark = pytest.mark.unit
 
@@ -336,6 +337,13 @@ class FakeInput:
     def is_available(cls) -> tuple[bool, str]:
         return cls._available
 
+    # A test sets this to have every build refused, as the interface pin would.
+    _refusal: Any = None
+
+    @classmethod
+    def preflight(cls, config: dict[str, Any]) -> Any:
+        return cls._refusal
+
     @classmethod
     def get_source_label(cls, config: dict[str, Any]) -> str:
         return str(config.get("fake_source", "") or "")
@@ -454,6 +462,10 @@ class FakeInputAlt:
     @classmethod
     def is_available(cls) -> tuple[bool, str]:
         return cls._available
+
+    @classmethod
+    def preflight(cls, config: dict[str, Any]) -> None:
+        return None
 
     @classmethod
     def get_source_label(cls, config: dict[str, Any]) -> str:
@@ -4989,3 +5001,117 @@ class TestOnlyTheVideoPadIsObserved:
         on_pad_added(None, unknown)
 
         assert unknown.probes
+
+
+class TestTheInterfacePinRefusesABuild:
+    """A pinned input that may not dial is never built, so nothing leaves on
+    another interface; it shows why and keeps retrying on the normal backoff."""
+
+    _REFUSAL = PinRefusal(VideoFailure.WRONG_INTERFACE, "192.0.2.20 is reached through eth0, not eth1")
+
+    @pytest.fixture(autouse=True)
+    def _addresses(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from openfollow.video.inputs import _pin
+
+        monkeypatch.setattr(_pin, "get_iface_ipv4", {"eth1": "198.51.100.10"}.get)
+
+    def _refused(self, monkeypatch: pytest.MonkeyPatch) -> receiver_mod.GstNativeSinkReceiver:
+        monkeypatch.setattr(FakeInput, "_refusal", self._REFUSAL)
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        return r
+
+    def test_a_refused_build_shows_the_verdict_on_the_placeholder(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r = self._refused(monkeypatch)
+
+        r.create_pipeline()
+
+        assert FakeInput.create_pipeline_call_count == 0
+        assert r._state.is_placeholder_pipeline is True
+        assert r.status_marker.failure is VideoFailure.WRONG_INTERFACE
+        assert r.status_marker.error_message == self._REFUSAL.detail
+        assert r.connected is False
+
+    def test_play_retries_a_refused_build_on_the_backoff(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r = self._refused(monkeypatch)
+
+        r.play()
+
+        callbacks = [cb.__name__ for _delay, cb in fake_glib.timers.values()]
+        assert callbacks == ["_do_reconnect"]
+        assert r.status_marker.failure is VideoFailure.WRONG_INTERFACE
+        assert r.status_marker.reconnect_attempt == 1
+
+    def test_a_retry_that_is_still_refused_keeps_the_verdict(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r = self._refused(monkeypatch)
+        r.play()
+        fake_glib.timers.clear()
+
+        r._do_reconnect()
+
+        assert FakeInput.create_pipeline_call_count == 0
+        assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
+        assert r.status_marker.failure is VideoFailure.WRONG_INTERFACE
+        assert r.status_marker.error_message == self._REFUSAL.detail
+
+    def test_a_retry_the_pin_now_allows_builds_the_input(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r = self._refused(monkeypatch)
+        r.play()
+        built = FakePipeline()
+        FakeInput.create_pipeline_result = built
+        monkeypatch.setattr(FakeInput, "_refusal", None)
+
+        r._do_reconnect()
+
+        assert r._pipeline is built
+        assert r._state.is_placeholder_pipeline is False
+        assert FakeState.PLAYING in built.state_changes
+
+    def test_the_build_records_the_address_it_was_checked_against(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        FakeInput.create_pipeline_result = FakePipeline()
+
+        r.create_pipeline()
+        assert r.pinned_to == "198.51.100.10"
+
+        r.release_source()
+        assert r.pinned_to is None
+
+    @pytest.mark.parametrize("config", [{}, {"video_input_iface": ""}], ids=["absent", "blank"])
+    def test_an_unpinned_build_records_no_address(
+        self, fake_gst, fake_glib, fake_input_cls, config: dict[str, Any]
+    ) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1", **config})
+        FakeInput.create_pipeline_result = FakePipeline()
+
+        r.create_pipeline()
+
+        assert r.pinned_to is None
+        assert FakeInput.create_pipeline_call_count == 1
+
+    def test_releasing_for_a_down_pin_stops_the_input_and_says_why(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        pipeline = FakePipeline()
+        FakeInput.create_pipeline_result = pipeline
+        r.play()
+
+        r.release_for_pin("eth1 has no address")
+
+        assert FakeState.NULL in pipeline.state_changes
+        assert r._pipeline is None
+        assert fake_glib.timers == {}
+        assert r.status_marker.failure is VideoFailure.INTERFACE_DOWN
+        assert r.status_marker.error_message == "eth1 has no address"
+        assert r.pinned_to is None

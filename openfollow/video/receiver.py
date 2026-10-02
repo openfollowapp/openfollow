@@ -18,6 +18,7 @@ from openfollow.video.connection_status import NdiStatusMarker
 from openfollow.video.failure import ConnectionPhase, SourceKind, VideoFailure, classify_failure
 from openfollow.video.inputs import get_input_class
 from openfollow.video.inputs._base import InputCapabilities, ReconnectPolicy
+from openfollow.video.inputs._pin import PinRefusal, config_pin, pinned_address
 
 if TYPE_CHECKING:
     from openfollow.video.detection import PersonDetector
@@ -128,6 +129,10 @@ class GstNativeSinkReceiver:
         self._selected_source_index: int = 0
         self._discovery_thread: threading.Thread | None = None
         self._discovery_lock = threading.Lock()
+        # Why the last build was refused under the interface pin, if it was.
+        self._pin_refusal: PinRefusal | None = None
+        # The pinned interface's address the input was last checked against.
+        self._pinned_to: str | None = None
         self._discovery_running = False
 
         # Status tracking for UI feedback
@@ -425,7 +430,18 @@ class GstNativeSinkReceiver:
         self._stop_discovery_thread("release_source")
         self._null_transition_current_pipeline(swap_label="release_source")
         self._reset_video_flow_state()
+        self._pinned_to = None
         self._status_marker.set_disconnected()
+
+    @property
+    def pinned_to(self) -> str | None:
+        """The pinned interface's address the input was last checked against, or None."""
+        return self._pinned_to
+
+    def release_for_pin(self, detail: str) -> None:
+        """Stop the input because its pinned interface has no address; the network plane rebuilds it."""
+        self.release_source()
+        self._status_marker.set_disconnected(detail, failure=VideoFailure.INTERFACE_DOWN)
 
     def swap_input(
         self,
@@ -546,10 +562,22 @@ class GstNativeSinkReceiver:
         """Build the GStreamer pipeline via the active input plugin."""
         Gst.init(None)
         self._reset_video_flow_state()
+        self._pin_refusal = None
         available, reason = self._input.__class__.is_available()
         if not available:
             logger.warning("%s is not available: %s", self._input.display_name, reason)
             self._status_marker.set_disconnected(reason, failure=VideoFailure.UNKNOWN)
+            self._state.set_placeholder_pipeline(True)
+            self._create_placeholder_pipeline()
+            return
+        pin = config_pin(self._input_config)
+        self._pinned_to = pinned_address(pin) if pin else None
+        refusal = self._input.__class__.preflight(self._input_config)
+        if refusal is not None:
+            # Not dialled at all, so nothing leaves on another interface.
+            logger.warning("%s not started: %s", self._input.display_name, refusal.detail)
+            self._pin_refusal = refusal
+            self._status_marker.set_disconnected(refusal.detail, failure=refusal.failure)
             self._state.set_placeholder_pipeline(True)
             self._create_placeholder_pipeline()
             return
@@ -716,7 +744,10 @@ class GstNativeSinkReceiver:
                 if result == Gst.StateChangeReturn.FAILURE:
                     self._handle_refused_start(self._pipeline)
                 else:
-                    if self._state.is_placeholder_pipeline:
+                    if self._pin_refusal is not None:
+                        # Retried on the normal backoff, so a returning interface is picked up.
+                        self._schedule_reconnect(self._pin_refusal.detail, failure=self._pin_refusal.failure)
+                    elif self._state.is_placeholder_pipeline:
                         logger.info(
                             "Placeholder pipeline started for %s input.",
                             self._input.display_name,
@@ -1178,6 +1209,9 @@ class GstNativeSinkReceiver:
             # feed permanently. Detect the placeholder and reschedule the
             # reconnect so the source keeps being retried (and eventually falls
             # through to the max-attempts heal path).
+            if self._pin_refusal is not None:
+                self._schedule_reconnect(self._pin_refusal.detail, failure=self._pin_refusal.failure)
+                return False
             if self._state.is_placeholder_pipeline:
                 logger.warning("Pipeline build failed during reconnect – rescheduling")
                 self._schedule_reconnect("Pipeline build failed during reconnect", failure=VideoFailure.UNKNOWN)

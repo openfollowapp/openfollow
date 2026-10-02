@@ -1144,6 +1144,31 @@ class AppRuntimeServices:
             if self._app._rttrpm_server is not None:
                 self._app._rttrpm_server.stop()
 
+        def _video_pinned() -> bool:
+            # Blank leaves the camera to the routing table: nothing to follow.
+            from openfollow.video.inputs import get_input_class
+
+            cfg = self._app._config
+            input_cls = get_input_class(cfg.video_source_type)
+            return bool(
+                cfg.video_input_iface
+                and input_cls is not None
+                and input_cls.pins_interface
+                and self._app._video_receiver is not None
+            )
+
+        def _current_video() -> str | None:
+            receiver = self._app._video_receiver
+            return receiver.pinned_to if receiver is not None else None
+
+        def _apply_video(_address: str) -> None:
+            self.swap_video(self._app._config)
+
+        def _suspend_video() -> None:
+            receiver = self._app._video_receiver
+            if receiver is not None:
+                receiver.release_for_pin(f"{self._app._config.video_input_iface} has no address")
+
         def _rttrpm_pinned() -> bool:
             # Unpinned, the OS routes it: no interface to follow, and the
             # auto-detected address would never match its unbound socket.
@@ -1220,6 +1245,15 @@ class AppRuntimeServices:
                 apply=_apply_osc_input,
                 suspend=_suspend_osc_input,
                 enabled=_osc_input_pinned,
+            ),
+            Plane(
+                label="Video input",
+                # Never follows the station: cameras rarely share the PSN network.
+                resolve=_resolver(lambda: self._app._config.video_input_iface, is_station=True),
+                current=_current_video,
+                apply=_apply_video,
+                suspend=_suspend_video,
+                enabled=_video_pinned,
             ),
             *self._osc_output_planes(),
         ]

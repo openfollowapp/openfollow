@@ -486,3 +486,94 @@ def test_source_endpoint_marks_srt_as_not_connect_probeable() -> None:
 
 def test_source_endpoint_is_none_for_the_wildcard_default() -> None:
     assert SrtInput.source_endpoint({"srt_host": "srt://0.0.0.0:5000"}) is None
+
+
+# ---------------------------------------------------------------------------
+# Video input pin
+# ---------------------------------------------------------------------------
+
+
+class TestSrtInterfacePin:
+    """On Linux libsrt binds its own socket to the pinned device."""
+
+    def _uri(self, config: dict[str, object], *, linux: bool, monkeypatch: pytest.MonkeyPatch) -> str:
+        from openfollow.video.inputs import srt
+
+        monkeypatch.setattr(srt, "FORCES_DEVICE", linux)
+        return str(TestSrtPassphrase()._srtsrc(config).properties["uri"])
+
+    def test_a_pin_binds_the_socket_to_the_device(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        uri = self._uri(
+            {"srt_host": "srt://192.0.2.20:5000", "video_input_iface": "eth1"}, linux=True, monkeypatch=monkeypatch
+        )
+        assert uri == "srt://192.0.2.20:5000?bindtodevice=eth1"
+
+    def test_the_pin_joins_an_existing_query(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        uri = self._uri(
+            {"srt_host": "srt://192.0.2.20:5000?latency=20", "video_input_iface": "eth0.13"},
+            linux=True,
+            monkeypatch=monkeypatch,
+        )
+        assert uri == "srt://192.0.2.20:5000?latency=20&bindtodevice=eth0.13"
+
+    def test_the_pin_outranks_a_device_carried_in_the_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        uri = self._uri(
+            {"srt_host": "srt://192.0.2.20:5000?bindtodevice=wlan0", "video_input_iface": "eth1"},
+            linux=True,
+            monkeypatch=monkeypatch,
+        )
+        assert uri.count("bindtodevice=") == 1
+        assert uri.endswith("bindtodevice=eth1")
+
+    def test_a_crafted_pin_cannot_add_url_options(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        uri = self._uri(
+            {"srt_host": "srt://192.0.2.20:5000", "video_input_iface": "eth1&passphrase=x"},
+            linux=True,
+            monkeypatch=monkeypatch,
+        )
+        assert "&passphrase" not in uri
+        assert uri.endswith("bindtodevice=eth1%26passphrase%3Dx")
+
+    @pytest.mark.parametrize(
+        ("config", "linux"),
+        [({"video_input_iface": ""}, True), ({}, True), ({"video_input_iface": "eth1"}, False)],
+        ids=["blank", "absent", "not-linux"],
+    )
+    def test_no_device_binding_without_a_pin_or_off_linux(
+        self, config: dict[str, object], linux: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        uri = self._uri({"srt_host": "srt://192.0.2.20:5000", **config}, linux=linux, monkeypatch=monkeypatch)
+        assert uri == "srt://192.0.2.20:5000"
+
+    def test_the_pin_is_a_config_field_the_panel_owns(self) -> None:
+        field = next(f for f in SrtInput.config_fields() if f.name == "video_input_iface")
+        assert field.device_editable is False
+        assert SrtInput.config_fields()[0].name == "srt_host"
+        assert SrtInput.pins_interface is True
+        assert "video_input_iface" not in SrtInput.web_ui_html({"video_input_iface": "eth1"})
+
+
+class TestSrtPreflight:
+    def _asked(self, config: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
+        from openfollow.video.inputs import srt
+
+        asked: list[tuple] = []
+        monkeypatch.setattr(srt, "check_video_pin", lambda *a, **kw: asked.append((a, kw)))
+        SrtInput.preflight(config)
+        return asked
+
+    def test_a_caller_checks_its_camera_under_the_pin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        asked = self._asked({"srt_host": "srt://192.0.2.20:1600", "video_input_iface": "eth1"}, monkeypatch)
+        assert asked == [(("eth1", "192.0.2.20", 1600), {})]
+
+    def test_a_listener_checks_only_the_pin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        asked = self._asked({"srt_host": "srt://0.0.0.0:5000", "video_input_iface": "eth1"}, monkeypatch)
+        assert asked == [(("eth1",), {})]
+
+    def test_a_down_pin_refuses_a_listener(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from openfollow import net_egress
+        from openfollow.video.failure import VideoFailure
+
+        monkeypatch.setattr(net_egress, "get_iface_ipv4", lambda iface: "")
+        refusal = SrtInput.preflight({"srt_host": "srt://0.0.0.0:5000", "video_input_iface": "eth9"})
+        assert refusal is not None and refusal.failure is VideoFailure.INTERFACE_DOWN

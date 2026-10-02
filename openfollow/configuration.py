@@ -2296,6 +2296,9 @@ class AppConfig:
     # so it recovers on its own after the source/network returns (0 = off).
     stall_timeout: float = 3.0
     heal_interval: float = 5.0
+    # Interface the network video inputs (SRT, RTSP, RTP) use, by name. Blank
+    # leaves it to the routing table; it does not follow ``psn_source_iface``.
+    video_input_iface: str = ""
 
     # Window
     window_width: int = 1280
@@ -2398,6 +2401,9 @@ class AppConfig:
         if not isinstance(self.web_bind_iface, str):
             self.web_bind_iface = ""
         self.web_bind_iface = self.web_bind_iface.strip()
+        if not isinstance(self.video_input_iface, str):
+            self.video_input_iface = ""
+        self.video_input_iface = self.video_input_iface.strip()
         # Strip ``psn_source_iface`` so whitespace doesn't look like a value
         # change each load and trigger a needless rebind cycle.
         if not isinstance(self.psn_source_iface, str):

@@ -336,6 +336,39 @@ class TestOptionalHooks:
         instance.cleanup()
 
 
+@pytest.mark.parametrize("plugin", _plugin_params())
+class TestInterfacePinContract:
+    """Every input that dials or listens on the network honours the video
+    input pin; every other one ignores it and never refuses."""
+
+    def test_the_network_inputs_are_the_ones_that_pin(self, plugin: type[VideoInputBase]) -> None:
+        networked = plugin.source_kind in {SourceKind.REMOTE, SourceKind.LISTENER}
+        assert plugin.pins_interface is networked
+
+    def test_a_pinning_input_declares_the_pin_after_its_source(self, plugin: type[VideoInputBase]) -> None:
+        fields = {f.name: f for f in plugin.config_fields()}
+        if plugin.pins_interface:
+            assert plugin.config_fields()[0].name != "video_input_iface", "field 0 is the source the receiver reads"
+            assert fields["video_input_iface"].device_editable is False
+        else:
+            assert "video_input_iface" not in fields
+
+    def test_a_pin_change_rebuilds_a_pinning_input(self, plugin: type[VideoInputBase]) -> None:
+        old, new = AppConfig(), AppConfig()
+        new.video_input_iface = "eth1"
+        assert plugin.config_changed(old, new) is plugin.pins_interface
+
+    def test_an_input_that_does_not_pin_never_refuses(
+        self, plugin: type[VideoInputBase], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from openfollow import net_egress
+
+        if plugin.pins_interface:
+            pytest.skip("covered per plugin")
+        monkeypatch.setattr(net_egress, "get_iface_ipv4", lambda iface: "")
+        assert plugin.preflight({"video_input_iface": "eth9"}) is None
+
+
 # --------------------------------------------------------------------------- #
 # Base-class behaviour (not plugin-specific)
 # --------------------------------------------------------------------------- #

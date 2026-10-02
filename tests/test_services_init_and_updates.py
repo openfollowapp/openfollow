@@ -3689,6 +3689,7 @@ class TestSwapVideo:
             "rtsp_url": "rtsp://new/y",
             "rtsp_user": "",
             "rtsp_password": "",
+            "video_input_iface": "",
         }
 
     def test_failure_attempts_rollback_to_prior_plugin_and_config(
@@ -3717,7 +3718,7 @@ class TestSwapVideo:
         # First call: forward swap with new cfg.
         assert receiver.swap_calls[0] == (
             "srt",
-            {"srt_host": "srt://10.0.0.5:5000", "srt_passphrase": ""},
+            {"srt_host": "srt://10.0.0.5:5000", "srt_passphrase": "", "video_input_iface": ""},
         )
         # Second call: rollback to prior plugin/config.
         assert receiver.swap_calls[1] == (

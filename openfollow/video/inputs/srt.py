@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import quote
 
 from openfollow.uri_redaction import redact_uri, strip_uri_query_key
 from openfollow.video.failure import SourceKind
@@ -16,7 +17,9 @@ from openfollow.video.inputs._base import (
     ReconnectPolicy,
     SourceEndpoint,
     VideoInputBase,
+    video_input_pin_field,
 )
+from openfollow.video.inputs._pin import FORCES_DEVICE, PinRefusal, check_video_pin, config_pin
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,7 @@ class SrtInput(VideoInputBase):
     display_name = "SRT"
     source_element_name = "srtsrc"
     source_kind = SourceKind.REMOTE
+    pins_interface = True
 
     # -- Declarations ---------------------------------------------------------
 
@@ -47,6 +51,7 @@ class SrtInput(VideoInputBase):
             ConfigField("srt_host", str, "srt://0.0.0.0:5000", "SRT URL"),
             # Web-only – see the note on the RTSP credential fields.
             ConfigField("srt_passphrase", str, "", "Passphrase", device_editable=False, strip=False),
+            video_input_pin_field(),
         ]
 
     @classmethod
@@ -113,6 +118,11 @@ class SrtInput(VideoInputBase):
             # Drop any passphrase carried in the URL so the explicit field is
             # the single answer to "which key is this stream encrypted with".
             srt_uri = strip_uri_query_key(srt_uri, "passphrase")
+        pin = config_pin(config)
+        if pin and FORCES_DEVICE:
+            # libsrt binds the socket to the device (SRTO_BINDTODEVICE).
+            srt_uri = strip_uri_query_key(srt_uri, "bindtodevice")
+            srt_uri += f"{'&' if '?' in srt_uri else '?'}bindtodevice={quote(pin, safe='')}"
 
         pipeline = Gst.Pipeline.new("srt-sink")
 
@@ -249,6 +259,13 @@ class SrtInput(VideoInputBase):
         )
 
     # -- Config ---------------------------------------------------------------
+
+    @classmethod
+    def preflight(cls, config: dict[str, Any]) -> PinRefusal | None:
+        endpoint = cls.source_endpoint(config)
+        if endpoint is None:
+            return check_video_pin(config_pin(config))
+        return check_video_pin(config_pin(config), endpoint.host, endpoint.port)
 
     @classmethod
     def source_endpoint(cls, config: dict[str, Any]) -> SourceEndpoint | None:

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from openfollow.video.failure import ConnectionPhase, SourceKind
+from openfollow.video.inputs._pin import PinRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,10 @@ class VideoInputBase(ABC):
     # names no address, port or sender, so a plugin that forgets to declare
     # cannot point at a setting that does not exist.
     source_kind: SourceKind = SourceKind.LOCAL
+
+    # Honours ``video_input_iface``; the Interface Assignment panel offers the
+    # Video input row only for an input that does.
+    pins_interface: bool = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -259,6 +264,15 @@ class VideoInputBase(ABC):
         return getattr(self, name, None)
 
     @classmethod
+    def preflight(cls, config: dict[str, Any]) -> PinRefusal | None:
+        """Why this connection may not be made under the interface pin, or None.
+
+        Runs before every build, on the main loop; keep it to a routing-table
+        lookup.
+        """
+        return None
+
+    @classmethod
     def source_endpoint(cls, config: dict[str, Any]) -> SourceEndpoint | None:
         """The remote host this input dials, or ``None`` if it dials nothing.
 
@@ -334,3 +348,8 @@ class VideoInputBase(ABC):
         numeric field rendered through this helper isn't silently dropped.
         """
         return "" if value is None else html.escape(str(value))
+
+
+def video_input_pin_field() -> ConfigField:
+    """The interface pin, shared by every network input; edited only in the panel."""
+    return ConfigField("video_input_iface", str, "", "Video input interface", device_editable=False)

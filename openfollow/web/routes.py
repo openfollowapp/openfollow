@@ -326,6 +326,8 @@ _BLANK_IFACE_LABELS = {
     # The web UI answers on every interface unless pinned – it does not
     # follow the station pin, so it gets its own wording.
     "all": "-- All interfaces --",
+    # Video input does not follow the station either: blank is unpinned.
+    "route": "-- Routing table decides --",
 }
 
 _SECTION_CONFIG_ATTRS = {
@@ -1067,6 +1069,7 @@ _INTERFACE_ASSIGNMENT_TARGETS: dict[str, tuple[str | None, str]] = {
     "otp_output.source_iface": ("otp_output", "source_iface"),
     "rttrpm_output.source_iface": ("rttrpm_output", "source_iface"),
     "osc.listen_iface": ("osc", "listen_iface"),
+    "video_input_iface": (None, "video_input_iface"),
     "web_bind_iface": (None, "web_bind_iface"),
 }
 
@@ -1101,7 +1104,7 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     # silently revert its Media Gallery to the Stage default. The video-source
     # form save path applies this field, so the section broadcast/receive must
     # strip it (matching the full export/import redaction).
-    "video_source": frozenset({"testpattern_selected_media"}),
+    "video_source": frozenset({"testpattern_selected_media", "video_input_iface"}),
     "rttrpm_output": frozenset({"source_iface"}),
 }
 
@@ -1294,6 +1297,37 @@ def _osc_membership_address(
     return plane_address(pin)
 
 
+def _video_input_row(cfg: AppConfig) -> dict[str, Any]:
+    """The active video input's row; read-only with a reason when it cannot be pinned."""
+    from openfollow.net_egress import is_loopback_host
+    from openfollow.net_utils import resolve_plane_source_ip
+    from openfollow.video.failure import SourceKind
+    from openfollow.video.inputs import get_input_class
+
+    input_cls = get_input_class(cfg.video_source_type)
+    name = input_cls.display_name if input_cls is not None else cfg.video_source_type
+    row: dict[str, Any] = {"label": f"Video input ({name})", "value": cfg.video_input_iface, "blank": "route"}
+    if input_cls is None or not input_cls.pins_interface:
+        named = input_cls is not None and input_cls.source_kind is SourceKind.NAMED
+        return {
+            **row,
+            "key": "",
+            "address": "",
+            "editable": False,
+            "note": f"Not supported – {name} chooses its own interface" if named else "Not a network input",
+        }
+    pin = cfg.video_input_iface
+    endpoint = input_cls.source_endpoint(input_cls.get_config_field_values(cfg))
+    if endpoint is not None and is_loopback_host(endpoint.host):
+        address = "Loopback"
+    elif not pin:
+        address = "Per routing table"
+    else:
+        resolved, status = resolve_plane_source_ip(pin, "")
+        address = f"{pin} is down" if status == "down" else resolved
+    return {**row, "key": "video_input_iface", "address": address, "editable": True}
+
+
 def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | None = None) -> list[dict[str, Any]]:
     """Rows for the Network Interface Assignment panel, in render order.
 
@@ -1394,6 +1428,7 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
             }
             for dest in cfg.osc_destinations.destinations
         ),
+        _video_input_row(cfg),
         {
             "key": "",
             "label": "Discovery / marker sync",
@@ -2877,6 +2912,7 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     # ``testpattern_selected_media`` is a device-local gallery item id; media
     # files never travel, so a foreign id would just dangle on another host.
     d.pop("testpattern_selected_media", None)
+    d.pop("video_input_iface", None)
     # A NIC name on this box: on a peer it would repin OTP to whatever shares it.
     d["otp_output"].pop("source_iface", None)
     # ``osc.listen_iface`` names a NIC on this box. Carried to a station that

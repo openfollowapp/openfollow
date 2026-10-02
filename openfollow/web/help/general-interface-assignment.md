@@ -52,6 +52,18 @@ If the pinned interface has no address, those messages stop. An OSC Output row's
 
 These pins belong to this station. A config export leaves them out, and an import keeps the pins this station already has for destinations it already has; a destination new to it follows the station interface.
 
+## Video input
+
+The interface the camera is reached through, named after the active video source. Left blank it does **not** follow Station default: cameras usually sit on another network than PSN, so blank leaves the choice to the routing table and the Address column reads `Per routing table`.
+
+- **SRT** connects only through the pinned interface. On macOS the station checks instead that the routing table already reaches the camera there.
+- **RTSP** cannot be bound to an interface, so before each connection the station checks which interface the routing table would use for the camera, and does not connect when it is another one. Multicast streams are joined on the pinned interface.
+- **RTP** receives only on the pinned interface: a multicast group is joined there, and a unicast stream is accepted only at its address.
+
+A camera the pin refuses shows why on every video surface: `Interface down` when the pinned interface has no address, `Wrong interface` when the camera is reached through another one. The station keeps retrying and the video returns on its own. A camera on this station itself reads `Loopback` and is never refused.
+
+NDI® chooses its own interface, and the Pi Camera, USB cameras and the Media Gallery are not network inputs, so for them the row is read-only. A saved pin is kept for when a network source is chosen again, and like the other pins it is left out of a config export.
+
 ## Web UI
 
 This page. Left blank it answers on every interface, which is what you want on almost every station – it is how you reach the box, not something the show depends on.
@@ -82,6 +94,6 @@ A newly plugged adapter keeps whatever name it already had until it is unplugged
 
 ## Saving
 
-Save applies immediately to the running station. PSN, OTP, and the other data planes rebind their sockets in place – no restart, and no interruption to anything on an interface you didn't change. The **Web UI** row is the exception and waits for a restart, as described above.
+Save applies immediately to the running station. PSN, OTP, and the other data planes rebind their sockets in place – no restart, and no interruption to anything on an interface you didn't change. Changing **Video input** reconnects the video source. The **Web UI** row is the exception and waits for a restart, as described above.
 
 **Scan** re-reads the adapter list from the system. Use it after plugging in a USB Ethernet adapter or creating a VLAN so the new interface appears in the dropdowns.

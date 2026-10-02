@@ -184,6 +184,7 @@ All config lives in `config.toml` (auto-reloaded when file changes on disk).
 | `psn_source_iface` | `""` | Bind PSN / beacon to this interface **by name**; empty = auto-detect |
 | `web_port` | `80` | Web config UI port |
 | `web_bind_iface` | `""` | Serve the web UI on this interface only, **by name**; empty = every interface. Resolved by `net_utils.resolve_web_bind`, which an explicit `web_bind` address outranks. The **one plane that fails open**: an unresolvable pin serves everywhere and records an advisory, because a silent output is diagnosable from another station and an unreachable config UI is not. Device-local |
+| `video_input_iface` | `""` | Interface SRT / RTSP / RTP reach the camera through, **by name**; empty = the routing table (it does **not** follow `psn_source_iface`: cameras rarely share the PSN network). A plugin field (`video_input_pin_field`, `pins_interface = True`), so a change live-swaps the input. SRT on Linux appends `bindtodevice` to the URI (libsrt `SRTO_BINDTODEVICE`); RTSP gets only `multicast-iface` because `rtspsrc` exposes no socket; RTP gets `multicast-iface` and binds a wildcard unicast listener to the pinned address. `VideoInputBase.preflight` runs before every build and refuses rather than dial off the pin: SRT on Linux probes through the forced device, RTSP (and SRT elsewhere) compares the routing table's chosen source address with the pin. Device-local; edited in the Network Interface Assignment panel |
 | `web_pin` | `""` | Auth PIN; when non-empty, browser routes require login + cookie (`SameSite=Strict`), peer-to-peer routes require HMAC-signed headers |
 | `update_github_repo` | `"openfollowapp/openfollow"` | `owner/repo` slug the `.deb`-release updater queries for new releases |
 | `update_service_name` | `"openfollow"` | systemd unit restarted after a `.deb` install |
@@ -404,6 +405,12 @@ the bench against 1.26: a bad RTSP path comes back as
 `gst-resource-error-quark:13` with `SDP contains no streams`, not
 `RESOURCE_NOT_FOUND`. Check what the element actually emits before adding a
 mapping - a code that looks obvious from the enum may never be sent.
+
+**`INTERFACE_DOWN` and `WRONG_INTERFACE` never come from the bus.** Only the
+video input pin's preflight produces them, before anything is dialled, so
+`classify_failure` has no rule for either. The refused build shows the
+placeholder and retries on the input's own backoff; `error_message` carries
+the interfaces the sentence cannot name.
 
 **`REFUSED` has no observed producer.** `rtspsrc` reports a refused connection
 as `Failed to connect. (Generic error)`, the errno discarded inside GStreamer's

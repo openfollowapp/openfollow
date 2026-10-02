@@ -15,7 +15,9 @@ from openfollow.video.inputs._base import (
     InputCapabilities,
     ReconnectPolicy,
     VideoInputBase,
+    video_input_pin_field,
 )
+from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin, pinned_address
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,7 @@ class RtpInput(VideoInputBase):
     display_name = "RTP"
     source_element_name = "udpsrc"
     source_kind = SourceKind.LISTENER
+    pins_interface = True
 
     # -- Declarations ---------------------------------------------------------
 
@@ -70,10 +73,16 @@ class RtpInput(VideoInputBase):
     }
 
     @classmethod
+    def preflight(cls, config: dict[str, Any]) -> PinRefusal | None:
+        # A listener dials nothing; only a pinned interface with no address refuses.
+        return check_video_pin(config_pin(config))
+
+    @classmethod
     def config_fields(cls) -> list[ConfigField]:
         return [
             ConfigField("rtp_url", str, "rtp://0.0.0.0:5004", "RTP URL"),
             ConfigField("rtp_encoding", str, "H264", "RTP Encoding"),
+            video_input_pin_field(),
         ]
 
     @classmethod
@@ -150,11 +159,17 @@ class RtpInput(VideoInputBase):
             raise RuntimeError("udpsrc GStreamer element not found – install gst-plugins-good")
         udpsrc.set_property("port", port)
 
+        pin = config_pin(config)
         if is_multicast:
             udpsrc.set_property("multicast-group", address)
             udpsrc.set_property("auto-multicast", True)
+            if pin:
+                udpsrc.set_property("multicast-iface", pin)
             logger.info("RTP multicast: %s:%d", address, port)
         else:
+            if pin and address == "0.0.0.0":
+                # Only what is sent to the pinned interface is received.
+                address = pinned_address(pin) or address
             udpsrc.set_property("address", address)
             logger.info("RTP unicast: %s:%d", address, port)
 

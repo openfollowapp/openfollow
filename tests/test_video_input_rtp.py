@@ -472,3 +472,53 @@ class TestGetSourceLabel:
         label = RtpInput.get_source_label({"rtp_url": "10.0.0.5:5006"})
         assert "unicast" in label
         assert "H264" in label
+
+
+class TestRtpInterfacePin:
+    @pytest.fixture(autouse=True)
+    def _addresses(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from openfollow.video.inputs import _pin
+
+        monkeypatch.setattr(_pin, "get_iface_ipv4", {"eth1": "198.51.100.10"}.get)
+
+    def test_a_pin_sets_the_multicast_membership(self) -> None:
+        udpsrc = _build({"rtp_url": "rtp://232.1.1.1:4000", "video_input_iface": "eth1"}).get_by_name("udpsrc")
+        assert udpsrc is not None
+        assert udpsrc.properties["multicast-iface"] == "eth1"
+
+    def test_a_pinned_unicast_listener_binds_the_pinned_address(self) -> None:
+        udpsrc = _build({"rtp_url": "rtp://0.0.0.0:5004", "video_input_iface": "eth1"}).get_by_name("udpsrc")
+        assert udpsrc is not None
+        assert udpsrc.properties["address"] == "198.51.100.10"
+
+    def test_a_local_address_in_the_url_is_kept(self) -> None:
+        udpsrc = _build({"rtp_url": "rtp://192.0.2.10:5004", "video_input_iface": "eth1"}).get_by_name("udpsrc")
+        assert udpsrc is not None
+        assert udpsrc.properties["address"] == "192.0.2.10"
+
+    def test_a_down_pin_leaves_the_wildcard(self) -> None:
+        """The preflight refuses a down pin before a build; never bind to nothing."""
+        udpsrc = _build({"rtp_url": "rtp://0.0.0.0:5004", "video_input_iface": "eth9"}).get_by_name("udpsrc")
+        assert udpsrc is not None
+        assert udpsrc.properties["address"] == "0.0.0.0"
+
+    @pytest.mark.parametrize("url", ["rtp://232.1.1.1:4000", "rtp://0.0.0.0:5004"])
+    def test_nothing_pinned_without_a_pin(self, url: str) -> None:
+        udpsrc = _build({"rtp_url": url}).get_by_name("udpsrc")
+        assert udpsrc is not None
+        assert "multicast-iface" not in udpsrc.properties
+        assert udpsrc.properties.get("address", "") != "198.51.100.10"
+
+    def test_the_preflight_checks_only_the_pin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from openfollow.video.inputs import rtp
+
+        asked: list[tuple] = []
+        monkeypatch.setattr(rtp, "check_video_pin", lambda *a, **kw: asked.append((a, kw)))
+        RtpInput.preflight({"rtp_url": "rtp://232.1.1.1:4000", "video_input_iface": "eth1"})
+        assert asked == [(("eth1",), {})]
+
+    def test_the_pin_is_a_config_field_the_panel_owns(self) -> None:
+        field = next(f for f in RtpInput.config_fields() if f.name == "video_input_iface")
+        assert field.device_editable is False
+        assert RtpInput.config_fields()[0].name == "rtp_url"
+        assert RtpInput.pins_interface is True

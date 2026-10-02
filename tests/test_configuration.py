@@ -1805,6 +1805,17 @@ def test_app_config_coerces_non_str_psn_source_iface() -> None:
     assert cfg.psn_source_iface == ""
 
 
+@pytest.mark.parametrize(("raw", "expected"), [(None, ""), (5, ""), (True, ""), ([], ""), ("  eth1  ", "eth1")])
+def test_app_config_normalises_video_input_iface(raw: object, expected: str) -> None:
+    assert AppConfig(video_input_iface=raw).video_input_iface == expected  # type: ignore[arg-type]
+
+
+def test_video_input_iface_survives_a_toml_round_trip(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    save_config(AppConfig(video_input_iface="eth0.13"), path)
+    assert load_config(path).video_input_iface == "eth0.13"
+
+
 def test_app_config_strips_web_pin_at_construction() -> None:
     """``web_pin`` is normalised on load so a hand-edited TOML matches the
     web-save path (which strips before persisting)."""

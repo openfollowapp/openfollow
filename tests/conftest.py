@@ -85,6 +85,19 @@ def _restore_os_environ() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _forget_shared_dns_answers() -> Iterator[None]:
+    """The outputs, the pin check, the panel and the bundle share two resolvers
+    for the life of the process; an answer one test left must not serve the next."""
+    from openfollow.net_utils import HOST_RESOLVER, IPV4_RESOLVER
+
+    HOST_RESOLVER.clear()
+    IPV4_RESOLVER.clear()
+    yield
+    HOST_RESOLVER.clear()
+    IPV4_RESOLVER.clear()
+
+
+@pytest.fixture(autouse=True)
 def _no_host_cgroup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may resolve the unit the test process itself runs under.
 

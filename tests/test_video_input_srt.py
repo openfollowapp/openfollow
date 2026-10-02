@@ -602,13 +602,15 @@ class TestSrtInterfacePin:
         from openfollow.video.inputs import _pin
 
         if answers is not None:
-            monkeypatch.setattr(_pin, "_resolver", _pin._Resolver())
+            from openfollow.net_utils import BoundedResolver
+
+            monkeypatch.setattr(_pin, "_resolver", BoundedResolver(ttl_s=30.0))
             monkeypatch.setattr(
                 _pin.socket,
                 "getaddrinfo",
                 lambda *a, **k: [(socket.AF_INET6 if ":" in x else socket.AF_INET, 2, 17, "", (x, 0)) for x in answers],
             )
-            _pin._resolver.lookup(host)
+            _pin._resolver.lookup(host, 1.0)
         uri = self._uri(
             {"srt_host": f"srt://{host}:5000", "video_input_iface": "eth1"}, linux=True, monkeypatch=monkeypatch
         )

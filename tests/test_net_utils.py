@@ -7,12 +7,16 @@ from __future__ import annotations
 import ipaddress
 import socket
 import sys
+import threading
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 import openfollow.net_utils as net_utils_module
 from openfollow.net_utils import (
+    BoundedResolver,
+    HostLookup,
     Ipv4Route,
     get_iface_for_ip,
     get_iface_ipv4,
@@ -1194,3 +1198,361 @@ def test_read_ipv4_routes_reads_the_kernel_table_by_default(tmp_path, monkeypatc
     path.write_text(_ROUTE_HEADER + _row("eth1", "198.51.100.0", "0.0.0.0", 0x1, "0", "255.255.255.0"))
     monkeypatch.setattr(net_utils_module, "_PROC_NET_ROUTE", path)
     assert [route.iface for route in read_ipv4_routes() or []] == ["eth1"]
+
+
+# --------------------------------------------------------------------------- #
+# BoundedResolver
+# --------------------------------------------------------------------------- #
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture()
+def dns(monkeypatch):
+    """``getaddrinfo`` answering from ``answers`` (a name missing there fails),
+    recording every call, and failing the test on a thread that dies."""
+    state = SimpleNamespace(answers={"cam.example": ["192.0.2.20"]}, calls=[], gate=None)
+
+    def _getaddrinfo(host, port, family=0, kind=0, *_a, **_k):
+        state.calls.append((host, family))
+        if state.gate is not None:
+            state.gate.wait(5)
+        if host not in state.answers:
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        return [
+            (socket.AF_INET6 if ":" in a else socket.AF_INET, kind, 17, "", (a, 0)) for a in state.answers[host]
+        ] * 2  # one entry per socket type, as the real call returns
+
+    monkeypatch.setattr(net_utils_module.socket, "getaddrinfo", _getaddrinfo)
+    crashes: list = []
+    monkeypatch.setattr(threading, "excepthook", crashes.append)
+    yield state
+    if state.gate is not None:
+        state.gate.set()
+    for worker in [t for t in threading.enumerate() if t.name == "test-dns"]:
+        worker.join(5)
+    assert crashes == []
+
+
+def _resolver(**kwargs) -> BoundedResolver:
+    return BoundedResolver(thread_name="test-dns", **kwargs)
+
+
+def _join_test_lookups() -> None:
+    for worker in [t for t in threading.enumerate() if t.name == "test-dns"]:
+        threading.Thread.join(worker, 5)
+
+
+class TestBoundedResolver:
+    @pytest.mark.parametrize("literal", ["192.0.2.20", "2001:db8::20"])
+    def test_a_literal_is_its_own_answer(self, dns, literal: str) -> None:
+        assert _resolver().lookup(literal, 1.0) == HostLookup("literal", (literal,))
+        assert dns.calls == []
+
+    def test_an_ipv4_resolver_refuses_an_ipv6_literal(self, dns) -> None:
+        found = _resolver(family=socket.AF_INET).lookup("2001:db8::20", 1.0)
+        assert found == HostLookup("literal", error="not an IPv4 address")
+
+    def test_a_name_resolves_to_every_address_once(self, dns) -> None:
+        dns.answers["cam.example"] = ["192.0.2.20", "2001:db8::20"]
+        assert _resolver().lookup("cam.example", 1.0) == HostLookup("resolved", ("192.0.2.20", "2001:db8::20"))
+
+    def test_the_family_reaches_the_lookup(self, dns) -> None:
+        _resolver(family=socket.AF_INET).lookup("cam.example", 1.0)
+        assert dns.calls == [("cam.example", socket.AF_INET)]
+
+    def test_without_a_lifetime_every_call_looks_up_again(self, dns) -> None:
+        resolver = _resolver()
+        for _ in range(2):
+            assert resolver.lookup("cam.example", 1.0).addresses == ("192.0.2.20",)
+        assert len(dns.calls) == 2
+        assert resolver.cached("cam.example") == ()
+
+    def test_an_answer_is_reused_for_its_lifetime(self, dns) -> None:
+        clock = _Clock()
+        resolver = _resolver(ttl_s=30.0, clock=clock)
+        resolver.lookup("cam.example", 1.0)
+        assert resolver.lookup("cam.example", 1.0).addresses == ("192.0.2.20",)
+        assert resolver.cached("cam.example") == ("192.0.2.20",)
+        assert len(dns.calls) == 1
+
+        clock.now += 30.0
+        dns.answers["cam.example"] = ["192.0.2.30"]
+        assert resolver.cached("cam.example") == ()
+        assert resolver.lookup("cam.example", 1.0).addresses == ("192.0.2.30",)
+
+    def test_a_failure_is_reported_with_its_reason(self, dns) -> None:
+        found = _resolver().lookup("nowhere.example", 1.0)
+        assert found.outcome == "failed"
+        assert "not known" in found.error
+
+    def test_a_failure_is_remembered_only_when_asked(self, dns) -> None:
+        clock = _Clock()
+        remembering = _resolver(failure_ttl_s=30.0, clock=clock)
+        for _ in range(2):
+            assert remembering.lookup("nowhere.example", 1.0).outcome == "failed"
+        assert len(dns.calls) == 1
+        clock.now += 30.0
+        remembering.lookup("nowhere.example", 1.0)
+        assert len(dns.calls) == 2
+
+        forgetting = _resolver(ttl_s=30.0, clock=clock)
+        for _ in range(2):
+            forgetting.lookup("nowhere.example", 1.0)
+        assert len(dns.calls) == 4
+
+    def test_an_empty_answer_is_a_failure(self, dns) -> None:
+        dns.answers["empty.example"] = []
+        assert _resolver().lookup("empty.example", 1.0) == HostLookup("failed", error="no address")
+
+    def test_a_malformed_name_is_a_failure_not_a_dead_thread(self, dns, monkeypatch) -> None:
+        """IDNA encoding rejects an empty label with a ValueError, not an OSError."""
+
+        def _idna(*_a, **_k):
+            raise UnicodeError("label empty or too long")
+
+        monkeypatch.setattr(net_utils_module.socket, "getaddrinfo", _idna)
+        resolver = _resolver()
+        for _ in range(2):
+            found = resolver.lookup("cam..example", 1.0)
+            assert found == HostLookup("failed", error="label empty or too long")
+
+    def test_a_slow_lookup_is_waited_out_once_and_serves_the_next_caller(self, dns) -> None:
+        """A caller whose budget has already passed since the lookup started does
+        not wait again; the answer serves whoever asks after it ends."""
+        clock = _Clock()
+        dns.gate = threading.Event()
+        resolver = _resolver(ttl_s=30.0, clock=clock)
+        assert resolver.lookup("cam.example", 0.01) == HostLookup("pending")
+
+        clock.now += 1.0
+        # Answering while a second wait would still run tells a wait from none.
+        threading.Timer(0.05, dns.gate.set).start()
+        assert resolver.lookup("cam.example", 0.5) == HostLookup("pending")
+
+        _join_test_lookups()
+        assert resolver.lookup("cam.example", 0.5).addresses == ("192.0.2.20",)
+        assert len(dns.calls) == 1
+
+    def test_callers_inside_the_wait_share_it(self, dns) -> None:
+        """A caller arriving while the lookup is within its budget waits on it too."""
+        dns.gate = threading.Event()
+        resolver = _resolver(ttl_s=30.0)
+        first: list[HostLookup] = []
+        waiter = threading.Thread(target=lambda: first.append(resolver.lookup("cam.example", 5.0)))
+        waiter.start()
+        while not dns.calls:
+            threading.Event().wait(0.001)
+        threading.Timer(0.05, dns.gate.set).start()
+        assert resolver.lookup("cam.example", 5.0) == HostLookup("resolved", ("192.0.2.20",))
+        waiter.join(5)
+        assert first == [HostLookup("resolved", ("192.0.2.20",))]
+        assert len(dns.calls) == 1
+
+    def test_a_short_wait_elsewhere_does_not_shorten_another_callers(self, dns) -> None:
+        """The panel's zero wait must not leave the OSC sender, with a second to
+        spare, without the answer that arrives inside it."""
+        dns.gate = threading.Event()
+        resolver = _resolver(ttl_s=30.0)
+        assert resolver.lookup("cam.example", 0.0) == HostLookup("pending")
+        threading.Timer(0.05, dns.gate.set).start()
+        assert resolver.lookup("cam.example", 5.0) == HostLookup("resolved", ("192.0.2.20",))
+        assert len(dns.calls) == 1
+
+    def test_a_timed_out_lookup_reads_pending_not_failed_until_its_answer_arrives(self, dns) -> None:
+        """A failure lifetime remembers failures, not lookups still running: the
+        panel would otherwise call a name that is resolving "not resolved"."""
+        dns.gate = threading.Event()
+        resolver = _resolver(ttl_s=30.0, failure_ttl_s=30.0)
+        assert resolver.lookup("cam.example", 0.01).outcome == "pending"
+        assert resolver.lookup("cam.example", 0.01) == HostLookup("pending")
+        dns.gate.set()
+        _join_test_lookups()
+        assert resolver.lookup("cam.example", 1.0).outcome == "resolved"
+        assert len(dns.calls) == 1
+
+    def test_a_late_answer_is_served_only_within_its_lifetime(self, dns) -> None:
+        dns.gate = threading.Event()
+        resolver = _resolver()
+        assert resolver.lookup("cam.example", 0.01).outcome == "pending"
+        dns.gate.set()
+        _join_test_lookups()
+        assert resolver.lookup("cam.example", 1.0).outcome == "resolved"
+        assert len(dns.calls) == 2
+
+    def test_a_prefetched_name_is_waited_on_not_looked_up_again(self, dns) -> None:
+        resolver = _resolver(ttl_s=30.0)
+        resolver.prefetch("cam.example")
+        assert resolver.lookup("cam.example", 5.0).addresses == ("192.0.2.20",)
+        assert len(dns.calls) == 1
+
+    def test_a_lookup_that_cannot_start_does_not_block_the_name(self, dns) -> None:
+        starts: list[int] = []
+
+        class _NoThread:
+            def start(self) -> None:
+                raise RuntimeError("can't start new thread")
+
+        def _factory(**kwargs: Any) -> Any:
+            starts.append(1)
+            return _NoThread() if len(starts) == 1 else threading.Thread(**kwargs)
+
+        resolver = _resolver(ttl_s=30.0, thread_factory=_factory)
+        assert resolver.lookup("cam.example", 1.0) == HostLookup("skipped", error="can't start new thread")
+        assert resolver.lookup("cam.example", 1.0).addresses == ("192.0.2.20",)
+
+    def test_a_lookup_cleared_while_it_failed_to_start_leaves_the_name_free(self, dns) -> None:
+        refused: list[BoundedResolver] = []
+
+        class _ClearedThenRefused:
+            def start(self) -> None:
+                refused[0].clear()
+                raise RuntimeError("can't start new thread")
+
+        def _factory(**kwargs: Any) -> Any:
+            return _ClearedThenRefused() if len(refused) == 1 and not dns.calls else threading.Thread(**kwargs)
+
+        resolver = _resolver(ttl_s=30.0, thread_factory=_factory)
+        refused.append(resolver)
+        assert resolver.lookup("cam.example", 1.0).outcome == "skipped"
+        refused.append(resolver)
+        assert resolver.lookup("cam.example", 1.0).addresses == ("192.0.2.20",)
+
+    def test_a_caller_waiting_on_a_lookup_that_could_not_start_is_told_so(self, dns) -> None:
+        """Not that the name does not resolve: every waiter hears what the starter hears."""
+        joined = threading.Event()
+        waiting: list[HostLookup] = []
+
+        def _clock() -> float:
+            # A second caller computing its wait has joined the lookup.
+            if threading.current_thread().name == "second-caller":
+                joined.set()
+            return 1000.0
+
+        class _RefusedOnceJoined:
+            def start(self) -> None:
+                second = threading.Thread(
+                    target=lambda: waiting.append(resolver.lookup("cam.example", 5.0)), name="second-caller"
+                )
+                second.start()
+                joined.wait(5)
+                raise RuntimeError("can't start new thread")
+
+        resolver = _resolver(clock=_clock, thread_factory=lambda **_k: _RefusedOnceJoined())
+        assert resolver.lookup("cam.example", 5.0) == HostLookup("skipped", error="can't start new thread")
+        for thread in [t for t in threading.enumerate() if t.name == "second-caller"]:
+            thread.join(5)
+        assert waiting == [HostLookup("skipped", error="can't start new thread")]
+
+    def test_too_many_names_waiting_skips_another(self, dns) -> None:
+        dns.gate = threading.Event()
+        dns.answers.update({"a.example": ["192.0.2.1"], "b.example": ["192.0.2.2"]})
+        resolver = _resolver(max_in_flight=1)
+        assert resolver.lookup("a.example", 0.01).outcome == "pending"
+        assert resolver.lookup("b.example", 0.01) == HostLookup("skipped", error="too many lookups still running")
+        dns.gate.set()
+        for worker in [t for t in threading.enumerate() if t.name == "test-dns"]:
+            worker.join(5)
+        assert resolver.lookup("b.example", 1.0).addresses == ("192.0.2.2",)
+
+    def test_the_cap_counts_a_lookup_clear_forgot(self, dns) -> None:
+        """Forgotten, it still holds a thread until the resolver answers it."""
+        dns.gate = threading.Event()
+        dns.answers.update({"a.example": ["192.0.2.1"], "b.example": ["192.0.2.2"]})
+        resolver = _resolver(max_in_flight=1)
+        assert resolver.lookup("a.example", 0.01).outcome == "pending"
+        resolver.clear()
+        assert resolver.lookup("b.example", 0.01) == HostLookup("skipped", error="too many lookups still running")
+        dns.gate.set()
+        _join_test_lookups()
+        assert resolver.lookup("b.example", 1.0).addresses == ("192.0.2.2",)
+
+    def test_clear_forgets_every_answer(self, dns) -> None:
+        resolver = _resolver(ttl_s=30.0)
+        resolver.lookup("cam.example", 1.0)
+        resolver.clear()
+        assert resolver.cached("cam.example") == ()
+        resolver.lookup("cam.example", 1.0)
+        assert len(dns.calls) == 2
+
+    def test_clear_drops_a_running_lookups_answer(self, dns) -> None:
+        """Nothing a lookup started before ``clear()`` finds may reach a caller after it."""
+        dns.gate = threading.Event()
+        resolver = _resolver(ttl_s=30.0)
+        assert resolver.lookup("cam.example", 0.01).outcome == "pending"
+        resolver.clear()
+        dns.gate.set()
+        _join_test_lookups()
+        assert resolver.cached("cam.example") == ()
+        assert resolver.lookup("cam.example", 1.0).outcome == "resolved"
+        assert len(dns.calls) == 2
+
+    def test_a_caller_waiting_through_clear_gets_no_answer(self, dns) -> None:
+        dns.gate = threading.Event()
+        resolver = _resolver(ttl_s=30.0)
+        results: list[HostLookup] = []
+        waiter = threading.Thread(target=lambda: results.append(resolver.lookup("cam.example", 5.0)))
+        waiter.start()
+        while not dns.calls:
+            threading.Event().wait(0.001)
+        resolver.clear()
+        dns.gate.set()
+        waiter.join(5)
+        assert results == [HostLookup("failed", error="no answer")]
+
+    def test_an_answer_past_its_lifetime_is_dropped(self, dns) -> None:
+        clock = _Clock()
+        resolver = _resolver(ttl_s=30.0, clock=clock)
+        dns.answers["other.example"] = ["192.0.2.30"]
+        resolver.lookup("cam.example", 1.0)
+        clock.now += 31.0
+        resolver.lookup("other.example", 1.0)
+        assert len(resolver) == 1
+        assert resolver.cached("other.example") == ("192.0.2.30",)
+
+    def test_cached_knows_a_literal_without_a_lookup(self, dns) -> None:
+        assert _resolver().cached("192.0.2.20") == ("192.0.2.20",)
+        assert _resolver(family=socket.AF_INET).cached("2001:db8::20") == ()
+        assert dns.calls == []
+
+    def test_a_finished_lookup_still_exiting_is_not_taken_for_a_running_one(self, dns) -> None:
+        """A worker stores its answer, then takes a moment to exit. Judged by
+        liveness, a caller in that moment would write "timed out" over a good
+        answer and, with a failure lifetime, black the name out."""
+
+        class _Lingering(threading.Thread):
+            def start(self) -> None:
+                self.run()  # the work finishes at once, but the thread never reports exiting
+
+            def is_alive(self) -> bool:
+                return True
+
+        resolver = _resolver(failure_ttl_s=30.0, thread_factory=_Lingering)
+        assert resolver.lookup("cam.example", 0.01).addresses == ("192.0.2.20",)
+        assert resolver.lookup("cam.example", 0.01).addresses == ("192.0.2.20",)
+
+
+@pytest.mark.parametrize(
+    ("resolver", "thread_name"),
+    [(net_utils_module.HOST_RESOLVER, "host-dns"), (net_utils_module.IPV4_RESOLVER, "ipv4-dns")],
+    ids=["host", "ipv4"],
+)
+def test_the_shared_resolvers_cap_how_many_names_resolve_at_once(
+    dns, resolver: BoundedResolver, thread_name: str
+) -> None:
+    """A LAN with no resolver must not collect a hung thread per name ever typed."""
+    dns.gate = threading.Event()
+    try:
+        for i in range(net_utils_module.MAX_LOOKUPS_IN_FLIGHT):
+            assert resolver.lookup(f"n{i}.example", 0.0).outcome == "pending"
+        assert resolver.lookup("one-more.example", 0.0).outcome == "skipped"
+    finally:
+        dns.gate.set()
+        for worker in [t for t in threading.enumerate() if t.name == thread_name]:
+            worker.join(5)

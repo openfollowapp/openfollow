@@ -12,7 +12,10 @@ from __future__ import annotations
 import ipaddress
 import socket
 import sys
+import threading
 import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NamedTuple
 
@@ -417,3 +420,210 @@ def read_ipv4_routes(path: Path | None = None) -> list[Ipv4Route] | None:
             continue
         routes.append(route)
     return routes
+
+
+@dataclass(frozen=True)
+class HostLookup:
+    """What a bounded lookup found: every address, or why there is none."""
+
+    # "resolved"; "literal" (an address, not a name; *error* says when the
+    # resolver's family excludes it); "pending" (still running past the wait);
+    # "failed"; or "skipped" (not started: too many running, or no thread to run it).
+    outcome: Literal["resolved", "literal", "pending", "failed", "skipped"]
+    addresses: tuple[str, ...] = ()
+    error: str = ""
+
+
+@dataclass(eq=False)
+class _Lookup:
+    """One lookup in flight; every caller waiting on it reads its answer here."""
+
+    host: str
+    generation: int
+    started: float
+    done: threading.Event = field(default_factory=threading.Event)
+    # (when, addresses, error), set once by the worker.
+    answer: tuple[float, tuple[str, ...], str] | None = None
+    # Why no thread could run it; every caller waiting on it is told so.
+    not_started: str | None = None
+
+
+class BoundedResolver:
+    """Host name lookups a caller waits for only so long.
+
+    ``getaddrinfo`` takes no timeout, so on a LAN with no resolver a bare call
+    blocks for as long as the OS keeps retrying. Each lookup runs on a daemon
+    thread instead, and one name never has two at once. A caller waits at most
+    its own budget counted from when the lookup started, so one older than that
+    answers "pending" at once, and a short wait elsewhere shortens no one
+    else's. A lookup keeps running past every wait, and its answer serves the
+    next caller. ``max_in_flight`` caps how many lookup threads may be alive.
+
+    An answer is remembered for ``ttl_s`` and a failure for ``failure_ttl_s``,
+    so a broken name does not respawn a thread per call.
+    """
+
+    def __init__(
+        self,
+        *,
+        family: int = socket.AF_UNSPEC,
+        ttl_s: float = 0.0,
+        failure_ttl_s: float = 0.0,
+        max_in_flight: int = 0,
+        thread_name: str = "dns",
+        clock: Callable[[], float] = time.monotonic,
+        thread_factory: Callable[..., threading.Thread] = threading.Thread,
+    ) -> None:
+        self._family = family
+        self._ttl_s = ttl_s
+        self._failure_ttl_s = failure_ttl_s
+        self._max_in_flight = max_in_flight
+        self._thread_name = thread_name
+        self._clock = clock
+        self._thread_factory = thread_factory
+        self._lock = threading.Lock()
+        # host -> (when, addresses, error) from the last lookup that finished.
+        self._answers: dict[str, tuple[float, tuple[str, ...], str]] = {}
+        self._pending: dict[str, _Lookup] = {}
+        # Lookup threads still running, including any ``clear()`` forgot.
+        self._alive = 0
+        # Bumped by ``clear()``; a lookup started before it stores nothing.
+        self._generation = 0
+
+    def __len__(self) -> int:
+        """How many names have a remembered answer."""
+        with self._lock:
+            return len(self._answers)
+
+    def lookup(self, host: str, wait_s: float) -> HostLookup:
+        """*host*'s addresses, waiting at most *wait_s* from when its lookup started."""
+        found = self._begin(host)
+        if isinstance(found, HostLookup):
+            return found
+        found.done.wait(max(0.0, found.started + wait_s - self._clock()))
+        with self._lock:
+            cleared = found.generation != self._generation
+        if found.not_started is not None:
+            return HostLookup("skipped", error=found.not_started)
+        if found.answer is None:
+            return HostLookup("pending")
+        if cleared:
+            return HostLookup("failed", error="no answer")
+        return self._as_lookup(found.answer)
+
+    def prefetch(self, host: str) -> None:
+        """Start *host*'s lookup without waiting, so several can run at once."""
+        self._begin(host)
+
+    def cached(self, host: str) -> tuple[str, ...]:
+        """What *host* is known to resolve to, without looking it up."""
+        literal = self._literal(host)
+        if literal is not None:
+            return literal.addresses
+        with self._lock:
+            known = self._known(host)
+        return known.addresses if known is not None else ()
+
+    def clear(self) -> None:
+        """Forget every answer and every running lookup; one still running stores nothing."""
+        with self._lock:
+            self._answers.clear()
+            self._pending.clear()
+            self._generation += 1
+
+    def _begin(self, host: str) -> HostLookup | _Lookup:
+        """A known answer, or the lookup to wait on, started here if none is running."""
+        literal = self._literal(host)
+        if literal is not None:
+            return literal
+        with self._lock:
+            known = self._known(host)
+            if known is not None:
+                return known
+            running = self._pending.get(host)
+            if running is not None:
+                return running
+            if self._max_in_flight and self._alive >= self._max_in_flight:
+                return HostLookup("skipped", error="too many lookups still running")
+            running = _Lookup(host, self._generation, self._clock())
+            self._pending[host] = running
+            self._alive += 1
+        # Started outside the lock, which the worker takes to store its answer.
+        try:
+            self._thread_factory(target=self._resolve, args=(running,), name=self._thread_name, daemon=True).start()
+        except RuntimeError as exc:
+            with self._lock:
+                self._alive -= 1
+                if self._pending.get(host) is running:
+                    del self._pending[host]
+                running.not_started = str(exc)
+            running.done.set()
+            return HostLookup("skipped", error=str(exc))
+        return running
+
+    def _literal(self, host: str) -> HostLookup | None:
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return None
+        if self._family == socket.AF_INET and address.version != 4:
+            return HostLookup("literal", error="not an IPv4 address")
+        return HostLookup("literal", (str(address),))
+
+    def _expired(self, answer: tuple[float, tuple[str, ...], str], now: float) -> bool:
+        when, addresses, _error = answer
+        return now - when >= (self._ttl_s if addresses else self._failure_ttl_s)
+
+    def _known(self, host: str) -> HostLookup | None:
+        """A remembered answer still within its lifetime. Call with the lock held."""
+        answer = self._answers.get(host)
+        if answer is None or self._expired(answer, self._clock()):
+            return None
+        return self._as_lookup(answer)
+
+    @staticmethod
+    def _as_lookup(answer: tuple[float, tuple[str, ...], str]) -> HostLookup:
+        _when, addresses, error = answer
+        return HostLookup("resolved", addresses) if addresses else HostLookup("failed", error=error)
+
+    def _resolve(self, running: _Lookup) -> None:
+        addresses: tuple[str, ...] = ()
+        error = ""
+        try:
+            infos = socket.getaddrinfo(running.host, None, self._family, socket.SOCK_DGRAM)
+            addresses = tuple(dict.fromkeys(str(info[4][0]) for info in infos))
+            if not addresses:
+                error = "no address"
+        except Exception as exc:  # noqa: BLE001 - any failure is this name's answer
+            # Not only OSError: IDNA encoding rejects an empty or over-long label
+            # with a ValueError, and a dead worker would block the name for good.
+            error = str(exc) or exc.__class__.__name__
+        finally:
+            with self._lock:
+                now = self._clock()
+                running.answer = (now, addresses, error)
+                self._alive -= 1
+                if running.generation == self._generation:
+                    del self._pending[running.host]
+                    # Expired answers serve no one; dropped here so the map stays bounded.
+                    self._answers = {h: a for h, a in self._answers.items() if not self._expired(a, now)}
+                    self._answers[running.host] = running.answer
+            running.done.set()
+
+
+# Names each shared resolver may have resolving at once: a LAN with no resolver
+# must not collect a hung thread per name the operator ever typed.
+MAX_LOOKUPS_IN_FLIGHT = 16
+# Resolves a destination once per name for every output and panel row that
+# asks; a failure is retried sooner, so a camera switched on is found quickly.
+HOST_RESOLVER = BoundedResolver(
+    ttl_s=30.0, failure_ttl_s=10.0, max_in_flight=MAX_LOOKUPS_IN_FLIGHT, thread_name="host-dns"
+)
+# OSC output and RTTrPM send from IPv4 sockets, so a dual-stack name means its A record.
+IPV4_RESOLVER = BoundedResolver(
+    family=socket.AF_INET,
+    ttl_s=30.0,
+    failure_ttl_s=30.0,
+    max_in_flight=MAX_LOOKUPS_IN_FLIGHT,
+    thread_name="ipv4-dns",
+)

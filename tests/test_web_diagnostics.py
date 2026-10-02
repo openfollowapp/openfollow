@@ -4654,9 +4654,37 @@ def test_resolve_host_bounded_gives_up_on_a_hanging_resolver(monkeypatch: pytest
     try:
         address, note = diag.resolve_host_bounded("cam.local", timeout_s=0.05)
         assert address is None
-        assert "timed out" in note
+        assert "has not answered within" in note
     finally:
         release.set()
+        _join_dns_workers()
+
+
+def test_resolve_host_bounded_answers_from_the_lookup_the_pin_already_made(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One resolver for the camera's name, so A5 and A6 cannot disagree about it."""
+    from openfollow.net_utils import HOST_RESOLVER
+
+    calls: list[str] = []
+
+    def _answer(host: str, *_a: Any, **_k: Any) -> Any:
+        calls.append(host)
+        return [(socket.AF_INET, None, None, "", ("10.1.2.3", 0))]
+
+    monkeypatch.setattr(diag.socket, "getaddrinfo", _answer)
+    HOST_RESOLVER.lookup("cam.local", 1.0)
+    assert diag.resolve_host_bounded("cam.local") == ("10.1.2.3", "resolves to 10.1.2.3")
+    assert calls == ["cam.local"]
+
+
+def test_resolve_host_bounded_says_when_a_lookup_could_not_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openfollow.net_utils import BoundedResolver
+
+    class _NoThread:
+        def start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(diag, "HOST_RESOLVER", BoundedResolver(thread_factory=lambda **_k: _NoThread()))
+    assert diag.resolve_host_bounded("cam.local") == (None, "DNS lookup could not start (can't start new thread)")
 
 
 def test_resolve_host_bounded_returns_the_resolved_address(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4877,39 +4905,35 @@ def test_collect_source_reachability_stops_at_an_unresolvable_name(
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_host_bounded_skips_when_earlier_lookups_are_still_hanging(
+def _join_dns_workers() -> None:
+    for worker in [t for t in threading.enumerate() if t.name == "host-dns"]:
+        worker.join(5)
+
+
+def test_resolve_host_bounded_never_starts_a_second_lookup_for_one_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Giving up on a lookup does not stop it. On the resolver-less LAN this
     bounding exists for, repeated bundle downloads would otherwise pile up a
-    thread apiece."""
+    thread apiece; a repeat waits on the lookup already running instead."""
     release = threading.Event()
+    calls: list[str] = []
 
-    def _hang(*_a: Any, **_k: Any) -> Any:
+    def _hang(host: str, *_a: Any, **_k: Any) -> Any:
+        calls.append(host)
         release.wait(10)
         return []
 
     monkeypatch.setattr(diag.socket, "getaddrinfo", _hang)
     try:
-        for _ in range(diag._MAX_INFLIGHT_DNS):
+        for _ in range(3):
             address, note = diag.resolve_host_bounded("cam.local", timeout_s=0.05)
             assert address is None
-            assert "timed out" in note
-        address, note = diag.resolve_host_bounded("cam.local", timeout_s=0.05)
-        assert address is None
-        assert "skipped" in note
+            assert "has not answered within" in note
+        assert calls == ["cam.local"]
     finally:
         release.set()
-    # The worker owns its slot and hands it back when it finally returns, so
-    # the cap is a cap and not a one-way latch.
-    reclaimed = []
-    deadline = time.monotonic() + 5.0
-    while len(reclaimed) < diag._MAX_INFLIGHT_DNS and time.monotonic() < deadline:
-        if diag._dns_slots.acquire(blocking=False):
-            reclaimed.append(True)
-    for _ in reclaimed:
-        diag._dns_slots.release()
-    assert len(reclaimed) == diag._MAX_INFLIGHT_DNS
+        _join_dns_workers()
 
 
 def test_describe_address_reachability_matches_an_ipv6_target_on_link(

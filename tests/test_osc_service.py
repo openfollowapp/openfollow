@@ -1453,9 +1453,13 @@ def test_udp_dest_class_hostname_is_unicast() -> None:
 # --------------------------------------------------------------------------- #
 
 
-@pytest.fixture(autouse=True)
-def _clear_resolve_cache() -> None:
-    service_module._resolve_failures.clear()
+def _answers(address: str) -> Any:
+    """A ``getaddrinfo`` stand-in that resolves every name to *address*."""
+
+    def _getaddrinfo(host: str, *_a: Any, **_k: Any) -> list[tuple[Any, ...]]:
+        return [(socket.AF_INET, socket.SOCK_DGRAM, 17, "", (address, 0))]
+
+    return _getaddrinfo
 
 
 def test_resolve_host_passes_ipv4_literal_through_without_lookup(
@@ -1464,10 +1468,10 @@ def test_resolve_host_passes_ipv4_literal_through_without_lookup(
     """An IPv4 literal must short-circuit – no DNS lookup at all, so the
     per-frame send loop never pays for resolution on the common path."""
 
-    def _boom(_host: str) -> str:
-        raise AssertionError("gethostbyname must not be called for an IP literal")
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("getaddrinfo must not be called for an IP literal")
 
-    monkeypatch.setattr(service_module.socket, "gethostbyname", _boom)
+    monkeypatch.setattr(service_module.socket, "getaddrinfo", _boom)
     assert service_module._resolve_host("192.168.1.5") == "192.168.1.5"
 
 
@@ -1475,7 +1479,7 @@ def test_resolve_host_resolves_hostname_to_literal(monkeypatch: pytest.MonkeyPat
     """A hostname is resolved to an IPv4 literal that is then handed to
     ``SimpleUDPClient`` (so pythonosc's own ``getaddrinfo`` resolves
     instantly instead of blocking on the scheduler thread)."""
-    monkeypatch.setattr(service_module.socket, "gethostbyname", lambda host: "10.0.0.7")
+    monkeypatch.setattr(service_module.socket, "getaddrinfo", _answers("10.0.0.7"))
     monkeypatch.setattr(service_module, "SimpleUDPClient", _FakeClient)
     client = service_module._make_client("osc.example.com", 9000, "udp", "slip")
     assert client.host == "10.0.0.7"
@@ -1487,28 +1491,41 @@ def test_resolve_host_bounds_slow_dns_and_raises(monkeypatch: pytest.MonkeyPatch
     well before the (10×-longer) lookup would have returned."""
     monkeypatch.setattr(service_module, "_RESOLVE_TIMEOUT_S", 0.05)
 
-    def _slow(_host: str) -> str:
+    def _slow(*_a: Any, **_k: Any) -> Any:
         time.sleep(5.0)
-        return "10.0.0.9"
+        return _answers("10.0.0.9")("slow.example.com")
 
-    monkeypatch.setattr(service_module.socket, "gethostbyname", _slow)
+    monkeypatch.setattr(service_module.socket, "getaddrinfo", _slow)
     start = time.monotonic()
     # Sub-second deadline must render with its fraction, not round to "0s".
-    with pytest.raises(OSError, match="timed out after 0.05s"):
+    with pytest.raises(OSError, match="has not answered within 0.05s"):
         service_module._resolve_host("slow.example.com")
     # Bounded: returns near the deadline, not after the 5 s sleep.
     assert time.monotonic() - start < 1.0
+
+
+def test_resolve_host_says_when_a_lookup_could_not_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Not a DNS failure: the station could not run the lookup at all."""
+    from openfollow.net_utils import BoundedResolver
+
+    class _NoThread:
+        def start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(service_module, "_resolver", BoundedResolver(thread_factory=lambda **_k: _NoThread()))
+    with pytest.raises(OSError, match=r"^DNS lookup for 'osc.example.com' could not start: can't start new thread$"):
+        service_module._resolve_host("osc.example.com")
 
 
 def test_resolve_host_relays_lookup_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """A failing lookup surfaces as ``OSError`` so ``_get_or_create_client``
     logs it and caches nothing (no client for an unresolvable target)."""
 
-    def _fail(_host: str) -> str:
+    def _fail(*_a: Any, **_k: Any) -> Any:
         raise socket.gaierror("nodename nor servname provided")
 
-    monkeypatch.setattr(service_module.socket, "gethostbyname", _fail)
-    with pytest.raises(OSError, match="failed"):
+    monkeypatch.setattr(service_module.socket, "getaddrinfo", _fail)
+    with pytest.raises(OSError, match="failed: nodename nor servname provided"):
         service_module._resolve_host("nope.invalid")
 
 
@@ -1517,16 +1534,31 @@ def test_resolve_host_caches_failure_to_avoid_respawning_threads(monkeypatch: py
     second resolver thread, bounding thread churn under sustained failure."""
     calls: list[str] = []
 
-    def _fail(host: str) -> str:
+    def _fail(host: str, *_a: Any, **_k: Any) -> Any:
         calls.append(host)
         raise socket.gaierror("nodename nor servname provided")
 
-    monkeypatch.setattr(service_module.socket, "gethostbyname", _fail)
-    with pytest.raises(OSError, match="failed"):
-        service_module._resolve_host("bad.invalid")
-    with pytest.raises(OSError, match="recently failed"):
-        service_module._resolve_host("bad.invalid")
+    monkeypatch.setattr(service_module.socket, "getaddrinfo", _fail)
+    for _ in range(2):
+        with pytest.raises(OSError, match="failed: nodename nor servname provided"):
+            service_module._resolve_host("bad.invalid")
     assert calls == ["bad.invalid"]  # second call short-circuited, no new lookup
+
+
+def test_resolve_host_asks_for_ipv4_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The client, its multicast options and an interface pin are all IPv4."""
+    families: list[int] = []
+
+    def _record(host: str, port: Any, family: int = 0, *_a: Any, **_k: Any) -> Any:
+        families.append(family)
+        return _answers("10.0.0.7")(host)
+
+    monkeypatch.setattr(service_module.socket, "getaddrinfo", _record)
+    assert service_module._resolve_host("osc.example.com") == "10.0.0.7"
+    assert families == [socket.AF_INET]
+    # An address, not a name: DNS was never asked, so the message must not blame it.
+    with pytest.raises(OSError, match=r"^OSC output is IPv4 only, and '2001:db8::7' is not an IPv4 address$"):
+        service_module._resolve_host("2001:db8::7")
 
 
 def test_send_to_slow_hostname_does_not_hang_and_caches_nothing(
@@ -1537,7 +1569,7 @@ def test_send_to_slow_hostname_does_not_hang_and_caches_nothing(
     cached, matching the existing construction-failure contract."""
     monkeypatch.setattr(service_module, "_RESOLVE_TIMEOUT_S", 0.05)
     monkeypatch.setattr(service_module, "SimpleUDPClient", _FakeClient)
-    monkeypatch.setattr(service_module.socket, "gethostbyname", lambda host: time.sleep(5.0))
+    monkeypatch.setattr(service_module.socket, "getaddrinfo", lambda *_a, **_k: time.sleep(5.0))
     svc = OscService()
     start = time.monotonic()
     svc.send("/x", host="slow.example.com", port=9000)  # must not hang

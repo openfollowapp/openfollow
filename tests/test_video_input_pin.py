@@ -237,6 +237,15 @@ def test_forced_device_route_checks_every_address_of_a_name_with_an_ipv6_one(net
     assert [p.family for p in net.probes] == [socket.AF_INET, socket.AF_INET6]
 
 
+def test_a_name_with_this_stations_ipv6_address_is_not_judged_as_bound(net: SimpleNamespace) -> None:
+    """libsrt may dial the local IPv6 answer, so no device is bound and the remote
+    IPv4 answer is judged by the routing table's choice, not a route through the pin."""
+    net.answers["camera.example"] = [_V6["eth0"], "203.0.113.20"]
+    net.local[socket.AF_INET] = _V4["eth1"]
+    assert check_video_pin("eth1", "camera.example", 5000, forced_device=True) is None
+    assert [p.family for p in net.probes] == [socket.AF_INET]
+
+
 # --------------------------------------------------------------------------- #
 # Route check (RTSP, and SRT off Linux): the routing table's own choice
 # --------------------------------------------------------------------------- #
@@ -481,8 +490,9 @@ def test_config_pin_reads_the_input_config(config: dict[str, Any], expected: str
         (["192.0.2.10", "203.0.113.20"], True),
         (["192.0.2.10"], False),
         (["203.0.113.20", "2001:db8:2::20"], False),
+        (["2001:db8::10", "203.0.113.20"], False),
     ],
-    ids=["unknown", "remote-ipv4", "remote-and-local", "local", "with-ipv6"],
+    ids=["unknown", "remote-ipv4", "remote-and-local", "local", "with-ipv6", "with-a-local-ipv6"],
 )
 def test_binds_device_only_for_a_remote_ipv4_destination(
     net: SimpleNamespace, answers: list[str], expected: bool

@@ -165,16 +165,17 @@ def is_local_destination(host: str) -> bool:
 def binds_device(host: str) -> bool:
     """Whether a pinned SRT connection to *host* is bound to the device.
 
-    libsrt refuses a device on anything but an IPv4 socket, so a name with an
-    IPv6 address is left to the routing table, which the pin check verified.
-    A name not yet resolved is bound, so nothing can leave elsewhere.
+    libsrt refuses a device on anything but an IPv4 socket and may dial any
+    answer, so a name with an IPv6 address, even this station's own, is left to
+    the routing table, which the pin check verified. A name not yet resolved is
+    bound, so nothing can leave elsewhere.
     """
     if not host or is_loopback_host(host):
         return False
     addresses = _resolver.cached(host)
     owners = _own_addresses()
     remote = [a for a in addresses if not _is_local(a, owners)]
-    return not addresses or (bool(remote) and all(":" not in a for a in remote))
+    return not addresses or (bool(remote) and all(":" not in a for a in addresses))
 
 
 def _route_key(field: str) -> int:
@@ -226,7 +227,7 @@ def check_video_pin(
         return unresolved
     owners = _own_addresses()
     remote = [address for address in found.addresses if not _is_local(address, owners)]
-    forced = forced_device and all(":" not in address for address in remote)
+    forced = forced_device and all(":" not in address for address in found.addresses)
     for address in remote:
         if forced:
             if _routed_through(address, pin) is False:

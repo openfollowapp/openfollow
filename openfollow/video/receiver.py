@@ -433,6 +433,10 @@ class GstNativeSinkReceiver:
         self._pinned_to = None
         self._status_marker.set_disconnected()
 
+    def _note_pin(self) -> None:
+        pin = config_pin(self._input_config)
+        self._pinned_to = pinned_address(pin) if pin else None
+
     @property
     def pinned_to(self) -> str | None:
         """The pinned interface's address the input was last checked against, or None."""
@@ -563,6 +567,7 @@ class GstNativeSinkReceiver:
         Gst.init(None)
         self._reset_video_flow_state()
         self._pin_refusal = None
+        self._note_pin()
         available, reason = self._input.__class__.is_available()
         if not available:
             logger.warning("%s is not available: %s", self._input.display_name, reason)
@@ -570,16 +575,14 @@ class GstNativeSinkReceiver:
             self._state.set_placeholder_pipeline(True)
             self._create_placeholder_pipeline()
             return
-        pin = config_pin(self._input_config)
-        self._pinned_to = pinned_address(pin) if pin else None
         refusal = self._input.__class__.preflight(self._input_config)
         if refusal is not None:
-            # Not dialled at all, so nothing leaves on another interface.
+            # Nothing is built, so nothing leaves on another interface; the
+            # caller schedules the retry.
             logger.warning("%s not started: %s", self._input.display_name, refusal.detail)
             self._pin_refusal = refusal
             self._status_marker.set_disconnected(refusal.detail, failure=refusal.failure)
             self._state.set_placeholder_pipeline(True)
-            self._create_placeholder_pipeline()
             return
         try:
             self._pipeline = self._input.create_pipeline(
@@ -726,6 +729,8 @@ class GstNativeSinkReceiver:
             # but show placeholder when no URL is configured.
             self._state.deactivate_source_selection()
             if not source_configured:
+                # Recorded even though nothing dials, or the network plane rebuilds this forever.
+                self._note_pin()
                 self._status_marker.set_disconnected(
                     f"No {self._input.display_name} URL configured", failure=VideoFailure.NOT_CONFIGURED
                 )
@@ -739,15 +744,16 @@ class GstNativeSinkReceiver:
                 return
             if self._pipeline is None:
                 self.create_pipeline()
+            if self._pin_refusal is not None:
+                # Retried on the normal backoff, so a returning interface is picked up.
+                self._schedule_reconnect(self._pin_refusal.detail, failure=self._pin_refusal.failure)
+                return
             if self._pipeline is not None:
                 result = self._pipeline.set_state(Gst.State.PLAYING)
                 if result == Gst.StateChangeReturn.FAILURE:
                     self._handle_refused_start(self._pipeline)
                 else:
-                    if self._pin_refusal is not None:
-                        # Retried on the normal backoff, so a returning interface is picked up.
-                        self._schedule_reconnect(self._pin_refusal.detail, failure=self._pin_refusal.failure)
-                    elif self._state.is_placeholder_pipeline:
+                    if self._state.is_placeholder_pipeline:
                         logger.info(
                             "Placeholder pipeline started for %s input.",
                             self._input.display_name,

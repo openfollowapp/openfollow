@@ -509,13 +509,52 @@ class TestRtpInterfacePin:
         assert "multicast-iface" not in udpsrc.properties
         assert udpsrc.properties.get("address", "") != "198.51.100.10"
 
-    def test_the_preflight_checks_only_the_pin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_the_preflight_checks_the_pin_has_an_address(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from openfollow.video.inputs import rtp
 
         asked: list[tuple] = []
         monkeypatch.setattr(rtp, "check_video_pin", lambda *a, **kw: asked.append((a, kw)))
         RtpInput.preflight({"rtp_url": "rtp://232.1.1.1:4000", "video_input_iface": "eth1"})
         assert asked == [(("eth1",), {})]
+
+    @pytest.fixture()
+    def _owned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import socket
+        from types import SimpleNamespace
+
+        from openfollow import net_egress
+        from openfollow.video.inputs import _pin
+
+        table = {"eth0": "192.0.2.10", "eth1": "198.51.100.10"}
+        monkeypatch.setattr(net_egress, "get_iface_ipv4", lambda iface: table.get(iface, ""))
+        monkeypatch.setattr(
+            _pin.psutil,
+            "net_if_addrs",
+            lambda: {n: [SimpleNamespace(family=socket.AF_INET, address=a)] for n, a in table.items()},
+        )
+
+    @pytest.mark.usefixtures("_owned")
+    @pytest.mark.parametrize(
+        "url",
+        ["rtp://198.51.100.10:5004", "rtp://0.0.0.0:5004", "rtp://127.0.0.1:5004", "rtp://232.1.1.1:4000"],
+        ids=["pinned-address", "wildcard", "loopback", "multicast"],
+    )
+    def test_a_listen_address_the_pin_honours_is_accepted(self, url: str) -> None:
+        assert RtpInput.preflight({"rtp_url": url, "video_input_iface": "eth1"}) is None
+
+    @pytest.mark.usefixtures("_owned")
+    @pytest.mark.parametrize("address", ["192.0.2.10", "203.0.113.9"], ids=["other-interface", "not-local"])
+    def test_a_listen_address_off_the_pin_is_refused(self, address: str) -> None:
+        """The URL's address is bound as given, so it would receive off the pin."""
+        from openfollow.video.failure import VideoFailure
+        from openfollow.video.inputs._pin import PinRefusal
+
+        refusal = RtpInput.preflight({"rtp_url": f"rtp://{address}:5004", "video_input_iface": "eth1"})
+        assert refusal == PinRefusal(VideoFailure.WRONG_INTERFACE, f"{address} is not an address of eth1")
+
+    @pytest.mark.usefixtures("_owned")
+    def test_an_unpinned_listener_is_never_refused(self) -> None:
+        assert RtpInput.preflight({"rtp_url": "rtp://192.0.2.10:5004", "video_input_iface": ""}) is None
 
     def test_the_pin_is_a_config_field_the_panel_owns(self) -> None:
         field = next(f for f in RtpInput.config_fields() if f.name == "video_input_iface")

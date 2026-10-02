@@ -545,6 +545,35 @@ class TestSrtInterfacePin:
         uri = self._uri({"srt_host": "srt://192.0.2.20:5000", **config}, linux=linux, monkeypatch=monkeypatch)
         assert uri == "srt://192.0.2.20:5000"
 
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "192.0.2.10"])
+    def test_a_camera_on_this_station_is_not_bound_to_the_device(
+        self, host: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A device-bound socket cannot reach this station's own addresses, and
+        traffic to them never leaves the box anyway."""
+        import socket
+        from types import SimpleNamespace
+
+        from openfollow.video.inputs import _pin
+
+        monkeypatch.setattr(
+            _pin.psutil,
+            "net_if_addrs",
+            lambda: {"eth0": [SimpleNamespace(family=socket.AF_INET, address="192.0.2.10")]},
+        )
+        uri = self._uri(
+            {"srt_host": f"srt://{host}:9000", "video_input_iface": "eth1"}, linux=True, monkeypatch=monkeypatch
+        )
+        assert "bindtodevice" not in uri
+
+    def test_the_pin_lands_in_the_query_ahead_of_a_fragment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        uri = self._uri(
+            {"srt_host": "srt://192.0.2.20:9000?streamid=#!::r=live,m=request", "video_input_iface": "eth1"},
+            linux=True,
+            monkeypatch=monkeypatch,
+        )
+        assert uri == "srt://192.0.2.20:9000?streamid=&bindtodevice=eth1#!::r=live,m=request"
+
     def test_the_pin_is_a_config_field_the_panel_owns(self) -> None:
         field = next(f for f in SrtInput.config_fields() if f.name == "video_input_iface")
         assert field.device_editable is False

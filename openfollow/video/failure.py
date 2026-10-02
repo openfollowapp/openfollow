@@ -161,6 +161,7 @@ _SENTENCES: dict[VideoFailure, str] = {
 _NO_DIAL_SENTENCES: dict[VideoFailure, str] = {
     VideoFailure.UNREACHABLE: "No video has arrived from {where}.",
     VideoFailure.NO_DATA: "Data is arriving from {where}, but no video could be decoded from it.",
+    VideoFailure.WRONG_INTERFACE: "{where} listens at an address the interface pinned for video input does not have.",
 }
 
 # One short next step per failure, kept separate from the sentence so the two
@@ -193,6 +194,7 @@ _KIND_ACTIONS: dict[SourceKind, dict[VideoFailure, str]] = {
     SourceKind.LISTENER: {
         VideoFailure.UNREACHABLE: "Check the sender is transmitting to this address and port.",
         VideoFailure.NO_DATA: "Check the sender is transmitting the encoding configured on this station.",
+        VideoFailure.WRONG_INTERFACE: "Set the RTP URL's address to 0.0.0.0, or pin the interface that has it.",
     },
     SourceKind.LOCAL: {
         VideoFailure.UNREACHABLE: "Check the device is connected, and not held by another program.",

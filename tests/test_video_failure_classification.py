@@ -243,6 +243,17 @@ class TestOperatorText:
         assert "Network Interface Assignment" in failure_action(down)
         assert failure_action(wrong) == "Check the camera's address, or pin the interface that reaches it."
 
+    def test_a_listener_off_the_pin_is_told_about_its_own_address(self) -> None:
+        """RTP dials nothing: the address at fault is the one it listens at."""
+        wrong = VideoFailure.WRONG_INTERFACE
+        where = "RTP 192.0.2.10:5004 H264 (unicast)"
+        assert failure_sentence(wrong, where=where, kind=SourceKind.LISTENER) == (
+            f"{where} listens at an address the interface pinned for video input does not have."
+        )
+        assert failure_action(wrong, kind=SourceKind.LISTENER) == (
+            "Set the RTP URL's address to 0.0.0.0, or pin the interface that has it."
+        )
+
 
 class TestRefusalArrivesInTheDebugString:
     """``rtspsrc`` and ``srtsrc`` put the OS wording in GStreamer's debug

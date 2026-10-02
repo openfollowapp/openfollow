@@ -1532,6 +1532,7 @@ _DEVICE_IDENTITY_SAMPLES = [
     ("markers_catalog_path", "/mnt/nvme/openfollow/markers.toml"),
     ("testpattern_selected_media", "0123456789abcdef"),
     ("detection.storage_path", "/mnt/nvme/openfollow/yolo"),
+    ("video_input_iface", "eth1"),
 ]
 
 

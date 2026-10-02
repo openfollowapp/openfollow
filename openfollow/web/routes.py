@@ -1297,10 +1297,31 @@ def _osc_membership_address(
     return plane_address(pin)
 
 
+def _plane_address(pin: str, station_iface: str) -> str:
+    """Where a plane binds: the resolved address, or which interface is down."""
+    from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
+
+    resolved, status = resolve_plane_source_ip(pin, station_iface)
+    if status == "down":
+        return f"{plane_source_iface(pin, station_iface)} is down"
+    return resolved
+
+
+def _egress_address(pin: str, host: str, station_iface: str) -> str:
+    """The address cell for a row that dials *host*."""
+    from openfollow.net_egress import is_loopback_host
+    from openfollow.net_utils import plane_source_iface
+
+    if is_loopback_host(host):
+        return "Loopback"
+    # Nothing configured is routed per destination, so no one address describes it.
+    if not plane_source_iface(pin, station_iface):
+        return "Per routing table"
+    return _plane_address(pin, station_iface)
+
+
 def _video_input_row(cfg: AppConfig) -> dict[str, Any]:
     """The active video input's row; read-only with a reason when it cannot be pinned."""
-    from openfollow.net_egress import is_loopback_host
-    from openfollow.net_utils import resolve_plane_source_ip
     from openfollow.video.failure import SourceKind
     from openfollow.video.inputs import get_input_class
 
@@ -1316,15 +1337,9 @@ def _video_input_row(cfg: AppConfig) -> dict[str, Any]:
             "editable": False,
             "note": f"Not supported – {name} chooses its own interface" if named else "Not a network input",
         }
-    pin = cfg.video_input_iface
     endpoint = input_cls.source_endpoint(input_cls.get_config_field_values(cfg))
-    if endpoint is not None and is_loopback_host(endpoint.host):
-        address = "Loopback"
-    elif not pin:
-        address = "Per routing table"
-    else:
-        resolved, status = resolve_plane_source_ip(pin, "")
-        address = f"{pin} is down" if status == "down" else resolved
+    # The video pin never follows the station interface.
+    address = _egress_address(cfg.video_input_iface, endpoint.host if endpoint else "", "")
     return {**row, "key": "video_input_iface", "address": address, "editable": True}
 
 
@@ -1344,30 +1359,12 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
     owns, so giving them their own dropdown would imply an independence they
     don't have.
     """
-    from openfollow.net_egress import is_loopback_host
-    from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
-
-    def _plane_address(pin: str, station_iface: str) -> str:
-        resolved, status = resolve_plane_source_ip(pin, station_iface)
-        if status == "down":
-            return f"{plane_source_iface(pin, station_iface)} is down"
-        return resolved
-
     resolved = web_bind if web_bind is not None else resolve_web_bind_for(cfg)
     station = cfg.psn_source_iface
     station_ip = _plane_address(station, "")
 
     def _addr(pin: str) -> str:
         return _plane_address(pin, station)
-
-    def _egress_address(pin: str, host: str) -> str:
-        # A sender with nothing configured is routed per destination, so no one
-        # address describes it.
-        if is_loopback_host(host):
-            return "Loopback"
-        if not plane_source_iface(pin, station):
-            return "Per routing table"
-        return _addr(pin)
 
     return [
         {
@@ -1399,7 +1396,7 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
             "key": "rttrpm_output.source_iface",
             "label": "RTTrPM output",
             "value": cfg.rttrpm_output.source_iface,
-            "address": _egress_address(cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host),
+            "address": _egress_address(cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host, station),
             "editable": True,
             "blank": "station",
             "experimental": True,
@@ -1422,7 +1419,7 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
                 "key": _dest_pin_key(dest.id),
                 "label": f"OSC to {dest.name or f'{dest.host}:{dest.port}'}",
                 "value": dest.source_iface,
-                "address": _egress_address(dest.source_iface, dest.host),
+                "address": _egress_address(dest.source_iface, dest.host, station),
                 "editable": True,
                 "blank": "station",
             }
@@ -2986,6 +2983,8 @@ _DEVICE_IDENTITY_FIELDS: tuple[str, ...] = (
     "markers_catalog_path",
     "testpattern_selected_media",
     "detection.storage_path",
+    # Blank is the routing table, not the station pin, so a reset would unpin it.
+    "video_input_iface",
 )
 
 

@@ -5018,21 +5018,32 @@ class TestTheInterfacePinRefusesABuild:
     def _refused(self, monkeypatch: pytest.MonkeyPatch) -> receiver_mod.GstNativeSinkReceiver:
         monkeypatch.setattr(FakeInput, "_refusal", self._REFUSAL)
         r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
-        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        self.placeholders: list[FakePipeline] = []
+
+        def _placeholder() -> FakePipeline:
+            self.placeholders.append(FakePipeline())
+            return self.placeholders[-1]
+
+        r._pipeline_assembler.create_placeholder_pipeline = _placeholder
         return r
 
-    def test_a_refused_build_shows_the_verdict_on_the_placeholder(
+    def test_a_refused_build_builds_nothing_and_shows_the_verdict(
         self, fake_gst, fake_glib, fake_input_cls, monkeypatch
     ) -> None:
         r = self._refused(monkeypatch)
+        r._state.set_resolution(1920, 1080)
 
         r.create_pipeline()
 
         assert FakeInput.create_pipeline_call_count == 0
-        assert r._state.is_placeholder_pipeline is True
+        # A placeholder here would only be torn down by the retry that follows.
+        assert self.placeholders == []
+        assert r._pipeline is None
         assert r.status_marker.failure is VideoFailure.WRONG_INTERFACE
         assert r.status_marker.error_message == self._REFUSAL.detail
         assert r.connected is False
+        # The previous feed's geometry is not this input's.
+        assert r.resolution == (0, 0)
 
     def test_play_retries_a_refused_build_on_the_backoff(
         self, fake_gst, fake_glib, fake_input_cls, monkeypatch
@@ -5041,6 +5052,7 @@ class TestTheInterfacePinRefusesABuild:
 
         r.play()
 
+        assert self.placeholders == []
         callbacks = [cb.__name__ for _delay, cb in fake_glib.timers.values()]
         assert callbacks == ["_do_reconnect"]
         assert r.status_marker.failure is VideoFailure.WRONG_INTERFACE
@@ -5098,6 +5110,26 @@ class TestTheInterfacePinRefusesABuild:
 
         assert r.pinned_to is None
         assert FakeInput.create_pipeline_call_count == 1
+
+    def test_an_input_with_no_url_records_the_pin(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """Nothing dials, but the network plane compares against this; left unset
+        it would rebuild the input on every poll."""
+        r = _make_receiver(input_config={"fake_source": "", "video_input_iface": "eth1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+
+        r.play()
+
+        assert r.status_marker.failure is VideoFailure.NOT_CONFIGURED
+        assert r.pinned_to == "198.51.100.10"
+
+    def test_an_unavailable_input_records_the_pin(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        monkeypatch.setattr(FakeInput, "_available", (False, "SDK missing"))
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+
+        r.create_pipeline()
+
+        assert r.pinned_to == "198.51.100.10"
 
     def test_releasing_for_a_down_pin_stops_the_input_and_says_why(
         self, fake_gst, fake_glib, fake_input_cls, monkeypatch

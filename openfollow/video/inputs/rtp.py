@@ -9,7 +9,8 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
-from openfollow.video.failure import SourceKind
+from openfollow.net_egress import is_loopback_host
+from openfollow.video.failure import SourceKind, VideoFailure
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -17,7 +18,7 @@ from openfollow.video.inputs._base import (
     VideoInputBase,
     video_input_pin_field,
 )
-from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin, pinned_address
+from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin, iface_owning, pinned_address
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +75,17 @@ class RtpInput(VideoInputBase):
 
     @classmethod
     def preflight(cls, config: dict[str, Any]) -> PinRefusal | None:
-        # A listener dials nothing; only a pinned interface with no address refuses.
-        return check_video_pin(config_pin(config))
+        pin = config_pin(config)
+        refusal = check_video_pin(pin)
+        if refusal is not None or not pin:
+            return refusal
+        address, _port, is_multicast = _parse_rtp_url(str(config.get("rtp_url", "") or ""))
+        if is_multicast or address == "0.0.0.0" or is_loopback_host(address):
+            return None
+        # A listen address named in the URL is bound as given, so it must be the pin's.
+        if iface_owning(address) != pin:
+            return PinRefusal(VideoFailure.WRONG_INTERFACE, f"{address} is not an address of {pin}")
+        return None
 
     @classmethod
     def config_fields(cls) -> list[ConfigField]:

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import struct
 import sys
 import threading
 import time
@@ -15,7 +16,7 @@ from typing import Any
 
 import psutil
 
-from openfollow.net_egress import is_loopback_host, pin_socket_egress, resolve_egress
+from openfollow.net_egress import is_loopback_host, resolve_egress
 from openfollow.net_utils import get_iface_ipv4
 from openfollow.video.failure import VideoFailure
 
@@ -28,6 +29,12 @@ FORCES_DEVICE = sys.platform.startswith("linux")
 _RESOLVE_WAIT_S = 0.3
 _RESOLVE_TTL_S = 30.0
 
+# The main routing table. A socket bound to a device with no route there may
+# still connect (the kernel assumes the destination is on-link), so a probe
+# connect cannot tell whether the device reaches the camera.
+_PROC_ROUTE = "/proc/net/route"
+_RTF_UP = 0x1
+
 
 @dataclass(frozen=True)
 class PinRefusal:
@@ -37,54 +44,145 @@ class PinRefusal:
     detail: str
 
 
+@dataclass(frozen=True)
+class _Lookup:
+    addresses: tuple[str, ...]
+    pending: bool = False
+
+
 class _Resolver:
-    """IPv4 lookups bounded for the main loop, cached for the attempts after."""
+    """Lookups bounded for the main loop, cached for the attempts after."""
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
         self._lock = threading.Lock()
-        self._cache: dict[str, tuple[float, str]] = {}
+        self._cache: dict[str, tuple[float, tuple[str, ...]]] = {}
         self._pending: dict[str, threading.Thread] = {}
 
-    def lookup(self, host: str) -> str | None:
-        """The host's first IPv4 address, or None when it is not known yet."""
-        try:
-            return str(ipaddress.IPv4Address(host))
-        except ValueError:
-            pass
+    def lookup(self, host: str) -> _Lookup:
+        """Every address *host* resolves to, both families, or that it is still resolving."""
+        literal = _literal(host)
+        if literal:
+            return _Lookup((literal,))
         with self._lock:
-            cached = self._cache.get(host)
-            if cached is not None and self._clock() - cached[0] < _RESOLVE_TTL_S:
-                return cached[1]
+            cached = self._fresh(host)
+            if cached is not None:
+                return _Lookup(cached)
             worker = self._pending.get(host)
             if worker is None:
                 worker = threading.Thread(target=self._resolve, args=(host,), name="video-pin-dns", daemon=True)
                 self._pending[host] = worker
                 worker.start()
         worker.join(_RESOLVE_WAIT_S)
+        if worker.is_alive():
+            return _Lookup((), pending=True)
         with self._lock:
-            cached = self._cache.get(host)
-        return cached[1] if cached is not None else None
+            return _Lookup(self._fresh(host) or ())
+
+    def cached(self, host: str) -> tuple[str, ...]:
+        """What *host* is known to resolve to, without looking it up."""
+        literal = _literal(host)
+        if literal:
+            return (literal,)
+        with self._lock:
+            return self._fresh(host) or ()
+
+    def _fresh(self, host: str) -> tuple[str, ...] | None:
+        cached = self._cache.get(host)
+        if cached is not None and self._clock() - cached[0] < _RESOLVE_TTL_S:
+            return cached[1]
+        return None
 
     def _resolve(self, host: str) -> None:
+        addresses: tuple[str, ...] = ()
         try:
-            infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_DGRAM)
-        except OSError:
-            infos = []
-        with self._lock:
-            self._pending.pop(host, None)
-            if infos:
-                self._cache[host] = (self._clock(), str(infos[0][4][0]))
+            infos = socket.getaddrinfo(host, None, type=socket.SOCK_DGRAM)
+            addresses = tuple(dict.fromkeys(str(info[4][0]) for info in infos))
+        except (OSError, ValueError):
+            # ValueError: a label that is empty or too long fails IDNA encoding.
+            pass
+        finally:
+            with self._lock:
+                self._pending.pop(host, None)
+                if addresses:
+                    self._cache[host] = (self._clock(), addresses)
 
 
 _resolver = _Resolver()
 
 
-def _iface_owning(address: str) -> str:
+def _literal(host: str) -> str:
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return ""
+
+
+def _own_addresses() -> dict[str, str]:
+    """Every address of this station, both families, mapped to its interface."""
+    owners: dict[str, str] = {}
     for name, addrs in psutil.net_if_addrs().items():
-        if any(a.family == socket.AF_INET and a.address == address for a in addrs):
-            return str(name)
-    return ""
+        for addr in addrs:
+            if addr.family in (socket.AF_INET, socket.AF_INET6):
+                owners.setdefault(str(addr.address).split("%")[0], str(name))
+    return owners
+
+
+def _is_local(address: str, owners: Mapping[str, str]) -> bool:
+    """Traffic to *address* never leaves the box, so no interface carries it."""
+    return is_loopback_host(address) or address.split("%")[0] in owners
+
+
+def is_local_destination(host: str) -> bool:
+    """Whether *host* is this station, as far as is known without a lookup."""
+    if not host:
+        return False
+    if is_loopback_host(host):
+        return True
+    owners = _own_addresses()
+    return any(_is_local(address, owners) for address in _resolver.cached(host))
+
+
+def _route_key(field: str) -> int:
+    # The kernel prints each network-order word as a native integer.
+    return int(ipaddress.IPv4Address(struct.pack("=I", int(field, 16))))
+
+
+def _routed_through(address: str, iface: str) -> bool | None:
+    """Whether the main routing table reaches *address* through *iface*; None when unreadable."""
+    try:
+        with open(_PROC_ROUTE, encoding="ascii") as fh:
+            lines = fh.read().splitlines()[1:]
+    except OSError:
+        return None
+    target = int(ipaddress.IPv4Address(address))
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 8 or fields[0] != iface:
+            continue
+        try:
+            network, flags, mask = _route_key(fields[1]), int(fields[3], 16), _route_key(fields[7])
+        except ValueError:
+            continue
+        if flags & _RTF_UP and target & mask == network & mask:
+            return True
+    return False
+
+
+def _routing_choice(address: str, port: int) -> str | None:
+    """This station's source address towards *address*, or None when nothing routes there.
+
+    No packet is sent: connecting a UDP socket only consults the routing table.
+    """
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    probe = socket.socket(family, socket.SOCK_DGRAM)
+    try:
+        probe.connect((address, port or 9))
+        return str(probe.getsockname()[0]).split("%")[0]
+    except OSError:
+        return None
+    finally:
+        probe.close()
 
 
 def check_video_pin(
@@ -92,7 +190,10 @@ def check_video_pin(
 ) -> PinRefusal | None:
     """None when *host* may be dialled under *pin*; otherwise why not.
 
-    No packet is sent: connecting a UDP socket only consults the routing table.
+    Every address the name resolves to is checked, since the element may dial
+    any of them. With *forced_device* the element's IPv4 socket is bound to the
+    device, so a route through it must exist; otherwise the routing table's own
+    choice is what the element takes.
     """
     if not pin or (host and is_loopback_host(host)):
         return None
@@ -101,32 +202,32 @@ def check_video_pin(
         return PinRefusal(VideoFailure.INTERFACE_DOWN, f"{pin} has no address")
     if not host:
         return None
-    ip = _resolver.lookup(host)
-    if ip is None:
-        return PinRefusal(VideoFailure.UNREACHABLE, f"{host} could not be resolved to check it against {pin}")
-    if is_loopback_host(ip):
-        return None
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        if forced_device:
-            try:
-                pin_socket_egress(probe, egress)
-                probe.connect((ip, port or 9))
-            except OSError:
+    found = _resolver.lookup(host)
+    if found.pending:
+        return PinRefusal(VideoFailure.UNKNOWN, f"{host} did not resolve in time to check it against {pin}")
+    if not found.addresses:
+        return PinRefusal(VideoFailure.UNKNOWN, f"{host} does not resolve, so it could not be checked against {pin}")
+    owners = _own_addresses()
+    for address in found.addresses:
+        if _is_local(address, owners):
+            continue
+        if forced_device and ":" not in address:
+            if _routed_through(address, pin) is False:
                 return PinRefusal(VideoFailure.WRONG_INTERFACE, f"{host} is not reachable through {pin}")
-            return None
-        try:
-            probe.connect((ip, port or 9))
-        except OSError:
-            # No route anywhere: the element reports that itself.
-            return None
-        local = str(probe.getsockname()[0])
-    finally:
-        probe.close()
-    via = _iface_owning(local)
-    if via == pin:
-        return None
-    return PinRefusal(VideoFailure.WRONG_INTERFACE, f"{host} is reached through {via or local}, not {pin}")
+            continue
+        local = _routing_choice(address, port)
+        if local is None:
+            # No route at all: the element reports that itself.
+            continue
+        via = owners.get(local, "")
+        if via != pin:
+            return PinRefusal(VideoFailure.WRONG_INTERFACE, f"{host} is reached through {via or local}, not {pin}")
+    return None
+
+
+def iface_owning(address: str) -> str:
+    """The interface holding *address* on this station, or ""."""
+    return _own_addresses().get(address, "")
 
 
 def config_pin(config: Mapping[str, Any]) -> str:

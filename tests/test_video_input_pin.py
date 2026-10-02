@@ -5,30 +5,54 @@ pinned interface or not at all, and says which of the two it observed."""
 
 from __future__ import annotations
 
-import errno
 import socket
+import struct
 import threading
 from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from openfollow import net_egress
-from openfollow.net_utils import InterfaceUnavailable
 from openfollow.video.failure import VideoFailure
 from openfollow.video.inputs import _pin
-from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin, pinned_address
+from openfollow.video.inputs._pin import (
+    PinRefusal,
+    check_video_pin,
+    config_pin,
+    iface_owning,
+    is_local_destination,
+    pinned_address,
+)
 
 pytestmark = pytest.mark.unit
 
-_TABLE = {"eth0": "192.0.2.10", "eth1": "198.51.100.10"}
+_V4 = {"eth0": "192.0.2.10", "eth1": "198.51.100.10"}
+_V6 = {"eth0": "2001:db8::10", "eth1": "2001:db8:1::10"}
+
+
+def _word(address: str) -> str:
+    """An IPv4 address the way /proc/net/route prints it."""
+    return f"{struct.unpack('=I', socket.inet_aton(address))[0]:08X}"
+
+
+def _route_table(*routes: tuple[str, str, str, int]) -> str:
+    """``(iface, destination, mask, flags)`` rows under the kernel's header."""
+    header = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT"
+    rows = [
+        f"{iface}\t{_word(dest)}\t00000000\t{flags:04X}\t0\t0\t100\t{_word(mask)}\t0\t0\t0"
+        for iface, dest, mask, flags in routes
+    ]
+    return "\n".join([header, *rows]) + "\n"
 
 
 class _Probe:
     """A UDP socket that records what it is asked; it has no way to send."""
 
-    def __init__(self, local: str, connect_error: int = 0) -> None:
+    def __init__(self, family: int, local: str, connect_error: int = 0) -> None:
+        self.family = family
         self.local = local
         self.connect_error = connect_error
         self.connected: tuple[str, int] | None = None
@@ -39,7 +63,7 @@ class _Probe:
             raise OSError(self.connect_error, "Network is unreachable")
         self.connected = address
 
-    def getsockname(self) -> tuple[str, int]:
+    def getsockname(self) -> tuple[Any, ...]:
         return (self.local, 40000)
 
     def close(self) -> None:
@@ -55,43 +79,50 @@ class _Clock:
 
 
 @pytest.fixture()
-def net(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
-    """Interfaces from ``_TABLE``, a probe socket per check, and fresh DNS state."""
+def net(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[SimpleNamespace]:
+    """Interfaces from ``_V4`` / ``_V6``, a probe socket per check, a route
+    table file, and fresh DNS state."""
+    routes = tmp_path / "route"
     state = SimpleNamespace(
         probes=[],
-        local="192.0.2.10",
+        local={socket.AF_INET: _V4["eth0"], socket.AF_INET6: _V6["eth0"]},
         connect_error=0,
-        pinned=[],
-        pin_error=None,
         lookups=[],
-        answers={"camera.example": "192.0.2.20"},
+        answers={"camera.example": ["192.0.2.20"]},
         clock=_Clock(),
+        routes=routes,
     )
+    routes.write_text(_route_table(("eth0", "0.0.0.0", "0.0.0.0", 0x3), ("eth1", "198.51.100.0", "255.255.255.0", 0x1)))
 
     def _socket(family: int, kind: int) -> _Probe:
-        assert (family, kind) == (socket.AF_INET, socket.SOCK_DGRAM)
-        probe = _Probe(state.local, state.connect_error)
+        assert kind == socket.SOCK_DGRAM
+        probe = _Probe(family, state.local[family], state.connect_error)
         state.probes.append(probe)
         return probe
 
-    def _pin_socket(sock: _Probe, egress: net_egress.Egress) -> None:
-        state.pinned.append(egress)
-        if state.pin_error is not None:
-            raise state.pin_error
-
-    def _getaddrinfo(host: str, port: Any, family: int, kind: int) -> list[tuple[Any, ...]]:
+    def _getaddrinfo(host: str, port: Any, *args: Any, **kwargs: Any) -> list[tuple[Any, ...]]:
         state.lookups.append(host)
         if host not in state.answers:
             raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
-        return [(family, kind, 17, "", (state.answers[host], 0))]
+        return [
+            (socket.AF_INET6 if ":" in a else socket.AF_INET, socket.SOCK_DGRAM, 17, "", (a, 0))
+            for a in state.answers[host]
+        ]
 
-    addrs = {name: [SimpleNamespace(family=socket.AF_INET, address=address)] for name, address in _TABLE.items()}
-    monkeypatch.setattr(net_egress, "get_iface_ipv4", lambda iface: _TABLE.get(iface, ""))
-    monkeypatch.setattr(_pin, "get_iface_ipv4", lambda iface: _TABLE.get(iface, ""))
+    addrs = {
+        name: [
+            SimpleNamespace(family=socket.AF_INET, address=_V4[name]),
+            SimpleNamespace(family=socket.AF_INET6, address=_V6[name]),
+            SimpleNamespace(family=socket.AF_INET6, address=f"fe80::{name[-1]}%{name}"),
+        ]
+        for name in _V4
+    }
+    monkeypatch.setattr(net_egress, "get_iface_ipv4", lambda iface: _V4.get(iface, ""))
+    monkeypatch.setattr(_pin, "get_iface_ipv4", lambda iface: _V4.get(iface, ""))
     monkeypatch.setattr(_pin.psutil, "net_if_addrs", lambda: addrs)
     monkeypatch.setattr(_pin.socket, "socket", _socket)
     monkeypatch.setattr(_pin.socket, "getaddrinfo", _getaddrinfo)
-    monkeypatch.setattr(_pin, "pin_socket_egress", _pin_socket)
+    monkeypatch.setattr(_pin, "_PROC_ROUTE", str(routes))
     monkeypatch.setattr(_pin, "_resolver", _pin._Resolver(clock=state.clock))
     # A lookup thread that dies prints a traceback for every unknown name.
     crashes: list[threading.ExceptHookArgs] = []
@@ -119,9 +150,14 @@ def test_a_camera_on_this_box_is_never_refused(net: SimpleNamespace, host: str) 
     assert net.probes == []
 
 
-def test_a_name_that_resolves_to_this_box_is_never_refused(net: SimpleNamespace) -> None:
-    net.answers["camera.example"] = "127.0.0.1"
-    assert check_video_pin("eth1", "camera.example", 554) is None
+@pytest.mark.parametrize("forced", [True, False], ids=["forced-device", "route-check"])
+@pytest.mark.parametrize("address", ["192.0.2.10", "2001:db8::10", "127.0.0.1"])
+def test_a_camera_served_by_this_station_is_never_refused(net: SimpleNamespace, forced: bool, address: str) -> None:
+    """A restream at one of this station's own addresses never leaves the box,
+    whichever interface holds that address."""
+    net.answers["camera.example"] = [address]
+    net.routes.write_text(_route_table())
+    assert check_video_pin("eth1", "camera.example", 8554, forced_device=forced) is None
     assert net.probes == []
 
 
@@ -142,38 +178,52 @@ def test_a_listener_on_a_live_pin_is_not_refused(net: SimpleNamespace) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Forced device (SRT on Linux): reachable through the pin, or not
+# Forced device (SRT on Linux): a route through the pin must exist
 # --------------------------------------------------------------------------- #
 
 
-def test_forced_device_accepts_a_camera_the_pin_reaches(net: SimpleNamespace) -> None:
+def test_forced_device_accepts_a_camera_on_a_route_through_the_pin(net: SimpleNamespace) -> None:
     assert check_video_pin("eth1", "198.51.100.20", 5000, forced_device=True) is None
-    assert net.pinned == [net_egress.Egress("eth1", "198.51.100.10")]
-    assert net.probes[0].connected == ("198.51.100.20", 5000)
-    assert net.probes[0].closed
+    # A probe connect proves nothing here: the kernel lets a device-bound
+    # socket connect anywhere by assuming the destination is on-link.
+    assert net.probes == []
 
 
-def test_forced_device_refuses_a_camera_the_pin_cannot_reach(net: SimpleNamespace) -> None:
-    net.connect_error = errno.ENETUNREACH
-    refusal = check_video_pin("eth1", "192.0.2.20", 5000, forced_device=True)
-    assert refusal == PinRefusal(VideoFailure.WRONG_INTERFACE, "192.0.2.20 is not reachable through eth1")
-    assert net.probes[0].closed
+def test_forced_device_refuses_a_camera_with_no_route_through_the_pin(net: SimpleNamespace) -> None:
+    refusal = check_video_pin("eth1", "203.0.113.20", 5000, forced_device=True)
+    assert refusal == PinRefusal(VideoFailure.WRONG_INTERFACE, "203.0.113.20 is not reachable through eth1")
 
 
-def test_forced_device_refuses_when_the_socket_cannot_be_pinned(net: SimpleNamespace) -> None:
-    net.pin_error = InterfaceUnavailable("cannot send via eth1")
-    refusal = check_video_pin("eth1", "192.0.2.20", 5000, forced_device=True)
-    assert refusal is not None
-    assert refusal.failure is VideoFailure.WRONG_INTERFACE
-    assert net.probes[0].connected is None
-    assert net.probes[0].closed
+def test_forced_device_accepts_any_camera_when_the_pin_carries_a_default_route(net: SimpleNamespace) -> None:
+    net.routes.write_text(_route_table(("eth1", "0.0.0.0", "0.0.0.0", 0x3)))
+    assert check_video_pin("eth1", "203.0.113.20", 5000, forced_device=True) is None
 
 
-def test_a_missing_port_still_consults_the_routing_table(net: SimpleNamespace) -> None:
-    """``connect`` needs a port; any one asks the same routing question."""
-    assert check_video_pin("eth1", "198.51.100.20", forced_device=True) is None
-    assert net.probes[0].connected is not None
-    assert net.probes[0].connected[1] != 0
+def test_forced_device_ignores_a_route_that_is_not_up(net: SimpleNamespace) -> None:
+    net.routes.write_text(_route_table(("eth1", "203.0.113.0", "255.255.255.0", 0x0)))
+    assert check_video_pin("eth1", "203.0.113.20", 5000, forced_device=True) is not None
+
+
+def test_forced_device_skips_lines_it_cannot_read(net: SimpleNamespace) -> None:
+    table = _route_table(("eth1", "198.51.100.0", "255.255.255.0", 0x1))
+    header, rest = table.split("\n", 1)
+    net.routes.write_text(f"{header}\neth1\tshort\neth1\tzz\t0\t1\t0\t0\t0\tzz\n{rest}")
+    assert check_video_pin("eth1", "198.51.100.20", 5000, forced_device=True) is None
+    assert check_video_pin("eth1", "203.0.113.20", 5000, forced_device=True) is not None
+
+
+def test_forced_device_without_a_readable_route_table_does_not_refuse(net: SimpleNamespace) -> None:
+    """The element is bound to the device anyway; nothing can leave elsewhere."""
+    net.routes.unlink()
+    assert check_video_pin("eth1", "203.0.113.20", 5000, forced_device=True) is None
+
+
+def test_forced_device_route_checks_an_ipv6_address(net: SimpleNamespace) -> None:
+    """The device binding covers IPv4 only, so IPv6 takes the routing table's choice."""
+    net.answers["camera.example"] = ["2001:db8:2::20"]
+    refusal = check_video_pin("eth1", "camera.example", 5000, forced_device=True)
+    assert refusal == PinRefusal(VideoFailure.WRONG_INTERFACE, "camera.example is reached through eth0, not eth1")
+    assert net.probes[0].family == socket.AF_INET6
 
 
 # --------------------------------------------------------------------------- #
@@ -182,9 +232,8 @@ def test_a_missing_port_still_consults_the_routing_table(net: SimpleNamespace) -
 
 
 def test_route_check_accepts_a_camera_the_routing_table_sends_through_the_pin(net: SimpleNamespace) -> None:
-    net.local = "198.51.100.10"
+    net.local[socket.AF_INET] = _V4["eth1"]
     assert check_video_pin("eth1", "198.51.100.20", 554, forced_device=False) is None
-    assert net.pinned == []
     assert net.probes[0].connected == ("198.51.100.20", 554)
     assert net.probes[0].closed
 
@@ -192,13 +241,13 @@ def test_route_check_accepts_a_camera_the_routing_table_sends_through_the_pin(ne
 def test_route_check_refuses_a_camera_the_routing_table_sends_elsewhere(net: SimpleNamespace) -> None:
     """The element's own socket is unpinned, so reaching the camera through
     the pin is not enough: the default route is what it will take."""
-    net.local = "192.0.2.10"
     refusal = check_video_pin("eth1", "203.0.113.20", 554, forced_device=False)
     assert refusal == PinRefusal(VideoFailure.WRONG_INTERFACE, "203.0.113.20 is reached through eth0, not eth1")
+    assert net.probes[0].closed
 
 
 def test_route_check_names_the_source_address_when_no_interface_owns_it(net: SimpleNamespace) -> None:
-    net.local = "203.0.113.99"
+    net.local[socket.AF_INET] = "203.0.113.99"
     refusal = check_video_pin("eth1", "203.0.113.20", 554, forced_device=False)
     assert refusal is not None
     assert refusal.detail == "203.0.113.20 is reached through 203.0.113.99, not eth1"
@@ -206,9 +255,32 @@ def test_route_check_names_the_source_address_when_no_interface_owns_it(net: Sim
 
 def test_route_check_leaves_a_camera_with_no_route_at_all_to_the_element(net: SimpleNamespace) -> None:
     """No route anywhere is not a pin fault; the element reports it itself."""
-    net.connect_error = errno.ENETUNREACH
+    net.connect_error = 101  # ENETUNREACH
     assert check_video_pin("eth1", "203.0.113.20", 554, forced_device=False) is None
     assert net.probes[0].closed
+
+
+def test_a_missing_port_still_consults_the_routing_table(net: SimpleNamespace) -> None:
+    """``connect`` needs a port; any one asks the same routing question."""
+    net.local[socket.AF_INET] = _V4["eth1"]
+    assert check_video_pin("eth1", "198.51.100.20", forced_device=False) is None
+    assert net.probes[0].connected is not None
+    assert net.probes[0].connected[1] != 0
+
+
+def test_every_address_a_name_has_is_checked(net: SimpleNamespace) -> None:
+    """The element may dial the IPv6 address: one that routes elsewhere refuses
+    even when the IPv4 one is on the pin."""
+    net.answers["camera.example"] = ["198.51.100.20", "2001:db8:2::20"]
+    net.local[socket.AF_INET] = _V4["eth1"]
+    refusal = check_video_pin("eth1", "camera.example", 554, forced_device=False)
+    assert refusal == PinRefusal(VideoFailure.WRONG_INTERFACE, "camera.example is reached through eth0, not eth1")
+    assert [p.family for p in net.probes] == [socket.AF_INET, socket.AF_INET6]
+
+
+def test_an_ipv6_address_on_the_pin_is_accepted(net: SimpleNamespace) -> None:
+    net.local[socket.AF_INET6] = _V6["eth1"]
+    assert check_video_pin("eth1", "2001:db8:1::20", 554, forced_device=False) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -217,30 +289,29 @@ def test_route_check_leaves_a_camera_with_no_route_at_all_to_the_element(net: Si
 
 
 def test_a_hostname_is_checked_at_the_address_it_resolves_to(net: SimpleNamespace) -> None:
-    net.local = "192.0.2.10"
     refusal = check_video_pin("eth1", "camera.example", 554, forced_device=False)
     assert net.probes[0].connected == ("192.0.2.20", 554)
     assert refusal is not None
     assert refusal.detail == "camera.example is reached through eth0, not eth1"
 
 
-def test_a_name_that_does_not_resolve_is_refused_as_unreachable(net: SimpleNamespace) -> None:
+def test_a_name_that_does_not_resolve_says_so_without_claiming_anything_answered(net: SimpleNamespace) -> None:
     refusal = check_video_pin("eth1", "nowhere.example", 554)
     assert refusal == PinRefusal(
-        VideoFailure.UNREACHABLE, "nowhere.example could not be resolved to check it against eth1"
+        VideoFailure.UNKNOWN, "nowhere.example does not resolve, so it could not be checked against eth1"
     )
     assert net.probes == []
 
 
 def test_a_resolved_name_is_reused_until_it_expires(net: SimpleNamespace) -> None:
-    net.local = "198.51.100.10"
-    net.answers["camera.example"] = "198.51.100.20"
+    net.local[socket.AF_INET] = _V4["eth1"]
+    net.answers["camera.example"] = ["198.51.100.20"]
     for _ in range(3):
         assert check_video_pin("eth1", "camera.example", 554, forced_device=False) is None
     assert net.lookups == ["camera.example"]
 
     net.clock.now += 31.0
-    net.answers["camera.example"] = "198.51.100.30"
+    net.answers["camera.example"] = ["198.51.100.30"]
     check_video_pin("eth1", "camera.example", 554, forced_device=False)
     assert net.lookups == ["camera.example", "camera.example"]
     assert net.probes[-1].connected == ("198.51.100.30", 554)
@@ -248,38 +319,78 @@ def test_a_resolved_name_is_reused_until_it_expires(net: SimpleNamespace) -> Non
 
 def test_a_failed_lookup_is_not_remembered(net: SimpleNamespace) -> None:
     assert check_video_pin("eth1", "late.example", 554) is not None
-    net.answers["late.example"] = "198.51.100.20"
-    net.local = "198.51.100.10"
+    net.answers["late.example"] = ["198.51.100.20"]
+    net.local[socket.AF_INET] = _V4["eth1"]
     assert check_video_pin("eth1", "late.example", 554, forced_device=False) is None
     assert net.lookups == ["late.example", "late.example"]
+
+
+def test_a_malformed_name_neither_crashes_the_lookup_nor_sticks(
+    net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """IDNA encoding rejects an empty label with a ValueError, not an OSError."""
+    calls: list[str] = []
+
+    def _idna(host: str, *args: Any, **kwargs: Any) -> list[tuple[Any, ...]]:
+        calls.append(host)
+        raise UnicodeError("label empty or too long")
+
+    monkeypatch.setattr(_pin.socket, "getaddrinfo", _idna)
+    for _ in range(2):
+        refusal = check_video_pin("eth1", "cam..example", 554)
+        assert refusal is not None and refusal.failure is VideoFailure.UNKNOWN
+    assert calls == ["cam..example", "cam..example"]
 
 
 def test_a_slow_lookup_does_not_hold_the_attempt_and_serves_the_next_one(
     net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The check runs on the main loop: a slow resolver refuses this attempt
-    and the answer it brings back serves the retry, from one lookup."""
+    """The check runs on the main loop: a slow resolver refuses this attempt,
+    saying it was not checked, and its answer serves the retry from one lookup."""
     release = threading.Event()
     calls: list[str] = []
 
-    def _slow(host: str, port: Any, family: int, kind: int) -> list[tuple[Any, ...]]:
+    def _slow(host: str, *args: Any, **kwargs: Any) -> list[tuple[Any, ...]]:
         calls.append(host)
         release.wait(5)
-        return [(family, kind, 17, "", ("198.51.100.20", 0))]
+        return [(socket.AF_INET, socket.SOCK_DGRAM, 17, "", ("198.51.100.20", 0))]
 
     monkeypatch.setattr(_pin.socket, "getaddrinfo", _slow)
     monkeypatch.setattr(_pin, "_RESOLVE_WAIT_S", 0.01)
-    net.local = "198.51.100.10"
+    net.local[socket.AF_INET] = _V4["eth1"]
 
-    first = check_video_pin("eth1", "slow.example", 554, forced_device=False)
-    second = check_video_pin("eth1", "slow.example", 554, forced_device=False)
-    assert first is not None and first.failure is VideoFailure.UNREACHABLE
-    assert second is not None and second.failure is VideoFailure.UNREACHABLE
+    for _ in range(2):
+        refusal = check_video_pin("eth1", "slow.example", 554, forced_device=False)
+        assert refusal == PinRefusal(
+            VideoFailure.UNKNOWN, "slow.example did not resolve in time to check it against eth1"
+        )
 
     release.set()
     monkeypatch.setattr(_pin, "_RESOLVE_WAIT_S", 5.0)
     assert check_video_pin("eth1", "slow.example", 554, forced_device=False) is None
     assert calls == ["slow.example"]
+
+
+# --------------------------------------------------------------------------- #
+# Whether a destination is this station
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [("", False), ("localhost", True), ("127.0.0.1", True), ("192.0.2.10", True), ("203.0.113.20", False)],
+)
+def test_is_local_destination(net: SimpleNamespace, host: str, expected: bool) -> None:
+    assert is_local_destination(host) is expected
+
+
+def test_a_name_is_local_only_once_it_is_known_to_resolve_here(net: SimpleNamespace) -> None:
+    """Never looked up from here: an unknown name is treated as remote."""
+    net.answers["relay.example"] = ["192.0.2.10"]
+    assert is_local_destination("relay.example") is False
+    assert net.lookups == []
+    check_video_pin("eth1", "relay.example", 9000)
+    assert is_local_destination("relay.example") is True
 
 
 # --------------------------------------------------------------------------- #
@@ -299,3 +410,10 @@ def test_config_pin_reads_the_input_config(config: dict[str, Any], expected: str
 @pytest.mark.parametrize(("pin", "expected"), [("", ""), ("eth1", "198.51.100.10"), ("eth9", "")])
 def test_pinned_address(net: SimpleNamespace, pin: str, expected: str) -> None:
     assert pinned_address(pin) == expected
+
+
+@pytest.mark.parametrize(
+    ("address", "expected"), [("198.51.100.10", "eth1"), ("2001:db8::10", "eth0"), ("203.0.113.9", "")]
+)
+def test_iface_owning(net: SimpleNamespace, address: str, expected: str) -> None:
+    assert iface_owning(address) == expected

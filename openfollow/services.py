@@ -1087,11 +1087,11 @@ class AppRuntimeServices:
         def _resolver(
             pin_getter: Callable[[], str],
             *,
-            is_station: bool,
+            follows_station: bool,
         ) -> Callable[[], tuple[str, ResolveStatus, str]]:
             def _resolve() -> tuple[str, ResolveStatus, str]:
                 pin = pin_getter()
-                station = "" if is_station else self._app._config.psn_source_iface
+                station = self._app._config.psn_source_iface if follows_station else ""
                 address, status = resolve_plane_source_ip(pin, station)
                 return address, status, plane_source_iface(pin, station)
 
@@ -1215,14 +1215,14 @@ class AppRuntimeServices:
         return [
             Plane(
                 label="PSN",
-                resolve=_resolver(lambda: self._app._config.psn_source_iface, is_station=True),
+                resolve=_resolver(lambda: self._app._config.psn_source_iface, follows_station=False),
                 current=_current_psn,
                 apply=_apply_psn,
                 suspend=_suspend_psn,
             ),
             Plane(
                 label="OTP output",
-                resolve=_resolver(lambda: self._app._config.otp_output.source_iface, is_station=False),
+                resolve=_resolver(lambda: self._app._config.otp_output.source_iface, follows_station=True),
                 current=_current_otp,
                 apply=_apply_otp,
                 suspend=_suspend_otp,
@@ -1232,7 +1232,7 @@ class AppRuntimeServices:
             ),
             Plane(
                 label="RTTrPM output",
-                resolve=_resolver(lambda: self._app._config.rttrpm_output.source_iface, is_station=False),
+                resolve=_resolver(lambda: self._app._config.rttrpm_output.source_iface, follows_station=True),
                 current=_current_rttrpm,
                 apply=_apply_rttrpm,
                 suspend=_suspend_rttrpm,
@@ -1240,7 +1240,7 @@ class AppRuntimeServices:
             ),
             Plane(
                 label="OSC input",
-                resolve=_resolver(lambda: self._app._config.osc.listen_iface, is_station=False),
+                resolve=_resolver(lambda: self._app._config.osc.listen_iface, follows_station=True),
                 current=_current_osc_input,
                 apply=_apply_osc_input,
                 suspend=_suspend_osc_input,
@@ -1248,8 +1248,8 @@ class AppRuntimeServices:
             ),
             Plane(
                 label="Video input",
-                # Never follows the station: cameras rarely share the PSN network.
-                resolve=_resolver(lambda: self._app._config.video_input_iface, is_station=True),
+                # Cameras rarely share the PSN network, so blank means the routing table.
+                resolve=_resolver(lambda: self._app._config.video_input_iface, follows_station=False),
                 current=_current_video,
                 apply=_apply_video,
                 suspend=_suspend_video,

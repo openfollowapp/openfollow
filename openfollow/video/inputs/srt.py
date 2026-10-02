@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
-from openfollow.uri_redaction import redact_uri, strip_uri_query_key
+from openfollow.uri_redaction import redact_uri, set_uri_query_key, strip_uri_query_key
 from openfollow.video.failure import SourceKind
 from openfollow.video.inputs._base import (
     ConfigField,
@@ -19,7 +19,13 @@ from openfollow.video.inputs._base import (
     VideoInputBase,
     video_input_pin_field,
 )
-from openfollow.video.inputs._pin import FORCES_DEVICE, PinRefusal, check_video_pin, config_pin
+from openfollow.video.inputs._pin import (
+    FORCES_DEVICE,
+    PinRefusal,
+    check_video_pin,
+    config_pin,
+    is_local_destination,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,10 +125,11 @@ class SrtInput(VideoInputBase):
             # the single answer to "which key is this stream encrypted with".
             srt_uri = strip_uri_query_key(srt_uri, "passphrase")
         pin = config_pin(config)
-        if pin and FORCES_DEVICE:
-            # libsrt binds the socket to the device (SRTO_BINDTODEVICE).
-            srt_uri = strip_uri_query_key(srt_uri, "bindtodevice")
-            srt_uri += f"{'&' if '?' in srt_uri else '?'}bindtodevice={quote(pin, safe='')}"
+        endpoint = self.source_endpoint(config)
+        if pin and FORCES_DEVICE and not is_local_destination(endpoint.host if endpoint else ""):
+            # libsrt binds the socket to the device (SRTO_BINDTODEVICE); a
+            # camera on this station is not reachable through one.
+            srt_uri = set_uri_query_key(srt_uri, "bindtodevice", quote(pin, safe=""))
 
         pipeline = Gst.Pipeline.new("srt-sink")
 

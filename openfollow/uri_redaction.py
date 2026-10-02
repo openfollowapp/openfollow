@@ -157,6 +157,19 @@ def strip_uri_query_key(uri: str, key: str) -> str:
     return f"{head}{new_query}{hash_sep}{fragment}"
 
 
+def set_uri_query_key(uri: str, key: str, value: str) -> str:
+    """Return ``uri`` with ``key=value`` as its only ``key``, in the query, never the fragment.
+
+    *value* is inserted as given, so the caller encodes it.
+    """
+    head, query, hash_sep, fragment = _split_query(strip_uri_query_key(uri, key))
+    if not query and not hash_sep:
+        head, hash_sep, fragment = head.partition("#")
+    params = [p for p in query.split("&") if p]
+    params.append(f"{key}={value}")
+    return f"{head}?{'&'.join(params)}{hash_sep}{fragment}"
+
+
 def redact_uri(uri: str) -> str:
     """Strip inline credentials from a media URI so it is safe to log/display.
 

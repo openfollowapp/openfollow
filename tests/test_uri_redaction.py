@@ -14,6 +14,7 @@ import pytest
 from openfollow.uri_redaction import (
     redact_uri,
     redact_uris_in_text,
+    set_uri_query_key,
     strip_uri_query_key,
     strip_uri_userinfo,
 )
@@ -113,6 +114,36 @@ class TestStripUriUserinfo:
         """
         out = strip_uri_userinfo(uri)
         assert "hunter2" not in out
+
+
+class TestSetUriQueryKey:
+    @pytest.mark.parametrize(
+        ("uri", "expected"),
+        [
+            ("srt://h:5000", "srt://h:5000?bindtodevice=eth1"),
+            ("srt://h:5000?latency=20", "srt://h:5000?latency=20&bindtodevice=eth1"),
+            ("srt://h:5000?bindtodevice=wlan0&latency=20", "srt://h:5000?latency=20&bindtodevice=eth1"),
+            ("srt://h:5000?bindtodevice=wlan0", "srt://h:5000?bindtodevice=eth1"),
+        ],
+        ids=["no-query", "joins-query", "replaces-copy", "replaces-only-param"],
+    )
+    def test_sets_the_key_once(self, uri: str, expected: str) -> None:
+        assert set_uri_query_key(uri, "bindtodevice", "eth1") == expected
+
+    @pytest.mark.parametrize(
+        ("uri", "expected"),
+        [
+            # An SRT access-control streamid typed unencoded starts a fragment.
+            (
+                "srt://h:9000?streamid=#!::r=live,m=request",
+                "srt://h:9000?streamid=&bindtodevice=eth1#!::r=live,m=request",
+            ),
+            ("srt://h:9000#tag", "srt://h:9000?bindtodevice=eth1#tag"),
+        ],
+        ids=["query-then-fragment", "fragment-only"],
+    )
+    def test_the_key_lands_in_the_query_not_the_fragment(self, uri: str, expected: str) -> None:
+        assert set_uri_query_key(uri, "bindtodevice", "eth1") == expected
 
 
 class TestStripUriQueryKey:

@@ -48,4 +48,5 @@ tasks escalate via `become`.
 ## Docs gate
 
 If provisioning steps, Ansible vars/flags, or systemd unit templates changed,
-update `docs/SERVICE.md` / `docs/PACKAGING.md` to match in the same change.
+update `docs/DEVELOPMENT.md` (source installs, Ansible flags) /
+`docs/SERVICE.md` / `docs/PACKAGING.md` to match in the same change.

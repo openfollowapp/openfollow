@@ -4,7 +4,7 @@
 # Ansible playbook: provision OpenFollow on a Raspberry Pi (user, deps, repo checkout, systemd units, boot splash, NVMe, network).
 - name: Install OpenFollow on Raspberry Pi
   # `all` matches whatever the inventory provides, including the ad-hoc
-  # `-i '<pi-ip>,'` form documented in the README. A named group (e.g.
+  # `-i '<pi-ip>,'` form documented in docs/DEVELOPMENT.md. A named group (e.g.
   # `openfollow`) silently matches nothing for that ad-hoc inventory.
   hosts: all
   become: true
@@ -547,7 +547,7 @@
         mode: "0700"
 
     # The deploy key is only needed to clone a *private* repo over SSH.
-    # Public/HTTPS installs (the README default) need no key, so probe for it
+    # Public/HTTPS installs (the default) need no key, so probe for it
     # on the control machine and skip the copy + SSH config when it's absent
     # rather than failing on a missing source file.
     - name: Check for deploy key on control machine
@@ -1087,4 +1087,4 @@
       ansible.builtin.debug:
         msg:
           - "NDI input requires manual NDI SDK and gst-plugin-ndi installation."
-          - "Complete the README NDI steps before setting video_source_type='ndi'."
+          - "Run scripts/install-ndi.sh before setting video_source_type='ndi'."

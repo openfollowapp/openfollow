@@ -711,8 +711,8 @@ class AppRuntimeServices:
         # Shared status flags surfaced by the operator-screen badge. A
         # subsystem writes, per key, one of:
         #   * a ``str``                          -> "error" row (red),
-        #   * a ``(severity, message)`` tuple, ``severity`` =
-        #     ``"error"`` (red) / ``"info"`` (blue),
+        #   * a ``(level, message)`` tuple, ``level`` one of the status
+        #     levels: ``"error"``, ``"caution"``, ``"info"``, ``"success"``,
         #   * ``None`` to clear the condition.
         # The badge consumer filters falsy values. Created eagerly so
         # subsystem constructors can write into it before init_* runs.

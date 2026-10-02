@@ -268,7 +268,7 @@ class TestRun:
         app._runtime_services.diagnostics_export = export
         app._check_diagnostics_export()
         assert app._runtime_services._status_flags["diagnostics_export"] == (
-            "info",
+            "success",
             "Diagnostics saved to SanDisk Ultra",
         )
 

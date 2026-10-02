@@ -24,7 +24,6 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_OK,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
-    COLOR_WARNING_BORDER,
     COLOR_WARNING_FILL,
     MODAL_RADIUS,
     PANEL_RADIUS,
@@ -32,12 +31,14 @@ from openfollow.runtime.overlay_draw_style import (
     STATUS_LEVEL_COLORS,
     draw_card_background,
     draw_chevron,
+    draw_level_box,
     draw_level_sign,
     draw_rounded_rect,
     draw_success_sign,
     draw_warning_sign,
     parse_hex,
     speed_color,
+    status_level,
 )
 from openfollow.runtime.overlay_layout import (
     INFO_PANEL_ROW_H,
@@ -835,13 +836,7 @@ def _draw_settings_error_box(
         body_h += 4.0
     card_h = pad * 2 + title_size + 6.0 + body_h
 
-    draw_rounded_rect(cr, x, y, w, card_h, PANEL_RADIUS)
-    cr.set_source_rgba(*COLOR_WARNING_FILL)
-    cr.fill()
-    cr.set_source_rgb(*COLOR_WARNING_BORDER)
-    draw_rounded_rect(cr, x, y, w, card_h, PANEL_RADIUS)
-    cr.set_line_width(2.0)
-    cr.stroke()
+    draw_level_box(cr, "error", x, y, w, card_h, radius=PANEL_RADIUS, line_width=2.0)
 
     draw_warning_sign(cr, x + pad + sign_size / 2, y + pad + sign_size / 2, size=sign_size)
 
@@ -1205,20 +1200,14 @@ def draw_bottom_left_info_panel(renderer: Any, cr: Any, state: OverlayState, w: 
     # surfaces an error_message, the bottom-left info panel turns red
     # so operators glancing at the HUD spot the failure even when
     # they don't have the Settings menu open. Matches the trigger
-    # condition for the Settings menu's red-bordered error box. A plane
-    # stopped because its interface went dark turns it red too; the sentence
-    # is a top-right status row.
+    # condition for the Settings menu's red-bordered error box. An output
+    # that is down or failing turns it red too; the sentence is a top-right
+    # status row.
     in_error = bool(
         state.settings_menu_banner or state.error_message or state.video_failure_text or state.network_alerts
     )
     if in_error:
-        draw_rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, PANEL_RADIUS)
-        cr.set_source_rgba(*COLOR_WARNING_FILL)
-        cr.fill()
-        cr.set_source_rgb(*COLOR_WARNING_BORDER)
-        draw_rounded_rect(cr, panel_x, panel_y, panel_w, panel_h, PANEL_RADIUS)
-        cr.set_line_width(1.6)
-        cr.stroke()
+        draw_level_box(cr, "error", panel_x, panel_y, panel_w, panel_h, radius=PANEL_RADIUS, line_width=1.6)
     else:
         draw_panel_background(renderer, cr, panel_x, panel_y, panel_w, panel_h, radius=PANEL_RADIUS)
 
@@ -1742,7 +1731,6 @@ def _draw_network_status_row(
 ) -> float:
     """A row in its level's fill and border, led by its sign (the spinner while
     *busy*); returns the height drawn."""
-    fill, border, _cut = STATUS_LEVEL_COLORS[level]
     text_x = x + _NOTICE_PAD + _NOTICE_SIGN + 8.0
     text_w = x + w - _NOTICE_PAD - text_x
     lines = _wrap_error_message(renderer, cr, text, text_w, _NOTICE_FONT, bold=False)
@@ -1750,13 +1738,7 @@ def _draw_network_status_row(
         rest = " ".join(lines[_NOTICE_MAX_LINES - 1 :])
         lines = [*lines[: _NOTICE_MAX_LINES - 1], renderer._truncate_text_to_width(cr, rest, text_w)]
     row_h = len(lines) * _NOTICE_LINE_H + 2 * _NOTICE_PAD
-    draw_rounded_rect(cr, x, y, w, row_h, ROW_RADIUS)
-    cr.set_source_rgba(*fill)
-    cr.fill()
-    draw_rounded_rect(cr, x, y, w, row_h, ROW_RADIUS)
-    cr.set_source_rgb(*border)
-    cr.set_line_width(1.2)
-    cr.stroke()
+    draw_level_box(cr, level, x, y, w, row_h, radius=ROW_RADIUS, line_width=1.2)
     sign_cx = x + _NOTICE_PAD + _NOTICE_SIGN / 2.0
     sign_cy = y + _NOTICE_PAD + _NOTICE_LINE_H / 2.0
     if busy:
@@ -1808,7 +1790,7 @@ def draw_pi_network_screen(
     cursor_y = panel_y + 74.0
 
     if net.banner:
-        level = net.banner_level if net.banner_level in STATUS_LEVEL_COLORS else "info"
+        level = status_level(net.banner_level)
         cursor_y += (
             _draw_network_status_row(renderer, cr, content_x, cursor_y, content_w, level, net.banner, busy=net.busy)
             + 10.0
@@ -1855,7 +1837,7 @@ def draw_pi_network_screen(
             # Clear of the rows above it, which would otherwise touch its border.
             if idx > 0 and net.rows[idx - 1].get("kind") not in ("notice", "header"):
                 row_y += _NOTICE_GAP
-            level = str(row.get("level") or "info")
+            level = status_level(row.get("level"))
             row_y += _draw_network_status_row(renderer, cr, inner_x, row_y, inner_w, level, label) + 6.0
             if idx + 1 < len(net.rows) and net.rows[idx + 1].get("kind") == "header":
                 row_y += spacing_after_section
@@ -1922,7 +1904,8 @@ def draw_pi_network_screen(
             draw_submenu_chevron(cr, inner_x + inner_w - 6.0, row_y + data_row_h / 2.0 - 2.0)
         if pill:
             # A state takes its level's chip colours; how the address was come by is neutral.
-            level_colors = STATUS_LEVEL_COLORS.get(str(row.get("pill_level") or ""))
+            pill_level = row.get("pill_level")
+            level_colors = STATUS_LEVEL_COLORS[status_level(pill_level)] if pill_level else None
             pill_x = inner_x + inner_w - pill_w - 8.0 - chevron_w
             pill_y = row_y + 1.0
             pill_h = data_row_h - 6.0

@@ -151,10 +151,31 @@ STATUS_LEVEL_COLORS: dict[str, tuple[tuple[float, ...], tuple[float, ...], tuple
     "info": (COLOR_INFO_FILL, COLOR_INFO_BORDER, COLOR_INFO_BG),
     "success": (COLOR_SUCCESS_FILL, COLOR_SUCCESS_BORDER, COLOR_SUCCESS_BG),
 }
+# Gravest first.
+STATUS_LEVELS = ("error", "caution", "info", "success")
+
+
+def status_level(value: object) -> str:
+    """*value* when it names a status level, else "error": a malformed writer shows as a fault."""
+    return value if isinstance(value, str) and value in STATUS_LEVEL_COLORS else "error"
+
+
+def draw_level_box(
+    cr: Any, level: str, x: float, y: float, w: float, h: float, *, radius: float, line_width: float
+) -> None:
+    """A rounded box in *level*'s chip fill and border."""
+    fill, border, _cut = STATUS_LEVEL_COLORS[status_level(level)]
+    draw_rounded_rect(cr, x, y, w, h, radius)
+    cr.set_source_rgba(*fill)
+    cr.fill_preserve()
+    cr.set_source_rgb(*border)
+    cr.set_line_width(line_width)
+    cr.stroke()
 
 
 def draw_level_sign(cr: Any, level: str, cx: float, cy: float, size: float = 13.0) -> None:
     """Off-white: the warning sign for an error, the check for a success, the "i" otherwise."""
+    level = status_level(level)
     cut = STATUS_LEVEL_COLORS[level][2]
     if level == "error":
         draw_warning_sign(cr, cx, cy, size)

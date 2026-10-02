@@ -35,6 +35,7 @@ from openfollow.psn.receiver import PsnReceiver
 from openfollow.runtime.marker_velocity import _MAX_REPORTED_SPEED_MPS
 from openfollow.runtime.overlay_draw_hud import draw_marker_card
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
+from openfollow.runtime.overlay_status_badge import draw_status_badge
 from openfollow.runtime.services_detection_pin import get_or_create_manual_marker
 from openfollow.runtime.services_marker_visuals import build_marker_visual_state
 from openfollow.runtime_metrics import OverlayStatePool
@@ -1510,6 +1511,29 @@ class TestStatusFlagsSnapshot:
         assert state.status_flags == [
             ("long", "Three parts", "info"),
         ]
+
+    def test_a_message_that_is_not_text_is_drawn_as_its_text(
+        self,
+        pool: OverlayStatePool,
+    ) -> None:
+        """Cairo measures and draws only text; any other value raised inside
+        the draw callback and took the whole HUD down to "Overlay Error"."""
+        app = _build_app()
+        flags: dict[str, object] = {
+            "count": ("info", 5),
+            "listed": ("info", ["oops"]),
+            "bare": 7,
+        }
+        app._runtime_services = SimpleNamespace(_status_flags=flags)
+        state = _build(app, pool)
+        assert state.status_flags == [
+            ("count", "5", "info"),
+            ("listed", "['oops']", "info"),
+            ("bare", "7", "error"),
+        ]
+        cr = FakeCairo()
+        draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert {"5", "['oops']", "7"} <= set(cr.show_text_strings())
 
     def test_pool_reuse_clears_stale_flags(
         self,

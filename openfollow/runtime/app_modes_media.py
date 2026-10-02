@@ -230,5 +230,5 @@ def check_diagnostics_export(app: OpenFollowApp, now: float | None = None) -> No
 
 def badge_row(status: ExportStatus) -> tuple[str, str]:
     if status.ok:
-        return ("info", f"Diagnostics saved to {status.drive}")
+        return ("success", f"Diagnostics saved to {status.drive}")
     return ("error", f"Export failed: {status.message.rstrip('.')}")

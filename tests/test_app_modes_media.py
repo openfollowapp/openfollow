@@ -118,7 +118,7 @@ class TestEntering:
 
     def test_a_success_row_is_cleared_and_the_picker_opens(self) -> None:
         app = _app(export=_Export(_done(True)))
-        app._runtime_services._status_flags[mm.BADGE_KEY] = ("info", "Diagnostics saved to SanDisk Ultra")
+        app._runtime_services._status_flags[mm.BADGE_KEY] = ("success", "Diagnostics saved to SanDisk Ultra")
         app._media_export_badge_at = 5.0
         mm.enter_diagnostics_export(app)
         assert (app._media_picker_active, app._media_export_badge_at) == (True, None)
@@ -296,7 +296,7 @@ class TestStatusCorner:
     def test_a_success_the_operator_left_before_is_posted_and_ages_out(self) -> None:
         app = _app(export=_Export(_done(True)))
         mm.check_diagnostics_export(app, now=100.0)
-        assert app._runtime_services._status_flags[mm.BADGE_KEY] == ("info", "Diagnostics saved to SanDisk Ultra")
+        assert app._runtime_services._status_flags[mm.BADGE_KEY] == ("success", "Diagnostics saved to SanDisk Ultra")
         mm.check_diagnostics_export(app, now=114.9)
         assert app._runtime_services._status_flags[mm.BADGE_KEY] is not None
         mm.check_diagnostics_export(app, now=115.0)
@@ -317,7 +317,7 @@ class TestStatusCorner:
         mm.check_diagnostics_export(app, now=1.0)
         export._status = _done(True, generation=2)
         mm.check_diagnostics_export(app, now=2.0)
-        assert app._runtime_services._status_flags[mm.BADGE_KEY][0] == "info"
+        assert app._runtime_services._status_flags[mm.BADGE_KEY][0] == "success"
 
     def test_a_later_web_success_clears_a_failure_without_posting(self) -> None:
         export = _Export(_done(False, generation=1))
@@ -329,7 +329,7 @@ class TestStatusCorner:
 
     @pytest.mark.parametrize(
         ("first_ok", "web_ok", "kind"),
-        [(True, True, "info"), (False, False, "error")],
+        [(True, True, "success"), (False, False, "error")],
         ids=["web-success-keeps-a-success-row", "web-failure-keeps-a-failure-row"],
     )
     def test_any_other_web_result_leaves_the_row(self, first_ok: bool, web_ok: bool, kind: str) -> None:

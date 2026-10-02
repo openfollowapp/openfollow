@@ -170,10 +170,11 @@ class _OpenPort:
 
 
 # A status-flag value the top-right HUD badge renders: a message string
-# (styled as an "error"), an explicit ``(severity, message)`` tuple to pick
-# "error" (red) vs "info" (blue), or ``None`` to clear the condition. The
-# dict is shared with :class:`AppRuntimeServices`; MidiSubsystem only ever
-# writes the string / None forms, but it must accept the shared wider type.
+# (styled as an "error"), an explicit ``(level, message)`` tuple naming one of
+# the status levels (error, caution, info, success), or ``None`` to clear the
+# condition. The dict is shared with :class:`AppRuntimeServices`; MidiSubsystem
+# only ever writes the string / None forms, but it must accept the shared wider
+# type.
 StatusFlagValue = str | tuple[str, str] | None
 
 

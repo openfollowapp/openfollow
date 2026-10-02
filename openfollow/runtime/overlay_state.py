@@ -192,9 +192,10 @@ class OverlayState:
     # answered. Drives the qualifier that stops an operator reading a
     # 169.254 address as a working lease.
     ip_is_fallback: bool = False
-    # One line per network plane stopped because its configured interface has
-    # no address. The HUD is the only surface left when the interface that
-    # carries the web UI is the one that went away.
+    # One line per network plane whose configured interface has no address,
+    # from the first poll that finds none (the plane itself is stopped later).
+    # The HUD is the only surface left when the interface that carries the
+    # web UI is the one that went away.
     network_alerts: list[str] = field(default_factory=list)
     show_hud_help: bool = True
     # System stats (CPU, RAM, temperature)

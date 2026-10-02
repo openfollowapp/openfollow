@@ -94,9 +94,11 @@ def wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = STARTUP_T
 def wait_for_own_listener(port: int, timeout: float = STARTUP_TIMEOUT_S) -> bool:
     """Poll until this process holds a listening TCP socket on ``port``, or ``timeout`` elapses."""
     process = psutil.Process()
+    # ``net_connections`` arrived in psutil 6.0; the declared floor, 5.9, has only ``connections``.
+    connections = getattr(process, "net_connections", None) or process.connections
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        for conn in process.net_connections(kind="tcp"):
+        for conn in connections(kind="tcp"):
             if conn.status == psutil.CONN_LISTEN and conn.laddr and conn.laddr.port == port:
                 return True
         time.sleep(0.05)

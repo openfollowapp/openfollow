@@ -16,6 +16,7 @@ import subprocess
 import sys
 from collections.abc import Iterator
 
+import psutil
 import pytest
 
 from openfollow.osc.service import _PYTHONOSC_AVAILABLE, OscService
@@ -248,6 +249,21 @@ def squatter_port() -> Iterator[int]:
 
 
 def test_wait_for_own_listener_sees_this_process_listening() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        assert _ports.wait_for_own_listener(sock.getsockname()[1], timeout=0.5) is True
+
+
+def test_wait_for_own_listener_works_with_psutil_before_6(monkeypatch: pytest.MonkeyPatch) -> None:
+    """psutil 5.9, the declared floor, names the call ``connections``."""
+    real = psutil.Process()
+
+    class _Psutil59Process:
+        def connections(self, kind: str = "inet") -> list[object]:
+            return list(real.net_connections(kind=kind))
+
+    monkeypatch.setattr(_ports.psutil, "Process", _Psutil59Process)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         sock.listen(1)

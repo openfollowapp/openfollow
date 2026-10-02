@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 
 import openfollow
+from openfollow import net_utils
 from openfollow.logging_setup import RingBufferLogHandler
 from openfollow.runtime.removable_media import Media
 from openfollow.web import diagnostics as diag
@@ -175,6 +176,191 @@ def test_safely_value_returns_default_and_sentinel_on_exception() -> None:
     value2, err2 = diag._safely_value(lambda: {"a": 1}, "x", {})
     assert value2 == {"a": 1}
     assert err2 is None
+
+
+# ---------------------------------------------------------------------------
+# Section A6 – network bind map
+# ---------------------------------------------------------------------------
+
+_PANEL_ROWS = [
+    {"label": "Station default", "value": "eth0", "address": "192.0.2.10", "editable": True, "blank": "auto"},
+    {
+        "label": "PSN in / out",
+        "value": "",
+        "address": "192.0.2.10",
+        "editable": False,
+        "note": "Follows station interface",
+    },
+    {"label": "OTP output", "value": "", "address": "192.0.2.10", "editable": True, "blank": "station"},
+    {"label": "RTTrPM output", "value": "eth1", "address": "eth1 is down", "editable": True, "blank": "station"},
+    {"label": "Video input (SRT)", "value": "", "address": "192.0.2.10", "editable": True, "blank": "station"},
+    {"label": "Web UI", "value": "", "address": "0.0.0.0", "editable": True, "blank": "all"},
+    {"label": "Odd row", "value": "", "address": "", "editable": True, "blank": "unknown"},
+]
+
+_PLANES = [
+    {"label": "PSN", "iface": "eth0", "address": "192.0.2.10", "bound": "192.0.2.10", "state": "ok", "detail": ""},
+    {
+        "label": "OTP output",
+        "iface": "",
+        "address": "",
+        "bound": None,
+        "state": "not followed",
+        "detail": "",
+        "resolved": False,
+    },
+    {
+        "label": "RTTrPM output",
+        "iface": "enx9c69d3af4e98",
+        "address": "",
+        "bound": None,
+        "state": "stopped",
+        "detail": "enx9c69d3af4e98 has no address",
+    },
+    {"label": "OSC output", "iface": "", "address": "192.0.2.10", "bound": "192.0.2.10", "state": "ok", "detail": ""},
+]
+
+
+def _bind_map(**providers: Any) -> list[str]:
+    return diag.collect_network_bind_map(diag.DiagnosticsProviders(**providers))
+
+
+def test_bind_map_lists_the_panel_rows_as_configured() -> None:
+    rows = _bind_map(interface_assignment_rows=lambda: _PANEL_ROWS, network_planes=lambda: _PLANES)
+    assert rows[0] == "  Configured (as the Network Interface Assignment panel shows it):"
+    assert rows[1].split() == ["Function", "Pin", "Address"]
+    configured = {row.split("  ")[2].strip(): row for row in rows[2:9]}
+    assert "eth0" in configured["Station default"] and "192.0.2.10" in configured["Station default"]
+    assert "Follows station interface" in configured["PSN in / out"]
+    assert "(follows station)" in configured["OTP output"]
+    assert "eth1 is down" in configured["RTTrPM output"]
+    assert "(follows station)" in configured["Video input (SRT)"]
+    assert "(all interfaces)" in configured["Web UI"]
+    # An unknown blank kind still renders, and an empty address reads as "-".
+    assert configured["Odd row"].split()[-2:] == ["(blank)", "-"]
+
+
+def test_bind_map_lists_every_plane_as_it_runs() -> None:
+    rows = _bind_map(interface_assignment_rows=lambda: _PANEL_ROWS, network_planes=lambda: _PLANES)
+    start = rows.index("  Runtime (what each network plane holds now):")
+    assert rows[start + 1].split() == ["Plane", "Interface", "Resolves", "to", "Bound", "now", "State"]
+    psn, otp, rttrpm = rows[start + 2 : start + 5]
+    assert psn.split() == ["PSN", "eth0", "192.0.2.10", "192.0.2.10", "ok"]
+    # Not followed: never resolved, so no interface or address to show.
+    assert otp.split()[2:] == ["-", "-", "-", "not", "followed"]
+    # Followed but unpinned: the routing table's choice reads "auto".
+    assert rows[start + 5].split() == ["OSC", "output", "auto", "192.0.2.10", "192.0.2.10", "ok"]
+    assert rttrpm.endswith("stopped: enx9c69d3af4e98 has no address")
+
+
+def test_a_plane_failing_before_it_was_ever_resolved_shows_no_interface() -> None:
+    """Its blank interface is not auto-detect: nothing was resolved at all."""
+    planes = [
+        {
+            "label": "OTP output",
+            "iface": "",
+            "address": "",
+            "bound": None,
+            "state": "failing",
+            "detail": "config unreadable",
+            "resolved": False,
+        }
+    ]
+    rows = _bind_map(network_planes=lambda: planes)
+    start = rows.index("  Runtime (what each network plane holds now):")
+    assert rows[start + 2].split()[2:5] == ["-", "-", "-"]
+
+
+def test_bind_map_tells_a_stopped_plane_from_one_bound_to_no_address() -> None:
+    planes = [
+        {"label": "OTP output", "iface": "", "address": "", "bound": "", "state": "ok", "detail": ""},
+        {"label": "RTTrPM output", "iface": "eth1", "address": "", "bound": None, "state": "down", "detail": ""},
+    ]
+    rows = _bind_map(network_planes=lambda: planes)
+    start = rows.index("  Runtime (what each network plane holds now):")
+    assert rows[start + 2].split()[-2] == "(unbound)"
+    assert rows[start + 3].split()[-2] == "-"
+
+
+def test_bind_map_redacts_a_failure_quoting_a_stream_url() -> None:
+    planes = [
+        {
+            "label": "Video input",
+            "iface": "eth1",
+            "address": "198.51.100.10",
+            "bound": None,
+            "state": "failing",
+            "detail": "could not open rtsp://admin:hunter2@198.51.100.20/stream",
+        }
+    ]
+    rows = _bind_map(network_planes=lambda: planes)
+    assert not any("hunter2" in row for row in rows)
+
+
+@pytest.mark.parametrize(
+    ("listener", "address", "state"),
+    [
+        (lambda: ("192.0.2.10:80", "listening"), "192.0.2.10:80", "listening"),
+        (lambda: ("0.0.0.0:2010", "listening on the fallback port, not 80"), "0.0.0.0:2010", "fallback port, not 80"),
+        (lambda: ("0.0.0.0:80", "not listening"), "0.0.0.0:80", "not listening"),
+        (lambda: 1 / 0, "-", "[unavailable: web_listener:"),
+    ],
+    ids=["pinned", "fallback", "down", "raising"],
+)
+def test_bind_map_shows_whether_and_where_the_web_ui_listens(listener: Any, address: str, state: str) -> None:
+    """It moves only on a restart, so a pin saved since reads as a difference from Configured."""
+    rows = _bind_map(network_planes=lambda: [], web_listener=listener)
+    web = next(row for row in rows if row.strip().startswith("Web UI"))
+    assert web.split()[4] == address
+    assert state in web
+
+
+def test_bind_map_keeps_the_web_ui_row_when_the_planes_cannot_be_read() -> None:
+    rows = _bind_map(network_planes=lambda: 1 / 0, web_listener=lambda: ("0.0.0.0:80", "listening"))
+    assert any(row.strip().startswith("Web UI") for row in rows)
+    assert "[unavailable: network_planes:" in rows[-1]
+
+
+def test_bind_map_columns_follow_a_long_interface_name() -> None:
+    """USB adapters are named after their MAC; a fixed width ran them into the next column."""
+    rows = _bind_map(network_planes=lambda: _PLANES)
+    start = rows.index("  Runtime (what each network plane holds now):")
+    table = rows[start + 1 : start + 5]
+    column = table[0].index("Resolves to")
+    assert all(row[column - 2 : column] == "  " for row in table)
+    assert "enx9c69d3af4e98  " in table[3]
+
+
+@pytest.mark.parametrize(
+    ("providers", "expected"),
+    [
+        ({}, "[not applicable: Interface Assignment rows not wired]"),
+        ({"interface_assignment_rows": lambda: 1 / 0}, "[unavailable: interface_assignment_rows:"),
+    ],
+    ids=["missing", "raising"],
+)
+def test_bind_map_survives_a_missing_or_failing_panel_provider(providers: dict[str, Any], expected: str) -> None:
+    rows = _bind_map(**providers)
+    assert expected in rows[1]
+    assert "Runtime (what each network plane holds now):" in rows[2]
+
+
+@pytest.mark.parametrize(
+    ("providers", "expected"),
+    [
+        ({}, "[not applicable: network observer not wired]"),
+        ({"network_planes": lambda: 1 / 0}, "[unavailable: network_planes:"),
+        ({"network_planes": lambda: []}, "[no planes polled yet]"),
+    ],
+    ids=["missing", "raising", "empty"],
+)
+def test_bind_map_survives_a_missing_failing_or_empty_observer(providers: dict[str, Any], expected: str) -> None:
+    assert expected in _bind_map(**providers)[-1]
+
+
+def test_the_bind_map_follows_video_reachability_in_the_bundle() -> None:
+    labels = [label for label, _attr in diag._BUNDLE_SECTIONS]
+    assert labels.index("A6. Network bind map") == labels.index("A5. Video source reachability") + 1
 
 
 # ---------------------------------------------------------------------------
@@ -1869,6 +2055,26 @@ def test_collect_bundle_clamps_the_runtime_section_to_the_remaining_budget(monke
     monkeypatch.setattr(diag, "collect_runtime_versions", fake_runtime)
     diag.collect_bundle(budget_s=20.0)
     assert seen["budget_s"] == 6.0 < diag._RUNTIME_SECTION_BUDGET_S
+
+
+def test_collect_bundle_clamps_the_address_sources_to_the_remaining_budget(monkeypatch, no_host_probes) -> None:
+    """E7 waits on the network backend; past the bundle's deadline it must not wait its full cap."""
+    clock = _FrozenClock()
+    monkeypatch.setattr(diag, "time", clock)
+    seen: dict[str, float | None] = {}
+
+    def eat_budget(_providers):
+        clock.advance(18.0)
+        return ["  ran"]
+
+    def fake_interfaces(route_path=None, *, address_sources=None, timeout_s=None):  # noqa: ARG001
+        seen["timeout_s"] = timeout_s
+        return ["  x"]
+
+    monkeypatch.setattr(diag, "collect_service", eat_budget)
+    monkeypatch.setattr(diag, "collect_network_interfaces", fake_interfaces)
+    diag.collect_bundle(budget_s=20.0)
+    assert seen["timeout_s"] == 2.0 < diag._ADDRESS_SOURCE_TIMEOUT_S
 
 
 def test_collect_bundle_clamps_the_storage_section_to_the_remaining_budget(monkeypatch, no_host_probes) -> None:
@@ -3581,6 +3787,8 @@ def _io_server(**overrides: Any) -> Any:
         "online_sync_status_provider": lambda: {},
         "get_runtime_stats": lambda: {},
         "get_detection_install_status": lambda: {},
+        "network_planes_provider": lambda: [],
+        "read_network_interfaces": lambda: [],
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -3621,6 +3829,8 @@ def test_build_diagnostics_providers_wires_io_fields() -> None:
     assert providers.camera_names is server.camera_names_provider
     assert providers.removable_media is server.media_scan_provider
     assert providers.gamepad_runtime is server.gamepad_runtime_provider
+    assert providers.network_planes is server.network_planes_provider
+    assert providers.network_interfaces is server.read_network_interfaces
 
 
 # ---------------------------------------------------------------------------
@@ -3719,6 +3929,113 @@ def test_collect_network_interfaces_reports_prefix_and_default_route(
     assert "ipv4 192.0.2.5/24" in joined
     assert "fe80::1" not in joined
     assert "Default route:  none" in joined
+
+
+def _one_nic(monkeypatch: pytest.MonkeyPatch, *addresses: str) -> None:
+    import psutil
+
+    monkeypatch.setattr(
+        psutil, "net_if_stats", lambda: {"eth0": SimpleNamespace(isup=True, speed=1000, mtu=1500, duplex=2)}
+    )
+    monkeypatch.setattr(
+        psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=socket.AF_INET, address=a, netmask="255.255.255.0") for a in addresses]
+        },
+    )
+
+
+def test_collect_network_interfaces_names_where_the_address_came_from(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The backend describes one address; a second one beside it (a link-local
+    fallback next to a static) is labelled only by what the address itself says."""
+    _one_nic(monkeypatch, "192.0.2.5", "169.254.7.7", "10.0.0.5")
+    rows = diag.collect_network_interfaces(
+        _route_file(tmp_path, ""),
+        address_sources=lambda: [{"name": "eth0", "address": "192.0.2.5", "address_source": "static"}],
+    )
+    assert any(row.strip() == "ipv4 192.0.2.5/24 (static)" for row in rows)
+    assert any(row.strip() == "ipv4 169.254.7.7/24 (link-local)" for row in rows)
+    assert any(row.strip() == "ipv4 10.0.0.5/24" for row in rows)
+    assert not any("Address source:" in row for row in rows)
+
+
+def test_collect_network_interfaces_marks_link_local_without_a_backend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A read-only backend cannot tell DHCP from static, but an address in
+    169.254/16 says what it is by itself."""
+    _one_nic(monkeypatch, "169.254.7.7", "not-an-address")
+    rows = diag.collect_network_interfaces(_route_file(tmp_path, ""), address_sources=None)
+    assert any(row.strip() == "ipv4 169.254.7.7/24 (link-local)" for row in rows)
+    assert any(row.strip() == "ipv4 not-an-address/24" for row in rows)
+
+
+def test_collect_network_interfaces_does_not_wait_forever_on_the_backend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One backend call per interface; a hung one must not hold the bundle."""
+    release = threading.Event()
+    monkeypatch.setattr(diag, "_ADDRESS_SOURCE_TIMEOUT_S", 0.05)
+    # The orphaned query holds this pool until it wakes; no later test may share it.
+    monkeypatch.setattr(diag, "_address_source_pool", threading.BoundedSemaphore(1))
+    _one_nic(monkeypatch, "192.0.2.5")
+    try:
+        rows = diag.collect_network_interfaces(
+            _route_file(tmp_path, ""), address_sources=lambda: [] if release.wait(5) else []
+        )
+    finally:
+        release.set()
+    assert rows[-1] == "  Address source: [unavailable: network backend did not answer within 0.05s]"
+
+
+def test_collect_network_interfaces_does_not_blame_a_backend_it_never_asked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An earlier bundle's query still running holds the one slot; the backend was not asked this time."""
+    held = threading.BoundedSemaphore(1)
+    held.acquire()
+    monkeypatch.setattr(diag, "_address_source_pool", held)
+    asked: list[int] = []
+    _one_nic(monkeypatch, "192.0.2.5")
+    rows = diag.collect_network_interfaces(_route_file(tmp_path, ""), address_sources=lambda: asked.append(1) or [])
+    assert asked == []
+    assert rows[-1] == "  Address source: [unavailable: an earlier bundle's network backend query has not finished]"
+
+
+def test_collect_network_interfaces_does_not_ask_the_backend_without_an_interface_table(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import psutil
+
+    monkeypatch.setattr(psutil, "net_if_stats", lambda: 1 / 0)
+    asked: list[int] = []
+    rows = diag.collect_network_interfaces(_route_file(tmp_path, ""), address_sources=lambda: asked.append(1) or [])
+    assert asked == []
+    assert rows[0].startswith("  [unavailable: net_if_stats:")
+
+
+@pytest.mark.parametrize(
+    ("provider", "note"),
+    [
+        (None, "[not applicable: network backend not wired]"),
+        (lambda: 1 / 0, "[unavailable: network_interfaces:"),
+        (
+            lambda: [{"name": "eth0", "address": "192.0.2.5", "address_source": ""}],
+            "[not reported by this network backend]",
+        ),
+    ],
+    ids=["missing", "raising", "read-only-backend"],
+)
+def test_collect_network_interfaces_says_when_the_source_is_unknown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, provider: Any, note: str
+) -> None:
+    _one_nic(monkeypatch, "192.0.2.5")
+    rows = diag.collect_network_interfaces(_route_file(tmp_path, ""), address_sources=provider)
+    assert any(row.strip() == "ipv4 192.0.2.5/24" for row in rows)
+    assert rows[-1].startswith(f"  Address source: {note}")
 
 
 def test_collect_network_interfaces_falls_back_to_raw_netmask(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -4485,7 +4802,7 @@ def test_collect_source_reachability_answers_the_ticket(monkeypatch: pytest.Monk
         monkeypatch,
         {"eth0": [SimpleNamespace(family=socket.AF_INET, address="192.0.2.5", netmask="255.255.255.0")]},
     )
-    monkeypatch.setattr(diag, "_PROC_NET_ROUTE", _route_file(tmp_path, ""))
+    monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", _route_file(tmp_path, ""))
     monkeypatch.setattr(diag, "probe_tcp_connect", lambda *_a, **_k: "no response within 1.5 s")
     endpoint = {"host": "198.51.100.10", "port": 554, "connection_oriented": True, "source_type": "rtsp"}
     joined = "\n".join(diag.collect_source_reachability(diag.DiagnosticsProviders(source_endpoint=lambda: endpoint)))
@@ -4500,7 +4817,7 @@ def test_collect_source_reachability_does_not_probe_a_udp_transport(
     """SRT dials out, but over UDP - connect() puts no packet on the wire, so
     a "connected" result there would be a lie."""
     _addrs(monkeypatch, {})
-    monkeypatch.setattr(diag, "_PROC_NET_ROUTE", _route_file(tmp_path, ""))
+    monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", _route_file(tmp_path, ""))
 
     def _must_not_run(*_a: Any, **_k: Any) -> str:
         raise AssertionError("a UDP endpoint must not be probed")
@@ -4518,7 +4835,7 @@ def test_collect_source_reachability_warns_before_leaving_the_lan(
     when it did - that is the condition on the offline contract's fourth
     documented exception."""
     _addrs(monkeypatch, {})
-    monkeypatch.setattr(diag, "_PROC_NET_ROUTE", _route_file(tmp_path, ""))
+    monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", _route_file(tmp_path, ""))
     monkeypatch.setattr(diag, "probe_tcp_connect", lambda *_a, **_k: "connected in under 1.5 s")
     # Not a documentation range: Python classifies 203.0.113.0/24 (TEST-NET-3)
     # as private, so it would never trip the warning.
@@ -4532,7 +4849,7 @@ def test_collect_source_reachability_stays_quiet_for_a_lan_address(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _addrs(monkeypatch, {})
-    monkeypatch.setattr(diag, "_PROC_NET_ROUTE", _route_file(tmp_path, ""))
+    monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", _route_file(tmp_path, ""))
     monkeypatch.setattr(diag, "probe_tcp_connect", lambda *_a, **_k: "connected in under 1.5 s")
     endpoint = {"host": "198.51.100.10", "port": 554, "connection_oriented": True, "source_type": "rtsp"}
     joined = "\n".join(diag.collect_source_reachability(diag.DiagnosticsProviders(source_endpoint=lambda: endpoint)))
@@ -4666,20 +4983,6 @@ def test_describe_address_reachability_names_a_directly_connected_route(
     path = _route_file(tmp_path, "eth0\t006433C6\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n")
     rows = diag.describe_address_reachability("198.51.100.10", path)
     assert "198.51.100.0/24 is directly connected on eth0" in rows[0]
-
-
-def test_read_routes_reports_an_unreadable_table_as_unknown(tmp_path: Path) -> None:
-    assert diag.read_routes(tmp_path / "absent") is None
-
-
-def test_read_routes_skips_rows_it_cannot_parse(tmp_path: Path) -> None:
-    path = _route_file(
-        tmp_path,
-        "too\tshort\n"
-        "eth0\tZZZZ\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n"
-        "eth0\t006433C6\t00000000\t0001\t0\t0\t0\tNOTAMASK\t0\t0\t0\n",
-    )
-    assert diag.read_routes(path) == []
 
 
 def test_describe_address_reachability_skips_an_entry_whose_mask_is_the_wrong_family(
@@ -5214,11 +5517,6 @@ def test_read_default_routes_orders_by_metric(tmp_path: Path) -> None:
         "enxA\t00000000\t01B2A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n",
     )
     assert [iface for iface, _gw, _metric in diag.read_default_routes(path) or []] == ["enxA", "eth0"]
-
-
-def test_read_routes_skips_a_row_with_an_unreadable_metric(tmp_path: Path) -> None:
-    path = _route_file(tmp_path, "eth0\t00000000\t01B2A8C0\t0003\t0\t0\tNOTANUM\t00000000\t0\t0\t0\n")
-    assert diag.read_routes(path) == []
 
 
 def test_collect_detection_models_flags_a_configured_model_that_is_absent(tmp_path: Path) -> None:

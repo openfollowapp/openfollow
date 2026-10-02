@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from openfollow import net_egress
+from openfollow import net_egress, net_utils
 from openfollow.video.failure import VideoFailure
 from openfollow.video.inputs import _pin
 from openfollow.video.inputs._pin import (
@@ -124,7 +124,7 @@ def net(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[SimpleNames
     monkeypatch.setattr(_pin.psutil, "net_if_addrs", lambda: addrs)
     monkeypatch.setattr(_pin.socket, "socket", _socket)
     monkeypatch.setattr(_pin.socket, "getaddrinfo", _getaddrinfo)
-    monkeypatch.setattr(_pin, "_PROC_ROUTE", str(routes))
+    monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", routes)
     monkeypatch.setattr(_pin, "_resolver", _pin._Resolver(clock=state.clock))
     # A lookup thread that dies prints a traceback for every unknown name.
     crashes: list[threading.ExceptHookArgs] = []
@@ -199,11 +199,6 @@ def test_forced_device_refuses_a_camera_with_no_route_through_the_pin(net: Simpl
 def test_forced_device_accepts_any_camera_when_the_pin_carries_a_default_route(net: SimpleNamespace) -> None:
     net.routes.write_text(_route_table(("eth1", "0.0.0.0", "0.0.0.0", 0x3)))
     assert check_video_pin("eth1", "203.0.113.20", 5000, forced_device=True) is None
-
-
-def test_forced_device_ignores_a_route_that_is_not_up(net: SimpleNamespace) -> None:
-    net.routes.write_text(_route_table(("eth1", "203.0.113.0", "255.255.255.0", 0x0)))
-    assert check_video_pin("eth1", "203.0.113.20", 5000, forced_device=True) is not None
 
 
 def test_forced_device_skips_lines_it_cannot_read(net: SimpleNamespace) -> None:

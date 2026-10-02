@@ -39,6 +39,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from openfollow.net_utils import ResolveStatus
+from openfollow.uri_redaction import redact_uris_in_text
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ POLL_INTERVAL_S = 1.0
 # Consecutive polls an interface must look addressless before its plane is
 # stopped. ``nmcli con down``/``con up`` behind Apply and Renew DHCP lease
 # leaves a gap of ~1 s for a static apply and up to ~5 s for a DHCP handshake,
-# so a single missing sample is not evidence of an outage.
+# so a missing sample is reported at once but is no reason to stop the plane.
 DOWN_POLLS_BEFORE_SUSPEND = 8
 
 # Backoff after a failed apply/suspend, so a plane whose backend keeps raising
@@ -81,8 +82,9 @@ class Plane:
     # Bind nothing. Called when the configured interface has no address, so no
     # traffic leaves on an interface the operator did not choose.
     suspend: Callable[[], None]
-    # False when the operator has this output switched off. A disabled plane is
-    # never touched and never alerts – it is not broken, it is off.
+    # False when there is nothing to follow: the output is switched off, or no
+    # interface pins it and the routing table chooses. Such a plane is never
+    # touched and never alerts – it is not broken.
     enabled: Callable[[], bool] = _always_enabled
     # Identity across polls when labels repeat or change; defaults to the label.
     key: str = ""
@@ -100,11 +102,42 @@ class _PlaneState:
     # on the way back even when the address is byte-identical.
     saw_outage: bool = False
     failure: str = ""
+    # An outage that began after the failure leads instead, until it ends.
+    superseded: bool = False
     retry_at: float = 0.0
     backoff: float = _RETRY_BACKOFF_S
     # Interface name from the last resolve, so ``alerts()`` can name it without
     # re-resolving. ``alerts()`` runs on the render path.
     iface: str = ""
+    address: str = ""
+    # Not followed (see ``Plane.enabled``): never touched, reported as such.
+    unfollowed: bool = False
+    # Set once a resolve has returned, so a failure before any reads as never resolved.
+    resolved: bool = False
+
+
+# A plane with nothing to follow (see ``Plane.enabled``).
+NOT_FOLLOWED = "not followed"
+
+
+@dataclass(frozen=True)
+class PlaneStatus:
+    """One plane as the last poll left it, for the diagnostics bundle.
+
+    ``state`` is ``ok``, ``not followed`` (switched off, or unpinned and left
+    to the routing table, so it may well be running), ``down`` (addressless,
+    not yet stopped), ``stopped`` (suspended) or ``failing`` (a rebind keeps
+    raising).
+    """
+
+    label: str
+    iface: str
+    address: str
+    bound: str | None
+    state: str
+    detail: str = ""
+    # False for a plane never resolved, whose blank ``iface`` is not auto-detect.
+    resolved: bool = True
 
 
 @dataclass
@@ -120,6 +153,9 @@ class NetworkPlaneObserver:
     _states: dict[str, _PlaneState] = field(default_factory=dict)
     _next_poll: float = 0.0
     _polled: tuple[Plane, ...] = ()
+    # Replaced whole once per poll, so a reader on another thread never sees a
+    # half-built one.
+    _status: tuple[PlaneStatus, ...] = ()
 
     def __post_init__(self) -> None:
         if not callable(self.planes):
@@ -135,6 +171,7 @@ class NetworkPlaneObserver:
         if not force and now < self._next_poll:
             return False
         self._next_poll = now + POLL_INTERVAL_S
+        statuses: list[PlaneStatus] = []
         for plane in self._refresh_planes():
             try:
                 self._poll_one(plane, now)
@@ -144,7 +181,34 @@ class NetworkPlaneObserver:
                 # leave PSN on a dead address. Recorded so it surfaces to the
                 # operator instead of only appearing as a repeating traceback.
                 self._record_failure(plane, now, exc)
+            statuses.append(self._status_of(plane))
+        self._status = tuple(statuses)
         return True
+
+    def snapshot(self) -> tuple[PlaneStatus, ...]:
+        """Every plane as the last poll left it. Safe from any thread; resolves nothing."""
+        return self._status
+
+    def _status_of(self, plane: Plane) -> PlaneStatus:
+        state = self._state(plane.state_key)
+        if state.unfollowed and not state.failure:
+            return PlaneStatus(plane.label, "", "", None, NOT_FOLLOWED, resolved=False)
+        try:
+            bound = plane.current()
+        except Exception:  # noqa: BLE001 - the poll already recorded this plane's fault
+            bound = None
+        # A failing rebind or stop outranks an outage, unless the outage began after it.
+        if state.failure and not state.superseded:
+            return PlaneStatus(
+                plane.label, state.iface, state.address, bound, "failing", state.failure, resolved=state.resolved
+            )
+        where = state.iface or "the interface"
+        if state.suspended:
+            return PlaneStatus(plane.label, state.iface, "", bound, "stopped", f"{where} has no address")
+        if state.down_polls:
+            detail = f"no address for {state.down_polls} of {DOWN_POLLS_BEFORE_SUSPEND} polls"
+            return PlaneStatus(plane.label, state.iface, "", bound, "down", detail)
+        return PlaneStatus(plane.label, state.iface, state.address, bound, "ok")
 
     def _refresh_planes(self) -> tuple[Plane, ...]:
         if not callable(self.planes):
@@ -165,7 +229,11 @@ class NetworkPlaneObserver:
 
     def _record_failure(self, plane: Plane, now: float, exc: Exception) -> None:
         state = self._state(plane.state_key)
-        state.failure = str(exc) or exc.__class__.__name__
+        if now < state.retry_at:
+            # Already backing off: the failure behind it stands, and a resolver that keeps raising logs once.
+            return
+        state.failure = redact_uris_in_text(str(exc) or exc.__class__.__name__)
+        state.superseded = False
         state.retry_at = now + state.backoff
         state.backoff = min(state.backoff * 2, _RETRY_BACKOFF_MAX_S)
         logger.exception("Network observer: %s failed", plane.label)
@@ -173,6 +241,7 @@ class NetworkPlaneObserver:
     @staticmethod
     def _clear_failure(state: _PlaneState) -> None:
         state.failure = ""
+        state.superseded = False
         state.retry_at = 0.0
         state.backoff = _RETRY_BACKOFF_S
 
@@ -180,28 +249,36 @@ class NetworkPlaneObserver:
         if not plane.enabled():
             # Reset rather than carry a stale down-count or alert into the next
             # time the operator switches this output on.
-            self._states[plane.state_key] = _PlaneState()
+            self._states[plane.state_key] = _PlaneState(unfollowed=True)
             return
         state = self._state(plane.state_key)
-        if now < state.retry_at:
-            return
+        state.unfollowed = False
+        # Every poll resolves, so an outage is seen and leads from its first
+        # poll; a failure's backoff holds back only apply and suspend.
+        backing_off = now < state.retry_at
 
         address, status, iface = plane.resolve()
+        state.resolved = True
         state.iface = iface
+        state.address = address
         # "none" is nothing configured and nothing to auto-detect: the station
         # has no address at all. Binding "" would hand the plane INADDR_ANY,
         # which is the wrong network by definition.
         if status in ("down", "none"):
-            self._handle_down(plane, state, iface)
+            self._handle_down(plane, state, iface, backing_off=backing_off)
             return
 
         state.down_polls = 0
+        # Unbound until the retry: a failure the outage stood in front of leads again.
+        state.superseded = False
         # Compare against the live binding, not the previous resolution: the
         # runtime may already have bound this correctly at startup, and
         # something else may have rebound it since.
         if plane.current() == address and not state.saw_outage:
             state.suspended = False
             self._clear_failure(state)
+            return
+        if backing_off:
             return
 
         plane.apply(address)
@@ -216,7 +293,9 @@ class NetworkPlaneObserver:
         state.saw_outage = False
         self._clear_failure(state)
 
-    def _handle_down(self, plane: Plane, state: _PlaneState, iface: str) -> None:
+    def _handle_down(self, plane: Plane, state: _PlaneState, iface: str, *, backing_off: bool) -> None:
+        if state.down_polls == 0:
+            state.superseded = bool(state.failure)
         state.down_polls += 1
         state.saw_outage = True
         if state.down_polls < DOWN_POLLS_BEFORE_SUSPEND:
@@ -225,6 +304,9 @@ class NetworkPlaneObserver:
         # config save elsewhere restarts the output on a wildcard bind, which
         # would otherwise run misrouted while this still says "suspended".
         if state.suspended and plane.current() is None:
+            self._clear_failure(state)
+            return
+        if backing_off:
             return
         plane.suspend()
         state.suspended = True
@@ -253,10 +335,13 @@ class NetworkPlaneObserver:
             state = self._states.get(plane.state_key)
             if state is None:
                 continue
-            if state.suspended:
+            if state.failure and not state.superseded:
+                # A failed rebind or suspend leads: it says why the plane is
+                # dead, also while its retry waits out the backoff.
+                where = f"{state.iface} – " if state.iface else ""
+                out.append(f"{plane.label}: {where}{state.failure}")
+            elif state.suspended or state.down_polls:
+                # Off the show from the first addressless poll; the suspend is
+                # debounced only so Apply and Renew don't tear the plane down.
                 out.append(f"{plane.label}: {state.iface or 'interface'} is down")
-            elif state.failure:
-                # A plane whose rebind keeps failing is just as dead as a
-                # suspended one, and used to surface nowhere at all.
-                out.append(f"{plane.label}: {state.failure}")
         return out

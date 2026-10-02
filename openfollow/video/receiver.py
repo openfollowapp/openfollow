@@ -437,7 +437,8 @@ class GstNativeSinkReceiver:
 
     def _note_pin(self) -> None:
         pin = config_pin(self._input_config)
-        self._pinned_to = get_iface_ipv4(pin) if pin else None
+        # A pin with no address builds nothing: stopped, not running unbound.
+        self._pinned_to = (get_iface_ipv4(pin) or None) if pin else None
 
     @property
     def pinned_to(self) -> str | None:

@@ -607,6 +607,31 @@ def test_configwebserver_display_port_falls_back_to_primary_when_nothing_live(
     assert srv.display_port == 80
 
 
+@pytest.mark.parametrize(
+    ("primary", "fallback", "expected"),
+    [
+        (True, True, ("192.0.2.10:9000", "listening")),
+        (False, True, ("192.0.2.10:8080", "listening on the fallback port, not 9000")),
+        (False, False, ("192.0.2.10:9000", "not listening")),
+    ],
+    ids=["primary", "fallback", "down"],
+)
+def test_configwebserver_listener_says_whether_and_where_it_serves(
+    tmp_path, monkeypatch, primary: bool, fallback: bool, expected: tuple[str, str]
+) -> None:
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=9000, host="192.0.2.10")
+    srv._http_server = object() if primary else None
+    srv._fallback_http_server = object() if fallback else None
+    srv._fallback_port = 8080 if fallback else None
+    assert srv.listener == expected
+
+
+def test_configwebserver_listener_names_the_wildcard(tmp_path, monkeypatch) -> None:
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=9000, host="")
+    srv._http_server = object()
+    assert srv.listener == ("0.0.0.0:9000", "listening")
+
+
 def test_configwebserver_display_port_ignores_stale_primary_bound_flag(
     tmp_path,
     monkeypatch,
@@ -1272,6 +1297,24 @@ class TestGetNetworkInterfaces:
 
         srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=_provider)
         assert srv.get_network_interfaces() == []
+
+    def test_the_diagnostics_read_reports_a_failure_instead_of_the_last_rows(self, tmp_path, monkeypatch) -> None:
+        """The bundle says the backend failed; stale rows would read as current DHCP / static data."""
+        state = {"fail": False}
+
+        def _provider() -> list[dict]:
+            if state["fail"]:
+                raise RuntimeError("nmcli exploded")
+            return [{"name": "eth0", "address": "10.0.0.5"}]
+
+        srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=_provider)
+        assert srv.get_network_interfaces()[0]["address"] == "10.0.0.5"
+        state["fail"] = True
+        with pytest.raises(RuntimeError, match="nmcli exploded"):
+            srv.read_network_interfaces()
+
+    def test_the_diagnostics_read_with_no_backend_is_empty(self, tmp_path, monkeypatch) -> None:
+        assert _make_quiet_server(tmp_path, monkeypatch).read_network_interfaces() == []
 
     def test_caller_cannot_mutate_the_cache(self, tmp_path, monkeypatch) -> None:
         """Rows are handed out as a copy, so a template helper decorating them

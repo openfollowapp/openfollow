@@ -15,6 +15,8 @@ Pick the protocol or device for your setup; the fields below update to match.
 - **Pi Camera** – CSI camera modules and HDMI/SDI-to-CSI adapters on the ribbon-cable port.
 - **Media Gallery** – play a stored still image or short looping clip, or capture a frame from a live source; ships with a Stage scene and a Grey card for bench-testing calibration and detection without a camera.
 
+Which network interface SRT, RTSP and RTP use is set under **Network Interface Assignment**, in the Video input row.
+
 ## Settings (by Source Type)
 
 - **RTSP URL** – the full `rtsp://` address, e.g. `rtsp://192.168.0.182:554/stream1`. Best results: 1080p/720p, 25–30 fps, H.264, ~4–8 Mbps CBR, 1 keyframe/s.

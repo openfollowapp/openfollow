@@ -9,9 +9,12 @@ auto-detect fallback. ``resolve_source_ip`` returns ``(ip, ResolveStatus)``.
 
 from __future__ import annotations
 
+import ipaddress
 import socket
+import sys
 import time
-from typing import Literal
+from pathlib import Path
+from typing import Literal, NamedTuple
 
 import psutil
 
@@ -351,3 +354,66 @@ def join_multicast_group_on_iface(sock: socket.socket, group: str, iface_ip: str
             f"interface address {iface_ip} is unavailable ({exc}); staying unsubscribed "
             f"until it returns rather than joining on every interface"
         ) from exc
+
+
+# The kernel's IPv4 route table. Read directly rather than asked of the
+# network backend: the backend reports what is *configured*, and "where does a
+# packet to that address go" is a question about what the kernel will do.
+_PROC_NET_ROUTE = Path("/proc/net/route")
+
+
+class Ipv4Route(NamedTuple):
+    """One route of the main IPv4 table. A gateway of ``0.0.0.0`` is directly connected.
+
+    The table carries no up/down state: the kernel sets ``RTF_UP`` on every row
+    it prints, and keeps an interface's routes through a carrier loss that
+    leaves its address in place.
+    """
+
+    iface: str
+    network: ipaddress.IPv4Network
+    gateway: str
+    metric: int
+
+
+_RTF_REJECT = 0x0200
+
+
+def _route_word(field: str) -> str:
+    # The kernel prints each network-order word as a native integer.
+    return socket.inet_ntoa(int(field, 16).to_bytes(4, sys.byteorder))
+
+
+def read_ipv4_routes(path: Path | None = None) -> list[Ipv4Route] | None:
+    """Every route in the kernel's main IPv4 table that can carry a packet.
+
+    ``None`` means the table could not be read (no ``/proc`` on macOS), which a
+    caller must report as unknown - distinct from ``[]``, a host that really has
+    nowhere to send a packet. The path is resolved here rather than as a default
+    argument, so a test pointing the module at another table is honoured.
+    """
+    try:
+        text = (path or _PROC_NET_ROUTE).read_text()
+    except (OSError, ValueError):
+        return None
+    routes: list[Ipv4Route] = []
+    for line in text.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 8:
+            continue
+        try:
+            # Unreachable and prohibit routes carry RTF_REJECT, a blackhole no
+            # device: none of them sends anything anywhere.
+            if fields[0] == "*" or int(fields[3], 16) & _RTF_REJECT:
+                continue
+            network = ipaddress.IPv4Network(f"{_route_word(fields[1])}/{_route_word(fields[7])}", strict=False)
+            route = Ipv4Route(
+                iface=fields[0],
+                network=network,
+                gateway=_route_word(fields[2]),
+                metric=int(fields[6]),
+            )
+        except (ValueError, OverflowError):
+            continue
+        routes.append(route)
+    return routes

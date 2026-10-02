@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-import struct
 import sys
 import threading
 import time
@@ -17,7 +16,7 @@ from typing import Any
 import psutil
 
 from openfollow.net_egress import is_loopback_host, resolve_egress
-from openfollow.net_utils import route_source
+from openfollow.net_utils import read_ipv4_routes, route_source
 from openfollow.video.failure import VideoFailure
 
 # Linux pins the element's own socket to the device (``bindtodevice``); elsewhere
@@ -31,12 +30,6 @@ _RESOLVE_TTL_S = 30.0
 # A name that failed is not looked up again for this long, so a camera that is
 # off does not cost every reconnect attempt a wait on the main loop.
 _FAILURE_TTL_S = 10.0
-
-# The main routing table. A socket bound to a device with no route there may
-# still connect (the kernel assumes the destination is on-link), so a probe
-# connect cannot tell whether the device reaches the camera.
-_PROC_ROUTE = "/proc/net/route"
-_RTF_UP = 0x1
 
 
 @dataclass(frozen=True)
@@ -178,30 +171,18 @@ def binds_device(host: str) -> bool:
     return not addresses or (bool(remote) and all(":" not in a for a in addresses))
 
 
-def _route_key(field: str) -> int:
-    # The kernel prints each network-order word as a native integer.
-    return int(ipaddress.IPv4Address(struct.pack("=I", int(field, 16))))
-
-
 def _routed_through(address: str, iface: str) -> bool | None:
-    """Whether the main routing table reaches *address* through *iface*; None when unreadable."""
-    try:
-        with open(_PROC_ROUTE, encoding="ascii") as fh:
-            lines = fh.read().splitlines()[1:]
-    except OSError:
+    """Whether the main routing table reaches *address* through *iface*; None when unreadable.
+
+    Read from the table, never probed: a socket bound to a device with no route
+    through it may still connect, because the kernel assumes the destination is
+    on-link.
+    """
+    routes = read_ipv4_routes()
+    if routes is None:
         return None
-    target = int(ipaddress.IPv4Address(address))
-    for line in lines:
-        fields = line.split()
-        if len(fields) < 8 or fields[0] != iface:
-            continue
-        try:
-            network, flags, mask = _route_key(fields[1]), int(fields[3], 16), _route_key(fields[7])
-        except ValueError:
-            continue
-        if flags & _RTF_UP and target & mask == network & mask:
-            return True
-    return False
+    target = ipaddress.IPv4Address(address)
+    return any(route.iface == iface and target in route.network for route in routes)
 
 
 def check_video_pin(

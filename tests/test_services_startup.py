@@ -1282,6 +1282,7 @@ def test_network_interfaces_provider_reports_an_addressless_interface(monkeypatc
         "router": "",
         "dns": [],
         "lease_display": None,
+        "address_source": "",
     }
 
 
@@ -2535,3 +2536,59 @@ def test_video_input_plane_stops_and_rebuilds_the_input(monkeypatch) -> None:
     services._app._video_receiver = None
     plane.suspend()  # nothing to stop
     assert receiver.released == ["eth1 has no address"]
+
+
+@pytest.mark.parametrize(
+    ("writable", "expected"), [(True, {"eth0": "dhcp", "eth1": "link-local"}), (False, {"eth0": "", "eth1": ""})]
+)
+def test_network_interfaces_provider_says_where_each_address_came_from(
+    monkeypatch, writable: bool, expected: dict[str, str]
+) -> None:
+    """A read-only backend reports every address as DHCP, so it is not asked."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+
+    class _FakeAdapter:
+        backend_name = "fake"
+
+        def list_interfaces(self):
+            return [_ifrow("eth0"), _ifrow("eth1")]
+
+        def is_writable(self):
+            return writable
+
+        def get_state(self, iface):
+            if iface == "eth0":
+                return _ifrow_state(iface, address="192.0.2.5", prefix=24, method_value="dhcp")
+            return _ifrow_state(iface, address="169.254.7.7", prefix=16, method_value="dhcp")
+
+    services._network_adapter = _FakeAdapter()
+    assert {r["name"]: r["address_source"] for r in services._network_interfaces_provider()} == expected
+
+
+def test_network_plane_status_reports_the_observer_snapshot(monkeypatch) -> None:
+    from openfollow.runtime.network_observer import NetworkPlaneObserver, Plane
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_observer = None
+    assert services.network_plane_status() == []
+
+    plane = Plane(
+        label="PSN",
+        resolve=lambda: ("192.0.2.10", "iface", "eth0"),
+        current=lambda: "192.0.2.10",
+        apply=lambda _address: None,
+        suspend=lambda: None,
+    )
+    services._network_observer = NetworkPlaneObserver(planes=[plane], clock=lambda: 0.0)
+    services._network_observer.poll()
+    assert services.network_plane_status() == [
+        {
+            "label": "PSN",
+            "iface": "eth0",
+            "address": "192.0.2.10",
+            "bound": "192.0.2.10",
+            "state": "ok",
+            "detail": "",
+            "resolved": True,
+        }
+    ]

@@ -1356,9 +1356,14 @@ class AppRuntimeServices:
             sync.update_iface_ip(address, force=recovered)
 
     def network_alerts(self) -> list[str]:
-        """Planes currently stopped because their interface has no address."""
+        """Planes not sending: an interface without an address, or a rebind or suspend that failed."""
         observer = self._network_observer
         return observer.alerts() if observer is not None else []
+
+    def network_plane_status(self) -> list[dict[str, Any]]:
+        """Every network plane as the observer last left it, for the diagnostics bundle."""
+        observer = self._network_observer
+        return [asdict(status) for status in observer.snapshot()] if observer is not None else []
 
     def init_online_sync(self) -> None:
         """Start the background online-sync worker.
@@ -2696,6 +2701,7 @@ class AppRuntimeServices:
             # degrade gracefully while a subsystem is booting.
             recent_osc_sends_provider=self._recent_osc_sends_provider,
             osc_listener_status_provider=self._osc_listener_status_provider,
+            network_planes_provider=self.network_plane_status,
             recent_midi_events_provider=self._recent_midi_events_provider,
             midi_port_names_provider=self._midi_port_names_provider,
             camera_names_provider=self._camera_names_provider,
@@ -2975,6 +2981,8 @@ class AppRuntimeServices:
                 "router": "",
                 "dns": [],
                 "lease_display": None,
+                # A read-only backend reports every address as DHCP, so it cannot say.
+                "address_source": "",
             }
             # A per-interface read can fail (interface disappearing mid-scan,
             # backend hiccup) without invalidating the rest of the list, so
@@ -2995,6 +3003,7 @@ class AppRuntimeServices:
                     router=state.ipv4.router or "",
                     dns=list(state.ipv4.dns),
                     lease_display=_format_lease_remaining(seconds),
+                    address_source=state.address_source if adapter.is_writable() else "",
                 )
             rows.append(row)
         return rows

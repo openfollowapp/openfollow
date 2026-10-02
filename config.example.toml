@@ -17,6 +17,9 @@ v4l2_framerate = 30
 testpattern_selected_media = "default:stage"
 stall_timeout = 3.0
 heal_interval = 5.0
+# Interface SRT, RTSP and RTP reach the camera through, by name; empty follows
+# psn_source_iface, like the outputs.
+video_input_iface = ""
 window_width = 1920
 window_height = 1080
 psn_system_name = "OpenFollow"

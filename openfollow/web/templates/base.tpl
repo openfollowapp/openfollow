@@ -1938,8 +1938,8 @@
  .modal-card.modal-card-large { width: min(820px, 100%); }
  .modal-card-large .modal-body img,
  .modal-card-notes .modal-body img { max-width: 100%; height: auto; }
- /* Release notes: as wide and tall as the window allows, so they scroll late. */
- .modal-card.modal-card-notes { width: min(1100px, 100%); max-height: calc(100vh - 24px); }
+ /* Release notes: a reading width, and as tall as the window allows, so they scroll late. */
+ .modal-card.modal-card-notes { width: min(733px, 100%); max-height: calc(100vh - 24px); }
  .modal-backdrop.modal-backdrop-notes { padding: 12px; }
  .modal-header {
  display: flex;
@@ -1996,6 +1996,8 @@
  /* Hugs its content; the buttons keep to the right, clear of it. */
  .modal-footer-lead { flex: 0 1 auto; max-width: 36rem; min-width: 0; margin-right: auto; }
  .modal-footer-lead + button { margin-left: 0.75rem; }
+ /* The same space above, left of and below the docked support card, matching the notes' left edge. */
+ .modal-card-notes .modal-footer { padding: 1.2rem; }
  /* Support OpenFollow (partials/support_card.tpl). Not a status. */
  .support-card {
  display: flex;
@@ -2546,7 +2548,7 @@
  // the modal closes for any reason (Cancel, ESC, backdrop, the
  // close button, or a footer button that calls ``closeModal``).
  // ``size: 'large'`` widens the card for long, illustrated content;
- // ``size: 'notes'`` gives release notes most of the window.
+ // ``size: 'notes'`` gives release notes a reading width and the window's height.
  // ``footerHTML`` (trusted markup) sits left of the footer buttons.
  // Returns nothing – caller wires its own confirm logic via
  // ``footerButtons.onClick``. Helper wrappers

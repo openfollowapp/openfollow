@@ -595,14 +595,24 @@ def test_the_support_card_is_padded_evenly(live_server, selector: str) -> None:
     assert len(padding.split()) == 1
 
 
-def test_whats_new_gives_the_notes_most_of_the_window(live_server) -> None:
+def test_whats_new_reads_at_a_narrower_width_than_the_large_dialog(live_server) -> None:
     _, base = live_server
     _, body = _get(base, "/")
     opener = body[body.index("async function openfollowShowWhatsNew()") :]
     assert "size: 'notes'" in opener[: opener.index("``modalChooseTemplate``")]
-    wide = re.search(r"\.modal-card\.modal-card-notes \{ width: min\((\d+)px, 100%\)", body)
+    notes = re.search(r"\.modal-card\.modal-card-notes \{ width: min\((\d+)px, 100%\)", body)
     large = re.search(r"\.modal-card\.modal-card-large \{ width: min\((\d+)px, 100%\)", body)
-    assert wide and large and int(wide.group(1)) > int(large.group(1))
+    assert notes and large and int(notes.group(1)) < int(large.group(1))
+
+
+def test_the_docked_support_card_has_the_same_space_above_left_and_below(live_server) -> None:
+    """One padding on the What's new footer, equal to the notes' own left edge."""
+    _, base = live_server
+    _, body = _get(base, "/")
+    footer = re.search(r"\.modal-card-notes \.modal-footer \{ padding: ([^;]+); \}", body)
+    notes_left = re.search(r"\.modal-body \{\s*padding: [^ ;]+ ([^;]+);", body)
+    assert footer and notes_left
+    assert footer.group(1).split() == [notes_left.group(1)]
 
 
 def test_whats_new_names_the_settings_backup_the_update_made(live_server, tmp_path, monkeypatch) -> None:

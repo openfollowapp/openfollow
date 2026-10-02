@@ -27,8 +27,8 @@ COLOR_ACCENT_SOFT = (1.0, 0.737, 0.0, 0.12)  # soft accent background (RGBA)
 # Borders and UI
 COLOR_BORDER_SOFT = (1.0, 1.0, 1.0, 0.08)  # soft border (RGBA)
 COLOR_BORDER = (1.0, 1.0, 1.0, 0.12)  # standard border (RGBA)
-# Dashed edge of the Support OpenFollow request: neutral, because gold reads as caution.
-COLOR_SUPPORT_BORDER = (1.0, 1.0, 1.0, 0.26)  # (RGBA)
+# Dashed edge of the Support OpenFollow request, the website's own: #ffbc00 at 60%.
+COLOR_SUPPORT_BORDER = (*COLOR_ACCENT, 0.6)  # (RGBA)
 SUPPORT_DASH = (5.0, 4.0)
 
 # Translucent fill for the shared overlay-card chrome (operator-message cards

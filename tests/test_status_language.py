@@ -233,7 +233,7 @@ def test_the_support_card_tokens_match_the_doc() -> None:
 
 
 def test_the_support_card_never_takes_a_level_colour() -> None:
-    """It shows no state; a caution gold or any level's token would make it read as one."""
+    """It shows no state; a level's token, or a coloured literal beside its own, would make it read as one."""
     rules = [
         (" ".join(selector.split()), body)
         for name, css in _style_blocks()

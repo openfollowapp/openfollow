@@ -273,19 +273,21 @@ attributes, so it spells the token's value.
 ## Not a status: Support OpenFollow
 
 The request for contributions (What's new, About, the Operator Screen's
-Settings) shows no state, so it takes no level. It must not read as one, and
-gold is the caution colour, so the card is neutral:
+Settings) shows no state, so it takes no level. It carries the website's
+Support OpenFollow edge, so it is the same object on both:
 
 | Token / constant | Value | Use |
 |---|---|---|
-| `--support-border` / `COLOR_SUPPORT_BORDER` | `#ffffff` at 26% | 1.5px dashed edge, 6px radius |
+| `--support-border` / `COLOR_SUPPORT_BORDER` | `#ffbc00` at 60% | 1.5px dashed edge, 6px radius |
 | `--surface` | | Card fill |
 | `--accent` / `COLOR_ACCENT` | | The heart and the "Support OpenFollow" label only |
 | `--qr-light` / `--qr-dark` | `#ffffff` / `#000000` | The QR field and modules |
 
-A status box is solid and filled with its level's colours; this card has a
-dashed edge, no level colour and a heart in place of a status sign. Its text
-makes no claim that could go stale on a station that never updates.
+The edge is gold, but it can't pass for a caution box: a caution box has a
+solid border, a gold fill and the "i" sign, while this card is dashed, takes
+the neutral `--surface` fill and leads with a heart. Never give it a level's
+fill, a solid border or a status sign. Its text makes no claim that could go
+stale on a station that never updates.
 
 
 - **Web boxes:** 6px, every level and every box.

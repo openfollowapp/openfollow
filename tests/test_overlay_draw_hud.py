@@ -2583,7 +2583,7 @@ class TestSettingsMenuLinkColumns:
 
 
 class TestSettingsMenuSupportColumn:
-    """The Support OpenFollow column reads as a request, not as another link or a caution."""
+    """The Support OpenFollow column reads as a request, not as another link."""
 
     @staticmethod
     def _draw() -> FakeCairo:
@@ -2596,8 +2596,8 @@ class TestSettingsMenuSupportColumn:
         dashes = [c for c in self._draw().calls if c[0] == "dash"]
         assert dashes == [("dash", SUPPORT_DASH, 0.0)]
 
-    def test_the_frame_is_neutral_never_the_accent(self) -> None:
-        """Gold on the Operator Screen means caution."""
+    def test_the_frame_takes_the_websites_edge_colour(self) -> None:
+        """The same dashed gold as the website's card, so both read as one request."""
         calls = self._draw().calls
         at = calls.index(("dash", SUPPORT_DASH, 0.0))
         colour = next(c for c in reversed(calls[:at]) if c[0] in {"rgb", "rgba"})

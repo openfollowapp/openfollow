@@ -576,6 +576,25 @@ def test_whats_new_docks_the_support_card_beside_continue(live_server) -> None:
     assert lead.index("lead.className = 'modal-footer-lead'") < lead.index("opts.footerButtons")
 
 
+def test_the_docked_card_hugs_its_content_and_continue_keeps_clear(live_server) -> None:
+    """The card is as wide as its text, not the row; Continue sits at the row's foot, apart from it."""
+    _, base = live_server
+    _, body = _get(base, "/")
+    footer = re.search(r"\.modal-footer \{([^}]*)\}", body).group(1)
+    assert "align-items: flex-end;" in footer
+    lead = re.search(r"\.modal-footer-lead \{([^}]*)\}", body).group(1)
+    assert "flex: 0 1 auto;" in lead and "max-width:" in lead
+    assert re.search(r"\.modal-footer-lead \+ button \{ margin-left: [\d.]+rem; \}", body)
+
+
+@pytest.mark.parametrize("selector", [r"\.support-card", r"\.support-card--compact"])
+def test_the_support_card_is_padded_evenly(live_server, selector: str) -> None:
+    _, base = live_server
+    _, body = _get(base, "/about")
+    padding = re.search(selector + r" \{[^}]*padding: ([^;]+);", body).group(1)
+    assert len(padding.split()) == 1
+
+
 def test_whats_new_gives_the_notes_most_of_the_window(live_server) -> None:
     _, base = live_server
     _, body = _get(base, "/")

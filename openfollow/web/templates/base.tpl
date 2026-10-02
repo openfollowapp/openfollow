@@ -43,9 +43,10 @@
  --muted: rgba(247, 245, 233, 0.68);
  --accent: #ffbc00;
  --accent-soft: rgba(255, 188, 0, 0.12);
- /* Support OpenFollow card: a neutral dashed edge, because gold is caution.
- The QR keeps dark modules on a light field, which is what a scanner reads. */
- --support-border: rgba(255, 255, 255, 0.26);
+ /* Support OpenFollow card: the website's dashed gold edge. Dashed, on a neutral
+ fill, it never passes for a caution box. The QR keeps dark modules on a light
+ field, which is what a scanner reads. */
+ --support-border: rgba(255, 188, 0, 0.6);
  --qr-light: #ffffff;
  --qr-dark: #000000;
  /* Status language, one token set per level: see docs/STATUS_LANGUAGE.md. */
@@ -1986,26 +1987,28 @@
  .modal-footer {
  display: flex;
  flex-wrap: wrap;
- align-items: center;
+ align-items: flex-end;
  gap: 0.55rem;
  justify-content: flex-end;
  padding: 0.85rem 1.2rem;
  border-top: 1px solid var(--border-soft);
  }
- .modal-footer-lead { flex: 1 1 24rem; min-width: 0; margin-right: auto; }
+ /* Hugs its content; the buttons keep to the right, clear of it. */
+ .modal-footer-lead { flex: 0 1 auto; max-width: 36rem; min-width: 0; margin-right: auto; }
+ .modal-footer-lead + button { margin-left: 0.75rem; }
  /* Support OpenFollow (partials/support_card.tpl). Not a status. */
  .support-card {
  display: flex;
  align-items: center;
  gap: 1rem;
- padding: 0.85rem 1rem;
+ padding: 1rem;
  border: 1.5px dashed var(--support-border);
  border-radius: 6px;
  background: var(--surface);
  }
- .support-card .qr { flex: none; width: 112px; height: 112px; }
- .support-card--compact { gap: 0.8rem; padding: 0.5rem 0.75rem; }
- .support-card--compact .qr { width: 88px; height: 88px; }
+ .support-card .qr { flex: none; width: 123px; height: 123px; }
+ .support-card--compact { gap: 0.8rem; padding: 0.75rem; }
+ .support-card--compact .qr { width: 97px; height: 97px; }
  .qr-field { fill: var(--qr-light); }
  .qr-modules { fill: var(--qr-dark); }
  .support-card-text { display: grid; gap: 0.3rem; min-width: 0; }

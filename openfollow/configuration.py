@@ -2297,7 +2297,7 @@ class AppConfig:
     stall_timeout: float = 3.0
     heal_interval: float = 5.0
     # Interface the network video inputs (SRT, RTSP, RTP) use, by name. Blank
-    # leaves it to the routing table; it does not follow ``psn_source_iface``.
+    # follows ``psn_source_iface``, like the outputs.
     video_input_iface: str = ""
 
     # Window

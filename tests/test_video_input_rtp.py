@@ -561,3 +561,14 @@ class TestRtpInterfacePin:
         assert field.device_editable is False
         assert RtpInput.config_fields()[0].name == "rtp_url"
         assert RtpInput.pins_interface is True
+
+
+class TestRtpRouteTarget:
+    @pytest.mark.parametrize(
+        ("url", "target"),
+        [("rtp://239.1.1.1:5004", "239.1.1.1"), ("rtp://192.0.2.10:5004", "192.0.2.10"), ("rtp://0.0.0.0:5004", "")],
+        ids=["group", "named-address", "wildcard"],
+    )
+    def test_the_address_whose_route_picks_the_interface(self, url: str, target: str) -> None:
+        """A group is joined where its route points; the wildcard receives everywhere."""
+        assert RtpInput.route_target({"rtp_url": url}) == target

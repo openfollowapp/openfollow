@@ -88,6 +88,13 @@ class RtpInput(VideoInputBase):
         return None
 
     @classmethod
+    def route_target(cls, config: dict[str, Any]) -> str:
+        # A group is joined where its route points; a named local address is
+        # its own interface; the wildcard receives on every interface.
+        address, _port, _is_multicast = _parse_rtp_url(str(config.get("rtp_url", "") or ""))
+        return "" if address == "0.0.0.0" else address
+
+    @classmethod
     def config_fields(cls) -> list[ConfigField]:
         return [
             ConfigField("rtp_url", str, "rtp://0.0.0.0:5004", "RTP URL"),

@@ -978,7 +978,7 @@ class AppRuntimeServices:
         from openfollow.video.inputs import get_input_class
 
         input_cls = get_input_class(cfg.video_source_type)
-        input_config = input_cls.get_config_field_values(cfg) if input_cls else {}
+        input_config = input_cls.runtime_config(cfg) if input_cls else {}
 
         receiver = GstNativeSinkReceiver(
             source_type=cfg.video_source_type,
@@ -1144,14 +1144,18 @@ class AppRuntimeServices:
             if self._app._rttrpm_server is not None:
                 self._app._rttrpm_server.stop()
 
+        def _video_pin() -> str:
+            # A blank pin follows the station interface, like the outputs.
+            cfg = self._app._config
+            return plane_source_iface(cfg.video_input_iface, cfg.psn_source_iface)
+
         def _video_pinned() -> bool:
-            # Blank leaves the camera to the routing table: nothing to follow.
+            # Nothing pinned at all leaves the camera to the routing table: nothing to follow.
             from openfollow.video.inputs import get_input_class
 
-            cfg = self._app._config
-            input_cls = get_input_class(cfg.video_source_type)
+            input_cls = get_input_class(self._app._config.video_source_type)
             return bool(
-                cfg.video_input_iface
+                _video_pin()
                 and input_cls is not None
                 and input_cls.pins_interface
                 and self._app._video_receiver is not None
@@ -1167,7 +1171,7 @@ class AppRuntimeServices:
         def _suspend_video() -> None:
             receiver = self._app._video_receiver
             if receiver is not None:
-                receiver.release_for_pin(f"{self._app._config.video_input_iface} has no address")
+                receiver.release_for_pin(f"{_video_pin()} has no address")
 
         def _rttrpm_pinned() -> bool:
             # Unpinned, the OS routes it: no interface to follow, and the
@@ -1248,8 +1252,7 @@ class AppRuntimeServices:
             ),
             Plane(
                 label="Video input",
-                # Cameras rarely share the PSN network, so blank means the routing table.
-                resolve=_resolver(lambda: self._app._config.video_input_iface, follows_station=False),
+                resolve=_resolver(lambda: self._app._config.video_input_iface, follows_station=True),
                 current=_current_video,
                 apply=_apply_video,
                 suspend=_suspend_video,
@@ -2552,7 +2555,7 @@ class AppRuntimeServices:
             raise ValueError(
                 f"Unknown video input type: {new_cfg.video_source_type!r}",
             )
-        new_input_config = new_input_cls.get_config_field_values(new_cfg)
+        new_input_config = new_input_cls.runtime_config(new_cfg)
 
         old_source_type = receiver._source_type
         old_input_config = dict(receiver._input_config)

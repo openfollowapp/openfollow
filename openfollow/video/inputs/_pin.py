@@ -17,7 +17,7 @@ from typing import Any
 import psutil
 
 from openfollow.net_egress import is_loopback_host, resolve_egress
-from openfollow.net_utils import get_iface_ipv4
+from openfollow.net_utils import get_iface_ipv4, route_source
 from openfollow.video.failure import VideoFailure
 
 # Linux pins the element's own socket to the device (``bindtodevice``); elsewhere
@@ -174,22 +174,6 @@ def _routed_through(address: str, iface: str) -> bool | None:
     return False
 
 
-def _routing_choice(address: str, port: int) -> str | None:
-    """This station's source address towards *address*, or None when nothing routes there.
-
-    No packet is sent: connecting a UDP socket only consults the routing table.
-    """
-    family = socket.AF_INET6 if ":" in address else socket.AF_INET
-    probe = socket.socket(family, socket.SOCK_DGRAM)
-    try:
-        probe.connect((address, port or 9))
-        return str(probe.getsockname()[0]).split("%")[0]
-    except OSError:
-        return None
-    finally:
-        probe.close()
-
-
 def check_video_pin(
     pin: str, host: str = "", port: int = 0, *, forced_device: bool = FORCES_DEVICE
 ) -> PinRefusal | None:
@@ -220,7 +204,7 @@ def check_video_pin(
             if _routed_through(address, pin) is False:
                 return PinRefusal(VideoFailure.WRONG_INTERFACE, f"{host} is not reachable through {pin}")
             continue
-        local = _routing_choice(address, port)
+        local = route_source(address, port)
         if local is None:
             # No route at all: the element reports that itself.
             continue

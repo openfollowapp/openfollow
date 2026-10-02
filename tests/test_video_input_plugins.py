@@ -358,6 +358,23 @@ class TestInterfacePinContract:
         new.video_input_iface = "eth1"
         assert plugin.config_changed(old, new) is plugin.pins_interface
 
+    def test_a_blank_pin_runs_on_the_station_interface(self, plugin: type[VideoInputBase]) -> None:
+        cfg = AppConfig(psn_source_iface="eth0")
+        if plugin.pins_interface:
+            assert plugin.runtime_config(cfg)["video_input_iface"] == "eth0"
+            cfg.video_input_iface = "eth1"
+            assert plugin.runtime_config(cfg)["video_input_iface"] == "eth1"
+        else:
+            assert "video_input_iface" not in plugin.runtime_config(cfg)
+        assert plugin.runtime_config(cfg) == {**plugin.get_config_field_values(cfg), **plugin.runtime_config(cfg)}
+
+    def test_a_station_change_rebuilds_an_input_whose_pin_is_blank(self, plugin: type[VideoInputBase]) -> None:
+        old, new = AppConfig(), AppConfig(psn_source_iface="eth0")
+        assert plugin.config_changed(old, new) is plugin.pins_interface
+        # With its own pin the station does not reach it.
+        old.video_input_iface = new.video_input_iface = "eth1"
+        assert plugin.config_changed(old, new) is False
+
     def test_an_input_that_does_not_pin_never_refuses(
         self, plugin: type[VideoInputBase], monkeypatch: pytest.MonkeyPatch
     ) -> None:

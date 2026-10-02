@@ -58,6 +58,9 @@ class _Probe:
         self.connected: tuple[str, int] | None = None
         self.closed = False
 
+    def setsockopt(self, level: int, option: int, value: int) -> None:
+        pass
+
     def connect(self, address: tuple[str, int]) -> None:
         if self.connect_error:
             raise OSError(self.connect_error, "Network is unreachable")

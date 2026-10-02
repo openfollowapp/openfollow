@@ -138,6 +138,25 @@ def resolve_source_ip(
     return "", "none"
 
 
+def route_source(address: str, port: int = 0) -> str | None:
+    """This station's source address towards *address*, or None when nothing routes there.
+
+    No packet is sent: connecting a UDP socket only consults the routing table.
+    """
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    probe = socket.socket(family, socket.SOCK_DGRAM)
+    try:
+        if family == socket.AF_INET:
+            # Without it a broadcast destination is refused, though nothing is sent.
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        probe.connect((address, port or 9))
+        return str(probe.getsockname()[0]).split("%")[0]
+    except OSError:
+        return None
+    finally:
+        probe.close()
+
+
 def plane_source_iface(pin: str, station_iface: str = "") -> str:
     """Return the interface a plane is configured to use, or "" for auto-detect.
 

@@ -3692,6 +3692,20 @@ class TestSwapVideo:
             "video_input_iface": "",
         }
 
+    def test_a_blank_video_pin_is_swapped_in_as_the_station_interface(
+        self,
+        services: AppRuntimeServices,
+    ) -> None:
+        from openfollow.configuration import AppConfig
+
+        receiver = _FakeReceiver(source_type="srt", input_config={"srt_host": "srt://old:5000"})
+        services._app._video_receiver = receiver  # type: ignore[assignment]
+
+        services.swap_video(AppConfig(video_source_type="srt", psn_source_iface="eth0"))
+
+        ((_type, called_config),) = receiver.swap_calls
+        assert called_config["video_input_iface"] == "eth0"
+
     def test_failure_attempts_rollback_to_prior_plugin_and_config(
         self,
         services: AppRuntimeServices,

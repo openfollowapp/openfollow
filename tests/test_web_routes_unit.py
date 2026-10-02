@@ -1202,13 +1202,66 @@ class TestInterfaceAssignmentRows:
         assert row["key"] == "video_input_iface"
         assert row["value"] == "eth1"
         assert row["address"] == "198.51.100.10"
-        # Blank never follows the station, so its option says who decides.
-        assert row["blank"] == "route"
+        # Blank follows the station interface, like every output.
+        assert row["blank"] == "station"
 
-    def test_an_unpinned_video_input_is_left_to_the_routing_table(self, monkeypatch) -> None:
+    def test_an_unpinned_video_input_follows_the_station(self, monkeypatch) -> None:
         row = self._video_row(monkeypatch, video_source_type="srt", psn_source_iface="eth0")
         assert row["value"] == ""
-        assert row["address"] == "Per routing table"
+        assert row["address"] == "192.0.2.10"
+
+    @staticmethod
+    def _pick(monkeypatch, source: str | None) -> list[str]:
+        """The Pi's routing choice, answering *source* for every destination."""
+        from openfollow import net_utils
+
+        asked: list[str] = []
+
+        def _route_source(address: str, port: int = 0) -> str | None:
+            asked.append(address)
+            return source
+
+        monkeypatch.setattr(net_utils, "route_source", _route_source)
+        return asked
+
+    @pytest.mark.parametrize(
+        ("fields", "target"),
+        [
+            ({"video_source_type": "srt", "srt_host": "srt://203.0.113.20:5000"}, "203.0.113.20"),
+            ({"video_source_type": "rtsp", "rtsp_url": "rtsp://203.0.113.21/stream"}, "203.0.113.21"),
+            ({"video_source_type": "rtp", "rtp_url": "rtp://239.1.1.1:5004"}, "239.1.1.1"),
+        ],
+        ids=["srt-camera", "rtsp-camera", "rtp-group"],
+    )
+    def test_with_nothing_pinned_the_video_row_shows_the_pis_pick(self, monkeypatch, fields: dict, target: str) -> None:
+        """Nothing pinned at all: the Pi picks, and the row says what it picked."""
+        asked = self._pick(monkeypatch, "198.51.100.10")
+        row = self._video_row(monkeypatch, **fields)
+        assert row["address"] == "eth1 – 198.51.100.10"
+        assert asked == [target]
+
+    def test_an_unpinned_rtp_listener_receives_on_every_interface(self, monkeypatch) -> None:
+        asked = self._pick(monkeypatch, "198.51.100.10")
+        row = self._video_row(monkeypatch, video_source_type="rtp", rtp_url="rtp://0.0.0.0:5004")
+        assert row["address"] == "All interfaces"
+        assert asked == []
+
+    def test_the_pick_says_when_nothing_routes_there(self, monkeypatch) -> None:
+        self._pick(monkeypatch, None)
+        row = self._video_row(monkeypatch, video_source_type="srt", srt_host="srt://203.0.113.20:5000")
+        assert row["address"] == "No route"
+
+    def test_the_pick_names_an_address_no_interface_holds(self, monkeypatch) -> None:
+        self._pick(monkeypatch, "203.0.113.99")
+        row = self._video_row(monkeypatch, video_source_type="srt", srt_host="srt://203.0.113.20:5000")
+        assert row["address"] == "203.0.113.99"
+
+    def test_the_pick_does_not_look_a_name_up(self, monkeypatch) -> None:
+        """A lookup would hold the page; the element resolves the name itself."""
+        asked = self._pick(monkeypatch, "198.51.100.10")
+        row = self._video_row(monkeypatch, video_source_type="srt", srt_host="srt://camera.example:5000")
+        assert row["address"] == "Picked when connecting"
+        assert asked == []
 
     def test_a_pinned_video_input_with_no_address_says_so(self, monkeypatch) -> None:
         row = self._video_row(monkeypatch, video_source_type="rtsp", video_input_iface="eth9")
@@ -1288,15 +1341,17 @@ class TestInterfaceAssignmentRows:
         cfg.rttrpm_output.source_iface = "eth9"
         assert self._row(cfg, "RTTrPM output")["address"] == "eth9 is down"
 
-    def test_a_sender_with_nothing_configured_reads_per_routing_table(self, monkeypatch) -> None:
-        """No pin anywhere means the OS routes each destination; naming the
-        auto-detected address would claim a binding that does not exist."""
-        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    def test_a_sender_with_nothing_configured_shows_the_pis_pick(self, monkeypatch) -> None:
+        """No pin anywhere means the Pi routes each destination; the row shows
+        where it routes this one now, not an auto-detected address it is not bound to."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+        asked = TestInterfaceAssignmentRows._pick(monkeypatch, "10.0.0.9")
         cfg = AppConfig()
         cfg.rttrpm_output.host = "198.51.100.20"
         cfg.osc_destinations.destinations[0].host = "198.51.100.21"
-        assert self._row(cfg, "RTTrPM output")["address"] == "Per routing table"
-        assert self._row(cfg, "OSC to Default")["address"] == "Per routing table"
+        assert self._row(cfg, "RTTrPM output")["address"] == "eth1 – 10.0.0.9"
+        assert self._row(cfg, "OSC to Default")["address"] == "eth1 – 10.0.0.9"
+        assert "198.51.100.20" in asked and "198.51.100.21" in asked
 
     def test_a_loopback_destination_reads_loopback(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})

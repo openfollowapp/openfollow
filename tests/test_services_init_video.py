@@ -169,6 +169,10 @@ class _FakeInputCls:
     def get_config_field_values(cls, cfg: Any) -> dict[str, Any]:  # noqa: ARG003
         return {"kind": "fake"}
 
+    @classmethod
+    def runtime_config(cls, cfg: Any) -> dict[str, Any]:
+        return cls.get_config_field_values(cfg)
+
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -437,6 +441,29 @@ class TestInitVideoInputPluginAbsent:
         services.init_video()
         assert recv_factory.last is not None
         assert recv_factory.last.input_config == {}
+
+
+class TestInitVideoPinsThroughTheStation:
+    def test_a_blank_video_pin_reaches_the_receiver_as_the_station_interface(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import openfollow.video.detection as detection_module
+        import openfollow.video.preview as preview_module
+
+        monkeypatch.setattr(detection_module, "PersonDetector", _FakePersonDetector)
+        monkeypatch.setattr(detection_module, "check_detection_dependencies", lambda _cfg: [])
+        monkeypatch.setattr(preview_module, "PreviewProvider", _FakePreviewProvider)
+        monkeypatch.setattr(preview_module, "SnapshotProvider", _FakeSnapshotProvider)
+        services._app._config.video_source_type = "srt"
+        services._app._config.psn_source_iface = "eth0"
+        services._app._config.video_input_iface = ""
+
+        services.init_video()
+        assert recv_factory.last is not None
+        assert recv_factory.last.input_config["video_input_iface"] == "eth0"
 
 
 class TestInitVideoPipelineFailure:

@@ -606,3 +606,8 @@ class TestSrtPreflight:
         monkeypatch.setattr(net_egress, "get_iface_ipv4", lambda iface: "")
         refusal = SrtInput.preflight({"srt_host": "srt://0.0.0.0:5000", "video_input_iface": "eth9"})
         assert refusal is not None and refusal.failure is VideoFailure.INTERFACE_DOWN
+
+
+def test_route_target_is_the_camera_an_srt_caller_dials() -> None:
+    assert SrtInput.route_target({"srt_host": "srt://192.0.2.20:5000"}) == "192.0.2.20"
+    assert SrtInput.route_target({"srt_host": "srt://0.0.0.0:5000"}) == ""

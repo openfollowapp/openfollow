@@ -326,8 +326,6 @@ _BLANK_IFACE_LABELS = {
     # The web UI answers on every interface unless pinned – it does not
     # follow the station pin, so it gets its own wording.
     "all": "-- All interfaces --",
-    # Video input does not follow the station either: blank is unpinned.
-    "route": "-- Routing table decides --",
 }
 
 _SECTION_CONFIG_ATTRS = {
@@ -1307,27 +1305,45 @@ def _plane_address(pin: str, station_iface: str) -> str:
     return resolved
 
 
+def _route_pick(host: str) -> str:
+    """The interface and address the Pi would use for *host* right now."""
+    import ipaddress
+
+    from openfollow.net_utils import get_iface_for_ip, route_source
+
+    try:
+        address = str(ipaddress.ip_address(host))
+    except ValueError:
+        # Looking a name up would hold the page; the element resolves it itself.
+        return "Picked when connecting"
+    source = route_source(address)
+    if source is None:
+        return "No route"
+    iface = get_iface_for_ip(source)
+    return f"{iface} – {source}" if iface else source
+
+
 def _egress_address(pin: str, host: str, station_iface: str) -> str:
-    """The address cell for a row that dials *host*."""
+    """The address cell for a row that sends to *host*; "" for a receiver listening on every interface."""
     from openfollow.net_egress import is_loopback_host
     from openfollow.net_utils import plane_source_iface
 
-    if is_loopback_host(host):
+    if host and is_loopback_host(host):
         return "Loopback"
-    # Nothing configured is routed per destination, so no one address describes it.
-    if not plane_source_iface(pin, station_iface):
-        return "Per routing table"
-    return _plane_address(pin, station_iface)
+    if plane_source_iface(pin, station_iface):
+        return _plane_address(pin, station_iface)
+    # Nothing pinned anywhere: show where the Pi sends it now, not that it chooses.
+    return _route_pick(host) if host else "All interfaces"
 
 
-def _video_input_row(cfg: AppConfig) -> dict[str, Any]:
+def _video_input_row(cfg: AppConfig, station: str) -> dict[str, Any]:
     """The active video input's row; read-only with a reason when it cannot be pinned."""
     from openfollow.video.failure import SourceKind
     from openfollow.video.inputs import get_input_class
 
     input_cls = get_input_class(cfg.video_source_type)
     name = input_cls.display_name if input_cls is not None else cfg.video_source_type
-    row: dict[str, Any] = {"label": f"Video input ({name})", "value": cfg.video_input_iface, "blank": "route"}
+    row: dict[str, Any] = {"label": f"Video input ({name})", "value": cfg.video_input_iface, "blank": "station"}
     if input_cls is None or not input_cls.pins_interface:
         named = input_cls is not None and input_cls.source_kind is SourceKind.NAMED
         return {
@@ -1337,9 +1353,8 @@ def _video_input_row(cfg: AppConfig) -> dict[str, Any]:
             "editable": False,
             "note": f"Not supported – {name} chooses its own interface" if named else "Not a network input",
         }
-    endpoint = input_cls.source_endpoint(input_cls.get_config_field_values(cfg))
-    # The video pin never follows the station interface.
-    address = _egress_address(cfg.video_input_iface, endpoint.host if endpoint else "", "")
+    target = input_cls.route_target(input_cls.get_config_field_values(cfg))
+    address = _egress_address(cfg.video_input_iface, target, station)
     return {**row, "key": "video_input_iface", "address": address, "editable": True}
 
 
@@ -1425,7 +1440,7 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
             }
             for dest in cfg.osc_destinations.destinations
         ),
-        _video_input_row(cfg),
+        _video_input_row(cfg, station),
         {
             "key": "",
             "label": "Discovery / marker sync",
@@ -2983,8 +2998,6 @@ _DEVICE_IDENTITY_FIELDS: tuple[str, ...] = (
     "markers_catalog_path",
     "testpattern_selected_media",
     "detection.storage_path",
-    # Blank is the routing table, not the station pin, so a reset would unpin it.
-    "video_input_iface",
 )
 
 

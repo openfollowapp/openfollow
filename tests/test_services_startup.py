@@ -2381,9 +2381,7 @@ def _video_plane(services, receiver):
     return next(p for p in services._build_network_planes() if p.label == "Video input")
 
 
-def test_video_input_plane_never_follows_the_station(monkeypatch) -> None:
-    """Cameras usually sit on another network than PSN, so blank means the
-    routing table, not the station's interface."""
+def test_video_input_plane_follows_its_own_and_the_station_interface(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
     _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
     cfg = services._app._config
@@ -2393,9 +2391,7 @@ def test_video_input_plane_never_follows_the_station(monkeypatch) -> None:
 
     assert plane.resolve() == ("10.0.0.9", "iface", "eth1")
     cfg.video_input_iface = ""
-    address, _status, iface = plane.resolve()
-    assert (address, iface) != ("192.168.1.5", "eth0")
-    assert iface == ""
+    assert plane.resolve() == ("192.168.1.5", "station", "eth0")
 
 
 @pytest.mark.parametrize(
@@ -2409,7 +2405,7 @@ def test_video_input_plane_never_follows_the_station(monkeypatch) -> None:
         ("ndi", "eth1", True, False),
         ("srt", "eth1", False, False),
     ],
-    ids=["srt", "rtsp", "rtp", "blank", "media-gallery", "ndi", "no-receiver"],
+    ids=["srt", "rtsp", "rtp", "nothing-pinned", "media-gallery", "ndi", "no-receiver"],
 )
 def test_video_input_is_a_plane_only_for_a_pinned_network_input(
     monkeypatch, source: str, pin: str, has_receiver: bool, expected: bool
@@ -2422,6 +2418,19 @@ def test_video_input_is_a_plane_only_for_a_pinned_network_input(
     cfg.video_input_iface = pin
     plane = _video_plane(services, _RecordingVideoReceiver() if has_receiver else None)
     assert plane.enabled() is expected
+
+
+def test_a_blank_video_pin_is_followed_through_the_station(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    cfg = services._app._config
+    cfg.video_source_type = "srt"
+    cfg.psn_source_iface = "eth0"
+    receiver = _RecordingVideoReceiver(pinned_to="192.168.1.5")
+    plane = _video_plane(services, receiver)
+    assert plane.enabled() is True
+    plane.suspend()
+    # The interface that went away is the station's, so the verdict names it.
+    assert receiver.released == ["eth0 has no address"]
 
 
 def test_video_input_plane_reports_what_the_input_was_built_for(monkeypatch) -> None:

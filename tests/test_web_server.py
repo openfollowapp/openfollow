@@ -1496,29 +1496,6 @@ def test_network_interfaces_by_name_blank_station_relabels_empty_option(
     assert "Auto-detect" not in body
 
 
-def test_network_interfaces_by_name_offers_the_routing_table_for_video_input(
-    live_server,
-    monkeypatch,
-) -> None:
-    """Video input does not follow the station: its blank option says who decides."""
-    import socket as _socket
-    from types import SimpleNamespace
-
-    from openfollow import net_utils as net_utils_mod
-
-    monkeypatch.setattr(
-        net_utils_mod.psutil,
-        "net_if_addrs",
-        lambda: {"eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.0.2.10")]},
-    )
-    _server, base = live_server
-
-    status, body = _get(base, "/network/interfaces/by_name?blank=route&current=")
-    assert status == 200
-    assert "-- Routing table decides --" in body
-    assert "Follow station interface" not in body
-
-
 def test_network_interfaces_by_name_unknown_blank_falls_back_to_auto_detect(
     live_server,
     monkeypatch,

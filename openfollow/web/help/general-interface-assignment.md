@@ -42,7 +42,7 @@ This row does **not** change which addresses OSC is accepted at. Ordinary OSC se
 
 ## RTTrPM and OSC outputs
 
-**RTTrPM output**, and one **OSC to** row per OSC destination, choose the interface those messages leave from. Left blank they follow Station default, like OTP. With Station default on `Auto-detect` too, nothing is pinned: the system picks the adapter for each destination from its address, and the Address column reads `Per routing table`.
+**RTTrPM output**, and one **OSC to** row per OSC destination, choose the interface those messages leave from. Left blank they follow Station default, like OTP. With Station default on `Auto-detect` too, nothing is pinned: the Pi picks the adapter for each destination from its address, and the Address column shows the adapter and address it picks right now.
 
 A pinned row sends only on that interface. A destination the interface cannot reach gets nothing rather than being sent over another adapter. Multicast and broadcast destinations go out on the pinned interface, and TCP destinations connect and reconnect over it.
 
@@ -54,7 +54,7 @@ These pins belong to this station. A config export leaves them out, and an impor
 
 ## Video input
 
-The interface the camera is reached through, named after the active video source. Left blank it does **not** follow Station default: cameras usually sit on another network than PSN, so blank leaves the choice to the routing table and the Address column reads `Per routing table`.
+The interface the camera is reached through, named after the active video source. Left blank it follows Station default, like the outputs. With Station default on `Auto-detect` too, nothing is pinned: the Pi picks the adapter that reaches the camera, and the Address column shows the one it picks right now, or `All interfaces` for an RTP stream every adapter receives.
 
 - **SRT** connects only through the pinned interface. On macOS the station checks instead that the routing table already reaches the camera there.
 - **RTSP** cannot be bound to an interface, so before each connection the station checks which interface the routing table would use for the camera, and does not connect when it is another one. Multicast streams are joined on the pinned interface.
@@ -62,7 +62,7 @@ The interface the camera is reached through, named after the active video source
 
 A camera the pin refuses shows why on every video surface: `Interface down` when the pinned interface has no address, `Wrong interface` when the camera is reached through another one. The station keeps retrying and the video returns on its own. A camera served by this station itself is never refused.
 
-NDI® chooses its own interface, and the Pi Camera, USB cameras and the Media Gallery are not network inputs, so for them the row is read-only. A saved pin is kept for when a network source is chosen again. A config export leaves it out, and Restore Defaults keeps it.
+NDI® chooses its own interface, and the Pi Camera, USB cameras and the Media Gallery are not network inputs, so for them the row is read-only. A saved pin is kept for when a network source is chosen again, and like the other pins it is left out of a config export.
 
 ## Web UI
 

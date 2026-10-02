@@ -207,3 +207,44 @@ def _hover_backgrounds() -> dict[str, str]:
 )
 def test_every_destructive_control_darkens_to_the_fault_row_tint(control: str) -> None:
     assert _hover_backgrounds().get(control) == "var(--error-row)"
+
+
+def _support_section() -> str:
+    doc = _DOC.read_text(encoding="utf-8")
+    start = doc.index("## Not a status: Support OpenFollow")
+    return doc[start : doc.index("\n## ", start + 1)]
+
+
+def test_the_support_card_tokens_match_the_doc() -> None:
+    """The card is documented outside the level table, so it is pinned here."""
+    from openfollow.runtime.overlay_draw_style import COLOR_SUPPORT_BORDER
+
+    section = _support_section()
+    defined = _root_tokens()
+    border = next(line for line in section.splitlines() if line.startswith("| `--support-border`"))
+    expected = _doc_rgba(border.split("|")[2])
+    assert _rgba(defined["--support-border"]) == expected
+    assert tuple(round(c * 255) for c in COLOR_SUPPORT_BORDER[:3]) == expected[:3]
+    assert round(COLOR_SUPPORT_BORDER[3], 3) == expected[3]
+    qr = next(line for line in section.splitlines() if line.startswith("| `--qr-light`"))
+    light, dark = re.findall(r"`(#[0-9a-fA-F]{6})`", qr)
+    assert _rgba(defined["--qr-light"])[:3] == _rgba(light)[:3]
+    assert _rgba(defined["--qr-dark"])[:3] == _rgba(dark)[:3]
+
+
+def test_the_support_card_never_takes_a_level_colour() -> None:
+    """It shows no state; a caution gold or any level's token would make it read as one."""
+    rules = [
+        (" ".join(selector.split()), body)
+        for name, css in _style_blocks()
+        for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)
+        if re.search(r"\.(support-card|support-heart|qr-field|qr-modules)(?![\w-])", selector)
+    ]
+    assert rules, "the support card's rules moved"
+    for selector, body in rules:
+        assert not re.search(r"--(error|caution|info|success)-", body), selector
+        for colour in _COLOUR.findall(body):
+            r, g, b, _ = _rgba(colour)
+            assert max(r, g, b) - min(r, g, b) <= _MAX_NEUTRAL_CHROMA, f"{selector} uses {colour}"
+    border = next(body for selector, body in rules if selector == ".support-card")
+    assert "dashed var(--support-border)" in border

@@ -270,7 +270,23 @@ attributes, so it spells the token's value.
   is neither a fault nor a state, like the About screen's safety line, is
   plain bold off-white.
 
-## Corner radius
+## Not a status: Support OpenFollow
+
+The request for contributions (What's new, About, the Operator Screen's
+Settings) shows no state, so it takes no level. It must not read as one, and
+gold is the caution colour, so the card is neutral:
+
+| Token / constant | Value | Use |
+|---|---|---|
+| `--support-border` / `COLOR_SUPPORT_BORDER` | `#ffffff` at 26% | 1.5px dashed edge, 6px radius |
+| `--surface` | | Card fill |
+| `--accent` / `COLOR_ACCENT` | | The heart and the "Support OpenFollow" label only |
+| `--qr-light` / `--qr-dark` | `#ffffff` / `#000000` | The QR field and modules |
+
+A status box is solid and filled with its level's colours; this card has a
+dashed edge, no level colour and a heart in place of a status sign. Its text
+makes no claim that could go stale on a station that never updates.
+
 
 - **Web boxes:** 6px, every level and every box.
 - **Chips and pills:** fully rounded. Small row pills: 0.4rem.

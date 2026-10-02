@@ -30,6 +30,7 @@ import openfollow.web.discovery as discovery_module
 from openfollow.configuration import AppConfig, load_config, save_config
 from openfollow.marker_catalog import MarkerCatalog
 from openfollow.palette import AUTO_PICK_ORDER
+from openfollow.runtime.overlay_links import SUPPORT
 from openfollow.web import peer_auth
 from openfollow.web import whats_new as whats_new_module
 from openfollow.web.server import ConfigWebServer
@@ -532,6 +533,7 @@ def test_whats_new_serves_the_notes_for_the_installed_release(live_server, tmp_p
     monkeypatch.setattr(whats_new_module, "STATE_DIR", tmp_path)
     status, data = _get_json(base, "/api/whats-new")
     assert status == 200
+    assert data.pop("support_html")
     assert data == {
         "version": openfollow.__version__,
         "matches": True,
@@ -541,7 +543,47 @@ def test_whats_new_serves_the_notes_for_the_installed_release(live_server, tmp_p
 
     notes.write_text("v0.0.1\n\n## Something older\n", encoding="utf-8")
     _, data = _get_json(base, "/api/whats-new")
+    assert data.pop("support_html")
     assert data == {"version": openfollow.__version__, "matches": False, "html": "", "backup": None}
+
+
+@pytest.mark.parametrize("first_line", ["v{version}", "v0.0.1"], ids=["notes", "fallback"])
+def test_whats_new_carries_the_support_card(live_server, tmp_path, monkeypatch, first_line: str) -> None:
+    """With the release's notes or without them, the dialog brings the compact card."""
+    _, base = live_server
+    notes = tmp_path / "whatsnew.md"
+    notes.write_text(first_line.format(version=openfollow.__version__) + "\n\n## Controllers\n", encoding="utf-8")
+    monkeypatch.setattr(whats_new_module, "WHATS_NEW_FILE", notes)
+    monkeypatch.setattr(whats_new_module, "STATE_DIR", tmp_path)
+    _, data = _get_json(base, "/api/whats-new")
+    card = data["support_html"]
+    assert 'class="support-card support-card--compact"' in card
+    assert 'href="https://openfollow.app/support-openfollow"' in card
+    assert len(re.findall(r"M\d+ \d+h1v1h-1z", card)) == sum(row.count("#") for row in SUPPORT.symbol)
+
+
+def test_whats_new_docks_the_support_card_beside_continue(live_server) -> None:
+    """In the footer row, not the notes: long notes scroll, the card stays in view."""
+    _, base = live_server
+    _, body = _get(base, "/")
+    opener = body[body.index("async function openfollowShowWhatsNew()") :]
+    opener = opener[: opener.index("``modalChooseTemplate``")]
+    assert "footerHTML: notes.support_html" in opener
+    assert "notes.support_html" not in opener[: opener.index("footerHTML:")]
+    open_modal = body[body.index(" function openModal(opts) {") :]
+    open_modal = open_modal[: open_modal.index(" function ", 1)]
+    lead = open_modal[open_modal.index("if (opts.footerHTML)") :]
+    assert lead.index("lead.className = 'modal-footer-lead'") < lead.index("opts.footerButtons")
+
+
+def test_whats_new_gives_the_notes_most_of_the_window(live_server) -> None:
+    _, base = live_server
+    _, body = _get(base, "/")
+    opener = body[body.index("async function openfollowShowWhatsNew()") :]
+    assert "size: 'notes'" in opener[: opener.index("``modalChooseTemplate``")]
+    wide = re.search(r"\.modal-card\.modal-card-notes \{ width: min\((\d+)px, 100%\)", body)
+    large = re.search(r"\.modal-card\.modal-card-large \{ width: min\((\d+)px, 100%\)", body)
+    assert wide and large and int(wide.group(1)) > int(large.group(1))
 
 
 def test_whats_new_names_the_settings_backup_the_update_made(live_server, tmp_path, monkeypatch) -> None:
@@ -573,7 +615,6 @@ def test_whats_new_without_notes_points_to_the_docs_and_any_close_dismisses(live
     assert '<a href="https://openfollow.app/docs"' in fallback
     # Closed by Continue, the ×, ESC or the backdrop: every path reaches onClose.
     assert "onClose: () => { fetch('/api/whats-new/dismiss', { method: 'POST' })" in opener
-    assert "size: 'large'" in opener
 
 
 def test_select_options_have_explicit_dark_background(live_server) -> None:
@@ -1664,6 +1705,34 @@ def test_about_page_renders_all_tabs(live_server) -> None:
     # Offer tab.
     assert "Written Offer for Source Code" in body
     assert "three (3) years" in body
+
+
+def test_about_page_carries_the_support_card(live_server) -> None:
+    """The full card, linking the website's stable address and never a payment page:
+    a station keeps this release's text and address for as long as it runs it."""
+    _, base = live_server
+    status, body = _get(base, "/about")
+    assert status == 200
+    card = body[body.index('<aside class="support-card"') :]
+    card = card[: card.index("</aside>")]
+    assert "support-card--compact" not in card
+    assert 'href="https://openfollow.app/support-openfollow"' in card
+    assert ">openfollow.app/support-openfollow</a>" in card
+    assert "Contributions pay for the hardware we test on and for hosting." in card
+    assert 'class="qr"' in card
+    assert "buymeacoffee" not in card
+    assert "own money" not in card
+    # Offline contract: nothing in it loads from anywhere.
+    assert "src=" not in card
+
+
+def test_the_support_qr_steps_aside_on_a_phone(live_server) -> None:
+    """On a phone the code would be scanned by the screen showing it; the link stays."""
+    _, base = live_server
+    _, body = _get(base, "/about")
+    rule = re.search(r"@media \(max-width: (\d+)px\) \{ \.support-card \.qr \{ display: none; \} \}", body)
+    assert rule and int(rule.group(1)) <= 640
+    assert ".support-card-url { display: none" not in body
 
 
 def test_about_page_exposes_no_config_state(live_server) -> None:

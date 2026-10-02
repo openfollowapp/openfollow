@@ -43,6 +43,11 @@
  --muted: rgba(247, 245, 233, 0.68);
  --accent: #ffbc00;
  --accent-soft: rgba(255, 188, 0, 0.12);
+ /* Support OpenFollow card: a neutral dashed edge, because gold is caution.
+ The QR keeps dark modules on a light field, which is what a scanner reads. */
+ --support-border: rgba(255, 255, 255, 0.26);
+ --qr-light: #ffffff;
+ --qr-dark: #000000;
  /* Status language, one token set per level: see docs/STATUS_LANGUAGE.md. */
  --error-fill: rgba(107, 20, 20, 0.8);
  --error-border: #b02626;
@@ -1930,7 +1935,11 @@
  overflow: hidden;
  }
  .modal-card.modal-card-large { width: min(820px, 100%); }
- .modal-card-large .modal-body img { max-width: 100%; height: auto; }
+ .modal-card-large .modal-body img,
+ .modal-card-notes .modal-body img { max-width: 100%; height: auto; }
+ /* Release notes: as wide and tall as the window allows, so they scroll late. */
+ .modal-card.modal-card-notes { width: min(1100px, 100%); max-height: calc(100vh - 24px); }
+ .modal-backdrop.modal-backdrop-notes { padding: 12px; }
  .modal-header {
  display: flex;
  align-items: center;
@@ -1976,11 +1985,46 @@
  }
  .modal-footer {
  display: flex;
+ flex-wrap: wrap;
+ align-items: center;
  gap: 0.55rem;
  justify-content: flex-end;
  padding: 0.85rem 1.2rem;
  border-top: 1px solid var(--border-soft);
  }
+ .modal-footer-lead { flex: 1 1 24rem; min-width: 0; margin-right: auto; }
+ /* Support OpenFollow (partials/support_card.tpl). Not a status. */
+ .support-card {
+ display: flex;
+ align-items: center;
+ gap: 1rem;
+ padding: 0.85rem 1rem;
+ border: 1.5px dashed var(--support-border);
+ border-radius: 6px;
+ background: var(--surface);
+ }
+ .support-card .qr { flex: none; width: 112px; height: 112px; }
+ .support-card--compact { gap: 0.8rem; padding: 0.5rem 0.75rem; }
+ .support-card--compact .qr { width: 88px; height: 88px; }
+ .qr-field { fill: var(--qr-light); }
+ .qr-modules { fill: var(--qr-dark); }
+ .support-card-text { display: grid; gap: 0.3rem; min-width: 0; }
+ .support-card-text p { margin: 0; line-height: 1.45; color: var(--text); }
+ .support-card--compact .support-card-text p { font-size: 0.86rem; line-height: 1.35; }
+ .support-card-eyebrow {
+ display: inline-flex;
+ align-items: center;
+ gap: 0.4rem;
+ color: var(--accent);
+ font-size: 0.72rem;
+ font-weight: 700;
+ letter-spacing: 0.12em;
+ text-transform: uppercase;
+ }
+ .support-heart { width: 1em; height: 1em; flex: none; fill: currentColor; }
+ .support-card-url { color: var(--text); font-size: 0.82rem; font-weight: 600; overflow-wrap: anywhere; }
+ /* A phone is the scanner: on its own screen the code is dead weight, the link is not. */
+ @media (max-width: 600px) { .support-card .qr { display: none; } }
  /* Modal footer buttons reuse the global button system: a bare
  button reads as secondary; ``.primary`` and ``.danger`` map to
  the shared variants so modal and inline buttons match. */
@@ -2498,7 +2542,9 @@
  // helper wires Cancel automatically). ``onClose`` fires after
  // the modal closes for any reason (Cancel, ESC, backdrop, the
  // close button, or a footer button that calls ``closeModal``).
- // ``size: 'large'`` widens the card for long, illustrated content.
+ // ``size: 'large'`` widens the card for long, illustrated content;
+ // ``size: 'notes'`` gives release notes most of the window.
+ // ``footerHTML`` (trusted markup) sits left of the footer buttons.
  // Returns nothing – caller wires its own confirm logic via
  // ``footerButtons.onClick``. Helper wrappers
  // (``modalPrompt``, ``modalConfirm``) provide the
@@ -2517,7 +2563,11 @@
  const closeBtn = root.querySelector('.modal-close');
  if (closeBtn) closeBtn.hidden = !_modalDismissable;
  const card = root.querySelector('.modal-card');
- if (card) card.classList.toggle('modal-card-large', opts.size === 'large');
+ if (card) {
+ card.classList.toggle('modal-card-large', opts.size === 'large');
+ card.classList.toggle('modal-card-notes', opts.size === 'notes');
+ }
+ root.classList.toggle('modal-backdrop-notes', opts.size === 'notes');
  window.OpenFollow.saveError.clear(card);
  title.textContent = opts.title || '';
  // Wipe previous content. ``replaceChildren`` is the modern
@@ -2529,6 +2579,12 @@
  body.innerHTML = opts.bodyHTML;
  } else if (opts.bodyHTML instanceof Node) {
  body.appendChild(opts.bodyHTML);
+ }
+ if (opts.footerHTML) {
+ const lead = document.createElement('div');
+ lead.className = 'modal-footer-lead';
+ lead.innerHTML = opts.footerHTML;
+ footer.appendChild(lead);
  }
  const buttons = Array.isArray(opts.footerButtons) ? opts.footerButtons : [];
  buttons.forEach((spec) => {
@@ -2712,7 +2768,8 @@
  }
  // The What's new step an in-app update ends in: this release's notes when
  // the package carries them, else where to find them. Closing it in any way
- // marks it seen for this station.
+ // marks it seen for this station. The Support OpenFollow card docks beside
+ // Continue, so long notes scroll without pushing it out of view.
  async function openfollowShowWhatsNew() {
  let notes;
  try {
@@ -2729,11 +2786,12 @@
  : '';
  openModal({
  title: notes.matches ? "What's new in v" + notes.version : 'Updated to v' + notes.version,
- size: 'large',
+ size: 'notes',
  bodyHTML: backup + (notes.matches
  ? notes.html
  : '<p>Find the full release notes and changes on '
  + '<a href="https://openfollow.app/docs" target="_blank" rel="noopener noreferrer">openfollow.app/docs</a>.</p>'),
+ footerHTML: notes.support_html,
  footerButtons: [{ label: 'Continue', kind: 'primary', onClick: () => closeModal() }],
  onClose: () => { fetch('/api/whats-new/dismiss', { method: 'POST' }).catch(() => {}); },
  });

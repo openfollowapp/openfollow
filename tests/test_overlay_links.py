@@ -16,9 +16,11 @@ quietly weakened.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
-from openfollow.runtime.overlay_links import DISCORD, DOCS, LINKS, QUIET_MODULES, draw_link_qr
+from openfollow.runtime.overlay_links import DISCORD, DOCS, LINKS, QUIET_MODULES, SUPPORT, draw_link_qr, link_qr_svg
 from tests._fake_cairo import FakeCairo
 
 pytestmark = pytest.mark.unit
@@ -69,6 +71,14 @@ class TestPayloads:
 
     def test_discord_url(self) -> None:
         assert DISCORD.url == "https://discord.gg/vbhtjP2mtT"
+
+    def test_support_url(self) -> None:
+        """The stable redirect on the website, never the payment page itself:
+        stations that never update keep this address for years."""
+        assert SUPPORT.url == "https://openfollow.app/support-openfollow"
+
+    def test_only_the_support_code_is_a_contribution_request(self) -> None:
+        assert [code for code in LINKS if code.contribution] == [SUPPORT]
 
 
 class TestDrawing:
@@ -137,3 +147,39 @@ def test_the_checked_in_symbol_decodes_to_its_url(code) -> None:
 
     decoded, _, _ = cv2.QRCodeDetector().detectAndDecode(canvas)
     assert decoded == code.url
+
+
+@pytest.mark.parametrize("code", LINKS, ids=lambda c: c.url)
+class TestSvg:
+    """The web UI's rendering of the same rows the Operator Screen draws."""
+
+    def test_draws_exactly_the_checked_in_modules(self, code) -> None:
+        svg = link_qr_svg(code)
+        drawn = {(int(x), int(y)) for x, y in re.findall(r"M(\d+) (\d+)h1v1h-1z", svg)}
+        expected = {
+            (col + QUIET_MODULES, row + QUIET_MODULES)
+            for row, bits in enumerate(code.symbol)
+            for col, bit in enumerate(bits)
+            if bit == "#"
+        }
+        assert drawn == expected
+
+    def test_the_field_includes_the_quiet_zone(self, code) -> None:
+        span = len(code.symbol) + 2 * QUIET_MODULES
+        svg = link_qr_svg(code)
+        assert f'viewBox="0 0 {span} {span}"' in svg
+        assert f'<rect class="qr-field" width="{span}" height="{span}"' in svg
+
+    def test_the_corner_radius_stays_inside_the_quiet_zone(self, code) -> None:
+        radius = float(re.search(r'rx="([\d.]+)"', link_qr_svg(code)).group(1))
+        assert 0 < radius <= QUIET_MODULES
+
+    def test_carries_no_colour_of_its_own(self, code) -> None:
+        """The page's tokens colour it, so a literal can't drift from them."""
+        svg = link_qr_svg(code)
+        assert "fill" not in svg
+        assert "#" not in svg
+
+    def test_is_hidden_from_screen_readers(self, code) -> None:
+        """The address is printed beside it; read twice it is noise."""
+        assert 'aria-hidden="true"' in link_qr_svg(code)

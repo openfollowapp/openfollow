@@ -4,7 +4,8 @@
 
 The symbols are stored rather than generated: encoding one needs a library the
 runtime does not otherwise want, and the payloads rarely change. Regenerate
-with ``scripts/gen_link_qr.py`` after editing a URL.
+with ``scripts/gen_link_qr.py`` after editing a URL. The web UI draws the same
+rows through ``link_qr_svg``, so a code never differs between the two.
 
 Rows are the bare symbol, no quiet zone - ``draw_link_qr`` adds the four
 modules the spec requires, so the margin cannot be lost by a caller drawing the
@@ -32,13 +33,16 @@ class LinkCode:
     url: str
     lines: tuple[str, ...]
     symbol: tuple[str, ...]
+    # The request for contributions: framed dashed, its caption led by a heart.
+    contribution: bool = False
 
 
 DOCS = LinkCode(
     url="https://openfollow.app/docs",
     lines=(
-        "Visit openfollow.app/docs for full documentation,",
-        "manuals and troubleshooting",
+        "Visit openfollow.app/docs for",
+        "documentation, manuals",
+        "and troubleshooting",
     ),
     symbol=(
         "#######.#..###....#######",
@@ -104,7 +108,48 @@ DISCORD = LinkCode(
     ),
 )
 
-LINKS: tuple[LinkCode, ...] = (DOCS, DISCORD)
+SUPPORT = LinkCode(
+    url="https://openfollow.app/support-openfollow",
+    lines=(
+        "Support OpenFollow",
+        "Help pay for test hardware",
+        "and hosting",
+    ),
+    symbol=(
+        "#######.##...#..####..#######",
+        "#.....#......#....#.#.#.....#",
+        "#.###.#.#..#####..##..#.###.#",
+        "#.###.#.##.#.###.#..#.#.###.#",
+        "#.###.#.####.#######..#.###.#",
+        "#.....#..#..###.##.#..#.....#",
+        "#######.#.#.#.#.#.#.#.#######",
+        ".........#.#..#####.#........",
+        "####..#.#.....########..###.#",
+        "##.###..##...#..#..######...#",
+        "##..#####.......###..#.##.##.",
+        ".###...#...###....##...##...#",
+        ".#########.#.###.#.......##..",
+        "##.......###.#######..#...###",
+        "#.....#..##.#.#.#..#.#.#..###",
+        "##...#...##.#.##..###.###..#.",
+        "#..#..#.#.##.#..#.####.###.#.",
+        ".#..#....##.####..#....#.###.",
+        "#.#.#####.#######.#.#.#.#.#..",
+        "....#..###..#..###.#...#..#..",
+        "##.####...####.############..",
+        "........#...##..#####...#####",
+        "#######..#####..#.###.#.##.#.",
+        "#.....#..#........#.#...##.##",
+        "#.###.#..#..#.#..#..#####.###",
+        "#.###.#.#..##.##.###.#..##..#",
+        "#.###.#.#.##.#..##..#..#..#.#",
+        "#.....#.#.##..###.#.#.##.#.#.",
+        "#######.##..#.#.#.###...#..#.",
+    ),
+    contribution=True,
+)
+
+LINKS: tuple[LinkCode, ...] = (DOCS, DISCORD, SUPPORT)
 
 
 def draw_link_qr(cr: Any, code: LinkCode, x: float, y: float, size: float, *, radius: float = 10.0) -> None:
@@ -127,3 +172,24 @@ def draw_link_qr(cr: Any, code: LinkCode, x: float, y: float, size: float, *, ra
             if bit == "#":
                 cr.rectangle(x + origin + col * module, y + origin + row * module, module, module)
     cr.fill()
+
+
+def link_qr_svg(code: LinkCode) -> str:
+    """``code`` as inline SVG for the web UI, quiet zone included.
+
+    Colours come from the page's ``.qr-field`` / ``.qr-modules`` rules, so the
+    markup carries none. The field's corner radius stays inside the quiet zone.
+    """
+    span = len(code.symbol) + 2 * QUIET_MODULES
+    modules = "".join(
+        f"M{col + QUIET_MODULES} {row + QUIET_MODULES}h1v1h-1z"
+        for row, bits in enumerate(code.symbol)
+        for col, bit in enumerate(bits)
+        if bit == "#"
+    )
+    return (
+        f'<svg class="qr" viewBox="0 0 {span} {span}" shape-rendering="crispEdges"'
+        ' aria-hidden="true" focusable="false">'
+        f'<rect class="qr-field" width="{span}" height="{span}" rx="{QUIET_MODULES // 2}"/>'
+        f'<path class="qr-modules" d="{modules}"/></svg>'
+    )

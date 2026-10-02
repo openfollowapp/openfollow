@@ -27,6 +27,9 @@ COLOR_ACCENT_SOFT = (1.0, 0.737, 0.0, 0.12)  # soft accent background (RGBA)
 # Borders and UI
 COLOR_BORDER_SOFT = (1.0, 1.0, 1.0, 0.08)  # soft border (RGBA)
 COLOR_BORDER = (1.0, 1.0, 1.0, 0.12)  # standard border (RGBA)
+# Dashed edge of the Support OpenFollow request: neutral, because gold reads as caution.
+COLOR_SUPPORT_BORDER = (1.0, 1.0, 1.0, 0.26)  # (RGBA)
+SUPPORT_DASH = (5.0, 4.0)
 
 # Translucent fill for the shared overlay-card chrome (operator-message cards
 # + every HUD panel). Marker cards paint their own opaque colour-coded chrome.
@@ -130,6 +133,28 @@ def draw_success_sign(
     cr.line_to(cx - size * 0.0625, cy + size * 0.1625)
     cr.line_to(cx + size * 0.2125, cy - size * 0.1375)
     cr.stroke()
+    cr.restore()
+
+
+def draw_heart(cr: Any, cx: float, cy: float, size: float, color: tuple[float, ...] = COLOR_ACCENT) -> None:
+    """Filled heart ``size`` wide, centred on (cx, cy): the Support OpenFollow mark."""
+    k = size / 24.0
+    ox, oy = cx - 12.0 * k, cy - 12.5 * k
+
+    def pt(x: float, y: float) -> tuple[float, float]:
+        return ox + x * k, oy + y * k
+
+    cr.save()
+    cr.move_to(*pt(12.0, 21.0))
+    cr.curve_to(*pt(12.0, 21.0), *pt(4.4, 16.3), *pt(2.3, 11.5))
+    cr.curve_to(*pt(0.8, 8.1), *pt(3.0, 4.0), *pt(6.9, 4.0))
+    cr.curve_to(*pt(9.0, 4.0), *pt(10.5, 5.1), *pt(12.0, 7.0))
+    cr.curve_to(*pt(13.5, 5.1), *pt(15.0, 4.0), *pt(17.1, 4.0))
+    cr.curve_to(*pt(21.0, 4.0), *pt(23.2, 8.1), *pt(21.7, 11.5))
+    cr.curve_to(*pt(19.6, 16.3), *pt(12.0, 21.0), *pt(12.0, 21.0))
+    cr.close_path()
+    cr.set_source_rgb(*color[:3])
+    cr.fill()
     cr.restore()
 
 

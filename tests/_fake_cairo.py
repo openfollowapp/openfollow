@@ -102,6 +102,9 @@ class FakeCairo:
     def set_line_cap(self, cap: Any) -> None:
         self.calls.append(("line_cap", cap))
 
+    def set_dash(self, dashes: Any, offset: float = 0.0) -> None:
+        self.calls.append(("dash", tuple(dashes), offset))
+
     # ------------------------------------------------------------------
     # Geometry
     # ------------------------------------------------------------------
@@ -125,6 +128,10 @@ class FakeCairo:
     def arc(self, cx: float, cy: float, r: float, a0: float, a1: float) -> None:
         self.arcs.append((cx, cy, r))
         self.calls.append(("arc", cx, cy, r, a0, a1))
+
+    def curve_to(self, x1: float, y1: float, x2: float, y2: float, x3: float, y3: float) -> None:
+        self._cur_x, self._cur_y = x3, y3
+        self.calls.append(("curve_to", x1, y1, x2, y2, x3, y3))
 
     def close_path(self) -> None:
         self.closes += 1

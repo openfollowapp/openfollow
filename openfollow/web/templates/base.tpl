@@ -1153,6 +1153,12 @@
  }
  .license-footer a:hover { text-decoration: underline; }
  .license-footer .sep { opacity: 0.5; margin: 0 0.4rem; }
+ /* Reopens What's new: a button, drawn as the footer's links. */
+ .license-footer .whats-new-link {
+ margin-left: 0.25rem; padding: 0; border-radius: 0; background: none;
+ color: var(--accent); font: inherit; font-weight: 600; transition: none;
+ }
+ .license-footer .whats-new-link:hover { transform: none; filter: none; text-decoration: underline; }
  .license-footer .update-flag {
  display: inline-block; margin-left: 0.4rem; vertical-align: 1px; border-radius: 0.4rem;
  --pill-pad-y: 0.1rem; padding-inline: 0.45rem; font-size: 0.7rem; font-weight: 500;
@@ -2232,6 +2238,10 @@
  % from openfollow import __commit__, __version__
  <footer class="license-footer" role="contentinfo">
  OpenFollow v{{__version__}}{{ ' (' + __commit__ + ')' if __commit__ else '' }}
+ %# Signed-in pages only: the notes come from an authenticated route.
+ % if defined('whats_new_pending'):
+ <button type="button" class="whats-new-link" onclick="openfollowShowWhatsNew()">(What's new)</button>
+ % end
  % if defined('update_supported') and update_supported and defined('update_available') and update_available:
  <span class="update-flag">Update available: v{{latest_version}}</span>
  % end

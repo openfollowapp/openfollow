@@ -1836,6 +1836,32 @@ def test_license_footer_present_on_index(live_server) -> None:
     assert 'href="/about"' in body
 
 
+_WHATS_NEW_LINK = (
+    '<button type="button" class="whats-new-link" onclick="openfollowShowWhatsNew()">(What\'s new)</button>'
+)
+
+
+@pytest.mark.parametrize("path", ["/", "/wizard"])
+def test_the_footer_reopens_whats_new_on_a_signed_in_page_at_any_time(live_server, path: str) -> None:
+    """No update pending, yet the link is there and the opener it calls is on the page."""
+    server, base = live_server
+    assert server.whats_new_pending() is False
+    status, body = _get(base, path)
+    assert status == 200
+    footer = body[body.index('<footer class="license-footer"') :]
+    assert _WHATS_NEW_LINK in footer[: footer.index("</footer>")]
+    assert "async function openfollowShowWhatsNew()" in body
+
+
+def test_the_whats_new_link_is_not_on_a_page_before_sign_in(pin_protected_server) -> None:
+    """Its notes come from a signed-in route, so the login and About pages leave it out."""
+    _, base, _ = pin_protected_server
+    for path in ("/login", "/about"):
+        status, body = _get(base, path)
+        assert status == 200
+        assert "whats-new-link" not in body.split("</style>")[-1]
+
+
 def test_hero_logo_links_to_overview(live_server) -> None:
     """base.tpl wraps the hero logo in a link back to the overview ("/"),
     so the logo is a clickable way home on every page."""

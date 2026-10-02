@@ -26,15 +26,16 @@ server's own ``401``; filling them in must connect.
 Needs the ``gst-rtsp-server`` GObject bindings (``GstRtspServer-1.0.typelib``)
 and any H.264 encoder::
 
-    brew install gst-rtsp-server                                   # macOS
-    sudo apt install gir1.2-gst-rtsp-server-1.0 gstreamer1.0-libav  # Debian
+    brew install gst-rtsp-server                                          # macOS
+    sudo apt install gir1.2-gst-rtsp-server-1.0 gstreamer1.0-plugins-bad  # Debian
 
 The encoder is picked from whatever is installed (``--list-encoders`` shows the
 choice). ``x264enc`` is preferred where present but comes from
 ``gst-plugins-ugly``, which the OpenFollow appliance deliberately does not ship
-(see ``THIRD_PARTY_NOTICES.md``), so on a station the fallback to ``gst-libav``
-or ``gst-plugins-bad`` is the path that actually runs. This is bench tooling,
-not part of the application.
+(see ``THIRD_PARTY_NOTICES.md``), so on a station ``openh264enc`` from
+``gst-plugins-bad`` is the one that actually runs. ``--encoder`` forces any
+other installed encoder, and only the settings it has are applied. This is
+bench tooling, not part of the application.
 """
 
 from __future__ import annotations
@@ -45,15 +46,19 @@ import sys
 from collections.abc import Callable
 
 # Preference order, best-quality-per-CPU first. ``x264enc`` is ``gst-plugins-ugly``
-# and absent from the appliance image; ``avenc_h264`` (gst-libav) and
-# ``openh264enc`` (gst-plugins-bad) are the sets that ship, and ``vtenc_h264`` is
-# VideoToolbox on macOS. Any of them is fine for a bench pattern.
-_ENCODER_PREFERENCE: tuple[str, ...] = ("x264enc", "vtenc_h264", "avenc_h264", "openh264enc")
+# and absent from the appliance image, ``vtenc_h264`` is VideoToolbox on macOS, and
+# ``openh264enc`` (``gst-plugins-bad``) is the only H.264 encoder a station has.
+_ENCODER_PREFERENCE: tuple[str, ...] = ("x264enc", "vtenc_h264", "openh264enc")
 
-# Per-encoder flags for low-latency output; absent entries just take defaults.
-_ENCODER_OPTIONS: dict[str, str] = {
-    "x264enc": "tune=zerolatency speed-preset=ultrafast",
-    "vtenc_h264": "realtime=true allow-frame-reordering=false",
+# The keyframe interval under each encoder family's name; the first one the
+# chosen encoder has is set.
+_KEYFRAME_PROPERTIES: tuple[str, ...] = ("key-int-max", "max-keyframe-interval", "gop-size")
+
+# Per-encoder low-latency and rate settings; absent entries take defaults.
+_ENCODER_OPTIONS: dict[str, dict[str, str]] = {
+    "x264enc": {"tune": "zerolatency", "speed-preset": "ultrafast"},
+    "vtenc_h264": {"realtime": "true", "allow-frame-reordering": "false"},
+    "openh264enc": {"bitrate": "4000000"},  # bit/s; its default target is 128 kbit/s
 }
 
 DEFAULT_PORT = 8554
@@ -105,6 +110,19 @@ def pick_encoder(available: Callable[[str], bool], preferred: str | None = None)
     return next((name for name in _ENCODER_PREFERENCE if available(name)), None)
 
 
+def encoder_settings(encoder: str, has_property: Callable[[str], bool], keyframe_interval: int) -> str:
+    """Return the ``name=value`` settings for *encoder*, only those it has.
+
+    A property the element lacks fails the media pipeline, and every client is
+    answered with a 503, so nothing is set on the encoder's name alone.
+    """
+    settings = dict(_ENCODER_OPTIONS.get(encoder, {}))
+    keyframe = next((name for name in _KEYFRAME_PROPERTIES if has_property(name)), None)
+    if keyframe is not None:
+        settings[keyframe] = str(keyframe_interval)
+    return " ".join(f"{name}={value}" for name, value in settings.items() if has_property(name))
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -125,18 +143,22 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     encoder = pick_encoder(available, args.encoder)
-    if encoder is None:
+    element = Gst.ElementFactory.make(encoder, None) if encoder is not None else None
+    if encoder is None or element is None:
         wanted = args.encoder or " / ".join(_ENCODER_PREFERENCE)
-        print(f"error: no usable H.264 encoder ({wanted}). Install gstreamer1.0-libav.", file=sys.stderr)
+        print(
+            f"error: no usable H.264 encoder ({wanted}). Install gstreamer1.0-plugins-bad for openh264enc.",
+            file=sys.stderr,
+        )
         return 1
-    options = _ENCODER_OPTIONS.get(encoder, "")
+    options = encoder_settings(encoder, lambda name: element.find_property(name) is not None, args.fps)
 
     # ``is-live`` keeps the pattern advancing on wall-clock time, so a station
     # that connects late still sees motion rather than a frame from t=0.
     launch = (
         f"( videotestsrc is-live=true pattern={args.pattern} "
         f"! video/x-raw,width={args.width},height={args.height},framerate={args.fps}/1 "
-        f"! videoconvert ! {encoder} {options} key-int-max={args.fps} "
+        f"! videoconvert ! {encoder} {options} "
         f"! rtph264pay name=pay0 pt=96 )"
     )
 

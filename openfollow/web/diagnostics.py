@@ -740,12 +740,10 @@ def describe_address_reachability(address: str, route_path: Path | None = None) 
     return [f"{indent}not on any local subnet; routed via {gateway} on {iface} (route {network}, metric {metric})"]
 
 
-# How a blank pin reads, by the panel row's ``blank`` kind.
-_BLANK_PIN = {
-    "auto": "(auto-detect)",
-    "station": "(follows station)",
-    "all": "(all interfaces)",
-}
+# What a blank pin means, by the panel row's ``blank`` kind, as the panel's picker offers it.
+BLANK_PIN_LABELS = {"auto": "Auto-detect", "station": "Follow station default interface", "all": "All interfaces"}
+# A row following Station default, where it is shown rather than chosen.
+FOLLOWS_STATION_DEFAULT = "Follows station default interface"
 
 
 def _columns(rows: list[tuple[str, ...]], indent: str = "    ") -> list[str]:
@@ -766,7 +764,9 @@ def _bind_map_configured(p: DiagnosticsProviders) -> list[str]:
     table: list[tuple[str, ...]] = [("Function", "Pin", "Address")]
     for row in rows or []:
         if row.get("editable"):
-            pin = str(row.get("value") or "") or _BLANK_PIN.get(str(row.get("blank") or ""), "(blank)")
+            blank = str(row.get("blank") or "")
+            reads = FOLLOWS_STATION_DEFAULT if blank == "station" else BLANK_PIN_LABELS.get(blank, "(blank)")
+            pin = str(row.get("value") or "") or reads
         else:
             pin = str(row.get("note") or "(read-only)")
         table.append((str(row.get("label") or "?"), pin, str(row.get("address") or "-")))

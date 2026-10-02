@@ -9,8 +9,8 @@ Useful when lighting, video, and management traffic live on separate networks �
 Interfaces are pinned **by name** (`eth0`, `wlan0`, `eth0.10`), not by IP address, so a pin survives a DHCP renewal or a venue change. The **Address** column shows the address that name currently resolves to, so you can see where a function will actually send before you save.
 
 - **Station default** – the interface everything else falls back to. Leave it on `Auto-detect` and the system picks the primary outbound adapter.
-- **Follow station interface** – the default for every other row. That row uses whatever Station default resolves to, so on a single-adapter station you never have to touch this panel.
-- A specific interface – that function uses it regardless of what the station default is.
+- **Follow station default interface** – what a blank row means on the outputs, OSC input and a network video input. With Station default set to an interface the row uses it, so on a single-adapter station you never have to touch this panel. With Station default on `Auto-detect` nothing is pinned, and the Address column shows the adapter the Pi picks for each destination. A blank **Web UI** row reads `All interfaces` instead, and so does an RTP stream on `0.0.0.0`.
+- A specific interface – that function uses it regardless of what Station default is.
 
 ## When a configured interface is unavailable
 
@@ -26,9 +26,9 @@ The **address** is allowed to change. If the interface is on DHCP and comes back
 
 ## Rows that can't be pinned
 
-**PSN in / out** and **Discovery / marker sync** always follow the station interface and are shown read-only. They carry this station's identity on the network – the address other stations and consoles see it at – so splitting them from the station default would mean the box advertised one address and answered on another.
+**PSN in / out** and **Discovery / marker sync** always follow Station default, sit directly under it, and are shown read-only. They carry this station's identity on the network – the address other stations and consoles see it at – so splitting them from Station default would mean the box advertised one address and answered on another.
 
-Following the station interface includes stopping with it. When the station interface has no address, peer discovery and marker-name sync go quiet until it returns, the same as every pinned row above – a station that kept announcing itself would put its name, version and web address on a network you did not choose. Unless you have pinned it yourself, the web UI stays reachable on every interface throughout, so the station is still there to browse to; it just stops appearing in other stations' peer lists.
+Following Station default includes stopping with it. When the Station default interface has no address, peer discovery and marker-name sync go quiet until it returns, the same as every pinned row above – a station that kept announcing itself would put its name, version and web address on a network you did not choose. Unless you have pinned it yourself, the web UI stays reachable on every interface throughout, so the station is still there to browse to; it just stops appearing in other stations' peer lists.
 
 ## OSC input
 
@@ -50,7 +50,7 @@ A destination on this station itself (`127.0.0.1` or `localhost`) never leaves t
 
 If the pinned interface has no address, those messages stop. An OSC Output row's Diagnostics and a zone's test send say `interface eth1 is down`, and the on-screen display shows `OSC output` or `RTTrPM output` as a red row in the top-right corner. They resume when the interface comes back. A zone crossing that happened while its interface was down is not sent late.
 
-These pins belong to this station. A config export leaves them out, and an import keeps the pins this station already has for destinations it already has; a destination new to it follows the station interface.
+These pins belong to this station. A config export leaves them out, and an import keeps the pins this station already has for destinations it already has; a destination new to it follows Station default.
 
 ## Video input
 

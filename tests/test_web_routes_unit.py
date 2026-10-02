@@ -1095,6 +1095,15 @@ class TestInterfaceAssignmentRows:
             lambda: {name: [SimpleNamespace(family=socket.AF_INET, address=addr)] for name, addr in spec.items()},
         )
 
+    def test_the_rows_that_always_ride_the_station_sit_directly_under_it(self, monkeypatch) -> None:
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        rows = build_interface_assignment_rows(AppConfig(psn_source_iface="eth0"))
+        labels = [row["label"] for row in rows]
+        assert labels[:3] == ["Station default", "PSN in / out", "Discovery / marker sync"]
+        # Each is listed once.
+        assert labels.count("PSN in / out") == labels.count("Discovery / marker sync") == 1
+        assert [row["note"] for row in rows[1:3]] == ["Follows station default interface"] * 2
+
     def test_station_row_owns_psn_source_iface(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         cfg = AppConfig(psn_source_iface="eth0")

@@ -21,6 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import wsgiref.util
+from typing import Any
 
 import pytest
 
@@ -30,7 +31,7 @@ import openfollow.web.discovery as discovery_module
 from openfollow.configuration import AppConfig, load_config, save_config
 from openfollow.marker_catalog import MarkerCatalog
 from openfollow.palette import AUTO_PICK_ORDER
-from openfollow.web import peer_auth
+from openfollow.web import diagnostics, peer_auth
 from openfollow.web import whats_new as whats_new_module
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port, start_on_free_port
@@ -795,6 +796,14 @@ def test_overview_poll_returns_peer_rows_without_section_shell(live_server) -> N
     assert 'class="section"' not in body
 
 
+def test_overview_says_station_default_is_down_rather_than_showing_its_address(live_server) -> None:
+    server, base = live_server
+    server.suspend_beacons()
+    status, body = _get(base, "/section/overview")
+    assert status == 200
+    assert '<span class="peer-address">Station default interface down</span>' in body
+
+
 def test_index_overview_section_polls_only_peer_rows(live_server) -> None:
     # The polling element is the inner peer list (#overview-peers), gated on the
     # enclosing section's collapsed state – not the whole #overview-section via
@@ -1355,19 +1364,35 @@ def test_interface_assignment_renders_and_saves_the_sender_rows(live_server, mon
     assert saved.rttrpm_output.source_iface == "eth1"
 
 
-def test_sender_sections_point_to_the_assignment_panel(live_server) -> None:
+def _pin_osc_destinations(cfg: Any, pin: str) -> None:
+    for dest in cfg.osc_destinations.destinations:
+        dest.source_iface = pin
+
+
+_SENDER_POINTERS = {
+    "/section/otp_output": lambda cfg, pin: setattr(cfg.otp_output, "source_iface", pin),
+    "/section/rttrpm_output": lambda cfg, pin: setattr(cfg.rttrpm_output, "source_iface", pin),
+    "/section/osc": lambda cfg, pin: setattr(cfg.osc, "listen_iface", pin),
+    "/section/osc_destinations": _pin_osc_destinations,
+}
+
+
+@pytest.mark.parametrize("path", sorted(_SENDER_POINTERS))
+@pytest.mark.parametrize(
+    ("pin", "shown"), [("", diagnostics.FOLLOWS_STATION_DEFAULT), ("eth7", "eth7")], ids=["blank", "pinned"]
+)
+def test_sender_sections_point_to_the_panel_with_their_own_pin(live_server, path: str, pin: str, shown: str) -> None:
+    """Each section shows its row's pin read-only, and Station default's wording only when it is blank."""
     server, base = live_server
     cfg = load_config(server.config_path)
-    cfg.osc_destinations.destinations[0].source_iface = "eth7"
+    _SENDER_POINTERS[path](cfg, pin)
     save_config(cfg, server.config_path)
 
-    for path, value in (("/section/rttrpm_output", "Follows station interface"), ("/section/osc_destinations", "eth7")):
-        status, body = _get(base, path)
-        assert status == 200
-        assert "Source Interface" in body
-        assert value in body
-        assert "goToSection('general', 'interface-assignment')" in body
-        assert 'name="source_iface"' not in body
+    status, body = _get(base, path)
+    assert status == 200
+    assert f'<span class="ia-pointer-value">{shown}</span>' in body
+    assert "goToSection('general', 'interface-assignment')" in body
+    assert 'name="source_iface"' not in body
 
 
 def test_interface_assignment_scan_rerenders_the_panel(live_server) -> None:
@@ -1492,7 +1517,7 @@ def test_network_interfaces_by_name_blank_station_relabels_empty_option(
 
     status, body = _get(base, "/network/interfaces/by_name?blank=station&current=")
     assert status == 200
-    assert "Follow station interface" in body
+    assert "Follow station default interface" in body
     assert "Auto-detect" not in body
 
 

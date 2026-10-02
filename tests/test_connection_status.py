@@ -54,6 +54,12 @@ class TestNdiStatusMarker:
         assert marker.error_message == "Signal lost"
         assert marker.is_connected is False
 
+    def test_set_disconnected_names_a_source_that_never_connected(self) -> None:
+        marker = NdiStatusMarker()
+        marker.set_connected("Camera 1")
+        marker.set_disconnected("Refused", source_name="Camera 2")
+        assert marker.source_name == "Camera 2"
+
     def test_set_reconnecting(self) -> None:
         marker = NdiStatusMarker()
         marker.set_connected("Camera 1")

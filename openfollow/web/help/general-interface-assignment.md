@@ -58,9 +58,9 @@ The interface the camera is reached through, named after the active video source
 
 - **SRT** connects only through the pinned interface. On macOS the station checks instead that the routing table already reaches the camera there.
 - **RTSP** cannot be bound to an interface, so before each connection the station checks which interface the routing table would use for the camera, and does not connect when it is another one. Multicast streams are joined on the pinned interface.
-- **RTP** receives only on the pinned interface: a multicast group is joined there, and a unicast stream is accepted only at its address. An RTP URL naming another interface's address is refused.
+- **RTP** receives only on the pinned interface: a multicast group is joined there, and a unicast stream is accepted only at its address. An RTP URL naming another interface's address is refused. An RTP URL on `0.0.0.0` receives on every interface unless this row names one itself, so blank reads `All interfaces` for it.
 
-A camera the pin refuses shows why on every video surface: `Interface down` when the pinned interface has no address, `Wrong interface` when the camera is reached through another one. The station keeps retrying and the video returns on its own. A camera served by this station itself is never refused.
+A camera the pin refuses shows why on every video surface: `Interface down` when the pinned interface has no address, `Wrong interface` when the camera is reached through another one. The station keeps retrying and the video returns on its own. A camera served by this station itself takes no pin: it is never refused, and never stopped when the pinned interface goes down.
 
 NDI® chooses its own interface, and the Pi Camera, USB cameras and the Media Gallery are not network inputs, so for them the row is read-only. A saved pin is kept for when a network source is chosen again, and like the other pins it is left out of a config export.
 

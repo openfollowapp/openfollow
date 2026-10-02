@@ -179,11 +179,19 @@ class NdiStatusMarker:
         *,
         failure: VideoFailure = VideoFailure.NONE,
         phase: ConnectionPhase = ConnectionPhase.STARTING,
+        source_name: str | None = None,
     ) -> None:
-        """Transition to DISCONNECTED state."""
+        """Transition to DISCONNECTED state; *source_name* names a source that never got as far as connecting."""
         error = redact_uris_in_text(error_message)
         self._update(
-            lambda prior: _StatusSnapshot(ConnectionStatus.DISCONNECTED, prior.source_name, 0, error, failure, phase)
+            lambda prior: _StatusSnapshot(
+                ConnectionStatus.DISCONNECTED,
+                prior.source_name if source_name is None else source_name,
+                0,
+                error,
+                failure,
+                phase,
+            )
         )
 
     def set_reconnecting(

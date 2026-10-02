@@ -1872,6 +1872,53 @@ def test_apply_runtime_swaps_video_on_plugin_field_change() -> None:
     assert app._runtime_services.video_swaps == [new_config]
 
 
+@pytest.mark.parametrize("station", ["eth1", ""], ids=["moved", "auto-detect"])
+def test_a_station_change_rebuilds_a_video_input_that_follows_it(monkeypatch, station: str) -> None:
+    """The station row is committed before the video block runs; compared
+    afterwards, both sides would resolve the new station and nothing would move."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+    app = _DummyApp(AppConfig(video_source_type="srt", srt_host="srt://203.0.113.20:5000", psn_source_iface="eth0"))
+    new_config = AppConfig(video_source_type="srt", srt_host="srt://203.0.113.20:5000", psn_source_iface=station)
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._runtime_services.video_swaps == [new_config]
+
+
+def test_a_station_change_leaves_a_video_input_with_its_own_pin(monkeypatch) -> None:
+    import socket as _socket
+    from types import SimpleNamespace
+
+    import openfollow.net_utils as net_utils_module
+
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {
+            "eth0": [SimpleNamespace(family=_socket.AF_INET, address="192.168.1.5")],
+            "eth1": [SimpleNamespace(family=_socket.AF_INET, address="10.0.0.9")],
+        },
+    )
+    fields = {"video_source_type": "srt", "srt_host": "srt://203.0.113.20:5000", "video_input_iface": "eth1"}
+    app = _DummyApp(AppConfig(psn_source_iface="eth0", **fields))
+
+    apply_runtime_config_changes(app, AppConfig(psn_source_iface="eth1", **fields))
+
+    assert app._runtime_services.video_swaps == []
+
+
 def test_apply_runtime_swaps_video_on_source_type_change() -> None:
     """Switching ``video_source_type`` between plugins (RTSP → SRT)
     also routes through the live-swap path. The dispatcher commits

@@ -1194,9 +1194,12 @@ class TestInterfaceAssignmentRows:
         cfg = AppConfig(**fields)
         return next(r for r in build_interface_assignment_rows(cfg) if r["label"].startswith("Video input"))
 
-    @pytest.mark.parametrize(("source", "name"), [("srt", "SRT"), ("rtsp", "RTSP"), ("rtp", "RTP")])
-    def test_a_network_video_input_is_pinned_here(self, monkeypatch, source: str, name: str) -> None:
-        row = self._video_row(monkeypatch, video_source_type=source, video_input_iface="eth1")
+    @pytest.mark.parametrize(
+        ("source", "name", "url"),
+        [("srt", "SRT", {}), ("rtsp", "RTSP", {}), ("rtp", "RTP", {"rtp_url": "rtp://239.1.1.1:5004"})],
+    )
+    def test_a_network_video_input_is_pinned_here(self, monkeypatch, source: str, name: str, url: dict) -> None:
+        row = self._video_row(monkeypatch, video_source_type=source, video_input_iface="eth1", **url)
         assert row["label"] == f"Video input ({name})"
         assert row["editable"] is True
         assert row["key"] == "video_input_iface"
@@ -1240,11 +1243,34 @@ class TestInterfaceAssignmentRows:
         assert row["address"] == "eth1 – 198.51.100.10"
         assert asked == [target]
 
-    def test_an_unpinned_rtp_listener_receives_on_every_interface(self, monkeypatch) -> None:
+    @pytest.mark.parametrize("station", ["", "eth0"], ids=["nothing", "station"])
+    @pytest.mark.parametrize("url", ["rtp://0.0.0.0:5004", "rtp://[::]:5004"], ids=["ipv4", "ipv6"])
+    def test_an_rtp_wildcard_receives_on_every_interface_unless_pinned_itself(
+        self, monkeypatch, station: str, url: str
+    ) -> None:
+        """Only a pin of its own narrows the wildcard; the station's does not reach it."""
         asked = self._pick(monkeypatch, "198.51.100.10")
-        row = self._video_row(monkeypatch, video_source_type="rtp", rtp_url="rtp://0.0.0.0:5004")
+        row = self._video_row(monkeypatch, video_source_type="rtp", rtp_url=url, psn_source_iface=station)
         assert row["address"] == "All interfaces"
+        assert row["blank"] == "all"
         assert asked == []
+
+        pinned = self._video_row(monkeypatch, video_source_type="rtp", rtp_url=url, video_input_iface="eth1")
+        assert pinned["address"] == "198.51.100.10"
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"video_source_type": "rtp", "rtp_url": "rtp://0.0.0.0:70000"},
+            {"video_source_type": "rtsp", "rtsp_url": "rtsp://[2001:db8::5/s"},
+            {"video_source_type": "srt", "srt_host": "srt://[2001:db8::5:5000"},
+        ],
+        ids=["rtp-port", "rtsp-bracket", "srt-bracket"],
+    )
+    def test_a_url_that_does_not_parse_still_renders_the_panel(self, monkeypatch, fields: dict) -> None:
+        row = self._video_row(monkeypatch, psn_source_iface="eth0", **fields)
+        assert row["editable"] is True
+        assert row["address"]
 
     def test_the_pick_says_when_nothing_routes_there(self, monkeypatch) -> None:
         self._pick(monkeypatch, None)
@@ -1266,6 +1292,22 @@ class TestInterfaceAssignmentRows:
     def test_a_pinned_video_input_with_no_address_says_so(self, monkeypatch) -> None:
         row = self._video_row(monkeypatch, video_source_type="rtsp", video_input_iface="eth9")
         assert row["address"] == "eth9 is down"
+
+    def test_a_sender_with_no_destination_is_left_to_the_routing_table(self, monkeypatch) -> None:
+        """Not "All interfaces": an output sends from one interface, not all of them."""
+        self._ifaces(monkeypatch, {"eth0": "192.0.2.10"})
+        cfg = AppConfig()
+        cfg.rttrpm_output.host = ""
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        assert rows["RTTrPM output"]["address"] == "Per routing table"
+
+    def test_a_camera_on_this_station_takes_no_pin_from_the_station(self, monkeypatch) -> None:
+        asked = self._pick(monkeypatch, "192.0.2.10")
+        row = self._video_row(
+            monkeypatch, video_source_type="srt", srt_host="srt://192.0.2.10:5000", psn_source_iface="eth1"
+        )
+        assert row["address"] == "eth0 – 192.0.2.10"
+        assert asked == ["192.0.2.10"]
 
     def test_a_camera_on_this_box_reads_as_loopback(self, monkeypatch) -> None:
         row = self._video_row(

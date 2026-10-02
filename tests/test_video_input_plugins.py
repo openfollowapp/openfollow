@@ -336,6 +336,10 @@ class TestOptionalHooks:
         instance.cleanup()
 
 
+# A source every networked input's pin governs: RTP's default wildcard is narrowed only by a pin of its own.
+_RTP_GROUP = "rtp://239.1.1.1:5004"
+
+
 @pytest.mark.parametrize("plugin", _plugin_params())
 class TestInterfacePinContract:
     """Every input that dials or listens on the network honours the video
@@ -359,7 +363,7 @@ class TestInterfacePinContract:
         assert plugin.config_changed(old, new) is plugin.pins_interface
 
     def test_a_blank_pin_runs_on_the_station_interface(self, plugin: type[VideoInputBase]) -> None:
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(psn_source_iface="eth0", rtp_url=_RTP_GROUP)
         if plugin.pins_interface:
             assert plugin.runtime_config(cfg)["video_input_iface"] == "eth0"
             cfg.video_input_iface = "eth1"
@@ -369,11 +373,22 @@ class TestInterfacePinContract:
         assert plugin.runtime_config(cfg) == {**plugin.get_config_field_values(cfg), **plugin.runtime_config(cfg)}
 
     def test_a_station_change_rebuilds_an_input_whose_pin_is_blank(self, plugin: type[VideoInputBase]) -> None:
-        old, new = AppConfig(), AppConfig(psn_source_iface="eth0")
+        old, new = AppConfig(rtp_url=_RTP_GROUP), AppConfig(psn_source_iface="eth0", rtp_url=_RTP_GROUP)
         assert plugin.config_changed(old, new) is plugin.pins_interface
         # With its own pin the station does not reach it.
         old.video_input_iface = new.video_input_iface = "eth1"
         assert plugin.config_changed(old, new) is False
+
+    def test_a_source_on_this_box_takes_no_pin(self, plugin: type[VideoInputBase]) -> None:
+        """Its traffic never leaves the box, so no interface carries it."""
+        cfg = AppConfig(
+            psn_source_iface="eth0",
+            video_input_iface="eth1",
+            srt_host="srt://127.0.0.1:5000",
+            rtsp_url="rtsp://127.0.0.1:8554/relay",
+            rtp_url="rtp://127.0.0.1:5004",
+        )
+        assert plugin.runtime_config(cfg).get("video_input_iface", "") == ""
 
     def test_an_input_that_does_not_pin_never_refuses(
         self, plugin: type[VideoInputBase], monkeypatch: pytest.MonkeyPatch

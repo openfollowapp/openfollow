@@ -20,7 +20,7 @@ from typing import Any
 
 from openfollow.net_utils import plane_source_iface
 from openfollow.video.failure import ConnectionPhase, SourceKind
-from openfollow.video.inputs._pin import PinRefusal
+from openfollow.video.inputs._pin import PinRefusal, is_station_address
 
 logger = logging.getLogger(__name__)
 
@@ -330,13 +330,23 @@ class VideoInputBase(ABC):
     @classmethod
     def runtime_config(cls, cfg: Any) -> dict[str, Any]:
         """The config the running input is built from: its fields, with a blank
-        interface pin resolved to the station interface it follows."""
+        interface pin resolved to the station interface it follows, and no pin
+        at all where none governs the connection."""
         values = cls.get_config_field_values(cfg)
         if cls.pins_interface:
-            values["video_input_iface"] = plane_source_iface(
-                str(values.get("video_input_iface", "") or ""), str(getattr(cfg, "psn_source_iface", "") or "")
-            )
+            own = str(values.get("video_input_iface", "") or "")
+            pin = plane_source_iface(own, str(getattr(cfg, "psn_source_iface", "") or ""))
+            values["video_input_iface"] = pin if pin and cls.uses_interface(values, followed=not own) else ""
         return values
+
+    @classmethod
+    def uses_interface(cls, config: dict[str, Any], *, followed: bool) -> bool:
+        """Whether a pin governs this connection; *followed* when it is the station's, not the input's own.
+
+        A literal address of this station needs no interface, so its input is
+        neither checked against a pin nor stopped with one.
+        """
+        return not is_station_address(cls.route_target(config))
 
     @classmethod
     def config_changed(cls, old_cfg: Any, new_cfg: Any) -> bool:
@@ -345,8 +355,11 @@ class VideoInputBase(ABC):
 
     @classmethod
     def route_target(cls, config: dict[str, Any]) -> str:
-        """The address whose route picks the interface when nothing pins it; "" when every interface receives."""
-        endpoint = cls.source_endpoint(config)
+        """The address whose route picks the interface when nothing pins it; "" for none or an unreadable URL."""
+        try:
+            endpoint = cls.source_endpoint(config)
+        except ValueError:
+            return ""
         return endpoint.host if endpoint is not None else ""
 
     def cleanup(self) -> None:  # noqa: B027 – intentional optional hook

@@ -1323,8 +1323,8 @@ def _route_pick(host: str) -> str:
     return f"{iface} – {source}" if iface else source
 
 
-def _egress_address(pin: str, host: str, station_iface: str) -> str:
-    """The address cell for a row that sends to *host*; "" for a receiver listening on every interface."""
+def _egress_address(pin: str, host: str, station_iface: str, *, unrouted: str = "Per routing table") -> str:
+    """The address cell for a row that sends to *host*; *unrouted* when there is no host and no pin."""
     from openfollow.net_egress import is_loopback_host
     from openfollow.net_utils import plane_source_iface
 
@@ -1333,10 +1333,10 @@ def _egress_address(pin: str, host: str, station_iface: str) -> str:
     if plane_source_iface(pin, station_iface):
         return _plane_address(pin, station_iface)
     # Nothing pinned anywhere: show where the Pi sends it now, not that it chooses.
-    return _route_pick(host) if host else "All interfaces"
+    return _route_pick(host) if host else unrouted
 
 
-def _video_input_row(cfg: AppConfig, station: str) -> dict[str, Any]:
+def _video_input_row(cfg: AppConfig) -> dict[str, Any]:
     """The active video input's row; read-only with a reason when it cannot be pinned."""
     from openfollow.video.failure import SourceKind
     from openfollow.video.inputs import get_input_class
@@ -1353,8 +1353,15 @@ def _video_input_row(cfg: AppConfig, station: str) -> dict[str, Any]:
             "editable": False,
             "note": f"Not supported – {name} chooses its own interface" if named else "Not a network input",
         }
-    target = input_cls.route_target(input_cls.get_config_field_values(cfg))
-    address = _egress_address(cfg.video_input_iface, target, station)
+    from openfollow.video.inputs._pin import config_pin
+
+    config = input_cls.runtime_config(cfg)
+    target = input_cls.route_target(config)
+    if input_cls.source_kind is SourceKind.LISTENER and not target:
+        # A wildcard listener receives on every interface unless pinned itself.
+        address = _egress_address(config_pin(config), "", "", unrouted="All interfaces")
+        return {**row, "key": "video_input_iface", "address": address, "editable": True, "blank": "all"}
+    address = _egress_address(config_pin(config), target, "")
     return {**row, "key": "video_input_iface", "address": address, "editable": True}
 
 
@@ -1440,7 +1447,7 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
             }
             for dest in cfg.osc_destinations.destinations
         ),
-        _video_input_row(cfg, station),
+        _video_input_row(cfg),
         {
             "key": "",
             "label": "Discovery / marker sync",

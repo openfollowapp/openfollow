@@ -2385,6 +2385,7 @@ def test_video_input_plane_follows_its_own_and_the_station_interface(monkeypatch
     services = _build_services_with_psutil_backend(monkeypatch)
     _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
     cfg = services._app._config
+    cfg.video_source_type = "srt"
     cfg.psn_source_iface = "eth0"
     cfg.video_input_iface = "eth1"
     plane = _video_plane(services, _RecordingVideoReceiver())
@@ -2433,6 +2434,28 @@ def test_a_blank_video_pin_is_followed_through_the_station(monkeypatch) -> None:
     assert receiver.released == ["eth0 has no address"]
 
 
+@pytest.mark.parametrize(
+    ("source", "field", "url"),
+    [
+        ("srt", "srt_host", "srt://127.0.0.1:5000"),
+        ("rtsp", "rtsp_url", "rtsp://192.168.1.5:8554/relay"),
+        ("rtp", "rtp_url", "rtp://0.0.0.0:5004"),
+    ],
+    ids=["srt-loopback", "rtsp-own-address", "rtp-wildcard"],
+)
+def test_an_input_no_followed_pin_governs_is_not_a_plane(monkeypatch, source: str, field: str, url: str) -> None:
+    """Its traffic never touches the station interface, so that interface going
+    away must not stop it."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    cfg = services._app._config
+    cfg.video_source_type = source
+    setattr(cfg, field, url)
+    cfg.psn_source_iface = "eth0"
+    plane = _video_plane(services, _RecordingVideoReceiver())
+    assert plane.enabled() is False
+
+
 def test_video_input_plane_reports_what_the_input_was_built_for(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
     receiver = _RecordingVideoReceiver(pinned_to="10.0.0.9")
@@ -2447,6 +2470,7 @@ def test_video_input_plane_reports_what_the_input_was_built_for(monkeypatch) -> 
 
 def test_video_input_plane_stops_and_rebuilds_the_input(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.video_source_type = "srt"
     services._app._config.video_input_iface = "eth1"
     receiver = _RecordingVideoReceiver(pinned_to="10.0.0.9")
     plane = _video_plane(services, receiver)

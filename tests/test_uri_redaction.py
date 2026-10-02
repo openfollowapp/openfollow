@@ -139,8 +139,9 @@ class TestSetUriQueryKey:
                 "srt://h:9000?streamid=&bindtodevice=eth1#!::r=live,m=request",
             ),
             ("srt://h:9000#tag", "srt://h:9000?bindtodevice=eth1#tag"),
+            ("srt://h:9000#a?b", "srt://h:9000?bindtodevice=eth1#a?b"),
         ],
-        ids=["query-then-fragment", "fragment-only"],
+        ids=["query-then-fragment", "fragment-only", "question-mark-in-fragment"],
     )
     def test_the_key_lands_in_the_query_not_the_fragment(self, uri: str, expected: str) -> None:
         assert set_uri_query_key(uri, "bindtodevice", "eth1") == expected

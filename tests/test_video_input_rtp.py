@@ -477,9 +477,9 @@ class TestGetSourceLabel:
 class TestRtpInterfacePin:
     @pytest.fixture(autouse=True)
     def _addresses(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from openfollow.video.inputs import _pin
+        from openfollow.video.inputs import rtp
 
-        monkeypatch.setattr(_pin, "get_iface_ipv4", {"eth1": "198.51.100.10"}.get)
+        monkeypatch.setattr(rtp, "get_iface_ipv4", {"eth1": "198.51.100.10"}.get)
 
     def test_a_pin_sets_the_multicast_membership(self) -> None:
         udpsrc = _build({"rtp_url": "rtp://232.1.1.1:4000", "video_input_iface": "eth1"}).get_by_name("udpsrc")
@@ -488,6 +488,11 @@ class TestRtpInterfacePin:
 
     def test_a_pinned_unicast_listener_binds_the_pinned_address(self) -> None:
         udpsrc = _build({"rtp_url": "rtp://0.0.0.0:5004", "video_input_iface": "eth1"}).get_by_name("udpsrc")
+        assert udpsrc is not None
+        assert udpsrc.properties["address"] == "198.51.100.10"
+
+    def test_a_pinned_ipv6_wildcard_binds_the_pinned_address(self) -> None:
+        udpsrc = _build({"rtp_url": "rtp://[::]:5004", "video_input_iface": "eth1"}).get_by_name("udpsrc")
         assert udpsrc is not None
         assert udpsrc.properties["address"] == "198.51.100.10"
 
@@ -536,8 +541,14 @@ class TestRtpInterfacePin:
     @pytest.mark.usefixtures("_owned")
     @pytest.mark.parametrize(
         "url",
-        ["rtp://198.51.100.10:5004", "rtp://0.0.0.0:5004", "rtp://127.0.0.1:5004", "rtp://232.1.1.1:4000"],
-        ids=["pinned-address", "wildcard", "loopback", "multicast"],
+        [
+            "rtp://198.51.100.10:5004",
+            "rtp://0.0.0.0:5004",
+            "rtp://[::]:5004",
+            "rtp://127.0.0.1:5004",
+            "rtp://232.1.1.1:4000",
+        ],
+        ids=["pinned-address", "wildcard", "ipv6-wildcard", "loopback", "multicast"],
     )
     def test_a_listen_address_the_pin_honours_is_accepted(self, url: str) -> None:
         assert RtpInput.preflight({"rtp_url": url, "video_input_iface": "eth1"}) is None
@@ -566,9 +577,39 @@ class TestRtpInterfacePin:
 class TestRtpRouteTarget:
     @pytest.mark.parametrize(
         ("url", "target"),
-        [("rtp://239.1.1.1:5004", "239.1.1.1"), ("rtp://192.0.2.10:5004", "192.0.2.10"), ("rtp://0.0.0.0:5004", "")],
-        ids=["group", "named-address", "wildcard"],
+        [
+            ("rtp://239.1.1.1:5004", "239.1.1.1"),
+            ("rtp://192.0.2.10:5004", "192.0.2.10"),
+            ("rtp://0.0.0.0:5004", ""),
+            ("rtp://[::]:5004", ""),
+            ("rtp://0.0.0.0:70000", ""),
+            ("rtp://rx.example:5004", "rx.example"),
+        ],
+        ids=["group", "named-address", "wildcard", "ipv6-wildcard", "unreadable", "name"],
     )
     def test_the_address_whose_route_picks_the_interface(self, url: str, target: str) -> None:
         """A group is joined where its route points; the wildcard receives everywhere."""
         assert RtpInput.route_target({"rtp_url": url}) == target
+
+
+class TestRtpFollowsTheStation:
+    """A blank pin follows the station interface only where the station's
+    interface means something: the membership, or an address the URL names."""
+
+    @pytest.mark.parametrize(
+        ("url", "own", "expected"),
+        [
+            ("rtp://239.1.1.1:5004", "", "eth0"),
+            ("rtp://192.0.2.10:5004", "", "eth0"),
+            ("rtp://0.0.0.0:5004", "", ""),
+            ("rtp://[::]:5004", "", ""),
+            ("rtp://0.0.0.0:5004", "eth1", "eth1"),
+            ("rtp://127.0.0.1:5004", "eth1", ""),
+        ],
+        ids=["group", "named-address", "wildcard", "ipv6-wildcard", "own-pin-wildcard", "loopback"],
+    )
+    def test_the_pin_the_listener_runs_with(self, url: str, own: str, expected: str) -> None:
+        from openfollow.configuration import AppConfig
+
+        cfg = AppConfig(rtp_url=url, video_input_iface=own, psn_source_iface="eth0")
+        assert RtpInput.runtime_config(cfg)["video_input_iface"] == expected

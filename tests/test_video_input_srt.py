@@ -566,6 +566,33 @@ class TestSrtInterfacePin:
         )
         assert "bindtodevice" not in uri
 
+    @pytest.mark.parametrize(
+        ("host", "answers"),
+        [("[2001:db8::20]", None), ("camera.example", ["192.0.2.20", "2001:db8::20"])],
+        ids=["ipv6-literal", "dual-stack-name"],
+    )
+    def test_an_ipv6_camera_is_not_bound_to_the_device(
+        self, host: str, answers: list[str] | None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """libsrt refuses a device on an IPv6 socket, so binding one fails every
+        connection; the pin check judges these by the routing table instead."""
+        import socket
+
+        from openfollow.video.inputs import _pin
+
+        if answers is not None:
+            monkeypatch.setattr(_pin, "_resolver", _pin._Resolver())
+            monkeypatch.setattr(
+                _pin.socket,
+                "getaddrinfo",
+                lambda *a, **k: [(socket.AF_INET6 if ":" in x else socket.AF_INET, 2, 17, "", (x, 0)) for x in answers],
+            )
+            _pin._resolver.lookup(host)
+        uri = self._uri(
+            {"srt_host": f"srt://{host}:5000", "video_input_iface": "eth1"}, linux=True, monkeypatch=monkeypatch
+        )
+        assert "bindtodevice" not in uri
+
     def test_the_pin_lands_in_the_query_ahead_of_a_fragment(self, monkeypatch: pytest.MonkeyPatch) -> None:
         uri = self._uri(
             {"srt_host": "srt://192.0.2.20:9000?streamid=#!::r=live,m=request", "video_input_iface": "eth1"},

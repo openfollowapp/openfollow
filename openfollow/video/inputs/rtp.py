@@ -4,13 +4,15 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
 from openfollow.net_egress import is_loopback_host
-from openfollow.video.failure import SourceKind, VideoFailure
+from openfollow.net_utils import get_iface_ipv4
+from openfollow.video.failure import SourceKind
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -18,7 +20,7 @@ from openfollow.video.inputs._base import (
     VideoInputBase,
     video_input_pin_field,
 )
-from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin, iface_owning, pinned_address
+from openfollow.video.inputs._pin import PinRefusal, check_listen_address, check_video_pin, config_pin
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,13 @@ def _parse_rtp_url(url: str) -> tuple[str, int, bool]:
     return host, port, is_multicast
 
 
+def _is_wildcard(address: str) -> bool:
+    try:
+        return ipaddress.ip_address(address).is_unspecified
+    except ValueError:
+        return False
+
+
 class RtpInput(VideoInputBase):
     """RTP video input – multicast or unicast UDP receiver."""
 
@@ -80,19 +89,29 @@ class RtpInput(VideoInputBase):
         if refusal is not None or not pin:
             return refusal
         address, _port, is_multicast = _parse_rtp_url(str(config.get("rtp_url", "") or ""))
-        if is_multicast or address == "0.0.0.0" or is_loopback_host(address):
+        if is_multicast or _is_wildcard(address) or is_loopback_host(address):
             return None
         # A listen address named in the URL is bound as given, so it must be the pin's.
-        if iface_owning(address) != pin:
-            return PinRefusal(VideoFailure.WRONG_INTERFACE, f"{address} is not an address of {pin}")
-        return None
+        return check_listen_address(pin, address)
 
     @classmethod
     def route_target(cls, config: dict[str, Any]) -> str:
         # A group is joined where its route points; a named local address is
         # its own interface; the wildcard receives on every interface.
-        address, _port, _is_multicast = _parse_rtp_url(str(config.get("rtp_url", "") or ""))
-        return "" if address == "0.0.0.0" else address
+        try:
+            address, _port, _is_multicast = _parse_rtp_url(str(config.get("rtp_url", "") or ""))
+        except ValueError:
+            return ""
+        return "" if _is_wildcard(address) else address
+
+    @classmethod
+    def uses_interface(cls, config: dict[str, Any], *, followed: bool) -> bool:
+        target = cls.route_target(config)
+        if not target:
+            # The wildcard receives on every interface; only a pin of its own narrows it.
+            return not followed
+        # A listen address is always this station's own, so only loopback needs no interface.
+        return not is_loopback_host(target)
 
     @classmethod
     def config_fields(cls) -> list[ConfigField]:
@@ -184,9 +203,9 @@ class RtpInput(VideoInputBase):
                 udpsrc.set_property("multicast-iface", pin)
             logger.info("RTP multicast: %s:%d", address, port)
         else:
-            if pin and address == "0.0.0.0":
+            if pin and _is_wildcard(address):
                 # Only what is sent to the pinned interface is received.
-                address = pinned_address(pin) or address
+                address = get_iface_ipv4(pin) or address
             udpsrc.set_property("address", address)
             logger.info("RTP unicast: %s:%d", address, port)
 

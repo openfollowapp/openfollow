@@ -1145,21 +1145,19 @@ class AppRuntimeServices:
                 self._app._rttrpm_server.stop()
 
         def _video_pin() -> str:
-            # A blank pin follows the station interface, like the outputs.
-            cfg = self._app._config
-            return plane_source_iface(cfg.video_input_iface, cfg.psn_source_iface)
+            # What the running input is built from: the station's for a blank
+            # pin, nothing where no pin governs the connection.
+            from openfollow.video.inputs import get_input_class
+            from openfollow.video.inputs._pin import config_pin
+
+            input_cls = get_input_class(self._app._config.video_source_type)
+            if input_cls is None or not input_cls.pins_interface:
+                return ""
+            return config_pin(input_cls.runtime_config(self._app._config))
 
         def _video_pinned() -> bool:
             # Nothing pinned at all leaves the camera to the routing table: nothing to follow.
-            from openfollow.video.inputs import get_input_class
-
-            input_cls = get_input_class(self._app._config.video_source_type)
-            return bool(
-                _video_pin()
-                and input_cls is not None
-                and input_cls.pins_interface
-                and self._app._video_receiver is not None
-            )
+            return bool(_video_pin() and self._app._video_receiver is not None)
 
         def _current_video() -> str | None:
             receiver = self._app._video_receiver

@@ -162,9 +162,9 @@ def set_uri_query_key(uri: str, key: str, value: str) -> str:
 
     *value* is inserted as given, so the caller encodes it.
     """
-    head, query, hash_sep, fragment = _split_query(strip_uri_query_key(uri, key))
-    if not query and not hash_sep:
-        head, hash_sep, fragment = head.partition("#")
+    # The fragment ends the query, whatever it contains.
+    body, hash_sep, fragment = strip_uri_query_key(uri, key).partition("#")
+    head, _, query = body.partition("?")
     params = [p for p in query.split("&") if p]
     params.append(f"{key}={value}")
     return f"{head}?{'&'.join(params)}{hash_sep}{fragment}"

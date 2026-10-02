@@ -337,11 +337,16 @@ class FakeInput:
     def is_available(cls) -> tuple[bool, str]:
         return cls._available
 
-    # A test sets this to have every build refused, as the interface pin would.
+    # A test sets this to have every build refused, as the interface pin would,
+    # or to an exception the check raises.
     _refusal: Any = None
+    preflight_calls: int = 0
 
     @classmethod
     def preflight(cls, config: dict[str, Any]) -> Any:
+        cls.preflight_calls += 1
+        if isinstance(cls._refusal, Exception):
+            raise cls._refusal
         return cls._refusal
 
     @classmethod
@@ -5011,9 +5016,7 @@ class TestTheInterfacePinRefusesABuild:
 
     @pytest.fixture(autouse=True)
     def _addresses(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from openfollow.video.inputs import _pin
-
-        monkeypatch.setattr(_pin, "get_iface_ipv4", {"eth1": "198.51.100.10"}.get)
+        monkeypatch.setattr(receiver_mod, "get_iface_ipv4", {"eth1": "198.51.100.10"}.get)
 
     def _refused(self, monkeypatch: pytest.MonkeyPatch) -> receiver_mod.GstNativeSinkReceiver:
         monkeypatch.setattr(FakeInput, "_refusal", self._REFUSAL)
@@ -5147,3 +5150,50 @@ class TestTheInterfacePinRefusesABuild:
         assert r.status_marker.failure is VideoFailure.INTERFACE_DOWN
         assert r.status_marker.error_message == "eth1 has no address"
         assert r.pinned_to is None
+
+    def test_releasing_for_a_down_pin_never_shows_the_verdict_cleared(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        FakeInput.create_pipeline_result = FakePipeline()
+        r.play()
+        seen: list[VideoFailure] = []
+        r.status_marker.add_callback(lambda _status, _name, _attempt, _error, failure: seen.append(failure))
+
+        r.release_for_pin("eth1 has no address")
+
+        assert seen == [VideoFailure.INTERFACE_DOWN]
+
+    def test_a_refusal_names_the_source_it_refused(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        """The verdict reads "<source> is not reached through ...", so a source
+        never dialled must not borrow the previous one's name."""
+        r = self._refused(monkeypatch)
+        r.status_marker.set_connecting("cam-0")
+        r._input_config["fake_source"] = "cam-2"
+
+        r.play()
+
+        assert r.status_marker.source_name == "cam-2"
+
+    def test_a_start_checks_the_pin_once(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        """Startup builds before it plays; the play must not check again."""
+        r = self._refused(monkeypatch)
+        monkeypatch.setattr(FakeInput, "preflight_calls", 0)
+
+        r.create_pipeline()
+        r.start()
+
+        assert FakeInput.preflight_calls == 1
+        assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
+
+    def test_a_check_that_raises_leaves_the_build_to_report(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        """A URL the check cannot read must not escape startup; the element says what is wrong with it."""
+        monkeypatch.setattr(FakeInput, "_refusal", ValueError("Invalid IPv6 URL"))
+        FakeInput.create_pipeline_result = FakePipeline()
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+
+        r.create_pipeline()
+
+        assert FakeInput.create_pipeline_call_count == 1

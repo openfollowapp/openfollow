@@ -17,7 +17,7 @@ from typing import Any
 import psutil
 
 from openfollow.net_egress import is_loopback_host, resolve_egress
-from openfollow.net_utils import get_iface_ipv4, route_source
+from openfollow.net_utils import route_source
 from openfollow.video.failure import VideoFailure
 
 # Linux pins the element's own socket to the device (``bindtodevice``); elsewhere
@@ -28,6 +28,9 @@ FORCES_DEVICE = sys.platform.startswith("linux")
 # is checked on a later attempt, from the cache the lookup fills meanwhile.
 _RESOLVE_WAIT_S = 0.3
 _RESOLVE_TTL_S = 30.0
+# A name that failed is not looked up again for this long, so a camera that is
+# off does not cost every reconnect attempt a wait on the main loop.
+_FAILURE_TTL_S = 10.0
 
 # The main routing table. A socket bound to a device with no route there may
 # still connect (the kernel assumes the destination is on-link), so a probe
@@ -60,7 +63,11 @@ class _Resolver:
         self._pending: dict[str, threading.Thread] = {}
 
     def lookup(self, host: str) -> _Lookup:
-        """Every address *host* resolves to, both families, or that it is still resolving."""
+        """Every address *host* resolves to, both families, or that it is still resolving.
+
+        Only the call that starts a lookup waits for it; one already running
+        answers "pending" at once, so a hanging resolver costs one wait.
+        """
         literal = _literal(host)
         if literal:
             return _Lookup((literal,))
@@ -68,15 +75,20 @@ class _Resolver:
             cached = self._fresh(host)
             if cached is not None:
                 return _Lookup(cached)
-            worker = self._pending.get(host)
-            if worker is None:
-                worker = threading.Thread(target=self._resolve, args=(host,), name="video-pin-dns", daemon=True)
-                self._pending[host] = worker
-                worker.start()
+            if host in self._pending:
+                return _Lookup((), pending=True)
+            worker = threading.Thread(target=self._resolve, args=(host,), name="video-pin-dns", daemon=True)
+            self._pending[host] = worker
+        try:
+            worker.start()
+        except RuntimeError:
+            with self._lock:
+                self._pending.pop(host, None)
+            return _Lookup(())
         worker.join(_RESOLVE_WAIT_S)
-        if worker.is_alive():
-            return _Lookup((), pending=True)
         with self._lock:
+            if host in self._pending:
+                return _Lookup((), pending=True)
             return _Lookup(self._fresh(host) or ())
 
     def cached(self, host: str) -> tuple[str, ...]:
@@ -89,8 +101,11 @@ class _Resolver:
 
     def _fresh(self, host: str) -> tuple[str, ...] | None:
         cached = self._cache.get(host)
-        if cached is not None and self._clock() - cached[0] < _RESOLVE_TTL_S:
-            return cached[1]
+        if cached is None:
+            return None
+        when, addresses = cached
+        if self._clock() - when < (_RESOLVE_TTL_S if addresses else _FAILURE_TTL_S):
+            return addresses
         return None
 
     def _resolve(self, host: str) -> None:
@@ -104,8 +119,7 @@ class _Resolver:
         finally:
             with self._lock:
                 self._pending.pop(host, None)
-                if addresses:
-                    self._cache[host] = (self._clock(), addresses)
+                self._cache[host] = (self._clock(), addresses)
 
 
 _resolver = _Resolver()
@@ -133,6 +147,14 @@ def _is_local(address: str, owners: Mapping[str, str]) -> bool:
     return is_loopback_host(address) or address.split("%")[0] in owners
 
 
+def is_station_address(host: str) -> bool:
+    """Whether *host* is loopback or a literal address of this station; never looks a name up."""
+    if is_loopback_host(host):
+        return True
+    literal = _literal(host)
+    return bool(literal) and _is_local(literal, _own_addresses())
+
+
 def is_local_destination(host: str) -> bool:
     """Whether *host* is this station, as far as is known without a lookup.
 
@@ -146,6 +168,21 @@ def is_local_destination(host: str) -> bool:
     owners = _own_addresses()
     addresses = _resolver.cached(host)
     return bool(addresses) and all(_is_local(address, owners) for address in addresses)
+
+
+def binds_device(host: str) -> bool:
+    """Whether a pinned SRT connection to *host* is bound to the device.
+
+    libsrt refuses a device on anything but an IPv4 socket, so a name with an
+    IPv6 address is left to the routing table, which the pin check verified.
+    A name not yet resolved is bound, so nothing can leave elsewhere.
+    """
+    if not host or is_loopback_host(host):
+        return False
+    addresses = _resolver.cached(host)
+    owners = _own_addresses()
+    remote = [a for a in addresses if not _is_local(a, owners)]
+    return not addresses or (bool(remote) and all(":" not in a for a in remote))
 
 
 def _route_key(field: str) -> int:
@@ -180,11 +217,11 @@ def check_video_pin(
     """None when *host* may be dialled under *pin*; otherwise why not.
 
     Every address the name resolves to is checked, since the element may dial
-    any of them. With *forced_device* the element's IPv4 socket is bound to the
-    device, so a route through it must exist; otherwise the routing table's own
-    choice is what the element takes.
+    any of them. With *forced_device* the element's socket is bound to the
+    device, so a route through it must exist; libsrt binds only IPv4, so a name
+    with an IPv6 address takes the routing table's own choice for every address.
     """
-    if not pin or (host and is_loopback_host(host)):
+    if not pin or (host and is_local_destination(host)):
         return None
     egress = resolve_egress(pin)
     if egress is None or egress.down:
@@ -192,15 +229,14 @@ def check_video_pin(
     if not host:
         return None
     found = _resolver.lookup(host)
-    if found.pending:
-        return PinRefusal(VideoFailure.UNKNOWN, f"{host} did not resolve in time to check it against {pin}")
-    if not found.addresses:
-        return PinRefusal(VideoFailure.UNKNOWN, f"{host} does not resolve, so it could not be checked against {pin}")
+    unresolved = _unresolved(found, host, pin)
+    if unresolved is not None:
+        return unresolved
     owners = _own_addresses()
-    for address in found.addresses:
-        if _is_local(address, owners):
-            continue
-        if forced_device and ":" not in address:
+    remote = [address for address in found.addresses if not _is_local(address, owners)]
+    forced = forced_device and all(":" not in address for address in remote)
+    for address in remote:
+        if forced:
             if _routed_through(address, pin) is False:
                 return PinRefusal(VideoFailure.WRONG_INTERFACE, f"{host} is not reachable through {pin}")
             continue
@@ -214,16 +250,26 @@ def check_video_pin(
     return None
 
 
-def iface_owning(address: str) -> str:
-    """The interface holding *address* on this station, or ""."""
-    return _own_addresses().get(address, "")
+def check_listen_address(pin: str, address: str) -> PinRefusal | None:
+    """None when every address *address* resolves to belongs to *pin*; otherwise why not."""
+    found = _resolver.lookup(address)
+    unresolved = _unresolved(found, address, pin)
+    if unresolved is not None:
+        return unresolved
+    owners = _own_addresses()
+    if any(owners.get(a.split("%")[0]) != pin for a in found.addresses):
+        return PinRefusal(VideoFailure.WRONG_INTERFACE, f"{address} is not an address of {pin}")
+    return None
+
+
+def _unresolved(found: _Lookup, host: str, pin: str) -> PinRefusal | None:
+    if found.pending:
+        return PinRefusal(VideoFailure.UNKNOWN, f"{host} did not resolve in time to check it against {pin}")
+    if not found.addresses:
+        return PinRefusal(VideoFailure.UNKNOWN, f"{host} does not resolve, so it could not be checked against {pin}")
+    return None
 
 
 def config_pin(config: Mapping[str, Any]) -> str:
     """The ``video_input_iface`` an input's config carries, "" when unpinned."""
     return str(config.get("video_input_iface", "") or "")
-
-
-def pinned_address(pin: str) -> str:
-    """The pinned interface's IPv4, or "" when unpinned or down."""
-    return get_iface_ipv4(pin) if pin else ""

@@ -22,9 +22,9 @@ from openfollow.video.inputs._base import (
 from openfollow.video.inputs._pin import (
     FORCES_DEVICE,
     PinRefusal,
+    binds_device,
     check_video_pin,
     config_pin,
-    is_local_destination,
 )
 
 logger = logging.getLogger(__name__)
@@ -126,9 +126,8 @@ class SrtInput(VideoInputBase):
             srt_uri = strip_uri_query_key(srt_uri, "passphrase")
         pin = config_pin(config)
         endpoint = self.source_endpoint(config)
-        if pin and FORCES_DEVICE and not is_local_destination(endpoint.host if endpoint else ""):
-            # libsrt binds the socket to the device (SRTO_BINDTODEVICE); a
-            # camera on this station is not reachable through one.
+        if pin and FORCES_DEVICE and binds_device(endpoint.host if endpoint else ""):
+            # libsrt binds the socket to the device (SRTO_BINDTODEVICE).
             srt_uri = set_uri_query_key(srt_uri, "bindtodevice", quote(pin, safe=""))
 
         pipeline = Gst.Pipeline.new("srt-sink")

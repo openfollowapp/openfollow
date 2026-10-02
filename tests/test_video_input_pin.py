@@ -20,11 +20,12 @@ from openfollow.video.failure import VideoFailure
 from openfollow.video.inputs import _pin
 from openfollow.video.inputs._pin import (
     PinRefusal,
+    binds_device,
+    check_listen_address,
     check_video_pin,
     config_pin,
-    iface_owning,
     is_local_destination,
-    pinned_address,
+    is_station_address,
 )
 
 pytestmark = pytest.mark.unit
@@ -121,7 +122,6 @@ def net(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[SimpleNames
         for name in _V4
     }
     monkeypatch.setattr(net_egress, "get_iface_ipv4", lambda iface: _V4.get(iface, ""))
-    monkeypatch.setattr(_pin, "get_iface_ipv4", lambda iface: _V4.get(iface, ""))
     monkeypatch.setattr(_pin.psutil, "net_if_addrs", lambda: addrs)
     monkeypatch.setattr(_pin.socket, "socket", _socket)
     monkeypatch.setattr(_pin.socket, "getaddrinfo", _getaddrinfo)
@@ -222,11 +222,20 @@ def test_forced_device_without_a_readable_route_table_does_not_refuse(net: Simpl
 
 
 def test_forced_device_route_checks_an_ipv6_address(net: SimpleNamespace) -> None:
-    """The device binding covers IPv4 only, so IPv6 takes the routing table's choice."""
+    """libsrt refuses a device on an IPv6 socket, so IPv6 takes the routing table's choice."""
     net.answers["camera.example"] = ["2001:db8:2::20"]
     refusal = check_video_pin("eth1", "camera.example", 5000, forced_device=True)
     assert refusal == PinRefusal(VideoFailure.WRONG_INTERFACE, "camera.example is reached through eth0, not eth1")
     assert net.probes[0].family == socket.AF_INET6
+
+
+def test_forced_device_route_checks_every_address_of_a_name_with_an_ipv6_one(net: SimpleNamespace) -> None:
+    """The connection is not bound to the device then, so the IPv4 address is
+    judged by where the routing table sends it too, not by any route through the pin."""
+    net.answers["camera.example"] = ["203.0.113.20", "2001:db8:1::20"]
+    net.local = {socket.AF_INET: _V4["eth1"], socket.AF_INET6: _V6["eth1"]}
+    assert check_video_pin("eth1", "camera.example", 5000, forced_device=True) is None
+    assert [p.family for p in net.probes] == [socket.AF_INET, socket.AF_INET6]
 
 
 # --------------------------------------------------------------------------- #
@@ -320,10 +329,15 @@ def test_a_resolved_name_is_reused_until_it_expires(net: SimpleNamespace) -> Non
     assert net.probes[-1].connected == ("198.51.100.30", 554)
 
 
-def test_a_failed_lookup_is_not_remembered(net: SimpleNamespace) -> None:
+def test_a_failed_lookup_is_retried_once_its_failure_expires(net: SimpleNamespace) -> None:
+    """Every reconnect would otherwise wait on the main loop for a camera that is off."""
     assert check_video_pin("eth1", "late.example", 554) is not None
     net.answers["late.example"] = ["198.51.100.20"]
     net.local[socket.AF_INET] = _V4["eth1"]
+    assert check_video_pin("eth1", "late.example", 554, forced_device=False) is not None
+    assert net.lookups == ["late.example"]
+
+    net.clock.now += 11.0
     assert check_video_pin("eth1", "late.example", 554, forced_device=False) is None
     assert net.lookups == ["late.example", "late.example"]
 
@@ -342,14 +356,29 @@ def test_a_malformed_name_neither_crashes_the_lookup_nor_sticks(
     for _ in range(2):
         refusal = check_video_pin("eth1", "cam..example", 554)
         assert refusal is not None and refusal.failure is VideoFailure.UNKNOWN
+        net.clock.now += 11.0
     assert calls == ["cam..example", "cam..example"]
 
 
-def test_a_slow_lookup_does_not_hold_the_attempt_and_serves_the_next_one(
+class _JoinRecorder(threading.Thread):
+    joins: list[float | None] = []
+
+    def join(self, timeout: float | None = None) -> None:
+        type(self).joins.append(timeout)
+        super().join(timeout)
+
+
+def _join_lookups() -> None:
+    for thread in threading.enumerate():
+        if thread.name == "video-pin-dns":
+            threading.Thread.join(thread, 5)
+
+
+def test_a_slow_lookup_holds_one_attempt_and_serves_a_later_one(
     net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The check runs on the main loop: a slow resolver refuses this attempt,
-    saying it was not checked, and its answer serves the retry from one lookup."""
+    """The check runs on the main loop: only the attempt that starts a lookup
+    waits for it, and its answer serves the retry from that one lookup."""
     release = threading.Event()
     calls: list[str] = []
 
@@ -360,6 +389,8 @@ def test_a_slow_lookup_does_not_hold_the_attempt_and_serves_the_next_one(
 
     monkeypatch.setattr(_pin.socket, "getaddrinfo", _slow)
     monkeypatch.setattr(_pin, "_RESOLVE_WAIT_S", 0.01)
+    monkeypatch.setattr(_JoinRecorder, "joins", [])
+    monkeypatch.setattr(_pin.threading, "Thread", _JoinRecorder)
     net.local[socket.AF_INET] = _V4["eth1"]
 
     for _ in range(2):
@@ -367,11 +398,30 @@ def test_a_slow_lookup_does_not_hold_the_attempt_and_serves_the_next_one(
         assert refusal == PinRefusal(
             VideoFailure.UNKNOWN, "slow.example did not resolve in time to check it against eth1"
         )
+    assert _JoinRecorder.joins == [0.01]
 
     release.set()
-    monkeypatch.setattr(_pin, "_RESOLVE_WAIT_S", 5.0)
+    _join_lookups()
     assert check_video_pin("eth1", "slow.example", 554, forced_device=False) is None
     assert calls == ["slow.example"]
+
+
+def test_a_lookup_that_cannot_start_a_thread_is_tried_again(
+    net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _NoThread(threading.Thread):
+        def start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+    real = threading.Thread
+    monkeypatch.setattr(_pin.threading, "Thread", _NoThread)
+    refusal = check_video_pin("eth1", "camera.example", 554)
+    assert refusal is not None and refusal.failure is VideoFailure.UNKNOWN
+
+    monkeypatch.setattr(_pin.threading, "Thread", real)
+    net.answers["camera.example"] = ["198.51.100.20"]
+    net.local[socket.AF_INET] = _V4["eth1"]
+    assert check_video_pin("eth1", "camera.example", 554, forced_device=False) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -392,6 +442,13 @@ def test_a_name_with_one_remote_address_is_not_local(net: SimpleNamespace) -> No
     net.answers["relay.example"] = ["192.0.2.10", "203.0.113.20"]
     check_video_pin("eth1", "relay.example", 9000)
     assert is_local_destination("relay.example") is False
+
+
+def test_a_known_local_name_is_not_refused_when_the_pin_is_down(net: SimpleNamespace) -> None:
+    """Its traffic never touches the pinned interface, so that interface's outage is not its fault."""
+    net.answers["relay.example"] = ["192.0.2.10"]
+    assert check_video_pin("eth1", "relay.example", 9000) is None
+    assert check_video_pin("eth9", "relay.example", 9000) is None
 
 
 def test_a_name_is_local_only_once_it_is_known_to_resolve_here(net: SimpleNamespace) -> None:
@@ -417,13 +474,73 @@ def test_config_pin_reads_the_input_config(config: dict[str, Any], expected: str
     assert config_pin(config) == expected
 
 
-@pytest.mark.parametrize(("pin", "expected"), [("", ""), ("eth1", "198.51.100.10"), ("eth9", "")])
-def test_pinned_address(net: SimpleNamespace, pin: str, expected: str) -> None:
-    assert pinned_address(pin) == expected
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("", False),
+        ("localhost", True),
+        ("127.0.0.1", True),
+        ("::1", True),
+        ("198.51.100.10", True),
+        ("2001:db8::10", True),
+        ("203.0.113.9", False),
+        ("camera.example", False),
+    ],
+)
+def test_is_station_address(net: SimpleNamespace, host: str, expected: bool) -> None:
+    assert is_station_address(host) is expected
+    assert net.lookups == []
 
 
 @pytest.mark.parametrize(
-    ("address", "expected"), [("198.51.100.10", "eth1"), ("2001:db8::10", "eth0"), ("203.0.113.9", "")]
+    ("answers", "expected"),
+    [
+        ([], True),
+        (["203.0.113.20"], True),
+        (["192.0.2.10", "203.0.113.20"], True),
+        (["192.0.2.10"], False),
+        (["203.0.113.20", "2001:db8:2::20"], False),
+    ],
+    ids=["unknown", "remote-ipv4", "remote-and-local", "local", "with-ipv6"],
 )
-def test_iface_owning(net: SimpleNamespace, address: str, expected: str) -> None:
-    assert iface_owning(address) == expected
+def test_binds_device_only_for_a_remote_ipv4_destination(
+    net: SimpleNamespace, answers: list[str], expected: bool
+) -> None:
+    """libsrt refuses a device on an IPv6 socket, and a local destination is not
+    reached through one; a name never resolved is bound, so nothing leaves elsewhere."""
+    if answers:
+        net.answers["camera.example"] = answers
+        check_video_pin("eth0", "camera.example", 5000)
+    assert binds_device("camera.example") is expected
+
+
+@pytest.mark.parametrize("host", ["", "localhost", "127.0.0.1"])
+def test_binds_device_for_nothing_configured_or_this_box(net: SimpleNamespace, host: str) -> None:
+    assert binds_device(host) is False
+
+
+@pytest.mark.parametrize(
+    ("address", "expected"),
+    [
+        ("198.51.100.10", None),
+        ("2001:db8:1::10", None),
+        ("192.0.2.10", PinRefusal(VideoFailure.WRONG_INTERFACE, "192.0.2.10 is not an address of eth1")),
+        ("203.0.113.9", PinRefusal(VideoFailure.WRONG_INTERFACE, "203.0.113.9 is not an address of eth1")),
+    ],
+)
+def test_check_listen_address(net: SimpleNamespace, address: str, expected: PinRefusal | None) -> None:
+    assert check_listen_address("eth1", address) == expected
+
+
+def test_a_listen_address_given_as_a_name_is_checked_where_it_resolves(net: SimpleNamespace) -> None:
+    net.answers["rx.example"] = ["198.51.100.10"]
+    assert check_listen_address("eth1", "rx.example") is None
+    assert check_listen_address("eth0", "rx.example") == PinRefusal(
+        VideoFailure.WRONG_INTERFACE, "rx.example is not an address of eth0"
+    )
+
+
+def test_a_listen_address_that_does_not_resolve_says_so(net: SimpleNamespace) -> None:
+    assert check_listen_address("eth1", "nowhere.example") == PinRefusal(
+        VideoFailure.UNKNOWN, "nowhere.example does not resolve, so it could not be checked against eth1"
+    )

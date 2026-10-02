@@ -1290,12 +1290,160 @@ class TestInterfaceAssignmentRows:
         row = self._video_row(monkeypatch, video_source_type="srt", srt_host="srt://203.0.113.20:5000")
         assert row["address"] == "203.0.113.99"
 
-    def test_the_pick_does_not_look_a_name_up(self, monkeypatch) -> None:
-        """A lookup would hold the page; the element resolves the name itself."""
+    @staticmethod
+    def _names(monkeypatch, answers: dict, gate=None, barrier=None) -> list[str]:
+        """``getaddrinfo`` answering from *answers* (an address, or a list of them,
+        IPv6 first); a name missing there fails. The shared resolvers start empty."""
+        import socket
+
+        from openfollow import net_utils
+
+        net_utils.HOST_RESOLVER.clear()
+        net_utils.IPV4_RESOLVER.clear()
+        looked_up: list[str] = []
+
+        def _getaddrinfo(host, _port, family=0, *_a, **_k):
+            looked_up.append(host)
+            if gate is not None:
+                gate.wait(5)
+            if barrier is not None:
+                barrier.wait(2)
+            if host not in answers:
+                raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+            found = answers[host] if isinstance(answers[host], list) else [answers[host]]
+            return [
+                (socket.AF_INET6 if ":" in a else socket.AF_INET, socket.SOCK_DGRAM, 17, "", (a, 0))
+                for a in found
+                if family != socket.AF_INET or ":" not in a
+            ]
+
+        monkeypatch.setattr(net_utils.socket, "getaddrinfo", _getaddrinfo)
+        return looked_up
+
+    @pytest.fixture(autouse=True)
+    def _fresh_resolvers(self):
+        """The panel shares the station's resolvers; nothing a test resolves outlives it."""
+        from openfollow import net_utils
+
+        yield
+        net_utils.HOST_RESOLVER.clear()
+        net_utils.IPV4_RESOLVER.clear()
+
+    def test_the_pick_resolves_a_name_once_for_many_renders(self, monkeypatch) -> None:
         asked = self._pick(monkeypatch, "198.51.100.10")
-        row = self._video_row(monkeypatch, video_source_type="srt", srt_host="srt://camera.example:5000")
-        assert row["address"] == "Picked when connecting"
-        assert asked == []
+        looked_up = self._names(monkeypatch, {"camera.example": "203.0.113.20"})
+        for _ in range(2):
+            row = self._video_row(monkeypatch, video_source_type="srt", srt_host="srt://camera.example:5000")
+            assert row["address"] == "eth1 – 198.51.100.10"
+        assert asked == ["203.0.113.20", "203.0.113.20"]
+        assert looked_up == ["camera.example"]
+
+    def test_the_pick_says_a_name_does_not_resolve_and_remembers_it(self, monkeypatch) -> None:
+        looked_up = self._names(monkeypatch, {})
+        for _ in range(2):
+            row = self._video_row(monkeypatch, video_source_type="srt", srt_host="srt://nowhere.example:5000")
+            assert row["address"] == "Name not resolved"
+        assert looked_up == ["nowhere.example"]
+
+    def test_the_pick_does_not_hold_the_page_for_a_slow_name(self, monkeypatch) -> None:
+        import threading
+
+        gate = threading.Event()
+        monkeypatch.setattr(routes_module, "_ROUTE_PICK_WAIT_S", 0.01)
+        self._names(monkeypatch, {"slow.example": "203.0.113.20"}, gate=gate)
+        try:
+            row = self._video_row(monkeypatch, video_source_type="srt", srt_host="srt://slow.example:5000")
+            assert row["address"] == "Resolving name"
+        finally:
+            gate.set()
+            for worker in [t for t in threading.enumerate() if t.name == "host-dns"]:
+                worker.join(5)
+
+    def test_the_pick_waits_once_for_every_name_on_the_page(self, monkeypatch) -> None:
+        """Every lookup starts before any row waits, so names resolve side by side
+        within one wait rather than one wait each: here none answers until all three run."""
+        import threading
+
+        from openfollow.configuration import OscDestinationConfig
+
+        monkeypatch.setattr(routes_module, "_ROUTE_PICK_WAIT_S", 5.0)
+        self._pick(monkeypatch, "198.51.100.10")
+        names = {f"osc{i}.example": f"203.0.113.{i}" for i in range(3)}
+        self._names(monkeypatch, names, barrier=threading.Barrier(3))
+        self._ifaces(monkeypatch, {"eth1": "198.51.100.10"})
+        cfg = AppConfig()
+        cfg.rttrpm_output.host = ""
+        cfg.osc_destinations.destinations = [
+            OscDestinationConfig(id=f"d{i}", name=f"d{i}", host=host, port=8000) for i, host in enumerate(names)
+        ]
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        assert [rows[f"OSC to d{i}"]["address"] for i in range(3)] == ["eth1 – 198.51.100.10"] * 3
+
+    def test_a_sender_row_reads_the_address_its_ipv4_output_uses(self, monkeypatch) -> None:
+        """A dual-stack name sorted IPv6 first: OSC and RTTrPM send to its A record."""
+        asked = self._pick(monkeypatch, "198.51.100.10")
+        self._names(monkeypatch, {"dual.example": ["2001:db8::20", "203.0.113.20"]})
+        self._ifaces(monkeypatch, {"eth1": "198.51.100.10"})
+        cfg = AppConfig()
+        cfg.rttrpm_output.host = "dual.example"
+        build_interface_assignment_rows(cfg)
+        assert asked == ["203.0.113.20"]
+
+    def test_the_panel_shows_the_answer_the_output_already_has(self, monkeypatch) -> None:
+        """One resolver per family for the station: the camera's name the pin check
+        resolved, and the OSC destination the sender resolved, are not looked up again."""
+        from openfollow.osc import service as osc_service
+        from openfollow.video.inputs._pin import check_video_pin
+
+        self._pick(monkeypatch, "198.51.100.10")
+        looked_up = self._names(monkeypatch, {"camera.example": "203.0.113.20", "osc.example": "203.0.113.21"})
+        self._ifaces(monkeypatch, {"eth1": "198.51.100.10"})
+        monkeypatch.setattr("openfollow.video.inputs._pin.route_source", lambda _a, _p=0: "198.51.100.10")
+        check_video_pin("eth1", "camera.example", 5000, forced_device=False)
+        osc_service._resolve_host("osc.example")
+        cfg = AppConfig(video_source_type="srt", srt_host="srt://camera.example:5000")
+        cfg.rttrpm_output.host = "osc.example"
+        build_interface_assignment_rows(cfg)
+        assert sorted(looked_up) == ["camera.example", "osc.example"]
+
+    def test_a_tcp_destination_is_looked_up_over_both_families(self, monkeypatch) -> None:
+        """A TCP connection tries every family, so an AAAA-only name is reachable, not "Name not resolved"."""
+        from openfollow.configuration import OscDestinationConfig
+
+        asked = self._pick(monkeypatch, "2001:db8::10")
+        self._names(monkeypatch, {"v6.example": ["2001:db8::20"]})
+        cfg = AppConfig()
+        cfg.osc_destinations.destinations = [
+            OscDestinationConfig(id="tcp", name="tcp", host="v6.example", port=8000, protocol="tcp"),
+            OscDestinationConfig(id="udp", name="udp", host="v6.example", port=8000),
+        ]
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        assert rows["OSC to tcp"]["address"] == "2001:db8::10"
+        assert rows["OSC to udp"]["address"] == "Name not resolved"
+        assert asked == ["2001:db8::20"]
+
+    def test_a_name_that_could_not_be_looked_up_says_so(self, monkeypatch) -> None:
+        """The station could not run the lookup; DNS was never asked."""
+        from openfollow import net_utils
+        from openfollow.web import routes as routes_module
+
+        class _NoThread:
+            def start(self) -> None:
+                raise RuntimeError("can't start new thread")
+
+        resolver = net_utils.BoundedResolver(thread_factory=lambda **_k: _NoThread())
+        monkeypatch.setattr(routes_module, "IPV4_RESOLVER", resolver)
+        cfg = AppConfig()
+        cfg.rttrpm_output.host = "rttrpm.example"
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        assert rows["RTTrPM output"]["address"] == "Name not looked up"
+
+    def test_an_ipv6_literal_for_an_ipv4_output_says_so(self, monkeypatch) -> None:
+        self._names(monkeypatch, {})
+        cfg = AppConfig()
+        cfg.rttrpm_output.host = "2001:db8::20"
+        rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
+        assert rows["RTTrPM output"]["address"] == "Not an IPv4 address"
 
     def test_a_pinned_video_input_with_no_address_says_so(self, monkeypatch) -> None:
         row = self._video_row(monkeypatch, video_source_type="rtsp", video_input_iface="eth9")

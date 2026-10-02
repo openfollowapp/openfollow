@@ -19,7 +19,7 @@ from typing import Any
 
 from openfollow.configuration import VALID_OSC_FRAMINGS as _VALID_OSC_FRAMINGS_TUPLE
 from openfollow.net_egress import Egress, pin_socket_egress
-from openfollow.net_utils import join_multicast_group_on_iface
+from openfollow.net_utils import IPV4_RESOLVER, join_multicast_group_on_iface
 from openfollow.osc.transport import TcpOscSender
 
 logger = logging.getLogger(__name__)
@@ -91,53 +91,24 @@ def _udp_dest_class(host: str) -> str:
 # unbounded ``getaddrinfo`` on a slow/unreachable resolver would stall
 # every other transmitter row dispatched on that thread until it returns.
 _RESOLVE_TIMEOUT_S = 1.0
-# Remember a failed/timed-out lookup so a misconfigured host doesn't respawn a
-# resolver thread on every 60 Hz send. Keyed by host (bounded by config rows).
-_RESOLVE_NEG_TTL_S = 30.0
-_resolve_failures: dict[str, float] = {}
-_resolve_lock = threading.Lock()
+# IPv4 only: the client, its multicast options and an interface pin are all IPv4.
+# A lookup older than the wait answers the next send at once, so a host that
+# never resolves never stalls every 60 Hz send.
+_resolver = IPV4_RESOLVER
 
 
 def _resolve_host(host: str) -> str:
-    """Resolve ``host`` to an IPv4 literal, bounding the DNS lookup.
-
-    Literals pass through. A hostname resolves on a daemon thread capped at
-    ``_RESOLVE_TIMEOUT_S``; a timeout/failure raises ``OSError`` and is cached
-    for ``_RESOLVE_NEG_TTL_S`` so repeats don't respawn threads.
-    """
-    try:
-        socket.inet_aton(host)
-        return host  # already an IPv4 literal – no lookup needed
-    except OSError:
-        pass
-    now = time.monotonic()
-    with _resolve_lock:
-        until = _resolve_failures.get(host)
-        if until is not None and now < until:
-            raise OSError(f"DNS lookup for {host!r} recently failed")
-    result: list[str] = []
-    error: list[BaseException] = []
-
-    def _lookup() -> None:
-        try:
-            result.append(socket.gethostbyname(host))
-        except BaseException as exc:  # noqa: BLE001 – relayed to the caller below
-            error.append(exc)
-
-    worker = threading.Thread(target=_lookup, name="OscDns", daemon=True)
-    worker.start()
-    worker.join(_RESOLVE_TIMEOUT_S)
-    if worker.is_alive():
-        with _resolve_lock:
-            _resolve_failures[host] = now + _RESOLVE_NEG_TTL_S
-        raise OSError(f"DNS lookup for {host!r} timed out after {_RESOLVE_TIMEOUT_S:g}s")
-    if error:
-        with _resolve_lock:
-            _resolve_failures[host] = now + _RESOLVE_NEG_TTL_S
-        raise OSError(f"DNS lookup for {host!r} failed: {error[0]}")
-    with _resolve_lock:
-        _resolve_failures.pop(host, None)
-    return result[0]
+    """Resolve ``host`` to an IPv4 literal within ``_RESOLVE_TIMEOUT_S``, or raise ``OSError``."""
+    found = _resolver.lookup(host, _RESOLVE_TIMEOUT_S)
+    if found.addresses:
+        return found.addresses[0]
+    if found.outcome == "literal":
+        raise OSError(f"OSC output is IPv4 only, and {host!r} is not an IPv4 address")
+    if found.outcome == "pending":
+        raise OSError(f"DNS lookup for {host!r} has not answered within {_RESOLVE_TIMEOUT_S:g}s")
+    if found.outcome == "skipped":
+        raise OSError(f"DNS lookup for {host!r} could not start: {found.error}")
+    raise OSError(f"DNS lookup for {host!r} failed: {found.error}")
 
 
 def _make_client(

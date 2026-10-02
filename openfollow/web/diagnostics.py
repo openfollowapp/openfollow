@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import openfollow
 from openfollow.logging_setup import RingBufferLogHandler
-from openfollow.net_utils import read_ipv4_routes
+from openfollow.net_utils import HOST_RESOLVER, read_ipv4_routes
 from openfollow.network.validate import is_link_local
 from openfollow.privilege import settings_backup
 from openfollow.uri_redaction import redact_uri, redact_uris_in_text
@@ -642,52 +642,24 @@ def collect_uplink(p: DiagnosticsProviders) -> list[str]:
 # a daemon thread we stop waiting for. Together they cap the section at ~2.5 s.
 _DNS_TIMEOUT_S = 1.0
 _CONNECT_TIMEOUT_S = 1.5
-# Resolver workers that may still be running after we stopped waiting. Two is
-# enough that a bundle download never queues behind itself, and small enough
-# that a resolver-less LAN cannot accumulate threads across downloads.
-_MAX_INFLIGHT_DNS = 2
-_dns_slots = threading.BoundedSemaphore(_MAX_INFLIGHT_DNS)
 
 
 def resolve_host_bounded(host: str, timeout_s: float = _DNS_TIMEOUT_S) -> tuple[str | None, str]:
-    """``(address, note)`` for a host, without ever blocking indefinitely."""
-    try:
-        ipaddress.ip_address(host)
-    except ValueError:
-        pass
-    else:
-        return host, ""
+    """``(address, note)`` for a host, without ever blocking indefinitely.
 
-    # Giving up on a lookup does not stop it: the thread runs on until the
-    # resolver answers or the process exits. On the very LAN this bounding
-    # exists for - one with no reachable resolver - repeated bundle downloads
-    # would otherwise pile up a thread apiece. A slot is held by the worker,
-    # not by us, and released when it finally returns.
-    if not _dns_slots.acquire(blocking=False):
-        return None, "DNS lookup skipped (an earlier lookup has not returned)"
-
-    resolved: list[str] = []
-
-    def _lookup() -> None:
-        try:
-            # Both families: a camera on an AAAA-only name resolves, and the
-            # analysis below answers for either.
-            infos = socket.getaddrinfo(host, None)
-            if infos:
-                resolved.append(str(infos[0][4][0]))
-        except OSError:
-            pass
-        finally:
-            _dns_slots.release()
-
-    worker = threading.Thread(target=_lookup, daemon=True, name="diag-dns")
-    worker.start()
-    worker.join(timeout_s)
-    if worker.is_alive():
-        return None, f"DNS lookup timed out after {timeout_s:.1f} s"
-    if not resolved:
-        return None, "DNS lookup failed (name does not resolve here)"
-    return resolved[0], f"resolves to {resolved[0]}"
+    Through the resolver the video pin and the bind map use, so one bundle
+    reads one answer for the camera, and a late one serves the next bundle.
+    """
+    found = HOST_RESOLVER.lookup(host, timeout_s)
+    if found.outcome == "literal":
+        return found.addresses[0], ""
+    if found.addresses:
+        return found.addresses[0], f"resolves to {found.addresses[0]}"
+    if found.outcome == "pending":
+        return None, f"DNS lookup has not answered within {timeout_s:.1f} s"
+    if found.outcome == "skipped":
+        return None, f"DNS lookup could not start ({found.error})"
+    return None, "DNS lookup failed (name does not resolve here)"
 
 
 def _on_link_interfaces(target: ipaddress.IPv4Address | ipaddress.IPv6Address) -> list[str] | None:

@@ -7,16 +7,14 @@ from __future__ import annotations
 import ipaddress
 import socket
 import sys
-import threading
-import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 import psutil
 
 from openfollow.net_egress import is_loopback_host, resolve_egress
-from openfollow.net_utils import read_ipv4_routes, route_source
+from openfollow.net_utils import HOST_RESOLVER, HostLookup, read_ipv4_routes, route_source
 from openfollow.video.failure import VideoFailure
 
 # Linux pins the element's own socket to the device (``bindtodevice``); elsewhere
@@ -24,12 +22,8 @@ from openfollow.video.failure import VideoFailure
 FORCES_DEVICE = sys.platform.startswith("linux")
 
 # A connect attempt runs on the main loop: a name that does not resolve in time
-# is checked on a later attempt, from the cache the lookup fills meanwhile.
+# is checked on a later attempt, from the answer the lookup leaves behind.
 _RESOLVE_WAIT_S = 0.3
-_RESOLVE_TTL_S = 30.0
-# A name that failed is not looked up again for this long, so a camera that is
-# off does not cost every reconnect attempt a wait on the main loop.
-_FAILURE_TTL_S = 10.0
 
 
 @dataclass(frozen=True)
@@ -40,89 +34,7 @@ class PinRefusal:
     detail: str
 
 
-@dataclass(frozen=True)
-class _Lookup:
-    addresses: tuple[str, ...]
-    pending: bool = False
-
-
-class _Resolver:
-    """Lookups bounded for the main loop, cached for the attempts after."""
-
-    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
-        self._clock = clock
-        self._lock = threading.Lock()
-        self._cache: dict[str, tuple[float, tuple[str, ...]]] = {}
-        self._pending: dict[str, threading.Thread] = {}
-
-    def lookup(self, host: str) -> _Lookup:
-        """Every address *host* resolves to, both families, or that it is still resolving.
-
-        Only the call that starts a lookup waits for it; one already running
-        answers "pending" at once, so a hanging resolver costs one wait.
-        """
-        literal = _literal(host)
-        if literal:
-            return _Lookup((literal,))
-        with self._lock:
-            cached = self._fresh(host)
-            if cached is not None:
-                return _Lookup(cached)
-            if host in self._pending:
-                return _Lookup((), pending=True)
-            worker = threading.Thread(target=self._resolve, args=(host,), name="video-pin-dns", daemon=True)
-            self._pending[host] = worker
-        try:
-            worker.start()
-        except RuntimeError:
-            with self._lock:
-                self._pending.pop(host, None)
-            return _Lookup(())
-        worker.join(_RESOLVE_WAIT_S)
-        with self._lock:
-            if host in self._pending:
-                return _Lookup((), pending=True)
-            return _Lookup(self._fresh(host) or ())
-
-    def cached(self, host: str) -> tuple[str, ...]:
-        """What *host* is known to resolve to, without looking it up."""
-        literal = _literal(host)
-        if literal:
-            return (literal,)
-        with self._lock:
-            return self._fresh(host) or ()
-
-    def _fresh(self, host: str) -> tuple[str, ...] | None:
-        cached = self._cache.get(host)
-        if cached is None:
-            return None
-        when, addresses = cached
-        if self._clock() - when < (_RESOLVE_TTL_S if addresses else _FAILURE_TTL_S):
-            return addresses
-        return None
-
-    def _resolve(self, host: str) -> None:
-        addresses: tuple[str, ...] = ()
-        try:
-            infos = socket.getaddrinfo(host, None, type=socket.SOCK_DGRAM)
-            addresses = tuple(dict.fromkeys(str(info[4][0]) for info in infos))
-        except (OSError, ValueError):
-            # ValueError: a label that is empty or too long fails IDNA encoding.
-            pass
-        finally:
-            with self._lock:
-                self._pending.pop(host, None)
-                self._cache[host] = (self._clock(), addresses)
-
-
-_resolver = _Resolver()
-
-
-def _literal(host: str) -> str:
-    try:
-        return str(ipaddress.ip_address(host))
-    except ValueError:
-        return ""
+_resolver = HOST_RESOLVER
 
 
 def _own_addresses() -> dict[str, str]:
@@ -198,7 +110,7 @@ def check_video_pin(
     if not pin or (host and is_loopback_host(host)):
         return None
     owners = _own_addresses()
-    found = _resolver.lookup(host) if host else _Lookup(())
+    found = _resolver.lookup(host, _RESOLVE_WAIT_S) if host else HostLookup("failed")
     # Looked up before the interface is judged, so a name that resolves to this
     # station is never refused for an outage, whatever the cache held.
     if found.addresses and all(_is_local(address, owners) for address in found.addresses):
@@ -230,7 +142,7 @@ def check_video_pin(
 
 def check_listen_address(pin: str, address: str) -> PinRefusal | None:
     """None when every address *address* resolves to belongs to *pin*; otherwise why not."""
-    found = _resolver.lookup(address)
+    found = _resolver.lookup(address, _RESOLVE_WAIT_S)
     unresolved = _unresolved(found, address, pin)
     if unresolved is not None:
         return unresolved
@@ -240,9 +152,13 @@ def check_listen_address(pin: str, address: str) -> PinRefusal | None:
     return None
 
 
-def _unresolved(found: _Lookup, host: str, pin: str) -> PinRefusal | None:
-    if found.pending:
+def _unresolved(found: HostLookup, host: str, pin: str) -> PinRefusal | None:
+    if found.outcome == "pending":
         return PinRefusal(VideoFailure.UNKNOWN, f"{host} did not resolve in time to check it against {pin}")
+    if found.outcome == "skipped":
+        return PinRefusal(
+            VideoFailure.UNKNOWN, f"{host} could not be looked up ({found.error}) to check it against {pin}"
+        )
     if not found.addresses:
         return PinRefusal(VideoFailure.UNKNOWN, f"{host} does not resolve, so it could not be checked against {pin}")
     return None

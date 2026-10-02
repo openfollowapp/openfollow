@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from openfollow import net_egress, net_utils
+from openfollow.net_utils import BoundedResolver
 from openfollow.video.failure import VideoFailure
 from openfollow.video.inputs import _pin
 from openfollow.video.inputs._pin import (
@@ -28,6 +29,9 @@ from openfollow.video.inputs._pin import (
 )
 
 pytestmark = pytest.mark.unit
+
+# Captured before any fixture swaps in a resolver on a test clock.
+_PRODUCTION_RESOLVER = _pin._resolver
 
 _V4 = {"eth0": "192.0.2.10", "eth1": "198.51.100.10"}
 _V6 = {"eth0": "2001:db8::10", "eth1": "2001:db8:1::10"}
@@ -125,7 +129,12 @@ def net(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[SimpleNames
     monkeypatch.setattr(_pin.socket, "socket", _socket)
     monkeypatch.setattr(_pin.socket, "getaddrinfo", _getaddrinfo)
     monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", routes)
-    monkeypatch.setattr(_pin, "_resolver", _pin._Resolver(clock=state.clock))
+    monkeypatch.setattr(
+        _pin,
+        "_resolver",
+        # The lifetimes of the production resolver, on a clock the test turns.
+        BoundedResolver(ttl_s=30.0, failure_ttl_s=10.0, thread_name="test-pin-dns", clock=state.clock),
+    )
     # A lookup thread that dies prints a traceback for every unknown name.
     crashes: list[threading.ExceptHookArgs] = []
     monkeypatch.setattr(threading, "excepthook", crashes.append)
@@ -363,25 +372,17 @@ def test_a_malformed_name_neither_crashes_the_lookup_nor_sticks(
     assert calls == ["cam..example", "cam..example"]
 
 
-class _JoinRecorder(threading.Thread):
-    joins: list[float | None] = []
-
-    def join(self, timeout: float | None = None) -> None:
-        type(self).joins.append(timeout)
-        super().join(timeout)
-
-
 def _join_lookups() -> None:
     for thread in threading.enumerate():
-        if thread.name == "video-pin-dns":
+        if thread.name == "test-pin-dns":
             threading.Thread.join(thread, 5)
 
 
 def test_a_slow_lookup_holds_one_attempt_and_serves_a_later_one(
     net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The check runs on the main loop: only the attempt that starts a lookup
-    waits for it, and its answer serves the retry from that one lookup."""
+    """The check runs on the main loop: a retry after the wait has passed does
+    not wait again, and the one lookup's answer serves a later attempt."""
     release = threading.Event()
     calls: list[str] = []
 
@@ -391,37 +392,39 @@ def test_a_slow_lookup_holds_one_attempt_and_serves_a_later_one(
         return [(socket.AF_INET, socket.SOCK_DGRAM, 17, "", ("198.51.100.20", 0))]
 
     monkeypatch.setattr(_pin.socket, "getaddrinfo", _slow)
-    monkeypatch.setattr(_pin, "_RESOLVE_WAIT_S", 0.01)
-    monkeypatch.setattr(_JoinRecorder, "joins", [])
-    monkeypatch.setattr(_pin.threading, "Thread", _JoinRecorder)
+    monkeypatch.setattr(_pin, "_RESOLVE_WAIT_S", 0.2)
     net.local[socket.AF_INET] = _V4["eth1"]
+    pending = PinRefusal(VideoFailure.UNKNOWN, "slow.example did not resolve in time to check it against eth1")
 
-    for _ in range(2):
-        refusal = check_video_pin("eth1", "slow.example", 554, forced_device=False)
-        assert refusal == PinRefusal(
-            VideoFailure.UNKNOWN, "slow.example did not resolve in time to check it against eth1"
-        )
-    assert _JoinRecorder.joins == [0.01]
+    assert check_video_pin("eth1", "slow.example", 554, forced_device=False) == pending
+    net.clock.now += 2.0
+    # An answer while a second wait would still run tells a wait from none.
+    threading.Timer(0.05, release.set).start()
+    assert check_video_pin("eth1", "slow.example", 554, forced_device=False) == pending
 
-    release.set()
     _join_lookups()
     assert check_video_pin("eth1", "slow.example", 554, forced_device=False) is None
     assert calls == ["slow.example"]
 
 
-def test_a_lookup_that_cannot_start_a_thread_is_tried_again(
+def test_a_lookup_that_cannot_start_a_thread_says_so_and_is_tried_again(
     net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class _NoThread(threading.Thread):
+    starts: list[int] = []
+
+    class _NoThread:
         def start(self) -> None:
             raise RuntimeError("can't start new thread")
 
-    real = threading.Thread
-    monkeypatch.setattr(_pin.threading, "Thread", _NoThread)
-    refusal = check_video_pin("eth1", "camera.example", 554)
-    assert refusal is not None and refusal.failure is VideoFailure.UNKNOWN
+    def _factory(**kwargs: Any) -> Any:
+        starts.append(1)
+        return _NoThread() if len(starts) == 1 else threading.Thread(**kwargs)
 
-    monkeypatch.setattr(_pin.threading, "Thread", real)
+    monkeypatch.setattr(_pin, "_resolver", BoundedResolver(ttl_s=30.0, thread_factory=_factory))
+    assert check_video_pin("eth1", "camera.example", 554) == PinRefusal(
+        VideoFailure.UNKNOWN, "camera.example could not be looked up (can't start new thread) to check it against eth1"
+    )
+
     net.answers["camera.example"] = ["198.51.100.20"]
     net.local[socket.AF_INET] = _V4["eth1"]
     assert check_video_pin("eth1", "camera.example", 554, forced_device=False) is None
@@ -454,6 +457,20 @@ def test_a_local_name_is_not_refused_when_the_pin_is_down(net: SimpleNamespace) 
     assert check_video_pin("eth9", "relay.example", 9000) is None
     net.clock.now += 60.0
     assert check_video_pin("eth9", "relay.example", 9000) is None
+
+
+def test_the_pin_remembers_a_name_it_checked(net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The SRT build asks whether its camera is this station without a lookup,
+    right after the check resolved the name; the answer has to outlive the check."""
+    monkeypatch.setattr(_pin, "_resolver", _PRODUCTION_RESOLVER)
+    _PRODUCTION_RESOLVER.clear()
+    try:
+        net.answers["relay.example"] = ["192.0.2.10"]
+        check_video_pin("eth1", "relay.example", 9000)
+        assert is_local_destination("relay.example") is True
+    finally:
+        # Shared with every other test in the session.
+        _PRODUCTION_RESOLVER.clear()
 
 
 def test_a_name_is_local_only_once_it_is_known_to_resolve_here(net: SimpleNamespace) -> None:

@@ -73,7 +73,7 @@ from openfollow.input.mouse3d_status import status_key
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
 from openfollow.marker_catalog import derive_station_name, save_catalog
-from openfollow.net_utils import get_local_ipv4_addresses
+from openfollow.net_utils import HOST_RESOLVER, IPV4_RESOLVER, BoundedResolver, get_local_ipv4_addresses
 from openfollow.network.adapter import (
     LOOPBACK_NAMES,
     VLAN_UNSUPPORTED_MESSAGE,
@@ -1305,26 +1305,43 @@ def _plane_address(pin: str, station_iface: str) -> str:
     return resolved
 
 
-def _route_pick(host: str) -> str:
-    """The interface and address the Pi would use for *host* right now."""
-    import ipaddress
+# One render waits at most this long for every name in the Address column.
+_ROUTE_PICK_WAIT_S = 0.2
 
+
+def _route_pick(host: str, resolver: BoundedResolver, wait_s: float | None) -> str:
+    """The interface and address the Pi would use for *host* right now; with no
+    *wait_s*, only start its lookup."""
     from openfollow.net_utils import get_iface_for_ip, route_source
 
-    try:
-        address = str(ipaddress.ip_address(host))
-    except ValueError:
-        # Looking a name up would hold the page; the element resolves it itself.
-        return "Picked when connecting"
-    source = route_source(address)
+    if wait_s is None:
+        resolver.prefetch(host)
+        return ""
+    found = resolver.lookup(host, wait_s)
+    if not found.addresses:
+        return {
+            "pending": "Resolving name",
+            "literal": "Not an IPv4 address",
+            "skipped": "Name not looked up",
+        }.get(found.outcome, "Name not resolved")
+    source = route_source(found.addresses[0])
     if source is None:
         return "No route"
     iface = get_iface_for_ip(source)
     return f"{iface} – {source}" if iface else source
 
 
-def _egress_address(pin: str, host: str, station_iface: str, *, unrouted: str = "Per routing table") -> str:
-    """The address cell for a row that sends to *host*; *unrouted* when there is no host and no pin."""
+def _egress_address(
+    pin: str,
+    host: str,
+    station_iface: str,
+    *,
+    resolver: BoundedResolver,
+    wait_s: float | None,
+    unrouted: str = "Per routing table",
+) -> str:
+    """The address cell for a row that sends to *host*, looked up by the resolver its output uses;
+    *unrouted* when there is no host and no pin."""
     from openfollow.net_egress import is_loopback_host
     from openfollow.net_utils import plane_source_iface
 
@@ -1333,10 +1350,10 @@ def _egress_address(pin: str, host: str, station_iface: str, *, unrouted: str = 
     if plane_source_iface(pin, station_iface):
         return _plane_address(pin, station_iface)
     # Nothing pinned anywhere: show where the Pi sends it now, not that it chooses.
-    return _route_pick(host) if host else unrouted
+    return _route_pick(host, resolver, wait_s) if host else unrouted
 
 
-def _video_input_row(cfg: AppConfig) -> dict[str, Any]:
+def _video_input_row(cfg: AppConfig, wait_s: float | None) -> dict[str, Any]:
     """The active video input's row; read-only with a reason when it cannot be pinned."""
     from openfollow.video.failure import SourceKind
     from openfollow.video.inputs import get_input_class
@@ -1361,11 +1378,12 @@ def _video_input_row(cfg: AppConfig) -> dict[str, Any]:
     if not is_loopback_host(target) and is_local_destination(target):
         # Never checked against the pin nor stopped with it: nothing leaves the box.
         return {**row, "key": "video_input_iface", "address": "This station", "editable": True}
+    pin = config_pin(config)
     if input_cls.receives_on_every_interface(config):
         # A wildcard listener receives on every interface unless pinned itself.
-        address = _egress_address(config_pin(config), "", "", unrouted="All interfaces")
+        address = _egress_address(pin, "", "", resolver=HOST_RESOLVER, wait_s=wait_s, unrouted="All interfaces")
         return {**row, "key": "video_input_iface", "address": address, "editable": True, "blank": "all"}
-    address = _egress_address(config_pin(config), target, "")
+    address = _egress_address(pin, target, "", resolver=HOST_RESOLVER, wait_s=wait_s)
     return {**row, "key": "video_input_iface", "address": address, "editable": True}
 
 
@@ -1385,12 +1403,26 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
     owns, so giving them their own dropdown would imply an independence they
     don't have.
     """
+    # Built once to start every lookup, then for real: each lookup waits from
+    # when it started, so the render waits once for all of them.
+    _interface_assignment_rows(cfg, web_bind, None)
+    return _interface_assignment_rows(cfg, web_bind, _ROUTE_PICK_WAIT_S)
+
+
+def _interface_assignment_rows(
+    cfg: AppConfig, web_bind: tuple[str, str] | None, wait_s: float | None
+) -> list[dict[str, Any]]:
     resolved = web_bind if web_bind is not None else resolve_web_bind_for(cfg)
     station = cfg.psn_source_iface
     station_ip = _plane_address(station, "")
 
     def _addr(pin: str) -> str:
         return _plane_address(pin, station)
+
+    def _sender(pin: str, host: str, *, tcp: bool = False) -> str:
+        # Each looked up the way its socket is: UDP from IPv4 sockets, TCP over both families.
+        resolver = HOST_RESOLVER if tcp else IPV4_RESOLVER
+        return _egress_address(pin, host, station, resolver=resolver, wait_s=wait_s)
 
     return [
         {
@@ -1422,7 +1454,7 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
             "key": "rttrpm_output.source_iface",
             "label": "RTTrPM output",
             "value": cfg.rttrpm_output.source_iface,
-            "address": _egress_address(cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host, station),
+            "address": _sender(cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host),
             "editable": True,
             "blank": "station",
             "experimental": True,
@@ -1445,13 +1477,13 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
                 "key": _dest_pin_key(dest.id),
                 "label": f"OSC to {dest.name or f'{dest.host}:{dest.port}'}",
                 "value": dest.source_iface,
-                "address": _egress_address(dest.source_iface, dest.host, station),
+                "address": _sender(dest.source_iface, dest.host, tcp=dest.protocol == "tcp"),
                 "editable": True,
                 "blank": "station",
             }
             for dest in cfg.osc_destinations.destinations
         ),
-        _video_input_row(cfg),
+        _video_input_row(cfg, wait_s),
         {
             "key": "",
             "label": "Discovery / marker sync",

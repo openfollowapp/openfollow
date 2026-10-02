@@ -69,13 +69,58 @@ the same fault does not have the same address. Diagnostics bundles attached to
 reports stay in the support channel and are never quoted verbatim in the
 tracker.
 
-## Commit messages
+## Commit messages, PR and issue titles
 
-Use [Conventional Commits](https://www.conventionalcommits.org):
-`<type>(<optional scope>): <imperative summary>`. Types: `feat`, `fix`, `test`,
-`docs`, `refactor`, `perf`, `build`, `ci`, `chore`. Keep the summary under ~72
-chars and put the rationale in the body. Do not put issue/PR numbers in the
-summary (see Code comments).
+Commit summaries, PR titles and issue titles all use
+[Conventional Commits](https://www.conventionalcommits.org):
+`<type>(<scope>): <imperative summary>`.
+
+- **Types:** `feat`, `fix`, `test`, `docs`, `refactor`, `perf`, `build`, `ci`,
+  `chore`.
+- **Scope is required: exactly one from the list below**, the area a reader
+  would look in first, even when the change touches others. No comma lists. A
+  new scope is added to this list in the same change that first uses it.
+- **Summary:** starts with a lower-case verb, no trailing period, whole title
+  under ~72 chars. Rationale goes in the body. No issue/PR numbers (see Code
+  comments).
+- **An issue title is the commit summary its fix will land as**, so the PR and
+  the squash commit reuse it verbatim. Name what the change does, not the
+  symptom: `fix(hud): draw caution status rows in the caution colors`, not
+  "Status badge draws a caution row as an error". The symptom goes in the body.
+  An umbrella issue names the outcome it delivers.
+- **Labels follow the type:** `fix` ⇒ `bug`, `feat` ⇒ `enhancement`, any other
+  type carries neither. Platform and area labels (`Linux`, `Mac`, `Network`)
+  are independent of the title.
+
+| Scope | Covers |
+|---|---|
+| `web` | Web UI pages, routes, help drawer (not the wizard) |
+| `wizard` | Setup wizard (`/wizard`) |
+| `hud` | Operator Screen: window, overlay, on-screen menus |
+| `video` | Video receiver and input plugins |
+| `gallery` | Media Gallery source |
+| `detection` | Person detection, tracking, masks, models |
+| `input` | Keyboard, mouse, MIDI, controller slots, shared input plumbing |
+| `gamepad` | Gamepads |
+| `mouse3d` | 3D mice |
+| `psn` / `otp` / `rttrpm` | That protocol's sender / receiver |
+| `osc` | OSC input and output |
+| `zones` | Trigger zones |
+| `markers` | Marker catalog, marker control and visibility |
+| `scene` | Camera model and calibration solver |
+| `config` | Config model, validation, import / export / peer transfer |
+| `network` | Interfaces, IP configuration, discovery, name resolution |
+| `diagnostics` | Diagnostics bundle, statistics, export to a drive |
+| `update` | Updater, What's new, online sync |
+| `packaging` | `.deb`, image, macOS bundle, privilege grants, settings backup |
+| `release` | Version bumps and release notes |
+| `ci` | Workflows, the `make ci` gate, lint / security tooling, hardware validation |
+| `deps` / `deps-dev` | Dependency bumps |
+| `repo` | README, CLAUDE.md, docs conventions, `.github` templates |
+
+New issues start from the Bug / Feature templates in
+[`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/), which prefill the type and
+label.
 
 ## Task Management
 

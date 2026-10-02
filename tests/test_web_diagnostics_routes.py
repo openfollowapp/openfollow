@@ -236,6 +236,30 @@ def test_api_diagnostics_bundle_usb_table_names_the_3d_mouse_and_the_stick(live_
     assert "storage: APFS can't be written" in usb
 
 
+def test_api_diagnostics_bundle_carries_the_network_bind_map(live_server, monkeypatch, tmp_path) -> None:
+    """Both halves reach the downloaded bundle: the panel's rows from this
+    station's config, and the planes from the running observer."""
+    from openfollow.web import diagnostics
+
+    server, base, _ = live_server
+    monkeypatch.setattr(diagnostics, "default_disk_root", lambda: tmp_path / "bundles")
+    server.network_planes_provider = lambda: [
+        {
+            "label": "Video input",
+            "iface": "eth9",
+            "address": "",
+            "bound": None,
+            "state": "stopped",
+            "detail": "eth9 has no address",
+        }
+    ]
+    _, body, _ = _get(base, "/api/diagnostics/bundle")
+    bind_map = body[body.index("=== A6. Network bind map ===") : body.index("=== B.")]
+    assert "Station default" in bind_map
+    assert "Video input (" in bind_map
+    assert "stopped: eth9 has no address" in bind_map
+
+
 def test_api_diagnostics_bundle_usb_table_says_when_the_listing_failed(live_server, monkeypatch, tmp_path) -> None:
     from openfollow.runtime.removable_media import MediaError
     from openfollow.web import diagnostics

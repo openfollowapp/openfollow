@@ -238,6 +238,7 @@ class ConfigWebServer:
         # Diagnostics I/O providers: recent OSC/MIDI events + USB-visibility cross-reference.
         recent_osc_sends_provider: (Callable[[], list[dict[str, Any]]] | None) = None,
         osc_listener_status_provider: (Callable[[], dict[str, Any]] | None) = None,
+        network_planes_provider: (Callable[[], list[dict[str, Any]]] | None) = None,
         recent_midi_events_provider: (Callable[[], list[dict[str, Any]]] | None) = None,
         midi_port_names_provider: Callable[[], list[str]] | None = None,
         camera_names_provider: Callable[[], list[str]] | None = None,
@@ -327,6 +328,7 @@ class ConfigWebServer:
         # Public so diagnostics builders pass directly to DiagnosticsProviders.
         self.recent_osc_sends_provider = recent_osc_sends_provider
         self.osc_listener_status_provider = osc_listener_status_provider
+        self.network_planes_provider = network_planes_provider
         self.recent_midi_events_provider = recent_midi_events_provider
         self.midi_port_names_provider = midi_port_names_provider
         self.camera_names_provider = camera_names_provider
@@ -493,6 +495,13 @@ class ConfigWebServer:
             self._network_ifaces_cache = _copy_rows(rows)
             self._network_ifaces_ts = time.monotonic()
         return _copy_rows(rows)
+
+    def read_network_interfaces(self) -> list[dict[str, Any]]:
+        """The backend's rows read now, uncached; a failure raises rather than
+        serving the last good rows, so the diagnostics bundle can report it."""
+        if self._network_interfaces_provider is None:
+            return []
+        return self._network_interfaces_provider()
 
     def apply_network(self, iface: str, config: Any) -> ApplyResult:
         """Apply IPv4 config to iface; always returns ApplyResult."""
@@ -1167,6 +1176,16 @@ class ConfigWebServer:
         restart is still pending.
         """
         return self._host
+
+    @property
+    def listener(self) -> tuple[str, str]:
+        """The external listener's ``host:port`` and whether it is serving there."""
+        host = self._host or "0.0.0.0"  # noqa: S104 - a label, not a bind
+        if self._http_server is not None:
+            return f"{host}:{self._port}", "listening"
+        if self._fallback_http_server is not None and self._fallback_port is not None:
+            return f"{host}:{self._fallback_port}", f"listening on the fallback port, not {self._port}"
+        return f"{host}:{self._port}", "not listening"
 
     @property
     def display_port(self) -> int:

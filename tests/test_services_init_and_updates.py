@@ -1085,6 +1085,20 @@ class TestInitWebServer:
         snapshot[9] = 4.0
         assert services._app._config.marker_move_speeds == {5: 2.7}
 
+    def test_wires_the_network_bind_map_provider(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without it the bundle's Runtime block reads "not wired" on every station."""
+        from openfollow import web
+
+        monkeypatch.setattr(web, "ConfigWebServer", _FakeWebServer)
+        services._preview_provider = SimpleNamespace(get_snapshot=lambda: None)
+        services._snapshot_provider = SimpleNamespace(get_snapshot=lambda: None)
+
+        services.init_web_server()
+        provider = services._app._web_server.kwargs["network_planes_provider"]
+        assert provider.__func__ is AppRuntimeServices.network_plane_status
+
     def test_wires_osc_binding_diagnostics_providers(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -6,7 +6,7 @@ OpenFollow's built-in OSC receiver lets external systems – lighting consoles, 
 
 - **Enabled** – master toggle for the OSC receiver. When off, the station ignores all incoming OSC traffic and the port is released.
 - **UDP Port** – the UDP port the station listens on, 1–65535. Default: `8765`. Every sender must target this port. After changing it, click **Save**; the receiver restarts and listens on the new port immediately.
-- **Multicast group** – an IPv4 multicast address (`224.0.0.0`–`239.255.255.255`) to join, so a single sender reaches every station at once – the same model PSN uses. Defaults to `239.20.20.20`; clear it to disable. Unicast (sending straight to a station's IP) and subnet broadcast work regardless of this setting.
+- **Multicast group** – an IPv4 multicast address (`224.0.0.0`–`239.255.255.255`) to join, so a single sender reaches every station at once – the same model PSN uses. Defaults to `239.20.20.20`; clear it to disable. Unicast (sending straight to a station's IP) and subnet broadcast work regardless of this setting. Which interface takes the subscription is set under **Network Interface Assignment**, in the OSC input row.
 - **Allowed sender IPs** – a comma-separated list of IPv4 or IPv6 addresses permitted to inject marker positions (e.g. `192.168.1.10, 192.168.1.20`). Leave blank to accept any host. Individual IP addresses only – CIDR ranges are not supported.
 
 > If **Enabled** is on and the allowlist is empty, any device on the LAN can update marker positions. Add at least one IP if your show network is shared with other equipment.

@@ -3510,6 +3510,10 @@ def _build_diagnostics_providers(
         # "(no events recorded)" / "[not applicable]" sentinels.
         recent_osc_sends=server.recent_osc_sends_provider,
         osc_multicast_status=server.osc_listener_status_provider,
+        interface_assignment_rows=lambda: build_interface_assignment_rows(cfg, resolve_web_bind_for(cfg)),
+        network_planes=server.network_planes_provider,
+        network_interfaces=server.read_network_interfaces,
+        web_listener=lambda: server.listener,
         recent_midi_events=server.recent_midi_events_provider,
         # USB-visibility cross-reference indices.
         midi_port_names=server.midi_port_names_provider,

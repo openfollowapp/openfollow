@@ -12,6 +12,7 @@ even when the address is unchanged.
 from __future__ import annotations
 
 import dataclasses
+import logging
 
 import pytest
 
@@ -20,6 +21,7 @@ from openfollow.runtime.network_observer import (
     POLL_INTERVAL_S,
     NetworkPlaneObserver,
     Plane,
+    PlaneStatus,
 )
 
 pytestmark = pytest.mark.unit
@@ -37,22 +39,33 @@ class _Recorder:
         self.suspends = 0
         self.is_enabled = True
         self.apply_error: Exception | None = None
+        self.current_error: Exception | None = None
+        self.suspend_error: Exception | None = None
+        self.resolve_error: Exception | None = None
         self.resolves = 0
+        self.apply_attempts = 0
 
     def resolve(self) -> tuple[str, str, str]:
         self.resolves += 1
+        if self.resolve_error is not None:
+            raise self.resolve_error
         return self.address, self.status, self.iface
 
     def current(self) -> str | None:
+        if self.current_error is not None:
+            raise self.current_error
         return self.bound
 
     def apply(self, address: str) -> None:
+        self.apply_attempts += 1
         if self.apply_error is not None:
             raise self.apply_error
         self.applied.append(address)
         self.bound = address
 
     def suspend(self) -> None:
+        if self.suspend_error is not None:
+            raise self.suspend_error
         self.suspends += 1
         self.bound = None
 
@@ -208,6 +221,29 @@ class TestRebuildAfterAnOutage:
         _poll_n(obs, clk, 1)
         assert rec.applied == ["192.168.1.77"]
 
+    def test_an_outage_alerts_from_its_first_poll(self) -> None:
+        """The output is off the show as soon as its interface has no address;
+        only the suspend waits out the gap an Apply or Renew leaves."""
+        rec = _Recorder()
+        rec.bound = "192.168.1.5"
+        obs, clk = _observer(rec)
+        rec.go_down()
+        _poll_n(obs, clk, 1)
+        assert obs.alerts() == ["plane0: eth0 is down"]
+        assert rec.suspends == 0
+
+    def test_a_gap_that_closes_before_the_suspend_clears_its_alert(self) -> None:
+        rec = _Recorder()
+        rec.bound = "192.168.1.5"
+        obs, clk = _observer(rec)
+        rec.go_down()
+        _poll_n(obs, clk, 2)
+        assert obs.alerts() == ["plane0: eth0 is down"]
+        rec.come_back("192.168.1.5")
+        _poll_n(obs, clk, 1)
+        assert obs.alerts() == []
+        assert rec.suspends == 0
+
     def test_resuming_from_suspended_rebuilds_and_clears_the_alert(self) -> None:
         rec = _Recorder()
         rec.bound = "192.168.1.5"
@@ -281,6 +317,13 @@ class TestFailureHandling:
         rec.apply_error = OSError("bind failed")
         obs, _clk = _observer(rec)
         obs.poll()
+        assert obs.alerts() == ["plane0: eth0 – bind failed"]
+
+    def test_a_failure_without_a_known_interface_reads_as_the_failure_alone(self) -> None:
+        rec = _Recorder(iface="")
+        rec.apply_error = OSError("bind failed")
+        obs, _clk = _observer(rec)
+        obs.poll()
         assert obs.alerts() == ["plane0: bind failed"]
 
     def test_a_recovered_plane_clears_its_alert(self) -> None:
@@ -294,6 +337,31 @@ class TestFailureHandling:
         assert obs.alerts() == []
         assert rec.applied == ["192.168.1.5"]
 
+    def test_a_suspend_that_raises_reads_as_its_failure(self) -> None:
+        """The row says why the output could not be stopped, also once the
+        interface is back and the retry is still waiting out its backoff."""
+        rec = _Recorder()
+        rec.bound = "192.168.1.5"
+        rec.suspend_error = OSError("cannot stop")
+        obs, clk = _observer(rec)
+        rec.go_down()
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        assert obs.alerts() == ["plane0: eth0 – cannot stop"]
+        rec.come_back("192.168.1.5")
+        _poll_n(obs, clk, 1)
+        assert obs.alerts() == ["plane0: eth0 – cannot stop"]
+
+    def test_a_rebind_that_fails_after_an_outage_reads_as_its_failure(self) -> None:
+        rec = _Recorder()
+        rec.bound = "192.168.1.5"
+        obs, clk = _observer(rec)
+        rec.go_down()
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        rec.come_back("192.168.1.5")
+        rec.apply_error = OSError("bind failed")
+        _poll_n(obs, clk, 2)  # the failed rebind, then a poll inside its backoff
+        assert obs.alerts() == ["plane0: eth0 – bind failed"]
+
     def test_one_failing_plane_does_not_stop_the_others(self) -> None:
         broken = _Recorder()
         broken.apply_error = OSError("bind failed")
@@ -301,6 +369,152 @@ class TestFailureHandling:
         obs, _clk = _observer(broken, healthy)
         obs.poll()
         assert healthy.applied == ["10.0.0.9"]
+
+    def test_a_failure_quoting_a_stream_credential_never_reaches_the_alert(self) -> None:
+        rec = _Recorder()
+        rec.apply_error = OSError("cannot reach rtsp://operator:secret@192.0.2.10/stream")
+        obs, _clk = _observer(rec)
+        obs.poll()
+        assert obs.alerts() == ["plane0: eth0 – cannot reach rtsp://192.0.2.10/stream"]
+
+
+class TestAFailureMeetsAnOutage:
+    """Every poll resolves, so an outage is seen from its first poll and leads
+    over a failure recorded before it; the backoff holds back only apply and
+    suspend."""
+
+    def test_an_outage_after_a_failed_rebind_reads_as_down_from_its_first_poll(self) -> None:
+        rec = _Recorder()
+        rec.bound = "192.168.1.5"
+        obs, clk = _observer(rec)
+        rec.go_down()
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        rec.come_back("192.168.1.5")
+        rec.apply_error = OSError("bind failed")
+        _poll_n(obs, clk, 1)
+        assert obs.alerts() == ["plane0: eth0 – bind failed"]
+
+        rec.go_down()
+        _poll_n(obs, clk, 1)
+        assert obs.alerts() == ["plane0: eth0 is down"]
+        _poll_n(obs, clk, 2 * DOWN_POLLS_BEFORE_SUSPEND)
+        assert obs.alerts() == ["plane0: eth0 is down"]
+
+    def test_a_failed_rebind_leads_again_when_an_outage_ends_inside_its_backoff(self) -> None:
+        """The plane is still unbound until the retry, so it must not fall silent."""
+        rec = _Recorder()
+        rec.apply_error = OSError("bind failed")
+        obs, clk = _observer(rec)
+        obs.poll()
+        rec.go_down()
+        clk.advance(0.01)
+        obs.poll(force=True)
+        assert obs.alerts() == ["plane0: eth0 is down"]
+
+        rec.come_back("192.168.1.5")
+        clk.advance(0.01)
+        obs.poll(force=True)
+        assert obs.alerts() == ["plane0: eth0 – bind failed"]
+        assert rec.apply_attempts == 1
+
+        rec.apply_error = None
+        clk.advance(120.0)
+        obs.poll(force=True)
+        assert obs.alerts() == []
+
+    def test_a_resolver_error_inside_a_backoff_leaves_what_the_plane_shows(self) -> None:
+        """The rebind failure behind the backoff, or the outage in front of it,
+        is why the plane is dead; a passing resolver error is not."""
+        rec = _Recorder()
+        rec.apply_error = OSError("bind failed")
+        obs, clk = _observer(rec)
+        obs.poll()
+        rec.resolve_error = OSError("nmcli timed out")
+        clk.advance(0.01)
+        obs.poll(force=True)
+        assert obs.alerts() == ["plane0: eth0 – bind failed"]
+
+        rec.resolve_error = None
+        rec.go_down()
+        clk.advance(0.01)
+        obs.poll(force=True)
+        rec.resolve_error = OSError("nmcli timed out")
+        clk.advance(0.01)
+        obs.poll(force=True)
+        assert obs.alerts() == ["plane0: eth0 is down"]
+
+    def test_a_resolver_that_raised_while_suspended_does_not_stick(self) -> None:
+        rec = _Recorder()
+        rec.bound = "192.168.1.5"
+        obs, clk = _observer(rec)
+        rec.go_down()
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        rec.resolve_error = OSError("nmcli timed out")
+        _poll_n(obs, clk, 1)
+        assert obs.alerts() == ["plane0: eth0 – nmcli timed out"]
+        rec.resolve_error = None
+        _poll_n(obs, clk, 1)
+        assert obs.alerts() == ["plane0: eth0 is down"]
+
+    def test_an_outage_inside_a_backoff_is_reported_at_once_and_stopped_only_after_it(self) -> None:
+        rec = _Recorder()
+        rec.apply_error = OSError("bind failed")
+        obs, clk = _observer(rec)
+        obs.poll()
+        rec.go_down()
+        clk.advance(0.01)
+        obs.poll(force=True)
+        assert obs.alerts() == ["plane0: eth0 is down"]
+
+        for _ in range(DOWN_POLLS_BEFORE_SUSPEND + 2):
+            clk.advance(0.01)
+            obs.poll(force=True)
+        assert rec.suspends == 0
+        assert rec.apply_attempts == 1
+
+        clk.advance(120.0)
+        obs.poll(force=True)
+        assert rec.suspends == 1
+
+    def test_a_suspend_that_raises_leads_for_the_rest_of_the_outage(self) -> None:
+        rec = _Recorder()
+        rec.bound = "192.168.1.5"
+        rec.suspend_error = OSError("cannot stop")
+        obs, clk = _observer(rec)
+        rec.go_down()
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND + 3)
+        assert obs.alerts() == ["plane0: eth0 – cannot stop"]
+
+    def test_a_resolver_that_keeps_raising_inside_a_backoff_logs_once(self, caplog: pytest.LogCaptureFixture) -> None:
+        rec = _Recorder()
+        rec.resolve_error = OSError("nmcli timed out")
+        obs, clk = _observer(rec)
+        with caplog.at_level(logging.ERROR, logger="openfollow.runtime.network_observer"):
+            for _ in range(3):
+                obs.poll(force=True)
+                clk.advance(0.1)
+        logged = [r for r in caplog.records if r.name == "openfollow.runtime.network_observer"]
+        assert len(logged) == 1
+        assert obs.alerts() == ["plane0: nmcli timed out"]
+
+    def test_a_resolver_that_keeps_raising_inside_a_backoff_does_not_push_the_retry_back(self) -> None:
+        """Measured against a plane whose resolver raised once: both rebind on the same poll."""
+        once, again = _Recorder(), _Recorder(iface="eth1")
+        once.resolve_error = OSError("nmcli timed out")
+        again.resolve_error = OSError("nmcli timed out")
+        obs, clk = _observer(once, again)
+        obs.poll()
+        once.resolve_error = None
+        clk.advance(0.1)
+        obs.poll(force=True)
+        again.resolve_error = None
+        for _ in range(1000):
+            clk.advance(0.1)
+            obs.poll(force=True)
+            if once.applied:
+                break
+        assert once.applied == ["192.168.1.5"]
+        assert again.applied == ["192.168.1.5"]
 
 
 class TestAlertsAndThrottling:
@@ -448,18 +662,20 @@ class TestAChangingSetOfPlanes:
         rec.bound = "192.168.1.5"
         obs, clk, current, _calls = self._provided(rec.plane("OSC output"))
         rec.go_down()
-        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND - 1)
         assert obs.alerts() == ["OSC output: eth0 is down"]
 
         current.clear()
         obs.poll()
         assert obs.alerts() == []
 
-        # Back in the set, it starts over rather than resuming a stale count.
+        # Back in the set, it counts its outage from zero; the stale count
+        # would stop it on this very poll.
         current.append(rec.plane("OSC output"))
         clk.advance()
         obs.poll()
-        assert obs.alerts() == []
+        assert obs.alerts() == ["OSC output: eth0 is down"]
+        assert rec.suspends == 0
 
     def test_planes_sharing_a_label_are_told_apart_by_key(self) -> None:
         eth1, eth2 = _Recorder(iface="eth1"), _Recorder(address="198.51.100.10", iface="eth2")
@@ -506,3 +722,180 @@ class TestAChangingSetOfPlanes:
         obs.poll(force=True)
         assert rec.applied[-1] == "192.168.1.6"
         assert obs.alerts() == []
+
+
+class TestSnapshot:
+    """What the diagnostics bundle reads: every plane as the last poll left it."""
+
+    def test_a_bound_plane_reads_ok_with_what_it_holds(self) -> None:
+        rec = _Recorder()
+        obs, _clk = _observer(rec)
+        obs.poll()
+        assert obs.snapshot() == (PlaneStatus("plane0", "eth0", "192.168.1.5", "192.168.1.5", "ok"),)
+
+    def test_the_bundle_and_the_hud_lead_with_the_same_condition(self) -> None:
+        """A failed rebind leads; an outage that begins after it leads instead;
+        the failure leads again once the outage ends inside its backoff."""
+        rec = _Recorder()
+        rec.apply_error = OSError("bind failed")
+        obs, clk = _observer(rec)
+        obs.poll()
+        assert obs.snapshot()[0].state == "failing"
+        assert obs.alerts() == ["plane0: eth0 – bind failed"]
+
+        rec.go_down()
+        clk.advance(0.01)
+        obs.poll(force=True)
+        assert obs.snapshot()[0].state == "down"
+        assert obs.alerts() == ["plane0: eth0 is down"]
+
+        rec.come_back("192.168.1.5")
+        clk.advance(0.01)
+        obs.poll(force=True)
+        assert obs.snapshot()[0].state == "failing"
+        assert obs.alerts() == ["plane0: eth0 – bind failed"]
+
+    def test_a_plane_not_followed_says_so_and_is_not_asked_anything(self) -> None:
+        rec = _Recorder()
+        rec.is_enabled = False
+        obs, _clk = _observer(rec)
+        obs.poll()
+        assert obs.snapshot() == (PlaneStatus("plane0", "", "", None, "not followed", resolved=False),)
+        assert rec.resolves == 0
+
+    def test_a_plane_switched_back_on_is_followed_again(self) -> None:
+        rec = _Recorder()
+        rec.is_enabled = False
+        obs, clk = _observer(rec)
+        obs.poll()
+        clk.advance()
+        rec.is_enabled = True
+        obs.poll()
+        assert obs.snapshot()[0].state == "ok"
+
+    def test_an_addressless_interface_counts_toward_the_stop(self) -> None:
+        rec = _Recorder()
+        obs, clk = _observer(rec)
+        obs.poll()
+        clk.advance()
+        rec.go_down()
+        _poll_n(obs, clk, 2)
+        (status,) = obs.snapshot()
+        assert (status.state, status.address) == ("down", "")
+        assert status.detail == f"no address for 2 of {DOWN_POLLS_BEFORE_SUSPEND} polls"
+        # Not stopped yet: it still holds the old binding.
+        assert status.bound == "192.168.1.5"
+
+    def test_a_suspended_plane_reads_stopped_and_bound_to_nothing(self) -> None:
+        rec = _Recorder()
+        obs, clk = _observer(rec)
+        rec.go_down()
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        assert obs.snapshot() == (PlaneStatus("plane0", "eth0", "", None, "stopped", "eth0 has no address"),)
+
+    def test_a_plane_whose_rebind_raises_reads_failing_with_the_reason(self) -> None:
+        rec = _Recorder()
+        rec.apply_error = OSError("address in use")
+        obs, _clk = _observer(rec)
+        obs.poll()
+        (status,) = obs.snapshot()
+        assert (status.state, status.detail, status.bound) == ("failing", "address in use", None)
+
+    def test_a_rebind_that_fails_after_an_outage_reads_failing_not_stopped(self) -> None:
+        """The interface is back; what is wrong now is the rebind, not the outage."""
+        rec = _Recorder()
+        obs, clk = _observer(rec)
+        rec.go_down()
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        rec.apply_error = OSError("address in use")
+        rec.come_back("192.168.1.6")
+        clk.advance()
+        obs.poll()
+        (status,) = obs.snapshot()
+        assert (status.state, status.detail) == ("failing", "address in use")
+
+    def test_a_plane_whose_first_resolve_raises_reads_as_never_resolved(self) -> None:
+        """Its blank interface is not auto-detect; once a resolve returns, it is."""
+        rec = _Recorder()
+        rec.resolve_error = OSError("nmcli timed out")
+        obs, clk = _observer(rec)
+        obs.poll()
+        (status,) = obs.snapshot()
+        assert (status.state, status.resolved) == ("failing", False)
+
+        rec.resolve_error = None
+        rec.apply_error = OSError("bind failed")
+        clk.advance(120.0)
+        obs.poll(force=True)
+        (status,) = obs.snapshot()
+        assert (status.state, status.detail, status.resolved) == ("failing", "bind failed", True)
+
+    def test_a_plane_whose_enabled_check_raises_reads_failing_not_unfollowed(self) -> None:
+        state = {"raise": False}
+        rec = _Recorder()
+        rec.is_enabled = False
+
+        def _enabled() -> bool:
+            if state["raise"]:
+                raise RuntimeError("config unreadable")
+            return rec.is_enabled
+
+        clk = _Clock()
+        plane = Plane("plane0", rec.resolve, rec.current, rec.apply, rec.suspend, enabled=_enabled)
+        obs = NetworkPlaneObserver(planes=[plane], clock=clk)
+        obs.poll()
+        assert obs.snapshot()[0].state == "not followed"
+        clk.advance()
+        state["raise"] = True
+        obs.poll()
+        (status,) = obs.snapshot()
+        assert (status.state, status.detail) == ("failing", "config unreadable")
+        # Never resolved, so its blank interface is not auto-detect.
+        assert status.resolved is False
+
+    def test_a_current_that_raises_reads_as_nothing_bound(self) -> None:
+        rec = _Recorder()
+        rec.bound = "192.168.1.5"
+        obs, clk = _observer(rec)
+        obs.poll()
+        clk.advance()
+        rec.current_error = RuntimeError("backend gone")
+        obs.poll()
+        (status,) = obs.snapshot()
+        assert status.bound is None
+        assert status.state == "failing"
+
+    def test_a_plane_that_leaves_the_set_leaves_the_snapshot(self) -> None:
+        recs = {"a": _Recorder(), "b": _Recorder()}
+        live = ["a", "b"]
+        clk = _Clock()
+        obs = NetworkPlaneObserver(planes=lambda: [recs[k].plane(k) for k in live], clock=clk)
+        obs.poll()
+        clk.advance()
+        live.remove("a")
+        obs.poll()
+        assert [s.label for s in obs.snapshot()] == ["b"]
+
+    def test_the_snapshot_is_replaced_whole_never_changed_in_place(self) -> None:
+        """A reader on another thread holds the old tuple; it must not change under it."""
+        rec = _Recorder()
+        obs, clk = _observer(rec)
+        obs.poll()
+        before = obs.snapshot()
+        clk.advance()
+        rec.go_down()
+        obs.poll()
+        assert before == (PlaneStatus("plane0", "eth0", "192.168.1.5", "192.168.1.5", "ok"),)
+        assert obs.snapshot() is not before
+
+    def test_a_throttled_poll_keeps_the_last_snapshot(self) -> None:
+        rec = _Recorder()
+        obs, _clk = _observer(rec)
+        obs.poll()
+        before = obs.snapshot()
+        obs.poll()  # inside the interval
+        assert obs.snapshot() is before
+
+    def test_nothing_polled_yet_is_an_empty_snapshot(self) -> None:
+        obs, _clk = _observer(_Recorder())
+        assert obs.snapshot() == ()

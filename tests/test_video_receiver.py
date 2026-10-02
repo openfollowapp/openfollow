@@ -5105,6 +5105,18 @@ class TestTheInterfacePinRefusesABuild:
         r.release_source()
         assert r.pinned_to is None
 
+    def test_a_pin_with_no_address_records_nothing_running(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        """Its build is refused, so nothing runs: stopped, never a socket bound to no one address."""
+        monkeypatch.setattr(receiver_mod, "get_iface_ipv4", lambda _iface: "")
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        FakeInput.create_pipeline_result = FakePipeline()
+
+        r.create_pipeline()
+
+        assert r.pinned_to is None
+
     @pytest.mark.parametrize("config", [{}, {"video_input_iface": ""}], ids=["absent", "blank"])
     def test_an_unpinned_build_records_no_address(
         self, fake_gst, fake_glib, fake_input_cls, config: dict[str, Any]

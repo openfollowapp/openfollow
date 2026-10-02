@@ -4,18 +4,22 @@
 
 from __future__ import annotations
 
+import ipaddress
 import socket
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 import openfollow.net_utils as net_utils_module
 from openfollow.net_utils import (
+    Ipv4Route,
     get_iface_for_ip,
     get_iface_ipv4,
     get_local_ipv4_addresses,
     get_primary_local_ipv4,
     list_iface_ipv4,
+    read_ipv4_routes,
     resolve_iface_ip,
     resolve_plane_source_ip,
     resolve_source_ip,
@@ -1115,3 +1119,78 @@ def test_route_source_asks_ipv6_in_its_own_family(probes) -> None:
     assert route_source("2001:db8::20") == "2001:db8::10"
     assert probes.made[0].family == socket.AF_INET6
     assert probes.made[0].options == []
+
+
+# read_ipv4_routes
+# --------------------------------------------------------------------------- #
+
+_ROUTE_HEADER = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
+
+
+def _word(address: str) -> str:
+    """An IPv4 address the way the kernel prints it: its network-order word as a native integer."""
+    return f"{int.from_bytes(socket.inet_aton(address), sys.byteorder):08X}"
+
+
+def _row(iface: str, dest: str, gateway: str, flags: int, metric: str, mask: str) -> str:
+    return f"{iface}\t{_word(dest)}\t{_word(gateway)}\t{flags:04X}\t0\t0\t{metric}\t{_word(mask)}\t0\t0\t0\n"
+
+
+def test_read_ipv4_routes_decodes_every_field(tmp_path) -> None:
+    path = tmp_path / "route"
+    path.write_text(
+        _ROUTE_HEADER
+        + _row("eth0", "0.0.0.0", "192.0.2.1", 0x3, "100", "0.0.0.0")
+        + _row("eth1", "198.51.100.0", "0.0.0.0", 0x0, "0", "255.255.255.0")
+    )
+    assert read_ipv4_routes(path) == [
+        Ipv4Route("eth0", ipaddress.IPv4Network("0.0.0.0/0"), "192.0.2.1", 100),
+        Ipv4Route("eth1", ipaddress.IPv4Network("198.51.100.0/24"), "0.0.0.0", 0),
+    ]
+
+
+def test_read_ipv4_routes_reports_an_unreadable_table_as_unknown(tmp_path) -> None:
+    """No table (macOS has no /proc) is not the same answer as no routes."""
+    assert read_ipv4_routes(tmp_path / "absent") is None
+    empty = tmp_path / "route"
+    empty.write_text(_ROUTE_HEADER)
+    assert read_ipv4_routes(empty) == []
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "too\tshort\n",
+        "eth0\tZZZZ\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n",
+        "eth0\t006433C6\t00000000\t0001\t0\t0\t0\tNOTAMASK\t0\t0\t0\n",
+        "eth0\t00000000\t01B2A8C0\t0003\t0\t0\tNOTANUM\t00000000\t0\t0\t0\n",
+        "eth0\t1FFFFFFFF\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n",
+    ],
+    ids=["short", "bad-destination", "bad-mask", "bad-metric", "overflow"],
+)
+def test_read_ipv4_routes_skips_rows_it_cannot_parse(tmp_path, row: str) -> None:
+    path = tmp_path / "route"
+    path.write_text(_ROUTE_HEADER + row + _row("eth1", "198.51.100.0", "0.0.0.0", 0x1, "0", "255.255.255.0"))
+    assert [route.iface for route in read_ipv4_routes(path) or []] == ["eth1"]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        _row("eth0", "198.51.100.0", "0.0.0.0", 0x0201, "0", "255.255.255.0"),
+        _row("*", "198.51.100.0", "0.0.0.0", 0x0001, "0", "255.255.255.0"),
+    ],
+    ids=["unreachable-or-prohibit", "blackhole"],
+)
+def test_read_ipv4_routes_leaves_out_a_route_that_sends_nothing(tmp_path, row: str) -> None:
+    """Longest prefix would otherwise pick it and call the target reachable."""
+    path = tmp_path / "route"
+    path.write_text(_ROUTE_HEADER + row + _row("eth1", "198.51.0.0", "0.0.0.0", 0x1, "0", "255.255.0.0"))
+    assert [route.iface for route in read_ipv4_routes(path) or []] == ["eth1"]
+
+
+def test_read_ipv4_routes_reads_the_kernel_table_by_default(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "route"
+    path.write_text(_ROUTE_HEADER + _row("eth1", "198.51.100.0", "0.0.0.0", 0x1, "0", "255.255.255.0"))
+    monkeypatch.setattr(net_utils_module, "_PROC_NET_ROUTE", path)
+    assert [route.iface for route in read_ipv4_routes() or []] == ["eth1"]

@@ -189,7 +189,7 @@ _PANEL_ROWS = [
         "value": "",
         "address": "192.0.2.10",
         "editable": False,
-        "note": "Follows station interface",
+        "note": "Follows station default interface",
     },
     {"label": "OTP output", "value": "", "address": "192.0.2.10", "editable": True, "blank": "station"},
     {"label": "RTTrPM output", "value": "eth1", "address": "eth1 is down", "editable": True, "blank": "station"},
@@ -231,11 +231,12 @@ def test_bind_map_lists_the_panel_rows_as_configured() -> None:
     assert rows[1].split() == ["Function", "Pin", "Address"]
     configured = {row.split("  ")[2].strip(): row for row in rows[2:9]}
     assert "eth0" in configured["Station default"] and "192.0.2.10" in configured["Station default"]
-    assert "Follows station interface" in configured["PSN in / out"]
-    assert "(follows station)" in configured["OTP output"]
+    # One wording for every row following Station default, read-only or blank.
+    assert diag.FOLLOWS_STATION_DEFAULT in configured["PSN in / out"]
+    assert diag.FOLLOWS_STATION_DEFAULT in configured["OTP output"]
     assert "eth1 is down" in configured["RTTrPM output"]
-    assert "(follows station)" in configured["Video input (SRT)"]
-    assert "(all interfaces)" in configured["Web UI"]
+    assert diag.FOLLOWS_STATION_DEFAULT in configured["Video input (SRT)"]
+    assert "All interfaces" in configured["Web UI"]
     # An unknown blank kind still renders, and an empty address reads as "-".
     assert configured["Odd row"].split()[-2:] == ["(blank)", "-"]
 
@@ -3814,6 +3815,21 @@ def test_build_diagnostics_providers_passes_every_declared_provider() -> None:
     providers = _build_diagnostics_providers(_io_server(), SimpleNamespace(web_port=8080))
     unwired = {f.name for f in dataclasses.fields(providers) if getattr(providers, f.name) is None}
     assert unwired == _PROVIDERS_UNWIRED_BY_DESIGN
+
+
+@pytest.mark.parametrize(
+    ("down", "expected"),
+    [(True, "192.0.2.10 (Station default interface down)"), (False, "192.0.2.10")],
+    ids=["outage", "healthy"],
+)
+def test_the_bundle_names_station_default_when_its_interface_is_down(down: bool, expected: str) -> None:
+    """The address keeps its last good value through an outage; the bundle says whose interface is down."""
+    from openfollow.web.routes import _build_diagnostics_providers
+
+    server = _io_server(local_ip="192.0.2.10", station_interface_down=down)
+    providers = _build_diagnostics_providers(server, SimpleNamespace(web_port=8080))
+    assert providers.iface_ip is not None
+    assert providers.iface_ip() == expected
 
 
 def test_build_diagnostics_providers_wires_io_fields() -> None:

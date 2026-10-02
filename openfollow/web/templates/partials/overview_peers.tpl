@@ -9,7 +9,7 @@
     <span class="peer-status">{{'○' if station_down else '●'}}</span>
     <span class="peer-name">{{local.name}} <em>(this station)</em></span>
     % if station_down:
-    <span class="peer-address">station interface down</span>
+    <span class="peer-address">Station default interface down</span>
     % else:
     <span class="peer-address">{{local.ip}}:{{local.web_port}}</span>
     % end

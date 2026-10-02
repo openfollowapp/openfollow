@@ -13,7 +13,7 @@ When a receiver of OSC Data moves to a new IP, change that one destination and e
 - **Framing** – visible only when Protocol is `TCP`. Choose what your receiver expects:
   - **SLIP (RFC 1055)** – default per OSC 1.1; each packet is delimited by `0xC0`.
   - **Length-prefix (OSC 1.0)** – each packet is preceded by a 32-bit big-endian length.
-- **Source Interface** – read-only here; the interface this destination's messages leave from, set under **General → Network Interface Assignment**. `Follows station interface` is the default.
+- **Source Interface** – read-only here; the interface this destination's messages leave from, set under **General → Network Interface Assignment**. `Follows station default interface` is the default.
 
 ## Managing destinations
 

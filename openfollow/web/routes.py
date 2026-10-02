@@ -320,13 +320,7 @@ _GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 # bound by it, and a rejected name is echoed back to the operator.
 _IFNAME_MAX = 15
 
-_BLANK_IFACE_LABELS = {
-    "auto": "-- Auto-detect --",
-    "station": "-- Follow station interface --",
-    # The web UI answers on every interface unless pinned – it does not
-    # follow the station pin, so it gets its own wording.
-    "all": "-- All interfaces --",
-}
+_BLANK_IFACE_LABELS = {kind: f"-- {label} --" for kind, label in diagnostics.BLANK_PIN_LABELS.items()}
 
 _SECTION_CONFIG_ATTRS = {
     "camera": "camera",
@@ -1392,7 +1386,7 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
 
     Every row carries the address the plane will actually bind, resolved
     through the same chain the runtime uses – so a row left on "Follow station
-    interface" visibly shows where it points rather than an empty cell.
+    default interface" visibly shows where it points rather than an empty cell.
 
     A configured interface with no address renders as an explicit error rather
     than as some other interface's address: the plane will not send there, and a
@@ -1433,6 +1427,7 @@ def _interface_assignment_rows(
             "editable": True,
             "blank": "auto",
         },
+        # Rows that always follow Station default sit directly under it.
         {
             "key": "",
             "label": "PSN in / out",
@@ -1440,7 +1435,16 @@ def _interface_assignment_rows(
             "address": station_ip,
             "editable": False,
             "blank": "",
-            "note": "Follows station interface",
+            "note": diagnostics.FOLLOWS_STATION_DEFAULT,
+        },
+        {
+            "key": "",
+            "label": "Discovery / marker sync",
+            "value": "",
+            "address": station_ip,
+            "editable": False,
+            "blank": "",
+            "note": diagnostics.FOLLOWS_STATION_DEFAULT,
         },
         {
             "key": "otp_output.source_iface",
@@ -1484,15 +1488,6 @@ def _interface_assignment_rows(
             for dest in cfg.osc_destinations.destinations
         ),
         _video_input_row(cfg, wait_s),
-        {
-            "key": "",
-            "label": "Discovery / marker sync",
-            "value": "",
-            "address": station_ip,
-            "editable": False,
-            "blank": "",
-            "note": "Follows station interface",
-        },
         {
             # The web UI does not inherit the station pin: a station pinned to
             # a lighting VLAN would take its own config UI off the office LAN
@@ -3520,7 +3515,7 @@ def _build_diagnostics_providers(
         # contradict it, so offline support would read a stale address as
         # current with nothing on the page saying otherwise.
         iface_ip=lambda: (
-            f"{server.local_ip} (station interface down)" if server.station_interface_down else server.local_ip
+            f"{server.local_ip} (Station default interface down)" if server.station_interface_down else server.local_ip
         ),
         config_redacted_toml=lambda: diagnostics.redact_config_secrets(
             _config_to_toml(cfg),
@@ -8386,7 +8381,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         defaults to ``psn_source_iface`` so the PSN picker keeps working
         with a plain ``hx-get``.
 
-        ``?blank=station`` labels the empty option "Follow station interface"
+        ``?blank=station`` labels the empty option "Follow station default interface"
         instead of "Auto-detect". Per-plane pickers use it because an empty
         pin follows ``psn_source_iface``, while the station picker itself has
         nothing to follow and keeps the auto-detect wording. Unknown values

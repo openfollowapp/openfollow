@@ -118,6 +118,8 @@ class DetectionBox:
     confidence: float
     label: str = "person"
     track_id: int = -1
+    # Seconds the track has coasted on prediction since its last match; 0 while matched.
+    age_s: float = 0.0
 
 
 def filter_detections_to_masks(
@@ -675,6 +677,11 @@ class PersonDetector:
         return ((box.x1 + box.x2) / 2.0, (box.y1 + box.y2) / 2.0)
 
     @property
+    def confidence_threshold(self) -> float:
+        """The score a detection must reach to count as a confident sighting."""
+        return float(self._config.confidence)
+
+    @property
     def tracked_detection(self) -> DetectionBox | None:
         """Return the detection for the currently pinned person, or *None*.
 
@@ -1010,9 +1017,18 @@ class PersonDetector:
         matched: list[DetectionBox] = []
         for track in tracks:
             x1, y1, x2, y2 = track.tlbr
-            box = DetectionBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=track.score, track_id=track.track_id)
+            is_matched = track.state == "tracked"
+            box = DetectionBox(
+                x1=x1,
+                y1=y1,
+                x2=x2,
+                y2=y2,
+                confidence=track.score,
+                track_id=track.track_id,
+                age_s=0.0 if is_matched else max(0.0, now - track.last_seen),
+            )
             full.append(_TrackedPerson(track_id=track.track_id, box=box, last_seen=track.last_seen))
-            if track.state == "tracked":
+            if is_matched:
                 matched.append(box)
 
         # Keep the highest-confidence detections when over the cap, matching the

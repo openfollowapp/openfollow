@@ -170,6 +170,28 @@ class TestTrackerTimestampAndStatus:
         t.set_speed(1.0, 0.0, 0.0)
         assert t.status == pytest.approx(0.4)
 
+    def test_an_explicit_invalid_status_is_not_promoted_by_the_next_write(self) -> None:
+        """Detection reports 0.0 while nobody is tracked, and the frame loop
+        writes the marker's speed right after. The first-write promotion must
+        tell that 0.0 from "nothing written yet"."""
+        t = Marker(marker_id=1, name="T1", clock=_StepClock(1))
+        t.set_pos(1.0, 0.0, 0.0)
+        t.set_status(0.0)
+        t.set_speed(0.0, 0.0, 0.0)
+        t.set_pos(2.0, 0.0, 0.0)
+        assert t.status == 0.0
+        assert t.to_psn_marker().status == 0.0
+
+    def test_a_status_set_before_any_data_write_stands(self) -> None:
+        t = Marker(marker_id=1, name="T1", clock=_StepClock(1))
+        t.set_status(0.0)
+        t.set_pos(1.0, 0.0, 0.0)
+        assert t.status == 0.0
+
+    def test_a_never_written_marker_ships_invalid(self) -> None:
+        t = Marker(marker_id=1, name="T1")
+        assert t.to_psn_marker().status == 0.0
+
     @pytest.mark.parametrize("given", [None, "high", object()])
     def test_a_non_numeric_status_falls_back_instead_of_raising(self, given: object) -> None:
         """Confidence arrives from the detection path; an unexpected value must

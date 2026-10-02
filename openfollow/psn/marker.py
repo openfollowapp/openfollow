@@ -62,9 +62,10 @@ class Marker:
     by an internal lock to prevent torn reads when background PSN threads
     read state while the main thread updates it.
 
-    Every position or speed write stamps ``timestamp`` and marks the marker
-    valid, so a receiver can tell a marker that is still being updated from a
-    stale one. ``set_status`` and ``set_name`` do not stamp.
+    Every position or speed write stamps ``timestamp`` and marks an untouched
+    marker valid, so a receiver can tell a marker that is still being updated
+    from a stale one. A status set explicitly stands, 0.0 included, until the
+    next ``set_status``. ``set_status`` and ``set_name`` do not stamp.
 
     A marker built from received data (``remote=True``, written via
     ``apply_remote``) instead holds what its sender published, timed from that
@@ -106,7 +107,9 @@ class Marker:
         self._ori: Vec3 = _ZERO
         self._accel: Vec3 = _ZERO
         self._trgtpos: Vec3 = _ZERO
-        self._status: float = _INVALID
+        # None until the first data write or an explicit set_status: an
+        # explicit 0.0 must not read as "nothing written yet".
+        self._status: float | None = None
         self._timestamp: int = 0
         self._remote: bool = bool(remote)
         self._clock = clock
@@ -140,7 +143,7 @@ class Marker:
     @property
     def status(self) -> float:
         with self._lock:
-            return self._status
+            return _INVALID if self._status is None else self._status
 
     @property
     def timestamp(self) -> int:
@@ -210,11 +213,12 @@ class Marker:
         ``set_name`` deliberately does not stamp - a rename is metadata, not
         tracker data, and must not make a stale marker look fresh. The first
         data write promotes an untouched marker to valid; an explicit
-        ``set_status`` afterwards stands, so a caller deriving validity from
-        tracking confidence is not overwritten on the next write.
+        ``set_status`` stands, so a caller deriving validity from tracking
+        confidence is not overwritten on the next write, and a 0.0 it set is
+        not promoted either.
         """
         self._timestamp = self._clock()
-        if self._status == _INVALID:
+        if self._status is None:
             self._status = _VALID
 
     def to_psn_marker(self, *, stale: bool = False) -> pypsn.PsnTracker:
@@ -234,7 +238,7 @@ class Marker:
                 ori=pypsn.PsnVector3(*self._ori),
                 accel=pypsn.PsnVector3(*self._accel),
                 trgtpos=pypsn.PsnVector3(*self._trgtpos),
-                status=_INVALID if stale else self._status,
+                status=_INVALID if stale or self._status is None else self._status,
                 timestamp=self._timestamp,
             )
 

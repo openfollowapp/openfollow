@@ -13,3 +13,13 @@ Configures the PosiStageNet (PSN) multicast stream that carries live marker posi
 > On managed switches, PSN multicast requires IGMP snooping with a querier active on the relevant VLAN. If a console can't see the stream, verify the switch fabric isn't silently dropping multicast to the `236.10.10.10` group.
 
 **Save** – writes the multicast IP and interface selection to disk and applies them to the running stream immediately. No restart needed.
+
+## Tracker Status
+
+Every tracker in the data packet carries a **status**, PSN's validity for that position, from `0.0` to `1.0`:
+
+- **Manual control and AI Assisted** – `1.0`. Your input (or your anchor) drives the position, so it is fully valid.
+- **Fully Automatic** – how much detection vouches for the position. A sighting right at the **Detection sensitivity** threshold reads `0.5` and a perfect score `1.0`; a dimmer sighting the tracker still accepts reads below `0.5`. While the tracked person is briefly lost, the status fades to `0.0` across the **Grace period**, and it stays at `0.0` while nobody is tracked.
+- **Stale** – `0.0` whenever this station has not updated the marker for one second, whatever it would otherwise carry, so a frozen station never advertises a valid position.
+
+Each tracker also carries a **timestamp** that stops advancing when the marker stops being updated. grandMA3 colours a tracker by packet arrival rather than by status; a receiver that does read validity gets the signal above.

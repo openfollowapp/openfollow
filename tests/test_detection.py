@@ -350,6 +350,39 @@ def test_track_carries_lost_track_within_grace_period(monkeypatch) -> None:
     assert all(t.track_id != first_id for t in detector._tracked)
 
 
+def test_track_reports_how_long_a_lost_track_has_coasted(monkeypatch) -> None:
+    """A coasting box says how long it has coasted and keeps its last matched
+    score, which is what the PSN tracker status decays from."""
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=500))
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.0)
+    (first,) = detector._track([detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)])
+    assert first.age_s == 0.0
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.2)
+    assert detector._track([]) == []
+    (coasting,) = detector._tracked
+    assert coasting.box.age_s == pytest.approx(0.2)
+    assert coasting.box.confidence == pytest.approx(0.9)
+
+    # The pinned person's box hands that age out while the grace period runs.
+    detector._pinned_id = first.track_id
+    assert detector.tracked_detection.age_s == pytest.approx(0.2)
+
+    # Matched again: the age resets.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.3)
+    (again,) = detector._track([detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.8)])
+    assert again.track_id == first.track_id
+    assert again.age_s == 0.0
+
+
+def test_confidence_threshold_mirrors_the_configured_confidence() -> None:
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, confidence=0.35))
+    assert detector.confidence_threshold == pytest.approx(0.35)
+
+
 def test_pin_survives_confidence_dip_without_renumber(monkeypatch) -> None:
     """End-to-end (re-acquisition + low-band recovery): a performer who goes
     briefly undetected and then reappears dim (low band only) keeps their

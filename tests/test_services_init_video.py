@@ -105,7 +105,9 @@ class _FakeReceiver:
         snapshot_provider: Any,
         stall_timeout: Any = None,
         heal_interval: Any = None,
+        iface_name: Any = None,
     ) -> None:
+        self.iface_name = iface_name
         self.source_type = source_type
         self.input_config = input_config
         self.overlay_renderer = overlay_renderer
@@ -464,6 +466,9 @@ class TestInitVideoPinsThroughTheStation:
         services.init_video()
         assert recv_factory.last is not None
         assert recv_factory.last.input_config["video_input_iface"] == "eth0"
+        # Its refusals name the interface the way the station labels it, read live.
+        services._app._config.interface_labels = {"eth0": "Lighting"}
+        assert recv_factory.last.iface_name("eth0") == "Lighting (eth0)"
 
 
 class TestInitVideoPipelineFailure:

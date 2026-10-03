@@ -108,8 +108,11 @@ or no modifier for neutral. Pill-shaped, uppercase, `--<level>-chip` fill,
 solid `--<level>-line` border, off-white text, **no icon**. "Starting" and
 "Idle" are info; "Off" is neutral. The OSC diagnostics health pill and the
 Experimental badge (caution) are chips too, and so are the state words in a
-table row: "Conflict" and "Not controlled" (caution) in the marker catalog. A
-row places a chip, it never restyles one.
+table row: "Conflict" and "Not controlled" (caution) in the marker catalog, and
+"Not connected" / "Interface down" (error) in the Network Interface Assignment
+Address column for a function that cannot send; a labelled adapter that is not
+plugged in reads "Not connected" in the neutral chip on the Network Interface
+card, where nothing is failing. A row places a chip, it never restyles one.
 
 ### Small row pills
 
@@ -277,6 +280,11 @@ attributes, so it spells the token's value.
   ("Diagnostics saved to …"). A level the HUD does not know draws as an
   error. The "+N more" row takes the gravest level among the rows it hides,
   in the order error, caution, info, success.
+- Every status row wraps at a space onto a second line and is cut with an
+  ellipsis only past it, whatever wrote it; the sign sits centred on a
+  two-line row. A row naming an interface by label and name ("OTP output:
+  Lighting backup (enx00e04c68a1f2) is not connected") otherwise lost the part
+  that says what is wrong.
 - An output stops being a show output the moment its interface loses its
   address, so its error row appears on the first poll that finds no address.
   Only stopping the output waits out the gap an Apply or Renew leaves. A
@@ -290,7 +298,8 @@ attributes, so it spells the token's value.
   interface pill that names a state takes its level's chip colours (a link-local
   address is an error, worded `fallback` when DHCP gave it and `link-local` when it
   was set by hand, an interface the web UI does not answer on is info); how
-  the address was come by, and no address at all, are the neutral grey. An
+  the address was come by, no address at all, and a labelled adapter that is
+  not plugged in (`not connected`) are the neutral grey. An
   action's result line takes its level; a confirmation is a success row, led by
   the off-white check, as the web's success box.
 - An offline marker shows an off-white disc with a cut-out cross.

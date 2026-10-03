@@ -1097,3 +1097,34 @@ def test_needs_cfg_false_for_every_rule() -> None:
     for section, rules in FIELD_RULES.items():
         for field_name, rule in rules.items():
             assert needs_cfg(rule) is False, f"{section}.{field_name}"
+
+
+# ---------------------------------------------------------------------------
+# network.label: an interface's label on its Network Interface row
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", ["Lighting", "FOH Lighting Main 01", "", "  Bühne  "])
+def test_network_label_accepts_up_to_twenty_characters(value: str) -> None:
+    assert validate("network", "label", value) is None
+
+
+def test_network_label_refuses_more_than_twenty_characters() -> None:
+    assert validate("network", "label", "L" * 21) == "Must be at most 20 characters."
+
+
+@pytest.mark.parametrize("value", ["Light\x00ing", "Light\u202eing"])
+def test_network_label_refuses_control_and_direction_characters(value: str) -> None:
+    assert validate("network", "label", value) == "Remove control or text-direction characters."
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["Light\u2066ing", "Light\u2067ing", "Light\u2068ing", "Light\u2069ing", "Light\x85ing", "Light\x9bing"],
+    ids=["LRI", "RLI", "FSI", "PDI", "C1-NEL", "C1-CSI"],
+)
+def test_bidi_isolates_and_c1_controls_are_refused_and_stripped(value: str) -> None:
+    """The isolates reorder text like the overrides do, and a C1 control is no
+    more at home in a config field than a C0 one."""
+    assert validate("network", "label", value) == "Remove control or text-direction characters."
+    assert _default_sanitiser(value) == "Lighting"

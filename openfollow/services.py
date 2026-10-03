@@ -29,8 +29,9 @@ from openfollow.configuration import (
 )
 from openfollow.input import InputManager
 from openfollow.input.mouse3d import idle_mouse3d_status
+from openfollow.net_adapters import display_name
 from openfollow.net_egress import Egress, is_loopback_host, resolve_egress
-from openfollow.net_utils import ResolveStatus
+from openfollow.net_utils import ResolveStatus, interface_present
 from openfollow.osc.egress import OscEgressTable
 from openfollow.otp import OtpServer
 from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
@@ -991,6 +992,7 @@ class AppRuntimeServices:
             snapshot_provider=self._snapshot_provider,
             stall_timeout=cfg.stall_timeout,
             heal_interval=cfg.heal_interval,
+            iface_name=self._iface_display_name,
         )
 
         # Create pipeline - may fail if no source, but receiver handles this gracefully
@@ -1183,7 +1185,7 @@ class AppRuntimeServices:
             receiver = self._app._video_receiver
             # Traffic to this station never leaves the box, so no outage stops it.
             if receiver is not None and not _video_is_local():
-                receiver.release_for_pin(f"{_video_pin()} has no address")
+                receiver.release_for_pin(f"{self._iface_display_name(_video_pin())} has no address")
 
         def _rttrpm_pinned() -> bool:
             # Unpinned, the OS routes it: no interface to follow, and the
@@ -1273,6 +1275,9 @@ class AppRuntimeServices:
             *self._osc_output_planes(),
         ]
 
+    def _iface_display_name(self, iface: str) -> str:
+        return display_name(iface, self._app._config.interface_labels)
+
     def observe_network_planes(self) -> None:
         """Follow every plane's configured interface. Called from housekeeping.
 
@@ -1284,7 +1289,12 @@ class AppRuntimeServices:
         observer = self._network_observer
         if observer is None:
             # A provider: OSC destinations and their pins change at runtime.
-            observer = NetworkPlaneObserver(planes=self._build_network_planes, clock=time.monotonic)
+            observer = NetworkPlaneObserver(
+                planes=self._build_network_planes,
+                clock=time.monotonic,
+                describe_iface=self._iface_display_name,
+                iface_present=interface_present,
+            )
             self._network_observer = observer
         # Inside the same throttle: resolving the station address enumerates
         # every adapter, and housekeeping runs at 100 ms.
@@ -1430,7 +1440,7 @@ class AppRuntimeServices:
         self._web_bind_status = "" if status == "none" else status
         self._web_bind_resolved_ip = host if status == "iface" else ""
         self._web_bind_banner = (
-            f"Web UI is pinned to '{cfg.web_bind_iface}', which has no address. "
+            f"Web UI is pinned to {self._iface_display_name(cfg.web_bind_iface)}, which has no address. "
             "Serving on all interfaces instead so the UI stays reachable."
             if status == "down"
             else ""
@@ -1469,9 +1479,9 @@ class AppRuntimeServices:
             # so a station booted with its interface dark never sent a packet
             # again, while the recovery logged that output had resumed.
             logger.error(
-                "Configured psn_source_iface '%s' has no address; PSN output stays silent "
+                "Configured psn_source_iface %s has no address; PSN output stays silent "
                 "until it returns (it will not be sent on another interface).",
-                self._app._config.psn_source_iface,
+                self._iface_display_name(self._app._config.psn_source_iface),
             )
             self._app._server = server
             return
@@ -1553,10 +1563,10 @@ class AppRuntimeServices:
         if status == "down":
             configured = plane_source_iface(pin, self._app._config.psn_source_iface)
             logger.error(
-                "Configured %s '%s' has no address; %s stays down until it returns "
+                "Configured %s %s has no address; %s stays down until it returns "
                 "(it will not be sent on another interface).",
                 label,
-                configured,
+                self._iface_display_name(configured),
                 label,
             )
             return None
@@ -1598,9 +1608,9 @@ class AppRuntimeServices:
         egress = resolve_egress(cfg.source_iface, self._app._config.psn_source_iface)
         if egress is not None and egress.down:
             logger.error(
-                "Configured rttrpm_output.source_iface '%s' has no address; RTTrPM output stays down until it "
+                "Configured rttrpm_output.source_iface %s has no address; RTTrPM output stays down until it "
                 "returns (it will not be sent on another interface).",
-                egress.iface,
+                self._iface_display_name(egress.iface),
             )
         return egress
 
@@ -2208,9 +2218,9 @@ class AppRuntimeServices:
         station cannot answer on one interface while advertising another.
         """
         logger.error(
-            "Configured psn_source_iface '%s' has no address; PSN input and output are stopped "
+            "Configured psn_source_iface %s has no address; PSN input and output are stopped "
             "(they will not be moved to another interface).",
-            self._app._config.psn_source_iface,
+            self._iface_display_name(self._app._config.psn_source_iface),
         )
         server = self._app._server
         if server is not None:

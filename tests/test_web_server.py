@@ -917,8 +917,7 @@ def test_network_interfaces_by_name_marks_pinned_iface_not_available(
 
     status, body = _get(base, "/network/interfaces/by_name")
     assert status == 200
-    assert "wlan0_gone" in body
-    assert "not available" in body
+    assert '<option value="wlan0_gone" selected>wlan0_gone – not connected</option>' in body
 
 
 def test_network_interfaces_by_name_current_param_overrides_psn_default(
@@ -1083,7 +1082,7 @@ def test_interface_assignment_shows_a_down_interface_as_an_error(
     # Scope to the OTP row: the station-following rows legitimately carry the
     # station address, and it must not leak into OTP's cell.
     otp_row = body[body.index("OTP output") :].split("</tr>", 1)[0]
-    assert "eth_gone is down" in otp_row
+    assert '<span class="stat-chip off">Not connected</span>' in otp_row
     assert "192.168.178.59" not in otp_row
 
 
@@ -1275,6 +1274,140 @@ def test_interface_assignment_restart_notice_names_the_moved_address(live_server
     assert "restart-notice" in body
     assert "Network screen" in body
     assert "After a restart the web UI answers only on http://10.0.0.9" in body
+    # The notice polls for the server's return; the Address poll would only fail meanwhile.
+    assert "/section/interface_assignment/status" not in body
+
+
+_IA_STATUS = "/section/interface_assignment/status"
+
+
+def _ia_status(base: str, seen: str | None = None) -> tuple[str, str | None]:
+    """The poll's body and the event its ``HX-Trigger`` header names, if any."""
+    query = "" if seen is None else "?" + urllib.parse.urlencode({"seen": seen})
+    status, body, headers = _raw_request(base, _IA_STATUS + query, headers={}, method="GET")
+    assert status == 200
+    return body, {k.lower(): v for k, v in headers.items()}.get("hx-trigger")
+
+
+def _ia_fingerprint(body: str) -> str:
+    match = re.search(r'id="ia-options-fp" data-fp="([0-9a-f]+)"', body)
+    assert match is not None
+    return match.group(1)
+
+
+def _ia_address(body: str, slot: str) -> str:
+    match = re.search(rf'<span id="{slot}"[^>]*>\n(.*?)\n</span>', body, re.S)
+    assert match is not None
+    return match.group(1).strip()
+
+
+def test_the_interface_assignment_poll_replaces_every_address_cell_and_no_picker(live_server, monkeypatch) -> None:
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_source_iface = "eth0"
+    cfg.otp_output.source_iface = "eth1"
+    save_config(cfg, server.config_path)
+
+    _status, panel = _get(base, "/section/interface_assignment")
+    body, _event = _ia_status(base)
+    cells = re.findall(r'<span id="(ia-addr-[^"]+)">', panel)
+    assert len(cells) == len(re.findall(r"<tr class=", panel)) > 5
+    assert re.findall(r'<span id="(ia-addr-[^"]+)" hx-swap-oob="true">', body) == cells
+    # An unsaved choice lives in the pickers, so the poll never sends one.
+    assert "<select" not in body
+    assert _ia_address(body, "ia-addr-otp_output-source_iface") == "10.0.0.9"
+
+
+@pytest.mark.parametrize(
+    ("present", "chip"),
+    [({"eth0": "192.168.178.59"}, "Not connected"), ({"eth0": "192.168.178.59", "eth1": None}, "Interface down")],
+    ids=["unplugged", "no-address"],
+)
+def test_the_interface_assignment_poll_shows_an_outage_without_a_scan(live_server, monkeypatch, present, chip) -> None:
+    import socket as _socket
+    from types import SimpleNamespace
+
+    from openfollow import net_utils as net_utils_mod
+
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_source_iface = "eth0"
+    cfg.otp_output.source_iface = "eth1"
+    save_config(cfg, server.config_path)
+    _get(base, "/section/interface_assignment")
+
+    # A present interface without an IPv4 address still lists, under a link-layer entry.
+    monkeypatch.setattr(
+        net_utils_mod.psutil,
+        "net_if_addrs",
+        lambda: {
+            name: [SimpleNamespace(family=_socket.AF_INET if addr else _socket.AF_INET6, address=addr or "fe80::1")]
+            for name, addr in present.items()
+        },
+    )
+    body, _event = _ia_status(base)
+    assert _ia_address(body, "ia-addr-otp_output-source_iface") == f'<span class="stat-chip off">{chip}</span>'
+    assert _ia_address(body, "ia-addr-psn_source_iface") == "192.168.178.59"
+
+
+def _relabel(server: Any, _monkeypatch: Any) -> None:
+    cfg = load_config(server.config_path)
+    cfg.interface_labels = {"eth1": "Lighting"}
+    save_config(cfg, server.config_path)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        _relabel,
+        lambda _server, monkeypatch: _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59"}),
+        lambda _server, monkeypatch: _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.10"}),
+        lambda _server, monkeypatch: _patch_ifaces(
+            monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9", "eth2": "10.1.0.9"}
+        ),
+    ],
+    ids=["label-saved", "adapter-unplugged", "address-changed", "adapter-plugged-in"],
+)
+def test_the_interface_assignment_poll_reloads_the_pickers_once_their_list_changes(
+    live_server, monkeypatch, change
+) -> None:
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
+    server, base = live_server
+    _status, panel = _get(base, "/section/interface_assignment")
+    seen = _ia_fingerprint(panel)
+    body, event = _ia_status(base, seen)
+    assert event is None
+    assert _ia_fingerprint(body) == seen
+
+    change(server, monkeypatch)
+    body, event = _ia_status(base, seen)
+    assert event == "iface-options-changed"
+    changed = _ia_fingerprint(body)
+    assert changed != seen
+    # The page keeps the new fingerprint, so the next poll is quiet again.
+    assert _ia_status(base, changed)[1] is None
+
+
+def test_the_interface_assignment_poll_without_a_fingerprint_reloads_nothing(live_server) -> None:
+    _server, base = live_server
+    assert _ia_status(base)[1] is None
+
+
+def test_the_interface_assignment_panel_polls_and_its_pickers_can_reload_in_place(live_server) -> None:
+    _server, base = live_server
+    _status, panel = _get(base, "/section/interface_assignment")
+    poller = panel[panel.rindex("<div", 0, panel.index(f'hx-get="{_IA_STATUS}"')) :].split("</div>", 1)[0]
+    assert 'hx-trigger="every 5s"' in poller
+    assert 'hx-swap="none"' in poller and 'hx-target="this"' in poller
+    assert 'document.getElementById("ia-options-fp").dataset.fp' in poller
+    selects = re.findall(r'<select [^>]*data-options-url="([^"]+)"[^>]*hx-get="([^"]+)"', panel)
+    assert len(selects) == panel.count("<select ") > 3
+    for options_url, load_url in selects:
+        assert load_url.startswith(options_url + "&current=")
+    _status, page = _get(base, "/")
+    assert "document.addEventListener('iface-options-changed', refreshIfacePickers);" in page
 
 
 def test_interface_assignment_offers_no_restart_when_the_bind_already_matches(live_server) -> None:
@@ -1350,7 +1483,7 @@ def test_interface_assignment_renders_and_saves_the_sender_rows(live_server, mon
     assert status == 200
     assert 'name="rttrpm_output.source_iface"' in body
     assert 'name="osc_destinations.default.source_iface"' in body
-    assert "OSC to Default" in body
+    assert "OSC Destination Default" in body
     assert "experimental-feature" in body
 
     status, _ = _post_form(

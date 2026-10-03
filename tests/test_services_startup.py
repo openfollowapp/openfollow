@@ -2435,6 +2435,17 @@ def test_a_blank_video_pin_is_followed_through_the_station(monkeypatch) -> None:
     assert receiver.released == ["eth0 has no address"]
 
 
+def test_a_video_pin_outage_names_the_interface_by_label(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    cfg = services._app._config
+    cfg.video_source_type = "srt"
+    cfg.video_input_iface = "eth1"
+    cfg.interface_labels = {"eth1": "Video"}
+    receiver = _RecordingVideoReceiver(pinned_to="10.0.0.9")
+    _video_plane(services, receiver).suspend()
+    assert receiver.released == ["Video (eth1) has no address"]
+
+
 @pytest.mark.parametrize(
     ("source", "field", "url"),
     [
@@ -2592,3 +2603,19 @@ def test_network_plane_status_reports_the_observer_snapshot(monkeypatch) -> None
             "resolved": True,
         }
     ]
+
+
+def test_an_outage_alert_names_the_adapter_by_its_label(monkeypatch) -> None:
+    """The station's own labels name the interface on the HUD, and an adapter
+    that is gone reads as not connected rather than down."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "eth0"
+    services._app._config.otp_output.enabled = True
+    services._app._config.otp_output.source_iface = "enx00e04c68a1f2"
+    services._app._config.interface_labels = {"enx00e04c68a1f2": "Lighting backup"}
+    services.apply_psn_source_ip_change = lambda _ip: None  # type: ignore[method-assign]
+    services._follow_station_ip = lambda: None  # type: ignore[method-assign]
+
+    services.observe_network_planes()
+    assert "OTP output: Lighting backup (enx00e04c68a1f2) is not connected" in services.network_alerts()

@@ -1223,9 +1223,11 @@ def _web_bind_address(cfg: AppConfig, resolved: tuple[str, str]) -> str:
     runtime actually substitutes, not as an error – unlike every other plane
     the web UI stays up rather than failing closed.
     """
+    from openfollow.net_adapters import display_name
+
     host, status = resolved
     if status == "down":
-        return f"{cfg.web_bind_iface} is down - all interfaces"
+        return f"{display_name(cfg.web_bind_iface, cfg.interface_labels)} is down - all interfaces"
     if status == "none":
         return "All interfaces"
     return host
@@ -1250,9 +1252,12 @@ def build_web_bind_notice(cfg: AppConfig, resolved: tuple[str, str], display_por
         # is served everywhere rather than nowhere. Warning about a lockout
         # that is not going to happen sends the operator to undo a pin that is
         # currently costing them nothing.
+        from openfollow.net_adapters import display_name
+
+        shown = display_name(cfg.web_bind_iface, cfg.interface_labels)
         return (
-            f"{cfg.web_bind_iface} has no address, so a restart serves the web UI on every "
-            f"interface instead. It answers only on {cfg.web_bind_iface} once that interface "
+            f"{shown} has no address, so a restart serves the web UI on every "
+            f"interface instead. It answers only on {shown} once that interface "
             "has an address at startup."
         )
     port = "" if display_port == 80 else f":{display_port}"
@@ -1289,13 +1294,53 @@ def _osc_membership_address(
     return plane_address(pin)
 
 
-def _plane_address(pin: str, station_iface: str) -> str:
-    """Where a plane binds: the resolved address, or which interface is down."""
+# What the Address column says for a plane that cannot send; the panel shows it as
+# an error chip, since the picker beside it already names the interface.
+ADDRESS_NOT_CONNECTED = "Not connected"
+ADDRESS_INTERFACE_DOWN = "Interface down"
+_OUTAGE_ADDRESSES = frozenset({ADDRESS_NOT_CONNECTED, ADDRESS_INTERFACE_DOWN})
+
+
+@dataclass(frozen=True)
+class _PanelNames:
+    """Read once per panel render: the operator's labels and the interfaces that exist."""
+
+    labels: Mapping[str, str]
+    present: frozenset[str]
+
+
+def _iface_who(name: str, labels: Mapping[str, str]) -> str:
+    """How a picker names an interface: its label, else the name and which adapter it is."""
+    from openfollow.net_adapters import describe, display_name
+
+    if name in labels:
+        return display_name(name, labels)
+    where = describe(name).where(labels)
+    return f"{name} · {where}" if where else name
+
+
+def _iface_options_fingerprint(labels: Mapping[str, str]) -> str:
+    """Changes whenever an interface picker's option list would read differently."""
+    from openfollow.net_utils import list_iface_ipv4, present_interfaces
+
+    listed = [(name, ip, _iface_who(name, labels)) for name, ip in list_iface_ipv4()]
+    state = repr((listed, sorted(present_interfaces()), sorted(labels.items())))
+    return hashlib.sha256(state.encode()).hexdigest()[:16]
+
+
+def _address_slot(row: Mapping[str, Any]) -> str:
+    """The id the panel's poll replaces a row's Address cell by."""
+    return "ia-addr-" + re.sub(r"[^A-Za-z0-9_-]+", "-", str(row["key"] or row["label"])).strip("-")
+
+
+def _plane_address(pin: str, station_iface: str, names: _PanelNames) -> str:
+    """Where a plane binds: the resolved address, or why its interface has none."""
     from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
 
     resolved, status = resolve_plane_source_ip(pin, station_iface)
     if status == "down":
-        return f"{plane_source_iface(pin, station_iface)} is down"
+        present = plane_source_iface(pin, station_iface) in names.present
+        return ADDRESS_INTERFACE_DOWN if present else ADDRESS_NOT_CONNECTED
     return resolved
 
 
@@ -1303,9 +1348,10 @@ def _plane_address(pin: str, station_iface: str) -> str:
 _ROUTE_PICK_WAIT_S = 0.2
 
 
-def _route_pick(host: str, resolver: BoundedResolver, wait_s: float | None) -> str:
+def _route_pick(host: str, resolver: BoundedResolver, wait_s: float | None, labels: Mapping[str, str]) -> str:
     """The interface and address the Pi would use for *host* right now; with no
     *wait_s*, only start its lookup."""
+    from openfollow.net_adapters import display_name
     from openfollow.net_utils import get_iface_for_ip, route_source
 
     if wait_s is None:
@@ -1322,7 +1368,7 @@ def _route_pick(host: str, resolver: BoundedResolver, wait_s: float | None) -> s
     if source is None:
         return "No route"
     iface = get_iface_for_ip(source)
-    return f"{iface} – {source}" if iface else source
+    return f"{display_name(iface, labels)} – {source}" if iface else source
 
 
 def _egress_address(
@@ -1332,6 +1378,7 @@ def _egress_address(
     *,
     resolver: BoundedResolver,
     wait_s: float | None,
+    names: _PanelNames,
     unrouted: str = "Per routing table",
 ) -> str:
     """The address cell for a row that sends to *host*, looked up by the resolver its output uses;
@@ -1342,12 +1389,12 @@ def _egress_address(
     if host and is_loopback_host(host):
         return "Loopback"
     if plane_source_iface(pin, station_iface):
-        return _plane_address(pin, station_iface)
+        return _plane_address(pin, station_iface, names)
     # Nothing pinned anywhere: show where the Pi sends it now, not that it chooses.
-    return _route_pick(host, resolver, wait_s) if host else unrouted
+    return _route_pick(host, resolver, wait_s, names.labels) if host else unrouted
 
 
-def _video_input_row(cfg: AppConfig, wait_s: float | None) -> dict[str, Any]:
+def _video_input_row(cfg: AppConfig, wait_s: float | None, names: _PanelNames) -> dict[str, Any]:
     """The active video input's row; read-only with a reason when it cannot be pinned."""
     from openfollow.video.failure import SourceKind
     from openfollow.video.inputs import get_input_class
@@ -1375,9 +1422,11 @@ def _video_input_row(cfg: AppConfig, wait_s: float | None) -> dict[str, Any]:
     pin = config_pin(config)
     if input_cls.receives_on_every_interface(config):
         # A wildcard listener receives on every interface unless pinned itself.
-        address = _egress_address(pin, "", "", resolver=HOST_RESOLVER, wait_s=wait_s, unrouted="All interfaces")
+        address = _egress_address(
+            pin, "", "", resolver=HOST_RESOLVER, wait_s=wait_s, names=names, unrouted="All interfaces"
+        )
         return {**row, "key": "video_input_iface", "address": address, "editable": True, "blank": "all"}
-    address = _egress_address(pin, target, "", resolver=HOST_RESOLVER, wait_s=wait_s)
+    address = _egress_address(pin, target, "", resolver=HOST_RESOLVER, wait_s=wait_s, names=names)
     return {**row, "key": "video_input_iface", "address": address, "editable": True}
 
 
@@ -1397,28 +1446,37 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
     owns, so giving them their own dropdown would imply an independence they
     don't have.
     """
+    from openfollow.net_adapters import display_name
+    from openfollow.net_utils import present_interfaces
+
+    names = _PanelNames(cfg.interface_labels, present_interfaces())
     # Built once to start every lookup, then for real: each lookup waits from
     # when it started, so the render waits once for all of them.
-    _interface_assignment_rows(cfg, web_bind, None)
-    return _interface_assignment_rows(cfg, web_bind, _ROUTE_PICK_WAIT_S)
+    _interface_assignment_rows(cfg, web_bind, None, names)
+    rows = _interface_assignment_rows(cfg, web_bind, _ROUTE_PICK_WAIT_S, names)
+    for row in rows:
+        row["outage"] = row["address"] in _OUTAGE_ADDRESSES
+        row["value_display"] = display_name(str(row.get("value") or ""), cfg.interface_labels)
+        row["slot"] = _address_slot(row)
+    return rows
 
 
 def _interface_assignment_rows(
-    cfg: AppConfig, web_bind: tuple[str, str] | None, wait_s: float | None
+    cfg: AppConfig, web_bind: tuple[str, str] | None, wait_s: float | None, names: _PanelNames
 ) -> list[dict[str, Any]]:
     resolved = web_bind if web_bind is not None else resolve_web_bind_for(cfg)
     station = cfg.psn_source_iface
-    station_ip = _plane_address(station, "")
+    station_ip = _plane_address(station, "", names)
 
     def _addr(pin: str) -> str:
-        return _plane_address(pin, station)
+        return _plane_address(pin, station, names)
 
     def _sender(pin: str, host: str, *, tcp: bool = False) -> str:
         # Each looked up the way its socket is: UDP from IPv4 sockets, TCP over both families.
         resolver = HOST_RESOLVER if tcp else IPV4_RESOLVER
-        return _egress_address(pin, host, station, resolver=resolver, wait_s=wait_s)
+        return _egress_address(pin, host, station, resolver=resolver, wait_s=wait_s, names=names)
 
-    return [
+    rows: list[dict[str, Any]] = [
         {
             "key": "psn_source_iface",
             "label": "Station default",
@@ -1479,7 +1537,7 @@ def _interface_assignment_rows(
         *(
             {
                 "key": _dest_pin_key(dest.id),
-                "label": f"OSC to {dest.name or f'{dest.host}:{dest.port}'}",
+                "label": f"OSC Destination {dest.name or f'{dest.host}:{dest.port}'}",
                 "value": dest.source_iface,
                 "address": _sender(dest.source_iface, dest.host, tcp=dest.protocol == "tcp"),
                 "editable": True,
@@ -1487,7 +1545,7 @@ def _interface_assignment_rows(
             }
             for dest in cfg.osc_destinations.destinations
         ),
-        _video_input_row(cfg, wait_s),
+        _video_input_row(cfg, wait_s, names),
         {
             # The web UI does not inherit the station pin: a station pinned to
             # a lighting VLAN would take its own config UI off the office LAN
@@ -1506,6 +1564,7 @@ def _interface_assignment_rows(
             "note": f"Fixed to {cfg.web_bind} by web_bind in config.toml" if cfg.web_bind else "",
         },
     ]
+    return rows
 
 
 def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> bool:
@@ -2963,6 +3022,8 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     # files never travel, so a foreign id would just dangle on another host.
     d.pop("testpattern_selected_media", None)
     d.pop("video_input_iface", None)
+    # Names this box's adapters; on another station the same name is other hardware.
+    d.pop("interface_labels", None)
     # A NIC name on this box: on a peer it would repin OTP to whatever shares it.
     d["otp_output"].pop("source_iface", None)
     # ``osc.listen_iface`` names a NIC on this box. Carried to a station that
@@ -3517,6 +3578,7 @@ def _build_diagnostics_providers(
         iface_ip=lambda: (
             f"{server.local_ip} (Station default interface down)" if server.station_interface_down else server.local_ip
         ),
+        interface_labels=lambda: dict(cfg.interface_labels),
         config_redacted_toml=lambda: diagnostics.redact_config_secrets(
             _config_to_toml(cfg),
         ),
@@ -5176,6 +5238,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         banner: dict[str, str] | None = None,
         editable: bool = False,
         vlan_form: dict[str, str] | None = None,
+        labels: Mapping[str, str] | None = None,
+        label_result: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Assemble the ``partials/network`` context from the adapter's raw
         snapshot.
@@ -5184,6 +5248,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         that is writable. ``overrides`` carries submitted input back onto it so
         a validation error keeps what the operator typed; ``vlan_form`` does
         the same for the Add VLAN block, which is otherwise closed.
+        ``labels`` replaces the saved labels when the caller has just written
+        them; ``label_result`` reports a label save on its row (``iface``, and
+        ``error`` with the ``entered`` text, or ``saved``).
         """
         cfg = server.get_network_config(iface)
         if not cfg or not cfg.get("interfaces"):
@@ -5263,6 +5330,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # without reopening a row the operator closed.
         net["editing_iface"] = net["active_interface"] if (iface or editable) else ""
         net["vlan_form"] = dict(vlan_form) if vlan_form else {}
+        _add_adapter_fields(net, _request_scoped_config().interface_labels if labels is None else labels, label_result)
         # The single-interface snapshot is a fresh read; it belongs to the row
         # being configured, while the others keep their own detail off the
         # cached scan. Captured before the operator's submitted input is
@@ -5293,6 +5361,26 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     row["entered"] = {key: net[key] for key in ("method", "address", "subnet_mask", "router", "dns")}
                 break
         return net
+
+    def _add_adapter_fields(
+        net: dict[str, Any], labels: Mapping[str, str], label_result: dict[str, str] | None
+    ) -> None:
+        """Which adapter each row is, its label, and the labelled adapters that are not plugged in."""
+        from openfollow.net_adapters import adapter_fields, display_name
+
+        result = label_result or {}
+        names = [str(row.get("name", "")) for row in net["iface_rows"]]
+        for row, name in zip(net["iface_rows"], names, strict=True):
+            row.update(adapter_fields(name, labels))
+            if name and name == result.get("iface"):
+                row["label_error"] = result.get("error", "")
+                row["label_entered"] = result.get("entered", row["label"])
+                row["label_saved"] = bool(result.get("saved"))
+        net["label_iface"] = result.get("iface", "")
+        net["absent_rows"] = [
+            {"name": name, "label": label} for name, label in sorted(labels.items()) if name not in names
+        ]
+        net["display_names"] = {name: display_name(name, labels) for name in names}
 
     def _resolve_network_iface(iface: str) -> tuple[str | None, str]:
         """Validate the posted interface against the adapter's live list.
@@ -5400,6 +5488,48 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "partials/network",
             net=_build_network_form_context(iface=iface, editable=True),
         )
+
+    def _label_targets() -> set[str]:
+        """Interfaces a label may be saved on: the ones the card lists."""
+        rows = server.get_network_interfaces() or []
+        snapshot = server.get_network_config(None) or {}
+        names = {str(row.get("name", "")) for row in rows} | {str(n) for n in snapshot.get("interfaces", [])}
+        return {name for name in names if name}
+
+    def _label_card(labels: Mapping[str, str] | None, result: dict[str, str]) -> Any:
+        return template("partials/network", net=_build_network_form_context(labels=labels, label_result=result))
+
+    @app.post("/section/network/label")
+    def network_label() -> Any:
+        """Label one interface, or clear its label. OpenFollow's own setting: nothing on the network changes."""
+        from openfollow.net_adapters import label_conflict, normalize_labels
+        from openfollow.web.validation import validate
+
+        iface = (request.forms.get("iface") or "").strip()
+        entered = request.forms.get("label") or ""
+        if iface not in _label_targets():
+            abort(400, "Unknown interface")
+        error = validate("network", "label", entered)
+        with _config_write_lock:
+            cfg = _load_config_for_edit()
+            error = error or label_conflict(cfg.interface_labels, iface, entered)
+            if error:
+                return _label_card(None, {"iface": iface, "error": error, "entered": entered})
+            cfg.interface_labels = normalize_labels({**cfg.interface_labels, iface: entered})
+            save_config(cfg, server.config_path)
+        return _label_card(cfg.interface_labels, {"iface": iface, "saved": "1"})
+
+    @app.post("/section/network/label/forget")
+    def network_label_forget() -> Any:
+        """Drop the label of an adapter that is not plugged in, which frees the label."""
+        iface = (request.forms.get("iface") or "").strip()
+        with _config_write_lock:
+            cfg = _load_config_for_edit()
+            if iface not in cfg.interface_labels:
+                abort(404, "No label on that interface")
+            cfg.interface_labels = {name: label for name, label in cfg.interface_labels.items() if name != iface}
+            save_config(cfg, server.config_path)
+        return _label_card(cfg.interface_labels, {})
 
     @app.post("/section/network/apply")
     def network_apply() -> Any:
@@ -5845,6 +5975,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             restarting=restarting,
             restart_refused=restart_refused,
             assignment_rows=build_interface_assignment_rows(cfg, resolved),
+            options_fingerprint=_iface_options_fingerprint(cfg.interface_labels),
             web_bind_notice=build_web_bind_notice(cfg, resolved, server.display_port),
             web_bind_advisory=server.get_web_bind_advisory(),
             web_bind_restart=_web_bind_restart_pending(cfg, resolved),
@@ -5858,6 +5989,23 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         pickers in place) is what keeps Scan from reverting an unsaved
         selection to the value on disk."""
         return _render_interface_assignment(_request_scoped_config())
+
+    @app.get("/section/interface_assignment/status")
+    def interface_assignment_status() -> Any:
+        """The panel's poll: every row's Address cell, swapped in out of band.
+
+        The pickers are left alone, so an unsaved choice survives. When their
+        option list would now read differently than at ``?seen=``, the response
+        triggers ``iface-options-changed`` and each picker reloads its options."""
+        cfg = _request_scoped_config()
+        fingerprint = _iface_options_fingerprint(cfg.interface_labels)
+        if "seen" in request.query and request.query.seen != fingerprint:
+            response.set_header("HX-Trigger", "iface-options-changed")
+        return template(
+            "partials/interface_assignment_status",
+            assignment_rows=build_interface_assignment_rows(cfg, resolve_web_bind_for(cfg)),
+            options_fingerprint=fingerprint,
+        )
 
     @app.post("/section/interface_assignment")
     def update_interface_assignment() -> Any:
@@ -8263,6 +8411,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # duplicate disk I/O.
         cfg = _request_scoped_config() if needs_cfg(rules[field_name]) else None
         err = validate(section, field_name, raw, cfg=cfg)
+        if err is None and (section, field_name) == ("network", "label"):
+            from openfollow.net_adapters import label_conflict
+
+            err = label_conflict(_request_scoped_config().interface_labels, request.query.get("iface", ""), raw)
         if err is not None:
             # Errors get an assertive live region so screen readers
             # interrupt. ``role`` / ``aria-live`` ride on the swapped-in span
@@ -8369,12 +8521,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def network_interfaces_by_name() -> Any:
         """Return iface-keyed network interface options.
 
-        Option ``value`` is the iface name (the stored value); the
-        label is ``<iface> – <current IPv4>`` so the operator can
-        still tell at a glance which network each one is on. A
-        configured iface that's currently down is appended with
-        ``(not available)`` so the operator sees their selection
-        instead of having it silently drop out of the list.
+        Option ``value`` is the iface name (the stored value); the label
+        reads "who – address or state": ``Lighting (enx…) – 203.0.113.21``,
+        or for an unlabelled one ``enx… · USB 1, port 1 – 203.0.113.21``, so
+        the operator can tell which adapter and which network each one is.
+        A configured iface without an address stays listed as ``– no
+        address``, or ``– not connected`` when the adapter is gone, instead
+        of silently dropping out of the list.
 
         Shared by every interface picker (PSN, OTP). ``?current=<iface>``
         selects that iface in the rendered list; without it the route
@@ -8388,9 +8541,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         fall back to auto-detect – the label is allow-listed, never
         interpolated from the query.
         """
-        from openfollow.net_utils import list_iface_ipv4
+        from openfollow.net_utils import interface_present, list_iface_ipv4
 
         cfg = _request_scoped_config()
+
+        def who(name: str) -> str:
+            return _iface_who(name, cfg.interface_labels)
+
         # ``?current=`` present (even empty) overrides; absent → PSN default. An
         # empty OTP pin must stay empty (auto-detect), not fall back to PSN's.
         current = request.query.current if "current" in request.query else cfg.psn_source_iface
@@ -8400,11 +8557,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         names = {name for name, _ in ifaces}
         for name, ip in ifaces:
             selected = "selected" if name == current else ""
-            label = html_mod.escape(f"{name} – {ip}", quote=True)
+            label = html_mod.escape(f"{who(name)} – {ip}", quote=True)
             options.append(f'<option value="{html_mod.escape(name, quote=True)}" {selected}>{label}</option>')
         if current and current not in names:
-            safe = html_mod.escape(current, quote=True)
-            options.append(f'<option value="{safe}" selected>{safe} (not available)</option>')
+            state = "no address" if interface_present(current) else "not connected"
+            text = html_mod.escape(f"{who(current)} – {state}", quote=True)
+            options.append(f'<option value="{html_mod.escape(current, quote=True)}" selected>{text}</option>')
         return "\n".join(options)
 
     # NDI source discovery is served by the plugin's own

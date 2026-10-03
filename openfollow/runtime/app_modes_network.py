@@ -18,6 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from openfollow.net_adapters import Adapter, describe, display_name
 from openfollow.net_utils import WEB_BIND_ALL
 from openfollow.network.adapter import (
     ApplyResult,
@@ -118,6 +119,9 @@ class _NetworkSnapshot:
     # call per interface, which the render loop cannot afford. This read is
     # already off-thread and budgeted.
     methods: dict[str, str] = field(default_factory=dict)
+    # Interface name -> which adapter it is. Off-thread for the same reason:
+    # describing one can read sysfs or run ``ip`` / ``networksetup``.
+    adapters: dict[str, Adapter] = field(default_factory=dict)
 
 
 def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
@@ -139,7 +143,8 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
         iface_state = state if iface.name == active else adapter.get_state(iface.name)
         if iface_state is not None:
             methods[iface.name] = _METHOD_LABELS.get(iface_state.ipv4.method, "")
-    return _NetworkSnapshot(True, interfaces, active, state, pending, methods)
+    adapters = {iface.name: describe(iface.name) for iface in interfaces}
+    return _NetworkSnapshot(True, interfaces, active, state, pending, methods, adapters)
 
 
 def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> None:
@@ -159,6 +164,7 @@ def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> No
         return
     app._pi_network_active_iface = snap.active_iface
     app._pi_network_methods = snap.methods
+    app._pi_network_adapters = snap.adapters
     app._pi_network_state_cache = snap.state
     app._pi_network_pending_config = snap.pending
 
@@ -294,6 +300,45 @@ def _iface_addresses(app: OpenFollowApp) -> list[tuple[str, str]]:
     ]
 
 
+def _labels(app: OpenFollowApp) -> dict[str, str]:
+    return dict(getattr(getattr(app, "_config", None), "interface_labels", None) or {})
+
+
+def _absent_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[str, object]]:
+    """Labelled adapters that are not plugged in: listed, with nothing to open."""
+    labels = _labels(app)
+    present = {name for name, _address in ifaces}
+    return [
+        {
+            "kind": "display",
+            "key": f"absent:{name}",
+            "label": display_name(name, labels),
+            "value": "",
+            "pill": "not connected",
+            "pill_level": "",
+        }
+        for name in sorted(labels)
+        if name not in present
+    ]
+
+
+def _adapter_rows(adapter: Adapter, labels: dict[str, str]) -> list[dict[str, object]]:
+    """Which physical adapter an interface is: the same rows the web card shows."""
+    fields = adapter.fields(labels)
+    shown = [
+        ("vlan", "VLAN", fields["vlan_on"]),
+        ("port", "Port", fields["port"]),
+        ("model", "Model", fields["model"]),
+        ("mac", "MAC address", fields["mac"]),
+    ]
+    rows: list[dict[str, object]] = [
+        {"kind": "display", "key": f"adapter_{key}", "label": label, "value": value}
+        for key, label, value in shown
+        if value
+    ]
+    return [{"kind": "header", "label": "Adapter"}, *rows] if rows else []
+
+
 def _iface_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[str, object]]:
     """One row per interface: the URL that reaches this UI there.
 
@@ -306,6 +351,7 @@ def _iface_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[
     everywhere = _serves_every_interface(app)
     bind_host = _served_bind_host(app)
     methods = getattr(app, "_pi_network_methods", {}) or {}
+    labels = _labels(app)
     rows: list[dict[str, object]] = []
     for name, address in ifaces:
         # The pill states the one thing worth knowing at a glance, worst first:
@@ -325,7 +371,7 @@ def _iface_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[
             {
                 "kind": "choice",
                 "key": f"{_IFACE_ROW_PREFIX}{name}",
-                "label": name,
+                "label": display_name(name, labels),
                 "value": address,
                 "pill": pill,
                 "pill_level": level,
@@ -466,6 +512,7 @@ def _iface_list_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[
 
     rows.append({"kind": "header", "label": "Interfaces"})
     rows.extend(_iface_rows(app, ifaces))
+    rows.extend(_absent_rows(app, ifaces))
     rows.extend(_reachability_notices(app, ifaces))
 
     if _web_ui_is_restricted(app):
@@ -523,6 +570,8 @@ def _iface_detail_rows(
             }
         )
 
+    adapters = getattr(app, "_pi_network_adapters", None) or {}
+    rows.extend(_adapter_rows(adapters.get(name, Adapter(name)), _labels(app)))
     rows.append({"kind": "header", "label": "Change this interface"})
     if not writable:
         rows.append(

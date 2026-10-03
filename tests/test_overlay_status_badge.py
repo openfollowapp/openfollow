@@ -37,11 +37,13 @@ from openfollow.runtime.overlay_state import OverlayState
 from openfollow.runtime.overlay_status_badge import (
     _BADGE_MAX_WIDTH,
     _BADGE_MIN_WIDTH,
+    _LINE_ADVANCE,
     _MAX_VISIBLE_ROWS,
     _ROW_HEIGHT,
     _ROW_SPACING,
     _TOP_OFFSET,
     draw_status_badge,
+    wrap_lines,
 )
 from tests._fake_cairo import FakeCairo, FakeRenderer
 
@@ -340,3 +342,77 @@ class TestTheStackFitsItsContent:
         rows = [(f"k{i}", "short") for i in range(_MAX_VISIBLE_ROWS + 3)]
         _cr, width = self._render(*rows)
         assert width >= _BADGE_MIN_WIDTH
+
+
+class TestRowsWrapToTwoLines:
+    """Every row, whatever wrote it, wraps at a space onto a second line and is
+    cut only past that. A label and an interface name ("OTP output: Lighting
+    backup (enx00e04c68a1f2) is not connected") cut off the part that says what
+    is wrong when a row had one line."""
+
+    _OUTAGE = "OTP output: Lighting backup (enx00e04c68a1f2) is not connected"
+
+    @staticmethod
+    def _render(*flags: tuple[str, ...]) -> FakeCairo:
+        cr = FakeCairo()
+        state = _state_with_flags(*flags)
+        draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
+        return cr
+
+    def test_a_row_that_fits_stays_one_line(self) -> None:
+        cr = self._render(("video_failure", "Video: Unreachable"))
+        assert cr.show_text_strings() == ["Video: Unreachable"]
+
+    @pytest.mark.parametrize("level", ["error", "caution", "info", "success"])
+    def test_a_long_row_of_any_level_wraps_at_a_space(self, level: str) -> None:
+        cr = self._render(("network_down_0", self._OUTAGE, level))
+        first, second = cr.texts
+        assert f"{first.text} {second.text}" == self._OUTAGE
+        assert second.x == first.x
+        assert second.y == first.y + _LINE_ADVANCE
+
+    def test_only_past_the_second_line_is_cut(self) -> None:
+        message = "MIDI patch(es) without a connected device: " + ", ".join(f"Faders {n}" for n in range(12))
+        cr = self._render(("midi_patch_missing", message))
+        lines = cr.show_text_strings()
+        assert len(lines) == 2
+        assert message.startswith(lines[0])
+        assert lines[1].endswith("...")
+        assert lines[1] != message[len(lines[0]) :].strip()
+
+    def test_a_word_longer_than_a_line_is_cut_not_split(self) -> None:
+        cr = self._render(("x", "y" * 80))
+        (only,) = cr.show_text_strings()
+        assert only.endswith("...")
+        assert only.startswith("yyyy")
+
+    def test_an_overlong_first_word_is_cut_on_its_own_line(self) -> None:
+        cr = self._render(("x", "y" * 80 + " is down"))
+        first, second = cr.show_text_strings()
+        assert first.endswith("...")
+        assert second == "is down"
+
+    def test_a_wrapped_row_is_taller_and_pushes_the_next_one_down(self) -> None:
+        cr = self._render(("a", self._OUTAGE), ("b", "Video: Stalled"))
+        tops = _row_top_ys(cr, _badge_x(cr))
+        assert tops == [float(_TOP_OFFSET), _TOP_OFFSET + _ROW_HEIGHT + _LINE_ADVANCE + _ROW_SPACING]
+
+    def test_the_sign_sits_centred_on_a_two_line_row(self) -> None:
+        cr = self._render(("a", self._OUTAGE, "info"))
+        # The info sign is a circle centred on the row.
+        centre_y = _TOP_OFFSET + (_ROW_HEIGHT + _LINE_ADVANCE) / 2
+        assert any(abs(arc[1] - centre_y) < 1e-6 for arc in cr.arcs)
+
+    def test_the_tail_stays_one_line(self) -> None:
+        rows = [(f"k{i}", self._OUTAGE) for i in range(_MAX_VISIBLE_ROWS + 1)]
+        cr = self._render(*rows)
+        assert cr.show_text_strings()[-1] == "+1 more"
+        assert len(cr.show_text_strings()) == 2 * _MAX_VISIBLE_ROWS + 1
+
+
+def test_wrapping_measures_in_the_current_font() -> None:
+    cr = FakeCairo()
+    cr.set_font_size(10.0)
+    # 6 px a character: twelve fit in 72 px.
+    assert wrap_lines(FakeRenderer(), cr, "aaaa bbbb cccc dddd", 72.0) == ["aaaa bbbb", "cccc dddd"]
+    assert wrap_lines(FakeRenderer(), cr, "", 72.0) == [""]

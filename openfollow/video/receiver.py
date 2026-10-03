@@ -88,6 +88,7 @@ class GstNativeSinkReceiver:
         snapshot_provider: SnapshotProvider | None = None,
         stall_timeout: float | None = None,
         heal_interval: float | None = None,
+        iface_name: Callable[[str], str] | None = None,
     ) -> None:
         # Resolve the active video input plugin
         input_cls = get_input_class(source_type)
@@ -132,6 +133,8 @@ class GstNativeSinkReceiver:
         self._discovery_lock = threading.Lock()
         # Why the last build was refused under the interface pin, if it was.
         self._pin_refusal: PinRefusal | None = None
+        # How a refusal names the pinned interface: "Lighting (eth1)" when labelled.
+        self._iface_name: Callable[[str], str] = iface_name or str
         # The pinned interface's address the input was last checked against.
         self._pinned_to: str | None = None
         self._discovery_running = False
@@ -445,6 +448,9 @@ class GstNativeSinkReceiver:
         """The pinned interface's address the input was last checked against, or None."""
         return self._pinned_to
 
+    def _refusal_text(self, refusal: PinRefusal) -> str:
+        return refusal.text(self._iface_name(refusal.pin)) if refusal.pin else refusal.detail
+
     def release_for_pin(self, detail: str) -> None:
         """Stop the input because its pinned interface has no address; the network plane rebuilds it."""
         self.release_source(detail, failure=VideoFailure.INTERFACE_DOWN)
@@ -588,10 +594,10 @@ class GstNativeSinkReceiver:
         if refusal is not None:
             # Nothing is built, so nothing leaves on another interface; the
             # caller schedules the retry.
-            logger.warning("%s not started: %s", self._input.display_name, refusal.detail)
+            logger.warning("%s not started: %s", self._input.display_name, self._refusal_text(refusal))
             self._pin_refusal = refusal
             self._status_marker.set_disconnected(
-                refusal.detail,
+                self._refusal_text(refusal),
                 failure=refusal.failure,
                 source_name=self._input.get_source_label(self._input_config),
             )
@@ -759,7 +765,7 @@ class GstNativeSinkReceiver:
                 self.create_pipeline()
             if self._pin_refusal is not None:
                 # Retried on the normal backoff, so a returning interface is picked up.
-                self._schedule_reconnect(self._pin_refusal.detail, failure=self._pin_refusal.failure)
+                self._schedule_reconnect(self._refusal_text(self._pin_refusal), failure=self._pin_refusal.failure)
                 return
             if self._pipeline is not None:
                 result = self._pipeline.set_state(Gst.State.PLAYING)
@@ -1229,7 +1235,7 @@ class GstNativeSinkReceiver:
             # reconnect so the source keeps being retried (and eventually falls
             # through to the max-attempts heal path).
             if self._pin_refusal is not None:
-                self._schedule_reconnect(self._pin_refusal.detail, failure=self._pin_refusal.failure)
+                self._schedule_reconnect(self._refusal_text(self._pin_refusal), failure=self._pin_refusal.failure)
                 return False
             if self._state.is_placeholder_pipeline:
                 logger.warning("Pipeline build failed during reconnect – rescheduling")

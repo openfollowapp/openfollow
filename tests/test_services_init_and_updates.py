@@ -974,6 +974,14 @@ class TestResolveWebBind:
         assert "eth1" in advisory["banner"]
         assert advisory["resolved_ip"] == ""
 
+    def test_a_missed_pin_is_named_by_its_label(self, services: AppRuntimeServices, monkeypatch) -> None:
+        _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        services._app._config = replace(
+            services._app._config, web_bind="", web_bind_iface="eth1", interface_labels={"eth1": "Office"}
+        )
+        services._resolve_web_bind()
+        assert services._web_bind_advisory()["banner"].startswith("Web UI is pinned to Office (eth1), which has")
+
     def test_an_unpinned_bind_reports_no_advisory(self, services: AppRuntimeServices) -> None:
         """Blank is the default, not a degraded state - surfacing a banner for
         it would cry wolf on every stock station."""

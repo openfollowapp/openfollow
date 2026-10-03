@@ -36,6 +36,8 @@ from openfollow.configuration import (
     AppConfig,
     _canonical_marker_token,
 )
+from openfollow.net_adapters import LABEL_MAX_LEN
+from openfollow.text_hygiene import CONTROL_CHARS_RE
 from openfollow.web.routes import (
     _as_bool,
     _as_button_index,
@@ -56,18 +58,13 @@ _CustomValidator = Callable[[str, "AppConfig | None"], "str | None"]
 
 
 # --- Sanitiser --------------------------------------------------------------
-# Strip control characters and bidi-override codepoints. The bidi-override
-# range (U+202A–U+202E) lets a string look one way in a code review and
-# render another way in the browser; the control range (U+0000–U+001F,
-# U+007F) includes NUL, BEL, etc. that have no business in a config field.
-# U+200E / U+200F (LTR/RTL marks) are also stripped – same family of
-# direction-spoofing tricks.
-_CONTROL_CHARS_RE = re.compile("[\x00-\x1f\x7f\u200e-\u200f\u202a-\u202e]")
+_CONTROL_CHARS_RE = CONTROL_CHARS_RE
 
 # Subset of the above used to REJECT (not silently clean) input at validate
-# time: NUL + non-whitespace C0 controls + DEL + bidi marks/overrides. Excludes
-# \t\n\v\f\r (0x09-0x0d) which ``.strip()`` legitimately handles.
-_DANGEROUS_TEXT_RE = re.compile("[\x00-\x08\x0e-\x1f\x7f\u200e-\u200f\u202a-\u202e]")
+# time: NUL + non-whitespace C0 controls + DEL + C1 controls + bidi
+# marks/overrides/isolates. Excludes \t\n\v\f\r (0x09-0x0d) which
+# ``.strip()`` legitimately handles.
+_DANGEROUS_TEXT_RE = re.compile("[\x00-\x08\x0e-\x1f\x7f-\x9f\u200e-\u200f\u202a-\u202e\u2066-\u2069]")
 
 
 def _default_sanitiser(s: str) -> str:
@@ -793,6 +790,12 @@ for _btn in MOUSE3D_BUTTON_FIELDS:
         _as_button_index, lo=-1, human_error="Button number (0 or higher), or blank for none."
     )
 FIELD_RULES["mouse3d"] = _mouse3d_rules
+
+# An interface's label, edited on its Network Interface row. Uniqueness needs the
+# other labels and the row's interface, so the validate route checks it.
+FIELD_RULES["network"] = {
+    "label": FieldRule(_as_str, max_len=LABEL_MAX_LEN, human_error=f"A label is at most {LABEL_MAX_LEN} characters."),
+}
 
 
 # --- Public API -------------------------------------------------------------

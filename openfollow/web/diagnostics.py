@@ -196,6 +196,8 @@ class DiagnosticsProviders:
 
     config_redacted_toml: Callable[[], str] | None = None
     config_diff_from_defaults: Callable[[], list[str]] | None = None
+    # The operator's labels for this station's interfaces, by interface name.
+    interface_labels: Callable[[], dict[str, str]] | None = None
 
     request_semaphore_rejections: Callable[[], int] | None = None
     detection_install_state: Callable[[], dict[str, Any]] | None = None
@@ -766,7 +768,7 @@ def _bind_map_configured(p: DiagnosticsProviders) -> list[str]:
         if row.get("editable"):
             blank = str(row.get("blank") or "")
             reads = FOLLOWS_STATION_DEFAULT if blank == "station" else BLANK_PIN_LABELS.get(blank, "(blank)")
-            pin = str(row.get("value") or "") or reads
+            pin = str(row.get("value_display") or row.get("value") or "") or reads
         else:
             pin = str(row.get("note") or "(read-only)")
         table.append((str(row.get("label") or "?"), pin, str(row.get("address") or "-")))
@@ -2286,11 +2288,26 @@ def _address_sources(
     return sources, "" if sources else "[not reported by this network backend]"
 
 
+def _adapter_line(nic: str, labels: Mapping[str, str]) -> str:
+    """``label "Lighting" · USB 2, port 2 · ASIX AX88179B · mac 9c:69:…``: which adapter a name is."""
+    from openfollow.net_adapters import describe
+
+    adapter = describe(nic)
+    parts = [f'label "{labels[nic]}"'] if nic in labels else []
+    summary = adapter.summary(labels)
+    if summary:
+        parts.append(summary)
+    if adapter.mac:
+        parts.append(f"mac {adapter.mac}")
+    return " · ".join(parts)
+
+
 def collect_network_interfaces(
     route_path: Path | None = None,
     *,
     address_sources: Callable[[], list[dict[str, Any]]] | None = None,
     timeout_s: float | None = None,
+    labels: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Interface table plus the addressing a reachability question needs.
 
@@ -2324,6 +2341,9 @@ def collect_network_interfaces(
             f"  {nic:<14} isup={st.isup} speed={st.speed}Mb mtu={st.mtu} "
             f"duplex={duplex_label.get(int(st.duplex), str(st.duplex))}"
         )
+        adapter = _adapter_line(nic, labels or {})
+        if adapter:
+            rows.append(f"  {'':<14}{adapter}")
         backend_address, source = sources.get(nic, ("", ""))
         for addr in addrs.get(nic, ()):
             if addr.family != socket.AF_INET:
@@ -2337,6 +2357,9 @@ def collect_network_interfaces(
             else:
                 origin = f" ({source})" if source and addr.address == backend_address else ""
             rows.append(f"  {'':<14}ipv4 {addr.address}{suffix}{origin}")
+    missing = [f'"{label}" ({name})' for name, label in sorted((labels or {}).items()) if name not in stats]
+    if missing:
+        rows.append(f"  Labelled, not connected: {', '.join(missing)}")
     routes = read_default_routes(route_path)
     if routes is None:
         rows.append("  Default route:  [unavailable: kernel route table not readable]")
@@ -3157,7 +3180,9 @@ def collect_bundle(
         "e5c_backups": collect_settings_backups,
         "e6_health": collect_system_health,
         "e7_net": lambda: collect_network_interfaces(
-            address_sources=p.network_interfaces, timeout_s=remaining(_ADDRESS_SOURCE_TIMEOUT_S)
+            address_sources=p.network_interfaces,
+            timeout_s=remaining(_ADDRESS_SOURCE_TIMEOUT_S),
+            labels=_safely_value(p.interface_labels, "interface_labels", {})[0] if p.interface_labels else None,
         ),
         "e8_usb": lambda: collect_usb(p),
         "e9_gamepad": lambda: collect_gamepad_runtime(p),

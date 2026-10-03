@@ -6,13 +6,26 @@ The station's network adapters and their IPv4 settings. When this page is unreac
 
 One row per adapter:
 
+- **Name** – your label for the adapter when it has one, with the interface name and which adapter it is underneath: `USB 2, port 2 · ASIX AX88179B`, `Built-in Ethernet`, `VLAN 13 on Production (eth0)`. Without a label the interface name leads.
 - **Dot** – green: up with an address. Grey: no address.
 - **Address** – with its prefix, or `(no address)`.
 - **Method tag** – `DHCP`, `DHCP + manual` or `Static`.
 - **VLAN n** – a tagged VLAN sub-interface and its ID.
 - **This session** – the address answering your browser belongs to this adapter. Changing its addressing drops this page.
 
+A labelled adapter that is not plugged in stays in the list as **Not connected**, so its label stays taken. **Forget** drops the label, for example to give it to a replacement adapter.
+
 Open a row to see its settings. **Scan** re-reads the adapter list, for example after a USB adapter is plugged in.
+
+## Adapter
+
+- **Label** – your name for this adapter, up to 20 characters, different from every other label. It is shown wherever the interface is: every interface picker, the protocol sections, the station's own screen and its warnings, and the diagnostics bundle. Its **Save** stores only the label and changes nothing on the network, so it works on a read-only station too. An empty label removes it.
+- **Port** – which USB socket the adapter sits in, numbered like the Controller Slots table, or `Built-in Ethernet` / `Built-in Wi-Fi` for the station's own.
+- **Model** – what the USB adapter reports itself as.
+- **MAC address** – the adapter's hardware address, usually printed on it.
+- **VLAN** – for a VLAN, its ID and the adapter it runs on.
+
+Labels belong to this station: a config export leaves them out, an import keeps this station's, and **Restore defaults** clears them.
 
 ## Settings
 

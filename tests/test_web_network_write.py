@@ -1083,16 +1083,21 @@ def test_the_poll_swaps_the_interface_list_and_nothing_else(net_server) -> None:
 
     Swapping the card wholesale took the operator's own state with it, so the
     poll had to be held off while the Add VLAN form was open - and a held poll
-    is a card showing addresses that have since moved on.
+    is a card showing addresses that have since moved on. The rows' label
+    fields are the one piece of operator state inside the list, so the poll
+    waits only while one is edited but unsaved, or a refused one is shown -
+    the way a row being edited stops it altogether.
     """
     _fake, base = net_server
     status, body = _get(base, "/section/network/status")
     assert status == 200
-    # No trigger filter: nothing is left for the poll to wait for.
-    assert 'hx-trigger="every 5s"' in body
+    assert 'hx-trigger="every 5s [netLabelsIdle()]"' in body
     assert 'hx-select="#net-iface-list" hx-target="#net-iface-list" hx-swap="outerHTML"' in body
     # Plain path: the poll names no interface, so it can't reopen a closed row.
-    assert 'hx-get="/section/network/status" hx-trigger="every 5s"' in body
+    assert 'hx-get="/section/network/status" hx-trigger="every 5s [netLabelsIdle()]"' in body
+    # The page defines the filter the trigger calls.
+    _status, page = _get(base, "/")
+    assert "function netLabelsIdle()" in page
 
 
 def test_the_polls_selection_is_not_handed_down_to_the_cards_controls(net_server) -> None:

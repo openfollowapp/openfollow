@@ -2068,7 +2068,7 @@ def test_collect_bundle_clamps_the_address_sources_to_the_remaining_budget(monke
         clock.advance(18.0)
         return ["  ran"]
 
-    def fake_interfaces(route_path=None, *, address_sources=None, timeout_s=None):  # noqa: ARG001
+    def fake_interfaces(route_path=None, *, address_sources=None, timeout_s=None, labels=None):  # noqa: ARG001
         seen["timeout_s"] = timeout_s
         return ["  x"]
 
@@ -5883,3 +5883,83 @@ def test_collect_settings_backups_an_archive_that_vanishes(tmp_path: Path, monke
 
 def test_the_bundle_carries_the_settings_backups_section() -> None:
     assert ("E5c. Settings backups", "e5c_backups") in diag._BUNDLE_SECTIONS
+
+
+# ---------------------------------------------------------------------------
+# Which physical adapter each interface is, and its label
+# ---------------------------------------------------------------------------
+
+
+def _usb_lighting(sysfs: Path) -> None:
+    """eth0 on the board, enx9c69d3ac16ab an ASIX adapter in USB 2, port 2."""
+    from openfollow import net_adapters
+
+    first_host = "platform/axi/1000120000.pcie/1f00200000.usb/xhci-hcd.0"
+    host = "platform/axi/1000120000.pcie/1f00300000.usb/xhci-hcd.1"
+    bus = sysfs / "bus" / "usb" / "devices"
+    bus.mkdir(parents=True)
+    for controller, hub in ((first_host, "usb1"), (host, "usb3")):
+        (sysfs / "devices" / controller / hub).mkdir(parents=True)
+        (bus / hub).symlink_to(sysfs / "devices" / controller / hub)
+    usb = sysfs / "devices" / host / "usb3" / "3-2"
+    (usb / "3-2:2.0").mkdir(parents=True)
+    for attr, value in (("devpath", "2"), ("busnum", "3"), ("idVendor", "0b95"), ("manufacturer", "ASIX")):
+        (usb / attr).write_text(value)
+    (usb / "product").write_text("AX88179B")
+    for index, (name, mac, device) in enumerate(
+        (
+            ("eth0", "88:a2:9e:df:04:e3", sysfs / "devices" / "platform" / "1f00100000.ethernet"),
+            ("enx9c69d3ac16ab", "9c:69:d3:ac:16:ab", usb / "3-2:2.0"),
+        ),
+        start=2,
+    ):
+        base = sysfs / "class" / "net" / name
+        base.mkdir(parents=True)
+        (base / "ifindex").write_text(str(index))
+        (base / "address").write_text(mac)
+        device.mkdir(parents=True, exist_ok=True)
+        (base / "device").symlink_to(device)
+    net_adapters.set_reader(net_adapters.AdapterReader(sysfs_root=sysfs, platform="linux"))
+
+
+def test_e7_says_which_adapter_each_interface_is(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import psutil
+
+    _usb_lighting(tmp_path / "sysfs")
+    nic = SimpleNamespace(isup=True, speed=1000, mtu=1500, duplex=2)
+    monkeypatch.setattr(psutil, "net_if_stats", lambda: {"eth0": nic, "enx9c69d3ac16ab": nic, "lo": nic})
+    monkeypatch.setattr(psutil, "net_if_addrs", dict)
+    rows = diag.collect_network_interfaces(
+        _route_file(tmp_path, ""), labels={"enx9c69d3ac16ab": "Lighting", "enx00e04c68a1f2": "Lighting backup"}
+    )
+    assert rows[1] == f"  {'':<14}Built-in Ethernet · mac 88:a2:9e:df:04:e3"
+    assert rows[3] == f'  {"":<14}label "Lighting" · USB 2, port 2 · ASIX AX88179B · mac 9c:69:d3:ac:16:ab'
+    # Nothing is known about loopback, so it gets no line of its own.
+    assert rows[4].startswith("  lo ")
+    assert '  Labelled, not connected: "Lighting backup" (enx00e04c68a1f2)' in rows
+
+
+def test_e7_without_labels_lists_no_missing_adapters(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _one_nic(monkeypatch, "192.0.2.5")
+    rows = diag.collect_network_interfaces(_route_file(tmp_path, ""))
+    assert not any("Labelled" in row for row in rows)
+
+
+def test_the_bundle_hands_e7_the_stations_labels(monkeypatch: pytest.MonkeyPatch, no_host_probes) -> None:
+    seen: list[object] = []
+
+    def fake_interfaces(route_path=None, *, address_sources=None, timeout_s=None, labels=None):  # noqa: ARG001
+        seen.append(labels)
+        return []
+
+    monkeypatch.setattr(diag, "collect_network_interfaces", fake_interfaces)
+    diag.collect_bundle(diag.DiagnosticsProviders(interface_labels=lambda: {"eth0": "Production"}))
+    diag.collect_bundle(diag.DiagnosticsProviders(interface_labels=lambda: 1 / 0))
+    diag.collect_bundle(diag.DiagnosticsProviders())
+    assert seen == [{"eth0": "Production"}, {}, None]
+
+
+def test_the_bind_map_shows_a_pin_by_label() -> None:
+    row = {"label": "PSN", "value": "eth0", "value_display": "Production (eth0)", "address": "192.0.2.10"}
+    rows = _bind_map(interface_assignment_rows=lambda: [{**row, "editable": True, "blank": "auto"}])
+    assert "Production (eth0)" in rows[2]

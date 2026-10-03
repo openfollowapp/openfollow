@@ -1656,6 +1656,15 @@ def test_apply_runtime_stores_web_pin_change_without_restart() -> None:
     assert app._web_commands.restart_requested is False
 
 
+def test_apply_runtime_hands_new_interface_labels_to_the_running_station() -> None:
+    """The HUD's outage rows and the Network screen read the running config, so a
+    label saved on the web shows there without a restart."""
+    app = _DummyApp(AppConfig(interface_labels={"eth0": "Production"}))
+    apply_runtime_config_changes(app, AppConfig(interface_labels={"eth0": "Video", "eth1": "Lighting"}))
+    assert app._config.interface_labels == {"eth0": "Video", "eth1": "Lighting"}
+    assert app._web_commands.restart_requested is False
+
+
 # Interface-pin dispatcher coverage
 
 
@@ -6679,3 +6688,49 @@ def test_load_config_says_once_which_markers_it_now_views(temp_config_path, capl
 
 def test_viewed_with_controlled_keeps_the_viewed_order() -> None:
     assert viewed_with_controlled([9, 1], [4, 1]) == [4, 1, 9]
+
+
+# ---------------------------------------------------------------------------
+# AppConfig.interface_labels: the operator's names for this station's adapters
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw", ["Lighting", ["eth0"], None, 7, True])
+def test_interface_labels_that_are_not_a_table_are_empty(raw: object) -> None:
+    assert AppConfig(interface_labels=raw).interface_labels == {}  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("raw", "stored"),
+    [
+        ({"eth0": "  Production  "}, {"eth0": "Production"}),
+        ({"eth0": "Pro\x07duc\u202etion"}, {"eth0": "Production"}),
+        ({"eth0": "L" * 25}, {"eth0": "L" * 20}),
+        ({"eth0": None, "eth1": 3, "eth2": ""}, {}),
+    ],
+    ids=["whitespace", "control-and-bidi", "over-20", "not-text"],
+)
+def test_interface_label_values_are_clean_text(raw: dict, stored: dict) -> None:
+    assert AppConfig(interface_labels=raw).interface_labels == stored
+
+
+@pytest.mark.parametrize("name", ["../eth0", "eth 0", "a" * 16, "", "x:y"])
+def test_interface_labels_on_names_no_interface_can_have_are_dropped(name: str) -> None:
+    assert AppConfig(interface_labels={name: "Lighting", "eth0": "Video"}).interface_labels == {"eth0": "Video"}
+
+
+def test_interface_labels_keep_one_owner_per_label() -> None:
+    cfg = AppConfig(interface_labels={"enx2": "LIGHTING", "enx1": "Lighting", "eth0": "Video"})
+    assert cfg.interface_labels == {"enx1": "Lighting", "eth0": "Video"}
+
+
+def test_interface_labels_round_trip_through_toml(temp_config_path) -> None:
+    labels = {"eth0": "Production", "eth0.13": "Video", "enx9c69d3ac16ab": "Lighting"}
+    save_config(AppConfig(interface_labels=labels), temp_config_path)
+    assert load_config(temp_config_path).interface_labels == labels
+
+
+def test_a_hand_edited_label_table_is_normalised_on_load(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[interface_labels]\neth0 = " Production "\n"eth0.13" = 5\n"bad/name" = "X"\n', encoding="utf-8")
+    assert load_config(str(path)).interface_labels == {"eth0": "Production"}

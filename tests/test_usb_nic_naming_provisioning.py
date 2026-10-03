@@ -10,8 +10,8 @@ leaves on the wrong network. It is the one case the fail-closed rule cannot
 catch, because nothing is down. Naming USB Ethernet adapters after their MAC
 removes the ordering for them, and like the DHCP fallback it is provisioning:
 nothing in the running app may rewrite an operator's network configuration. The
-adapters it leaves alone (one on the Pi 3 onboard NIC's drivers, one without a
-hardware MAC) are rows in the device table below.
+devices it leaves alone (an adapter without a hardware MAC, anything that is not
+Ethernet) are rows in the device table below.
 """
 
 from __future__ import annotations
@@ -98,15 +98,12 @@ _DEVICES = {
     # An ASIX AX88179B in a Pi 5 USB socket, as the bench station reports it.
     "usb adapter, listed driver": (("ether", "platform-xhci-hcd.1-usb-0:2:2.0", "cdc_ncm", True), True),
     "usb adapter, realtek": (("ether", _USB, "r8152", True), True),
+    "usb adapter, microchip": (("ether", _USB, "lan78xx", True), True),
     # The gap a driver list left: any make of adapter is covered.
     "usb adapter, any other driver": (("ether", _USB, "a_driver_nobody_listed", True), True),
     "pi 5 onboard": (("ether", "platform-1f00100000.ethernet", "macb", True), False),
-    "pi 3 onboard on usb": (("ether", "platform-3f980000.usb-usb-0:1.1:1.0", "smsc95xx", True), False),
-    "pi 3b+ onboard on usb": (("ether", "platform-3f980000.usb-usb-0:1.1.1:1.0", "lan78xx", True), False),
     "pcie nic": (("ether", "pci-0000:01:00.0", "r8169", True), False),
     "usb adapter without a hardware mac": (("ether", _USB, "r8152", False), False),
-    # The onboard NIC's drivers are kept out wherever they appear, so an adapter on one keeps ethN.
-    "usb adapter on an onboard nic's driver": (("ether", _USB, "lan78xx", True), False),
     # Never covered by the driver list either: their names, and the profiles bound to them, stay.
     "usb wi-fi dongle": (("wlan", _USB, "mt7601u", True), False),
     "usb mobile modem": (("wwan", _USB, "qmi_wwan", True), False),
@@ -127,9 +124,7 @@ def _named_by_mac(rule: dict[str, str], device: tuple[str, str, str, bool], *, s
 @pytest.mark.parametrize("device", sorted(_DEVICES))
 def test_on_raspberry_pi_os_the_rule_alone_decides(device: str) -> None:
     """A USB Ethernet adapter gets its MAC name, whatever its make, so two can
-    never trade names. The onboard NIC of the Pi 3 and earlier hangs off USB too;
-    renaming it would dangle every eth0 pin an operator already has, so its two
-    drivers are kept out."""
+    never trade names."""
     attributes, renamed = _DEVICES[device]
     assert _named_by_mac(_match_section("deb link file"), attributes, systemd_rule=False) is renamed
 
@@ -137,7 +132,7 @@ def test_on_raspberry_pi_os_the_rule_alone_decides(device: str) -> None:
 @pytest.mark.parametrize("device", sorted(_DEVICES))
 def test_on_plain_debian_the_rule_changes_nothing(device: str) -> None:
     """systemd's own rule runs there and names every USB adapter by MAC; ours only
-    ever repeats its outcome, exceptions included."""
+    ever repeats its outcome."""
     attributes, _renamed_on_pi_os = _DEVICES[device]
     with_ours = _named_by_mac(_match_section("deb link file"), attributes, systemd_rule=True)
     systemd_alone = _named_by_mac({"Path": "!*"}, attributes, systemd_rule=True)

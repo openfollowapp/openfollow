@@ -714,20 +714,23 @@ class PersonDetector:
         if pinned_id is not None:
             for tp in tracked:
                 if tp.track_id == pinned_id:
-                    if now - tp.last_seen <= grace_s:
+                    # Aged live, so a detector that stops stepping ages its last
+                    # box too; one interval is the normal gap between matches. The
+                    # same age decides eligibility, so the status reaches 0.0 at
+                    # the moment the track drops, and a zero grace still keeps a
+                    # fresh match for one interval.
+                    age_s = max(tp.box.age_s, now - tp.last_seen - interval_s)
+                    if age_s <= grace_s:
                         with self._track_lock:
                             self._last_pinned_center = self._box_center(tp.box)
-                        # Aged live, so a detector that stops stepping ages its
-                        # last box too; one interval is the normal gap between matches.
-                        age_s = max(tp.box.age_s, now - tp.last_seen - interval_s)
                         return tp.box if age_s == tp.box.age_s else replace(tp.box, age_s=age_s)
                     # Grace period expired – release pin
                     break
             with self._track_lock:
                 self._pinned_id = None
 
-        # Results older than the grace period are a stalled detector, not people.
-        if not results or (last_track_t is not None and now - last_track_t > grace_s):
+        # Results that have coasted past the grace period are a stalled detector, not people.
+        if not results or (last_track_t is not None and now - last_track_t - interval_s > grace_s):
             return None
 
         # Re-acquire: prefer the detection nearest the last-followed centre so a

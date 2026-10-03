@@ -400,8 +400,42 @@ def test_tracked_detection_ages_the_pinned_box_while_the_detector_stalls(monkeyp
     monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.4)
     assert detector.tracked_detection.age_s == pytest.approx(0.3)
 
-    # Past grace: the pin releases and the frozen results must not re-acquire it.
+    # The fade runs to the end of the grace period: the last box handed out has
+    # coasted exactly that long, so the status it feeds reaches 0.0 before the drop.
     monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.6)
+    assert detector.tracked_detection.age_s == pytest.approx(0.5)
+
+    # Past grace: the pin releases and the frozen results must not re-acquire it.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.61)
+    assert detector.tracked_detection is None
+
+
+def test_tracked_detection_with_no_grace_keeps_a_match_for_one_interval(monkeypatch) -> None:
+    """A zero grace period means no coasting, not no tracking: the frame loop
+    runs between detector steps, so a match must stay valid for the normal gap
+    between steps and lapse only once the detector misses one."""
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=0, interval_ms=100))
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.0)
+    (first,) = detector._track([detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)])
+    detector._results = [first]
+
+    # Between steps: cold-start acquire, then sticky, both unaged.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.05)
+    assert detector.tracked_detection is first
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.09)
+    assert detector.tracked_detection is first
+
+    # The detector stepped on time: still a fresh match.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.1)
+    (again,) = detector._track([detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)])
+    detector._results = [again]
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.15)
+    assert detector.tracked_detection.age_s == 0.0
+
+    # One missed step: the pin lapses and the stale results re-acquire nothing.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.21)
     assert detector.tracked_detection is None
 
 

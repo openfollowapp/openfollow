@@ -93,6 +93,7 @@ from openfollow.network.validate import (
 from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.privilege.camera_config import AUTOMATIC
 from openfollow.runtime.diagnostics_export import WEB, ExportStatus, status_lines
+from openfollow.station_fqdn import canonical_host, fqdn_problem
 from openfollow.templates import (
     TEMPLATE_FILE_SUFFIX,
     TEMPLATE_LEGACY_SUFFIX,
@@ -403,16 +404,18 @@ def _is_on_device_request() -> bool:
 _SAFE_HTTP_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
-def _allowed_request_hosts() -> set[str]:
+def _allowed_request_hosts(fqdn: str = "") -> set[str]:
     """Host names this device legitimately answers to: loopback, its own LAN
-    IPs, and its (mDNS) hostname. A state-changing request whose ``Origin``
-    names anything else is a cross-origin / DNS-rebound forgery."""
+    IPs, its (mDNS) hostname and the FQDN configured for it. A state-changing
+    request whose ``Origin`` names anything else is a cross-origin / DNS-rebound forgery."""
     hosts = {"127.0.0.1", "::1", "localhost"}
     hosts.update(_get_local_ips())
     host = socket.gethostname().strip().lower()
     if host:
         hosts.add(host)
         hosts.add(f"{host}.local")
+    if fqdn:
+        hosts.add(canonical_host(fqdn))
     return hosts
 
 
@@ -460,9 +463,9 @@ def _connection_address() -> str | None:
     return str(addr)
 
 
-def _host_refusal(host: str | None) -> HostRefusal | None:
+def _host_refusal(host: str | None, fqdn: str = "") -> HostRefusal | None:
     """Why a change through ``host`` would be refused, or ``None`` when it is accepted."""
-    if host is None or host in _allowed_request_hosts():
+    if host is None or canonical_host(host) in _allowed_request_hosts(fqdn):
         return None
     address = _connection_address()
     href = None
@@ -473,14 +476,14 @@ def _host_refusal(host: str | None) -> HostRefusal | None:
     return HostRefusal(host=host, address=address, href=href)
 
 
-def _page_host_context() -> dict[str, Any]:
+def _page_host_context(cfg: AppConfig) -> dict[str, Any]:
     """base.tpl's banner for a page opened through a name its saves will be refused on."""
     raw = (request.get_header("Host") or "").strip()
     try:
         host = urlsplit(f"//{raw}").hostname if raw else None
     except ValueError:
         host = None
-    return {"host_refusal": _host_refusal(host)}
+    return {"host_refusal": _host_refusal(host, cfg.station_fqdn)}
 
 
 def _is_navigation() -> bool:
@@ -1031,6 +1034,7 @@ def get_section_data(cfg: AppConfig, section: str) -> dict[str, Any] | None:
             "psn_source_iface": cfg.psn_source_iface,
             "web_port": cfg.web_port,
             "web_pin": cfg.web_pin,
+            "station_fqdn": cfg.station_fqdn,
             "update_service_name": cfg.update_service_name,
         }
     if section == "interface_assignment":
@@ -1078,8 +1082,9 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "psn": frozenset({"psn_source_iface"}),
     # ``web_pin`` (login credential) and ``web_port`` (local bind) are
     # device-local: a peer push / import must never rewrite this station's PIN
-    # or listen port. Stripped at both broadcaster-forward and peer-receive.
-    "general": frozenset({"psn_source_iface", "web_pin", "web_port"}),
+    # or listen port, nor make it claim another station's FQDN. Stripped at both
+    # broadcaster-forward and peer-receive.
+    "general": frozenset({"psn_source_iface", "web_pin", "web_port", "station_fqdn"}),
     # The OTP source interface pins THIS device's NIC by name – like
     # ``psn_source_iface``, it must not cross machines via broadcast/import.
     "otp_output": frozenset({"source_iface"}),
@@ -1639,6 +1644,10 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
             pin = _as_str(data["web_pin"], cfg.web_pin).strip()
             if _is_valid_web_pin(pin):
                 cfg.web_pin = pin
+        if "station_fqdn" in data:
+            fqdn = _as_str(data["station_fqdn"], cfg.station_fqdn)
+            if fqdn_problem(fqdn) is None:
+                cfg.station_fqdn = canonical_host(fqdn)
         if "update_github_repo" in data:
             repo = _as_str(data["update_github_repo"], cfg.update_github_repo).strip()
             if _is_valid_github_repo(repo):
@@ -3029,6 +3038,8 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     d.pop("video_input_iface", None)
     # Names this box's adapters; on another station the same name is other hardware.
     d.pop("interface_labels", None)
+    # Two stations must never claim one name through a copied config.
+    d.pop("station_fqdn", None)
     # A NIC name on this box: on a peer it would repin OTP to whatever shares it.
     d["otp_output"].pop("source_iface", None)
     # ``osc.listen_iface`` names a NIC on this box. Carried to a station that
@@ -3098,6 +3109,7 @@ _DEVICE_IDENTITY_FIELDS: tuple[str, ...] = (
     "web_port",
     "web_bind",
     "web_bind_iface",
+    "station_fqdn",
     "station_id",
     "markers_catalog_path",
     "testpattern_selected_media",
@@ -4683,7 +4695,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.hook("before_request")
     def _check_auth() -> Any:
-        pin = _request_scoped_config().web_pin
+        cfg = _request_scoped_config()
+        pin = cfg.web_pin
 
         # CSRF / DNS-rebind defence, applied whether or not a PIN is set. A
         # station with no PIN still must not let an attacker page drive it:
@@ -4692,7 +4705,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # always send the header on a state-changing request; its absence
         # means a non-browser client, which this threat model does not cover.
         if request.method not in _SAFE_HTTP_METHODS:
-            refusal = _host_refusal(_request_origin_host())
+            refusal = _host_refusal(_request_origin_host(), cfg.station_fqdn)
             if refusal is not None:
                 raise _refused(refusal)
 
@@ -4802,7 +4815,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             error="",
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(cfg),
-            **_page_host_context(),
+            **_page_host_context(cfg),
         )
 
     @app.post("/login")
@@ -4845,7 +4858,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             error="Incorrect PIN",
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(cfg),
-            **_page_host_context(),
+            **_page_host_context(cfg),
         )
 
     @app.post("/logout")
@@ -4993,7 +5006,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             written_offer_html=_written_offer_html(),
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(cfg),
-            **_page_host_context(),
+            **_page_host_context(cfg),
         )
 
     @app.get("/about/license.txt")
@@ -5085,7 +5098,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # Update-available banner (General section) + footer flag (base.tpl);
             # read once so the flag and version label can't disagree mid-render.
             **_page_update_context(server),
-            **_page_host_context(),
+            **_page_host_context(config),
             # index.tpl includes the General partial directly, so the platform
             # gate for the Startup box has to be supplied here too.
             startup_supported=_startup_settings_supported(),
@@ -9256,7 +9269,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         input_data = _build_input_template_data(config)
         # Footer "Update available" flag: an update is most often discovered
         # while the operator is still in the Setup Wizard.
-        return template("wizard", config=config, **input_data, **_page_update_context(server), **_page_host_context())
+        return template(
+            "wizard", config=config, **input_data, **_page_update_context(server), **_page_host_context(config)
+        )
 
     @app.get("/api/video/snapshot/full")
     def api_video_snapshot_full() -> Any:

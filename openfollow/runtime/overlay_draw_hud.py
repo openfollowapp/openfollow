@@ -1886,10 +1886,6 @@ def draw_pi_network_screen(
         # line an operator reads out over comms - ellipsised; the values here
         # are short interface names, so the space belongs on the left.
         value_x = inner_x + 300.0
-        renderer._set_ui_font(cr, 11.5, bold=is_selected)
-        cr.set_source_rgba(*COLOR_TEXT_MUTED if kind == "display" else COLOR_TEXT)
-        cr.move_to(label_x, row_y + data_row_h * 0.65)
-        cr.show_text(renderer._truncate_text_to_width(cr, label, value_x - label_x - 8.0))
         # A pill sits at the right edge, so the value column has to stop short
         # of it rather than run underneath.
         chevron_w = CHEVRON_GUTTER if row.get("opens") else 0.0
@@ -1898,6 +1894,13 @@ def draw_pi_network_screen(
         if pill:
             renderer._set_ui_font(cr, 10)
             pill_w = cr.text_extents(pill).width + 16.0
+        # A row with nothing in the value column lends it to the label: an FQDN's
+        # URL runs past the column a ``.local`` one fits in.
+        label_end = value_x - 8.0 if value else inner_x + inner_w - 14.0 - pill_w - chevron_w
+        renderer._set_ui_font(cr, 11.5, bold=is_selected)
+        cr.set_source_rgba(*COLOR_TEXT_MUTED if kind == "display" else COLOR_TEXT)
+        cr.move_to(label_x, row_y + data_row_h * 0.65)
+        cr.show_text(renderer._truncate_text_to_width(cr, label, label_end - label_x))
         renderer._set_ui_font(cr, 11.5, bold=is_selected)
         cr.set_source_rgba(*COLOR_TEXT_MUTED if kind == "display" else COLOR_TEXT)
         cr.move_to(value_x, row_y + data_row_h * 0.65)

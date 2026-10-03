@@ -44,7 +44,7 @@ def test_is_valid_web_pin_rejects_nondigit_overlong_nonascii() -> None:
 
 
 def test_config_dict_redacted_drops_device_local_fields() -> None:
-    cfg = AppConfig(web_pin="1234", web_port=8080)
+    cfg = AppConfig(web_pin="1234", web_port=8080, station_fqdn="tracker-1.stage.example.com")
     cfg.detection.storage_path = "/mnt/nvme/openfollow/yolo"
     cfg.testpattern_selected_media = "0123456789abcdef"
     cfg.otp_output.source_iface = "eth1"
@@ -62,6 +62,8 @@ def test_config_dict_redacted_drops_device_local_fields() -> None:
     # no such adapter it reads as a down pin and drops that station's
     # subscription until somebody finds the setting.
     assert "listen_iface" not in d["osc"]
+    # names this box: two stations must never claim one name through a copied config.
+    assert "station_fqdn" not in d
     assert d["web_port"] == 8080  # non-secret fields preserved
 
 
@@ -160,9 +162,13 @@ def test_general_section_accepts_valid_web_pin_and_port() -> None:
 
 
 def test_general_strip_covers_pin_and_port() -> None:
-    scrubbed = strip_device_local_fields("general", {"web_pin": "1", "web_port": 80, "psn_system_name": "x"})
+    scrubbed = strip_device_local_fields(
+        "general",
+        {"web_pin": "1", "web_port": 80, "station_fqdn": "tracker-1.stage.example.com", "psn_system_name": "x"},
+    )
     assert "web_pin" not in scrubbed
     assert "web_port" not in scrubbed
+    assert "station_fqdn" not in scrubbed
     assert scrubbed["psn_system_name"] == "x"
 
 
@@ -1528,6 +1534,7 @@ _DEVICE_IDENTITY_SAMPLES = [
     ("web_port", 8080),
     ("web_bind", "0.0.0.0"),
     ("web_bind_iface", "eth1"),
+    ("station_fqdn", "tracker-1.stage.example.com"),
     ("station_id", "f0e1d2c3b4a59687f0e1d2c3b4a59687"),
     ("markers_catalog_path", "/mnt/nvme/openfollow/markers.toml"),
     ("testpattern_selected_media", "0123456789abcdef"),
@@ -3242,7 +3249,7 @@ def test_a_page_warns_by_the_name_in_its_host_header(bound_request, host_header:
     from openfollow.web.routes import _page_host_context
 
     bound_request(REQUEST_METHOD="GET", HTTP_HOST=host_header)
-    refusal = _page_host_context()["host_refusal"]
+    refusal = _page_host_context(AppConfig())["host_refusal"]
     assert (refusal.host if refusal else None) == refused_host
 
 
@@ -3609,3 +3616,77 @@ def test_restoring_defaults_clears_the_interface_labels() -> None:
     assert reset.interface_labels == {}
     # The station pin it keeps still names the same adapter, labelled or not.
     assert reset.psn_source_iface == "eth0"
+
+
+# ---------------------------------------------------------------------------
+# Station FQDN: saved from the General form, accepted as a host, never carried off the box.
+# ---------------------------------------------------------------------------
+
+_FQDN = "tracker-1.stage.example.com"
+
+
+@pytest.mark.parametrize(
+    ("posted", "stored"),
+    [
+        ("Tracker-1.Stage.Example.COM.", _FQDN),
+        ("", ""),
+        ("tracker.local", "other.example.com"),
+        ("192.0.2.10", "other.example.com"),
+        ("tracker", "other.example.com"),
+    ],
+    ids=["canonicalised", "blank-clears", "mdns-kept-out", "ip-kept-out", "one-label-kept-out"],
+)
+def test_the_general_form_saves_a_station_fqdn_only_when_it_is_valid(posted: str, stored: str) -> None:
+    """A crafted POST past the blur check must not store a name the config load would blank."""
+    cfg = AppConfig(station_fqdn="other.example.com")
+    apply_section_data(cfg, "general", {"station_fqdn": posted})
+    assert cfg.station_fqdn == stored
+
+
+def test_the_general_form_leaves_the_fqdn_alone_when_it_does_not_post_it() -> None:
+    cfg = AppConfig(station_fqdn=_FQDN)
+    apply_section_data(cfg, "general", {"psn_system_name": "Stage Left"})
+    assert cfg.station_fqdn == _FQDN
+
+
+def test_the_configured_fqdn_is_an_accepted_host() -> None:
+    from openfollow.web.routes import _allowed_request_hosts
+
+    assert _FQDN in _allowed_request_hosts(_FQDN)
+    assert _FQDN not in _allowed_request_hosts()
+
+
+@pytest.mark.parametrize("host", [_FQDN, "TRACKER-1.Stage.Example.COM", _FQDN + "."])
+def test_a_change_through_the_configured_fqdn_is_accepted(bound_request, host: str) -> None:
+    """Compared the way DNS compares names: case-insensitive, root dot ignored."""
+    from openfollow.web.routes import _host_refusal
+
+    bound_request(SERVER_ADDR="192.0.2.10")
+    assert _host_refusal(host, _FQDN) is None
+    assert _host_refusal(host, "") is not None
+
+
+def test_a_change_through_another_name_is_still_refused_with_an_fqdn_set(bound_request) -> None:
+    from openfollow.web.routes import _host_refusal
+
+    bound_request(SERVER_ADDR="192.0.2.10")
+    refusal = _host_refusal("station.example.com", _FQDN)
+    assert refusal is not None
+    assert refusal.message == "This station does not accept changes made through station.example.com."
+
+
+@pytest.mark.parametrize("host_header", [f"{_FQDN}:8080", "Tracker-1.Stage.Example.COM", f"{_FQDN}."])
+def test_a_page_opened_by_the_configured_fqdn_warns_of_nothing(bound_request, host_header: str) -> None:
+    from openfollow.web.routes import _page_host_context
+
+    bound_request(REQUEST_METHOD="GET", HTTP_HOST=host_header)
+    assert _page_host_context(AppConfig(station_fqdn=_FQDN))["host_refusal"] is None
+    assert _page_host_context(AppConfig())["host_refusal"] is not None
+
+
+@pytest.mark.parametrize("current", [_FQDN, ""], ids=["named", "unnamed"])
+def test_an_import_never_gives_this_station_another_stations_fqdn(current: str) -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(station_fqdn=current), {"station_fqdn": "foreign.example.com"})
+    assert new.station_fqdn == current

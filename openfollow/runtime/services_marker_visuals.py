@@ -24,6 +24,7 @@ from openfollow.runtime.overlay_state import (
 from openfollow.runtime.services_detection_pin import is_assist_controlled
 from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.runtime_metrics import OverlayStatePool
+from openfollow.station_fqdn import web_ui_host
 from openfollow.units import UnitSystem
 from openfollow.video.failure import SourceKind, VideoFailure, failure_action, failure_chip, failure_sentence
 
@@ -41,22 +42,6 @@ def _port_suffix(port: int) -> str:
     - but on a fallback bind the port is load-bearing and must be displayed.
     """
     return "" if port == 80 else f":{port}"
-
-
-def _local_hostname() -> str:
-    """Return ``<hostname>.local``, or ``""`` when the host has no usable name.
-
-    Always the running system's actual hostname, never the station slug the
-    config asks for: when the rename was skipped (no passwordless grant, no
-    ``hostnamectl``) advertising the desired name would send the operator to
-    an address avahi never answers on.
-    """
-    from openfollow.privilege.device_repair import current_hostname
-
-    name = current_hostname()
-    if not name or name == "localhost":
-        return ""
-    return f"{name}.local"
 
 
 # Same pattern ``GridConfig.__post_init__`` enforces. Duplicated here rather
@@ -496,7 +481,7 @@ def build_marker_visual_state(
     # Carries the port for the same reason the IP row does: on a fallback bind
     # the UI is not on 80, and a name pointing at a dead port is worse than no
     # name at all.
-    hostname = _local_hostname()
+    hostname = web_ui_host(app._config.station_fqdn)
     state.hostname_text = hostname + _port_suffix(web_port) if hostname else ""
 
     # The station name is the operator-set ``psn_system_name`` (the

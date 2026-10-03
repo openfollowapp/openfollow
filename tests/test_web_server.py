@@ -7121,6 +7121,45 @@ def test_a_plain_form_post_through_an_unaccepted_name_gets_a_page_saying_why(liv
     assert "<h2>Not saved</h2>" in body
 
 
+def test_saves_through_the_configured_fqdn_work_from_the_next_request(live_server) -> None:
+    """The name is read from the config on every request, so it takes effect without a
+    restart, and it opens exactly that one name, not every name."""
+    server, base = live_server
+    form = {"HX-Request": "true", "Content-Type": "application/x-www-form-urlencoded"}
+    rename = urllib.parse.urlencode({"psn_system_name": "Stage Left"}).encode()
+    via_fqdn = {**form, "Origin": "http://tracker-1.stage.example.com"}
+
+    assert _raw_request(base, "/section/general", headers=via_fqdn, data=rename)[0] == 403
+
+    name_it = urllib.parse.urlencode({"station_fqdn": "Tracker-1.Stage.Example.COM."}).encode()
+    assert _raw_request(base, "/section/general", headers={**form, "Origin": base}, data=name_it)[0] == 200
+    assert load_config(server.config_path).station_fqdn == "tracker-1.stage.example.com"
+
+    assert _raw_request(base, "/section/general", headers=via_fqdn, data=rename)[0] == 200
+    assert load_config(server.config_path).psn_system_name == "Stage Left"
+    elsewhere = {**form, "Origin": _REFUSED_ORIGIN}
+    assert _raw_request(base, "/section/general", headers=elsewhere, data=rename)[0] == 403
+
+
+def test_the_fqdn_field_is_saved_and_redrawn_with_the_station_settings_form(live_server) -> None:
+    """It sits in Advanced Settings, outside the name and PIN form: ``form=`` puts it in
+    that form's POST, and the form re-renders the field's group out of band."""
+    server, base = live_server
+    save_config(AppConfig(station_fqdn="tracker-1.stage.example.com"), server.config_path)
+    status, body = _get(base, "/")
+    assert status == 200
+    form = re.search(r'<form id="general-network-section"[^>]*>', body)
+    assert form is not None
+    assert 'hx-select-oob="#general-station-fqdn-group"' in form.group(0)
+    group = body[body.index('id="general-station-fqdn-group"') :]
+    field = re.search(r'<input id="general-station-fqdn"[^>]*>', group)
+    assert field is not None
+    assert 'form="general-network-section"' in field.group(0)
+    assert 'value="tracker-1.stage.example.com"' in field.group(0)
+    assert body.index('id="general-station-fqdn-group"') > body.index("<summary>Advanced Settings</summary>")
+    assert '<button type="submit" form="general-network-section" class="save-btn">Save</button>' in body
+
+
 def test_a_refused_unlock_says_why_on_the_login_page(pin_protected_server) -> None:
     _, base, pin = pin_protected_server
     status, body, response_headers = _raw_request(

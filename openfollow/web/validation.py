@@ -37,6 +37,7 @@ from openfollow.configuration import (
     _canonical_marker_token,
 )
 from openfollow.net_adapters import LABEL_MAX_LEN
+from openfollow.station_fqdn import FQDN_INPUT_MAX_LEN, fqdn_problem
 from openfollow.text_hygiene import CONTROL_CHARS_RE
 from openfollow.web.routes import (
     _as_bool,
@@ -231,6 +232,10 @@ def _validate_host(value: str, _cfg: AppConfig | None) -> str | None:
     if len(value) > 253 or not _HOSTNAME_RE.match(value):
         return "Must be a valid hostname or IPv4 / IPv6 address."
     return None
+
+
+def _validate_station_fqdn(value: str, _cfg: AppConfig | None) -> str | None:
+    return fqdn_problem(value)
 
 
 def _validate_int_list(value: str, _cfg: AppConfig | None) -> str | None:
@@ -744,6 +749,9 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "web_port": FieldRule(_as_int, lo=1, hi=65535, human_error="Port must be between 1 and 65535."),
         "web_pin": FieldRule(
             _as_str, pattern=r"^[0-9]{1,32}$", max_len=32, human_error="PIN must be 1–32 digits (or empty)."
+        ),
+        "station_fqdn": FieldRule(
+            _as_str, max_len=FQDN_INPUT_MAX_LEN, custom=_validate_station_fqdn, human_error="Station FQDN."
         ),
         "update_service_name": FieldRule(
             _as_str, max_len=128, custom=_validate_service_name, human_error="Service name."

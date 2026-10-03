@@ -29,6 +29,7 @@ import tomli_w
 
 from openfollow.binding_conflicts import BindingMove, settle_duplicates
 from openfollow.net_adapters import normalize_labels
+from openfollow.station_fqdn import normalize_fqdn
 from openfollow.units import UnitSystem
 
 if TYPE_CHECKING:
@@ -2330,6 +2331,9 @@ class AppConfig:
     # Operator labels for this station's interfaces, by interface name
     # ("enx9c69d3ac16ab" -> "Lighting"). Device-local: they name this box's adapters.
     interface_labels: dict[str, str] = field(default_factory=dict)
+    # This station's name on a venue's DNS. Blank = only its ``<host>.local`` name.
+    # Device-local: it names this box.
+    station_fqdn: str = ""
 
     # Web-triggered update settings (signed-.deb GitHub-release installer)
     update_github_repo: str = "openfollowapp/openfollow"
@@ -2410,6 +2414,7 @@ class AppConfig:
             self.video_input_iface = ""
         self.video_input_iface = self.video_input_iface.strip()
         self.interface_labels = normalize_labels(self.interface_labels)
+        self.station_fqdn = normalize_fqdn(self.station_fqdn)
         # Strip ``psn_source_iface`` so whitespace doesn't look like a value
         # change each load and trigger a needless rebind cycle.
         if not isinstance(self.psn_source_iface, str):
@@ -3173,6 +3178,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # Read live by the HUD's outage rows and the Network screen; nothing to rebind.
     if new_config.interface_labels != app._config.interface_labels:
         app._config.interface_labels = dict(new_config.interface_labels)
+    # Read live by the HUD's web address rows; the web server reads it from disk.
+    if new_config.station_fqdn != app._config.station_fqdn:
+        app._config.station_fqdn = new_config.station_fqdn
 
     # PSN iface single-field path: only fires when iface changed alone (the
     # combined block above handles the iface+mcast case). The bind IP comes

@@ -4,7 +4,9 @@ Identity, display preferences, and web access for this station. Changes here app
 
 **Unit system** – choose **Metric (m, m/s)** or **Imperial (ft / in, ft/s)**. This controls what the web UI and the Operator Screen show and parse across Camera, Grid, Markers, Movement, Trigger Zones, and the Setup Wizard. Stored configuration and every wire protocol – OSC, PSN, RTTrPM, OTP – always stay metric regardless of this setting. The selection takes effect as soon as you change it; no Save is needed.
 
-**Advanced Settings** – a collapsed group holding the two controls you set once and then leave alone. It opens closed every time you load the page.
+**Advanced Settings** – a collapsed group holding the controls you set once and then leave alone. It opens closed every time you load the page.
+
+**Station FQDN** – the fully qualified domain name this station has on a venue network that runs its own DNS, such as `tracker-1.stage.example.com`. Blank by default. Once set, the web UI accepts changes made through this name, and the Operator Screen shows it wherever it showed the station's `.local` name: the Network screen, the **Web address** row and the Settings card. The `.local` name keeps working behind it. The station never looks the name up: it answers to it only once the venue's DNS points the name at one of the station's addresses, and its IP addresses stay listed on the Network screen either way. **Remove FQDN** on the Operator Screen's Network screen clears it. The name belongs to this station alone: a config export leaves it out, a section broadcast never carries it, and an import or Restore Defaults keeps this station's own.
 
 **Start OpenFollow at boot** – whether this station launches OpenFollow by itself when it is powered on. On for every station installed from a release package or image. The switch reads the station's own service state whenever the General tab loads, so it shows what will actually happen at the next boot – not a saved preference that could have drifted from it. It is a snapshot of that moment: if you change the service from a shell while this page is open, reload the page to see it. Switching it off leaves the running station untouched: video, tracking and output all keep going until it is restarted or powered down.
 
@@ -18,4 +20,4 @@ Identity, display preferences, and web access for this station. Changes here app
 
 > Set a PIN on any station that is connected to a shared production network. Leaving it unset is acceptable only on isolated bench or point-to-point networks.
 
-**Save** – writes the Station name and PIN to disk. Both fields apply live as soon as you save; no app restart is needed.
+**Save** – writes the Station name, PIN and Station FQDN to disk. All three apply live as soon as you save; no app restart is needed.

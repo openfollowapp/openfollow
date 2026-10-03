@@ -119,6 +119,19 @@ address at boot is ignored: the UI serves on every interface and the station
 says so both on its own screen and in the web Network Interface Assignment panel. A
 pin cannot leave the station with no web UI at all.
 
+## Web UI opened by a venue DNS name refuses to save
+
+A station answers saves through its IP addresses, its hostname and
+`<hostname>.local`. Opened by any other name, every page loads and every save
+is refused, because the station cannot tell that name from a forged one. On a
+venue network whose DNS gives the station its own name, enter that name as
+**Station FQDN** under General → Station Settings → Advanced Settings; saves
+through it then work, and the station's screen shows it in place of the
+`.local` name. The station never looks the name up. If the name was mistyped
+or the venue's DNS never pointed it here, Settings → Network on the station's
+own screen offers **Remove FQDN**, or delete the `station_fqdn` line from
+`/var/lib/openfollow/config.toml`.
+
 ## NVMe for YOLO models (recommended on Pi)
 
 If internal flash is nearly full, mount NVMe at `/mnt/nvme` and set:

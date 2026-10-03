@@ -3633,7 +3633,9 @@
  // Scoped to actual form-submit / broadcast controls only.
  function refreshFormGate(form) {
  if (!form) return;
- const hasError = form.querySelector('[aria-invalid="true"]') !== null;
+ // ``form.elements`` also holds inputs joined to the form from outside it by ``form=``.
+ const hasError = form.querySelector('[aria-invalid="true"]') !== null
+ || Array.from(form.elements).some((el) => el.getAttribute('aria-invalid') === 'true');
  form.querySelectorAll(
  'button[type="submit"].save-btn,'
  + ' button.broadcast-btn[onclick*="broadcastSection"]'
@@ -3662,7 +3664,7 @@
  if (input) {
  const hasError = target.querySelector('.field-error-msg') !== null;
  input.setAttribute('aria-invalid', hasError ? 'true' : 'false');
- refreshFormGate(input.closest('form'));
+ refreshFormGate(input.form || input.closest('form'));
  }
  }
  // A re-render carrying a value the server refused marks its input the
@@ -3673,7 +3675,7 @@
  ? document.querySelector('[aria-describedby="' + span.id + '"]') : null;
  if (input) {
  input.setAttribute('aria-invalid', 'true');
- refreshFormGate(input.closest('form'));
+ refreshFormGate(input.form || input.closest('form'));
  }
  });
  }

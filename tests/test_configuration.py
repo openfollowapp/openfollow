@@ -6734,3 +6734,113 @@ def test_a_hand_edited_label_table_is_normalised_on_load(tmp_path) -> None:
     path = tmp_path / "config.toml"
     path.write_text('[interface_labels]\neth0 = " Production "\n"eth0.13" = 5\n"bad/name" = "X"\n', encoding="utf-8")
     assert load_config(str(path)).interface_labels == {"eth0": "Production"}
+
+
+# ---------------------------------------------------------------------------
+# AppConfig.station_fqdn: this station's name on a venue's own DNS
+# ---------------------------------------------------------------------------
+
+# 63 + 63 + 63 + 61 characters and three dots: the longest name DNS carries.
+_LONGEST_FQDN = ".".join(["a" * 63, "b" * 63, "c" * 63, "d" * 61])
+
+
+@pytest.mark.parametrize(
+    ("raw", "stored"),
+    [
+        ("tracker-1.stage.example.com", "tracker-1.stage.example.com"),
+        ("  Tracker-1.Stage.Example.COM  ", "tracker-1.stage.example.com"),
+        ("tracker-1.stage.example.com.", "tracker-1.stage.example.com"),
+        ("a.b", "a.b"),
+        ("1tracker.2.example.com", "1tracker.2.example.com"),
+        (_LONGEST_FQDN, _LONGEST_FQDN),
+        ("", ""),
+    ],
+    ids=["plain", "case-and-whitespace", "root-dot", "two-labels", "digit-labels", "253-chars", "blank"],
+)
+def test_a_station_fqdn_is_stored_canonical(raw: str, stored: str) -> None:
+    assert AppConfig(station_fqdn=raw).station_fqdn == stored
+
+
+@pytest.mark.parametrize("raw", [None, 7, True, ["tracker.example.com"], {"tracker": "example.com"}])
+def test_a_station_fqdn_that_is_not_text_loads_blank(raw: object) -> None:
+    assert AppConfig(station_fqdn=raw).station_fqdn == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "tracker",
+        "tracker.",
+        "192.0.2.10",
+        "1.2.3.4.5",
+        "2001:db8::1",
+        "tracker.local",
+        "Tracker.LOCAL.",
+        "-tracker.example.com",
+        "tracker-.example.com",
+        "tracker..example.com",
+        ".tracker.example.com",
+        "tracker.example.com..",
+        "tracker_1.example.com",
+        "tracker 1.example.com",
+        "trackér.example.com",
+        "http://tracker.example.com",
+        "tracker.example.com:80",
+        "a" * 64 + ".example.com",
+        _LONGEST_FQDN + "d",
+    ],
+    ids=[
+        "one-label",
+        "one-label-root-dot",
+        "ipv4",
+        "numeric-tld",
+        "ipv6",
+        "mdns",
+        "mdns-any-case",
+        "leading-hyphen",
+        "trailing-hyphen",
+        "empty-label",
+        "leading-dot",
+        "two-root-dots",
+        "underscore",
+        "space",
+        "non-ascii",
+        "url",
+        "port",
+        "label-over-63",
+        "name-over-253",
+    ],
+)
+def test_a_station_fqdn_that_breaks_the_rules_loads_blank(raw: str) -> None:
+    assert AppConfig(station_fqdn=raw).station_fqdn == ""
+
+
+def test_a_station_fqdn_round_trips_through_toml(temp_config_path) -> None:
+    save_config(AppConfig(station_fqdn="tracker-1.stage.example.com"), temp_config_path)
+    assert load_config(temp_config_path).station_fqdn == "tracker-1.stage.example.com"
+
+
+@pytest.mark.parametrize(
+    ("line", "stored"),
+    [
+        ('station_fqdn = "Tracker-1.Stage.Example.COM."', "tracker-1.stage.example.com"),
+        ('station_fqdn = "tracker.local"', ""),
+        ("station_fqdn = 42", ""),
+    ],
+    ids=["canonicalised", "refused-name", "wrong-type"],
+)
+def test_a_hand_edited_station_fqdn_is_normalised_on_load(tmp_path, line: str, stored: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(line + "\n", encoding="utf-8")
+    assert load_config(str(path)).station_fqdn == stored
+
+
+def test_apply_runtime_hands_a_new_station_fqdn_to_the_running_station() -> None:
+    """The HUD's web address rows read the running config, so a name saved on the
+    web shows on the station's screen without a restart."""
+    app = _DummyApp(AppConfig())
+    apply_runtime_config_changes(app, AppConfig(station_fqdn="tracker-1.stage.example.com"))
+    assert app._config.station_fqdn == "tracker-1.stage.example.com"
+    apply_runtime_config_changes(app, AppConfig())
+    assert app._config.station_fqdn == ""
+    assert app._web_commands.restart_requested is False

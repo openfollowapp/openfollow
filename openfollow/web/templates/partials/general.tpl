@@ -60,7 +60,7 @@
     %# this form is nested inside the shared Station Settings box.
     <form id="general-network-section" class="save-flash {{'saved' if defined('saved') and saved else ''}} {{'restarting' if defined('restarting') and restarting else ''}}"
           hx-post="/section/general" hx-target="#general-network-section" hx-swap="outerHTML"
-          hx-select="#general-network-section" hx-trigger="submit">
+          hx-select="#general-network-section" hx-select-oob="#general-station-fqdn-group" hx-trigger="submit">
         <div class="group">
             <h3 class="group-title">Station name</h3>
             <div class="row">
@@ -113,19 +113,36 @@
         </div>
     </form>
 
-    %# Advanced Settings: the two controls an operator sets once and then
-    %# leaves alone. Deliberately carries no ``data-adv-key`` - that attribute
-    %# is what persists a disclosure's open state, and this one opens closed on
-    %# every load.
+    %# Advanced Settings: the controls an operator sets once and then leaves
+    %# alone. Deliberately carries no ``data-adv-key`` - that attribute is what
+    %# persists a disclosure's open state, and this one opens closed on every load.
     % _startup_here = defined('startup_supported') and startup_supported
     <details class="inline-advanced">
         <summary>Advanced Settings</summary>
         <div class="inline-advanced-content">
+            %# Saved with the station name: ``form=`` joins that form from here,
+            %# and its ``hx-select-oob`` re-renders this group with the stored name.
+            <div class="group" id="general-station-fqdn-group">
+                <h3 class="group-title">Web address</h3>
+                <div class="row">
+                    <div class="field wide">
+                        <label for="general-station-fqdn">Station FQDN</label>
+                        <input id="general-station-fqdn" type="text" name="station_fqdn" value="{{config.station_fqdn}}"
+                               form="general-network-section" placeholder="tracker-1.stage.example.com"
+                               autocomplete="off" autocapitalize="off" spellcheck="false"
+                               hx-get="/api/validate/general/station_fqdn" hx-trigger="blur changed delay:200ms"
+                               hx-target="#general-station-fqdn-error" hx-swap="innerHTML" hx-include="#general-network-section"
+                               aria-describedby="general-station-fqdn-error" aria-invalid="false">
+                        <span id="general-station-fqdn-error" class="field-error"></span>
+                    </div>
+                </div>
+            </div>
+
             % if _startup_here:
             %# Fetched on its own so the ``systemctl`` read stays off the
             %# General render path, and so the switch reports the host's state
             %# rather than a stored flag.
-            <div class="group">
+            <div class="group group--divider">
                 <h3 class="group-title">Startup</h3>
                 <div id="startup-settings">
                     <p class="muted">Loading startup settings…</p>
@@ -137,7 +154,7 @@
             %# does not also trigger the units form.
             <form id="general-experimental-section"
                   hx-post="/settings/experimental" hx-swap="none" hx-trigger="change">
-                <div class="group {{'group--divider' if _startup_here else ''}}">
+                <div class="group group--divider">
                     <h3 class="group-title">Experimental features</h3>
                     <div class="row">
                         <div class="field checkbox-field wide">
@@ -155,7 +172,7 @@
     </details>
 
     %# Save sits at the box bottom (the display-units and experimental toggles
-    %# above live-apply on change, so only Station name + Web Access PIN need it).
+    %# above live-apply on change, so only the station name, PIN and FQDN need it).
     %# ``form=`` keeps it submitting the network form from outside it.
     <div class="actions">
         <button type="submit" form="general-network-section" class="save-btn">Save</button>

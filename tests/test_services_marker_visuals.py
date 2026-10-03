@@ -871,6 +871,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
     cfg = SimpleNamespace(
         video_source_type="ndi",
         web_port=80,
+        station_fqdn="",
         psn_system_name="OF",
         marker=_make_full_marker_config(),
         grid=_make_grid_config(),

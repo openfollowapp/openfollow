@@ -1717,7 +1717,7 @@ class TestTheScreenAnswersHowToReachTheWebUi:
         app = _make_app()
         anm.enter_pi_network(app)
         rows = anm.build_pi_network_rows(app)
-        mdns = next(r for r in rows if r.get("key") == "mdns")
+        mdns = next(r for r in rows if r.get("key") == "web_host")
         assert mdns["label"] == "http://openfollow-noble-bear.local"
         assert mdns["kind"] not in {"choice", "text", "action"}
         assert rows.index(mdns) < min(i for i, r in enumerate(rows) if r.get("kind") == "choice")
@@ -1729,7 +1729,7 @@ class TestTheScreenAnswersHowToReachTheWebUi:
         monkeypatch.setattr("openfollow.privilege.device_repair.current_hostname", lambda: "localhost")
         app = _make_app()
         anm.enter_pi_network(app)
-        assert [r for r in anm.build_pi_network_rows(app) if r.get("key") == "mdns"] == []
+        assert [r for r in anm.build_pi_network_rows(app) if r.get("key") == "web_host"] == []
 
     def test_a_failing_hostname_lookup_does_not_blank_the_screen(self, monkeypatch) -> None:
         """This screen is the last surface an operator has; a hostname lookup
@@ -1839,6 +1839,93 @@ class TestServeOnAllInterfacesIsTheLockoutEscape:
         assert app._config.web_bind_iface == "eth0"
         assert app._restart_requests == 0
         assert "still pinned" in app._pi_network_banner
+
+
+class TestTheStationFqdn:
+    """A name the venue's DNS gives the station replaces its ``.local`` name here,
+    and this screen is where a wrong one is taken back off."""
+
+    _FQDN = "tracker-1.stage.example.com"
+
+    def _app(self, monkeypatch, *, fqdn: str = _FQDN, adapter: _FakeAdapter | None = None) -> SimpleNamespace:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        monkeypatch.setattr("openfollow.privilege.device_repair.current_hostname", lambda: "openfollow-noble-bear")
+        app = _make_app(adapter)
+        app._config.station_fqdn = fqdn
+        anm.enter_pi_network(app)
+        return app
+
+    @staticmethod
+    def _keys(app: SimpleNamespace) -> list[object]:
+        return [r.get("key") for r in anm.build_pi_network_rows(app)]
+
+    def test_it_replaces_the_local_name_and_claims_no_interface(self, monkeypatch) -> None:
+        """The ``.local`` name answers on every interface; an FQDN points wherever the
+        venue's DNS does, so its row names none. The IP addresses stay listed."""
+        app = self._app(monkeypatch)
+        rows = anm.build_pi_network_rows(app)
+        host = next(r for r in rows if r.get("key") == "web_host")
+        assert (host["label"], host["value"]) == ("http://tracker-1.stage.example.com", "")
+        assert "http://openfollow-noble-bear.local" not in [r.get("label") for r in rows]
+        assert "http://192.168.1.5" in _detail_labels(app, "eth0")
+
+    def test_it_carries_the_port_the_ui_is_served_on(self, monkeypatch) -> None:
+        app = self._app(monkeypatch)
+        app._web_server = _FakeWebServer(display_port=8080)
+        host = next(r for r in anm.build_pi_network_rows(app) if r.get("key") == "web_host")
+        assert host["label"] == "http://tracker-1.stage.example.com:8080"
+
+    def test_remove_fqdn_is_offered_only_while_one_is_set(self, monkeypatch) -> None:
+        assert "fqdn_remove" not in self._keys(self._app(monkeypatch, fqdn=""))
+        rows = anm.build_pi_network_rows(self._app(monkeypatch))
+        keys = [r.get("key") for r in rows]
+        heading = next(i for i, r in enumerate(rows) if r.get("label") == "If you still can't reach it")
+        assert keys.index("fqdn_remove") == heading + 1
+
+    def test_remove_fqdn_clears_it_and_names_the_local_address_again(self, monkeypatch) -> None:
+        saved: list[object] = []
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: saved.append(app) or True)
+        app = self._app(monkeypatch)
+
+        _confirm_key(app, "fqdn_remove")
+
+        assert app._config.station_fqdn == ""
+        assert saved, "the cleared name was never written to disk"
+        assert (app._pi_network_banner, app._pi_network_banner_level) == ("FQDN removed.", "success")
+        assert app._restart_requests == 0
+        rows = anm.build_pi_network_rows(app)
+        host = next(r for r in rows if r.get("key") == "web_host")
+        assert (host["label"], host["value"]) == ("http://openfollow-noble-bear.local", "any interface")
+        assert "fqdn_remove" not in [r.get("key") for r in rows]
+        assert "If you still can't reach it" not in [r.get("label") for r in rows]
+        assert rows[app._pi_network_index].get("kind") in {"choice", "text", "action"}
+
+    def test_a_failed_save_keeps_the_fqdn(self, monkeypatch) -> None:
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: False)
+        app = self._app(monkeypatch)
+
+        _confirm_key(app, "fqdn_remove")
+
+        assert app._config.station_fqdn == self._FQDN
+        assert (app._pi_network_banner, app._pi_network_banner_level) == (
+            "Could not save - the FQDN is still set.",
+            "error",
+        )
+
+    def test_it_survives_a_read_only_network_backend(self, monkeypatch) -> None:
+        """It writes config, not the network stack, like the unpin escape beside it."""
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: True)
+        app = self._app(monkeypatch, adapter=_FakeAdapter(writable=False))
+        _confirm_key(app, "fqdn_remove")
+        assert app._config.station_fqdn == ""
+
+    def test_both_escapes_share_one_heading(self, monkeypatch) -> None:
+        app = self._app(monkeypatch)
+        app._config.web_bind_iface = "eth0"
+        rows = anm.build_pi_network_rows(app)
+        keys = [r.get("key") for r in rows]
+        assert [r.get("label") for r in rows].count("If you still can't reach it") == 1
+        assert keys[-2:] == ["web_unpin", "fqdn_remove"]
 
 
 class TestFixReachabilityActions:
@@ -1984,6 +2071,19 @@ class TestDefensivePathsOnTheReachabilityScreen:
 
         assert saved == []
         assert app._restart_requests == 0
+
+    def test_removing_an_fqdn_already_gone_writes_nothing(self, monkeypatch) -> None:
+        """The row is only offered while a name is set, so reaching this means it
+        was cleared since the row was rendered - by a web save, say."""
+        saved: list[object] = []
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: saved.append(app) or True)
+        app = _make_app()
+        anm.enter_pi_network(app)
+
+        anm._remove_fqdn(app)
+
+        assert saved == []
+        assert app._pi_network_banner == ""
 
     def test_dhcp_without_an_adapter_says_so_instead_of_raising(self) -> None:
         app = _make_app()

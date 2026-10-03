@@ -26,15 +26,15 @@ pytestmark = pytest.mark.unit
 _REPO_ROOT = Path(openfollow.__file__).resolve().parent.parent
 _LINK_NAME = "72-openfollow-usb-net-by-mac.link"
 
+# The image installs the .deb, so the .deb is the one route that carries the rule.
 _SOURCES = {
-    "image layer": _REPO_ROOT / "packaging" / "image" / "layer" / "openfollow.yaml",
     "deb link file": _REPO_ROOT / "packaging" / "debian" / "usb-net-by-mac.link",
     "deb build script": _REPO_ROOT / "packaging" / "build-deb.sh",
 }
 
 # Routes carrying the rule itself; the build script only installs it.
-_BLOCK_SOURCES = ("image layer", "deb link file")
-_INSTALLING_SOURCES = ("image layer", "deb build script")
+_BLOCK_SOURCES = ("deb link file",)
+_INSTALLING_SOURCES = ("deb build script",)
 
 
 def _read(name: str) -> str:
@@ -45,7 +45,7 @@ def _read(name: str) -> str:
 
 
 def _match_section(name: str) -> dict[str, str]:
-    """The rule's ``[Match]`` keys, read the same way from the file and the image heredoc."""
+    """The rule's ``[Match]`` keys."""
     keys: dict[str, str] = {}
     inside = False
     for line in _read(name).splitlines():
@@ -65,9 +65,10 @@ def _list_matches(spec: str, value: str) -> bool:
     return hit != inverted
 
 
-def _renamed(keys: dict[str, str], *, id_path: str, driver: str, mac_name: bool) -> bool:
+def _renamed(keys: dict[str, str], *, kind: str, id_path: str, driver: str, mac_name: bool) -> bool:
     """Whether the rule applies to a device: every key in ``[Match]`` has to."""
     checks = {
+        "Type": lambda spec: _list_matches(spec, kind),
         "Path": lambda spec: _list_matches(spec, id_path),
         "Driver": lambda spec: _list_matches(spec, driver),
         "Property": lambda spec: spec == "ID_NET_NAME_MAC=*" and mac_name,
@@ -89,33 +90,34 @@ def test_routes_name_adapters_by_mac(name: str) -> None:
     assert "NamePolicy=mac" in _read(name)
 
 
-def test_the_image_and_the_deb_carry_one_rule() -> None:
-    assert _match_section("image layer") == _match_section("deb link file")
-
-
-# (ID_PATH, driver, has a MAC name) as udev reports them, and whether the name moves.
+# (type, ID_PATH, driver, has a MAC name) as udev reports them, and whether the name moves.
+_USB = "platform-xhci-hcd.0-usb-0:1:1.0"
 _DEVICES = {
     # An ASIX AX88179B in a Pi 5 USB socket, as the bench station reports it.
-    "usb adapter, listed driver": (("platform-xhci-hcd.1-usb-0:2:2.0", "cdc_ncm", True), True),
-    "usb adapter, realtek": (("platform-xhci-hcd.0-usb-0:1:1.0", "r8152", True), True),
+    "usb adapter, listed driver": (("ether", "platform-xhci-hcd.1-usb-0:2:2.0", "cdc_ncm", True), True),
+    "usb adapter, realtek": (("ether", _USB, "r8152", True), True),
     # The gap a driver list left: any make of adapter is covered.
-    "usb adapter, any other driver": (("platform-xhci-hcd.0-usb-0:1:1.0", "a_driver_nobody_listed", True), True),
-    "pi 5 onboard": (("platform-1f00100000.ethernet", "macb", True), False),
-    "pi 3 onboard on usb": (("platform-3f980000.usb-usb-0:1.1:1.0", "smsc95xx", True), False),
-    "pi 3b+ onboard on usb": (("platform-3f980000.usb-usb-0:1.1.1:1.0", "lan78xx", True), False),
-    "pcie nic": (("pci-0000:01:00.0", "r8169", True), False),
-    "usb adapter without a hardware mac": (("platform-xhci-hcd.0-usb-0:1:1.0", "r8152", False), False),
+    "usb adapter, any other driver": (("ether", _USB, "a_driver_nobody_listed", True), True),
+    "pi 5 onboard": (("ether", "platform-1f00100000.ethernet", "macb", True), False),
+    "pi 3 onboard on usb": (("ether", "platform-3f980000.usb-usb-0:1.1:1.0", "smsc95xx", True), False),
+    "pi 3b+ onboard on usb": (("ether", "platform-3f980000.usb-usb-0:1.1.1:1.0", "lan78xx", True), False),
+    "pcie nic": (("ether", "pci-0000:01:00.0", "r8169", True), False),
+    "usb adapter without a hardware mac": (("ether", _USB, "r8152", False), False),
+    # Never covered by the driver list either: their names, and the profiles bound to them, stay.
+    "usb wi-fi dongle": (("wlan", _USB, "mt7601u", True), False),
+    "usb mobile modem": (("wwan", _USB, "qmi_wwan", True), False),
 }
 
 
 @pytest.mark.parametrize("name", sorted(_BLOCK_SOURCES))
 @pytest.mark.parametrize("device", sorted(_DEVICES))
-def test_every_usb_adapter_and_no_onboard_nic_is_named_by_mac(name: str, device: str) -> None:
-    """Every USB network adapter gets its MAC name, whatever its make, so two can
+def test_every_usb_ethernet_adapter_and_no_onboard_nic_is_named_by_mac(name: str, device: str) -> None:
+    """Every USB Ethernet adapter gets its MAC name, whatever its make, so two can
     never trade names. The Pi 3 / Zero onboard NIC hangs off USB too; renaming it
     would dangle every eth0 pin an operator already has."""
-    (id_path, driver, mac_name), renamed = _DEVICES[device]
-    assert _renamed(_match_section(name), id_path=id_path, driver=driver, mac_name=mac_name) is renamed
+    (kind, id_path, driver, mac_name), renamed = _DEVICES[device]
+    found = _renamed(_match_section(name), kind=kind, id_path=id_path, driver=driver, mac_name=mac_name)
+    assert found is renamed
 
 
 def test_the_match_model_follows_systemd_link() -> None:
@@ -123,9 +125,11 @@ def test_the_match_model_follows_systemd_link() -> None:
     a ``!`` list and require every key, or the table proves nothing."""
     assert _list_matches("!a b", "c") and not _list_matches("!a b", "b")
     assert _list_matches("*-usb-*", "platform-x-usb-0:1") and not _list_matches("*-usb-*", "pci-0000")
-    assert not _renamed({"Path": "*-usb-*", "Driver": "r8152"}, id_path="p-usb-1", driver="asix", mac_name=True)
+    assert not _renamed(
+        {"Path": "*-usb-*", "Driver": "r8152"}, kind="ether", id_path="p-usb-1", driver="asix", mac_name=True
+    )
     with pytest.raises(AssertionError, match="no model"):
-        _renamed({"Type": "ether"}, id_path="", driver="", mac_name=True)
+        _renamed({"MACAddress": "x"}, kind="ether", id_path="", driver="", mac_name=True)
 
 
 def test_deb_declares_the_link_file_as_a_conffile() -> None:

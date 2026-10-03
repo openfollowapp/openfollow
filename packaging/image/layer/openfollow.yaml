@@ -6,9 +6,11 @@
 # X-Env-Layer-Category: app
 # X-Env-Layer-Desc: Install the offline OpenFollow .deb and apply the headless
 #  appliance boot config (silent kiosk boot, HDMI 1080p, WiFi/BT off, SSH on).
-#  The .deb carries the runtime, the systemd units, the splash and the
-#  `openfollow` service user; this layer adds only the OS/boot concerns the .deb
-#  does not own. Requires rpi-user-credentials (creates the openfollow login user
+#  The .deb carries the runtime, the systemd units, the splash, the
+#  `openfollow` service user and its /etc files (the NetworkManager DHCP
+#  fallback, the USB adapter naming rule); this layer adds only the OS/boot
+#  concerns the .deb does not own, and never rewrites a file the .deb ships as a
+#  conffile, or dpkg sees it as modified and an update stops at its prompt. Requires rpi-user-credentials (creates the openfollow login user
 #  before the deb installs) and rpi-boot-firmware (so our config.txt/cmdline.txt
 #  edits run AFTER the firmware templates are installed, not before).
 #  The network stack is NetworkManager (installed + enabled below), not the
@@ -77,44 +79,6 @@ mmdebstrap:
     #     Requires), but the networkd units still ship with systemd; masking makes
     #     "NetworkManager owns every interface" explicit and conflict-free.
     - chroot "$1" systemctl mask systemd-networkd.service systemd-networkd.socket systemd-networkd-wait-online.service
-
-    # 2a'. Keep the station reachable on a show LAN with no DHCP server. Without
-    #      this NM leaves the NIC with no IPv4 address at all: the web server is
-    #      up and avahi is answering, but nothing can reach either. Set as a
-    #      connection default rather than on a profile because no profile exists
-    #      yet at build time, and this way it also covers profiles created later.
-    #      link-local=4 is "fallback" - the 169.254 address appears only once
-    #      DHCP has given up and goes away when a lease arrives, so a healthy LAN
-    #      never carries a second address. dhcp-timeout must not be finite: on
-    #      expiry NM fails the activation and tears the fallback address down
-    #      with it. 2147483647 is NM's "infinity" - the word is rejected here.
-    - |-
-      set -eu
-      mkdir -p "$1/etc/NetworkManager/conf.d"
-      cat > "$1/etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf" <<'NMFALLBACK'
-      [connection]
-      ipv4.dhcp-timeout=2147483647
-      ipv4.link-local=4
-      NMFALLBACK
-
-    # 2a2. Name every USB network adapter after its MAC. Kernel ethN names follow
-    #      probe order, not device identity, so two adapters can swap across a
-    #      reboot - and because a plane pins an interface by name and both names
-    #      still resolve, the swap moves stage data onto the wrong network with
-    #      nothing down to notice. Matched by USB path, keeping out the onboard
-    #      NIC's drivers: it is USB-attached on Pi 3 / Zero and must stay eth0.
-    - |-
-      set -eu
-      mkdir -p "$1/etc/systemd/network"
-      cat > "$1/etc/systemd/network/72-openfollow-usb-net-by-mac.link" <<'USBNETLINK'
-      [Match]
-      Path=*-usb-*
-      Driver=!smsc95xx lan78xx
-      Property=ID_NET_NAME_MAC=*
-
-      [Link]
-      NamePolicy=mac
-      USBNETLINK
 
     # 2b. Enable lingering for openfollow so /run/user/<uid> exists at boot before
     #     login – the Cage kiosk session needs XDG_RUNTIME_DIR. The deb postinst

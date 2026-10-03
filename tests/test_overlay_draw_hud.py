@@ -2586,11 +2586,42 @@ class TestSettingsMenuSupportColumn:
     """The Support OpenFollow column reads as a request, not as another link."""
 
     @staticmethod
-    def _draw() -> FakeCairo:
+    def _draw(width: int = 1600, height: int = 900) -> FakeCairo:
         state = _base_state(settings_items=["Network"], settings_items_enabled=[True])
         cr = FakeCairo()
-        draw_settings_menu(FakeRenderer(state=state), cr, state, 1600, 900)
+        draw_settings_menu(FakeRenderer(state=state), cr, state, width, height)
         return cr
+
+    @staticmethod
+    def _box(modules: list[tuple[float, float, float, float]]) -> tuple[float, float, float, float]:
+        """A code's white field as (left, top, right, bottom), quiet zone included."""
+        quiet = QUIET_MODULES * modules[0][2]
+        return (
+            min(r[0] for r in modules) - quiet,
+            min(r[1] for r in modules) - quiet,
+            max(r[0] + r[2] for r in modules) + quiet,
+            max(r[1] + r[3] for r in modules) + quiet,
+        )
+
+    @classmethod
+    def _frame_and_content(cls, cr: FakeCairo) -> tuple[tuple[float, ...], tuple[float, ...]]:
+        """The dashed frame's edges and the support column's ink, each as (left, top, right, bottom)."""
+        at = cr.calls.index(("dash", SUPPORT_DASH, 0.0))
+        start = max(i for i, c in enumerate(cr.calls[:at]) if c == ("save",))
+        xs, ys = zip(*(c[1:3] for c in cr.calls[start:at] if c[0] in {"move_to", "line_to"}), strict=True)
+        field = cls._box(TestSettingsMenuLinkColumns._codes(cr)[LINKS.index(SUPPORT)])
+        lefts = [field[0], min(min(c[1], c[3], c[5]) for c in cr.calls if c[0] == "curve_to")]
+        rights = [field[2]]
+        measure = FakeCairo()
+        for line in SUPPORT.lines:
+            text = next(t for t in cr.texts if t.text == line)
+            measure.set_font_size(text.font_size)
+            lefts.append(text.x)
+            rights.append(text.x + measure.text_extents(line).width)
+        title = next(t for t in cr.texts if t.text == SUPPORT.lines[0])
+        measure.set_font_size(title.font_size)
+        top = title.y + measure.text_extents(title.text).y_bearing
+        return (min(xs), min(ys), max(xs), max(ys)), (min(lefts), top, max(rights), field[3])
 
     def test_only_the_support_column_is_framed_dashed(self) -> None:
         dashes = [c for c in self._draw().calls if c[0] == "dash"]
@@ -2612,19 +2643,26 @@ class TestSettingsMenuSupportColumn:
         assert sum(1 for c in calls[saved:restored] if c == ("save",)) == 1
         assert ("stroke",) in calls[at:restored]
 
-    def test_the_frame_holds_the_whole_column(self) -> None:
-        cr = self._draw()
-        codes = TestSettingsMenuLinkColumns._codes(cr)
-        support = codes[LINKS.index(SUPPORT)]
-        at = cr.calls.index(("dash", SUPPORT_DASH, 0.0))
-        start = max(i for i, c in enumerate(cr.calls[:at]) if c == ("save",))
-        path = [c for c in cr.calls[start:at] if c[0] in {"move_to", "line_to", "arc"}]
-        xs = [c[1] for c in path]
-        ys = [c[2] for c in path]
-        caption = next(t for t in cr.texts if t.text == SUPPORT.lines[0])
-        assert min(xs) < min(r[0] for r in support) and max(xs) > max(r[0] + r[2] for r in support)
-        assert min(ys) < caption.y - caption.font_size
-        assert max(ys) > max(r[1] + r[3] for r in support)
+    @pytest.mark.parametrize(
+        "size",
+        [(1600, 900), (1100, 600), (1120, 900)],
+        ids=["code-widest", "caption-widest", "code-fills-its-column"],
+    )
+    def test_the_frame_leaves_the_same_space_on_all_four_sides(self, size: tuple[int, int]) -> None:
+        """The frame hugs the caption and the code, not the column they are centred in."""
+        frame, content = self._frame_and_content(self._draw(*size))
+        gaps = [content[0] - frame[0], content[1] - frame[1], frame[2] - content[2], frame[3] - content[3]]
+        assert gaps[0] > 0
+        assert gaps == pytest.approx([gaps[0]] * 4, abs=0.5)
+
+    def test_the_frame_keeps_clear_of_the_next_code(self) -> None:
+        """Where the code fills its column the space shrinks on every side rather than crowd its neighbour."""
+        cr = self._draw(1120, 900)
+        frame, content = self._frame_and_content(cr)
+        neighbour = self._box(TestSettingsMenuLinkColumns._codes(cr)[LINKS.index(SUPPORT) - 1])
+        pad = content[0] - frame[0]
+        assert pad > 0
+        assert frame[0] - neighbour[2] >= pad - 1e-6
 
     def test_a_heart_leads_the_accent_title(self) -> None:
         cr = self._draw()

@@ -1328,9 +1328,14 @@ def _iface_options_fingerprint(labels: Mapping[str, str]) -> str:
     return hashlib.sha256(state.encode()).hexdigest()[:16]
 
 
+def _dom_id_part(raw: str) -> str:
+    """``raw`` as an HTML id fragment, one to one: any other character becomes ``-<hex>-``."""
+    return re.sub(r"[^A-Za-z0-9_]", lambda match: f"-{ord(match.group()):x}-", raw)
+
+
 def _address_slot(row: Mapping[str, Any]) -> str:
     """The id the panel's poll replaces a row's Address cell by."""
-    return "ia-addr-" + re.sub(r"[^A-Za-z0-9_-]+", "-", str(row["key"] or row["label"])).strip("-")
+    return "ia-addr-" + _dom_id_part(str(row["key"] or row["label"]))
 
 
 def _plane_address(pin: str, station_iface: str, names: _PanelNames) -> str:
@@ -5496,8 +5501,26 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         names = {str(row.get("name", "")) for row in rows} | {str(n) for n in snapshot.get("interfaces", [])}
         return {name for name in names if name}
 
+    def _card_in_progress() -> dict[str, Any]:
+        """The unsaved edit row and Add VLAN form a label request carried, for its re-render."""
+        forms = request.forms
+        kept: dict[str, Any] = {}
+        editing = (forms.get("editing_iface") or "").strip()
+        if editing and _resolve_network_iface(editing)[0] == editing:
+            _label_iface, method, fields = _parse_network_form()
+            kept.update(
+                iface=editing, editable=True, overrides={"active_interface": editing, "method": method, **fields}
+            )
+        if "vlan_parent" in forms or "vlan_id" in forms:
+            kept["vlan_form"] = {
+                "parent": (forms.get("vlan_parent") or "").strip(),
+                "vlan_id": (forms.get("vlan_id") or "").strip(),
+            }
+        return kept
+
     def _label_card(labels: Mapping[str, str] | None, result: dict[str, str]) -> Any:
-        return template("partials/network", net=_build_network_form_context(labels=labels, label_result=result))
+        net = _build_network_form_context(labels=labels, label_result=result, **_card_in_progress())
+        return template("partials/network", net=net)
 
     @app.post("/section/network/label")
     def network_label() -> Any:

@@ -196,6 +196,94 @@ def test_forgetting_a_label_that_is_not_there_is_refused(net_server) -> None:  #
     assert status == 404
 
 
+# --- What else is on the card ---------------------------------------------------
+
+# What a label request carries of an edit left open on eth0, as the label form includes it.
+_EDITING_ETH0 = {
+    "editing_iface": "eth0",
+    "method": "static",
+    "address": "10.0.0.77",
+    "subnet_mask": "255.255.0.0",
+    "router": "10.0.0.254",
+    "dns1": "9.9.9.9",
+}
+
+
+def _assert_still_editing_eth0(body: str) -> None:
+    eth0 = _row(body, "eth0")
+    assert 'data-mode="edit"' in eth0 and 'data-method="static"' in eth0
+    for typed in ("10.0.0.77", "255.255.0.0", "10.0.0.254", "9.9.9.9"):
+        assert f'value="{typed}"' in eth0
+    assert 'data-mode="view"' in _row(body, "wlan0")
+
+
+@pytest.mark.parametrize(
+    ("label", "saved"), [("Lighting", {"wlan0": "Lighting"}), ("x" * 21, {})], ids=["saved", "refused"]
+)
+def test_a_label_request_keeps_the_row_being_edited(net_server, tmp_path, label, saved) -> None:  # noqa: F811
+    fake, base = net_server
+    status, body = _post(base, "/section/network/label", {"iface": "wlan0", "label": label, **_EDITING_ETH0})
+    assert status == 200
+    assert _saved(tmp_path) == saved
+    _assert_still_editing_eth0(body)
+    # Carried back to the screen, never applied.
+    assert fake.applied == []
+
+
+def test_forget_keeps_the_row_being_edited(net_server, tmp_path) -> None:  # noqa: F811
+    _labels(tmp_path, {"enx00e04c68a1f2": "Lighting"})
+    fake, base = net_server
+    _status, body = _post(base, "/section/network/label/forget", {"iface": "enx00e04c68a1f2", **_EDITING_ETH0})
+    assert _saved(tmp_path) == {}
+    _assert_still_editing_eth0(body)
+    assert fake.applied == []
+
+
+def test_a_label_request_keeps_an_open_add_vlan_form(net_server) -> None:  # noqa: F811
+    _fake, base = net_server
+    _status, body = _post(
+        base, "/section/network/label", {"iface": "wlan0", "label": "Lighting", "vlan_parent": "wlan0", "vlan_id": "13"}
+    )
+    vlan_form = body[body.index('<form id="net-vlan-add"') : body.index("</form>", body.index('id="net-vlan-add"'))]
+    assert not vlan_form.startswith('<form id="net-vlan-add" class="ia-vlan-add" hidden')
+    assert 'value="13"' in vlan_form
+    assert '<option value="wlan0" selected>' in vlan_form
+
+
+def test_a_label_request_with_nothing_in_progress_leaves_the_card_read_only(net_server) -> None:  # noqa: F811
+    _fake, base = net_server
+    _status, body = _post(base, "/section/network/label", {"iface": "wlan0", "label": "Lighting"})
+    assert 'data-mode="edit"' not in body
+    assert '<form id="net-vlan-add" class="ia-vlan-add" hidden' in body
+
+
+def test_an_edit_on_an_interface_the_host_does_not_have_is_not_carried(net_server) -> None:  # noqa: F811
+    _fake, base = net_server
+    status, body = _post(
+        base,
+        "/section/network/label",
+        {"iface": "wlan0", "label": "Lighting", **_EDITING_ETH0, "editing_iface": "eth9"},
+    )
+    assert status == 200
+    assert 'data-mode="edit"' not in body
+    assert 'value="10.0.0.77"' not in body
+
+
+def test_the_label_forms_carry_what_the_edit_row_and_vlan_form_hold(net_server, tmp_path) -> None:  # noqa: F811
+    _labels(tmp_path, {"enx00e04c68a1f2": "Lighting"})
+    _fake, base = net_server
+    _status, body = _get(base, "/section/network/edit/eth0")
+    keep = (
+        'hx-include=".net-iface-row[data-mode=&#039;edit&#039;] .net-iface-form [name]:not([name=&#039;iface&#039;]), '
+        '#net-vlan-add:not([hidden]) [name]"'
+    )
+    # Every label form and the Forget form, and nothing else.
+    assert body.count(keep) == body.count('class="net-label-form') + body.count('class="net-forget"') == 3
+    # Only the row being edited names itself, so a read-only row carries nothing.
+    assert body.count('name="editing_iface"') == 1
+    assert 'name="editing_iface" value="eth0"' in _row(body, "eth0")
+
+
 # --- On-blur check --------------------------------------------------------------
 
 

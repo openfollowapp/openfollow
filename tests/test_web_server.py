@@ -1316,7 +1316,29 @@ def test_the_interface_assignment_poll_replaces_every_address_cell_and_no_picker
     assert re.findall(r'<span id="(ia-addr-[^"]+)" hx-swap-oob="true">', body) == cells
     # An unsaved choice lives in the pickers, so the poll never sends one.
     assert "<select" not in body
-    assert _ia_address(body, "ia-addr-otp_output-source_iface") == "10.0.0.9"
+    assert _ia_address(body, "ia-addr-otp_output-2e-source_iface") == "10.0.0.9"
+
+
+def test_the_interface_assignment_poll_tells_apart_ids_that_differ_by_punctuation(live_server, monkeypatch) -> None:
+    from openfollow.configuration import OscDestinationConfig
+
+    _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_source_iface = "eth0"
+    cfg.osc_destinations.destinations = [
+        OscDestinationConfig(id="media.v2", name="A", host="198.51.100.1", source_iface="eth1"),
+        OscDestinationConfig(id="media-v2", name="B", host="198.51.100.2", source_iface="eth0"),
+    ]
+    save_config(cfg, server.config_path)
+
+    _status, panel = _get(base, "/section/interface_assignment")
+    cells = re.findall(r'<span id="(ia-addr-[^"]+)">', panel)
+    assert len(set(cells)) == len(cells)
+    body, _event = _ia_status(base)
+    assert re.findall(r'<span id="(ia-addr-[^"]+)" hx-swap-oob="true">', body) == cells
+    assert "10.0.0.9" in _ia_address(body, "ia-addr-osc_destinations-2e-media-2e-v2-2e-source_iface")
+    assert "192.168.178.59" in _ia_address(body, "ia-addr-osc_destinations-2e-media-2d-v2-2e-source_iface")
 
 
 @pytest.mark.parametrize(
@@ -1348,7 +1370,7 @@ def test_the_interface_assignment_poll_shows_an_outage_without_a_scan(live_serve
         },
     )
     body, _event = _ia_status(base)
-    assert _ia_address(body, "ia-addr-otp_output-source_iface") == f'<span class="stat-chip off">{chip}</span>'
+    assert _ia_address(body, "ia-addr-otp_output-2e-source_iface") == f'<span class="stat-chip off">{chip}</span>'
     assert _ia_address(body, "ia-addr-psn_source_iface") == "192.168.178.59"
 
 

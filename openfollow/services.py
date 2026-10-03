@@ -3508,7 +3508,7 @@ class AppRuntimeServices:
             return {"skipped": True, "reason": "no destination selected"}
         egress = self._osc_egress.for_destination(dest)
         if egress is not None and egress.down:
-            return {"skipped": True, "reason": f"interface {egress.iface} is down"}
+            return {"skipped": True, "reason": f"interface {self._iface_display_name(egress.iface)} is down"}
         typed_args = coerce_osc_args(str_args)
         sent = self._osc_service.send(
             address,
@@ -3520,7 +3520,9 @@ class AppRuntimeServices:
             egress=egress,
         )
         if not sent:
-            return {"error": f"could not send on interface {egress.iface}" if egress is not None else "send failed"}
+            if egress is None:
+                return {"error": "send failed"}
+            return {"error": f"could not send on interface {self._iface_display_name(egress.iface)}"}
         return {
             "success": True,
             "address": address,

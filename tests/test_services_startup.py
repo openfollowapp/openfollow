@@ -1527,8 +1527,12 @@ def test_a_routing_change_restages_the_egress_table(monkeypatch) -> None:
     assert services._osc_egress.for_destination(moved) == Egress("eth1", "10.0.0.9")
 
 
-def test_a_zone_test_send_to_a_down_interface_says_so(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("labels", "named"), [({}, "eth1"), ({"eth1": "Lighting"}, "Lighting (eth1)")], ids=["unlabelled", "labelled"]
+)
+def test_a_zone_test_send_to_a_down_interface_says_so(monkeypatch, labels, named) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.interface_labels = labels
     _fake_ifaces(monkeypatch, {})
     service = _RecordingOscService()
     service.sent = []
@@ -1538,7 +1542,7 @@ def test_a_zone_test_send_to_a_down_interface_says_so(monkeypatch) -> None:
     services._app._config.trigger_zones.zones[0].osc_address_first_entry = "/go"
     services._restage_osc_egress(services._app._config.osc_destinations)
 
-    assert services._zone_test_send(0, "first") == {"skipped": True, "reason": "interface eth1 is down"}
+    assert services._zone_test_send(0, "first") == {"skipped": True, "reason": f"interface {named} is down"}
     assert service.sent == []
 
 

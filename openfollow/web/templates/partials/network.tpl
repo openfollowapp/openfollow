@@ -39,6 +39,9 @@
 %# rather than making the operator retype it.
 % _vform = _net.get("vlan_form") or {}
 % _vopen = bool(_vform)
+%# A label save or Forget re-renders the card, so it carries what the open edit
+%# row and Add VLAN form hold, and the re-render puts it back.
+% _keep = ".net-iface-row[data-mode='edit'] .net-iface-form [name]:not([name='iface']), #net-vlan-add:not([hidden]) [name]"
 <div id="network-config-section" class="network-config"
 % if _polls:
      hx-get="/section/network/status" hx-trigger="every 5s [netLabelsIdle()]"
@@ -134,7 +137,7 @@
                 %# the network, so it is editable on a stack this card cannot write.
                 <form class="net-label-form {{'save-flash saved' if row.get('label_saved') else ''}}"
                       hx-post="/section/network/label" hx-target="#network-interface"
-                      hx-swap="innerHTML" hx-trigger="submit">
+                      hx-swap="innerHTML" hx-trigger="submit" hx-include="{{_keep}}">
                     <input type="hidden" name="iface" value="{{_name}}">
                     <div class="group group--divider">
                         <h4 class="group-title">Adapter</h4>
@@ -190,6 +193,9 @@
                 % end
                       >
                     <input type="hidden" name="iface" value="{{_name}}">
+                    % if _row_edit:
+                    <input type="hidden" name="editing_iface" value="{{_name}}">
+                    % end
 
                     %# Names the address rather than claiming the operator is on
                     %# this network: the station answers for any of its addresses
@@ -319,7 +325,7 @@
                     </span>
                     <span class="stat-chip">Not connected</span>
                     <form class="net-forget" hx-post="/section/network/label/forget"
-                          hx-target="#network-interface" hx-swap="innerHTML">
+                          hx-target="#network-interface" hx-swap="innerHTML" hx-include="{{_keep}}">
                         <input type="hidden" name="iface" value="{{gone["name"]}}">
                         <button type="submit" class="danger small">Forget</button>
                     </form>
@@ -344,7 +350,7 @@
         %# Its own form: the card is a div, so ``closest form`` has nothing
         %# else to find, and Create submits it rather than the browser falling
         %# through to a native GET that silently creates nothing.
-        <form class="ia-vlan-add" {{'' if _vopen else 'hidden'}}
+        <form id="net-vlan-add" class="ia-vlan-add" {{'' if _vopen else 'hidden'}}
               hx-post="/section/network/vlan/create" hx-target="#network-interface"
               hx-swap="innerHTML" hx-trigger="submit"
               hx-disabled-elt="find button[type=submit]" data-busy-text="Creating VLAN {vlan_id} on {vlan_parent}…">

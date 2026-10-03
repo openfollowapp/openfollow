@@ -60,10 +60,13 @@ class _StubDetection:
 
 
 class _StubDetector:
-    def __init__(self, detection, *, confidence_threshold: float = 0.2, grace_s: float = 0.5) -> None:  # noqa: ANN001
+    def __init__(  # noqa: ANN001
+        self, detection, *, confidence_threshold: float = 0.2, grace_s: float = 0.5, available: bool = True
+    ) -> None:
         self.tracked_detection = detection
         self.confidence_threshold = confidence_threshold
         self.grace_s = grace_s
+        self.available = available
 
 
 class _StubCamera:
@@ -923,6 +926,7 @@ def test_replace_mode_does_not_read_detections(monkeypatch) -> None:
             self.tracked_detection = tracked
             self.confidence_threshold = 0.2
             self.grace_s = 0.5
+            self.available = True
 
         @property
         def detections(self):  # noqa: ANN202
@@ -1376,6 +1380,20 @@ def test_pinning_another_marker_restores_the_one_released(monkeypatch) -> None:
 
     assert m1.status == 1.0
     assert m2.status == pytest.approx(0.75)
+
+
+def test_a_detector_with_no_backend_releases_like_no_detector(monkeypatch) -> None:
+    """A detector whose backend never loaded tracks nobody, ever, so it must not
+    hold a hand-driven marker at 0.0 the way a live detector between sightings does."""
+    app = _make_app(detection_cfg=_status_cfg(), resolution=(1000, 1000))
+    marker = app._server.get_marker(0)
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+    assert marker.status == pytest.approx(0.75)
+
+    _run(app, _StubDetector(None, available=False))
+
+    assert marker.status == 1.0
+    assert app._detection_pin_states[0].status is None
 
 
 def test_a_marker_leaving_the_controlled_set_is_restored(monkeypatch) -> None:

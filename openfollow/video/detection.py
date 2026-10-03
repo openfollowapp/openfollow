@@ -60,6 +60,8 @@ _MAX_DT_REL = 8.0
 # reappears near where they were, so a candidate within this radius is treated as
 # the same person; beyond it the old target is taken to have left the frame.
 _REACQUIRE_MAX_CENTER_DIST = 0.15
+# Track steps whose gaps bound the live ageing allowance; ~half a second at 15 Hz.
+_STEP_HISTORY = 8
 
 # Where detection storage lands when the operator leaves ``storage_path`` blank
 # on a unit whose NVMe is mounted. The appliance mounts the drive here and the
@@ -457,6 +459,9 @@ class PersonDetector:
         self._tracked: list[_TrackedPerson] = []
         # Monotonic timestamp of the previous track step, for the Kalman dt.
         self._last_track_t: float | None = None
+        # Seconds between recent track steps: the detector's own cadence, which
+        # ``tracked_detection`` allows for before it calls a box coasting.
+        self._step_gaps_s: deque[float] = deque(maxlen=_STEP_HISTORY)
         self._pinned_id: int | None = None  # currently followed person
         # Normalised centre of the box last returned for the pinned person. Lets
         # re-acquisition re-lock onto the same person (by position) when their
@@ -700,7 +705,6 @@ class PersonDetector:
         """
         now = time.monotonic()
         grace_s = self.grace_s
-        interval_s = self._config.interval_ms / 1000.0
 
         # Snapshot shared state under lock to avoid races with detector thread
         with self._track_lock:
@@ -709,17 +713,23 @@ class PersonDetector:
             results = self._results
             last_center = self._last_pinned_center
             last_track_t = self._last_track_t
+            longest_step_s = max(self._step_gaps_s, default=0.0)
+
+        # The normal gap between matches is the detector's own step period, which
+        # inference time sets; ``interval_ms`` is only the pull timeout and so a
+        # floor. The longest recent gap, not the last, so cadence jitter never
+        # reads as coasting.
+        allowance_s = max(self._config.interval_ms / 1000.0, longest_step_s)
 
         # Sticky-by-track_id while the pinned person's track is still alive.
         if pinned_id is not None:
             for tp in tracked:
                 if tp.track_id == pinned_id:
                     # Aged live, so a detector that stops stepping ages its last
-                    # box too; one interval is the normal gap between matches. The
-                    # same age decides eligibility, so the status reaches 0.0 at
-                    # the moment the track drops, and a zero grace still keeps a
-                    # fresh match for one interval.
-                    age_s = max(tp.box.age_s, now - tp.last_seen - interval_s)
+                    # box too. The same age decides eligibility, so the status
+                    # reaches 0.0 at the moment the track drops, and a zero grace
+                    # still keeps a fresh match for one step.
+                    age_s = max(tp.box.age_s, now - tp.last_seen - allowance_s)
                     if age_s <= grace_s:
                         with self._track_lock:
                             self._last_pinned_center = self._box_center(tp.box)
@@ -730,7 +740,7 @@ class PersonDetector:
                 self._pinned_id = None
 
         # Results that have coasted past the grace period are a stalled detector, not people.
-        if not results or (last_track_t is not None and now - last_track_t - interval_s > grace_s):
+        if not results or (last_track_t is not None and now - last_track_t - allowance_s > grace_s):
             return None
 
         # Re-acquire: prefer the detection nearest the last-followed centre so a
@@ -833,6 +843,7 @@ class PersonDetector:
             self._tracker.reset()
             self._tracked = []
             self._last_track_t = None
+            self._step_gaps_s.clear()
             self._pinned_id = None
             self._last_pinned_center = None
         self._thread = threading.Thread(target=self._run, daemon=True, name="PersonDetector")
@@ -1019,10 +1030,8 @@ class PersonDetector:
         # detection-cadence clock; the pin filter runs on a separate animate-cadence
         # clock (``NOMINAL_FRAME_DT`` in ``runtime/frame_timing``).
         nominal_s = max(self._config.interval_ms / 1000.0, 1e-3)
-        if self._last_track_t is None:
-            dt_rel = 1.0
-        else:
-            dt_rel = min(max((now - self._last_track_t) / nominal_s, _MIN_DT_REL), _MAX_DT_REL)
+        step_s = None if self._last_track_t is None else now - self._last_track_t
+        dt_rel = 1.0 if step_s is None else min(max(step_s / nominal_s, _MIN_DT_REL), _MAX_DT_REL)
         self._last_track_t = now
 
         tracks = self._tracker.update(high, low, now, max_lost_s, dt=dt_rel)
@@ -1052,6 +1061,8 @@ class PersonDetector:
 
         with self._track_lock:
             self._tracked = full
+            if step_s is not None:
+                self._step_gaps_s.append(step_s)
         with self._perf_lock:
             self._tracked_count = len(full)
         return matched

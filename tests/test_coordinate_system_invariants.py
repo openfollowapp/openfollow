@@ -311,6 +311,7 @@ class _StubDetector:
         self.tracked_detection = detection
         self.confidence_threshold = 0.2
         self.grace_s = 0.5
+        self.available = True
 
 
 @pytest.mark.parametrize("offsets", OFFSET_CASES)

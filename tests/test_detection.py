@@ -439,6 +439,50 @@ def test_tracked_detection_with_no_grace_keeps_a_match_for_one_interval(monkeypa
     assert detector.tracked_detection is None
 
 
+def test_tracked_detection_allows_for_the_detectors_own_step_period(monkeypatch) -> None:
+    """``interval_ms`` only bounds the pull; inference time sets the real gap
+    between steps. A person matched on every step must not read as coasting
+    between them, or the status would sawtooth at the step rate."""
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=0, interval_ms=100))
+    person = detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.0)
+    detector._track([person])
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.3)
+    (again,) = detector._track([person])
+    detector._results = [again]
+
+    # 250 ms after a step on a 300 ms cadence: fresh, acquired and sticky.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.55)
+    assert detector.tracked_detection is again
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.59)
+    assert detector.tracked_detection.age_s == 0.0
+
+    # One step overdue: coasting, which a zero grace does not allow.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.61)
+    assert detector.tracked_detection is None
+
+
+def test_tracked_detection_allowance_is_the_longest_recent_step(monkeypatch) -> None:
+    """A single quick step must not shrink the allowance to its own gap, or the
+    next normal-length gap reads as coasting."""
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=500, interval_ms=100))
+    person = detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)
+
+    for t in (100.0, 100.3, 100.4):
+        monkeypatch.setattr(detection_module.time, "monotonic", lambda t=t: t)
+        (box,) = detector._track([person])
+    detector._results = [box]
+    detector._pinned_id = box.track_id
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.65)
+    assert detector.tracked_detection.age_s == 0.0
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.8)
+    assert detector.tracked_detection.age_s == pytest.approx(0.1)
+
+
 def test_grace_s_mirrors_the_configured_grace_period() -> None:
     detection_module = _load_detection_module()
     detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=750))

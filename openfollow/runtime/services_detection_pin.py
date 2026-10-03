@@ -314,8 +314,9 @@ def apply_detection_pin(
     pin_state.attached_track_id = None
     pin_state.attached_marker_id = None
 
-    if person_detector is None:
-        # No detector: the operator drives the marker, so it is fully valid.
+    if person_detector is None or not person_detector.available:
+        # No detector, or one that never loaded a backend: the operator drives
+        # the marker, so it is fully valid.
         _release_status(app, marker.marker_id, pin_state)
         return
 

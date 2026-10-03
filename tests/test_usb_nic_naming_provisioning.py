@@ -7,13 +7,14 @@ a station with two USB adapters can swap ``eth1`` and ``eth2`` across a reboot.
 Every network plane pins an interface by *name*, and after a swap both names
 still resolve - so the pin binds cleanly to the wrong adapter and stage data
 leaves on the wrong network. It is the one case the fail-closed rule cannot
-catch, because nothing is down. Naming an adapter after its MAC removes the
-ordering entirely, and like the DHCP fallback it is provisioning: nothing in the
-running app may rewrite an operator's network configuration.
+catch, because nothing is down. Naming every USB adapter after its MAC removes
+the ordering entirely, and like the DHCP fallback it is provisioning: nothing in
+the running app may rewrite an operator's network configuration.
 """
 
 from __future__ import annotations
 
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 import pytest
@@ -27,18 +28,13 @@ _LINK_NAME = "72-openfollow-usb-net-by-mac.link"
 
 _SOURCES = {
     "image layer": _REPO_ROOT / "packaging" / "image" / "layer" / "openfollow.yaml",
-    "ansible playbook": _REPO_ROOT / "scripts" / "ansible" / "install-raspberry-pi.yml",
     "deb link file": _REPO_ROOT / "packaging" / "debian" / "usb-net-by-mac.link",
     "deb build script": _REPO_ROOT / "packaging" / "build-deb.sh",
 }
 
 # Routes carrying the rule itself; the build script only installs it.
-_BLOCK_SOURCES = ("image layer", "ansible playbook", "deb link file")
-_INSTALLING_SOURCES = ("image layer", "ansible playbook", "deb build script")
-
-# The onboard NIC is USB-attached on Pi 3 and Zero. Matching those drivers would
-# rename eth0 on those boards and dangle every pin an operator already has.
-_ONBOARD_USB_DRIVERS = ("smsc95xx", "lan78xx")
+_BLOCK_SOURCES = ("image layer", "deb link file")
+_INSTALLING_SOURCES = ("image layer", "deb build script")
 
 
 def _read(name: str) -> str:
@@ -48,18 +44,36 @@ def _read(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _matched_drivers(name: str) -> set[str]:
-    """The drivers the rule actually matches.
-
-    Read off the ``Driver=`` line rather than the file, because the comment
-    above it names the onboard drivers precisely to say they are excluded - a
-    substring search over the whole text cannot tell the two apart.
-    """
+def _match_section(name: str) -> dict[str, str]:
+    """The rule's ``[Match]`` keys, read the same way from the file and the image heredoc."""
+    keys: dict[str, str] = {}
+    inside = False
     for line in _read(name).splitlines():
         stripped = line.strip()
-        if stripped.startswith("Driver="):
-            return set(stripped.removeprefix("Driver=").split())
-    return set()
+        if stripped.startswith("["):
+            inside = stripped == "[Match]"
+        elif inside and "=" in stripped and not stripped.startswith("#"):
+            key, _sep, value = stripped.partition("=")
+            keys[key] = value
+    return keys
+
+
+def _list_matches(spec: str, value: str) -> bool:
+    """systemd.link: a list of globs, any of which matches; a leading ``!`` inverts the list."""
+    inverted = spec.startswith("!")
+    hit = any(fnmatchcase(value, pattern) for pattern in spec.removeprefix("!").split())
+    return hit != inverted
+
+
+def _renamed(keys: dict[str, str], *, id_path: str, driver: str, mac_name: bool) -> bool:
+    """Whether the rule applies to a device: every key in ``[Match]`` has to."""
+    checks = {
+        "Path": lambda spec: _list_matches(spec, id_path),
+        "Driver": lambda spec: _list_matches(spec, driver),
+        "Property": lambda spec: spec == "ID_NET_NAME_MAC=*" and mac_name,
+    }
+    assert set(keys) <= set(checks), f"no model for match keys {set(keys) - set(checks)}"
+    return all(checks[key](spec) for key, spec in keys.items())
 
 
 @pytest.mark.parametrize("name", sorted(_INSTALLING_SOURCES))
@@ -75,33 +89,47 @@ def test_routes_name_adapters_by_mac(name: str) -> None:
     assert "NamePolicy=mac" in _read(name)
 
 
-@pytest.mark.parametrize("name", sorted(_BLOCK_SOURCES))
-def test_matched_by_driver_not_by_usb_path(name: str) -> None:
-    """A ``Path=*-usb-*`` match would also catch the onboard NIC on the boards
-    where it hangs off USB. Driver matching is what keeps eth0 called eth0."""
-    assert _matched_drivers(name)
-    assert "Path=*-usb-*" not in _read(name)
+def test_the_image_and_the_deb_carry_one_rule() -> None:
+    assert _match_section("image layer") == _match_section("deb link file")
+
+
+# (ID_PATH, driver, has a MAC name) as udev reports them, and whether the name moves.
+_DEVICES = {
+    # An ASIX AX88179B in a Pi 5 USB socket, as the bench station reports it.
+    "usb adapter, listed driver": (("platform-xhci-hcd.1-usb-0:2:2.0", "cdc_ncm", True), True),
+    "usb adapter, realtek": (("platform-xhci-hcd.0-usb-0:1:1.0", "r8152", True), True),
+    # The gap a driver list left: any make of adapter is covered.
+    "usb adapter, any other driver": (("platform-xhci-hcd.0-usb-0:1:1.0", "a_driver_nobody_listed", True), True),
+    "pi 5 onboard": (("platform-1f00100000.ethernet", "macb", True), False),
+    "pi 3 onboard on usb": (("platform-3f980000.usb-usb-0:1.1:1.0", "smsc95xx", True), False),
+    "pi 3b+ onboard on usb": (("platform-3f980000.usb-usb-0:1.1.1:1.0", "lan78xx", True), False),
+    "pcie nic": (("pci-0000:01:00.0", "r8169", True), False),
+    "usb adapter without a hardware mac": (("platform-xhci-hcd.0-usb-0:1:1.0", "r8152", False), False),
+}
 
 
 @pytest.mark.parametrize("name", sorted(_BLOCK_SOURCES))
-@pytest.mark.parametrize("driver", _ONBOARD_USB_DRIVERS)
-def test_onboard_usb_nic_drivers_are_never_matched(name: str, driver: str) -> None:
-    """Renaming the onboard NIC would break every existing ``eth0`` pin on a
-    Pi 3 / Zero, and the operator would meet it as a plane that stopped."""
-    assert driver not in _matched_drivers(name)
+@pytest.mark.parametrize("device", sorted(_DEVICES))
+def test_every_usb_adapter_and_no_onboard_nic_is_named_by_mac(name: str, device: str) -> None:
+    """Every USB network adapter gets its MAC name, whatever its make, so two can
+    never trade names. The Pi 3 / Zero onboard NIC hangs off USB too; renaming it
+    would dangle every eth0 pin an operator already has."""
+    (id_path, driver, mac_name), renamed = _DEVICES[device]
+    assert _renamed(_match_section(name), id_path=id_path, driver=driver, mac_name=mac_name) is renamed
 
 
-@pytest.mark.parametrize("name", sorted(_BLOCK_SOURCES))
-def test_the_usual_adapter_chipsets_are_covered(name: str) -> None:
-    """The drivers behind the adapters an operator is likely to buy. One that is
-    missing gets ordering-dependent names back without any signal."""
-    matched = _matched_drivers(name)
-    for driver in ("r8152", "ax88179_178a", "asix", "cdc_ether"):
-        assert driver in matched
+def test_the_match_model_follows_systemd_link() -> None:
+    """The model above is what the device table proves against; it must invert
+    a ``!`` list and require every key, or the table proves nothing."""
+    assert _list_matches("!a b", "c") and not _list_matches("!a b", "b")
+    assert _list_matches("*-usb-*", "platform-x-usb-0:1") and not _list_matches("*-usb-*", "pci-0000")
+    assert not _renamed({"Path": "*-usb-*", "Driver": "r8152"}, id_path="p-usb-1", driver="asix", mac_name=True)
+    with pytest.raises(AssertionError, match="no model"):
+        _renamed({"Type": "ether"}, id_path="", driver="", mac_name=True)
 
 
 def test_deb_declares_the_link_file_as_a_conffile() -> None:
-    """An operator who adjusted the match list keeps it across an upgrade."""
+    """An operator who adjusted the match keeps it across an upgrade."""
     text = _read("deb build script")
     assert "DEBIAN/conffiles" in text
     assert f"/etc/systemd/network/{_LINK_NAME}" in text

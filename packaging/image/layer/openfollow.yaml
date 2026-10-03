@@ -97,18 +97,20 @@ mmdebstrap:
       ipv4.link-local=4
       NMFALLBACK
 
-    # 2a2. Name USB network adapters after their MAC. Kernel ethN names follow
+    # 2a2. Name every USB network adapter after its MAC. Kernel ethN names follow
     #      probe order, not device identity, so two adapters can swap across a
     #      reboot - and because a plane pins an interface by name and both names
     #      still resolve, the swap moves stage data onto the wrong network with
-    #      nothing down to notice. Matched by driver, not USB path: the onboard
-    #      NIC is USB-attached on Pi 3 / Zero and must keep the name eth0.
+    #      nothing down to notice. Matched by USB path, keeping out the onboard
+    #      NIC's drivers: it is USB-attached on Pi 3 / Zero and must stay eth0.
     - |-
       set -eu
       mkdir -p "$1/etc/systemd/network"
       cat > "$1/etc/systemd/network/72-openfollow-usb-net-by-mac.link" <<'USBNETLINK'
       [Match]
-      Driver=r8152 ax88179_178a asix ax88172a aqc111 cdc_ether cdc_ncm cdc_eem rndis_host smsc75xx sr9700 sr9800 dm9601 mcs7830 pegasus
+      Path=*-usb-*
+      Driver=!smsc95xx lan78xx
+      Property=ID_NET_NAME_MAC=*
 
       [Link]
       NamePolicy=mac

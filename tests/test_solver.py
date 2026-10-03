@@ -13,12 +13,14 @@ import numpy as np
 import pytest
 
 from openfollow.scene.solver import (
+    CONE_RING_SEGMENTS,
     compute_homography,
     decompose_homography,
     ground_circle_world_ring,
     hfov_to_vfov,
     project_points,
     ring_silhouette_edges,
+    ring_silhouette_indices,
     solve_camera_dlt,
     unproject_to_plane,
     vfov_to_hfov,
@@ -41,6 +43,7 @@ def test_ground_circle_world_ring_geometry() -> None:
 
 def test_ground_circle_world_ring_default_segment_count() -> None:
     assert len(ground_circle_world_ring(0.0, 0.0, 0.0, 1.0)) == 24
+    assert len(ground_circle_world_ring(0.0, 0.0, 0.0, 1.0, segments=CONE_RING_SEGMENTS)) == CONE_RING_SEGMENTS
 
 
 def _ellipse(cx: float, cy: float, rx: float, ry: float, n: int = 24) -> np.ndarray:
@@ -75,6 +78,9 @@ class TestRingSilhouetteEdges:
             assert any(np.allclose(f, pt) for pt in floor)
             assert any(np.allclose(t, pt) for pt in top)
             assert _supports((f, t), both)
+        # The index form names the same points, so a caller can walk the rings.
+        pairs = ring_silhouette_indices(floor, top, fc, tc)
+        assert [(tuple(floor[i]), tuple(top[j])) for i, j in pairs] == [(f, t) for f, t in edges]
         return edges
 
     def test_front_view_joins_the_outer_points(self) -> None:
@@ -137,6 +143,7 @@ class TestRingSilhouetteEdges:
         none = np.zeros((0, 2))
         floor, top = (none, ring) if empty_floor else (ring, none)
         assert ring_silhouette_edges(floor, top, (400.0, 400.0), (400.0, 300.0)) == []
+        assert ring_silhouette_indices(floor, top, (400.0, 400.0), (400.0, 300.0)) == []
 
     def test_partial_rings_use_the_points_that_remain(self) -> None:
         # Half the floor ring went behind the camera; the edges come from what

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, NamedTuple
 
 import cairo
 import numpy as np
@@ -14,10 +14,11 @@ import numpy.typing as npt
 from openfollow.runtime.overlay_draw_style import parse_hex
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 from openfollow.scene.solver import (
+    CONE_RING_SEGMENTS,
     apply_overlay_distortion,
     ground_circle_world_ring,
     project_points,
-    ring_silhouette_edges,
+    ring_silhouette_indices,
 )
 from openfollow.zones.geometry import polygon_signed_area
 
@@ -284,11 +285,20 @@ def _wound_same_way(poly: npt.NDArray[Any]) -> npt.NDArray[Any]:
     return poly[::-1] if polygon_signed_area(poly.tolist()) < 0 else poly
 
 
-def _cone_geometry(
-    state: OverlayState, t: MarkerOverlayData, w: int, h: int
-) -> tuple[npt.NDArray[Any], npt.NDArray[Any], list[tuple[tuple[float, float], tuple[float, float]]]]:
-    """Project a marker's cone: the finite base ring on the stage plane, the
-    finite top ring at the marker's Z and the silhouette edges joining them.
+class _ConeScreen(NamedTuple):
+    """A marker's cone on screen: finite ring points, projected centres and
+    the silhouette edges as ``(base index, top index)`` pairs."""
+
+    base_ring: npt.NDArray[Any]
+    top_ring: npt.NDArray[Any]
+    base_center: npt.NDArray[Any]
+    top_center: npt.NDArray[Any]
+    edges: list[tuple[int, int]]
+
+
+def _cone_geometry(state: OverlayState, t: MarkerOverlayData, w: int, h: int) -> _ConeScreen:
+    """Project a marker's cone: the base ring on the stage plane, the top ring
+    at the marker's Z and the silhouette edges joining them.
 
     The top ring follows Z wherever it is, below the stage plane included: the
     cone is not symmetric, so a marker under the stage reads as pointing down.
@@ -297,8 +307,8 @@ def _cone_geometry(
     z_off = state.grid_config[5] if state.grid_config else 0.0
 
     # One projection per marker: both centres and both rings, split after.
-    base_world = ground_circle_world_ring(tx, ty, z_off, state.cone_base_diameter / 2.0)
-    top_world = ground_circle_world_ring(tx, ty, tz, state.cone_top_diameter / 2.0)
+    base_world = ground_circle_world_ring(tx, ty, z_off, state.cone_base_diameter / 2.0, segments=CONE_RING_SEGMENTS)
+    top_world = ground_circle_world_ring(tx, ty, tz, state.cone_top_diameter / 2.0, segments=CONE_RING_SEGMENTS)
     n = len(base_world) + 1
     scr = project(
         state.camera_params,
@@ -312,15 +322,49 @@ def _cone_geometry(
     top_center, top_ring = scr[n], scr[n + 1 :]
     base_ring = base_ring[np.all(np.isfinite(base_ring), axis=1)]
     top_ring = top_ring[np.all(np.isfinite(top_ring), axis=1)]
-    edges: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    edges: list[tuple[int, int]] = []
     if np.all(np.isfinite(base_center)) and np.all(np.isfinite(top_center)):
-        edges = ring_silhouette_edges(
+        edges = ring_silhouette_indices(
             base_ring,
             top_ring,
             (float(base_center[0]), float(base_center[1])),
             (float(top_center[0]), float(top_center[1])),
         )
-    return base_ring, top_ring, edges
+    return _ConeScreen(base_ring, top_ring, base_center, top_center, edges)
+
+
+def _ring_arc(ring: npt.NDArray[Any], start: int, end: int, toward: npt.NDArray[Any]) -> npt.NDArray[Any]:
+    """Points of ``ring`` from index ``start`` to ``end``, along whichever of
+    the two arcs lies on the ``toward`` side of the chord between them."""
+    n = len(ring)
+    forward = [(start + k) % n for k in range((end - start) % n + 1)]
+    backward = [(start - k) % n for k in range((start - end) % n + 1)]
+    cx, cy = ring[end] - ring[start]
+
+    def side(xs: npt.NDArray[Any], ys: npt.NDArray[Any]) -> float:
+        return float(np.sum(cx * (ys - ring[start, 1]) - cy * (xs - ring[start, 0])))
+
+    want = side(np.asarray([toward[0]]), np.asarray([toward[1]]))
+    fwd = ring[forward]
+    arc = forward if (side(fwd[:, 0], fwd[:, 1]) >= 0) == (want >= 0) else backward
+    return ring[arc]
+
+
+def _cone_side(g: _ConeScreen) -> npt.NDArray[Any] | None:
+    """The side of the cone as the region between the rings: from one tangent
+    point along the base ring's arc on the top's side to the other, up that
+    edge, back along the top ring's arc on the base's side, and down again.
+
+    Bounded by the ring arcs rather than their chords, it shares no area with
+    either disc, so a translucent fill never doubles up and the only seams
+    fall on the ring outlines the wireframe strokes over.
+    """
+    if len(g.edges) != 2:
+        return None
+    (ia, ja), (ib, jb) = g.edges
+    base_arc = _ring_arc(g.base_ring, ia, ib, g.top_center)
+    top_arc = _ring_arc(g.top_ring, jb, ja, g.base_center)
+    return np.vstack([base_arc, top_arc])
 
 
 def _draw_cone(
@@ -339,44 +383,45 @@ def _draw_cone(
 
     A base ring at the marker's XY on the stage plane, a top ring at its Z and
     the two silhouette edges joining them. A positive ``fill_alpha`` first
-    fills the silhouette (both rings and the side between the edges) as one
-    evenly covered region, or, when ``shaded``, the side under a left-lit
-    gradient between the two flat discs; the wireframe is stroked on top.
+    fills the silhouette (both discs and the side between them) as one evenly
+    covered region, or, when ``shaded``, the side under a left-lit gradient
+    between the two flat discs; the wireframe is stroked on top.
     """
     if not state.grid_config:
         return
-    base_ring, top_ring, edges = _cone_geometry(state, t, w, h)
-    r, g, b = rgb
+    g = _cone_geometry(state, t, w, h)
+    edges = [
+        ((float(g.base_ring[i, 0]), float(g.base_ring[i, 1])), (float(g.top_ring[j, 0]), float(g.top_ring[j, 1])))
+        for i, j in g.edges
+    ]
+    side = _cone_side(g)
+    r, g_, b = rgb
 
     if fill_alpha > 0.0:
-        side = None
-        if len(edges) == 2:
-            (f0, t0), (f1, t1) = edges
-            side = np.array([f0, t0, t1, f1], dtype=np.float64)
         if shaded and side is not None:
             # Base disc, lit side, lid: three passes so the side can carry
             # its own gradient while the discs stay flat. A ring too
             # degenerate to path leaves an empty path, and the fill is a no-op.
-            _path_ring(cr, base_ring)
-            cr.set_source_rgba(r, g, b, fill_alpha)
+            _path_ring(cr, g.base_ring)
+            cr.set_source_rgba(r, g_, b, fill_alpha)
             cr.fill()
             _path_ring(cr, side)
             cr.set_source(_side_gradient(edges, rgb, fill_alpha))
             cr.fill()
-            _path_ring(cr, top_ring)
-            cr.set_source_rgba(r, g, b, fill_alpha)
+            _path_ring(cr, g.top_ring)
+            cr.set_source_rgba(r, g_, b, fill_alpha)
             cr.fill()
         else:
-            regions = [base_ring, top_ring] + ([side] if side is not None else [])
+            regions = [g.base_ring, g.top_ring] + ([side] if side is not None else [])
             filled = [_path_ring(cr, _wound_same_way(region)) for region in regions]
             if any(filled):
-                cr.set_source_rgba(r, g, b, fill_alpha)
+                cr.set_source_rgba(r, g_, b, fill_alpha)
                 cr.fill()
 
-    cr.set_source_rgba(r, g, b, alpha)
+    cr.set_source_rgba(r, g_, b, alpha)
     cr.set_line_width(line_width)
-    drew = _path_ring(cr, base_ring)
-    if _path_ring(cr, top_ring):
+    drew = _path_ring(cr, g.base_ring)
+    if _path_ring(cr, g.top_ring):
         drew = True
     for (x0, y0), (x1, y1) in edges:
         cr.move_to(x0, y0)

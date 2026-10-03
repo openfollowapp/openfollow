@@ -35,6 +35,8 @@ from openfollow.runtime.services_detection_pin import (
     is_assist_controlled,
 )
 from openfollow.scene.solver import (
+    CONE_RING_SEGMENTS,
+    GROUND_RING_SEGMENTS,
     apply_overlay_distortion,
     ground_circle_world_ring,
     invert_overlay_distortion,
@@ -399,9 +401,11 @@ class MouseHandler:
         if cfg.marker.marker_style == "cone":
             gc_on = True
             gc_size = cfg.marker.cone_base_diameter / 2.0
+            ring_segments = CONE_RING_SEGMENTS
         else:
             gc_on = cfg.marker.ground_circle
             gc_size = cfg.marker.ground_circle_size
+            ring_segments = GROUND_RING_SEGMENTS
         # Match the rendered circle: the overlay bows the projected ground circle
         # by the lens coefficients, so the hit-test projects through the same
         # warp (identity when no lens is configured) or the clickable region
@@ -427,7 +431,7 @@ class MouseHandler:
             dist = math.hypot(x - cx, y - cy)
             hit = False
             if gc_on and gc_size > 0.0:
-                ring = ground_circle_world_ring(mx, my, z_off, gc_size)
+                ring = ground_circle_world_ring(mx, my, z_off, gc_size, segments=ring_segments)
                 ring_scr = apply_overlay_distortion(
                     project_points(buf, np.array(ring, dtype=np.float64), float(w), float(h)),
                     float(w),

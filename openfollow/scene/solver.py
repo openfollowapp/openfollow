@@ -160,12 +160,19 @@ def project_points(
     return np.column_stack([sx, sy])
 
 
+# Ring sample counts. The ground circle is a plain outline; the cone's rings
+# also carry its silhouette tangents, which can only land on a sample, so a
+# coarse ring makes the edges hop as a marker moves.
+GROUND_RING_SEGMENTS = 24
+CONE_RING_SEGMENTS = 72
+
+
 def ground_circle_world_ring(
     cx: float,
     cy: float,
     z: float,
     radius: float,
-    segments: int = 24,
+    segments: int = GROUND_RING_SEGMENTS,
 ) -> list[tuple[float, float, float]]:
     """Build a horizontal ring of world points around ``(cx, cy)`` at height ``z``.
 
@@ -189,12 +196,14 @@ def _convex_hull(pts: npt.NDArray[Any]) -> list[int]:
     Duplicate and collinear boundary points are dropped, so every hull edge
     is a supporting line of the whole set.
     """
-    order = sorted(range(len(pts)), key=lambda i: (pts[i, 0], pts[i, 1]))
+    # Plain tuples: the chain is a Python loop, and numpy scalar indexing
+    # would dominate it on the denser cone rings.
+    xy = [(float(x), float(y)) for x, y in pts]
+    order = sorted(range(len(xy)), key=xy.__getitem__)
 
     def cross(o: int, a: int, b: int) -> float:
-        oa = pts[a] - pts[o]
-        ob = pts[b] - pts[o]
-        return float(oa[0] * ob[1] - oa[1] * ob[0])
+        ox, oy = xy[o]
+        return (xy[a][0] - ox) * (xy[b][1] - oy) - (xy[a][1] - oy) * (xy[b][0] - ox)
 
     lower: list[int] = []
     for i in order:
@@ -209,21 +218,22 @@ def _convex_hull(pts: npt.NDArray[Any]) -> list[int]:
     return lower[:-1] + upper[:-1]
 
 
-def ring_silhouette_edges(
+def ring_silhouette_indices(
     floor_ring: npt.NDArray[Any],
     top_ring: npt.NDArray[Any],
     floor_center: tuple[float, float],
     top_center: tuple[float, float],
-) -> list[tuple[tuple[float, float], tuple[float, float]]]:
-    """Join two projected horizontal rings along their silhouette.
+) -> list[tuple[int, int]]:
+    """Index pairs ``(floor, top)`` of the two silhouette edges joining two
+    projected horizontal rings.
 
     ``floor_ring`` / ``top_ring`` are the rings' finite screen points, (N, 2)
     and (M, 2); the centres are the projected ring centres. The silhouette
     edges are the two common tangents: the convex hull of both rings has
     exactly two edges that bridge from one ring to the other, each a
     supporting line of both, so the drawn edge never cuts into a ring however
-    perspective tilts the ellipses. Returns two ``(floor, top)`` segments, or
-    none when either ring has no point.
+    perspective tilts the ellipses. Returns no pair when either ring has no
+    point.
 
     When one ring lies inside the other (seen from straight above) the hull
     has no bridge, and the outermost point of each ring per side of the
@@ -245,7 +255,7 @@ def ring_silhouette_edges(
     for a, b in zip(hull, hull[1:] + hull[:1], strict=True):
         if (a < n_floor) != (b < n_floor):
             f, t = (a, b) if a < n_floor else (b, a)
-            bridges.append(((float(pts[f, 0]), float(pts[f, 1])), (float(pts[t, 0]), float(pts[t, 1]))))
+            bridges.append((f, t - n_floor))
     if len(bridges) == 2:
         return bridges
 
@@ -255,12 +265,23 @@ def ring_silhouette_edges(
     nx, ny = (-ay / norm, ax / norm) if norm > 1e-9 else (1.0, 0.0)
     floor_side = (floor_pts[:, 0] - floor_center[0]) * nx + (floor_pts[:, 1] - floor_center[1]) * ny
     top_side = (top_pts[:, 0] - top_center[0]) * nx + (top_pts[:, 1] - top_center[1]) * ny
-    edges = []
-    for pick in (np.argmin, np.argmax):
-        f = floor_pts[pick(floor_side)]
-        t = top_pts[pick(top_side)]
-        edges.append(((float(f[0]), float(f[1])), (float(t[0]), float(t[1]))))
-    return edges
+    return [(int(pick(floor_side)), int(pick(top_side))) for pick in (np.argmin, np.argmax)]
+
+
+def ring_silhouette_edges(
+    floor_ring: npt.NDArray[Any],
+    top_ring: npt.NDArray[Any],
+    floor_center: tuple[float, float],
+    top_center: tuple[float, float],
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """The silhouette edges of :func:`ring_silhouette_indices` as ``(floor,
+    top)`` screen points."""
+    floor_pts = np.asarray(floor_ring, dtype=np.float64).reshape(-1, 2)
+    top_pts = np.asarray(top_ring, dtype=np.float64).reshape(-1, 2)
+    return [
+        ((float(floor_pts[f, 0]), float(floor_pts[f, 1])), (float(top_pts[t, 0]), float(top_pts[t, 1])))
+        for f, t in ring_silhouette_indices(floor_pts, top_pts, floor_center, top_center)
+    ]
 
 
 # Fixed-point iterations to invert the radial warp. The forward map is gentle

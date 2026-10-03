@@ -572,20 +572,27 @@ class TestDrawMarkerBranches:
 
 
 def _ring_on_screen(state: OverlayState, x: float, y: float, z: float, radius: float) -> np.ndarray:
-    from openfollow.scene.solver import ground_circle_world_ring
+    from openfollow.scene.solver import CONE_RING_SEGMENTS, ground_circle_world_ring
 
-    return project(state.camera_params, ground_circle_world_ring(x, y, z, radius), 1920, 1080)
+    ring = ground_circle_world_ring(x, y, z, radius, segments=CONE_RING_SEGMENTS)
+    return project(state.camera_params, ring, 1920, 1080)
+
+
+# One projection per cone marker: both centres and both rings.
+_CONE_POINTS = 2 * 72 + 2
+_TOP_START = 72 + 1  # index of the top centre in that projection
 
 
 def _ring_paths(cr: FakeCairo, *, before_fill: bool = False) -> list[list[tuple[float, float]]]:
     """Split the recorded path into sub-paths (one per move_to), closed ones only.
 
-    ``before_fill`` keeps only the sub-paths pathed ahead of the ``fill`` call;
-    the default keeps only those pathed after it (the stroked wireframe).
+    ``before_fill`` keeps only the sub-paths pathed ahead of the last ``fill``
+    call (the filled regions); the default keeps only those pathed after it
+    (the stroked wireframe).
     """
     calls = cr.calls
     if ("fill",) in calls:
-        cut = calls.index(("fill",))
+        cut = len(calls) - 1 - calls[::-1].index(("fill",))
         calls = calls[:cut] if before_fill else calls[cut + 1 :]
     elif before_fill:
         return []
@@ -632,7 +639,7 @@ class TestDrawMarkerConeStyle:
         draw_marker(cr, state, self._marker(), 1920, 1080)
         assert cr.closes == 2  # floor ring + top ring
         assert len(cr.move_tos) == 4  # two rings, two silhouette edges
-        assert len(cr.line_tos) == 2 * 23 + 2
+        assert len(cr.line_tos) == 2 * 71 + 2
         assert cr.strokes == 1
         assert cr.fills == 0
         assert cr.arcs == []
@@ -776,9 +783,9 @@ class TestDrawMarkerConeStyle:
 
         def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
             out = real(cam, pts, w, h, k1, k2)
-            if len(out) == 50:  # both centres and both 24-point rings
+            if len(out) == _CONE_POINTS:
                 out[5] = np.nan  # a base ring point
-                out[30] = np.nan  # a top ring point
+                out[_TOP_START + 5] = np.nan  # a top ring point
             return out
 
         monkeypatch.setattr(mod, "project", _fake_project)
@@ -786,8 +793,8 @@ class TestDrawMarkerConeStyle:
         cr = FakeCairo()
         draw_marker(cr, state, self._marker(), 1920, 1080)
         floor, top = _ring_paths(cr)
-        assert len(floor) == 23
-        assert len(top) == 23
+        assert len(floor) == 71
+        assert len(top) == 71
         assert cr.strokes == 1
 
     def test_unfilled_emits_no_fill(self) -> None:
@@ -822,6 +829,48 @@ class TestDrawMarkerConeStyle:
         assert all(c <= b for c, b in zip(shadow[:3], base[:3], strict=True)) and shadow[0] < base[0]
         assert lit[3] == shadow[3] == 0.5
 
+    def test_shaded_side_shares_no_area_with_the_discs(self) -> None:
+        """The side stops at the ring arcs, not at a chord across the discs:
+        a translucent fill must not double up over half of the base disc, which
+        drew a hard line across it that hopped as the marker moved."""
+        from openfollow.zones.geometry import point_in_polygon
+
+        state = self._state(cone_filled=True, cone_opacity=0.5, cone_shaded=True)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        base, side, lid = _ring_paths(cr, before_fill=True)
+        base_c = np.mean(base, axis=0)
+        lid_c = np.mean(lid, axis=0)
+        # Every side vertex is a ring vertex: the region is bounded by arcs.
+        ring_pts = np.vstack([base, lid])
+        for pt in side:
+            assert any(np.allclose(pt, rp) for rp in ring_pts)
+        # Inside the base disc, on the lid's side of its centre: disc only.
+        far = min(base, key=lambda p: math.hypot(p[0] - lid_c[0], p[1] - lid_c[1]))
+        probe = base_c + 0.5 * (np.array(far) - base_c)
+        assert point_in_polygon(float(probe[0]), float(probe[1]), base)
+        assert not point_in_polygon(float(probe[0]), float(probe[1]), side)
+        # Halfway between the rings: side only.
+        mid = (base_c + lid_c) / 2.0
+        assert point_in_polygon(float(mid[0]), float(mid[1]), side)
+        assert not point_in_polygon(float(mid[0]), float(mid[1]), base)
+        assert not point_in_polygon(float(mid[0]), float(mid[1]), lid)
+
+    def test_silhouette_edges_move_smoothly_as_the_marker_slides(self) -> None:
+        """The tangent points can only land on ring samples, so a coarse ring
+        makes the base chord rotate in visible hops as a marker crosses the
+        stage. With the cone's ring density each hop stays under a degree."""
+        state = self._state()
+        angles = []
+        for x in np.linspace(0.0, 2.0, 81):
+            cr = FakeCairo()
+            draw_marker(cr, state, self._marker(x=x, y=0.5, z=1.8), 1920, 1080)
+            (x0, y0), (x1, y1) = cr.move_tos[2:]  # the two edges' base endpoints
+            angles.append(math.degrees(math.atan2(y1 - y0, x1 - x0)))
+        steps = [abs(b - a) for a, b in zip(angles[:-1], angles[1:], strict=True)]
+        assert max(steps) < 1.5
+        assert angles[-1] - angles[0] > 3.0  # the chord does turn with perspective
+
     def test_unshaded_fill_is_one_flat_pass(self) -> None:
         state = self._state(cone_filled=True, cone_opacity=0.5, cone_shaded=False)
         cr = FakeCairo()
@@ -836,8 +885,8 @@ class TestDrawMarkerConeStyle:
 
         def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
             out = real(cam, pts, w, h, k1, k2)
-            if len(out) == 50:
-                out[25:] = np.nan  # no top ring, so no silhouette edges
+            if len(out) == _CONE_POINTS:
+                out[_TOP_START:] = np.nan  # no top ring, so no silhouette edges
             return out
 
         monkeypatch.setattr(mod, "project", _fake_project)
@@ -874,7 +923,8 @@ class TestDrawMarkerConeStyle:
         assert rgba[1][4] == 0.8
         # Floor ring, top ring and the side between the edges, as one region.
         fill_paths = _ring_paths(cr, before_fill=True)
-        assert [len(p) for p in fill_paths] == [24, 24, 4]
+        assert [len(p) for p in fill_paths[:2]] == [72, 72]
+        assert len(fill_paths) == 3 and len(fill_paths[2]) >= 4
         assert len(_ring_paths(cr)) == 2  # the wireframe rings still stroke
 
     def test_filled_sub_paths_are_wound_the_same_way(self) -> None:
@@ -902,7 +952,9 @@ class TestDrawMarkerConeStyle:
         cr = FakeCairo()
         draw_marker(cr, state, self._marker(z=z), 1920, 1080)
         assert cr.fills == 1
-        assert [len(p) for p in _ring_paths(cr, before_fill=True)] == [24, 24, 4]
+        fill_paths = _ring_paths(cr, before_fill=True)
+        assert [len(p) for p in fill_paths[:2]] == [72, 72]
+        assert len(fill_paths) == 3 and len(fill_paths[2]) >= 4
 
     def test_zero_opacity_fills_nothing(self) -> None:
         state = self._state(cone_filled=True, cone_opacity=0.0)
@@ -944,8 +996,8 @@ class TestDrawMarkerConeStyle:
 
         def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
             out = real(cam, pts, w, h, k1, k2)
-            if len(out) == 50:
-                out[25:] = np.nan  # top centre and the whole top ring
+            if len(out) == _CONE_POINTS:
+                out[_TOP_START:] = np.nan  # top centre and the whole top ring
             return out
 
         monkeypatch.setattr(mod, "project", _fake_project)
@@ -970,7 +1022,7 @@ class TestDrawMarkerConeStyle:
         monkeypatch.setattr(mod, "project", _counting_project)
         cr = FakeCairo()
         draw_marker(cr, self._state(), self._marker(), 1920, 1080)
-        assert calls == [50]
+        assert calls == [_CONE_POINTS]
 
     def test_lens_distortion_warps_the_rings(self) -> None:
         plain = self._state()

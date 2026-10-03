@@ -1120,8 +1120,16 @@ def test_network_label_refuses_control_and_direction_characters(value: str) -> N
 
 @pytest.mark.parametrize(
     "value",
-    ["Light\u2066ing", "Light\u2067ing", "Light\u2068ing", "Light\u2069ing", "Light\x85ing", "Light\x9bing"],
-    ids=["LRI", "RLI", "FSI", "PDI", "C1-NEL", "C1-CSI"],
+    [
+        "Light\u2066ing",
+        "Light\u2067ing",
+        "Light\u2068ing",
+        "Light\u2069ing",
+        "Light\u061cing",
+        "Light\x85ing",
+        "Light\x9bing",
+    ],
+    ids=["LRI", "RLI", "FSI", "PDI", "ALM", "C1-NEL", "C1-CSI"],
 )
 def test_bidi_isolates_and_c1_controls_are_refused_and_stripped(value: str) -> None:
     """The isolates reorder text like the overrides do, and a C1 control is no

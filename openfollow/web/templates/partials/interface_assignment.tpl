@@ -60,13 +60,13 @@
                     %# option list (and its blank-option wording) comes from the
                     %# shared route so every picker stays consistent.
                     %#
-                    %# ``load`` only: ``current`` is baked in at render time, so
-                    %# re-fetching on Scan would re-mark the SAVED value as
-                    %# selected and silently discard an unsaved choice. Scan
-                    %# re-renders the whole panel instead, which refreshes both
-                    %# the option lists and the resolved addresses.
+                    %# ``current`` is the saved value only on load. A later reload
+                    %# (``refreshIfacePickers``) sends what the picker shows, so an
+                    %# unsaved choice survives it.
+                    % _options_url = f"/network/interfaces/by_name?blank={row['blank']}"
                     <select name="{{row['key']}}" aria-label="{{row['label']}} interface"
-                            hx-get="/network/interfaces/by_name?blank={{row['blank']}}&current={{row['value']}}"
+                            data-options-url="{{_options_url}}"
+                            hx-get="{{_options_url}}&current={{row['value']}}"
                             hx-trigger="load"
                             hx-target="this" hx-swap="innerHTML">
                         <option value="{{row['value']}}">{{row['value'] or '-- Loading... --'}}</option>
@@ -75,19 +75,22 @@
                 % else:
                 <td class="muted">{{row.get('note', '')}}</td>
                 % end
-                %# A plane that cannot send shows its state, not a sentence: the
-                %# interface it names is already in the picker beside it.
                 <td class="ia-addr {{'muted' if not row['editable'] else ''}}">
-                    % if row.get('outage'):
-                    <span class="stat-chip off">{{row['address']}}</span>
-                    % else:
-                    {{row['address'] or '--'}}
-                    % end
+                    % include('partials/interface_assignment_address.tpl', row=row, oob=False)
                 </td>
             </tr>
             % end
         </tbody>
     </table>
+
+    %# Keeps the Address column current without touching the pickers, and has
+    %# them reload their options once the interface list reads differently.
+    % if not (defined('restarting') and restarting):
+    <span id="ia-options-fp" data-fp="{{options_fingerprint}}" hidden></span>
+    <div hidden hx-get="/section/interface_assignment/status" hx-trigger="every 5s"
+         hx-vals='js:{seen: document.getElementById("ia-options-fp").dataset.fp}'
+         hx-target="this" hx-swap="none"></div>
+    % end
 
     <div class="actions">
         <button type="submit" class="save-btn">Save</button>

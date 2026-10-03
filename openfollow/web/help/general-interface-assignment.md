@@ -96,4 +96,4 @@ A newly plugged adapter keeps whatever name it already had until it is unplugged
 
 Save applies immediately to the running station. PSN, OTP, and the other data planes rebind their sockets in place – no restart, and no interruption to anything on an interface you didn't change. Changing **Video input** reconnects the video source. The **Web UI** row is the exception and waits for a restart, as described above.
 
-**Scan** re-reads the adapter list from the system. Use it after plugging in a USB Ethernet adapter or creating a VLAN so the new interface appears in the dropdowns.
+The Address column and the dropdowns keep themselves current: an adapter plugged in or out, a new VLAN, a changed address or a new label shows within a few seconds, and a choice you have not saved yet stays selected. **Scan** re-reads all of it at once.

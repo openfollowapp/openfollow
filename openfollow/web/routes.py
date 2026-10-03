@@ -1309,6 +1309,30 @@ class _PanelNames:
     present: frozenset[str]
 
 
+def _iface_who(name: str, labels: Mapping[str, str]) -> str:
+    """How a picker names an interface: its label, else the name and which adapter it is."""
+    from openfollow.net_adapters import describe, display_name
+
+    if name in labels:
+        return display_name(name, labels)
+    where = describe(name).where(labels)
+    return f"{name} · {where}" if where else name
+
+
+def _iface_options_fingerprint(labels: Mapping[str, str]) -> str:
+    """Changes whenever an interface picker's option list would read differently."""
+    from openfollow.net_utils import list_iface_ipv4, present_interfaces
+
+    listed = [(name, ip, _iface_who(name, labels)) for name, ip in list_iface_ipv4()]
+    state = repr((listed, sorted(present_interfaces()), sorted(labels.items())))
+    return hashlib.sha256(state.encode()).hexdigest()[:16]
+
+
+def _address_slot(row: Mapping[str, Any]) -> str:
+    """The id the panel's poll replaces a row's Address cell by."""
+    return "ia-addr-" + re.sub(r"[^A-Za-z0-9_-]+", "-", str(row["key"] or row["label"])).strip("-")
+
+
 def _plane_address(pin: str, station_iface: str, names: _PanelNames) -> str:
     """Where a plane binds: the resolved address, or why its interface has none."""
     from openfollow.net_utils import plane_source_iface, resolve_plane_source_ip
@@ -1433,6 +1457,7 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
     for row in rows:
         row["outage"] = row["address"] in _OUTAGE_ADDRESSES
         row["value_display"] = display_name(str(row.get("value") or ""), cfg.interface_labels)
+        row["slot"] = _address_slot(row)
     return rows
 
 
@@ -5950,6 +5975,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             restarting=restarting,
             restart_refused=restart_refused,
             assignment_rows=build_interface_assignment_rows(cfg, resolved),
+            options_fingerprint=_iface_options_fingerprint(cfg.interface_labels),
             web_bind_notice=build_web_bind_notice(cfg, resolved, server.display_port),
             web_bind_advisory=server.get_web_bind_advisory(),
             web_bind_restart=_web_bind_restart_pending(cfg, resolved),
@@ -5963,6 +5989,23 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         pickers in place) is what keeps Scan from reverting an unsaved
         selection to the value on disk."""
         return _render_interface_assignment(_request_scoped_config())
+
+    @app.get("/section/interface_assignment/status")
+    def interface_assignment_status() -> Any:
+        """The panel's poll: every row's Address cell, swapped in out of band.
+
+        The pickers are left alone, so an unsaved choice survives. When their
+        option list would now read differently than at ``?seen=``, the response
+        triggers ``iface-options-changed`` and each picker reloads its options."""
+        cfg = _request_scoped_config()
+        fingerprint = _iface_options_fingerprint(cfg.interface_labels)
+        if "seen" in request.query and request.query.seen != fingerprint:
+            response.set_header("HX-Trigger", "iface-options-changed")
+        return template(
+            "partials/interface_assignment_status",
+            assignment_rows=build_interface_assignment_rows(cfg, resolve_web_bind_for(cfg)),
+            options_fingerprint=fingerprint,
+        )
 
     @app.post("/section/interface_assignment")
     def update_interface_assignment() -> Any:
@@ -8498,17 +8541,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         fall back to auto-detect – the label is allow-listed, never
         interpolated from the query.
         """
-        from openfollow.net_adapters import describe, display_name
         from openfollow.net_utils import interface_present, list_iface_ipv4
 
         cfg = _request_scoped_config()
-        labels = cfg.interface_labels
 
         def who(name: str) -> str:
-            if name in labels:
-                return display_name(name, labels)
-            where = describe(name).where(labels)
-            return f"{name} · {where}" if where else name
+            return _iface_who(name, cfg.interface_labels)
 
         # ``?current=`` present (even empty) overrides; absent → PSN default. An
         # empty OTP pin must stay empty (auto-detect), not fall back to PSN's.

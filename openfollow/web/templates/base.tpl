@@ -2302,6 +2302,15 @@
  .some((input) => input.value !== input.defaultValue);
  return !edited && !document.querySelector('.net-label-form .field-error-msg');
  }
+ // Network Interface Assignment's poll asks for this once the interface list reads
+ // differently: each picker reloads its options, keeping what it shows selected.
+ function refreshIfacePickers() {
+ document.querySelectorAll('select[data-options-url]').forEach((select) => {
+ const url = select.dataset.optionsUrl + '&current=' + encodeURIComponent(select.value);
+ htmx.ajax('GET', url, {source: select, target: select, swap: 'innerHTML'});
+ });
+ }
+ document.addEventListener('iface-options-changed', refreshIfacePickers);
  // Schedule client-side reload for static/manual address apply (single-NIC only).
  // On multi-NIC, HX-Redirect returns and unloads this page first, cancelling the timer.
  function netScheduleReload(el) {

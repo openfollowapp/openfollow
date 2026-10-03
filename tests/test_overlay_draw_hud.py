@@ -682,6 +682,10 @@ class TestSelectionMenus:
         # Error message body is rendered (may be word-wrapped, so
         # check for a substring rather than the exact line).
         assert any("Connection refused" in t for t in texts)
+        # The error chip, at the box's 2 px border.
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+        assert ("rgb", *COLOR_WARNING_BORDER) in cr.calls
+        assert ("line_width", 2.0) in cr.calls
 
     def test_settings_menu_skips_error_box_when_message_empty(self) -> None:
         """No error → no red box; keeps the modal lean when the
@@ -1044,6 +1048,8 @@ class TestBottomLeftInfoPanel:
         assert "Network:" not in texts
         assert not any("is down" in text for text in texts)
         assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+        assert ("rgb", *COLOR_WARNING_BORDER) in cr.calls
+        assert ("line_width", 1.6) in cr.calls
 
     def test_no_network_row_when_every_plane_is_up(self) -> None:
         state = _base_state(ip_text="192.168.1.2")
@@ -2365,13 +2371,31 @@ class TestDrawPiNetworkScreen:
         assert next(t for t in cr.texts if t.text == pill).rgba == (*COLOR_TEXT, 1.0)
         assert next(t for t in cr.texts if t.text == "DHCP").rgba == COLOR_TEXT_MUTED
 
-    def test_a_neutral_pill_draws_no_status_colour(self) -> None:
-        rows = [{"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "", "pill": "no address"}]
+    @pytest.mark.parametrize(
+        "level",
+        [{}, {"pill_level": ""}, {"pill_level": None}],
+        ids=["absent", "empty", "none"],
+    )
+    def test_a_neutral_pill_draws_no_status_colour(self, level: dict) -> None:
+        rows = [{"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "", "pill": "no address", **level}]
         state = _base_state(pi_network=_network_state(rows=rows))
         cr = FakeCairo()
         draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
         fills = {c[1:] for c in cr.calls if c[0] == "rgba"}
         assert not fills & {COLOR_WARNING_FILL, COLOR_INFO_FILL, COLOR_CAUTION_FILL}
+
+    @pytest.mark.parametrize("level", ["warning", "ERROR", 5, ["info"]], ids=["unknown", "wrong-case", "int", "list"])
+    def test_a_pill_level_nobody_defined_draws_as_an_error(self, level: object) -> None:
+        """A malformed writer shows as a fault, not as the neutral grey of no state at all."""
+        rows = [
+            {"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "", "pill": "odd", "pill_level": level}
+        ]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+        assert ("rgb", *COLOR_WARNING_BORDER) in cr.calls
+        assert next(t for t in cr.texts if t.text == "odd").rgba == (*COLOR_TEXT, 1.0)
 
     def test_a_row_without_a_pill_draws_none(self) -> None:
         rows = [{"kind": "choice", "key": "iface:eth0", "label": "eth0", "value": "192.168.1.5"}]
@@ -2529,11 +2553,24 @@ class TestDrawPiNetworkScreen:
         assert drawn[0] == ("spinner" if busy else "info")
         assert ("info" in drawn) is not busy
 
-    def test_a_result_without_a_level_reads_as_info(self) -> None:
-        state = _base_state(pi_network=_network_state(banner="Querying network status…"))
+    @pytest.mark.parametrize("level", ["", "warning"], ids=["no-level", "unknown-level"])
+    def test_a_result_without_a_known_level_reads_as_a_fault(self, level: str) -> None:
+        """As the status badge: a malformed writer's line shows as an error, not as news."""
+        state = _base_state(pi_network=_network_state(banner="Apply failed: refused", banner_level=level))
         cr = FakeCairo()
         draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
-        assert ("rgba", *COLOR_INFO_FILL) in cr.calls
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+        assert ("rgba", *COLOR_INFO_FILL) not in cr.calls
+
+    @pytest.mark.parametrize("level", [None, "warning", ["error"]], ids=["no-level", "unknown-level", "unhashable"])
+    def test_a_notice_without_a_known_level_reads_as_a_fault(self, level: object) -> None:
+        """It draws as an error rather than taking the screen down with it."""
+        rows = [{"kind": "notice", "level": level, "label": "eth0 has no address", "value": ""}]
+        state = _base_state(pi_network=_network_state(rows=rows))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+        assert any("no address" in t for t in cr.show_text_strings())
 
     def test_renders_banner_when_set(self) -> None:
         rows = [

@@ -867,24 +867,25 @@ def build_marker_visual_state(
                 continue
             # A subsystem writes either a plain message string (the
             # back-compat form, styled as an "error") or a
-            # ``(severity, message)`` tuple to choose "error" (red) vs
-            # "info" (blue) badge styling. Be defensive about the tuple's
+            # ``(level, message)`` tuple naming one of the status levels
+            # (error, caution, info, success). Be defensive about the tuple's
             # arity – this runs on the per-frame overlay-build path, so a
             # malformed writer (wrong-length tuple) must degrade rather than
             # raise ValueError and abort the frame. An empty tuple was
             # already dropped by the ``if not raw`` guard above, so the
             # first element is always present; a missing message coerces to
-            # "" and is filtered out below like a cleared condition.
+            # "" and is filtered out below like a cleared condition, and any
+            # other value is drawn as its text.
             if isinstance(raw, tuple):
                 severity = raw[0]
                 message = raw[1] if len(raw) > 1 else ""
             else:
                 severity, message = "error", raw
             if message:
-                state.status_flags.append((key, message, severity))
+                state.status_flags.append((key, str(message), severity))
 
-    # Ahead of missing controllers: a stopped output loses stage data, and the
-    # rows past the badge's visible few collapse into "+N more".
+    # Ahead of missing controllers: an output without its interface loses stage
+    # data, and the rows past the badge's visible few collapse into "+N more".
     for i, alert in enumerate(state.network_alerts):
         state.status_flags.append((f"network_down_{i}", alert, "error"))
 

@@ -20,7 +20,7 @@ That is deliberate. During a show, output that has stopped is something you can 
 
 The function resumes on its own as soon as the interface has an address again – no restart, no re-save. The station checks about once a second, so a cable going back in recovers within a moment. Nothing about your configuration changes while the interface is away.
 
-While a function is stopped, the on-screen display shows it as a red row in the top-right corner, and the panel with the IP address turns red. That matters when the interface that went away is the one carrying this web page: the screen on the device is the only place left to look.
+From the moment its interface has no address, the on-screen display shows the function as a red row in the top-right corner, and the panel with the IP address turns red. That matters when the interface that went away is the one carrying this web page: the screen on the device is the only place left to look. The function itself is stopped after a few seconds, so the short gap an Apply or a DHCP renewal leaves shows the row without stopping anything.
 
 The **address** is allowed to change. If the interface is on DHCP and comes back with a different address than before, that is normal and the function follows it. Only the interface itself is fixed.
 

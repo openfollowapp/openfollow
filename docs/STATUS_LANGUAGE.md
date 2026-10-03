@@ -263,17 +263,28 @@ attributes, so it spells the token's value.
 
 ### HUD
 
-- The status rows, the Settings ERROR box, the bottom-left panel in a failure
+- Error status rows, the Settings ERROR box, the bottom-left panel in a failure
   state and a missing controller's marker card use the error fill and border.
   The marker card keeps its marker-coloured border.
-- Status rows and the ERROR box lead with the off-white warning sign
+- Error status rows and the ERROR box lead with the off-white warning sign
   (`draw_warning_sign`).
 - A fault's sentence is a top-right status row, whatever raised it (a video
-  failure, a missing controller, an output stopped because its interface is
-  down). The bottom-left panel only turns red; it never carries the sentence.
-- An info status row takes the info chip colours (`COLOR_INFO_FILL`,
-  `COLOR_INFO_BORDER`), led by the off-white "i" sign (`draw_info_sign`). A
-  caution row takes the caution chip colours the same way, led by the same sign.
+  failure, a missing controller, an output whose interface has no address).
+  The bottom-left panel only turns red; it never carries the sentence.
+- A status row takes its level's chip colours from `STATUS_LEVEL_COLORS`,
+  led by its level's off-white sign (`draw_level_sign`): the warning sign for
+  an error, the "i" for caution and info, the off-white check for a success
+  ("Diagnostics saved to …"). A level the HUD does not know draws as an
+  error. The "+N more" row takes the gravest level among the rows it hides,
+  in the order error, caution, info, success.
+- An output stops being a show output the moment its interface loses its
+  address, so its error row appears on the first poll that finds no address.
+  Only stopping the output waits out the gap an Apply or Renew leaves. A
+  rebind or stop that fails names the interface and the failure in that row
+  instead, until a later outage of that interface takes the row back. No
+  status row is caution today: the HUD shows faults, progress and results, and
+  a limitation worth knowing lives on the web UI and the on-screen Network
+  screen.
 - The on-screen Network screen: a notice is a row in its level's fill and border,
   led by its sign (`draw_level_sign`), its text wrapped rather than cut. An
   interface pill that names a state takes its level's chip colours (a link-local
@@ -283,9 +294,11 @@ attributes, so it spells the token's value.
   action's result line takes its level; a confirmation is a success row, led by
   the off-white check, as the web's success box.
 - An offline marker shows an off-white disc with a cut-out cross.
-- The online dot and confirmations use the success mark (`COLOR_OK`,
-  `#5cc98c`); a confirmation such as "Detection Complete!" leads with the
-  success sign (`draw_success_sign`).
+- The online dot uses the success mark (`COLOR_OK`, `#5cc98c`). A
+  confirmation drawn straight on a panel, such as "Detection Complete!" or
+  the export screen's result, leads with the green success sign
+  (`draw_success_sign`); one in a row of its level's fill (a status row, the
+  Network screen's result line) leads with the off-white check instead.
 - Text uses the HUD's normal colours, never a red or pink text. A notice that
   is neither a fault nor a state, like the About screen's safety line, is
   plain bold off-white.

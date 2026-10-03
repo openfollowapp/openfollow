@@ -7,16 +7,12 @@ from __future__ import annotations
 from typing import Any
 
 from openfollow.runtime.overlay_draw_style import (
-    COLOR_INFO_BG,
-    COLOR_INFO_BORDER,
-    COLOR_INFO_FILL,
     COLOR_TEXT,
-    COLOR_WARNING_BORDER,
-    COLOR_WARNING_FILL,
     PANEL_RADIUS,
-    draw_info_sign,
-    draw_rounded_rect,
-    draw_warning_sign,
+    STATUS_LEVELS,
+    draw_level_box,
+    draw_level_sign,
+    status_level,
 )
 from openfollow.runtime.overlay_state import OverlayState
 
@@ -69,36 +65,17 @@ def draw_status_badge(
     cursor_y = float(_TOP_OFFSET)
 
     for _key, message, severity in visible:
-        _draw_warning_row(
-            renderer,
-            cr,
-            badge_x,
-            cursor_y,
-            badge_w,
-            _ROW_HEIGHT,
-            message,
-            severity,
-        )
+        _draw_status_row(renderer, cr, badge_x, cursor_y, badge_w, _ROW_HEIGHT, message, status_level(severity))
         cursor_y += _ROW_HEIGHT + _ROW_SPACING
 
     if overflow > 0:
-        # Tail row reads as an error if any hidden row is one, else info –
-        # so a stack of pure-info rows doesn't sprout a stray red tail.
+        # The tail takes the gravest level among the rows it hides.
         hidden = state.status_flags[len(visible) :]
-        tail_severity = "error" if any(s == "error" for _, _, s in hidden) else "info"
-        _draw_warning_row(
-            renderer,
-            cr,
-            badge_x,
-            cursor_y,
-            badge_w,
-            _ROW_HEIGHT,
-            f"+{overflow} more",
-            tail_severity,
-        )
+        tail_level = min((status_level(s) for _, _, s in hidden), key=STATUS_LEVELS.index)
+        _draw_status_row(renderer, cr, badge_x, cursor_y, badge_w, _ROW_HEIGHT, f"+{overflow} more", tail_level)
 
 
-def _draw_warning_row(
+def _draw_status_row(
     renderer: Any,
     cr: Any,
     x: float,
@@ -106,32 +83,11 @@ def _draw_warning_row(
     w: float,
     h: float,
     message: str,
-    severity: str = "error",
+    level: str,
 ) -> None:
-    """One badge row: background, severity glyph, message text.
-
-    ``"error"`` is the HUD's warning red with a warning sign, ``"info"`` the
-    info blue with an "i" sign. The overflow row reuses it.
-    """
-    info = severity == "info"
-    radius = PANEL_RADIUS
-    draw_rounded_rect(cr, x, y, w, h, radius)
-    if info:
-        cr.set_source_rgba(*COLOR_INFO_FILL)
-    else:
-        cr.set_source_rgba(*COLOR_WARNING_FILL)
-    cr.fill()
-    draw_rounded_rect(cr, x, y, w, h, radius)
-    cr.set_source_rgb(*(COLOR_INFO_BORDER if info else COLOR_WARNING_BORDER))
-    cr.set_line_width(1.6)
-    cr.stroke()
-
-    glyph_cx = x + _ICON_PAD + 6.0
-    glyph_cy = y + h * 0.5
-    if info:
-        draw_info_sign(cr, glyph_cx, glyph_cy, cut=COLOR_INFO_BG)
-    else:
-        draw_warning_sign(cr, glyph_cx, glyph_cy)
+    """One badge row in its level's chip colours, led by the level's sign."""
+    draw_level_box(cr, level, x, y, w, h, radius=PANEL_RADIUS, line_width=1.6)
+    draw_level_sign(cr, level, x + _ICON_PAD + 6.0, y + h * 0.5)
 
     # Message text – bold, truncated.
     renderer._set_ui_font(cr, _ROW_FONT_SIZE, bold=True)

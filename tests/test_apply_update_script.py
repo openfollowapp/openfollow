@@ -70,6 +70,17 @@ def test_installs_even_when_that_version_is_already_installed(tmp_path: Path) ->
     assert state["state"] == "restarting"
 
 
+def test_a_conffile_the_operator_changed_never_stops_the_install(tmp_path: Path) -> None:
+    """dpkg asks about a conffile changed on both sides, and nothing answers that
+    prompt here: the install would end at it. The operator's version is kept and
+    an unchanged one takes the update."""
+    calls, _state = _run(tmp_path)
+    apt = next(line for line in calls if line.startswith("apt-get ")).split()
+    assert "Dpkg::Options::=--force-confdef" in apt
+    assert "Dpkg::Options::=--force-confold" in apt
+    assert "Dpkg::Options::=--force-confnew" not in apt
+
+
 def test_starts_the_service_without_cycling_the_instance_postinst_started(tmp_path: Path) -> None:
     # prerm stops the unit and postinst starts it again, so a restart here would
     # stop the new version while it is still starting.

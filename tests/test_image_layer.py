@@ -45,6 +45,20 @@ def test_layer_yaml_parses() -> None:
     assert isinstance(doc["mmdebstrap"]["customize-hooks"], list)
 
 
+def test_the_image_rewrites_no_file_the_deb_ships_as_a_conffile() -> None:
+    """The image installs the .deb, so a copy of one of its conffiles written
+    afterwards leaves dpkg seeing it as modified - and the first update that
+    changes that file stops at a conffile prompt on every imaged station."""
+    build = (_LAYER.parents[2] / "build-deb.sh").read_text(encoding="utf-8")
+    listed = build[build.index("printf '%s\\n'") : build.index('"$STAGE/DEBIAN/conffiles"')]
+    conffiles = re.findall(r"(/etc/\S+)", listed)
+    assert conffiles, "build-deb.sh declares no conffiles"
+    hooks = "\n".join(_customize_hooks())
+    assert "apt-get install -y --no-install-recommends /tmp/openfollow.deb" in hooks
+    for path in conffiles:
+        assert path not in hooks, f"the image writes {path}, which the .deb owns"
+
+
 def test_parted_is_in_the_package_list() -> None:
     doc = yaml.safe_load(_LAYER.read_text(encoding="utf-8"))
     assert "parted" in doc["mmdebstrap"]["packages"]

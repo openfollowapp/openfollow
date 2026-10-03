@@ -61,8 +61,11 @@ export DEBIAN_FRONTEND=noninteractive
 [ -f "$SPEC" ] || fail "Staged update not found."
 write_state running "Installing update…"
 # --allow-downgrades so an operator can roll back offline; --reinstall because
-# apt otherwise skips the version already installed and still exits 0.
-if ! out=$(apt-get install -y --reinstall --allow-downgrades "$SPEC" 2>&1); then
+# apt otherwise skips the version already installed and still exits 0. A
+# conffile the operator changed is kept (confold) rather than stopping the
+# install at a prompt nothing here can answer; an unchanged one is updated.
+if ! out=$(apt-get install -y --reinstall --allow-downgrades \
+        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$SPEC" 2>&1); then
     # Prefer the apt/dpkg error lines; fall back to the last few non-empty
     # lines when the failure emits no E:/dpkg: marker (disk space, dependency
     # summaries, …) so the operator still gets an actionable reason.

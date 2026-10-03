@@ -156,6 +156,7 @@ def _make_app(
         _selected_id=None,
         _assist_manual={},
         _detection_pin_states={},
+        _detection_pin_mode=None,
     )
 
 
@@ -310,7 +311,7 @@ class _StubDetector:
     def __init__(self, detection) -> None:  # noqa: ANN001
         self.tracked_detection = detection
         self.confidence_threshold = 0.2
-        self.grace_s = 0.5
+        self.coast_s = 0.5
         self.available = True
 
 

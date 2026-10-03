@@ -185,8 +185,8 @@ def _write_status(marker: Any, state: DetectionPinState, status: float) -> None:
 def _release_status(app: Any, marker_id: int, state: DetectionPinState) -> None:
     """Hand a marker the pin stops driving back to full validity.
 
-    Runs on every such path: detection off, no detector, mode switch, another
-    marker pinned, marker no longer controlled.
+    Runs on every such path: detection off, no detector, mode switch (which
+    prunes every state), another marker pinned, marker no longer controlled.
     """
     if state.status is None:
         return
@@ -287,6 +287,12 @@ def apply_detection_pin(
         _prune_pin_states(app, keep=set())
         return
 
+    if det.pin_mode != app._detection_pin_mode:
+        # A mode switch starts clean: the other mode's smoothing and status must
+        # not leak into its first frame. Releases what the dropped states hold.
+        _prune_pin_states(app, keep=set())
+        app._detection_pin_mode = det.pin_mode
+
     if det.pin_mode == "assist":
         # Assist runs even without a live detector: input is redirected to the
         # manual ghosts, so each output keeps gliding to its anchor (degrading to
@@ -363,7 +369,7 @@ def apply_detection_pin(
     # unproject_to_plane returns PSN-absolute world coords (canonical marker.pos frame).
     smooth_x, smooth_y = _advance_smoothing(pin_state, float(world[0, 0]), float(world[0, 1]), cfg, dt)
     marker.set_pos(smooth_x, smooth_y, marker.pos[2])
-    # Threshold and grace come from the detector, which drains config on its own cadence.
+    # Threshold and window come from the detector, which drains config on its own cadence.
     _write_status(
         marker,
         pin_state,
@@ -371,7 +377,7 @@ def apply_detection_pin(
             best.confidence,
             person_detector.confidence_threshold,
             age_s=best.age_s,
-            grace_s=person_detector.grace_s,
+            grace_s=person_detector.coast_s,
         ),
     )
 
@@ -400,10 +406,6 @@ def _apply_assist_all(
     target_ids = set(app._controlled_ids)
     _prune_manual_markers(app, keep=target_ids)
     _prune_pin_states(app, keep=target_ids)
-    # The operator's anchor drives every assist output, so a state carried over
-    # from replace mode hands its validity back before any early exit below.
-    for mid, state in app._detection_pin_states.items():
-        _release_status(app, mid, state)
     if not target_ids:
         return
 

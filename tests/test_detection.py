@@ -355,8 +355,10 @@ def test_track_carries_lost_track_within_grace_period(monkeypatch) -> None:
 
 
 def test_track_reports_how_long_a_lost_track_has_coasted(monkeypatch) -> None:
-    """A coasting box says how long it has coasted and keeps its last matched
-    score, which is what the PSN tracker status decays from."""
+    """A coasting box says how long it has coasted past the step due to re-match
+    it, and keeps its last matched score, which is what the PSN tracker status
+    decays from. One missed step is the same age a live read would give the
+    box, so the two definitions cannot sawtooth against each other."""
     detection_module = _load_detection_module()
     detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=500))
 
@@ -364,21 +366,47 @@ def test_track_reports_how_long_a_lost_track_has_coasted(monkeypatch) -> None:
     (first,) = detector._track([detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)])
     assert first.age_s == 0.0
 
+    # One missed step on a 200 ms cadence: due now, not yet coasting.
     monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.2)
     assert detector._track([]) == []
     (coasting,) = detector._tracked
-    assert coasting.box.age_s == pytest.approx(0.2)
+    assert coasting.box.age_s == 0.0
     assert coasting.box.confidence == pytest.approx(0.9)
+
+    # Two missed steps: one step past due.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.4)
+    assert detector._track([]) == []
+    (coasting,) = detector._tracked
+    assert coasting.box.age_s == pytest.approx(0.2)
 
     # The pinned person's box hands that age out while the grace period runs.
     detector._pinned_id = first.track_id
     assert detector.tracked_detection.age_s == pytest.approx(0.2)
 
     # Matched again: the age resets.
-    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.3)
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.5)
     (again,) = detector._track([detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.8)])
     assert again.track_id == first.track_id
     assert again.age_s == 0.0
+
+
+def test_a_missed_step_reads_the_same_age_stamped_or_live(monkeypatch) -> None:
+    """At the moment a step misses, the age the step stamps on the lost track
+    equals the age a live read gave the box the instant before."""
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=500, interval_ms=100))
+    person = detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)
+
+    for t in (100.0, 100.3):
+        monkeypatch.setattr(detection_module.time, "monotonic", lambda t=t: t)
+        (box,) = detector._track([person])
+    detector._pinned_id = box.track_id
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.6)
+    live = detector.tracked_detection.age_s
+    assert detector._track([]) == []
+    assert detector.tracked_detection.age_s == pytest.approx(live)
+    assert live == 0.0
 
 
 def test_tracked_detection_ages_the_pinned_box_while_the_detector_stalls(monkeypatch) -> None:
@@ -413,7 +441,7 @@ def test_tracked_detection_ages_the_pinned_box_while_the_detector_stalls(monkeyp
 def test_tracked_detection_with_no_grace_keeps_a_match_for_one_interval(monkeypatch) -> None:
     """A zero grace period means no coasting, not no tracking: the frame loop
     runs between detector steps, so a match must stay valid for the normal gap
-    between steps and lapse only once the detector misses one."""
+    between steps and lapse only once the detector misses one by a whole step."""
     detection_module = _load_detection_module()
     detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=0, interval_ms=100))
 
@@ -434,8 +462,12 @@ def test_tracked_detection_with_no_grace_keeps_a_match_for_one_interval(monkeypa
     monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.15)
     assert detector.tracked_detection.age_s == 0.0
 
-    # One missed step: the pin lapses and the stale results re-acquire nothing.
+    # One step overdue: still handed out, aged, across one step of headroom.
     monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.21)
+    assert detector.tracked_detection.age_s == pytest.approx(0.01)
+
+    # A whole step overdue: the pin lapses and the stale results re-acquire nothing.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.31)
     assert detector.tracked_detection is None
 
 
@@ -459,9 +491,82 @@ def test_tracked_detection_allows_for_the_detectors_own_step_period(monkeypatch)
     monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.59)
     assert detector.tracked_detection.age_s == 0.0
 
-    # One step overdue: coasting, which a zero grace does not allow.
-    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.61)
+    # Overdue by more than a whole step: lapsed.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.91)
     assert detector.tracked_detection is None
+
+
+def test_tracked_detection_with_no_grace_survives_a_step_longer_than_the_recent_ones(monkeypatch) -> None:
+    """The allowance is the longest recent step, so a new longest step always
+    overruns it. Without headroom every such step would release the pin, reset
+    the smoothing and put 0.0 on the wire under a zero grace."""
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=0, interval_ms=100))
+    person = detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)
+
+    for t in (100.0, 100.1, 100.2):
+        monkeypatch.setattr(detection_module.time, "monotonic", lambda t=t: t)
+        (box,) = detector._track([person])
+    detector._results = [box]
+    assert detector.tracked_detection is box
+    pinned = detector._pinned_id
+
+    # This step takes 160 ms, 60 % over the recent 100 ms: overdue, but not lost.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.35)
+    overdue = detector.tracked_detection
+    assert overdue is not None
+    assert overdue.age_s == pytest.approx(0.05)
+    assert detector._pinned_id == pinned
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.36)
+    (box,) = detector._track([person])
+    detector._results = [box]
+    assert detector.tracked_detection is box
+    assert detector._pinned_id == pinned
+
+
+def test_an_outage_between_steps_does_not_become_the_allowance(monkeypatch) -> None:
+    """Pull timeouts, inference errors and backend rebuilds never step the
+    tracker, so the first step after one spans the whole outage. Recorded as a
+    step gap it would hand a frozen box out as fresh for as long as the outage
+    lasted; it is clamped like the Kalman dt instead."""
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=500, interval_ms=100))
+    person = detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)
+
+    for t in (100.0, 100.1, 160.0):  # a one-minute outage, then the feed is back
+        monkeypatch.setattr(detection_module.time, "monotonic", lambda t=t: t)
+        (box,) = detector._track([person])
+    detector._results = [box]
+    detector._pinned_id = box.track_id
+
+    # The detector stalls again right away. Eight nominal steps is the most the
+    # outage may count for, plus the grace: well under two seconds, not a minute.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 160.5)
+    assert detector.tracked_detection.age_s == 0.0
+    monkeypatch.setattr(
+        detection_module.time, "monotonic", lambda: 160.0 + 2 * detection_module._MAX_DT_REL * 0.1 + 0.01
+    )
+    assert detector.tracked_detection is None
+
+
+def test_a_reacquired_box_is_aged_like_a_sticky_one(monkeypatch) -> None:
+    """Results carry the age stamped at their step, 0 for a match. A re-acquire
+    from a stalled detector must hand the box out at its live age, not as a
+    fresh sighting the sticky path would age the very next frame."""
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=500, interval_ms=100))
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.0)
+    (first,) = detector._track([detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)])
+    detector._results = [first]
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.4)
+    reacquired = detector.tracked_detection
+    assert reacquired.track_id == first.track_id
+    assert reacquired.age_s == pytest.approx(0.3)
+    # The sticky path agrees on the next read.
+    assert detector.tracked_detection.age_s == pytest.approx(0.3)
 
 
 def test_tracked_detection_allowance_is_the_longest_recent_step(monkeypatch) -> None:
@@ -487,6 +592,23 @@ def test_grace_s_mirrors_the_configured_grace_period() -> None:
     detection_module = _load_detection_module()
     detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=750))
     assert detector.grace_s == pytest.approx(0.75)
+
+
+def test_coast_s_is_the_grace_period_but_never_under_one_step(monkeypatch) -> None:
+    """The window the status fades across is the window a box is handed out
+    for, so the two cannot disagree on where 0.0 lands."""
+    detection_module = _load_detection_module()
+    person = detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)
+
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=750, interval_ms=100))
+    assert detector.coast_s == pytest.approx(0.75)
+
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=0, interval_ms=100))
+    assert detector.coast_s == pytest.approx(0.1)  # no steps yet: the pull timeout
+    for t in (100.0, 100.3):
+        monkeypatch.setattr(detection_module.time, "monotonic", lambda t=t: t)
+        detector._track([person])
+    assert detector.coast_s == pytest.approx(0.3)  # the detector's own 300 ms cadence
 
 
 def test_confidence_threshold_mirrors_the_configured_confidence() -> None:

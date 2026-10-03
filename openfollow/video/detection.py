@@ -459,8 +459,7 @@ class PersonDetector:
         self._tracked: list[_TrackedPerson] = []
         # Monotonic timestamp of the previous track step, for the Kalman dt.
         self._last_track_t: float | None = None
-        # Seconds between recent track steps: the detector's own cadence, which
-        # ``tracked_detection`` allows for before it calls a box coasting.
+        # Seconds between recent track steps: the cadence ``_step_allowance_s`` reads.
         self._step_gaps_s: deque[float] = deque(maxlen=_STEP_HISTORY)
         self._pinned_id: int | None = None  # currently followed person
         # Normalised centre of the box last returned for the pinned person. Lets
@@ -692,6 +691,37 @@ class PersonDetector:
         return self._config.grace_period_ms / 1000.0
 
     @property
+    def coast_s(self) -> float:
+        """Seconds a box stays handed out past its due step: the grace period, never under one step.
+
+        The fade the pin derives from ``DetectionBox.age_s`` runs across this
+        window, so it reaches 0.0 exactly where the box stops being handed out.
+        """
+        with self._track_lock:
+            return max(self.grace_s, self._step_allowance_s())
+
+    def _step_allowance_s(self) -> float:
+        """The detector's own step period; the caller holds ``_track_lock``.
+
+        Inference time sets the cadence and ``interval_ms`` is only the pull
+        timeout, so it floors the longest recent gap rather than replacing it.
+        """
+        return max(self._config.interval_ms / 1000.0, max(self._step_gaps_s, default=0.0))
+
+    @staticmethod
+    def _coast_age_s(last_seen: float, now: float, allowance_s: float) -> float:
+        """Seconds a box matched at ``last_seen`` has coasted past the step due to re-match it.
+
+        The one definition of a box's age: a box one step overdue is fresh, so a
+        match on every step never reads as coasting between steps.
+        """
+        return max(0.0, now - last_seen - allowance_s)
+
+    @staticmethod
+    def _aged(box: DetectionBox, age_s: float) -> DetectionBox:
+        return box if box.age_s == age_s else replace(box, age_s=age_s)
+
+    @property
     def tracked_detection(self) -> DetectionBox | None:
         """Return the detection for the currently pinned person, or *None*.
 
@@ -704,7 +734,6 @@ class PersonDetector:
         within the re-acquire gate (the old target has left the frame).
         """
         now = time.monotonic()
-        grace_s = self.grace_s
 
         # Snapshot shared state under lock to avoid races with detector thread
         with self._track_lock:
@@ -713,34 +742,29 @@ class PersonDetector:
             results = self._results
             last_center = self._last_pinned_center
             last_track_t = self._last_track_t
-            longest_step_s = max(self._step_gaps_s, default=0.0)
-
-        # The normal gap between matches is the detector's own step period, which
-        # inference time sets; ``interval_ms`` is only the pull timeout and so a
-        # floor. The longest recent gap, not the last, so cadence jitter never
-        # reads as coasting.
-        allowance_s = max(self._config.interval_ms / 1000.0, longest_step_s)
+            allowance_s = self._step_allowance_s()
+        # One step of headroom, so a step longer than the recent ones is not a lost track.
+        coast_s = max(self.grace_s, allowance_s)
 
         # Sticky-by-track_id while the pinned person's track is still alive.
         if pinned_id is not None:
             for tp in tracked:
                 if tp.track_id == pinned_id:
-                    # Aged live, so a detector that stops stepping ages its last
-                    # box too. The same age decides eligibility, so the status
-                    # reaches 0.0 at the moment the track drops, and a zero grace
-                    # still keeps a fresh match for one step.
-                    age_s = max(tp.box.age_s, now - tp.last_seen - allowance_s)
-                    if age_s <= grace_s:
+                    # Aged live, so a detector that stops stepping ages its last box too.
+                    age_s = self._coast_age_s(tp.last_seen, now, allowance_s)
+                    if age_s <= coast_s:
                         with self._track_lock:
                             self._last_pinned_center = self._box_center(tp.box)
-                        return tp.box if age_s == tp.box.age_s else replace(tp.box, age_s=age_s)
-                    # Grace period expired – release pin
+                        return self._aged(tp.box, age_s)
+                    # Coast window expired – release pin
                     break
             with self._track_lock:
                 self._pinned_id = None
 
-        # Results that have coasted past the grace period are a stalled detector, not people.
-        if not results or (last_track_t is not None and now - last_track_t - allowance_s > grace_s):
+        # Results were all matched at the last step; past the coast window they
+        # are a stalled detector, not people.
+        age_s = 0.0 if last_track_t is None else self._coast_age_s(last_track_t, now, allowance_s)
+        if not results or age_s > coast_s:
             return None
 
         # Re-acquire: prefer the detection nearest the last-followed centre so a
@@ -764,7 +788,7 @@ class PersonDetector:
         with self._track_lock:
             self._pinned_id = best.track_id
             self._last_pinned_center = self._box_center(best)
-        return best
+        return self._aged(best, age_s)
 
     @property
     def performance_stats(self) -> dict[str, bool | int | float | str | None]:
@@ -1033,6 +1057,11 @@ class PersonDetector:
         step_s = None if self._last_track_t is None else now - self._last_track_t
         dt_rel = 1.0 if step_s is None else min(max(step_s / nominal_s, _MIN_DT_REL), _MAX_DT_REL)
         self._last_track_t = now
+        with self._track_lock:
+            if step_s is not None:
+                # An outage is not a step: clamped like the Kalman dt, so it never becomes the allowance.
+                self._step_gaps_s.append(min(step_s, _MAX_DT_REL * nominal_s))
+            allowance_s = self._step_allowance_s()
 
         tracks = self._tracker.update(high, low, now, max_lost_s, dt=dt_rel)
 
@@ -1048,7 +1077,7 @@ class PersonDetector:
                 y2=y2,
                 confidence=track.score,
                 track_id=track.track_id,
-                age_s=0.0 if is_matched else max(0.0, now - track.last_seen),
+                age_s=0.0 if is_matched else self._coast_age_s(track.last_seen, now, allowance_s),
             )
             full.append(_TrackedPerson(track_id=track.track_id, box=box, last_seen=track.last_seen))
             if is_matched:
@@ -1061,8 +1090,6 @@ class PersonDetector:
 
         with self._track_lock:
             self._tracked = full
-            if step_s is not None:
-                self._step_gaps_s.append(step_s)
         with self._perf_lock:
             self._tracked_count = len(full)
         return matched

@@ -16,10 +16,8 @@ from openfollow.psn.clock import psn_timestamp_usec
 
 Vec3 = tuple[float, float, float]
 _ZERO: Vec3 = (0.0, 0.0, 0.0)
-# PSN_DATA_TRACKER_STATUS carries the tracker's validity as a float: 1.0 for a
-# marker the operator drives, less where detection only partly vouches for the
-# position. A status nothing has written yet is None in memory and reads 0.0 on
-# the wire, so an explicit 0.0 stands.
+# PSN_DATA_TRACKER_STATUS: 1.0 for a marker the operator drives, less where detection
+# only partly vouches for it. Unwritten is None in memory and 0.0 on the wire.
 _VALID = 1.0
 _INVALID = 0.0
 

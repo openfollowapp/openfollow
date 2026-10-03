@@ -272,6 +272,8 @@ class OpenFollowApp:
         # drives the single resolved marker (one entry). Created lazily and
         # pruned when a marker leaves the driven set.
         self._detection_pin_states: dict[int, DetectionPinState] = {}
+        # The pin mode those states were built under; a switch prunes them all.
+        self._detection_pin_mode: str | None = None
         # Per-controlled-marker velocity estimate behind the PSN speed field.
         # Created lazily by the frame loop and pruned when a marker leaves the
         # controlled set.

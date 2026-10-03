@@ -61,11 +61,11 @@ class _StubDetection:
 
 class _StubDetector:
     def __init__(  # noqa: ANN001
-        self, detection, *, confidence_threshold: float = 0.2, grace_s: float = 0.5, available: bool = True
+        self, detection, *, confidence_threshold: float = 0.2, coast_s: float = 0.5, available: bool = True
     ) -> None:
         self.tracked_detection = detection
         self.confidence_threshold = confidence_threshold
-        self.grace_s = grace_s
+        self.coast_s = coast_s
         self.available = available
 
 
@@ -155,6 +155,7 @@ def _make_app(
         _server=server,
         _assist_manual={},
         _detection_pin_states={},
+        _detection_pin_mode=None,
         _selected_id=selected_id,
         # ``pin_marker_id`` looks at controlled_ids when the operator picks a
         # fixed ID. Default to a single-marker list matching ``selected_id``
@@ -925,7 +926,7 @@ def test_replace_mode_does_not_read_detections(monkeypatch) -> None:
         def __init__(self, tracked: _StubDetection) -> None:
             self.tracked_detection = tracked
             self.confidence_threshold = 0.2
-            self.grace_s = 0.5
+            self.coast_s = 0.5
             self.available = True
 
         @property
@@ -1297,7 +1298,7 @@ def test_replace_decays_against_the_detectors_grace_window_not_the_configs(monke
     app = _make_app(detection_cfg=_status_cfg(grace_period_ms=500), resolution=(1000, 1000))
     marker = app._server.get_marker(0)
 
-    _run(app, _StubDetector(_tracked(0.6, age_s=0.25), grace_s=1.0), monkeypatch, unproject=_linear_unproject)
+    _run(app, _StubDetector(_tracked(0.6, age_s=0.25), coast_s=1.0), monkeypatch, unproject=_linear_unproject)
 
     assert marker.status == pytest.approx(0.75 * 0.75)
 
@@ -1415,8 +1416,8 @@ def test_a_marker_leaving_the_controlled_set_is_restored(monkeypatch) -> None:
 
 
 def test_switching_to_assist_restores_full_validity(monkeypatch) -> None:
-    """The replace-driven marker stays controlled, so its pin state survives
-    the switch; the assist loop has to release what that state still holds."""
+    """The replace-driven marker stays controlled, so pruning by the controlled
+    set alone would keep its state; the mode switch itself sheds it."""
     m1 = _StubMarker(1)
     app = _make_app(
         detection_cfg=_status_cfg(),
@@ -1454,7 +1455,24 @@ def test_switching_to_assist_restores_full_validity_without_a_feed(monkeypatch) 
     _run(app, _AssistDetector([]), monkeypatch, unproject=_linear_unproject)
 
     assert m1.status == 1.0
-    assert app._detection_pin_states[1].status is None
+    assert app._detection_pin_states == {}
+
+
+def test_a_mode_switch_sheds_the_other_modes_smoothing(monkeypatch) -> None:
+    """Replace seeds its filter from the first target it sees. A filter assist
+    left behind would make that first frame glide from assist's last person
+    instead, so the switch starts replace from a clean state."""
+    app = _assist_app(_assist_cfg(assist_radius_m=50.0, smoothing=0.5))
+    marker = app._server.get_marker(_PID)
+    _seed_anchor(app, 2.0, 0.0, 0.0)
+    _run_assist(app, _AssistDetector([_det(0.2, 1)]), monkeypatch)  # inner filter now holds x = 2.0
+    assert app._detection_pin_states[_PID].smooth_x == pytest.approx(2.0)
+
+    app._config.detection = DetectionConfig(enabled=True, pin_mode="replace", smoothing=0.5, prediction=0.0)
+    _run(app, _StubDetector(_det(0.8, 1)), monkeypatch, unproject=_linear_unproject)
+
+    assert marker.pos[0] == pytest.approx(8.0)  # seeded on the new target, not eased from 2.0
+    assert app._assist_manual == {}
 
 
 def test_assist_never_writes_a_status(monkeypatch) -> None:

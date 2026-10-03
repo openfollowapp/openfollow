@@ -97,8 +97,10 @@ class _StubMarker:
     def pos(self) -> tuple[float, float, float]:
         return self._pos
 
-    def set_pos(self, x: float, y: float, z: float) -> None:
+    def set_pos(self, x: float, y: float, z: float, *, status: float | None = None) -> None:
         self._pos = (x, y, z)
+        if status is not None:
+            self.status = status
 
     def set_status(self, status: float) -> None:
         self.status = status
@@ -1259,6 +1261,33 @@ def test_replace_writes_the_matched_detection_status(monkeypatch) -> None:
 
     assert marker.status == pytest.approx(0.75)
     assert app._detection_pin_states[0].status == pytest.approx(0.75)
+
+
+def test_replace_writes_position_and_status_in_one_call(monkeypatch) -> None:
+    """The PSN sender reads position and status under one lock; written in two
+    calls, a packet could pair the new position with the previous frame's status."""
+
+    class _RecordingMarker(_StubMarker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.writes: list[tuple[str, float | None]] = []
+
+        def set_pos(self, x: float, y: float, z: float, *, status: float | None = None) -> None:
+            super().set_pos(x, y, z, status=status)
+            self.writes.append(("pos", status))
+
+        def set_status(self, status: float) -> None:
+            super().set_status(status)
+            self.writes.append(("status", status))
+
+    marker = _RecordingMarker()
+    app = _make_app(detection_cfg=_status_cfg(), resolution=(1000, 1000), marker=marker)
+
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+
+    assert len(marker.writes) == 1
+    assert marker.writes[0][0] == "pos"
+    assert marker.writes[0][1] == pytest.approx(0.75)
 
 
 def test_replace_decays_the_status_while_the_track_coasts(monkeypatch) -> None:

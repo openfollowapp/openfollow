@@ -330,9 +330,12 @@ def test_track_caps_results_to_highest_confidence() -> None:
     assert sorted(round(b.confidence, 2) for b in tracked) == [0.50, 0.90]
 
 
-def test_track_carries_lost_track_within_grace_period(monkeypatch) -> None:
+def test_track_carries_lost_track_for_the_span_it_is_handed_out(monkeypatch) -> None:
+    """A lost track is retained for the step period plus the coast window, the
+    span ``tracked_detection`` hands its predicted box out for, so the status
+    fade completes before the track drops."""
     detection_module = _load_detection_module()
-    cfg = DetectionConfig(enabled=False, grace_period_ms=500)
+    cfg = DetectionConfig(enabled=False, grace_period_ms=500, interval_ms=100)
     detector = detection_module.PersonDetector(cfg)
 
     monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.0)
@@ -340,18 +343,76 @@ def test_track_carries_lost_track_within_grace_period(monkeypatch) -> None:
     assert len(first) == 1
     first_id = first[0].track_id
 
-    # 200ms later (inside grace) with no detections – the track must still
-    # exist internally even though it's not returned as a "fresh" match.
-    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.2)
-    empty = detector._track([])
-    assert empty == []
-    assert any(t.track_id == first_id for t in detector._tracked)
+    # Missed on every 100 ms step: carried, though never returned as a fresh match.
+    for t in (100.1, 100.2, 100.3, 100.4, 100.5, 100.59):
+        monkeypatch.setattr(detection_module.time, "monotonic", lambda t=t: t)
+        assert detector._track([]) == []
+        assert any(t.track_id == first_id for t in detector._tracked)
 
-    # Past grace period – the carry-over drops.
-    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 101.0)
-    gone = detector._track([])
-    assert gone == []
+    # One step past the window – the carry-over drops.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.7)
+    assert detector._track([]) == []
     assert all(t.track_id != first_id for t in detector._tracked)
+
+
+def test_the_fade_completes_before_the_tracker_drops_the_track(monkeypatch) -> None:
+    """A step landing just past the grace period must not remove a track whose
+    status still reads well above zero; the last box handed out has coasted the
+    whole window."""
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=500, interval_ms=100))
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.0)
+    (first,) = detector._track([detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)])
+    detector._pinned_id = first.track_id
+    for t in (100.1, 100.2, 100.3, 100.4):
+        monkeypatch.setattr(detection_module.time, "monotonic", lambda t=t: t)
+        detector._track([])
+
+    # A 120 ms step lands past the grace period: still carried, status at 20 %.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.52)
+    detector._track([])
+    assert detector.tracked_detection.age_s == pytest.approx(0.4)
+
+    # The last step inside the window still hands the box out, all but faded.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.61)
+    detector._track([])
+    assert detector.tracked_detection.age_s == pytest.approx(0.49)
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.72)
+    detector._track([])
+    assert detector.tracked_detection is None
+
+
+def test_with_no_grace_a_missed_step_coasts_for_one_step_then_drops(monkeypatch) -> None:
+    """A zero grace keeps the one step of headroom: the step that misses the
+    person carries the track so the fade can run, and the next step drops it."""
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=0, interval_ms=100))
+    person = detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)
+
+    for t in (100.0, 100.1):
+        monkeypatch.setattr(detection_module.time, "monotonic", lambda t=t: t)
+        (box,) = detector._track([person])
+    detector._results = [box]
+    assert detector.tracked_detection is box
+
+    # Missed: carried on prediction, fresh at the step and fading across the headroom.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.2)
+    assert detector._track([]) == []
+    detector._results = []
+    assert detector.tracked_detection.age_s == 0.0
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.25)
+    assert detector.tracked_detection.age_s == pytest.approx(0.05)
+
+    # Missed again, just inside the window: the box goes out all but faded.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.29)
+    assert detector._track([]) == []
+    assert detector.tracked_detection.age_s == pytest.approx(0.09)
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.4)
+    assert detector._track([]) == []
+    assert detector.tracked_detection is None
 
 
 def test_track_reports_how_long_a_lost_track_has_coasted(monkeypatch) -> None:

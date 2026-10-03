@@ -160,11 +160,18 @@ class Marker:
         """Now, on the clock this marker's timestamps are stamped from."""
         return self._clock()
 
-    def set_pos(self, x: float, y: float, z: float) -> None:
-        """Set the marker position in PSN coordinates."""
+    def set_pos(self, x: float, y: float, z: float, *, status: float | None = None) -> None:
+        """Set the marker position in PSN coordinates.
+
+        ``status`` lands with the position under the one lock, so a reader never
+        pairs this position with the previous frame's validity.
+        """
+        value = None if status is None else _clamped_status(status)
         with self._lock:
             self._pos = (x, y, z)
             self._stamp_locked()
+            if value is not None:
+                self._status = value
 
     def set_name(self, name: str) -> None:
         """Update the marker name (used by live catalog rename)."""

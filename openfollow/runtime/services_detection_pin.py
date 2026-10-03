@@ -368,18 +368,16 @@ def apply_detection_pin(
 
     # unproject_to_plane returns PSN-absolute world coords (canonical marker.pos frame).
     smooth_x, smooth_y = _advance_smoothing(pin_state, float(world[0, 0]), float(world[0, 1]), cfg, dt)
-    marker.set_pos(smooth_x, smooth_y, marker.pos[2])
     # Threshold and window come from the detector, which drains config on its own cadence.
-    _write_status(
-        marker,
-        pin_state,
-        detection_status(
-            best.confidence,
-            person_detector.confidence_threshold,
-            age_s=best.age_s,
-            grace_s=person_detector.coast_s,
-        ),
+    status = detection_status(
+        best.confidence,
+        person_detector.confidence_threshold,
+        age_s=best.age_s,
+        grace_s=person_detector.coast_s,
     )
+    # One write: no packet pairs this position with the previous frame's status.
+    marker.set_pos(smooth_x, smooth_y, marker.pos[2], status=status)
+    pin_state.status = status
 
 
 def _apply_assist_all(

@@ -188,6 +188,29 @@ class TestTrackerTimestampAndStatus:
         t.set_pos(1.0, 0.0, 0.0)
         assert t.status == 0.0
 
+    def test_set_pos_lands_a_status_with_the_position(self) -> None:
+        """The detection pin writes where the person is and how far it vouches
+        for that in one call, so a packet never carries one without the other."""
+        clock = _StepClock(100)
+        t = Marker(marker_id=1, name="T1", clock=clock)
+        t.set_pos(1.0, 2.0, 3.0, status=0.3)
+        assert t.pos == (1.0, 2.0, 3.0)
+        assert t.status == pytest.approx(0.3)
+        assert t.timestamp == 100
+        assert t.to_psn_marker().status == pytest.approx(0.3)
+
+    def test_set_pos_without_a_status_leaves_the_explicit_one_alone(self) -> None:
+        t = Marker(marker_id=1, name="T1", clock=_StepClock(1))
+        t.set_pos(1.0, 0.0, 0.0, status=0.0)
+        t.set_pos(2.0, 0.0, 0.0)
+        assert t.status == 0.0
+
+    @pytest.mark.parametrize(("given", "expected"), [(7.5, 1.0), (-3.0, 0.0)])
+    def test_set_pos_clamps_the_status_it_carries(self, given: float, expected: float) -> None:
+        t = Marker(marker_id=1, name="T1")
+        t.set_pos(1.0, 0.0, 0.0, status=given)
+        assert t.status == expected
+
     def test_a_never_written_marker_ships_invalid(self) -> None:
         t = Marker(marker_id=1, name="T1")
         assert t.to_psn_marker().status == 0.0

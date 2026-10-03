@@ -61,9 +61,10 @@ _CustomValidator = Callable[[str, "AppConfig | None"], "str | None"]
 _CONTROL_CHARS_RE = CONTROL_CHARS_RE
 
 # Subset of the above used to REJECT (not silently clean) input at validate
-# time: NUL + non-whitespace C0 controls + DEL + bidi marks/overrides. Excludes
-# \t\n\v\f\r (0x09-0x0d) which ``.strip()`` legitimately handles.
-_DANGEROUS_TEXT_RE = re.compile("[\x00-\x08\x0e-\x1f\x7f\u200e-\u200f\u202a-\u202e]")
+# time: NUL + non-whitespace C0 controls + DEL + C1 controls + bidi
+# marks/overrides/isolates. Excludes \t\n\v\f\r (0x09-0x0d) which
+# ``.strip()`` legitimately handles.
+_DANGEROUS_TEXT_RE = re.compile("[\x00-\x08\x0e-\x1f\x7f-\x9f\u200e-\u200f\u202a-\u202e\u2066-\u2069]")
 
 
 def _default_sanitiser(s: str) -> str:

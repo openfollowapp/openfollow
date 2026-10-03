@@ -247,19 +247,19 @@ def test_ports_sort_numerically() -> None:
 def test_a_usb_network_adapter_has_the_key_of_its_socket(tmp_path: Path) -> None:
     device = _usb_device(tmp_path, _HOST1, "usb3", "3-2", "2")
     _node(tmp_path, "net", "enx9c69d3ac16ab", device / "3-2:2.0")
-    assert resolve_key("enx9c69d3ac16ab", sysfs_root=tmp_path) == f"usb:{_HOST1}:2"
+    assert resolve_key("enx9c69d3ac16ab", sysfs_root=tmp_path, classes=("net",)) == f"usb:{_HOST1}:2"
 
 
 def test_a_network_adapter_off_usb_has_no_socket_key(tmp_path: Path) -> None:
     _node(tmp_path, "net", "eth0", tmp_path / "devices" / "platform" / "1f00100000.ethernet")
     (tmp_path / "class" / "net" / "wg0").mkdir(parents=True)
-    assert resolve_key("eth0", sysfs_root=tmp_path) is None
-    assert resolve_key("wg0", sysfs_root=tmp_path) is None
+    assert resolve_key("eth0", sysfs_root=tmp_path, classes=("net",)) is None
+    assert resolve_key("wg0", sysfs_root=tmp_path, classes=("net",)) is None
 
 
 @pytest.mark.parametrize("name", ["", "../usb3", ".hidden", "a/b"])
 def test_a_name_that_could_leave_the_net_class_is_refused(tmp_path: Path, name: str) -> None:
-    assert resolve_key(name, sysfs_root=tmp_path) is None
+    assert resolve_key(name, sysfs_root=tmp_path, classes=("net",)) is None
 
 
 def test_a_network_adapter_key_never_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -270,12 +270,12 @@ def test_a_network_adapter_key_never_raises(tmp_path: Path, monkeypatch: pytest.
         raise PermissionError("devpath")
 
     monkeypatch.setattr(ci, "_usb_key", unreadable)
-    assert resolve_key("eth1", sysfs_root=tmp_path) is None
+    assert resolve_key("eth1", sysfs_root=tmp_path, classes=("net",)) is None
 
 
 def test_off_linux_no_network_adapter_has_a_socket_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ci.sys, "platform", "darwin")
-    assert resolve_key("en7") is None
+    assert resolve_key("en7", classes=("net",)) is None
 
 
 def test_on_linux_a_network_adapter_is_read_from_sys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -283,4 +283,15 @@ def test_on_linux_a_network_adapter_is_read_from_sys(tmp_path: Path, monkeypatch
     _node(tmp_path, "net", "eth1", device / "1-1:1.0")
     monkeypatch.setattr(ci.sys, "platform", "linux")
     monkeypatch.setattr(ci, "_SYSFS", tmp_path)
-    assert resolve_key("eth1") == f"usb:{_HOST0}:1"
+    assert resolve_key("eth1", classes=("net",)) == f"usb:{_HOST0}:1"
+
+
+def test_a_name_is_looked_up_in_its_own_class_only(tmp_path: Path) -> None:
+    """Names are unique per class, not across them: an interface may be called
+    event0 too, and must not take the socket of the input device of that name."""
+    pad = _usb_device(tmp_path, _HOST0, "usb1", "1-1", "1")
+    nic = _usb_device(tmp_path, _HOST1, "usb3", "3-2", "2")
+    _node(tmp_path, "input", "event0", pad / "1-1:1.0" / "input" / "input5")
+    _node(tmp_path, "net", "event0", nic / "3-2:2.0")
+    assert resolve_key("event0", sysfs_root=tmp_path, classes=("net",)) == f"usb:{_HOST1}:2"
+    assert resolve_key("/dev/input/event0", sysfs_root=tmp_path) == f"usb:{_HOST0}:1"

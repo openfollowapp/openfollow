@@ -87,6 +87,7 @@ def valid_iface_name(name: object) -> bool:
     return (
         isinstance(name, str)
         and 0 < len(name) <= _IFNAME_MAX
+        and name.isprintable()
         and not name.startswith(".")
         and not any(ch.isspace() or ch in "/:" for ch in name)
     )
@@ -199,7 +200,7 @@ class AdapterReader:
         # Deferred: the input package's own imports reach back into configuration, which imports this.
         from openfollow.input.controller_identity import port_label, resolve_key, usb_host_paths
 
-        usb_key = resolve_key(name, sysfs_root=self._root)
+        usb_key = resolve_key(name, sysfs_root=self._root, classes=("net",))
         if usb_key is not None:
             port = port_label(usb_key, usb_host_paths(self._hosts_root))
             return Adapter(name, port=port, model=_usb_model(device, self._root), mac=mac)

@@ -24,13 +24,21 @@ USB_KEY_PREFIX = "usb:"
 BT_KEY_PREFIX = "bt:"
 
 
-def resolve_key(node: str | None, *, sysfs_root: Path | None = None) -> str | None:
+# Device classes a controller node may belong to.
+CONTROLLER_CLASSES = ("input", "hidraw")
+
+
+def resolve_key(
+    node: str | None, *, sysfs_root: Path | None = None, classes: tuple[str, ...] = CONTROLLER_CLASSES
+) -> str | None:
     """Key of the socket ``node`` sits in, or ``None`` when it has none.
 
     USB: ``usb:<host controller>:<devpath>``. ``devpath`` is the port chain
     without the bus number, so a renumbered bus keeps the key, and the USB 2
     and USB 3 root hubs of one controller give a socket the same key.
-    Bluetooth: ``bt:<uniq>``. Never raises.
+    Bluetooth: ``bt:<uniq>``. Never raises. *classes* are the sysfs classes the
+    name is looked up in: names are only unique within one, so a network
+    adapter passes ``("net",)``.
     """
     if sysfs_root is None:
         if not sys.platform.startswith("linux"):
@@ -39,7 +47,7 @@ def resolve_key(node: str | None, *, sysfs_root: Path | None = None) -> str | No
     if not node:
         return None
     try:
-        device = _class_device(Path(node).name, sysfs_root)
+        device = _class_device(Path(node).name, sysfs_root, classes)
         if device is None:
             return None
         # A Bluetooth pad behind a USB radio sits under that radio's USB device;
@@ -51,8 +59,8 @@ def resolve_key(node: str | None, *, sysfs_root: Path | None = None) -> str | No
         return None
 
 
-def _class_device(name: str, sysfs_root: Path) -> Path | None:
-    for cls in ("input", "hidraw", "net"):
+def _class_device(name: str, sysfs_root: Path, classes: tuple[str, ...]) -> Path | None:
+    for cls in classes:
         link = sysfs_root / "class" / cls / name / "device"
         if link.exists():
             return link.resolve(strict=True)

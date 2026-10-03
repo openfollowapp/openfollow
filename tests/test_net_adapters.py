@@ -116,6 +116,7 @@ def test_labels_are_compared_as_they_would_be_stored() -> None:
     [
         ("  Lighting  ", "Lighting"),
         ("Light\x00ing\u202e", "Lighting"),
+        ("Light\u2067ing\x85", "Lighting"),
         ("A" * (LABEL_MAX_LEN + 5), "A" * LABEL_MAX_LEN),
         (None, ""),
         (3, ""),
@@ -131,7 +132,9 @@ def test_kernel_interface_names_are_accepted(name: str) -> None:
     assert valid_iface_name(name)
 
 
-@pytest.mark.parametrize("name", ["", "a" * 16, "../etc", ".hidden", "eth 0", "a/b", "a:b", None, 3, True])
+@pytest.mark.parametrize(
+    "name", ["", "a" * 16, "../etc", ".hidden", "eth 0", "a/b", "a:b", "eth\x00x", "eth\x1bx", None, 3, True]
+)
 def test_names_that_are_no_interface_or_unsafe_in_a_path_are_refused(name: object) -> None:
     assert not valid_iface_name(name)
 
@@ -167,6 +170,19 @@ def test_a_usb_adapter_reads_its_socket_model_and_mac(tmp_path: Path) -> None:
     assert adapter == Adapter("enx9c69d3ac16ab", port="USB 2, port 2", model="ASIX AX88179B", mac="9c:69:d3:ac:16:ab")
     assert adapter.summary({}) == "USB 2, port 2 · ASIX AX88179B"
     assert adapter.where({}) == "USB 2, port 2"
+
+
+def test_an_interface_named_like_an_input_device_reads_its_own_socket(tmp_path: Path) -> None:
+    """Names are unique per sysfs class only: a gamepad's event0 in another socket
+    must not lend the interface called event0 its port."""
+    _usb_adapter(tmp_path, "event0")
+    pad = tmp_path / "devices" / _HOST0 / "usb1" / "1-1"
+    (pad / "1-1:1.0" / "input" / "input5").mkdir(parents=True)
+    for attr, value in (("devpath", "1"), ("busnum", "1")):
+        (pad / attr).write_text(f"{value}\n")
+    (tmp_path / "class" / "input" / "event0").mkdir(parents=True)
+    (tmp_path / "class" / "input" / "event0" / "device").symlink_to(pad / "1-1:1.0" / "input" / "input5")
+    assert _linux(tmp_path).read("event0").port == "USB 2, port 2"
 
 
 def test_a_product_that_names_its_maker_is_not_repeated(tmp_path: Path) -> None:
@@ -250,7 +266,7 @@ def test_a_virtual_interface_has_no_description(tmp_path: Path) -> None:
     assert adapter.summary({}) == ""
 
 
-@pytest.mark.parametrize("name", ["eth9", "../../etc", ""])
+@pytest.mark.parametrize("name", ["eth9", "../../etc", "", "eth\x00x"])
 def test_an_absent_or_unsafe_name_reads_as_unknown(tmp_path: Path, name: str) -> None:
     assert _linux(tmp_path).read(name) == Adapter(name)
 

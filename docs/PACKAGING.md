@@ -271,9 +271,11 @@ model here is a web user holding the PIN, not someone with shell access. The run
 drop-in renders both from `ALL_CAPABILITIES`; only the Ansible playbook mirrors them
 by hand.
 
-**No-DHCP fallback.** All three install routes – the image layer, the Ansible
-playbook and the `.deb` – write
-`/etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf`:
+**No-DHCP fallback.** The `.deb` writes
+`/etc/NetworkManager/conf.d/10-openfollow-dhcp-fallback.conf`, and the image
+carries it by installing the `.deb` rather than writing its own copy: dpkg would
+read a second writer as an operator edit and stop the next upgrade at a
+conffile prompt. The Ansible playbook writes the same file:
 
 ```ini
 [connection]
@@ -313,8 +315,10 @@ NetworkManager profile, so this is provisioning and only provisioning.
 The `.deb` declares it a **conffile**, so an operator who tuned the timeout
 keeps that value across an upgrade. The operator reaches a fallen-back station
 at `<hostname>.local` or at the address on the on-screen HUD;
-`tests/test_dhcp_fallback_provisioning.py` pins all three routes against each
-other, and asserts nothing in the app sets these properties at runtime.
+`tests/test_dhcp_fallback_provisioning.py` pins the `.deb` and the playbook
+against each other and asserts nothing in the app sets these properties at
+runtime; `tests/test_image_layer.py` fails if the image writes any file the
+`.deb` declares a conffile.
 
 **Single account.** `rpi-image-gen`'s `rpi-user-credentials` layer creates the
 `openfollow` login user (password `openfollow`, **passwordless sudo**, in the

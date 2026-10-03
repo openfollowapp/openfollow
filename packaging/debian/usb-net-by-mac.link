@@ -1,21 +1,28 @@
-# Name a USB network adapter after its MAC so the name cannot move.
+# Name USB Ethernet adapters after their MAC so the name cannot move.
 #
 # Kernel ethN names are handed out in probe order, not by device identity, so a
 # station with two adapters fitted can swap eth1 and eth2 across a reboot. Every
 # network plane here pins an interface by NAME, and both names still resolve
 # after a swap - so the pin binds cleanly to the wrong adapter and stage data
-# leaves on the wrong network with nothing to show for it. It is the one case
-# the fail-closed rule cannot catch, because nothing is down.
+# leaves on the wrong network with nothing to show for it. Named after its MAC,
+# an adapter keeps its name in any socket, and a replacement gets a new name, so
+# a pin on the old one stops visibly instead.
 #
-# Matched by driver rather than by USB path: on Pi 3 and Zero the ONBOARD NIC is
-# USB-attached (smsc95xx / lan78xx), so a path match would rename eth0 there and
-# dangle every pin an operator already has. Neither driver is listed below, and
-# no Pi's onboard NIC uses one that is.
+# Matched by USB path, so an Ethernet adapter of any make is covered. Wi-Fi
+# dongles and mobile modems keep their names (Type=ether). An adapter without a
+# hardware MAC has no MAC name and is left to the other rules.
+#
+# Raspberry Pi OS masks systemd's own 73-usb-net-by-mac.link, so there this is
+# the one rule naming USB adapters. On plain Debian that rule is active and names
+# every USB network adapter by MAC, as it always has; there this file changes
+# nothing.
 #
 # Naming applies when the device appears, so an adapter already plugged in keeps
 # its old name until the next replug or reboot.
 [Match]
-Driver=r8152 ax88179_178a asix ax88172a aqc111 cdc_ether cdc_ncm cdc_eem rndis_host smsc75xx sr9700 sr9800 dm9601 mcs7830 pegasus
+Type=ether
+Path=*-usb-*
+Property=ID_NET_NAME_MAC=*
 
 [Link]
 NamePolicy=mac

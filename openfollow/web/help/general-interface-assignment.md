@@ -84,7 +84,7 @@ Note that this row moves the web UI only. `Station default` still decides the ad
 
 ## USB Ethernet adapters
 
-A USB adapter is named after its own hardware address, so it appears as something like `enx88a29edf04e3` rather than `eth1`. The name is long, but it belongs to that one physical adapter and stays the same wherever it is plugged in and whatever else is fitted.
+A USB Ethernet adapter is named after its own hardware address, so it appears as something like `enx88a29edf04e3` rather than `eth1`. The name is long, but it belongs to that one physical adapter and stays the same wherever it is plugged in and whatever else is fitted. An adapter without a hardware address of its own keeps an `ethN` name in the order adapters are found.
 
 That matters because a plain `eth1` is handed out in the order adapters are found at boot, not by which adapter it is. With two fitted, `eth1` and `eth2` can trade places after a restart, and since a pin stores the name, the function would carry on sending to a name that now means the other adapter. Nothing looks wrong in that state, which is why the naming is worth the ugliness.
 

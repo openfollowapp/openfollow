@@ -5,8 +5,8 @@
 A station on a show LAN with no DHCP server must still self-assign an address,
 or it is unreachable from the web UI and from SSH alike. Nothing in the running
 app arms this - it is provisioning only, so every install route has to write the
-same NetworkManager connection default: the image layer, the Ansible playbook,
-and the ``.deb``.
+same NetworkManager connection default: the ``.deb`` (which the image installs)
+and the Ansible playbook.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ _REPO_ROOT = Path(openfollow.__file__).resolve().parent.parent
 _DROPIN_NAME = "10-openfollow-dhcp-fallback.conf"
 
 _SOURCES = {
-    "image layer": _REPO_ROOT / "packaging" / "image" / "layer" / "openfollow.yaml",
     "ansible playbook": _REPO_ROOT / "scripts" / "ansible" / "install-raspberry-pi.yml",
     "deb drop-in": _REPO_ROOT / "packaging" / "debian" / "nm-dhcp-fallback.conf",
     "deb build script": _REPO_ROOT / "packaging" / "build-deb.sh",
@@ -44,11 +43,11 @@ _REQUIRED = (
 _REJECTED_BY_NETWORKMANAGER = ("ipv4.may-fail",)
 
 # Routes carrying the property block itself; the build script only installs it.
-_BLOCK_SOURCES = ("image layer", "ansible playbook", "deb drop-in")
+_BLOCK_SOURCES = ("ansible playbook", "deb drop-in")
 
 # Routes that name the installed file. The deb's drop-in *is* the content, so
 # it is the build script that has to reference the destination path.
-_INSTALLING_SOURCES = ("image layer", "ansible playbook", "deb build script")
+_INSTALLING_SOURCES = ("ansible playbook", "deb build script")
 
 
 def _read(name: str) -> str:
@@ -196,7 +195,8 @@ def test_every_install_route_ships_an_mdns_responder() -> None:
     the advice sends the operator to a dead name - worse than showing none."""
     assert "avahi-daemon" in (_REPO_ROOT / "packaging" / "debian" / "control.in").read_text(encoding="utf-8")
     assert "avahi-daemon" in _read("ansible playbook")
-    assert "avahi-daemon" in _read("image layer")
+    image = _REPO_ROOT / "packaging" / "image" / "layer" / "openfollow.yaml"
+    assert "avahi-daemon" in image.read_text(encoding="utf-8")
 
 
 def test_help_does_not_tie_the_fallback_to_the_dhcp_timeout() -> None:

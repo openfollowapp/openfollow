@@ -7,9 +7,11 @@ a station with two USB adapters can swap ``eth1`` and ``eth2`` across a reboot.
 Every network plane pins an interface by *name*, and after a swap both names
 still resolve - so the pin binds cleanly to the wrong adapter and stage data
 leaves on the wrong network. It is the one case the fail-closed rule cannot
-catch, because nothing is down. Naming every USB adapter after its MAC removes
-the ordering entirely, and like the DHCP fallback it is provisioning: nothing in
-the running app may rewrite an operator's network configuration.
+catch, because nothing is down. Naming USB Ethernet adapters after their MAC
+removes the ordering for them, and like the DHCP fallback it is provisioning:
+nothing in the running app may rewrite an operator's network configuration. The
+adapters it leaves alone (one on the Pi 3 onboard NIC's drivers, one without a
+hardware MAC) are rows in the device table below.
 """
 
 from __future__ import annotations
@@ -111,16 +113,35 @@ _DEVICES = {
 }
 
 
-@pytest.mark.parametrize("name", sorted(_BLOCK_SOURCES))
+# systemd's own 73-usb-net-by-mac.link. Raspberry Pi OS masks it; plain Debian runs it after ours.
+_SYSTEMD_USB_RULE = {"Path": "*-usb-*", "Property": "ID_NET_NAME_MAC=*"}
+
+
+def _named_by_mac(rule: dict[str, str], device: tuple[str, str, str, bool], *, systemd_rule: bool) -> bool:
+    """The ordered set: the first rule matching a device applies, and both apply NamePolicy=mac."""
+    kind, id_path, driver, mac_name = device
+    rules = [rule, _SYSTEMD_USB_RULE] if systemd_rule else [rule]
+    return any(_renamed(r, kind=kind, id_path=id_path, driver=driver, mac_name=mac_name) for r in rules)
+
+
 @pytest.mark.parametrize("device", sorted(_DEVICES))
-def test_usb_ethernet_adapters_and_no_onboard_nic_are_named_by_mac(name: str, device: str) -> None:
+def test_on_raspberry_pi_os_the_rule_alone_decides(device: str) -> None:
     """A USB Ethernet adapter gets its MAC name, whatever its make, so two can
     never trade names. The onboard NIC of the Pi 3 and earlier hangs off USB too;
     renaming it would dangle every eth0 pin an operator already has, so its two
     drivers are kept out."""
-    (kind, id_path, driver, mac_name), renamed = _DEVICES[device]
-    found = _renamed(_match_section(name), kind=kind, id_path=id_path, driver=driver, mac_name=mac_name)
-    assert found is renamed
+    attributes, renamed = _DEVICES[device]
+    assert _named_by_mac(_match_section("deb link file"), attributes, systemd_rule=False) is renamed
+
+
+@pytest.mark.parametrize("device", sorted(_DEVICES))
+def test_on_plain_debian_the_rule_changes_nothing(device: str) -> None:
+    """systemd's own rule runs there and names every USB adapter by MAC; ours only
+    ever repeats its outcome, exceptions included."""
+    attributes, _renamed_on_pi_os = _DEVICES[device]
+    with_ours = _named_by_mac(_match_section("deb link file"), attributes, systemd_rule=True)
+    systemd_alone = _named_by_mac({"Path": "!*"}, attributes, systemd_rule=True)
+    assert with_ours is systemd_alone
 
 
 def test_the_match_model_follows_systemd_link() -> None:

@@ -15,6 +15,11 @@
 # and mobile modems keep theirs (Type=ether). An adapter without a hardware MAC
 # has no MAC name and is left to the other rules.
 #
+# Raspberry Pi OS masks systemd's own 73-usb-net-by-mac.link, so there this is
+# the one rule naming USB adapters and the exceptions hold. On plain Debian that
+# rule is active and names every USB network adapter by MAC, exceptions
+# included, as it always has; there this file changes nothing.
+#
 # Naming applies when the device appears, so an adapter already plugged in keeps
 # its old name until the next replug or reboot.
 [Match]

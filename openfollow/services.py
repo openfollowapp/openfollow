@@ -2920,10 +2920,23 @@ class AppRuntimeServices:
                 "detections_avg": 0.0,
                 "tracked_people": 0,
                 "pinned_track_id": None,
+                "pin_status": None,
                 "last_inference_age_ms": None,
                 "missing_deps": [],
             },
         }
+
+    def _detection_pin_status(self) -> float | None:
+        """The PSN tracker status the detection pin last wrote, or None when it drives nothing.
+
+        Replace mode keeps at most one pin state carrying a status, so this is
+        the pin's own view of the one marker it drives, for /api/stats to set
+        beside what the wire carries.
+        """
+        for state in self._app._detection_pin_states.values():
+            if state.status is not None:
+                return float(state.status)
+        return None
 
     def _resolve_detection_missing_deps(
         self,
@@ -3091,6 +3104,7 @@ class AppRuntimeServices:
         }
         if self._person_detector is not None:
             detection_snapshot = dict(self._person_detector.performance_stats)
+        detection_snapshot["pin_status"] = self._detection_pin_status()
         detection_snapshot["missing_deps"] = self._resolve_detection_missing_deps(
             cfg.detection,
             now_monotonic,

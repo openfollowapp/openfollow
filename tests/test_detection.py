@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import numpy as np
@@ -81,8 +82,11 @@ def test_tracked_detection_obeys_grace_period_then_reacquires(monkeypatch) -> No
     detector._pinned_id = 7
     monkeypatch.setattr(detection_module.time, "monotonic", lambda: 10.2)
 
-    # Within grace: sticky return of the pinned person's box.
-    assert detector.tracked_detection is pinned_box
+    # Within grace: sticky return of the pinned person's box, aged live past
+    # the one-interval gap a fresh match would show.
+    sticky = detector.tracked_detection
+    assert dataclasses.replace(sticky, age_s=0.0) == pinned_box
+    assert sticky.age_s == pytest.approx(0.2 - cfg.interval_ms / 1000.0)
 
     # Grace expired: the pin releases and re-acquires the visible detection at the
     # same place (same centre as the pinned box), now under a new track_id.
@@ -348,6 +352,103 @@ def test_track_carries_lost_track_within_grace_period(monkeypatch) -> None:
     gone = detector._track([])
     assert gone == []
     assert all(t.track_id != first_id for t in detector._tracked)
+
+
+def test_track_reports_how_long_a_lost_track_has_coasted(monkeypatch) -> None:
+    """A coasting box says how long it has coasted and keeps its last matched
+    score, which is what the PSN tracker status decays from."""
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=500))
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.0)
+    (first,) = detector._track([detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)])
+    assert first.age_s == 0.0
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.2)
+    assert detector._track([]) == []
+    (coasting,) = detector._tracked
+    assert coasting.box.age_s == pytest.approx(0.2)
+    assert coasting.box.confidence == pytest.approx(0.9)
+
+    # The pinned person's box hands that age out while the grace period runs.
+    detector._pinned_id = first.track_id
+    assert detector.tracked_detection.age_s == pytest.approx(0.2)
+
+    # Matched again: the age resets.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.3)
+    (again,) = detector._track([detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.8)])
+    assert again.track_id == first.track_id
+    assert again.age_s == 0.0
+
+
+def test_tracked_detection_ages_the_pinned_box_while_the_detector_stalls(monkeypatch) -> None:
+    """A matched box is stamped with age 0, but a detector that stops stepping
+    must not keep handing it out as a fresh sighting: the age is measured live,
+    and results older than the grace period re-acquire nothing."""
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=500, interval_ms=100))
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.0)
+    (first,) = detector._track([detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)])
+    detector._results = [first]
+    detector._pinned_id = first.track_id
+    assert detector.tracked_detection.age_s == 0.0
+
+    # One interval is the normal gap between matches; beyond it the box is coasting.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.05)
+    assert detector.tracked_detection.age_s == 0.0
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.4)
+    assert detector.tracked_detection.age_s == pytest.approx(0.3)
+
+    # The fade runs to the end of the grace period: the last box handed out has
+    # coasted exactly that long, so the status it feeds reaches 0.0 before the drop.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.6)
+    assert detector.tracked_detection.age_s == pytest.approx(0.5)
+
+    # Past grace: the pin releases and the frozen results must not re-acquire it.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.61)
+    assert detector.tracked_detection is None
+
+
+def test_tracked_detection_with_no_grace_keeps_a_match_for_one_interval(monkeypatch) -> None:
+    """A zero grace period means no coasting, not no tracking: the frame loop
+    runs between detector steps, so a match must stay valid for the normal gap
+    between steps and lapse only once the detector misses one."""
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=0, interval_ms=100))
+
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.0)
+    (first,) = detector._track([detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)])
+    detector._results = [first]
+
+    # Between steps: cold-start acquire, then sticky, both unaged.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.05)
+    assert detector.tracked_detection is first
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.09)
+    assert detector.tracked_detection is first
+
+    # The detector stepped on time: still a fresh match.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.1)
+    (again,) = detector._track([detection_module.DetectionBox(0.1, 0.1, 0.4, 0.6, 0.9)])
+    detector._results = [again]
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.15)
+    assert detector.tracked_detection.age_s == 0.0
+
+    # One missed step: the pin lapses and the stale results re-acquire nothing.
+    monkeypatch.setattr(detection_module.time, "monotonic", lambda: 100.21)
+    assert detector.tracked_detection is None
+
+
+def test_grace_s_mirrors_the_configured_grace_period() -> None:
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, grace_period_ms=750))
+    assert detector.grace_s == pytest.approx(0.75)
+
+
+def test_confidence_threshold_mirrors_the_configured_confidence() -> None:
+    detection_module = _load_detection_module()
+    detector = detection_module.PersonDetector(DetectionConfig(enabled=False, confidence=0.35))
+    assert detector.confidence_threshold == pytest.approx(0.35)
 
 
 def test_pin_survives_confidence_dip_without_renumber(monkeypatch) -> None:

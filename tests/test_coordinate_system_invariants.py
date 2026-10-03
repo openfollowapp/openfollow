@@ -302,11 +302,15 @@ class _StubDetection:
     def __init__(self, x1: float, y1: float, x2: float, y2: float, track_id: int = 0) -> None:
         self.x1, self.y1, self.x2, self.y2 = x1, y1, x2, y2
         self.track_id = track_id
+        self.confidence = 0.9
+        self.age_s = 0.0
 
 
 class _StubDetector:
     def __init__(self, detection) -> None:  # noqa: ANN001
         self.tracked_detection = detection
+        self.confidence_threshold = 0.2
+        self.grace_s = 0.5
 
 
 @pytest.mark.parametrize("offsets", OFFSET_CASES)

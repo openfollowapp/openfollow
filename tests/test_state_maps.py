@@ -57,3 +57,13 @@ def test_prune_leaves_a_fully_kept_map_untouched() -> None:
     mapping = {1: "a", 2: "b"}
     prune_to_keep(mapping, {1, 2, 3})
     assert mapping == {1: "a", 2: "b"}
+
+
+def test_prune_hands_back_the_dropped_entries() -> None:
+    """A caller releases what the dropped state still holds elsewhere."""
+    mapping = {1: "a", 2: "b", 3: "c"}
+    assert sorted(prune_to_keep(mapping, {2})) == [(1, "a"), (3, "c")]
+
+
+def test_prune_hands_back_nothing_when_everything_is_kept() -> None:
+    assert list(prune_to_keep({1: "a"}, {1})) == []

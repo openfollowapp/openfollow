@@ -18,7 +18,7 @@ import os
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -118,6 +118,8 @@ class DetectionBox:
     confidence: float
     label: str = "person"
     track_id: int = -1
+    # Seconds the track has coasted on prediction since its last match; 0 while matched.
+    age_s: float = 0.0
 
 
 def filter_detections_to_masks(
@@ -675,6 +677,16 @@ class PersonDetector:
         return ((box.x1 + box.x2) / 2.0, (box.y1 + box.y2) / 2.0)
 
     @property
+    def confidence_threshold(self) -> float:
+        """The score a detection must reach to count as a confident sighting."""
+        return float(self._config.confidence)
+
+    @property
+    def grace_s(self) -> float:
+        """Seconds a lost track coasts before the tracker drops it."""
+        return self._config.grace_period_ms / 1000.0
+
+    @property
     def tracked_detection(self) -> DetectionBox | None:
         """Return the detection for the currently pinned person, or *None*.
 
@@ -687,7 +699,8 @@ class PersonDetector:
         within the re-acquire gate (the old target has left the frame).
         """
         now = time.monotonic()
-        grace_s = self._config.grace_period_ms / 1000.0
+        grace_s = self.grace_s
+        interval_s = self._config.interval_ms / 1000.0
 
         # Snapshot shared state under lock to avoid races with detector thread
         with self._track_lock:
@@ -695,21 +708,29 @@ class PersonDetector:
             tracked = self._tracked
             results = self._results
             last_center = self._last_pinned_center
+            last_track_t = self._last_track_t
 
         # Sticky-by-track_id while the pinned person's track is still alive.
         if pinned_id is not None:
             for tp in tracked:
                 if tp.track_id == pinned_id:
-                    if now - tp.last_seen <= grace_s:
+                    # Aged live, so a detector that stops stepping ages its last
+                    # box too; one interval is the normal gap between matches. The
+                    # same age decides eligibility, so the status reaches 0.0 at
+                    # the moment the track drops, and a zero grace still keeps a
+                    # fresh match for one interval.
+                    age_s = max(tp.box.age_s, now - tp.last_seen - interval_s)
+                    if age_s <= grace_s:
                         with self._track_lock:
                             self._last_pinned_center = self._box_center(tp.box)
-                        return tp.box
+                        return tp.box if age_s == tp.box.age_s else replace(tp.box, age_s=age_s)
                     # Grace period expired – release pin
                     break
             with self._track_lock:
                 self._pinned_id = None
 
-        if not results:
+        # Results that have coasted past the grace period are a stalled detector, not people.
+        if not results or (last_track_t is not None and now - last_track_t - interval_s > grace_s):
             return None
 
         # Re-acquire: prefer the detection nearest the last-followed centre so a
@@ -1010,9 +1031,18 @@ class PersonDetector:
         matched: list[DetectionBox] = []
         for track in tracks:
             x1, y1, x2, y2 = track.tlbr
-            box = DetectionBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=track.score, track_id=track.track_id)
+            is_matched = track.state == "tracked"
+            box = DetectionBox(
+                x1=x1,
+                y1=y1,
+                x2=x2,
+                y2=y2,
+                confidence=track.score,
+                track_id=track.track_id,
+                age_s=0.0 if is_matched else max(0.0, now - track.last_seen),
+            )
             full.append(_TrackedPerson(track_id=track.track_id, box=box, last_seen=track.last_seen))
-            if track.state == "tracked":
+            if is_matched:
                 matched.append(box)
 
         # Keep the highest-confidence detections when over the cap, matching the

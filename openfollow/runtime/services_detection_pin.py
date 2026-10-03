@@ -43,6 +43,9 @@ class DetectionPinState:
     # drives, so the overlay can paint that one box in the marker's colour.
     attached_track_id: int | None = None
     attached_marker_id: int | None = None
+    # Replace mode: the PSN tracker status last written to the driven marker, so
+    # /api/stats can show the pin's own view beside the wire. None once released.
+    status: float | None = None
 
     def reset(self) -> None:
         """Clear smoothing/velocity so the next acquisition re-seeds fresh.
@@ -152,6 +155,45 @@ def _resolve_pinned_marker(app: Any, cfg: Any) -> Any:
     if selected_id is None:
         return None
     return app._server.get_marker(selected_id)
+
+
+def detection_status(score: float, threshold: float, *, age_s: float = 0.0, grace_s: float) -> float:
+    """PSN tracker validity for a marker driven by one tracked person.
+
+    ``threshold`` (the configured detection confidence) reads 0.5 and a perfect
+    score 1.0; a low-band recovery match continues the same line below 0.5,
+    clamped at 0.0. A track coasting on prediction (``age_s`` since its last
+    match) decays linearly to 0.0 at ``grace_s``, where the tracker drops it.
+    """
+    if threshold >= 1.0:
+        matched = 1.0
+    else:
+        matched = min(1.0, max(0.0, 0.5 + 0.5 * (score - threshold) / (1.0 - threshold)))
+    if age_s <= 0.0:
+        return matched
+    if grace_s <= 0.0:
+        return 0.0
+    return matched * max(0.0, 1.0 - age_s / grace_s)
+
+
+def _write_status(marker: Any, state: DetectionPinState, status: float) -> None:
+    """Publish the pin's validity on the driven marker and remember it for /api/stats."""
+    marker.set_status(status)
+    state.status = status
+
+
+def _release_status(app: Any, marker_id: int, state: DetectionPinState) -> None:
+    """Hand a marker the pin stops driving back to full validity.
+
+    Runs on every such path: detection off, no detector, mode switch, another
+    marker pinned, marker no longer controlled.
+    """
+    if state.status is None:
+        return
+    state.status = None
+    marker = app._server.get_marker(marker_id)
+    if marker is not None:
+        marker.set_status(1.0)
 
 
 def _load_camera_params(app: Any, buffer: npt.NDArray[Any]) -> npt.NDArray[Any]:
@@ -273,16 +315,22 @@ def apply_detection_pin(
     pin_state.attached_marker_id = None
 
     if person_detector is None:
+        # No detector: the operator drives the marker, so it is fully valid.
+        _release_status(app, marker.marker_id, pin_state)
         return
 
     best = person_detector.tracked_detection
     if best is None:
         # Detection dropped – clear smoothing so reacquisition snaps, not lerps.
         pin_state.reset()
+        # Nobody tracked: the position is only as valid as detection makes it.
+        _write_status(marker, pin_state, 0.0)
         return
 
     w, h = app._video_receiver.resolution
     if w <= 0 or h <= 0:
+        # No feed to place the person on: detection vouches for nothing.
+        _write_status(marker, pin_state, 0.0)
         return
 
     # The tracked person is the attached box; the overlay paints it in the
@@ -308,11 +356,23 @@ def apply_detection_pin(
     world = unproject_to_plane(params, screen_pt, float(w), float(h), plane_z)
 
     if not np.all(np.isfinite(world[0])):
+        _write_status(marker, pin_state, 0.0)
         return
 
     # unproject_to_plane returns PSN-absolute world coords (canonical marker.pos frame).
     smooth_x, smooth_y = _advance_smoothing(pin_state, float(world[0, 0]), float(world[0, 1]), cfg, dt)
     marker.set_pos(smooth_x, smooth_y, marker.pos[2])
+    # Threshold and grace come from the detector, which drains config on its own cadence.
+    _write_status(
+        marker,
+        pin_state,
+        detection_status(
+            best.confidence,
+            person_detector.confidence_threshold,
+            age_s=best.age_s,
+            grace_s=person_detector.grace_s,
+        ),
+    )
 
 
 def _apply_assist_all(
@@ -339,6 +399,10 @@ def _apply_assist_all(
     target_ids = set(app._controlled_ids)
     _prune_manual_markers(app, keep=target_ids)
     _prune_pin_states(app, keep=target_ids)
+    # The operator's anchor drives every assist output, so a state carried over
+    # from replace mode hands its validity back before any early exit below.
+    for mid, state in app._detection_pin_states.items():
+        _release_status(app, mid, state)
     if not target_ids:
         return
 
@@ -496,6 +560,8 @@ def _prune_pin_states(app: Any, *, keep: set[int]) -> None:
 
     Parallels :func:`_prune_manual_markers`. A marker that leaves the driven set
     (controlled set shrinks, mode switch, detection off) sheds its smoothing /
-    glide state so a later re-entry seeds fresh from the live marker position.
+    glide state so a later re-entry seeds fresh from the live marker position,
+    and gets its full validity back on the wire.
     """
-    prune_to_keep(app._detection_pin_states, keep)
+    for marker_id, state in prune_to_keep(app._detection_pin_states, keep):
+        _release_status(app, marker_id, state)

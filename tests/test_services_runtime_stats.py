@@ -46,6 +46,7 @@ class _DummyApp:
         self._last_animate_time: float | None = None
         self._last_frame_completed: float | None = None
         self._frame_stalled = False
+        self._detection_pin_states: dict[int, Any] = {}
 
 
 @dataclass
@@ -561,6 +562,36 @@ class TestPublishRuntimeStats:
         assert tracking["running"] is True
         assert tracking["pinned_track_id"] == 42
         assert tracking["missing_deps"] == []
+        assert tracking["pin_status"] is None  # the pin has written nothing yet
+
+    def test_pin_status_mirrors_what_the_detection_pin_wrote(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pin's own view of the one marker it drives sits beside the wire
+        in /api/stats, so support can compare the two."""
+        from openfollow.runtime.services_detection_pin import DetectionPinState
+
+        self._prime(services, detector=_FakeDetector())
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        # A state that never wrote a status (a released or assist marker) is skipped.
+        services._app._detection_pin_states[3] = DetectionPinState()
+        services._app._detection_pin_states[7] = DetectionPinState(status=0.75)
+
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["tracking"]["pin_status"] == pytest.approx(0.75)
+
+    def test_pin_status_is_none_without_a_detector(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._prime(services)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["tracking"]["pin_status"] is None
 
     def test_missing_deps_surface_into_tracking_section(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

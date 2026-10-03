@@ -5051,6 +5051,30 @@ class TestTheInterfacePinRefusesABuild:
         # The previous feed's geometry is not this input's.
         assert r.resolution == (0, 0)
 
+    def test_a_refusal_names_the_pinned_interface_by_its_label(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        """The same outage reads "Video (eth1)" from the observer; a refusal at build
+        time and on every retry must not say bare eth1 beside it."""
+        from openfollow.video.inputs._pin import _naming
+
+        refusal = _naming(VideoFailure.INTERFACE_DOWN, "{pin} has no address", "eth1")
+        monkeypatch.setattr(FakeInput, "_refusal", refusal)
+        labels = {"eth1": "Video"}
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake",
+            input_config={"fake_source": "cam-1", "video_input_iface": "eth1"},
+            reconnect_delay=0.2,
+            iface_name=lambda name: f"{labels[name]} ({name})" if name in labels else name,
+        )
+        r._pipeline_assembler.create_placeholder_pipeline = FakePipeline
+        r.create_pipeline()
+        assert r.status_marker.error_message == "Video (eth1) has no address"
+        r.play()
+        assert r.status_marker.error_message == "Video (eth1) has no address"
+        # The refusal itself still reads plainly, for the bundle and the log of record.
+        assert refusal.detail == "eth1 has no address"
+
     def test_play_retries_a_refused_build_on_the_backoff(
         self, fake_gst, fake_glib, fake_input_cls, monkeypatch
     ) -> None:

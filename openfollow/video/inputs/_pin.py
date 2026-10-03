@@ -8,7 +8,7 @@ import ipaddress
 import socket
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import psutil
@@ -28,10 +28,23 @@ _RESOLVE_WAIT_S = 0.3
 
 @dataclass(frozen=True)
 class PinRefusal:
-    """Why a pinned input may not dial; ``detail`` names the interfaces."""
+    """Why a pinned input may not dial; ``detail`` names the interfaces.
+
+    ``template`` repeats it with ``{pin}`` where the pinned interface goes, so the
+    receiver can name that one the way the station labels it.
+    """
 
     failure: VideoFailure
     detail: str
+    pin: str = field(default="", compare=False)
+    template: str = field(default="", compare=False)
+
+    def text(self, pin_name: str) -> str:
+        return self.template.replace("{pin}", pin_name) if self.template else self.detail
+
+
+def _naming(failure: VideoFailure, template: str, pin: str) -> PinRefusal:
+    return PinRefusal(failure, template.replace("{pin}", pin), pin, template)
 
 
 _resolver = HOST_RESOLVER
@@ -117,7 +130,7 @@ def check_video_pin(
         return None
     egress = resolve_egress(pin)
     if egress is None or egress.down:
-        return PinRefusal(VideoFailure.INTERFACE_DOWN, f"{pin} has no address")
+        return _naming(VideoFailure.INTERFACE_DOWN, "{pin} has no address", pin)
     if not host:
         return None
     unresolved = _unresolved(found, host, pin)
@@ -128,7 +141,7 @@ def check_video_pin(
     for address in remote:
         if forced:
             if _routed_through(address, pin) is False:
-                return PinRefusal(VideoFailure.WRONG_INTERFACE, f"{host} is not reachable through {pin}")
+                return _naming(VideoFailure.WRONG_INTERFACE, f"{host} is not reachable through {{pin}}", pin)
             continue
         local = route_source(address, port)
         if local is None:
@@ -136,7 +149,7 @@ def check_video_pin(
             continue
         via = owners.get(local, "")
         if via != pin:
-            return PinRefusal(VideoFailure.WRONG_INTERFACE, f"{host} is reached through {via or local}, not {pin}")
+            return _naming(VideoFailure.WRONG_INTERFACE, f"{host} is reached through {via or local}, not {{pin}}", pin)
     return None
 
 
@@ -148,19 +161,21 @@ def check_listen_address(pin: str, address: str) -> PinRefusal | None:
         return unresolved
     owners = _own_addresses()
     if any(owners.get(a.split("%")[0]) != pin for a in found.addresses):
-        return PinRefusal(VideoFailure.WRONG_INTERFACE, f"{address} is not an address of {pin}")
+        return _naming(VideoFailure.WRONG_INTERFACE, f"{address} is not an address of {{pin}}", pin)
     return None
 
 
 def _unresolved(found: HostLookup, host: str, pin: str) -> PinRefusal | None:
     if found.outcome == "pending":
-        return PinRefusal(VideoFailure.UNKNOWN, f"{host} did not resolve in time to check it against {pin}")
+        return _naming(VideoFailure.UNKNOWN, f"{host} did not resolve in time to check it against {{pin}}", pin)
     if found.outcome == "skipped":
-        return PinRefusal(
-            VideoFailure.UNKNOWN, f"{host} could not be looked up ({found.error}) to check it against {pin}"
+        return _naming(
+            VideoFailure.UNKNOWN, f"{host} could not be looked up ({found.error}) to check it against {{pin}}", pin
         )
     if not found.addresses:
-        return PinRefusal(VideoFailure.UNKNOWN, f"{host} does not resolve, so it could not be checked against {pin}")
+        return _naming(
+            VideoFailure.UNKNOWN, f"{host} does not resolve, so it could not be checked against {{pin}}", pin
+        )
     return None
 
 

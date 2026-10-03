@@ -28,6 +28,7 @@ except ImportError:
 import tomli_w
 
 from openfollow.binding_conflicts import BindingMove, settle_duplicates
+from openfollow.net_adapters import normalize_labels
 from openfollow.units import UnitSystem
 
 if TYPE_CHECKING:
@@ -2326,6 +2327,9 @@ class AppConfig:
     # falls back to the wildcard bind when the pin cannot be resolved: a
     # silent output is diagnosable, an unreachable config UI is not.
     web_bind_iface: str = ""
+    # Operator labels for this station's interfaces, by interface name
+    # ("enx9c69d3ac16ab" -> "Lighting"). Device-local: they name this box's adapters.
+    interface_labels: dict[str, str] = field(default_factory=dict)
 
     # Web-triggered update settings (signed-.deb GitHub-release installer)
     update_github_repo: str = "openfollowapp/openfollow"
@@ -2405,6 +2409,7 @@ class AppConfig:
         if not isinstance(self.video_input_iface, str):
             self.video_input_iface = ""
         self.video_input_iface = self.video_input_iface.strip()
+        self.interface_labels = normalize_labels(self.interface_labels)
         # Strip ``psn_source_iface`` so whitespace doesn't look like a value
         # change each load and trigger a needless rebind cycle.
         if not isinstance(self.psn_source_iface, str):
@@ -3165,6 +3170,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # looping on subsequent passes.
     if new_config.web_pin != app._config.web_pin:
         app._config.web_pin = new_config.web_pin
+    # Read live by the HUD's outage rows and the Network screen; nothing to rebind.
+    if new_config.interface_labels != app._config.interface_labels:
+        app._config.interface_labels = dict(new_config.interface_labels)
 
     # PSN iface single-field path: only fires when iface changed alone (the
     # combined block above handles the iface+mcast case). The bind IP comes

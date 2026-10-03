@@ -569,8 +569,12 @@ class TestZoneTestSend:
 
     @pytest.mark.parametrize(
         ("egress", "error"),
-        [(Egress("eth1", "198.51.100.10"), "could not send on interface eth1"), (None, "send failed")],
-        ids=["pinned", "unpinned"],
+        [
+            (Egress("eth1", "198.51.100.10"), "could not send on interface eth1"),
+            (Egress("eth2", "198.51.100.11"), "could not send on interface Lighting (eth2)"),
+            (None, "send failed"),
+        ],
+        ids=["pinned", "pinned-labelled", "unpinned"],
     )
     def test_a_test_send_that_never_left_is_not_a_success(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, egress: Any, error: str
@@ -578,6 +582,7 @@ class TestZoneTestSend:
         from openfollow.configuration import OscDestinationConfig
 
         _seed_zone(services)
+        services._app._config.interface_labels = {"eth2": "Lighting"}
         services._app._config.osc_destinations.destinations.append(
             OscDestinationConfig(id="d1", host="10.1.2.3", port=9000),
         )

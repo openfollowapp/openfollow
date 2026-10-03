@@ -323,6 +323,11 @@ def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
         target.selected_index = int(getattr(app, "_pi_network_index", 0))
         target.active_iface = str(getattr(app, "_pi_network_active_iface", ""))
         target.open_iface = str(getattr(app, "_pi_network_open_iface", ""))
+        if target.open_iface:
+            from openfollow.net_adapters import display_name
+
+            labels = getattr(getattr(app, "_config", None), "interface_labels", None) or {}
+            target.title = f"Network Interface: {display_name(target.open_iface, labels)}"
         target.banner = str(getattr(app, "_pi_network_banner", ""))
         target.banner_level = str(getattr(app, "_pi_network_banner_level", "") or "")
         target.busy = bool(getattr(app, "_pi_network_busy", False))

@@ -226,7 +226,7 @@ class TestNetworkPartialStructure:
             "partials/network",
             net={"available": True, "writable": False, "editable": False, "iface_rows": []},
         )
-        assert 'hx-trigger="every 5s"' in body
+        assert 'hx-trigger="every 5s [netLabelsIdle()]"' in body
         assert 'hx-target="#net-iface-list"' in body
 
 

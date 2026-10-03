@@ -1062,3 +1062,36 @@ class TestVideoFailureReachesTheTopRightBadge:
     def test_an_unconfigured_source_is_not_alarmed_about(self) -> None:
         """Nothing is broken; the operator has not finished setting up."""
         assert self._flags_after(VideoFailure.NOT_CONFIGURED)["video_failure"] is None
+
+
+class TestNetworkScreenHeadline:
+    def test_an_open_interface_is_headlined_by_label_then_name(self, monkeypatch) -> None:
+        from openfollow.runtime import app_modes_network as anm
+
+        monkeypatch.setattr(anm, "build_pi_network_rows", lambda _app: [])
+        app = SimpleNamespace(
+            _pi_network_active=True,
+            _pi_network_open_iface="enx9c69d3ac16ab",
+            _config=SimpleNamespace(interface_labels={"enx9c69d3ac16ab": "Lighting"}),
+        )
+        state = OverlayState()
+        _populate_pi_network_overlay(app, state)
+        assert state.pi_network.title == "Network Interface: Lighting (enx9c69d3ac16ab)"
+
+    def test_an_unlabelled_interface_is_headlined_by_name(self, monkeypatch) -> None:
+        from openfollow.runtime import app_modes_network as anm
+
+        monkeypatch.setattr(anm, "build_pi_network_rows", lambda _app: [])
+        app = SimpleNamespace(_pi_network_active=True, _pi_network_open_iface="eth0")
+        state = OverlayState()
+        _populate_pi_network_overlay(app, state)
+        assert state.pi_network.title == "Network Interface: eth0"
+
+    def test_the_list_has_no_interface_headline(self, monkeypatch) -> None:
+        from openfollow.runtime import app_modes_network as anm
+
+        monkeypatch.setattr(anm, "build_pi_network_rows", lambda _app: [])
+        state = OverlayState()
+        state.pi_network.title = "stale"
+        _populate_pi_network_overlay(SimpleNamespace(_pi_network_active=True), state)
+        assert state.pi_network.title == ""

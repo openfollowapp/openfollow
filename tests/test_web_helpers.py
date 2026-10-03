@@ -3581,3 +3581,31 @@ def test_detection_models_dir_points_at_the_models_subdirectory() -> None:
         "dir": "/mnt/nvme/openfollow/yolo/models",
         "configured": "yolo26n.onnx",
     }
+
+
+# ---------------------------------------------------------------------------
+# Interface labels name this box's adapters: they never travel, and a reset clears them.
+# ---------------------------------------------------------------------------
+
+
+def test_interface_labels_are_not_exported() -> None:
+    cfg = AppConfig(interface_labels={"eth0": "Production"})
+    assert "interface_labels" not in _config_dict_redacted(cfg)
+
+
+def test_an_import_keeps_this_stations_interface_labels() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig(interface_labels={"eth0": "Production"})
+    new = _apply_import_data(current, {"interface_labels": {"eth0": "Foreign", "eth1": "Elsewhere"}})
+    assert new.interface_labels == {"eth0": "Production"}
+
+
+def test_restoring_defaults_clears_the_interface_labels() -> None:
+    from openfollow.web.routes import reset_config_to_defaults
+
+    current = AppConfig(psn_source_iface="eth0", interface_labels={"eth0": "Production"})
+    reset = reset_config_to_defaults(current)
+    assert reset.interface_labels == {}
+    # The station pin it keeps still names the same adapter, labelled or not.
+    assert reset.psn_source_iface == "eth0"

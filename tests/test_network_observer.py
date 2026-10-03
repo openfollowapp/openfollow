@@ -899,3 +899,99 @@ class TestSnapshot:
     def test_nothing_polled_yet_is_an_empty_snapshot(self) -> None:
         obs, _clk = _observer(_Recorder())
         assert obs.snapshot() == ()
+
+
+class TestNamesTheAdapter:
+    """Alerts, the bundle and the log name an interface as the operator labelled it,
+    and tell an unplugged adapter from one without an address."""
+
+    @staticmethod
+    def _named(rec: _Recorder, *, present: set[str]) -> tuple[NetworkPlaneObserver, _Clock]:
+        clk = _Clock()
+        labels = {"enx9c69d3ac16ab": "Lighting"}
+        obs = NetworkPlaneObserver(
+            planes=[rec.plane("PSN")],
+            clock=clk,
+            describe_iface=lambda iface: f"{labels[iface]} ({iface})" if iface in labels else iface,
+            iface_present=lambda iface: iface in present,
+        )
+        return obs, clk
+
+    def test_a_labelled_interface_without_an_address_is_down(self) -> None:
+        rec = _Recorder(iface="enx9c69d3ac16ab")
+        obs, clk = self._named(rec, present={"enx9c69d3ac16ab"})
+        rec.go_down()
+        _poll_n(obs, clk, 1)
+        assert obs.alerts() == ["PSN: Lighting (enx9c69d3ac16ab) is down"]
+        assert obs.snapshot()[0].detail == f"no address for 1 of {DOWN_POLLS_BEFORE_SUSPEND} polls"
+
+    def test_an_unplugged_adapter_is_not_connected(self, caplog: pytest.LogCaptureFixture) -> None:
+        rec = _Recorder(iface="enx9c69d3ac16ab")
+        obs, clk = self._named(rec, present=set())
+        rec.go_down()
+        _poll_n(obs, clk, 1)
+        assert obs.alerts() == ["PSN: Lighting (enx9c69d3ac16ab) is not connected"]
+        assert obs.snapshot()[0].detail == f"not connected for 1 of {DOWN_POLLS_BEFORE_SUSPEND} polls"
+        with caplog.at_level(logging.ERROR, logger="openfollow.runtime.network_observer"):
+            _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        assert "configured interface Lighting (enx9c69d3ac16ab) is not connected; output stopped" in caplog.text
+        assert obs.snapshot()[0].detail == "Lighting (enx9c69d3ac16ab) is not connected"
+
+    def test_a_stopped_plane_on_a_present_interface_has_no_address(self, caplog: pytest.LogCaptureFixture) -> None:
+        rec = _Recorder(iface="eth1")
+        obs, clk = self._named(rec, present={"eth1"})
+        rec.go_down()
+        with caplog.at_level(logging.ERROR, logger="openfollow.runtime.network_observer"):
+            _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        assert "configured interface eth1 has no address; output stopped" in caplog.text
+        assert obs.snapshot()[0].detail == "eth1 has no address"
+
+    def test_a_returning_adapter_is_present_again(self, caplog: pytest.LogCaptureFixture) -> None:
+        rec = _Recorder(iface="enx9c69d3ac16ab")
+        present: set[str] = set()
+        obs, clk = self._named(rec, present=present)
+        rec.go_down()
+        _poll_n(obs, clk, 2)
+        present.add("enx9c69d3ac16ab")
+        rec.come_back("203.0.113.21")
+        with caplog.at_level(logging.INFO, logger="openfollow.runtime.network_observer"):
+            _poll_n(obs, clk, 1)
+        assert obs.alerts() == []
+        assert "interface Lighting (enx9c69d3ac16ab) is back at 203.0.113.21" in caplog.text
+        # Gone again without an address: down, not "not connected" from the last outage.
+        rec.go_down()
+        _poll_n(obs, clk, 1)
+        assert obs.alerts() == ["PSN: Lighting (enx9c69d3ac16ab) is down"]
+
+    def test_a_failure_names_the_interface_by_label(self) -> None:
+        rec = _Recorder(iface="enx9c69d3ac16ab")
+        rec.apply_error = OSError("bind refused")
+        obs, clk = self._named(rec, present={"enx9c69d3ac16ab"})
+        _poll_n(obs, clk, 1)
+        assert obs.alerts() == ["PSN: Lighting (enx9c69d3ac16ab) – bind refused"]
+
+    def test_a_presence_check_that_fails_still_stops_the_plane(self) -> None:
+        rec = _Recorder(iface="eth1")
+        clk = _Clock()
+
+        def broken(_iface: str) -> bool:
+            raise OSError("enumeration failed mid-hotplug")
+
+        obs = NetworkPlaneObserver(planes=[rec.plane("PSN")], clock=clk, iface_present=broken)
+        rec.go_down()
+        _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
+        assert obs.alerts() == ["PSN: eth1 is down"]
+        assert rec.suspends == 1
+        assert obs.snapshot()[0].state == "stopped"
+
+    def test_naming_that_fails_falls_back_to_the_bare_name(self) -> None:
+        rec = _Recorder(iface="eth1")
+        clk = _Clock()
+
+        def broken(_iface: str) -> str:
+            raise KeyError("labels")
+
+        obs = NetworkPlaneObserver(planes=[rec.plane("PSN")], clock=clk, describe_iface=broken)
+        rec.go_down()
+        _poll_n(obs, clk, 1)
+        assert obs.alerts() == ["PSN: eth1 is down"]

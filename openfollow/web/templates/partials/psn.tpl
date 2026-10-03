@@ -41,7 +41,8 @@
                 <div class="notice warning" role="status">{{_adv['banner']}}</div>
                 % end
                 <div class="ia-pointer">
-                    <span class="ia-pointer-value">{{config.psn_source_iface or 'Auto-detect'}}</span>
+                    % from openfollow.net_adapters import display_name
+                    <span class="ia-pointer-value">{{display_name(config.psn_source_iface, config.interface_labels) or 'Auto-detect'}}</span>
                     <a class="ia-link" href="#interface-assignment"
                        onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Network Interface Assignment</a>
                 </div>

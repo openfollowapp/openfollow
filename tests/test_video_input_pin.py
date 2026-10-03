@@ -549,3 +549,17 @@ def test_a_listen_address_that_does_not_resolve_says_so(net: SimpleNamespace) ->
     assert check_listen_address("eth1", "nowhere.example") == PinRefusal(
         VideoFailure.UNKNOWN, "nowhere.example does not resolve, so it could not be checked against eth1"
     )
+
+
+def test_a_refusal_can_name_its_pin_another_way() -> None:
+    """The text keeps the interface separate, so the station can put its label there."""
+    from openfollow.video.failure import VideoFailure
+    from openfollow.video.inputs._pin import PinRefusal, _naming
+
+    refusal = _naming(VideoFailure.WRONG_INTERFACE, "192.0.2.20 is reached through eth0, not {pin}", "eth1")
+    assert refusal.detail == "192.0.2.20 is reached through eth0, not eth1"
+    assert refusal.text("Video (eth1)") == "192.0.2.20 is reached through eth0, not Video (eth1)"
+    # Compared by what it says, as before.
+    assert refusal == PinRefusal(VideoFailure.WRONG_INTERFACE, "192.0.2.20 is reached through eth0, not eth1")
+    plain = PinRefusal(VideoFailure.UNKNOWN, "the interface pin could not be checked")
+    assert plain.text("anything") == "the interface pin could not be checked"

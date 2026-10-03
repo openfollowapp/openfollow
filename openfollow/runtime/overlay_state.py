@@ -46,6 +46,8 @@ class PiNetworkOverlayState:
     active_iface: str = ""
     # Interface whose own screen is open; "" is the interface list.
     open_iface: str = ""
+    # That screen's headline: "Network Interface: Lighting (enx…)".
+    title: str = ""
     banner: str = ""
     # "error", "caution", "info" or "success".
     banner_level: str = ""
@@ -65,6 +67,7 @@ class PiNetworkOverlayState:
         self.selected_index = 0
         self.active_iface = ""
         self.open_iface = ""
+        self.title = ""
         self.banner = ""
         self.banner_level = ""
         self.busy = False

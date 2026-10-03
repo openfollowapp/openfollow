@@ -992,6 +992,7 @@ class AppRuntimeServices:
             snapshot_provider=self._snapshot_provider,
             stall_timeout=cfg.stall_timeout,
             heal_interval=cfg.heal_interval,
+            iface_name=self._iface_display_name,
         )
 
         # Create pipeline - may fail if no source, but receiver handles this gracefully

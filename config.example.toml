@@ -66,6 +66,15 @@ default_pos_z = 1.6
 # 180 degrees from the stage axes. Height is never affected; the mouse and
 # OSC set absolute positions and are unaffected.
 invert_control_direction = false
+# "crosshair" (ball, crosshair, Z line, ground circle) or "cone" (a truncated
+# cone between the stage plane and the marker's Z).
+marker_style = "crosshair"
+cone_base_diameter = 0.6
+cone_top_diameter = 0.3
+cone_thickness = 2
+cone_filled = true
+cone_opacity = 0.4
+cone_shaded = true
 ball_visible = true
 ball_size = 0.15
 transparency = 0.3

@@ -16,9 +16,10 @@
 %#      ``hx-target="this"`` stays as defence in depth in case the
 %#      structure shifts again.
 %#
-%#   2. Marker Visuals – <form id="marker-section"> with the Body /
-%#      Crosshair / Z Display / Z Line / Ground Circle / Color
-%#      Palette groups. Saves through /section/marker like every
+%#   2. Marker Visuals – <form id="marker-section"> with the Style /
+%#      Cone / Body / Crosshair / Z Line / Ground Circle / Z Display
+%#      groups. Z Display is last because it shows in both styles: the
+%#      last visible group is what drops its bottom divider. Saves through /section/marker like every
 %#      other dataclass-driven section.
 
 %# ------------------------------------------------------------------
@@ -41,6 +42,7 @@
 %# ------------------------------------------------------------------
 %# Section 2: Marker Visuals
 %# ------------------------------------------------------------------
+% _style = config.marker.marker_style
 <form id="marker-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="marker-visuals" data-help="marker-visuals" data-fold-default="expanded"
       hx-post="/section/marker" hx-target="#marker-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
@@ -49,6 +51,77 @@
     </div>
 
     <div class="group">
+        <h3 class="group-title">Style</h3>
+        <div class="fields-grid">
+            <div class="field">
+                <label>Marker Style</label>
+                <div class="seg-toggle" role="radiogroup" aria-label="Marker style">
+                    <label class="seg-option">
+                        <input type="radio" name="marker_style" value="crosshair" {{'checked' if config.marker.marker_style == 'crosshair' else ''}}>
+                        <span><strong>Crosshair</strong></span>
+                    </label>
+                    <label class="seg-option">
+                        <input type="radio" name="marker_style" value="cone" {{'checked' if config.marker.marker_style == 'cone' else ''}}>
+                        <span><strong>Cone</strong></span>
+                    </label>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="group" data-style-only="cone" {{'' if _style == 'cone' else 'hidden'}}>
+        <h3 class="group-title">Cone</h3>
+        <div class="fields-grid">
+            <div class="field">
+                <label>Base Diameter ({{_len}})</label>
+                <input id="marker-cone-radius" type="{{'text' if _imp else 'number'}}" name="cone_base_diameter" value="{{format_length(config.marker.cone_base_diameter, _us) if _imp else config.marker.cone_base_diameter}}" min="0" step="any"
+                       hx-get="/api/validate/marker/cone_base_diameter" hx-trigger="blur changed delay:200ms"
+                       hx-target="#marker-cone-radius-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="marker-cone-radius-error" aria-invalid="false">
+                <span id="marker-cone-radius-error" class="field-error"></span>
+                % if _imp:
+                <small class="metric-echo">Stored: {{metric_echo(config.marker.cone_base_diameter)}}</small>
+                % end
+            </div>
+            <div class="field">
+                <label>Top Diameter ({{_len}})</label>
+                <input id="marker-cone-top-diameter" type="{{'text' if _imp else 'number'}}" name="cone_top_diameter" value="{{format_length(config.marker.cone_top_diameter, _us) if _imp else config.marker.cone_top_diameter}}" min="0" step="any"
+                       hx-get="/api/validate/marker/cone_top_diameter" hx-trigger="blur changed delay:200ms"
+                       hx-target="#marker-cone-top-diameter-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="marker-cone-top-diameter-error" aria-invalid="false">
+                <span id="marker-cone-top-diameter-error" class="field-error"></span>
+                % if _imp:
+                <small class="metric-echo">Stored: {{metric_echo(config.marker.cone_top_diameter)}}</small>
+                % end
+            </div>
+            <div class="field">
+                <label>Line Thickness (px)</label>
+                <input id="marker-cone-thickness" type="number" name="cone_thickness" value="{{config.marker.cone_thickness}}" min="1" max="10"
+                       hx-get="/api/validate/marker/cone_thickness" hx-trigger="blur changed delay:200ms"
+                       hx-target="#marker-cone-thickness-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="marker-cone-thickness-error" aria-invalid="false">
+                <span id="marker-cone-thickness-error" class="field-error"></span>
+            </div>
+            <div class="field checkbox-field">
+                <label>Filled</label>
+                <div class="checkbox-wrap"><input type="checkbox" name="cone_filled" {{'checked' if config.marker.cone_filled else ''}}></div>
+            </div>
+            <div class="field">
+                <label>Fill Opacity (0–1)</label>
+                <input id="marker-cone-opacity" type="number" name="cone_opacity" value="{{config.marker.cone_opacity}}" min="0" max="1" step="any"
+                       hx-get="/api/validate/marker/cone_opacity" hx-trigger="blur changed delay:200ms"
+                       hx-target="#marker-cone-opacity-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="marker-cone-opacity-error" aria-invalid="false">
+                <span id="marker-cone-opacity-error" class="field-error"></span>
+            </div>
+            <div class="field checkbox-field">
+                <label>Shaded</label>
+                <div class="checkbox-wrap"><input type="checkbox" name="cone_shaded" {{'checked' if config.marker.cone_shaded else ''}}></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="group" data-style-only="crosshair" {{'' if _style == 'crosshair' else 'hidden'}}>
         <h3 class="group-title">Body</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
@@ -77,7 +150,7 @@
         </div>
     </div>
 
-    <div class="group">
+    <div class="group" data-style-only="crosshair" {{'' if _style == 'crosshair' else 'hidden'}}>
         <h3 class="group-title">Crosshair</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
@@ -118,17 +191,7 @@
         </div>
     </div>
 
-    <div class="group">
-        <h3 class="group-title">Z Display</h3>
-        <div class="fields-grid">
-            <div class="field checkbox-field">
-                <label>Z from Stage Level</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="z_display_from_stage" {{'checked' if config.marker.z_display_from_stage else ''}}></div>
-            </div>
-        </div>
-    </div>
-
-    <div class="group">
+    <div class="group" data-style-only="crosshair" {{'' if _style == 'crosshair' else 'hidden'}}>
         <h3 class="group-title">Z Line</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
@@ -146,7 +209,7 @@
         </div>
     </div>
 
-    <div class="group">
+    <div class="group" data-style-only="crosshair" {{'' if _style == 'crosshair' else 'hidden'}}>
         <h3 class="group-title">Ground Circle</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
@@ -167,6 +230,16 @@
             <div class="field checkbox-field">
                 <label>Filled</label>
                 <div class="checkbox-wrap"><input type="checkbox" name="ground_circle_filled" {{'checked' if config.marker.ground_circle_filled else ''}}></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="group">
+        <h3 class="group-title">Z Display</h3>
+        <div class="fields-grid">
+            <div class="field checkbox-field">
+                <label>Z from Stage Level</label>
+                <div class="checkbox-wrap"><input type="checkbox" name="z_display_from_stage" {{'checked' if config.marker.z_display_from_stage else ''}}></div>
             </div>
         </div>
     </div>

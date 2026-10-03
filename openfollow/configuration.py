@@ -486,6 +486,10 @@ class GridConfig:
         self.origin_thickness = _coerce_int(self.origin_thickness, 3, lo=1, hi=20)
 
 
+# Operator Screen marker glyph; each style reads only its own fields.
+_MARKER_STYLES = ("crosshair", "cone")
+
+
 @dataclass
 class MarkerConfig:
     min_speed: float = 0.1
@@ -496,6 +500,13 @@ class MarkerConfig:
     default_pos_z: float = 1.6
     # Relative input only (keyboard, gamepad, 3D mouse); for an upstage camera.
     invert_control_direction: bool = False
+    marker_style: str = "crosshair"
+    cone_base_diameter: float = 0.6
+    cone_top_diameter: float = 0.3
+    cone_thickness: int = 2
+    cone_filled: bool = True
+    cone_opacity: float = 0.4
+    cone_shaded: bool = True
     ball_visible: bool = True
     ball_size: float = 0.15
     transparency: float = 0.3
@@ -522,6 +533,13 @@ class MarkerConfig:
         self.default_pos_y = _coerce_float(self.default_pos_y, 0.0)
         self.default_pos_z = _coerce_float(self.default_pos_z, 1.6)
         self.invert_control_direction = _coerce_bool(self.invert_control_direction, False)
+        self.marker_style = _coerce_choice(self.marker_style, _MARKER_STYLES, "crosshair")
+        self.cone_base_diameter = _coerce_float(self.cone_base_diameter, 0.6, lo=0.0)
+        self.cone_top_diameter = _coerce_float(self.cone_top_diameter, 0.3, lo=0.0)
+        self.cone_thickness = _coerce_int(self.cone_thickness, 2, lo=1, hi=10)
+        self.cone_filled = _coerce_bool(self.cone_filled, True)
+        self.cone_opacity = _coerce_float(self.cone_opacity, 0.4, lo=0.0, hi=1.0)
+        self.cone_shaded = _coerce_bool(self.cone_shaded, True)
         self.ball_visible = _coerce_bool(self.ball_visible, True)
         self.crosshair_visible = _coerce_bool(self.crosshair_visible, True)
         self.z_line = _coerce_bool(self.z_line, True)

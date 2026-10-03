@@ -539,9 +539,444 @@ class TestDrawMarkerBranches:
         assert cr.arcs == []
         assert cr.fills == 0
 
+    def test_crosshair_style_is_unchanged_by_the_cone_fields(self) -> None:
+        """In crosshair style the cone settings are inert: the draw trace is
+        the same whatever they hold."""
+        traces = []
+        for radius, thickness in ((0.3, 2), (5.0, 9)):
+            state = _scene_state(
+                show_ball=True,
+                show_crosshair=True,
+                show_z_line=True,
+                show_ground_circle=True,
+                cone_base_diameter=radius,
+                cone_thickness=thickness,
+            )
+            cr = FakeCairo()
+            draw_marker(cr, state, self._marker(z=1.6), 1920, 1080)
+            traces.append(cr.calls)
+        assert traces[0] == traces[1]
+        assert ("close_path",) in traces[0]  # the ground circle still draws
+
     def test_project_helper_roundtrips_through_numpy_reshape(self) -> None:
         """Plain Python lists and numpy arrays both work as inputs."""
         cam = _camera_params()
         a = project(cam, [(0.0, 0.0, 0.0)], 1920, 1080)
         b = project(cam, np.array([[0.0, 0.0, 0.0]]), 1920, 1080)
         np.testing.assert_allclose(a, b)
+
+
+# --------------------------------------------------------------------------- #
+# draw_marker – cone style
+# --------------------------------------------------------------------------- #
+
+
+def _ring_on_screen(state: OverlayState, x: float, y: float, z: float, radius: float) -> np.ndarray:
+    from openfollow.scene.solver import ground_circle_world_ring
+
+    return project(state.camera_params, ground_circle_world_ring(x, y, z, radius), 1920, 1080)
+
+
+def _ring_paths(cr: FakeCairo, *, before_fill: bool = False) -> list[list[tuple[float, float]]]:
+    """Split the recorded path into sub-paths (one per move_to), closed ones only.
+
+    ``before_fill`` keeps only the sub-paths pathed ahead of the ``fill`` call;
+    the default keeps only those pathed after it (the stroked wireframe).
+    """
+    calls = cr.calls
+    if ("fill",) in calls:
+        cut = calls.index(("fill",))
+        calls = calls[:cut] if before_fill else calls[cut + 1 :]
+    elif before_fill:
+        return []
+    paths: list[list[tuple[float, float]]] = []
+    closed: list[list[tuple[float, float]]] = []
+    for call in calls:
+        if call[0] == "move_to":
+            paths.append([(call[1], call[2])])
+        elif call[0] == "line_to":
+            paths[-1].append((call[1], call[2]))
+        elif call[0] == "close_path":
+            closed.append(paths[-1])
+    return closed
+
+
+def _signed_area(poly: list[tuple[float, float]]) -> float:
+    arr = np.array(poly)
+    x, y = arr[:, 0], arr[:, 1]
+    return float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+
+
+class TestDrawMarkerConeStyle:
+    def _marker(self, **kw: object) -> MarkerOverlayData:
+        defaults = {"marker_id": 1, "x": 1.0, "y": 0.5, "z": 1.8, "color": "#ff3333"}
+        defaults.update(kw)
+        return MarkerOverlayData(**defaults)  # type: ignore[arg-type]
+
+    def _state(self, **overrides: object) -> OverlayState:
+        # Diameters 0.8 / 0.4 m: rings of radius 0.4 / 0.2 m.
+        base: dict[str, object] = {
+            "marker_style": "cone",
+            "cone_base_diameter": 0.8,
+            "cone_top_diameter": 0.4,
+            "cone_thickness": 2,
+            "cone_filled": False,
+            "cone_shaded": False,
+        }
+        base.update(overrides)
+        return _scene_state(**base)
+
+    def test_draws_two_rings_and_two_edges_in_one_stroke(self) -> None:
+        state = self._state()
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        assert cr.closes == 2  # floor ring + top ring
+        assert len(cr.move_tos) == 4  # two rings, two silhouette edges
+        assert len(cr.line_tos) == 2 * 23 + 2
+        assert cr.strokes == 1
+        assert cr.fills == 0
+        assert cr.arcs == []
+
+    def test_rings_sit_on_the_stage_plane_and_at_the_marker_z(self) -> None:
+        state = self._state(grid_config=(10.0, 6.0, 1.0, 0.0, 0.0, 0.5))
+        marker = self._marker(z=2.0)
+        cr = FakeCairo()
+        draw_marker(cr, state, marker, 1920, 1080)
+        floor, top = _ring_paths(cr)
+        np.testing.assert_allclose(np.array(floor), _ring_on_screen(state, 1.0, 0.5, 0.5, 0.4))
+        np.testing.assert_allclose(np.array(top), _ring_on_screen(state, 1.0, 0.5, 2.0, 0.2))
+
+    def test_equal_radii_give_a_cylinder_and_zero_top_radius_a_point(self) -> None:
+        cyl = self._state(cone_top_diameter=0.8)
+        cr = FakeCairo()
+        draw_marker(cr, cyl, self._marker(), 1920, 1080)
+        _, top = _ring_paths(cr)
+        np.testing.assert_allclose(np.array(top), _ring_on_screen(cyl, 1.0, 0.5, 1.8, 0.4))
+
+        point = self._state(cone_top_diameter=0.0)
+        cr = FakeCairo()
+        draw_marker(cr, point, self._marker(), 1920, 1080)
+        _, top = _ring_paths(cr)
+        apex = project(point.camera_params, [(1.0, 0.5, 1.8)], 1920, 1080)[0]
+        for pt in top:
+            np.testing.assert_allclose(pt, apex)
+
+    def test_edges_join_the_two_rings(self) -> None:
+        state = self._state()
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        floor, top = _ring_paths(cr)
+        edge_starts = cr.move_tos[2:]
+        edge_ends = cr.line_tos[-2:]
+        for start, end in zip(edge_starts, edge_ends, strict=True):
+            assert any(np.allclose(start, pt) for pt in floor)
+            assert any(np.allclose(end, pt) for pt in top)
+        # One edge per side of the marker: the two starts straddle the floor centre.
+        xs = sorted(x for x, _ in edge_starts)
+        assert xs[0] < xs[1]
+
+    @pytest.mark.parametrize("z", [0.0, -0.5])
+    def test_top_ring_follows_the_marker_at_or_below_the_stage(self, z: float) -> None:
+        """The cone is not symmetric, so a marker under the stage draws the cone
+        pointing down rather than collapsing to the base ring."""
+        state = self._state()
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(z=z), 1920, 1080)
+        assert cr.closes == 2
+        assert len(cr.move_tos) == 4
+        assert cr.strokes == 1
+        floor, top = _ring_paths(cr)
+        np.testing.assert_allclose(np.array(floor), _ring_on_screen(state, 1.0, 0.5, 0.0, 0.4))
+        np.testing.assert_allclose(np.array(top), _ring_on_screen(state, 1.0, 0.5, z, 0.2))
+
+    def test_zero_radii_draw_the_vertical_axis(self) -> None:
+        state = self._state(cone_base_diameter=0.0, cone_top_diameter=0.0)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        floor_c = project(state.camera_params, [(1.0, 0.5, 0.0)], 1920, 1080)[0]
+        top_c = project(state.camera_params, [(1.0, 0.5, 1.8)], 1920, 1080)[0]
+        for start in cr.move_tos[2:]:
+            np.testing.assert_allclose(start, floor_c)
+        for end in cr.line_tos[-2:]:
+            np.testing.assert_allclose(end, top_c)
+
+    def test_uses_the_marker_colour_and_the_cone_thickness(self) -> None:
+        state = self._state(cone_thickness=4)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(color="#ff3333"), 1920, 1080)
+        rgba = [c for c in cr.calls if c[0] == "rgba"]
+        assert rgba == [("rgba", pytest.approx(1.0), pytest.approx(0.2), pytest.approx(0.2), 0.8)]
+        assert [c for c in cr.calls if c[0] == "line_width"] == [("line_width", 4.0)]
+
+    def test_selected_marker_is_drawn_heavier(self) -> None:
+        state = self._state(cone_thickness=2, selected_id=1)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(marker_id=1), 1920, 1080)
+        assert [c for c in cr.calls if c[0] == "line_width"] == [("line_width", 3.0)]
+
+    def test_crosshair_fields_are_ignored(self) -> None:
+        """The ball, crosshair, Z line and ground circle switches change nothing."""
+        traces = []
+        for flag in (False, True):
+            state = self._state(
+                show_ball=flag,
+                show_crosshair=flag,
+                show_z_line=flag,
+                show_ground_circle=flag,
+                ground_circle_filled=flag,
+            )
+            cr = FakeCairo()
+            draw_marker(cr, state, self._marker(), 1920, 1080)
+            traces.append(cr.calls)
+        assert traces[0] == traces[1]
+        assert traces[0].count(("close_path",)) == 2
+
+    def test_assist_ghost_is_a_dim_cone(self) -> None:
+        state = self._state(cone_thickness=3)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(is_assist_ghost=True), 1920, 1080)
+        assert cr.closes == 2
+        assert len(cr.move_tos) == 4
+        assert cr.fills == 0
+        assert cr.arcs == []
+        rgba = [c for c in cr.calls if c[0] == "rgba"]
+        assert len(rgba) == 1 and rgba[0][4] == 0.5
+        assert [c for c in cr.calls if c[0] == "line_width"] == [("line_width", 3.0)]
+
+    def test_requires_grid_config(self) -> None:
+        state = self._state(grid_config=None)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        assert cr.strokes == 0
+        assert cr.move_tos == []
+
+    def test_nonfinite_rings_draw_nothing(self, monkeypatch) -> None:
+        from openfollow.runtime import overlay_draw_scene as mod
+
+        real = mod.project
+
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
+            arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+            if len(arr) == 2:  # the marker's own centre + radius point
+                return real(cam, pts, w, h, k1, k2)
+            return np.full((len(arr), 2), np.nan, dtype=np.float64)
+
+        monkeypatch.setattr(mod, "project", _fake_project)
+        state = self._state()
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        assert cr.strokes == 0
+        assert cr.move_tos == []
+
+    def test_partial_ring_behind_the_camera_keeps_the_rest(self, monkeypatch) -> None:
+        """One ring point behind the camera drops that point, not the ring."""
+        from openfollow.runtime import overlay_draw_scene as mod
+
+        real = mod.project
+
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
+            out = real(cam, pts, w, h, k1, k2)
+            if len(out) == 50:  # both centres and both 24-point rings
+                out[5] = np.nan  # a base ring point
+                out[30] = np.nan  # a top ring point
+            return out
+
+        monkeypatch.setattr(mod, "project", _fake_project)
+        state = self._state()
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        floor, top = _ring_paths(cr)
+        assert len(floor) == 23
+        assert len(top) == 23
+        assert cr.strokes == 1
+
+    def test_unfilled_emits_no_fill(self) -> None:
+        cr = FakeCairo()
+        draw_marker(cr, self._state(cone_filled=False), self._marker(), 1920, 1080)
+        assert cr.fills == 0
+
+    def test_shipped_defaults_fill_shaded_at_the_ground_circle_opacity(self) -> None:
+        state = _scene_state(marker_style="cone")
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        assert cr.fills == 3  # base disc, shaded side, lid
+        assert ("source_pattern",) in cr.calls
+        rgba = [c for c in cr.calls if c[0] == "rgba"]
+        assert rgba[0][4] == 0.4
+
+    def test_shaded_fill_lights_the_side_from_the_left(self) -> None:
+        state = self._state(cone_filled=True, cone_opacity=0.5, cone_shaded=True)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(color="#ff3333"), 1920, 1080)
+        # Flat base disc, gradient side, flat lid, then the wireframe stroke.
+        kinds = [c[0] for c in cr.calls if c[0] in ("fill", "source_pattern", "stroke")]
+        assert kinds == ["fill", "source_pattern", "fill", "fill", "stroke"]
+        (grad,) = cr.patterns
+        x0, _, x1, _ = grad.get_linear_points()
+        assert x0 < x1  # runs from the left edge's midpoint to the right one
+        stops = grad.get_color_stops_rgba()
+        assert [s[0] for s in stops] == [0.0, 0.5, 1.0]
+        lit, base, shadow = (s[1:] for s in stops)
+        assert base == pytest.approx((1.0, 0.2, 0.2, 0.5))
+        assert all(c >= b for c, b in zip(lit[:3], base[:3], strict=True)) and lit[1] > base[1]
+        assert all(c <= b for c, b in zip(shadow[:3], base[:3], strict=True)) and shadow[0] < base[0]
+        assert lit[3] == shadow[3] == 0.5
+
+    def test_unshaded_fill_is_one_flat_pass(self) -> None:
+        state = self._state(cone_filled=True, cone_opacity=0.5, cone_shaded=False)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        assert cr.fills == 1
+        assert cr.patterns == []
+
+    def test_shaded_without_edges_falls_back_to_a_flat_fill(self, monkeypatch) -> None:
+        from openfollow.runtime import overlay_draw_scene as mod
+
+        real = mod.project
+
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
+            out = real(cam, pts, w, h, k1, k2)
+            if len(out) == 50:
+                out[25:] = np.nan  # no top ring, so no silhouette edges
+            return out
+
+        monkeypatch.setattr(mod, "project", _fake_project)
+        state = self._state(cone_filled=True, cone_opacity=0.5, cone_shaded=True)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        assert cr.fills == 1
+        assert cr.patterns == []
+
+    def test_shading_is_inert_without_a_fill(self) -> None:
+        state = self._state(cone_filled=False, cone_shaded=True)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        assert cr.fills == 0
+        assert cr.patterns == []
+
+    def test_assist_ghost_is_never_shaded(self) -> None:
+        state = self._state(cone_filled=True, cone_opacity=0.9, cone_shaded=True)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(is_assist_ghost=True), 1920, 1080)
+        assert cr.fills == 0
+        assert cr.patterns == []
+
+    def test_filled_cone_fills_the_silhouette_before_the_wireframe(self) -> None:
+        state = self._state(cone_filled=True, cone_opacity=0.45)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(color="#ff3333"), 1920, 1080)
+        assert cr.fills == 1
+        assert cr.calls.index(("fill",)) < cr.calls.index(("stroke",))
+        # The fill is in the marker colour at the configured opacity; the
+        # wireframe keeps its own alpha on top.
+        rgba = [c for c in cr.calls if c[0] == "rgba"]
+        assert rgba[0] == ("rgba", pytest.approx(1.0), pytest.approx(0.2), pytest.approx(0.2), 0.45)
+        assert rgba[1][4] == 0.8
+        # Floor ring, top ring and the side between the edges, as one region.
+        fill_paths = _ring_paths(cr, before_fill=True)
+        assert [len(p) for p in fill_paths] == [24, 24, 4]
+        assert len(_ring_paths(cr)) == 2  # the wireframe rings still stroke
+
+    def test_filled_sub_paths_are_wound_the_same_way(self) -> None:
+        """Cairo's non-zero rule unions same-winding sub-paths; a sub-path wound
+        the other way would punch a hole where the side overlaps a ring."""
+        state = self._state(cone_filled=True, cone_opacity=0.45)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        areas = [_signed_area(p) for p in _ring_paths(cr, before_fill=True)]
+        assert all(a > 0 for a in areas)
+
+    def test_filled_side_spans_the_two_silhouette_edges(self) -> None:
+        state = self._state(cone_filled=True, cone_opacity=0.45)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        side = _ring_paths(cr, before_fill=True)[2]
+        edge_starts = cr.move_tos[-2:]
+        edge_ends = cr.line_tos[-2:]
+        for pt in (*edge_starts, *edge_ends):
+            assert any(np.allclose(pt, s) for s in side)
+
+    @pytest.mark.parametrize("z", [0.0, -0.5])
+    def test_filled_cone_below_the_stage_still_fills_three_regions(self, z: float) -> None:
+        state = self._state(cone_filled=True, cone_opacity=0.45)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(z=z), 1920, 1080)
+        assert cr.fills == 1
+        assert [len(p) for p in _ring_paths(cr, before_fill=True)] == [24, 24, 4]
+
+    def test_zero_opacity_fills_nothing(self) -> None:
+        state = self._state(cone_filled=True, cone_opacity=0.0)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        assert cr.fills == 0
+
+    def test_filled_cone_with_nothing_on_screen_fills_nothing(self, monkeypatch) -> None:
+        from openfollow.runtime import overlay_draw_scene as mod
+
+        real = mod.project
+
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
+            arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+            if len(arr) == 2:
+                return real(cam, pts, w, h, k1, k2)
+            return np.full((len(arr), 2), np.nan, dtype=np.float64)
+
+        monkeypatch.setattr(mod, "project", _fake_project)
+        state = self._state(cone_filled=True, cone_opacity=0.5)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        assert cr.fills == 0
+        assert cr.strokes == 0
+
+    def test_assist_ghost_is_never_filled(self) -> None:
+        state = self._state(cone_filled=True, cone_opacity=0.9)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(is_assist_ghost=True), 1920, 1080)
+        assert cr.fills == 0
+        assert cr.closes == 2
+
+    def test_top_behind_the_camera_keeps_the_base_ring(self, monkeypatch) -> None:
+        """A raised marker walking toward a low camera: its own point at Z
+        projects behind the lens, but the base ring is on screen and stays."""
+        from openfollow.runtime import overlay_draw_scene as mod
+
+        real = mod.project
+
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
+            out = real(cam, pts, w, h, k1, k2)
+            if len(out) == 50:
+                out[25:] = np.nan  # top centre and the whole top ring
+            return out
+
+        monkeypatch.setattr(mod, "project", _fake_project)
+        state = self._state(cone_filled=True, cone_opacity=0.5)
+        cr = FakeCairo()
+        draw_marker(cr, state, self._marker(), 1920, 1080)
+        assert cr.strokes == 1
+        assert len(_ring_paths(cr)) == 1  # the base ring, no edges
+        assert len(cr.move_tos) == 2  # one for the fill, one for the stroke
+        assert cr.fills == 1
+
+    def test_cone_projects_once_per_marker(self, monkeypatch) -> None:
+        from openfollow.runtime import overlay_draw_scene as mod
+
+        real = mod.project
+        calls: list[int] = []
+
+        def _counting_project(cam, pts, w, h, k1=0.0, k2=0.0):
+            calls.append(len(np.asarray(pts, dtype=np.float64).reshape(-1, 3)))
+            return real(cam, pts, w, h, k1, k2)
+
+        monkeypatch.setattr(mod, "project", _counting_project)
+        cr = FakeCairo()
+        draw_marker(cr, self._state(), self._marker(), 1920, 1080)
+        assert calls == [50]
+
+    def test_lens_distortion_warps_the_rings(self) -> None:
+        plain = self._state()
+        warped = self._state(lens_k1=-0.2)
+        cr_plain, cr_warped = FakeCairo(), FakeCairo()
+        draw_marker(cr_plain, plain, self._marker(), 1920, 1080)
+        draw_marker(cr_warped, warped, self._marker(), 1920, 1080)
+        assert len(cr_plain.line_tos) == len(cr_warped.line_tos)
+        assert not np.allclose(np.array(cr_plain.line_tos), np.array(cr_warped.line_tos))

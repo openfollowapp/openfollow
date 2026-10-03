@@ -18,6 +18,7 @@ from openfollow.scene.solver import (
     ground_circle_world_ring,
     hfov_to_vfov,
     project_points,
+    ring_silhouette_edges,
     solve_camera_dlt,
     unproject_to_plane,
     vfov_to_hfov,
@@ -40,6 +41,109 @@ def test_ground_circle_world_ring_geometry() -> None:
 
 def test_ground_circle_world_ring_default_segment_count() -> None:
     assert len(ground_circle_world_ring(0.0, 0.0, 0.0, 1.0)) == 24
+
+
+def _ellipse(cx: float, cy: float, rx: float, ry: float, n: int = 24) -> np.ndarray:
+    ang = np.linspace(0.0, 2 * math.pi, n, endpoint=False)
+    return np.column_stack([cx + rx * np.cos(ang), cy + ry * np.sin(ang)])
+
+
+def _rotated_ellipse(cx: float, cy: float, rx: float, ry: float, tilt_deg: float, n: int = 24) -> np.ndarray:
+    ang = np.linspace(0.0, 2 * math.pi, n, endpoint=False)
+    x, y = rx * np.cos(ang), ry * np.sin(ang)
+    c, s_ = math.cos(math.radians(tilt_deg)), math.sin(math.radians(tilt_deg))
+    return np.column_stack([cx + x * c - y * s_, cy + x * s_ + y * c])
+
+
+def _supports(edge: tuple[tuple[float, float], tuple[float, float]], pts: np.ndarray) -> bool:
+    """True when every point of ``pts`` lies on one side of the edge's line."""
+    (x0, y0), (x1, y1) = edge
+    cross = (x1 - x0) * (pts[:, 1] - y0) - (y1 - y0) * (pts[:, 0] - x0)
+    return bool(np.all(cross >= -1e-6) or np.all(cross <= 1e-6))
+
+
+class TestRingSilhouetteEdges:
+    """The two edges are the common tangents of the projected rings: each is a
+    supporting line of both rings, one per side, from a floor point to a top
+    point."""
+
+    def _check(self, floor: np.ndarray, top: np.ndarray, fc: tuple[float, float], tc: tuple[float, float]) -> list:
+        edges = ring_silhouette_edges(floor, top, fc, tc)
+        assert len(edges) == 2
+        both = np.vstack([floor, top])
+        for f, t in edges:
+            assert any(np.allclose(f, pt) for pt in floor)
+            assert any(np.allclose(t, pt) for pt in top)
+            assert _supports((f, t), both)
+        return edges
+
+    def test_front_view_joins_the_outer_points(self) -> None:
+        # Seen from the front: a wide base ellipse low on screen, a narrower
+        # top ellipse above it. The tangents leave from the outer flanks.
+        floor = _ellipse(400.0, 600.0, 50.0, 10.0)
+        top = _ellipse(400.0, 300.0, 30.0, 6.0)
+        edges = self._check(floor, top, (400.0, 600.0), (400.0, 300.0))
+        left, right = sorted(edges, key=lambda e: e[0][0])
+        assert left[0][0] < 400.0 and left[1][0] < 400.0
+        assert right[0][0] > 400.0 and right[1][0] > 400.0
+
+    def test_off_axis_tilted_ellipses_get_true_tangents(self) -> None:
+        # A marker far off the optical axis under a steep pitch: perspective
+        # tilts the two ellipses differently, so the outermost point along
+        # the perpendicular to the axis is not the tangent point. The edge
+        # must still support both rings instead of cutting into one.
+        floor = _rotated_ellipse(900.0, 700.0, 80.0, 22.0, 28.0)
+        top = _rotated_ellipse(820.0, 380.0, 45.0, 11.0, 18.0)
+        self._check(floor, top, (900.0, 700.0), (820.0, 380.0))
+
+    def test_sides_follow_a_tilted_axis(self) -> None:
+        # Roll the camera 90 degrees: the axis runs along screen X.
+        floor = _ellipse(600.0, 400.0, 10.0, 50.0)
+        top = _ellipse(300.0, 400.0, 6.0, 30.0)
+        edges = self._check(floor, top, (600.0, 400.0), (300.0, 400.0))
+        ys = sorted(f[1] for f, _ in edges)
+        assert ys[0] < 400.0 < ys[1]
+
+    def test_apex_gets_the_two_tangents_from_the_base(self) -> None:
+        # A top radius of zero: both edges end at the apex and support the base.
+        floor = _ellipse(400.0, 600.0, 50.0, 10.0)
+        apex = np.array([[430.0, 250.0]])
+        edges = self._check(floor, apex, (400.0, 600.0), (430.0, 250.0))
+        assert all(t == (430.0, 250.0) for _, t in edges)
+
+    def test_top_ring_inside_the_base_falls_back_to_the_axis_split(self) -> None:
+        # Seen from above the top ring sits inside the base ring: the hull
+        # has no bridge, so the outermost point per side is joined instead.
+        floor = _ellipse(400.0, 400.0, 50.0, 50.0)
+        top = _ellipse(410.0, 395.0, 10.0, 10.0)
+        edges = ring_silhouette_edges(floor, top, (400.0, 400.0), (410.0, 395.0))
+        assert len(edges) == 2
+        for f, t in edges:
+            assert any(np.allclose(f, pt) for pt in floor)
+            assert any(np.allclose(t, pt) for pt in top)
+
+    def test_identical_rings_still_return_two_edges(self) -> None:
+        # Both centres coincide and both rings are the same: the fallback
+        # split is horizontal so the call stays total.
+        ring = _ellipse(400.0, 400.0, 20.0, 20.0)
+        edges = ring_silhouette_edges(ring, ring, (400.0, 400.0), (400.0, 400.0))
+        assert len(edges) == 2
+        xs = sorted(f[0] for f, _ in edges)
+        assert xs == [pytest.approx(380.0), pytest.approx(420.0)]
+
+    @pytest.mark.parametrize("empty_floor", [True, False])
+    def test_an_empty_ring_yields_no_edges(self, empty_floor: bool) -> None:
+        ring = _ellipse(400.0, 400.0, 20.0, 20.0)
+        none = np.zeros((0, 2))
+        floor, top = (none, ring) if empty_floor else (ring, none)
+        assert ring_silhouette_edges(floor, top, (400.0, 400.0), (400.0, 300.0)) == []
+
+    def test_partial_rings_use_the_points_that_remain(self) -> None:
+        # Half the floor ring went behind the camera; the edges come from what
+        # is left rather than vanishing with the ring.
+        floor = _ellipse(400.0, 600.0, 50.0, 10.0)[:12]
+        top = _ellipse(400.0, 300.0, 30.0, 6.0)
+        self._check(floor, top, (400.0, 600.0), (400.0, 300.0))
 
 
 def _world_corners() -> np.ndarray:

@@ -4705,6 +4705,21 @@
  if (mode === 'replace') { el.removeAttribute('hidden'); } else { el.setAttribute('hidden', ''); }
  });
  });
+ // Marker Visuals: the style radio reveals that style's groups. Each group
+ // carries ``data-style-only="<style>"``; the server renders the ``hidden``
+ // state on first paint, this follows later toggles. Hidden groups still
+ // submit, so a style's settings survive a save made in the other style.
+ document.addEventListener('change', (event) => {
+ const radio = event.target.closest('input[name="marker_style"]');
+ if (!radio) return;
+ const form = radio.closest('form');
+ if (!form) return;
+ const checked = form.querySelector('input[name="marker_style"]:checked');
+ const style = checked !== null ? checked.value : 'crosshair';
+ form.querySelectorAll('[data-style-only]').forEach((el) => {
+ if (el.dataset.styleOnly === style) { el.removeAttribute('hidden'); } else { el.setAttribute('hidden', ''); }
+ });
+ });
  // Generic drag-reorder shared by the OSC Transmitters + OSC Destinations
  // row lists: same ⋮⋮ handle on both. Each row carries the bulk-reorder
  // endpoint + swap target in ``data-reorder-url`` / ``data-reorder-target``,

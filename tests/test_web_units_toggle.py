@@ -118,6 +118,17 @@ class TestImperialFormSubmission:
         cfg = load_config(server.config_path)
         assert cfg.grid.width == pytest.approx(1.6764, abs=1e-6)
 
+    def test_post_cone_radii_imperial_store_metric(self, live_server) -> None:
+        server, base = live_server
+        _set_unit_system(base, "imperial")
+        status, _ = _post_form(
+            base, "/section/marker", {"marker_style": "cone", "cone_base_diameter": "1 ft", "cone_top_diameter": "6 in"}
+        )
+        assert status == 200
+        cfg = load_config(server.config_path)
+        assert cfg.marker.cone_base_diameter == pytest.approx(0.3048, abs=1e-6)
+        assert cfg.marker.cone_top_diameter == pytest.approx(0.1524, abs=1e-6)
+
     def test_post_grid_width_metric_unchanged_behaviour(self, live_server) -> None:
         server, base = live_server  # default metric
         status, _ = _post_form(base, "/section/grid", {"width": "7.5"})

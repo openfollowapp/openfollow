@@ -578,6 +578,68 @@ def test_apply_section_data_marker_parses_boolean_and_float() -> None:
     assert config.marker.ball_visible is False
 
 
+def test_apply_section_data_marker_cone_style_round_trips() -> None:
+    config = AppConfig()
+
+    ok = apply_section_data(
+        config,
+        "marker",
+        {
+            "marker_style": "cone",
+            "cone_base_diameter": "0.45",
+            "cone_top_diameter": "0.1",
+            "cone_thickness": "4",
+            "cone_filled": "false",
+            "cone_opacity": "0.6",
+            "cone_shaded": "false",
+        },
+    )
+
+    assert ok is True
+    assert config.marker.marker_style == "cone"
+    assert config.marker.cone_base_diameter == 0.45
+    assert config.marker.cone_top_diameter == 0.1
+    assert config.marker.cone_thickness == 4
+    assert config.marker.cone_filled is False
+    assert config.marker.cone_opacity == 0.6
+    assert config.marker.cone_shaded is False
+    payload = get_section_data(config, "marker")
+    assert payload is not None
+    assert payload["marker_style"] == "cone"
+    assert payload["cone_base_diameter"] == 0.45
+    assert payload["cone_top_diameter"] == 0.1
+    assert payload["cone_thickness"] == 4
+    assert payload["cone_filled"] is False
+    assert payload["cone_shaded"] is False
+    assert payload["cone_opacity"] == 0.6
+
+
+def test_apply_section_data_marker_repairs_bad_cone_values() -> None:
+    """A crafted POST gets the same normalisation a hand-edited TOML would: an
+    unknown style keeps the default and the thickness is clamped to its range."""
+    config = AppConfig()
+    config.marker.marker_style = "cone"
+
+    ok = apply_section_data(
+        config,
+        "marker",
+        {
+            "marker_style": "sphere",
+            "cone_base_diameter": "-2",
+            "cone_top_diameter": "-1",
+            "cone_thickness": "99",
+            "cone_opacity": "7",
+        },
+    )
+
+    assert ok is True
+    assert config.marker.marker_style == "crosshair"
+    assert config.marker.cone_base_diameter == 0.0
+    assert config.marker.cone_top_diameter == 0.0
+    assert config.marker.cone_thickness == 10
+    assert config.marker.cone_opacity == 1.0
+
+
 def test_apply_section_data_movement_parses_speed_and_position() -> None:
     config = AppConfig()
 

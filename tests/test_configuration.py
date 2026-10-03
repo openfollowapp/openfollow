@@ -2576,7 +2576,11 @@ def test_marker_config_coerces_all_boolean_flags() -> None:
         ground_circle_filled="false",  # type: ignore[arg-type]
         z_display_from_stage="yes",  # type: ignore[arg-type]
         invert_control_direction="true",  # type: ignore[arg-type]
+        cone_filled="off",  # type: ignore[arg-type]
+        cone_shaded="no",  # type: ignore[arg-type]
     )
+    assert cfg.cone_filled is False
+    assert cfg.cone_shaded is False
     assert cfg.ball_visible is False
     assert cfg.crosshair_visible is False
     assert cfg.z_line is False
@@ -2660,6 +2664,13 @@ def test_marker_config_shipped_defaults() -> None:
     accidental revert is caught. These mirror ``config.example.toml``."""
     cfg = MarkerConfig()
     assert cfg.default_pos_z == 1.6
+    assert cfg.marker_style == "crosshair"
+    assert cfg.cone_base_diameter == 0.6
+    assert cfg.cone_top_diameter == 0.3
+    assert cfg.cone_thickness == 2
+    assert cfg.cone_filled is True
+    assert cfg.cone_opacity == 0.4
+    assert cfg.cone_shaded is True
     assert cfg.transparency == 0.3
     assert cfg.z_line_thickness == 2
     assert cfg.ground_circle is True
@@ -2678,6 +2689,72 @@ def test_marker_config_clamps_thicknesses(bad_thickness: object) -> None:
     cfg = MarkerConfig(crosshair_thickness=bad_thickness, z_line_thickness=bad_thickness)  # type: ignore[arg-type]
     assert cfg.crosshair_thickness >= 1
     assert cfg.z_line_thickness >= 1
+
+
+@pytest.mark.parametrize("style", ["crosshair", "cone"])
+def test_marker_config_accepts_each_marker_style(style: str) -> None:
+    assert MarkerConfig(marker_style=style).marker_style == style
+
+
+@pytest.mark.parametrize("bad_style", ["sphere", "Cone", "", None, True, 1])
+def test_marker_config_falls_back_on_unknown_marker_style(bad_style: object) -> None:
+    cfg = MarkerConfig(marker_style=bad_style)  # type: ignore[arg-type]
+    assert cfg.marker_style == "crosshair"
+
+
+@pytest.mark.parametrize(
+    "bad_radius,expected",
+    [(-1.0, 0.0), ("abc", 0.6), (None, 0.6), (float("nan"), 0.6), (float("inf"), 0.6)],
+)
+def test_marker_config_clamps_cone_base_diameter(bad_radius: object, expected: float) -> None:
+    cfg = MarkerConfig(cone_base_diameter=bad_radius)  # type: ignore[arg-type]
+    assert cfg.cone_base_diameter == expected
+
+
+@pytest.mark.parametrize(
+    "bad_radius,expected",
+    [(-1.0, 0.0), ("abc", 0.3), (None, 0.3), (float("nan"), 0.3), (float("inf"), 0.3)],
+)
+def test_marker_config_clamps_cone_top_diameter(bad_radius: object, expected: float) -> None:
+    cfg = MarkerConfig(cone_top_diameter=bad_radius)  # type: ignore[arg-type]
+    assert cfg.cone_top_diameter == expected
+
+
+def test_marker_config_cone_top_diameter_may_exceed_the_base() -> None:
+    cfg = MarkerConfig(cone_base_diameter=0.2, cone_top_diameter=0.5)
+    assert (cfg.cone_base_diameter, cfg.cone_top_diameter) == (0.2, 0.5)
+
+
+def test_marker_config_cone_base_diameter_accepts_zero_and_strings() -> None:
+    assert MarkerConfig(cone_base_diameter=0).cone_base_diameter == 0.0
+    assert MarkerConfig(cone_base_diameter="0.45").cone_base_diameter == 0.45  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "bad_thickness,expected",
+    [(0, 1), (-3, 1), (11, 10), (999, 10), ("x", 2), (None, 2), (True, 2)],
+)
+def test_marker_config_clamps_cone_thickness(bad_thickness: object, expected: int) -> None:
+    cfg = MarkerConfig(cone_thickness=bad_thickness)  # type: ignore[arg-type]
+    assert cfg.cone_thickness == expected
+
+
+@pytest.mark.parametrize("bad_alpha,expected", [(-0.5, 0.0), (5.0, 1.0), ("x", 0.4), (None, 0.4)])
+def test_marker_config_clamps_cone_opacity(bad_alpha: object, expected: float) -> None:
+    cfg = MarkerConfig(cone_opacity=bad_alpha)  # type: ignore[arg-type]
+    assert cfg.cone_opacity == expected
+
+
+@pytest.mark.parametrize("bad_flag", ["maybe", None, 2])
+def test_marker_config_cone_filled_falls_back_to_on(bad_flag: object) -> None:
+    cfg = MarkerConfig(cone_filled=bad_flag)  # type: ignore[arg-type]
+    assert cfg.cone_filled is True
+
+
+@pytest.mark.parametrize("bad_flag", ["maybe", None, 2])
+def test_marker_config_cone_shaded_falls_back_to_on(bad_flag: object) -> None:
+    cfg = MarkerConfig(cone_shaded=bad_flag)  # type: ignore[arg-type]
+    assert cfg.cone_shaded is True
 
 
 # --- DetectionConfig ------------------------------------------------------

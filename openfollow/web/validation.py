@@ -433,6 +433,15 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "invert_control_direction": FieldRule(_as_bool),
     },
     "marker": {
+        "marker_style": FieldRule(
+            _as_str, choices=("crosshair", "cone"), human_error="Style must be 'crosshair' or 'cone'."
+        ),
+        "cone_base_diameter": FieldRule(_as_float, lo=0.0, human_error="Base diameter must be ≥ 0."),
+        "cone_top_diameter": FieldRule(_as_float, lo=0.0, human_error="Top diameter must be ≥ 0."),
+        "cone_thickness": FieldRule(_as_int, lo=1, hi=10, human_error="Cone thickness must be between 1 and 10 px."),
+        "cone_filled": FieldRule(_as_bool),
+        "cone_shaded": FieldRule(_as_bool),
+        "cone_opacity": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Fill opacity must be between 0 and 1."),
         "ball_visible": FieldRule(_as_bool),
         "ball_size": FieldRule(_as_float, lo=0.0, human_error="Ball size must be ≥ 0."),
         "transparency": FieldRule(_as_float, lo=0.0, hi=1.0, human_error="Opacity must be between 0 and 1."),

@@ -183,6 +183,86 @@ def ground_circle_world_ring(
     ]
 
 
+def _convex_hull(pts: npt.NDArray[Any]) -> list[int]:
+    """Indices of the counter-clockwise convex hull of ``pts`` (monotone chain).
+
+    Duplicate and collinear boundary points are dropped, so every hull edge
+    is a supporting line of the whole set.
+    """
+    order = sorted(range(len(pts)), key=lambda i: (pts[i, 0], pts[i, 1]))
+
+    def cross(o: int, a: int, b: int) -> float:
+        oa = pts[a] - pts[o]
+        ob = pts[b] - pts[o]
+        return float(oa[0] * ob[1] - oa[1] * ob[0])
+
+    lower: list[int] = []
+    for i in order:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], i) <= 0:
+            lower.pop()
+        lower.append(i)
+    upper: list[int] = []
+    for i in reversed(order):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], i) <= 0:
+            upper.pop()
+        upper.append(i)
+    return lower[:-1] + upper[:-1]
+
+
+def ring_silhouette_edges(
+    floor_ring: npt.NDArray[Any],
+    top_ring: npt.NDArray[Any],
+    floor_center: tuple[float, float],
+    top_center: tuple[float, float],
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """Join two projected horizontal rings along their silhouette.
+
+    ``floor_ring`` / ``top_ring`` are the rings' finite screen points, (N, 2)
+    and (M, 2); the centres are the projected ring centres. The silhouette
+    edges are the two common tangents: the convex hull of both rings has
+    exactly two edges that bridge from one ring to the other, each a
+    supporting line of both, so the drawn edge never cuts into a ring however
+    perspective tilts the ellipses. Returns two ``(floor, top)`` segments, or
+    none when either ring has no point.
+
+    When one ring lies inside the other (seen from straight above) the hull
+    has no bridge, and the outermost point of each ring per side of the
+    projected axis is joined instead, so the glyph keeps its two edges.
+    """
+    floor_pts = np.asarray(floor_ring, dtype=np.float64).reshape(-1, 2)
+    top_pts = np.asarray(top_ring, dtype=np.float64).reshape(-1, 2)
+    n_floor = floor_pts.shape[0]
+    if n_floor == 0 or top_pts.shape[0] == 0:
+        return []
+
+    pts = np.vstack([floor_pts, top_pts])
+    # A top point coinciding with a floor point counts as the floor's (the
+    # floor comes first, so ``unique`` keeps its index): two identical rings
+    # then have no bridge and take the fallback below.
+    _, keep = np.unique(pts, axis=0, return_index=True)
+    hull = [int(keep[i]) for i in _convex_hull(pts[keep])]
+    bridges = []
+    for a, b in zip(hull, hull[1:] + hull[:1], strict=True):
+        if (a < n_floor) != (b < n_floor):
+            f, t = (a, b) if a < n_floor else (b, a)
+            bridges.append(((float(pts[f, 0]), float(pts[f, 1])), (float(pts[t, 0]), float(pts[t, 1]))))
+    if len(bridges) == 2:
+        return bridges
+
+    ax = top_center[0] - floor_center[0]
+    ay = top_center[1] - floor_center[1]
+    norm = math.hypot(ax, ay)
+    nx, ny = (-ay / norm, ax / norm) if norm > 1e-9 else (1.0, 0.0)
+    floor_side = (floor_pts[:, 0] - floor_center[0]) * nx + (floor_pts[:, 1] - floor_center[1]) * ny
+    top_side = (top_pts[:, 0] - top_center[0]) * nx + (top_pts[:, 1] - top_center[1]) * ny
+    edges = []
+    for pick in (np.argmin, np.argmax):
+        f = floor_pts[pick(floor_side)]
+        t = top_pts[pick(top_side)]
+        edges.append(((float(f[0]), float(f[1])), (float(t[0]), float(t[1]))))
+    return edges
+
+
 # Fixed-point iterations to invert the radial warp. The forward map is gentle
 # across the clamped coefficient range, so the fixed point converges to well
 # under a pixel within a handful of steps.

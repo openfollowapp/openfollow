@@ -155,6 +155,13 @@ class OverlayState:
     grid_thickness: int = _GRID_THICKNESS_DEFAULT
     grid_transparency: float = _GRID_TRANSPARENCY_DEFAULT
     # Marker visual config
+    marker_style: str = "crosshair"
+    cone_base_diameter: float = 0.6
+    cone_top_diameter: float = 0.3
+    cone_thickness: int = 2
+    cone_filled: bool = True
+    cone_opacity: float = 0.4
+    cone_shaded: bool = True
     show_ball: bool = True
     show_crosshair: bool = True
     crosshair_size: float = 0.3
@@ -311,6 +318,13 @@ class OverlayState:
         self.grid_color = _GRID_COLOR_DEFAULT
         self.grid_thickness = _GRID_THICKNESS_DEFAULT
         self.grid_transparency = _GRID_TRANSPARENCY_DEFAULT
+        self.marker_style = "crosshair"
+        self.cone_base_diameter = 0.6
+        self.cone_top_diameter = 0.3
+        self.cone_thickness = 2
+        self.cone_filled = True
+        self.cone_opacity = 0.4
+        self.cone_shaded = True
         self.show_ball = True
         self.show_crosshair = True
         self.crosshair_size = 0.3

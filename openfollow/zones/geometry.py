@@ -28,7 +28,7 @@ def point_in_polygon(px: float, py: float, vertices: Polygon) -> bool:
     return inside
 
 
-def _polygon_signed_area(vertices: Polygon) -> float:
+def polygon_signed_area(vertices: Polygon) -> float:
     """Shoelace signed area (positive = counter-clockwise)."""
     n = len(vertices)
     total = 0.0
@@ -55,7 +55,7 @@ def shrink_polygon(vertices: Polygon, amount: float) -> list[Vertex]:
             return [(float(x), float(y)) for x, y in vertices]
 
     # Determine winding: push vertices toward interior
-    orig_area = _polygon_signed_area(vertices)
+    orig_area = polygon_signed_area(vertices)
     ccw = orig_area > 0.0
     sign = 1.0 if ccw else -1.0
 
@@ -97,7 +97,7 @@ def shrink_polygon(vertices: Polygon, amount: float) -> list[Vertex]:
     # the opposite edge: the offset polygon self-intersects, flipping its
     # winding (sign) or collapsing its area. Either way the result is a
     # misplaced hysteresis polygon – fall back to no shrink for this zone.
-    new_area = _polygon_signed_area(result)
+    new_area = polygon_signed_area(result)
     same_sign = (new_area >= 0.0) == (orig_area >= 0.0)
     if not same_sign or abs(new_area) < 0.05 * abs(orig_area):
         return [(float(x), float(y)) for x, y in vertices]

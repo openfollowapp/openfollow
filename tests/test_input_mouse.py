@@ -134,6 +134,18 @@ def _world_at(app: _DummyApp, x: float, y: float) -> tuple[float, float]:
     return float(out[0, 0]), float(out[0, 1])
 
 
+def _stage_point_on_screen(app: _DummyApp, wx: float, wy: float) -> tuple[float, float]:
+    """Screen pixel where the stage-plane point ``(wx, wy)`` projects."""
+    w, h = _canvas_size(app)
+    scr = project_points(
+        _cam_buffer(app),
+        np.array([[wx, wy, app._config.grid.z_offset]], dtype=np.float64),
+        float(w),
+        float(h),
+    )
+    return float(scr[0, 0]), float(scr[0, 1])
+
+
 def _grab(handler: MouseHandler, app: _DummyApp, marker_id: int = 1) -> bool:
     cx, cy = _ground_center(app, marker_id)
     return handler.on_pointer_down(cx, cy, 1)
@@ -220,6 +232,39 @@ class TestGrab:
         cx, cy = _ground_center(app, 1)
         # 40 px away, outside the ~14 px touch radius and no polygon to fall on.
         assert handler.on_pointer_down(cx + 40, cy, 1) is False
+
+    def test_cone_style_grabs_inside_the_floor_ring(self) -> None:
+        """The grab area is the ring that is drawn: in cone style the
+        cone's floor ring, whether or not the ground circle is on."""
+        app = _DummyApp()
+        app._config.marker.marker_style = "cone"
+        app._config.marker.cone_base_diameter = 2.0  # a 1 m ring
+        app._config.marker.ground_circle = False
+        handler = MouseHandler(app)
+        # 0.8 m from the centre: inside the 1 m ring, well past the pixel fallback.
+        x, y = _stage_point_on_screen(app, 0.8, 0.0)
+        assert handler.on_pointer_down(x, y, 1) is True
+        assert handler.active is True
+
+    def test_cone_style_misses_outside_the_floor_ring(self) -> None:
+        app = _DummyApp()
+        app._config.marker.marker_style = "cone"
+        app._config.marker.cone_base_diameter = 1.0  # a 0.5 m ring
+        handler = MouseHandler(app)
+        x, y = _stage_point_on_screen(app, 0.9, 0.0)
+        assert handler.on_pointer_down(x, y, 1) is False
+
+    def test_cone_style_ignores_the_ground_circle_size(self) -> None:
+        """A wide ground circle is not drawn in cone style, so it is not a
+        grab area either."""
+        app = _DummyApp()
+        app._config.marker.ground_circle = True
+        app._config.marker.ground_circle_size = 2.0
+        app._config.marker.cone_base_diameter = 0.6  # a 0.3 m ring
+        x, y = _stage_point_on_screen(app, 1.5, 0.0)
+        assert MouseHandler(app).on_pointer_down(x, y, 1) is True  # crosshair style: inside the circle
+        app._config.marker.marker_style = "cone"
+        assert MouseHandler(app).on_pointer_down(x, y, 1) is False
 
     def test_deactivate_disarms(self) -> None:
         app = _DummyApp()

@@ -394,8 +394,14 @@ class MouseHandler:
         buf, w, h = view
         cfg = app._config
         z_off = cfg.grid.z_offset
-        gc_on = cfg.marker.ground_circle
-        gc_size = cfg.marker.ground_circle_size
+        # The grab area is the ring that is drawn: the cone's base ring
+        # in cone style, else the ground circle.
+        if cfg.marker.marker_style == "cone":
+            gc_on = True
+            gc_size = cfg.marker.cone_base_diameter / 2.0
+        else:
+            gc_on = cfg.marker.ground_circle
+            gc_size = cfg.marker.ground_circle_size
         # Match the rendered circle: the overlay bows the projected ground circle
         # by the lens coefficients, so the hit-test projects through the same
         # warp (identity when no lens is configured) or the clickable region

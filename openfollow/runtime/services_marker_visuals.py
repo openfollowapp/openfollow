@@ -183,6 +183,13 @@ def _resolve_marker_name(app: Any, marker_id: int) -> str:
 def sync_marker_config(state: OverlayState, cfg: Any) -> None:
     """Copy marker visual config fields into the overlay state."""
     tc = cfg.marker
+    state.marker_style = tc.marker_style
+    state.cone_base_diameter = tc.cone_base_diameter
+    state.cone_top_diameter = tc.cone_top_diameter
+    state.cone_thickness = int(tc.cone_thickness)
+    state.cone_filled = tc.cone_filled
+    state.cone_opacity = tc.cone_opacity
+    state.cone_shaded = tc.cone_shaded
     state.show_ball = tc.ball_visible
     state.show_crosshair = tc.crosshair_visible
     state.crosshair_size = tc.crosshair_size

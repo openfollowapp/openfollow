@@ -34,6 +34,13 @@ pytestmark = pytest.mark.unit
 
 def _make_marker_config() -> SimpleNamespace:
     return SimpleNamespace(
+        marker_style="cone",
+        cone_base_diameter=0.45,
+        cone_top_diameter=0.1,
+        cone_thickness=4.0,
+        cone_filled=False,
+        cone_opacity=0.65,
+        cone_shaded=False,
         ball_visible=False,
         crosshair_visible=False,
         crosshair_size=0.5,
@@ -77,6 +84,13 @@ class TestSyncMarkerConfig:
 
         sync_marker_config(state, cfg)
 
+        assert state.marker_style == "cone"
+        assert state.cone_base_diameter == 0.45
+        assert state.cone_top_diameter == 0.1
+        assert state.cone_thickness == 4
+        assert state.cone_filled is False
+        assert state.cone_opacity == 0.65
+        assert state.cone_shaded is False
         assert state.show_ball is False
         assert state.show_crosshair is False
         assert state.crosshair_size == 0.5

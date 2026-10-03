@@ -1292,7 +1292,9 @@ _SECTION_LENGTH_FIELDS: dict[str, frozenset[str]] = {
             "max_height",
         }
     ),
-    "marker": frozenset({"ball_size", "crosshair_size", "ground_circle_size"}),
+    "marker": frozenset(
+        {"ball_size", "crosshair_size", "ground_circle_size", "cone_base_diameter", "cone_top_diameter"}
+    ),
     "movement": frozenset({"default_pos_x", "default_pos_y", "default_pos_z"}),
     "trigger_zones": frozenset({"hysteresis"}),
 }
@@ -1569,6 +1571,13 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "invert_control_direction": _as_bool,
     },
     "marker": {
+        "marker_style": _as_str,
+        "cone_base_diameter": _as_float,
+        "cone_top_diameter": _as_float,
+        "cone_thickness": _as_int,
+        "cone_filled": _as_bool,
+        "cone_opacity": _as_float,
+        "cone_shaded": _as_bool,
         "ball_visible": _as_bool,
         "ball_size": _as_float,
         "transparency": _as_float,
@@ -5411,6 +5420,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         cfg = _save_section_from_form(
             "marker",
             bool_fields=(
+                "cone_filled",
+                "cone_shaded",
                 "ball_visible",
                 "crosshair_visible",
                 "z_line",

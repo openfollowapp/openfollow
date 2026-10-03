@@ -49,6 +49,13 @@ def test_overlay_state_reset_restores_defaults() -> None:
     state.lens_k2 = 0.04
     state.grid_config = (1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
     state.show_ball = False
+    state.marker_style = "cone"
+    state.cone_base_diameter = 1.5
+    state.cone_top_diameter = 1.0
+    state.cone_thickness = 7
+    state.cone_filled = False
+    state.cone_opacity = 0.9
+    state.cone_shaded = False
     state.show_hud_help = False
     state.video_source_type = "srt"
     state.source_label = "My Source"
@@ -78,6 +85,13 @@ def test_overlay_state_reset_restores_defaults() -> None:
     assert state.lens_k2 == 0.0
     assert state.grid_config is None
     assert state.show_ball is True
+    assert state.marker_style == "crosshair"
+    assert state.cone_base_diameter == 0.6
+    assert state.cone_top_diameter == 0.3
+    assert state.cone_thickness == 2
+    assert state.cone_filled is True
+    assert state.cone_opacity == 0.4
+    assert state.cone_shaded is True
     assert state.show_hud_help is True
     assert state.video_source_type == "ndi"
     assert state.source_label == ""

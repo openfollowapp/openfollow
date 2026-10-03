@@ -37,8 +37,76 @@ from openfollow.web import server as _server_module  # noqa: F401 – registers 
 pytestmark = pytest.mark.unit
 
 
-def _render_marker() -> str:
-    return template("partials/marker", config=AppConfig(), saved=False)
+def _render_marker(config: AppConfig | None = None) -> str:
+    return template("partials/marker", config=config if config is not None else AppConfig(), saved=False)
+
+
+def _tag_after(html: str, needle: str) -> str:
+    return html.split(needle, 1)[1].split(">", 1)[0]
+
+
+class TestMarkerStyleForm:
+    """The style toggle shows one style's groups; the other style's stay in
+    the form, hidden, so a save keeps both."""
+
+    def test_style_toggle_is_a_two_option_segmented_radio_without_sublabels(self) -> None:
+        body = _render_marker()
+        toggle = body.split('aria-label="Marker style"', 1)[1].split("</div>", 1)[0]
+        assert toggle.count('name="marker_style"') == 2
+        assert 'value="crosshair"' in toggle and 'value="cone"' in toggle
+        assert "<small>" not in toggle
+
+    def test_crosshair_style_shows_the_crosshair_groups_only(self) -> None:
+        body = _render_marker()
+        assert "hidden" in _tag_after(body, 'data-style-only="cone"')
+        for _ in range(4):
+            assert "hidden" not in _tag_after(body, 'data-style-only="crosshair"')
+            body = body.split('data-style-only="crosshair"', 1)[1]
+
+    def test_cone_style_shows_the_cone_group_only(self) -> None:
+        cfg = AppConfig()
+        cfg.marker.marker_style = "cone"
+        body = _render_marker(cfg)
+        assert "hidden" not in _tag_after(body, 'data-style-only="cone"')
+        rest = body
+        for _ in range(4):
+            assert "hidden" in _tag_after(rest, 'data-style-only="crosshair"')
+            rest = rest.split('data-style-only="crosshair"', 1)[1]
+
+    def test_hidden_groups_still_carry_their_inputs(self) -> None:
+        cfg = AppConfig()
+        cfg.marker.marker_style = "cone"
+        body = _render_marker(cfg)
+        for name in ("ball_visible", "crosshair_size", "z_line_thickness", "ground_circle_size"):
+            assert f'name="{name}"' in body
+
+    def test_cone_group_carries_the_fill_controls(self) -> None:
+        body = _render_marker()
+        group = body.split('data-style-only="cone"', 1)[1].split('data-style-only="crosshair"', 1)[0]
+        for name in (
+            "cone_base_diameter",
+            "cone_top_diameter",
+            "cone_thickness",
+            "cone_filled",
+            "cone_opacity",
+            "cone_shaded",
+        ):
+            assert f'name="{name}"' in group
+
+    def test_z_display_is_not_tied_to_a_style(self) -> None:
+        """The Z readout applies to both styles, so its group never hides."""
+        body = _render_marker()
+        z_group_tag = body.rsplit('name="z_display_from_stage"', 1)[0].rsplit('<div class="group"', 1)[1]
+        assert "data-style-only" not in z_group_tag.split(">", 1)[0]
+
+    def test_z_display_is_the_last_group_in_the_form(self) -> None:
+        """The last group drops its bottom divider; it must be one that shows
+        in both styles, or cone style ends on a hidden group's divider."""
+        body = _render_marker()
+        form = body.split('id="marker-section"', 1)[1].split("</form>", 1)[0]
+        last_group = form.rsplit('<div class="group"', 1)[1]
+        assert "Z Display" in last_group
+        assert "data-style-only" not in last_group.split(">", 1)[0]
 
 
 class TestMarkerTabStructure:
